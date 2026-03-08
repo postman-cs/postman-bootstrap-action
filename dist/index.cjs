@@ -22089,19 +22089,11 @@ var PostmanAssetsClient = class {
     }, 3, 2e3);
     return specId;
   }
-  async updateSpec(specId, specContent, workspaceId) {
-    const qs = workspaceId ? `?workspaceId=${workspaceId}` : "";
-    const response = await this.request(`/specs/${specId}${qs}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        type: "OPENAPI:3.0",
-        files: [{ path: "index.yaml", content: specContent }]
-      })
+  async updateSpec(specId, specContent, _workspaceId) {
+    await this.request(`/specs/${specId}/files/index.yaml`, {
+      method: "PATCH",
+      body: JSON.stringify({ content: specContent })
     });
-    const id = String(response?.id || "").trim();
-    if (!id) {
-      throw new Error("Spec update did not return an ID");
-    }
   }
   async generateCollection(specId, projectName, prefix) {
     const payload = {

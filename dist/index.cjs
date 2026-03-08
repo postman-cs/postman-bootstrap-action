@@ -21624,7 +21624,11 @@ var GitHubApiClient = class {
       throw new Error("No GitHub auth token configured");
     }
     const first = await this.requestWithToken(path, init, orderedTokens[0]);
-    if (first.status !== 403 || orderedTokens.length < 2 || !this.canUseFallback(path)) {
+    if (orderedTokens.length < 2 || !this.canUseFallback(path)) {
+      return first;
+    }
+    const isVariableGet404 = first.status === 404 && (!init.method || init.method === "GET") && this.isVariablesEndpoint(path);
+    if (first.status !== 403 && !isVariableGet404) {
       return first;
     }
     return this.requestWithToken(path, init, orderedTokens[1]);

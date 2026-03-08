@@ -130,7 +130,21 @@ export class GitHubApiClient {
     }
 
     const first = await this.requestWithToken(path, init, orderedTokens[0]);
-    if (first.status !== 403 || orderedTokens.length < 2 || !this.canUseFallback(path)) {
+
+    if (orderedTokens.length < 2 || !this.canUseFallback(path)) {
+      return first;
+    }
+
+    // GitHub returns 404 (not 403) when GITHUB_TOKEN lacks permission to
+    // read repo variables — this prevents information disclosure but means
+    // the action silently treats existing variables as missing. Retry with
+    // the fallback PAT for both 403 and variable-GET-404 cases.
+    const isVariableGet404 =
+      first.status === 404 &&
+      (!init.method || init.method === 'GET') &&
+      this.isVariablesEndpoint(path);
+
+    if (first.status !== 403 && !isVariableGet404) {
       return first;
     }
 

@@ -81,10 +81,20 @@ export class PostmanAssetsClient {
           type: 'team'
         }
       };
-      const created = await this.request('/workspaces', {
-        method: 'POST',
-        body: JSON.stringify(payload)
-      });
+      let created;
+      try {
+        created = await this.request('/workspaces', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('Only personal workspaces')) {
+          throw new Error(
+            'Workspace creation failed: Your team may have Org Mode enabled. Org-level workspaces require a different API request schema which is currently unsupported in this alpha version.'
+          );
+        }
+        throw err;
+      }
 
       const workspaceId = created?.workspace?.id;
       if (!workspaceId) {

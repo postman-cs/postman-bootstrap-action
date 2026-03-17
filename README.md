@@ -152,6 +152,7 @@ The `postman-access-token` is a Postman session token (`x-access-token`) require
 - `smoke-collection-id`
 - `contract-collection-id`
 - `collections-json`
+- **`spec-server-url`** — First server URL from the OpenAPI spec’s `servers` array. The onboarding composite uses this as a fallback for env runtime URLs when `env-runtime-urls-json` is not provided.
 - `lint-summary-json`
 
 ## Local development

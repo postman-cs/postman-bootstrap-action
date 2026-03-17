@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
+import { parse as parseYaml } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
 import { GitHubApiClient, type GitHubApiClientAuthMode } from './lib/github/github-api-client.js';
@@ -42,6 +43,7 @@ export interface PlannedOutputs {
   'smoke-collection-id': string;
   'contract-collection-id': string;
   'collections-json': string;
+  'spec-server-url': string;
   'lint-summary-json': string;
 }
 
@@ -265,6 +267,7 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
       smoke: '',
       contract: ''
     }),
+    'spec-server-url': '',
     'lint-summary-json': JSON.stringify({
       errors: 0,
       total: 0,
@@ -658,7 +661,17 @@ export async function runBootstrap(
     }
   );
 
-  void specContent;
+  try {
+    const spec = (specContent.trim().startsWith('{') ? JSON.parse(specContent) : parseYaml(specContent)) as Record<string, unknown>;
+    const servers = Array.isArray(spec.servers) ? spec.servers : [];
+    const firstUrl = String((servers[0] as Record<string, unknown>)?.url || '').trim();
+    if (firstUrl) {
+      outputs['spec-server-url'] = firstUrl;
+      dependencies.core.info(`Inferred server URL from spec: ${firstUrl}`);
+    }
+  } catch {
+    dependencies.core.warning('Could not parse servers from OpenAPI spec');
+  }
 
   const lintSummary = await runGroup(
     dependencies.core,

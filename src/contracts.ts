@@ -135,6 +135,9 @@ export const openAlphaActionContract: BetaActionContract = {
     'collections-json': {
       description: 'JSON summary of generated collections.'
     },
+    'spec-server-url': {
+      description: 'First server URL extracted from the OpenAPI spec servers field.'
+    },
     'lint-summary-json': {
       description: 'JSON summary of lint errors and warnings.'
     }

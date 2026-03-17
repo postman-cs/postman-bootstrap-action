@@ -95,6 +95,7 @@ describe('open-alpha action contract', () => {
         smoke: '',
         contract: ''
       }),
+      'spec-server-url': '',
       'lint-summary-json': JSON.stringify({
         errors: 0,
         total: 0,

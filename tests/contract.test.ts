@@ -41,6 +41,29 @@ describe('open-alpha action contract', () => {
     expect(resolveInputs({}).integrationBackend).toBe('bifrost');
   });
 
+  it('defaults the new lifecycle controls in the contract, manifest, and runtime', () => {
+    expect(openAlphaActionContract.inputs['collection-sync-mode'].default).toBe('reuse');
+    expect(openAlphaActionContract.inputs['collection-sync-mode'].allowedValues).toEqual([
+      'reuse',
+      'refresh',
+      'version'
+    ]);
+    expect(actionManifest.inputs['collection-sync-mode'].default).toBe('reuse');
+    expect(resolveInputs({}).collectionSyncMode).toBe('reuse');
+
+    expect(openAlphaActionContract.inputs['spec-sync-mode'].default).toBe('update');
+    expect(openAlphaActionContract.inputs['spec-sync-mode'].allowedValues).toEqual([
+      'update',
+      'version'
+    ]);
+    expect(actionManifest.inputs['spec-sync-mode'].default).toBe('update');
+    expect(resolveInputs({}).specSyncMode).toBe('update');
+
+    expect(openAlphaActionContract.inputs['set-as-current'].default).toBe('true');
+    expect(actionManifest.inputs['set-as-current'].default).toBe('true');
+    expect(resolveInputs({}).setAsCurrent).toBe(true);
+  });
+
   it('rejects unsupported integration backends during input resolution', () => {
     expect(() =>
       resolveInputs({

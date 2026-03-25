@@ -57,6 +57,10 @@ function createCoreStub(values: Record<string, string> = {}) {
 function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   return {
     projectName: 'core-payments',
+    collectionSyncMode: 'reuse',
+    specSyncMode: 'update',
+    releaseLabel: undefined,
+    setAsCurrent: true,
     domain: 'core-banking',
     domainCode: 'AF',
     requesterEmail: 'owner@example.com',
@@ -296,7 +300,8 @@ describe('bootstrap action', () => {
       }
     );
 
-    expect(github.getRepositoryVariable).not.toHaveBeenCalled();
+    expect(github.getRepositoryVariable).toHaveBeenCalledTimes(1);
+    expect(github.getRepositoryVariable).toHaveBeenCalledWith('POSTMAN_RELEASES_JSON');
     expect(postman.createWorkspace).not.toHaveBeenCalled();
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
@@ -374,6 +379,227 @@ describe('bootstrap action', () => {
       'smoke-collection-id': 'col-smoke-from-vars',
       'contract-collection-id': 'col-contract-from-vars'
     });
+  });
+
+  it('refresh mode regenerates collections even when ids already exist', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const generatedIds = ['col-baseline-refresh', 'col-smoke-refresh', 'col-contract-refresh'];
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn().mockResolvedValue(undefined)
+    };
+    const github = {
+      setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+      getRepositoryVariable: vi.fn().mockResolvedValue('')
+    };
+
+    const result = await runBootstrap(
+      createInputs({
+        workspaceId: 'ws-existing',
+        specId: 'spec-existing',
+        baselineCollectionId: 'col-baseline-existing',
+        smokeCollectionId: 'col-smoke-existing',
+        contractCollectionId: 'col-contract-existing',
+        collectionSyncMode: 'refresh',
+        setAsCurrent: false
+      }),
+      {
+        core,
+        exec: execStub,
+        github,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({
+      'baseline-collection-id': 'col-baseline-refresh',
+      'smoke-collection-id': 'col-smoke-refresh',
+      'contract-collection-id': 'col-contract-refresh'
+    });
+    expect(github.setRepositoryVariable).toHaveBeenCalledWith(
+      'POSTMAN_BASELINE_COLLECTION_UID',
+      'col-baseline-refresh'
+    );
+  });
+
+  it('version mode creates release-scoped assets and persists a release manifest', async () => {
+    const previousRefName = process.env.GITHUB_REF_NAME;
+    const previousSha = process.env.GITHUB_SHA;
+    process.env.GITHUB_REF_NAME = 'release/v1.1.1';
+    process.env.GITHUB_SHA = 'deadbeef';
+
+    try {
+      const { core } = createCoreStub();
+      const execStub = createExecStub();
+      const ioStub = createIoStub();
+      const generatedIds = ['col-baseline-v111', 'col-smoke-v111', 'col-contract-v111'];
+      const postman = {
+        addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+        createWorkspace: vi.fn(),
+        findWorkspacesByName: vi.fn().mockResolvedValue([]),
+        generateCollection: vi
+          .fn()
+          .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+        getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+        getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+        injectTests: vi.fn().mockResolvedValue(undefined),
+        inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+        tagCollection: vi.fn().mockResolvedValue(undefined),
+        uploadSpec: vi.fn().mockResolvedValue('spec-v111'),
+        updateSpec: vi.fn().mockResolvedValue(undefined)
+      };
+      const github = {
+        setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+        getRepositoryVariable: vi.fn(async (name: string) =>
+          name === 'POSTMAN_RELEASES_JSON' ? JSON.stringify({ releases: {} }) : ''
+        )
+      };
+
+      const result = await runBootstrap(
+        createInputs({
+          workspaceId: 'ws-existing',
+          collectionSyncMode: 'version',
+          specSyncMode: 'version'
+        }),
+        {
+          core,
+          exec: execStub,
+          github,
+          io: ioStub,
+          postman,
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response('openapi: 3.1.0', { status: 200 })
+          )
+        }
+      );
+
+      expect(postman.uploadSpec).toHaveBeenCalledWith(
+        'ws-existing',
+        'core-payments release-v1.1.1',
+        'openapi: 3.1.0'
+      );
+      expect(postman.generateCollection).toHaveBeenNthCalledWith(
+        1,
+        'spec-v111',
+        'core-payments release-v1.1.1',
+        '[Baseline]'
+      );
+      const manifestCall = github.setRepositoryVariable.mock.calls.find(
+        ([name]) => name === 'POSTMAN_RELEASES_JSON'
+      );
+      expect(manifestCall).toBeTruthy();
+      expect(JSON.parse(String(manifestCall?.[1]))).toMatchObject({
+        current: 'release-v1.1.1',
+        releases: {
+          'release-v1.1.1': {
+            specId: 'spec-v111',
+            collections: {
+              baseline: 'col-baseline-v111',
+              smoke: 'col-smoke-v111',
+              contract: 'col-contract-v111'
+            },
+            source: {
+              ref: 'release-v1.1.1',
+              sha: 'deadbeef'
+            }
+          }
+        }
+      });
+      expect(result['spec-id']).toBe('spec-v111');
+    } finally {
+      if (previousRefName === undefined) delete process.env.GITHUB_REF_NAME;
+      else process.env.GITHUB_REF_NAME = previousRefName;
+      if (previousSha === undefined) delete process.env.GITHUB_SHA;
+      else process.env.GITHUB_SHA = previousSha;
+    }
+  });
+
+  it('version mode can keep existing current pointers when set-as-current is false', async () => {
+    const previousRefName = process.env.GITHUB_REF_NAME;
+    process.env.GITHUB_REF_NAME = 'v1.1.1';
+
+    try {
+      const { core } = createCoreStub();
+      const execStub = createExecStub();
+      const ioStub = createIoStub();
+      const postman = {
+        addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+        createWorkspace: vi.fn(),
+        findWorkspacesByName: vi.fn().mockResolvedValue([]),
+        generateCollection: vi
+          .fn()
+          .mockResolvedValueOnce('col-baseline-v111')
+          .mockResolvedValueOnce('col-smoke-v111')
+          .mockResolvedValueOnce('col-contract-v111'),
+        getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+        getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+        injectTests: vi.fn().mockResolvedValue(undefined),
+        inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+        tagCollection: vi.fn().mockResolvedValue(undefined),
+        uploadSpec: vi.fn().mockResolvedValue('spec-v111'),
+        updateSpec: vi.fn().mockResolvedValue(undefined)
+      };
+      const github = {
+        setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+        getRepositoryVariable: vi.fn(async (name: string) =>
+          name === 'POSTMAN_RELEASES_JSON'
+            ? JSON.stringify({ current: 'v1.1.0', releases: { 'v1.1.0': { collections: {} } } })
+            : ''
+        )
+      };
+
+      await runBootstrap(
+        createInputs({
+          workspaceId: 'ws-existing',
+          collectionSyncMode: 'version',
+          specSyncMode: 'version',
+          setAsCurrent: false
+        }),
+        {
+          core,
+          exec: execStub,
+          github,
+          io: ioStub,
+          postman,
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response('openapi: 3.1.0', { status: 200 })
+          )
+        }
+      );
+
+      const updatedCurrentCalls = github.setRepositoryVariable.mock.calls.filter(([name]) =>
+        [
+          'POSTMAN_WORKSPACE_ID',
+          'POSTMAN_SPEC_UID',
+          'POSTMAN_BASELINE_COLLECTION_UID',
+          'POSTMAN_SMOKE_COLLECTION_UID',
+          'POSTMAN_CONTRACT_COLLECTION_UID',
+          'POSTMAN_RELEASE_LABEL'
+        ].includes(String(name))
+      );
+      expect(updatedCurrentCalls).toHaveLength(0);
+    } finally {
+      if (previousRefName === undefined) delete process.env.GITHUB_REF_NAME;
+      else process.env.GITHUB_REF_NAME = previousRefName;
+    }
   });
 
   it('creates a new workspace when the repo-variable workspace is linked to a different repository', async () => {

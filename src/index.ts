@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
+import { parse, stringify } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
 import { GitHubApiClient, type GitHubApiClientAuthMode } from './lib/github/github-api-client.js';
@@ -555,6 +556,70 @@ function createReleaseEntry(
   };
 }
 
+const SPEC_SUMMARY_MAX_LEN = 200;
+const SPEC_HTTP_METHODS = new Set([
+  'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'
+]);
+
+/** OpenAPI JSON/YAML: fix missing or oversized operation summaries before Spec Hub upload. */
+export function normalizeSpecDocument(raw: string, warn: (msg: string) => void): string {
+  const head = raw.trimStart();
+  let doc: unknown;
+  let asJson = false;
+  try {
+    if (head.startsWith('{') || head.startsWith('[')) {
+      doc = JSON.parse(raw) as unknown;
+      asJson = true;
+    } else {
+      doc = parse(raw) as unknown;
+    }
+  } catch {
+    warn('Spec normalization skipped: document is not valid JSON or YAML.');
+    return raw;
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return raw;
+  const paths = (doc as Record<string, unknown>).paths;
+  if (!paths || typeof paths !== 'object' || Array.isArray(paths)) return raw;
+
+  let changed = false;
+  for (const [pathKey, pathItem] of Object.entries(paths as Record<string, unknown>)) {
+    if (!pathItem || typeof pathItem !== 'object' || Array.isArray(pathItem)) continue;
+    const item = pathItem as Record<string, unknown>;
+    for (const method of Object.keys(item)) {
+      if (!SPEC_HTTP_METHODS.has(method.toLowerCase())) continue;
+      const op = item[method];
+      if (!op || typeof op !== 'object' || Array.isArray(op)) continue;
+      const o = op as Record<string, unknown>;
+      const prev = o.summary;
+      let s = typeof o.summary === 'string' ? o.summary.trim() : '';
+      const M = method.toUpperCase();
+      if (!s && typeof o.operationId === 'string' && o.operationId.trim()) {
+        s = o.operationId.trim();
+        warn(`Spec normalization: ${M} ${pathKey} — missing summary; using operationId.`);
+      }
+      if (!s) {
+        s = `${M} ${pathKey}`;
+        warn(
+          `Spec normalization: ${M} ${pathKey} — missing summary and operationId; using method + path.`
+        );
+      }
+      if (s.length > SPEC_SUMMARY_MAX_LEN) {
+        const before = s.length;
+        s = `${s.slice(0, SPEC_SUMMARY_MAX_LEN - 1)}…`;
+        warn(
+          `Spec normalization: ${M} ${pathKey} — summary truncated from ${before} to ${SPEC_SUMMARY_MAX_LEN} characters.`
+        );
+      }
+      if (prev !== s && (typeof prev !== 'string' || prev.trim() !== s)) {
+        o.summary = s;
+        changed = true;
+      }
+    }
+  }
+  if (!changed) return raw;
+  return asJson ? `${JSON.stringify(doc, null, 2)}\n` : `${stringify(doc, { lineWidth: 0 })}\n`;
+}
+
 async function persistBootstrapRepositoryVariables(
   github: Pick<GitHubApiClient, 'setRepositoryVariable'>,
   outputs: PlannedOutputs,
@@ -835,7 +900,10 @@ export async function runBootstrap(
     dependencies.core,
     specId ? 'Update Spec in Spec Hub' : 'Upload Spec to Spec Hub',
     async () => {
-      const document = await fetchSpecDocument(inputs.specUrl, dependencies.specFetcher);
+      const fetched = await fetchSpecDocument(inputs.specUrl, dependencies.specFetcher);
+      const document = normalizeSpecDocument(fetched, (msg) =>
+        dependencies.core.warning(msg)
+      );
       if (specId) {
         await dependencies.postman.updateSpec(specId, document, workspaceId);
       } else {

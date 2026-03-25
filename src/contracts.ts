@@ -166,6 +166,7 @@ export const openAlphaActionContract: BetaActionContract = {
     'requester workspace invitation',
     'workspace admin assignment',
     'spec upload to Spec Hub',
+    'OpenAPI operation summary normalization before upload (missing or oversized summaries)',
     'spec linting by UID',
     'baseline, smoke, and contract collection generation',
     'collection refresh and versioning policies',

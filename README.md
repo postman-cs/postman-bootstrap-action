@@ -9,7 +9,7 @@ This action preserves the bootstrap slice of the API Catalog demo flow:
 - create or reuse a Postman workspace
 - assign the workspace to a governance group through the current Bifrost and internal path
 - invite the requester and add workspace admins
-- upload or update a remote spec in Spec Hub
+- upload or update a remote spec in Spec Hub (after normalizing operation summaries — see below)
 - lint the uploaded spec by UID with the Postman CLI
 - generate missing baseline, smoke, and contract collections or reuse existing ones
 - optionally refresh current collections from the latest spec or create release-scoped spec and collection assets
@@ -36,6 +36,15 @@ If you do not set those inputs, the action preserves today’s bootstrap behavio
 ### Team ID derivation
 
 The action automatically derives the Postman Team ID from your `postman-api-key` via the `/me` API. There is no need to supply a separate team ID input. If the environment variable `POSTMAN_TEAM_ID` is set, that value takes precedence.
+
+### OpenAPI operation summaries (normalization)
+
+Before upload to Spec Hub, the action parses JSON or YAML OpenAPI documents and adjusts **path operations** so collection generation is less likely to fail:
+
+1. **Missing `summary`:** Uses `operationId` if present; otherwise falls back to `METHOD /path` (for example `GET /pets`).
+2. **Very long `summary`:** Truncates to **200 characters** (with an ellipsis) so downstream limits are not exceeded.
+
+This runs in `src/index.ts` before upload. If nothing under `paths` needs changing, the original document bytes are preserved. When normalization runs, the spec is re-serialized (JSON stays JSON; YAML stays YAML). Each fix emits a **warning** in the Actions log so you can improve the source spec over time. Invalid documents that cannot be parsed are left unchanged and a warning is logged.
 
 ## Usage
 

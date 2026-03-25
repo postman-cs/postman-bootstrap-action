@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   lintSpecViaCli,
+  normalizeSpecDocument,
   readActionInputs,
   runBootstrap,
   type CoreLike,
@@ -845,6 +846,49 @@ describe('bootstrap action', () => {
     const lintSummary = JSON.parse(result['lint-summary-json']);
     expect(lintSummary.warnings).toBe(1);
     expect(lintSummary.errors).toBe(0);
+  });
+
+  it('normalizeSpecDocument adds summary from operationId or METHOD+path', () => {
+    const warn = vi.fn();
+    const withId = normalizeSpecDocument(
+      JSON.stringify({
+        openapi: '3.0.0',
+        info: { title: 'T', version: '1' },
+        paths: { '/pets': { get: { operationId: 'listPets' } } }
+      }),
+      warn
+    );
+    expect(JSON.parse(withId).paths['/pets'].get.summary).toBe('listPets');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('operationId'));
+
+    const warn2 = vi.fn();
+    const bare = normalizeSpecDocument(
+      JSON.stringify({
+        openapi: '3.0.0',
+        info: { title: 'T', version: '1' },
+        paths: { '/x': { post: {} } }
+      }),
+      warn2
+    );
+    expect(JSON.parse(bare).paths['/x'].post.summary).toBe('POST /x');
+    expect(warn2).toHaveBeenCalledWith(expect.stringContaining('method + path'));
+  });
+
+  it('normalizeSpecDocument truncates long summaries', () => {
+    const long = 'x'.repeat(250);
+    const warn = vi.fn();
+    const out = normalizeSpecDocument(
+      JSON.stringify({
+        openapi: '3.0.0',
+        info: { title: 'T', version: '1' },
+        paths: { '/a': { get: { summary: long } } }
+      }),
+      warn
+    );
+    const s = JSON.parse(out).paths['/a'].get.summary as string;
+    expect(s.length).toBe(200);
+    expect(s.endsWith('…')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('truncated'));
   });
 });
 

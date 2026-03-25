@@ -17,6 +17,21 @@ inputs:
   contract-collection-id:
     description: Existing contract collection ID
     required: false
+  collection-sync-mode:
+    description: Collection lifecycle policy (reuse, refresh, or version)
+    required: false
+    default: reuse
+  spec-sync-mode:
+    description: Spec lifecycle policy (update or version)
+    required: false
+    default: update
+  release-label:
+    description: Optional release label used for versioned specs and collections
+    required: false
+  set-as-current:
+    description: Whether resolved assets should become the current/default repo variable pointers
+    required: false
+    default: 'true'
   project-name:
     description: Service project name
     required: true

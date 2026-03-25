@@ -43,6 +43,27 @@ export const openAlphaActionContract: BetaActionContract = {
       description: 'Existing contract collection ID.',
       required: false
     },
+    'collection-sync-mode': {
+      description: 'Collection lifecycle policy: reuse existing collections, refresh them from the latest spec, or version them by release label.',
+      required: false,
+      default: 'reuse',
+      allowedValues: ['reuse', 'refresh', 'version']
+    },
+    'spec-sync-mode': {
+      description: 'Spec lifecycle policy: update the canonical spec or create/reuse a versioned spec for the resolved release label.',
+      required: false,
+      default: 'update',
+      allowedValues: ['update', 'version']
+    },
+    'release-label': {
+      description: 'Optional release label. When omitted for versioned sync, the action derives one from GitHub ref metadata.',
+      required: false
+    },
+    'set-as-current': {
+      description: 'Whether the resolved assets should become the current/default repo variable pointers.',
+      required: false,
+      default: 'true'
+    },
     'project-name': {
       description: 'Service project name.',
       required: true
@@ -147,6 +168,7 @@ export const openAlphaActionContract: BetaActionContract = {
     'spec upload to Spec Hub',
     'spec linting by UID',
     'baseline, smoke, and contract collection generation',
+    'collection refresh and versioning policies',
     'collection tagging',
     'GitHub repository variable persistence for downstream sync steps',
     'workspace, spec, and collection outputs'

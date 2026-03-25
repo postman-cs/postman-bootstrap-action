@@ -17,6 +17,10 @@ export interface ResolvedInputs {
   baselineCollectionId?: string;
   smokeCollectionId?: string;
   contractCollectionId?: string;
+  collectionSyncMode: 'reuse' | 'refresh' | 'version';
+  specSyncMode: 'update' | 'version';
+  releaseLabel?: string;
+  setAsCurrent: boolean;
   domain?: string;
   domainCode?: string;
   requesterEmail?: string;
@@ -60,6 +64,24 @@ export interface LintSummary {
 interface BootstrapRepositoryVariables {
   lintErrors: number;
   lintWarnings: number;
+}
+
+interface ReleaseEntry {
+  specId?: string;
+  collections: {
+    baseline?: string;
+    smoke?: string;
+    contract?: string;
+  };
+  source?: {
+    ref?: string;
+    sha?: string;
+  };
+}
+
+interface ReleasesManifest {
+  current?: string;
+  releases: Record<string, ReleaseEntry>;
 }
 
 export interface CoreLike {
@@ -183,6 +205,30 @@ function asStringMap(value: unknown, inputName: string): Record<string, string> 
   );
 }
 
+function parseBooleanInput(value: string | undefined, defaultValue: boolean): boolean {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return defaultValue;
+  if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function parseCollectionSyncMode(
+  value: string | undefined
+): 'reuse' | 'refresh' | 'version' {
+  if (value === 'refresh' || value === 'version') {
+    return value;
+  }
+  return 'reuse';
+}
+
+function parseSpecSyncMode(value: string | undefined): 'update' | 'version' {
+  if (value === 'version') {
+    return value;
+  }
+  return 'update';
+}
+
 export function resolveInputs(
   env: NodeJS.ProcessEnv = process.env
 ): ResolvedInputs {
@@ -218,6 +264,10 @@ export function resolveInputs(
     baselineCollectionId: getInput('baseline-collection-id', env),
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
+    collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
+    specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
+    releaseLabel: getInput('release-label', env),
+    setAsCurrent: parseBooleanInput(getInput('set-as-current', env), true),
     domain: getInput('domain', env),
     domainCode: getInput('domain-code', env),
     requesterEmail: getInput('requester-email', env),
@@ -296,6 +346,16 @@ export function readActionInputs(
     INPUT_BASELINE_COLLECTION_ID: optionalInput(actionCore, 'baseline-collection-id'),
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
+    INPUT_COLLECTION_SYNC_MODE:
+      optionalInput(actionCore, 'collection-sync-mode') ??
+      openAlphaActionContract.inputs['collection-sync-mode'].default,
+    INPUT_SPEC_SYNC_MODE:
+      optionalInput(actionCore, 'spec-sync-mode') ??
+      openAlphaActionContract.inputs['spec-sync-mode'].default,
+    INPUT_RELEASE_LABEL: optionalInput(actionCore, 'release-label'),
+    INPUT_SET_AS_CURRENT:
+      optionalInput(actionCore, 'set-as-current') ??
+      openAlphaActionContract.inputs['set-as-current'].default,
     INPUT_DOMAIN: optionalInput(actionCore, 'domain'),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, 'domain-code'),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, 'requester-email'),
@@ -428,32 +488,117 @@ async function fetchSpecDocument(
   );
 }
 
+function normalizeReleaseLabel(value: string | undefined): string | undefined {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return trimmed
+    .replace(/^refs\/heads\//, '')
+    .replace(/^refs\/tags\//, '')
+    .replace(/^refs\/pull\//, 'pull-')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || undefined;
+}
+
+function deriveReleaseLabel(inputs: ResolvedInputs): string | undefined {
+  if (inputs.releaseLabel) {
+    return normalizeReleaseLabel(inputs.releaseLabel);
+  }
+
+  return (
+    normalizeReleaseLabel(process.env.GITHUB_REF_NAME) ??
+    normalizeReleaseLabel(process.env.GITHUB_HEAD_REF) ??
+    normalizeReleaseLabel(process.env.GITHUB_REF)
+  );
+}
+
+function parseReleasesManifest(raw: string | undefined): ReleasesManifest {
+  if (!raw?.trim()) {
+    return { releases: {} };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<ReleasesManifest>;
+    return {
+      current: typeof parsed.current === 'string' && parsed.current ? parsed.current : undefined,
+      releases: parsed.releases && typeof parsed.releases === 'object' ? parsed.releases : {}
+    };
+  } catch {
+    return { releases: {} };
+  }
+}
+
+function createAssetProjectName(inputs: ResolvedInputs, releaseLabel?: string): string {
+  if (!releaseLabel) {
+    return inputs.projectName;
+  }
+  return `${inputs.projectName} ${releaseLabel}`;
+}
+
+function createReleaseEntry(
+  releaseLabel: string,
+  outputs: PlannedOutputs
+): ReleaseEntry {
+  return {
+    specId: outputs['spec-id'],
+    collections: {
+      baseline: outputs['baseline-collection-id'],
+      smoke: outputs['smoke-collection-id'],
+      contract: outputs['contract-collection-id']
+    },
+    source: {
+      ref: normalizeReleaseLabel(process.env.GITHUB_REF_NAME) ?? normalizeReleaseLabel(process.env.GITHUB_REF),
+      sha: process.env.GITHUB_SHA || undefined
+    }
+  };
+}
+
 async function persistBootstrapRepositoryVariables(
   github: Pick<GitHubApiClient, 'setRepositoryVariable'>,
   outputs: PlannedOutputs,
   systemEnvMap: Record<string, string>,
   environments: string[],
-  lintSummary: BootstrapRepositoryVariables
+  lintSummary: BootstrapRepositoryVariables,
+  options: {
+    setAsCurrent: boolean;
+    releaseLabel?: string;
+    releasesManifest?: ReleasesManifest;
+  }
 ): Promise<void> {
   await github.setRepositoryVariable(
     'LINT_WARNINGS',
     String(lintSummary.lintWarnings)
   );
   await github.setRepositoryVariable('LINT_ERRORS', String(lintSummary.lintErrors));
-  await github.setRepositoryVariable('POSTMAN_WORKSPACE_ID', outputs['workspace-id']);
-  await github.setRepositoryVariable('POSTMAN_SPEC_UID', outputs['spec-id']);
-  await github.setRepositoryVariable(
-    'POSTMAN_BASELINE_COLLECTION_UID',
-    outputs['baseline-collection-id']
-  );
-  await github.setRepositoryVariable(
-    'POSTMAN_SMOKE_COLLECTION_UID',
-    outputs['smoke-collection-id']
-  );
-  await github.setRepositoryVariable(
-    'POSTMAN_CONTRACT_COLLECTION_UID',
-    outputs['contract-collection-id']
-  );
+
+  if (options.setAsCurrent) {
+    await github.setRepositoryVariable('POSTMAN_WORKSPACE_ID', outputs['workspace-id']);
+    await github.setRepositoryVariable('POSTMAN_SPEC_UID', outputs['spec-id']);
+    await github.setRepositoryVariable(
+      'POSTMAN_BASELINE_COLLECTION_UID',
+      outputs['baseline-collection-id']
+    );
+    await github.setRepositoryVariable(
+      'POSTMAN_SMOKE_COLLECTION_UID',
+      outputs['smoke-collection-id']
+    );
+    await github.setRepositoryVariable(
+      'POSTMAN_CONTRACT_COLLECTION_UID',
+      outputs['contract-collection-id']
+    );
+  }
+
+  if (options.releaseLabel) {
+    const manifest = options.releasesManifest ?? { releases: {} };
+    manifest.releases[options.releaseLabel] = createReleaseEntry(options.releaseLabel, outputs);
+    if (options.setAsCurrent) {
+      manifest.current = options.releaseLabel;
+      await github.setRepositoryVariable('POSTMAN_RELEASE_LABEL', options.releaseLabel);
+    }
+    await github.setRepositoryVariable('POSTMAN_RELEASES_JSON', JSON.stringify(manifest));
+  }
 
   for (const envName of environments) {
     const systemEnvId = systemEnvMap[envName];
@@ -464,6 +609,22 @@ async function persistBootstrapRepositoryVariables(
       `POSTMAN_SYSTEM_ENV_${envName.toUpperCase()}`,
       systemEnvId
     );
+  }
+}
+
+async function getRepositoryVariableSafe(
+  github: Pick<GitHubApiClient, 'getRepositoryVariable'> | undefined,
+  name: string
+): Promise<string | undefined> {
+  if (!github) {
+    return undefined;
+  }
+
+  try {
+    const value = await github.getRepositoryVariable(name);
+    return value || undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -480,6 +641,14 @@ export async function runBootstrap(
     parseJsonValue(inputs.systemEnvMapJson, {}, 'system-env-map-json'),
     'system-env-map-json'
   );
+  const requiresReleaseLabel =
+    inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
+  const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
+  if (requiresReleaseLabel && !releaseLabel) {
+    throw new Error(
+      'Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata'
+    );
+  }
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman CS open-alpha for ${inputs.projectName}`;
 
@@ -492,7 +661,10 @@ export async function runBootstrap(
   let repoWorkspaceId: string | undefined;
   let workspaceId = explicitWorkspaceId;
   if (!workspaceId && dependencies.github) {
-    repoWorkspaceId = await dependencies.github.getRepositoryVariable('POSTMAN_WORKSPACE_ID').catch(() => undefined) || undefined;
+    repoWorkspaceId = await getRepositoryVariableSafe(
+      dependencies.github,
+      'POSTMAN_WORKSPACE_ID'
+    );
     workspaceId = repoWorkspaceId;
   }
 
@@ -608,34 +780,54 @@ export async function runBootstrap(
     );
   }
 
+  let releasesManifest: ReleasesManifest = { releases: {} };
+  if (dependencies.github) {
+    const rawManifest = await getRepositoryVariableSafe(
+      dependencies.github,
+      'POSTMAN_RELEASES_JSON'
+    );
+    releasesManifest = parseReleasesManifest(rawManifest);
+  }
+
+  const releaseEntry = releaseLabel ? releasesManifest.releases[releaseLabel] : undefined;
+
 
   let specId = inputs.specId;
-  if (!specId && dependencies.github) {
-    specId = await dependencies.github.getRepositoryVariable('POSTMAN_SPEC_UID').catch(() => undefined) || undefined;
+  if (!specId && inputs.specSyncMode === 'version') {
+    specId = releaseEntry?.specId;
+  }
+  if (!specId && dependencies.github && inputs.specSyncMode === 'update') {
+    specId = await getRepositoryVariableSafe(dependencies.github, 'POSTMAN_SPEC_UID');
   }
 
   let baselineCollectionId = inputs.baselineCollectionId;
   let smokeCollectionId = inputs.smokeCollectionId;
   let contractCollectionId = inputs.contractCollectionId;
 
+  if (inputs.collectionSyncMode === 'version' && releaseEntry) {
+    baselineCollectionId = baselineCollectionId || releaseEntry.collections.baseline;
+    smokeCollectionId = smokeCollectionId || releaseEntry.collections.smoke;
+    contractCollectionId = contractCollectionId || releaseEntry.collections.contract;
+  }
+
   if (dependencies.github) {
-    if (!baselineCollectionId) {
-      baselineCollectionId =
-        (await dependencies.github
-          .getRepositoryVariable('POSTMAN_BASELINE_COLLECTION_UID')
-          .catch(() => undefined)) || undefined;
+    if (!baselineCollectionId && inputs.collectionSyncMode === 'reuse') {
+      baselineCollectionId = await getRepositoryVariableSafe(
+        dependencies.github,
+        'POSTMAN_BASELINE_COLLECTION_UID'
+      );
     }
-    if (!smokeCollectionId) {
-      smokeCollectionId =
-        (await dependencies.github
-          .getRepositoryVariable('POSTMAN_SMOKE_COLLECTION_UID')
-          .catch(() => undefined)) || undefined;
+    if (!smokeCollectionId && inputs.collectionSyncMode === 'reuse') {
+      smokeCollectionId = await getRepositoryVariableSafe(
+        dependencies.github,
+        'POSTMAN_SMOKE_COLLECTION_UID'
+      );
     }
-    if (!contractCollectionId) {
-      contractCollectionId =
-        (await dependencies.github
-          .getRepositoryVariable('POSTMAN_CONTRACT_COLLECTION_UID')
-          .catch(() => undefined)) || undefined;
+    if (!contractCollectionId && inputs.collectionSyncMode === 'reuse') {
+      contractCollectionId = await getRepositoryVariableSafe(
+        dependencies.github,
+        'POSTMAN_CONTRACT_COLLECTION_UID'
+      );
     }
   }
 
@@ -649,7 +841,7 @@ export async function runBootstrap(
       } else {
         specId = await dependencies.postman.uploadSpec(
           workspaceId || '',
-          inputs.projectName,
+          createAssetProjectName(inputs, inputs.specSyncMode === 'version' ? releaseLabel : undefined),
           document
         );
       }
@@ -693,14 +885,26 @@ export async function runBootstrap(
     dependencies.core,
     'Generate Collections from Spec',
     async () => {
-      outputs['baseline-collection-id'] = baselineCollectionId || '';
-      outputs['smoke-collection-id'] = smokeCollectionId || '';
-      outputs['contract-collection-id'] = contractCollectionId || '';
+      const shouldReuseCollections =
+        inputs.collectionSyncMode === 'reuse' ||
+        (inputs.collectionSyncMode === 'version' &&
+          Boolean(baselineCollectionId && smokeCollectionId && contractCollectionId));
+      const assetProjectName =
+        inputs.collectionSyncMode === 'version'
+          ? createAssetProjectName(inputs, releaseLabel)
+          : inputs.projectName;
+
+      outputs['baseline-collection-id'] =
+        shouldReuseCollections ? baselineCollectionId || '' : '';
+      outputs['smoke-collection-id'] =
+        shouldReuseCollections ? smokeCollectionId || '' : '';
+      outputs['contract-collection-id'] =
+        shouldReuseCollections ? contractCollectionId || '' : '';
 
       if (!outputs['baseline-collection-id']) {
         outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
           outputs['spec-id'],
-          inputs.projectName,
+          assetProjectName,
           '[Baseline]'
         );
       } else {
@@ -712,7 +916,7 @@ export async function runBootstrap(
       if (!outputs['smoke-collection-id']) {
         outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
           outputs['spec-id'],
-          inputs.projectName,
+          assetProjectName,
           '[Smoke]'
         );
       } else {
@@ -724,7 +928,7 @@ export async function runBootstrap(
       if (!outputs['contract-collection-id']) {
         outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
           outputs['spec-id'],
-          inputs.projectName,
+          assetProjectName,
           '[Contract]'
         );
       } else {
@@ -786,6 +990,14 @@ export async function runBootstrap(
           {
             lintErrors: lintSummary.errors,
             lintWarnings: lintSummary.warnings
+          },
+          {
+            setAsCurrent:
+              inputs.collectionSyncMode === 'refresh'
+                ? true
+                : inputs.setAsCurrent,
+            releaseLabel,
+            releasesManifest
           }
         );
       }

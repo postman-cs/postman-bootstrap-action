@@ -23286,7 +23286,7 @@ async function runBootstrap(inputs, dependencies) {
   if (!specId && inputs.specSyncMode === "version") {
     specId = releaseEntry?.specId;
   }
-  if (!specId && dependencies.github) {
+  if (!specId && dependencies.github && inputs.specSyncMode === "update") {
     specId = await getRepositoryVariableSafe(dependencies.github, "POSTMAN_SPEC_UID");
   }
   let baselineCollectionId = inputs.baselineCollectionId;

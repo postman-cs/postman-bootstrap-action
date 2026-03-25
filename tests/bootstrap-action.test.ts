@@ -602,6 +602,79 @@ describe('bootstrap action', () => {
     }
   });
 
+  it('version mode does not fall back to the singleton current spec uid', async () => {
+    const previousRefName = process.env.GITHUB_REF_NAME;
+    process.env.GITHUB_REF_NAME = 'v1.1.2';
+
+    try {
+      const { core } = createCoreStub();
+      const execStub = createExecStub();
+      const ioStub = createIoStub();
+      const postman = {
+        addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+        createWorkspace: vi.fn(),
+        findWorkspacesByName: vi.fn().mockResolvedValue([]),
+        generateCollection: vi
+          .fn()
+          .mockResolvedValueOnce('col-baseline-v112')
+          .mockResolvedValueOnce('col-smoke-v112')
+          .mockResolvedValueOnce('col-contract-v112'),
+        getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+        getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+        injectTests: vi.fn().mockResolvedValue(undefined),
+        inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+        tagCollection: vi.fn().mockResolvedValue(undefined),
+        uploadSpec: vi.fn().mockResolvedValue('spec-v112'),
+        updateSpec: vi.fn().mockResolvedValue(undefined)
+      };
+      const github = {
+        setRepositoryVariable: vi.fn().mockResolvedValue(undefined),
+        getRepositoryVariable: vi.fn(async (name: string) => {
+          if (name === 'POSTMAN_RELEASES_JSON') {
+            return JSON.stringify({ releases: {} });
+          }
+          if (name === 'POSTMAN_SPEC_UID') {
+            return 'spec-current';
+          }
+          return '';
+        })
+      };
+
+      const result = await runBootstrap(
+        createInputs({
+          workspaceId: 'ws-existing',
+          collectionSyncMode: 'version',
+          specSyncMode: 'version'
+        }),
+        {
+          core,
+          exec: execStub,
+          github,
+          io: ioStub,
+          postman,
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response('openapi: 3.1.0', { status: 200 })
+          )
+        }
+      );
+
+      expect(postman.updateSpec).not.toHaveBeenCalledWith(
+        'spec-current',
+        'openapi: 3.1.0',
+        'ws-existing'
+      );
+      expect(postman.uploadSpec).toHaveBeenCalledWith(
+        'ws-existing',
+        'core-payments v1.1.2',
+        'openapi: 3.1.0'
+      );
+      expect(result['spec-id']).toBe('spec-v112');
+    } finally {
+      if (previousRefName === undefined) delete process.env.GITHUB_REF_NAME;
+      else process.env.GITHUB_REF_NAME = previousRefName;
+    }
+  });
+
   it('creates a new workspace when the repo-variable workspace is linked to a different repository', async () => {
     const previousRepository = process.env.GITHUB_REPOSITORY;
     process.env.GITHUB_REPOSITORY = 'postman-cs/bootstrap-action-test';

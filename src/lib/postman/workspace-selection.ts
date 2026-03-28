@@ -16,10 +16,6 @@ type WorkspaceLookupClient = {
   getWorkspaceGitRepoUrl(workspaceId: string, teamId: string, accessToken: string): Promise<string | null>;
 };
 
-type RepoVariableClient = {
-  setRepositoryVariable(name: string, value: string): Promise<unknown>;
-};
-
 export type CanonicalWorkspaceSelection =
   | { type: 'existing'; workspaceId: string; source: 'linked_match' | 'repo_var' | 'name_match'; warning?: string }
   | { type: 'create' }

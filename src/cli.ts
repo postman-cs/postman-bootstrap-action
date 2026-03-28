@@ -44,7 +44,7 @@ export class ConsoleReporter implements ReporterCore {
     console.error(message);
   }
 
-  public setOutput(_name: string, _value: string): void {
+  public setOutput(): void {
   }
 
   public warning(message: string): void {
@@ -147,7 +147,7 @@ export function createCliExec(secretMasker: (value: string) => string): ExecLike
           ? execError.code
           : Number.parseInt(String(execError.code ?? '1'), 10) || 1;
       if (!options?.ignoreReturnCode) {
-        throw new Error(`Command failed with exit code ${numericCode}: ${commandLabel}`);
+        throw new Error(`Command failed with exit code ${numericCode}: ${commandLabel}`, { cause: error });
       }
       return {
         exitCode: numericCode,

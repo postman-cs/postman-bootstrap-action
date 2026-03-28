@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { stringify as stringifyYaml } from 'yaml';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   lintSpecViaCli,
@@ -31,7 +31,7 @@ function createCoreStub(values: Record<string, string> = {}) {
       }
       return value;
     },
-    group: async (_name: string, fn: () => Promise<any>) => fn(),
+    group: async <T>(_name: string, fn: () => Promise<T>): Promise<T> => fn(),
     info: (message: string) => {
       infos.push(message);
     },

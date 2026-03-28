@@ -8,7 +8,15 @@ type EnvironmentValue = {
   value: string;
 };
 
-type FetchResult = Record<string, any> | null;
+type JsonRecord = Record<string, unknown>;
+type FetchResult = JsonRecord | null;
+
+function asRecord(value: unknown): JsonRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as JsonRecord;
+}
 
 export interface PostmanAssetsClientOptions {
   apiKey: string;
@@ -104,7 +112,7 @@ export class PostmanAssetsClient {
       if (user && typeof user === 'object' && 'teamId' in user && user.teamId) {
         return String(user.teamId);
       }
-    } catch (e) {
+    } catch {
       // ignore
     }
     return undefined;
@@ -115,12 +123,13 @@ export class PostmanAssetsClient {
     const teams = data?.data ?? [];
     return Array.isArray(teams)
       ? teams
-          .filter((t: any) => t?.id && t?.name)
-          .map((t: any) => ({
-            id: Number(t.id),
-            name: String(t.name),
-            handle: String(t.handle || ''),
-            ...(t.organizationId != null ? { organizationId: Number(t.organizationId) } : {})
+          .map((entry) => asRecord(entry))
+          .filter((team): team is JsonRecord => Boolean(team?.id && team?.name))
+          .map((team) => ({
+            id: Number(team.id),
+            name: String(team.name),
+            handle: String(team.handle || ''),
+            ...(team.organizationId != null ? { organizationId: Number(team.organizationId) } : {})
           }))
       : [];
   }
@@ -153,7 +162,7 @@ export class PostmanAssetsClient {
     }
 
     try {
-      return (await response.json()) as Record<string, any>;
+      return (await response.json()) as JsonRecord;
     } catch {
       return null;
     }
@@ -180,19 +189,22 @@ export class PostmanAssetsClient {
           throw new Error(
             'Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. ' +
             'The Postman API does not allow creating team workspaces at the organization level. ' +
-            'Use the workspace-team-id input to specify which sub-team should own this workspace.'
+            'Use the workspace-team-id input to specify which sub-team should own this workspace.',
+            { cause: err }
           );
         }
         throw err;
       }
 
-      const workspaceId = created?.workspace?.id;
+      const createdWorkspace = asRecord(created?.workspace);
+      const workspaceId = String(createdWorkspace?.id || '').trim();
       if (!workspaceId) {
         throw new Error('Workspace create did not return an id');
       }
 
       const workspace = await this.request(`/workspaces/${workspaceId}`);
-      if (workspace?.workspace?.visibility !== 'team') {
+      const workspaceDetails = asRecord(workspace?.workspace);
+      if (workspaceDetails?.visibility !== 'team') {
         await this.request(`/workspaces/${workspaceId}`, {
           method: 'PUT',
           body: JSON.stringify(payload)
@@ -215,11 +227,12 @@ export class PostmanAssetsClient {
     const workspaces = data?.workspaces ?? [];
     return Array.isArray(workspaces)
       ? workspaces
-          .filter((w: any) => w?.id && w?.name)
-          .map((w: any) => ({
-            id: String(w.id),
-            name: String(w.name),
-            type: String(w.type ?? 'team')
+          .map((entry) => asRecord(entry))
+          .filter((workspace): workspace is JsonRecord => Boolean(workspace?.id && workspace?.name))
+          .map((workspace) => ({
+            id: String(workspace.id),
+            name: String(workspace.name),
+            type: String(workspace.type ?? 'team')
           }))
       : [];
   }
@@ -277,7 +290,10 @@ export class PostmanAssetsClient {
     email: string
   ): Promise<void> {
     const users = await this.request('/users');
-    const user = users?.data?.find((entry: any) => entry.email === email);
+    const userList = Array.isArray(users?.data) ? users.data : [];
+    const user = userList
+      .map((entry) => asRecord(entry))
+      .find((entry) => entry?.email === email);
     if (!user?.id) {
       return;
     }
@@ -358,8 +374,9 @@ export class PostmanAssetsClient {
   async updateSpec(
     specId: string,
     specContent: string,
-    _workspaceId?: string
+    workspaceId?: string
   ): Promise<void> {
+    void workspaceId;
     // Postman Spec Hub uses PATCH /specs/{specId}/files/{filePath} for updates.
     // PUT /specs/{specId} is not a valid endpoint and returns 404.
     await this.request(`/specs/${specId}/files/index.yaml`, {
@@ -389,22 +406,31 @@ export class PostmanAssetsClient {
       }
     };
 
-    const extractUid = (data: any): string | undefined =>
-      data?.details?.resources?.[0]?.id ||
-      data?.collection?.id ||
-      data?.collection?.uid ||
-      data?.resource?.uid ||
-      data?.resource?.id ||
-      undefined;
+    const extractUid = (data: unknown): string | undefined => {
+      const root = asRecord(data);
+      const details = asRecord(root?.details);
+      const resources = Array.isArray(details?.resources) ? details.resources : [];
+      const firstResource = asRecord(resources[0]);
+      const collection = asRecord(root?.collection);
+      const resource = asRecord(root?.resource);
+      return String(
+        firstResource?.id ??
+        collection?.id ??
+        collection?.uid ??
+        resource?.uid ??
+        resource?.id ??
+        ''
+      ).trim() || undefined;
+    };
 
     return retry(
       async () => {
         const maxLockedRetries = 5;
-        let response: FetchResult = null;
+        let generationResponse: FetchResult | undefined;
 
         for (let lockedAttempt = 0; ; lockedAttempt += 1) {
           try {
-            response = await this.request(`/specs/${specId}/generations/collection`, {
+            generationResponse = await this.request(`/specs/${specId}/generations/collection`, {
               method: 'POST',
               body: JSON.stringify(payload)
             });
@@ -423,18 +449,23 @@ export class PostmanAssetsClient {
           }
         }
 
-        const directUid = extractUid(response);
+        if (!generationResponse) {
+          throw new Error(`Collection generation request did not return a response for ${prefix}`);
+        }
+
+        const directUid = extractUid(generationResponse);
         if (directUid) {
           return directUid;
         }
 
         let taskUrl =
-          response?.url ||
-          response?.task_url ||
-          response?.taskUrl ||
-          response?.links?.task;
+          String(generationResponse?.url ?? '') ||
+          String(generationResponse?.task_url ?? '') ||
+          String(generationResponse?.taskUrl ?? '') ||
+          String(asRecord(generationResponse?.links)?.task ?? '');
         if (!taskUrl) {
-          const taskId = response?.taskId || response?.task?.id || response?.id;
+          const task = asRecord(generationResponse?.task);
+          const taskId = generationResponse?.taskId || task?.id || generationResponse?.id;
           if (!taskId) {
             throw new Error(
               `Collection generation did not return a task URL or ID for ${prefix}`
@@ -448,7 +479,9 @@ export class PostmanAssetsClient {
             setTimeout(resolve, 2000);
           });
           const task = await this.request(taskUrl);
-          const status = String(task?.status || task?.task?.status || '').toLowerCase();
+          const taskRecord = asRecord(task);
+          const taskNested = asRecord(taskRecord?.task);
+          const status = String(taskRecord?.status || taskNested?.status || '').toLowerCase();
           if (status === 'completed') {
             const taskUid = extractUid(task);
             if (!taskUid) {
@@ -495,7 +528,7 @@ export class PostmanAssetsClient {
 
   async injectTests(collectionUid: string, type: 'contract' | 'smoke'): Promise<void> {
     const collectionResponse = await this.request(`/collections/${collectionUid}`);
-    const collection = collectionResponse?.collection;
+    const collection = asRecord(collectionResponse?.collection);
     if (!collection) {
       throw new Error(`Failed to fetch collection ${collectionUid}`);
     }
@@ -632,16 +665,17 @@ export class PostmanAssetsClient {
       ]
     };
 
-    const injectScripts = (itemNode: any) => {
+    const injectScripts = (itemNode: Record<string, unknown>) => {
       if (itemNode.name === '00 - Resolve Secrets') {
         return;
       }
 
       if (itemNode.request) {
-        itemNode.event = (itemNode.event || []).filter(
-          (entry: any) => entry.listen !== 'test'
+        const events = Array.isArray(itemNode.event) ? itemNode.event : [];
+        itemNode.event = events.filter(
+          (entry: { listen?: string }) => entry.listen !== 'test'
         );
-        itemNode.event.push({
+        (itemNode.event as Array<Record<string, unknown>>).push({
           listen: 'test',
           script: {
             type: 'text/javascript',
@@ -650,21 +684,25 @@ export class PostmanAssetsClient {
         });
       }
       if (Array.isArray(itemNode.item)) {
-        itemNode.item.forEach(injectScripts);
+        itemNode.item
+          .map((entry) => asRecord(entry))
+          .filter((entry): entry is JsonRecord => Boolean(entry))
+          .forEach(injectScripts);
       }
     };
 
     if (Array.isArray(collection.item)) {
       // Remove any existing secrets resolver to prevent duplicates on reruns
-      collection.item = collection.item.filter(
-        (entry: any) => entry.name !== '00 - Resolve Secrets'
+      const collectionItems = collection.item as Array<Record<string, unknown>>;
+      collection.item = collectionItems.filter(
+        (entry: { name?: string }) => entry.name !== '00 - Resolve Secrets'
       );
-      collection.item.forEach(injectScripts);
+      (collection.item as Array<Record<string, unknown>>).forEach(injectScripts);
     } else {
       collection.item = [];
     }
 
-    collection.item.unshift(request0Item);
+    (collection.item as Array<Record<string, unknown>>).unshift(request0Item);
 
     await this.request(`/collections/${collectionUid}`, {
       method: 'PUT',
@@ -687,7 +725,8 @@ export class PostmanAssetsClient {
       })
     });
 
-    const uid = String(response?.environment?.uid || '').trim();
+    const environment = asRecord(response?.environment);
+    const uid = String(environment?.uid || '').trim();
     if (!uid) {
       throw new Error('Environment create did not return a UID');
     }
@@ -731,7 +770,8 @@ export class PostmanAssetsClient {
       })
     });
 
-    const uid = String(response?.monitor?.uid || '').trim();
+    const monitor = asRecord(response?.monitor);
+    const uid = String(monitor?.uid || '').trim();
     if (!uid) {
       throw new Error('Monitor create did not return a UID');
     }
@@ -756,7 +796,9 @@ export class PostmanAssetsClient {
       })
     });
 
-    const uid = String(response?.mock?.uid || '').trim();
+    const mock = asRecord(response?.mock);
+    const mockConfig = asRecord(mock?.config);
+    const uid = String(mock?.uid || '').trim();
     if (!uid) {
       throw new Error('Mock create did not return a UID');
     }
@@ -764,23 +806,23 @@ export class PostmanAssetsClient {
     return {
       uid,
       url:
-        String(response?.mock?.mockUrl || '').trim() ||
-        String(response?.mock?.config?.serverResponseId || '').trim()
+        String(mock?.mockUrl || '').trim() ||
+        String(mockConfig?.serverResponseId || '').trim()
     };
   }
 
-  async getCollection(uid: string): Promise<any> {
+  async getCollection(uid: string): Promise<unknown> {
     const response = await this.request(`/collections/${uid}`);
     return response?.collection;
   }
 
-  async getEnvironment(uid: string): Promise<any> {
+  async getEnvironment(uid: string): Promise<unknown> {
     const response = await this.request(`/environments/${uid}`);
     return response?.environment;
   }
 
-  async getEnvironments(workspaceId: string): Promise<any[]> {
+  async getEnvironments(workspaceId: string): Promise<unknown[]> {
     const response = await this.request(`/environments?workspace=${workspaceId}`);
-    return response?.environments || [];
+    return Array.isArray(response?.environments) ? response.environments : [];
   }
 }

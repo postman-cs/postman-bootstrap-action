@@ -160,28 +160,6 @@ function optionalInput(
   return normalizeInputValue(actionCore.getInput(name));
 }
 
-function parseJsonValue<T>(
-  raw: string,
-  fallback: T,
-  inputName: string
-): T {
-  try {
-    return (JSON.parse(raw || JSON.stringify(fallback)) as T) ?? fallback;
-  } catch (error) {
-    throw new Error(
-      `Invalid JSON for ${inputName}: ${error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
-}
-
-function asStringArray(value: unknown, inputName: string): string[] {
-  if (!Array.isArray(value)) {
-    throw new Error(`${inputName} must be a JSON array`);
-  }
-  return value.map((entry) => String(entry));
-}
-
 function parseBooleanInput(value: string | undefined, defaultValue: boolean): boolean {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return defaultValue;
@@ -236,8 +214,8 @@ export function resolveInputs(
       if (parsedUrl.protocol !== 'https:') {
         throw new Error('not https');
       }
-    } catch {
-      throw new Error(`spec-url must be a valid HTTPS URL, got: ${specUrl}`);
+    } catch (error) {
+      throw new Error(`spec-url must be a valid HTTPS URL, got: ${specUrl}`, { cause: error });
     }
   }
 

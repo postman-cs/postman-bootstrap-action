@@ -29030,6 +29030,12 @@ async function retry(operation, options = {}) {
 }
 
 // src/lib/postman/postman-assets-client.ts
+function asRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value;
+}
 function normalizeGitRepoUrl(url) {
   const raw = String(url || "").trim();
   if (!raw) return "";
@@ -29102,18 +29108,18 @@ var PostmanAssetsClient = class {
       if (user && typeof user === "object" && "teamId" in user && user.teamId) {
         return String(user.teamId);
       }
-    } catch (e) {
+    } catch {
     }
     return void 0;
   }
   async getTeams() {
     const data = await this.request("/teams");
     const teams = data?.data ?? [];
-    return Array.isArray(teams) ? teams.filter((t) => t?.id && t?.name).map((t) => ({
-      id: Number(t.id),
-      name: String(t.name),
-      handle: String(t.handle || ""),
-      ...t.organizationId != null ? { organizationId: Number(t.organizationId) } : {}
+    return Array.isArray(teams) ? teams.map((entry) => asRecord(entry)).filter((team) => Boolean(team?.id && team?.name)).map((team) => ({
+      id: Number(team.id),
+      name: String(team.name),
+      handle: String(team.handle || ""),
+      ...team.organizationId != null ? { organizationId: Number(team.organizationId) } : {}
     })) : [];
   }
   async request(path, init = {}) {
@@ -29163,17 +29169,20 @@ var PostmanAssetsClient = class {
       } catch (err) {
         if (err instanceof Error && err.message.includes("Only personal workspaces")) {
           throw new Error(
-            "Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. The Postman API does not allow creating team workspaces at the organization level. Use the workspace-team-id input to specify which sub-team should own this workspace."
+            "Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. The Postman API does not allow creating team workspaces at the organization level. Use the workspace-team-id input to specify which sub-team should own this workspace.",
+            { cause: err }
           );
         }
         throw err;
       }
-      const workspaceId = created?.workspace?.id;
+      const createdWorkspace = asRecord(created?.workspace);
+      const workspaceId = String(createdWorkspace?.id || "").trim();
       if (!workspaceId) {
         throw new Error("Workspace create did not return an id");
       }
       const workspace = await this.request(`/workspaces/${workspaceId}`);
-      if (workspace?.workspace?.visibility !== "team") {
+      const workspaceDetails = asRecord(workspace?.workspace);
+      if (workspaceDetails?.visibility !== "team") {
         await this.request(`/workspaces/${workspaceId}`, {
           method: "PUT",
           body: JSON.stringify(payload)
@@ -29191,10 +29200,10 @@ var PostmanAssetsClient = class {
   async listWorkspaces() {
     const data = await this.request("/workspaces");
     const workspaces = data?.workspaces ?? [];
-    return Array.isArray(workspaces) ? workspaces.filter((w) => w?.id && w?.name).map((w) => ({
-      id: String(w.id),
-      name: String(w.name),
-      type: String(w.type ?? "team")
+    return Array.isArray(workspaces) ? workspaces.map((entry) => asRecord(entry)).filter((workspace) => Boolean(workspace?.id && workspace?.name)).map((workspace) => ({
+      id: String(workspace.id),
+      name: String(workspace.name),
+      type: String(workspace.type ?? "team")
     })) : [];
   }
   async findWorkspacesByName(name) {
@@ -29234,7 +29243,8 @@ var PostmanAssetsClient = class {
   }
   async inviteRequesterToWorkspace(workspaceId, email) {
     const users = await this.request("/users");
-    const user = users?.data?.find((entry) => entry.email === email);
+    const userList = Array.isArray(users?.data) ? users.data : [];
+    const user = userList.map((entry) => asRecord(entry)).find((entry) => entry?.email === email);
     if (!user?.id) {
       return;
     }
@@ -29293,7 +29303,8 @@ var PostmanAssetsClient = class {
     }, { maxAttempts: 3, delayMs: 2e3 });
     return specId;
   }
-  async updateSpec(specId, specContent, _workspaceId) {
+  async updateSpec(specId, specContent, workspaceId) {
+    void workspaceId;
     await this.request(`/specs/${specId}/files/index.yaml`, {
       method: "PATCH",
       body: JSON.stringify({ content: specContent })
@@ -29314,14 +29325,24 @@ var PostmanAssetsClient = class {
         requestNameSource: "Fallback"
       }
     };
-    const extractUid = (data) => data?.details?.resources?.[0]?.id || data?.collection?.id || data?.collection?.uid || data?.resource?.uid || data?.resource?.id || void 0;
+    const extractUid = (data) => {
+      const root = asRecord(data);
+      const details = asRecord(root?.details);
+      const resources = Array.isArray(details?.resources) ? details.resources : [];
+      const firstResource = asRecord(resources[0]);
+      const collection = asRecord(root?.collection);
+      const resource = asRecord(root?.resource);
+      return String(
+        firstResource?.id ?? collection?.id ?? collection?.uid ?? resource?.uid ?? resource?.id ?? ""
+      ).trim() || void 0;
+    };
     return retry(
       async () => {
         const maxLockedRetries = 5;
-        let response = null;
+        let generationResponse;
         for (let lockedAttempt = 0; ; lockedAttempt += 1) {
           try {
-            response = await this.request(`/specs/${specId}/generations/collection`, {
+            generationResponse = await this.request(`/specs/${specId}/generations/collection`, {
               method: "POST",
               body: JSON.stringify(payload)
             });
@@ -29339,13 +29360,17 @@ var PostmanAssetsClient = class {
             });
           }
         }
-        const directUid = extractUid(response);
+        if (!generationResponse) {
+          throw new Error(`Collection generation request did not return a response for ${prefix}`);
+        }
+        const directUid = extractUid(generationResponse);
         if (directUid) {
           return directUid;
         }
-        let taskUrl = response?.url || response?.task_url || response?.taskUrl || response?.links?.task;
+        let taskUrl = String(generationResponse?.url ?? "") || String(generationResponse?.task_url ?? "") || String(generationResponse?.taskUrl ?? "") || String(asRecord(generationResponse?.links)?.task ?? "");
         if (!taskUrl) {
-          const taskId = response?.taskId || response?.task?.id || response?.id;
+          const task = asRecord(generationResponse?.task);
+          const taskId = generationResponse?.taskId || task?.id || generationResponse?.id;
           if (!taskId) {
             throw new Error(
               `Collection generation did not return a task URL or ID for ${prefix}`
@@ -29358,7 +29383,9 @@ var PostmanAssetsClient = class {
             setTimeout(resolve, 2e3);
           });
           const task = await this.request(taskUrl);
-          const status = String(task?.status || task?.task?.status || "").toLowerCase();
+          const taskRecord = asRecord(task);
+          const taskNested = asRecord(taskRecord?.task);
+          const status = String(taskRecord?.status || taskNested?.status || "").toLowerCase();
           if (status === "completed") {
             const taskUid = extractUid(task);
             if (!taskUid) {
@@ -29394,7 +29421,7 @@ var PostmanAssetsClient = class {
   }
   async injectTests(collectionUid, type) {
     const collectionResponse = await this.request(`/collections/${collectionUid}`);
-    const collection = collectionResponse?.collection;
+    const collection = asRecord(collectionResponse?.collection);
     if (!collection) {
       throw new Error(`Failed to fetch collection ${collectionUid}`);
     }
@@ -29533,7 +29560,8 @@ var PostmanAssetsClient = class {
         return;
       }
       if (itemNode.request) {
-        itemNode.event = (itemNode.event || []).filter(
+        const events = Array.isArray(itemNode.event) ? itemNode.event : [];
+        itemNode.event = events.filter(
           (entry) => entry.listen !== "test"
         );
         itemNode.event.push({
@@ -29545,11 +29573,12 @@ var PostmanAssetsClient = class {
         });
       }
       if (Array.isArray(itemNode.item)) {
-        itemNode.item.forEach(injectScripts);
+        itemNode.item.map((entry) => asRecord(entry)).filter((entry) => Boolean(entry)).forEach(injectScripts);
       }
     };
     if (Array.isArray(collection.item)) {
-      collection.item = collection.item.filter(
+      const collectionItems = collection.item;
+      collection.item = collectionItems.filter(
         (entry) => entry.name !== "00 - Resolve Secrets"
       );
       collection.item.forEach(injectScripts);
@@ -29572,7 +29601,8 @@ var PostmanAssetsClient = class {
         }
       })
     });
-    const uid = String(response?.environment?.uid || "").trim();
+    const environment = asRecord(response?.environment);
+    const uid = String(environment?.uid || "").trim();
     if (!uid) {
       throw new Error("Environment create did not return a UID");
     }
@@ -29604,7 +29634,8 @@ var PostmanAssetsClient = class {
         }
       })
     });
-    const uid = String(response?.monitor?.uid || "").trim();
+    const monitor = asRecord(response?.monitor);
+    const uid = String(monitor?.uid || "").trim();
     if (!uid) {
       throw new Error("Monitor create did not return a UID");
     }
@@ -29622,13 +29653,15 @@ var PostmanAssetsClient = class {
         }
       })
     });
-    const uid = String(response?.mock?.uid || "").trim();
+    const mock = asRecord(response?.mock);
+    const mockConfig = asRecord(mock?.config);
+    const uid = String(mock?.uid || "").trim();
     if (!uid) {
       throw new Error("Mock create did not return a UID");
     }
     return {
       uid,
-      url: String(response?.mock?.mockUrl || "").trim() || String(response?.mock?.config?.serverResponseId || "").trim()
+      url: String(mock?.mockUrl || "").trim() || String(mockConfig?.serverResponseId || "").trim()
     };
   }
   async getCollection(uid) {
@@ -29641,7 +29674,7 @@ var PostmanAssetsClient = class {
   }
   async getEnvironments(workspaceId) {
     const response = await this.request(`/environments?workspace=${workspaceId}`);
-    return response?.environments || [];
+    return Array.isArray(response?.environments) ? response.environments : [];
   }
 };
 
@@ -30090,8 +30123,8 @@ function resolveInputs(env = process.env) {
       if (parsedUrl.protocol !== "https:") {
         throw new Error("not https");
       }
-    } catch {
-      throw new Error(`spec-url must be a valid HTTPS URL, got: ${specUrl}`);
+    } catch (error) {
+      throw new Error(`spec-url must be a valid HTTPS URL, got: ${specUrl}`, { cause: error });
     }
   }
   return {

@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PostmanAssetsClient } from '../src/lib/postman/postman-assets-client.js';
+import { instrumentContractCollection } from '../src/lib/spec/collection-contracts.js';
+import { buildContractIndex } from '../src/lib/spec/contract-index.js';
+import { parseOpenApiDocument } from '../src/lib/spec/openapi-loader.js';
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -12,6 +15,10 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 describe('PostmanAssetsClient', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('uses the public Postman API base URL by default', () => {
     const client = new PostmanAssetsClient({
       apiKey: 'pmak-test'
@@ -419,5 +426,180 @@ describe('PostmanAssetsClient', () => {
     const body = JSON.parse((callOptions as RequestInit).body as string);
     expect(body.options.folderStrategy).toBe('Tags');
     expect(body.options.nestedFolderHierarchy).toBe(false);
+  });
+
+  it('generateCollection retries transient 423 locks before returning the generated collection UID', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('locked', { status: 423, statusText: 'Locked' }))
+      .mockResolvedValueOnce(jsonResponse({ collection: { uid: 'col-after-lock' } }));
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    const result = client.generateCollection('spec-123', 'payments', '[Baseline]', 'Paths', false, 'Fallback');
+    await vi.advanceTimersByTimeAsync(5000);
+
+    await expect(result).resolves.toBe('col-after-lock');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('generateCollection polls async task URLs until completion', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ task: { id: 'task-123' } }))
+      .mockResolvedValueOnce(jsonResponse({ task: { status: 'running' } }))
+      .mockResolvedValueOnce(jsonResponse({ task: { status: 'completed' }, collection: { uid: 'col-task' } }));
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    const result = client.generateCollection('spec-123', 'payments', '[Smoke]', 'Paths', false, 'Fallback');
+    await vi.advanceTimersByTimeAsync(2000);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await expect(result).resolves.toBe('col-task');
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://api.getpostman.com/specs/spec-123/tasks/task-123',
+      expect.any(Object)
+    );
+  });
+
+  it('generateCollection fails task failures without retrying the generation request', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ taskUrl: '/tasks/task-123' }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'failed' }));
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    const result = client.generateCollection('spec-123', 'payments', '[Contract]', 'Paths', false, 'Fallback');
+    const rejection = expect(result).rejects.toThrow('Task failed for [Contract]');
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await rejection;
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('generateCollection does not retry non-lock API errors', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response('server exploded', { status: 500, statusText: 'Server Error' }));
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(
+      client.generateCollection('spec-123', 'payments', '[Baseline]', 'Paths', false, 'Fallback')
+    ).rejects.toThrow('500 Server Error');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('injects operation-specific OpenAPI contract tests into contract collections', async () => {
+    const spec = `openapi: 3.1.0
+info:
+  title: Pets
+  version: 1.0.0
+paths:
+  /pets/{id}:
+    get:
+      summary: Get pet
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, name]
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+`;
+    const body = instrumentContractCollection({
+      info: { name: '[Contract] Pets' },
+      item: [
+        {
+          name: 'Get pet',
+          request: {
+            method: 'GET',
+            url: { raw: 'https://api.example.test/pets/123' }
+          }
+        }
+      ]
+    }, buildContractIndex(parseOpenApiDocument(spec))).collection;
+    const item = (body.item as Array<{ event: Array<{ script: { exec: string[] } }> }>)[1]!;
+    const exec = item.event[0]!.script.exec.join('\n');
+    expect(exec).toContain('/pets/{id}');
+    expect(exec).not.toContain('pm.response.to.have.jsonSchema');
+    expect(exec).not.toMatch(/\beval\s*\(/);
+    expect(exec).not.toContain('new Function');
+    expect(exec).toContain('Response body matches OpenAPI schema');
+    expect(exec).not.toContain('Required fields are present');
+    expect(exec).not.toContain('Response time is acceptable');
+  });
+
+  it('injects failing mapping tests for extra unmapped requests while covered operations pass', async () => {
+    const spec = `openapi: 3.1.0
+info:
+  title: Pets
+  version: 1.0.0
+paths:
+  /pets:
+    get:
+      summary: List pets
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+`;
+    const body = instrumentContractCollection({
+      info: { name: '[Contract] Pets' },
+      item: [
+        { name: 'List pets', request: { method: 'GET', url: { path: ['pets'] } } },
+        { name: 'Health', request: { method: 'GET', url: { path: ['health'] } } }
+      ]
+    }, buildContractIndex(parseOpenApiDocument(spec))).collection;
+    const item = (body.item as Array<{ event: Array<{ script: { exec: string[] } }> }>)[2]!;
+    const exec = item.event[0]!.script.exec.join('\n');
+    expect(exec).toContain('No OpenAPI operation matched request GET /health');
+    expect(exec).toContain('OpenAPI operation mapping exists');
+  });
+
+  it('fails contract injection before PUT when generated requests miss spec operations', async () => {
+    const spec = `openapi: 3.1.0
+info:
+  title: Pets
+  version: 1.0.0
+paths:
+  /pets:
+    get:
+      summary: List pets
+      responses:
+        '200':
+          description: OK
+`;
+    expect(() =>
+      instrumentContractCollection({
+        info: { name: '[Contract] Pets' },
+        item: [
+          { name: 'Health', request: { method: 'GET', url: { path: ['health'] } } }
+        ]
+      }, buildContractIndex(parseOpenApiDocument(spec)))
+    ).toThrow('Contract collection is missing generated request coverage for GET /pets');
   });
 });

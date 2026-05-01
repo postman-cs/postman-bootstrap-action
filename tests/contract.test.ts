@@ -16,6 +16,7 @@ const actionManifest = parse(
 ) as {
   inputs: Record<string, { required?: boolean; default?: string }>;
   outputs: Record<string, unknown>;
+  runs: { using: string; main: string };
 };
 
 describe('open-alpha action contract', () => {
@@ -30,6 +31,13 @@ describe('open-alpha action contract', () => {
   it('keeps action.yml aligned with the contract surface', () => {
     expect(Object.keys(actionManifest.inputs)).toEqual(contractInputNames);
     expect(Object.keys(actionManifest.outputs)).toEqual(contractOutputNames);
+  });
+
+  it('keeps the action metadata on the committed Node 24 bundle', () => {
+    expect(actionManifest.runs).toEqual({
+      using: 'node24',
+      main: 'dist/index.cjs'
+    });
   });
 
   it('defaults integration-backend to bifrost in the contract, manifest, and runtime', () => {
@@ -101,6 +109,22 @@ describe('open-alpha action contract', () => {
     expect(openAlphaActionContract.inputs['request-name-source'].allowedValues).toEqual(['Fallback', 'URL']);
     expect(actionManifest.inputs['request-name-source'].default).toBe('Fallback');
     expect(resolveInputs({}).requestNameSource).toBe('Fallback');
+  });
+
+  it('rejects unsupported collection generation option values instead of silently falling back', () => {
+    expect(() => resolveInputs({ INPUT_FOLDER_STRATEGY: 'Folders' }))
+      .toThrow(/Unsupported folder-strategy/);
+    expect(() => resolveInputs({ INPUT_NESTED_FOLDER_HIERARCHY: 'maybe' }))
+      .toThrow(/nested-folder-hierarchy must be a boolean/);
+    expect(() => resolveInputs({ INPUT_REQUEST_NAME_SOURCE: 'Name' }))
+      .toThrow(/Unsupported request-name-source/);
+  });
+
+  it('rejects malformed governance JSON and non-numeric workspace team IDs during resolution', () => {
+    expect(() => resolveInputs({ INPUT_GOVERNANCE_MAPPING_JSON: '{not-json' }))
+      .toThrow(/governance-mapping-json must be valid JSON/);
+    expect(() => resolveInputs({ INPUT_WORKSPACE_TEAM_ID: 'team-alpha' }))
+      .toThrow(/workspace-team-id must be a numeric sub-team ID/);
   });
 
   it('rejects unsupported integration backends during input resolution', () => {
@@ -180,6 +204,23 @@ describe('open-alpha action contract', () => {
     };
     const inputs = readActionInputs(coreStub);
     expect(inputs.openapiVersion).toBe('3.1');
+  });
+
+  it('readActionInputs ignores removed legacy team inputs', () => {
+    const coreStub = {
+      getInput: (name: string) => {
+        const map: Record<string, string> = {
+          'project-name': 'my-api',
+          'spec-url': 'https://example.com/openapi.yaml',
+          'postman-api-key': 'pmak-test',
+          'postman-team-id': 'legacy-team'
+        };
+        return map[name] ?? '';
+      },
+      setSecret: () => {}
+    };
+
+    expect(readActionInputs(coreStub).teamId).toBe('');
   });
 
   it('documents the retained bootstrap steps and removed internal-only behavior', () => {

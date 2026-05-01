@@ -433,84 +433,76 @@ export class PostmanAssetsClient {
       ).trim() || undefined;
     };
 
-    return retry(
-      async () => {
-        const maxLockedRetries = 5;
-        let generationResponse: FetchResult | undefined;
+    const maxLockedRetries = 5;
+    let generationResponse: FetchResult | undefined;
 
-        for (let lockedAttempt = 0; ; lockedAttempt += 1) {
-          try {
-            generationResponse = await this.request(`/specs/${specId}/generations/collection`, {
-              method: 'POST',
-              body: JSON.stringify(payload)
-            });
-            break;
-          } catch (error) {
-            const message = this.secretMasker(
-              error instanceof Error ? error.message : String(error)
-            );
-            const isLocked = message.includes('423');
-            if (!isLocked || lockedAttempt >= maxLockedRetries) {
-              throw error;
-            }
-            await new Promise((resolve) => {
-              setTimeout(resolve, 5000 * Math.pow(2, lockedAttempt));
-            });
-          }
+    for (let lockedAttempt = 0; ; lockedAttempt += 1) {
+      try {
+        generationResponse = await this.request(`/specs/${specId}/generations/collection`, {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        break;
+      } catch (error) {
+        const message = this.secretMasker(
+          error instanceof Error ? error.message : String(error)
+        );
+        const isLocked = message.includes('423');
+        if (!isLocked || lockedAttempt >= maxLockedRetries) {
+          throw error;
         }
-
-        if (!generationResponse) {
-          throw new Error(`Collection generation request did not return a response for ${prefix}`);
-        }
-
-        const directUid = extractUid(generationResponse);
-        if (directUid) {
-          return directUid;
-        }
-
-        let taskUrl =
-          String(generationResponse?.url ?? '') ||
-          String(generationResponse?.task_url ?? '') ||
-          String(generationResponse?.taskUrl ?? '') ||
-          String(asRecord(generationResponse?.links)?.task ?? '');
-        if (!taskUrl) {
-          const task = asRecord(generationResponse?.task);
-          const taskId = generationResponse?.taskId || task?.id || generationResponse?.id;
-          if (!taskId) {
-            throw new Error(
-              `Collection generation did not return a task URL or ID for ${prefix}`
-            );
-          }
-          taskUrl = `/specs/${specId}/tasks/${taskId}`;
-        }
-
-        for (let attempt = 0; attempt < 45; attempt += 1) {
-          await new Promise((resolve) => {
-            setTimeout(resolve, 2000);
-          });
-          const task = await this.request(taskUrl);
-          const taskRecord = asRecord(task);
-          const taskNested = asRecord(taskRecord?.task);
-          const status = String(taskRecord?.status || taskNested?.status || '').toLowerCase();
-          if (status === 'completed') {
-            const taskUid = extractUid(task);
-            if (!taskUid) {
-              throw new Error(`Task completed but no UID found for ${prefix}`);
-            }
-            return taskUid;
-          }
-          if (status === 'failed') {
-            throw new Error(`Task failed for ${prefix}`);
-          }
-        }
-
-        throw new Error(`Collection generation timed out for ${prefix}`);
-      },
-      {
-        maxAttempts: 4,
-        delayMs: 2000
+        await new Promise((resolve) => {
+          setTimeout(resolve, 5000 * Math.pow(2, lockedAttempt));
+        });
       }
-    );
+    }
+
+    if (!generationResponse) {
+      throw new Error(`Collection generation request did not return a response for ${prefix}`);
+    }
+
+    const directUid = extractUid(generationResponse);
+    if (directUid) {
+      return directUid;
+    }
+
+    let taskUrl =
+      String(generationResponse?.url ?? '') ||
+      String(generationResponse?.task_url ?? '') ||
+      String(generationResponse?.taskUrl ?? '') ||
+      String(asRecord(generationResponse?.links)?.task ?? '');
+    if (!taskUrl) {
+      const task = asRecord(generationResponse?.task);
+      const taskId = generationResponse?.taskId || task?.id || generationResponse?.id;
+      if (!taskId) {
+        throw new Error(
+          `Collection generation did not return a task URL or ID for ${prefix}`
+        );
+      }
+      taskUrl = `/specs/${specId}/tasks/${taskId}`;
+    }
+
+    for (let attempt = 0; attempt < 45; attempt += 1) {
+      await new Promise((resolve) => {
+        setTimeout(resolve, 2000);
+      });
+      const task = await this.request(taskUrl);
+      const taskRecord = asRecord(task);
+      const taskNested = asRecord(taskRecord?.task);
+      const status = String(taskRecord?.status || taskNested?.status || '').toLowerCase();
+      if (status === 'completed') {
+        const taskUid = extractUid(task);
+        if (!taskUid) {
+          throw new Error(`Task completed but no UID found for ${prefix}`);
+        }
+        return taskUid;
+      }
+      if (status === 'failed') {
+        throw new Error(`Task failed for ${prefix}`);
+      }
+    }
+
+    throw new Error(`Collection generation timed out for ${prefix}`);
   }
 
   async tagCollection(collectionUid: string, tags: string[]): Promise<void> {
@@ -536,7 +528,10 @@ export class PostmanAssetsClient {
     });
   }
 
-  async injectTests(collectionUid: string, type: 'contract' | 'smoke'): Promise<void> {
+  async injectTests(
+    collectionUid: string,
+    type: 'smoke'
+  ): Promise<void> {
     const collectionResponse = await this.request(`/collections/${collectionUid}`);
     const collection = asRecord(collectionResponse?.collection);
     if (!collection) {
@@ -562,75 +557,6 @@ export class PostmanAssetsClient {
       "    }",
       "});"
     ];
-    const contractTests = [
-      "// [Contract] Auto-generated contract test assertions",
-      "",
-      "pm.test('Status code is successful (2xx)', function () {",
-      "    pm.response.to.be.success;",
-      "});",
-      "",
-      "pm.test('Response time is acceptable', function () {",
-      "    var threshold = parseInt(pm.environment.get('RESPONSE_TIME_THRESHOLD') || '2000', 10);",
-      "    pm.expect(pm.response.responseTime).to.be.below(threshold);",
-      "});",
-      "",
-      "pm.test('Response body is not empty', function () {",
-      "    if (pm.response.code !== 204) {",
-      "        var body = pm.response.text();",
-      "        pm.expect(body.length).to.be.above(0);",
-      "    }",
-      "});",
-      "",
-      "pm.test('Content-Type is application/json', function () {",
-      "    if (pm.response.code !== 204) {",
-      "        pm.response.to.have.header('Content-Type');",
-      "        pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
-      "    }",
-      "});",
-      "",
-      "pm.test('Response is valid JSON', function () {",
-      "    if (pm.response.code !== 204) {",
-      "        pm.response.to.be.json;",
-      "    }",
-      "});",
-      "",
-      "// Validate required fields from response schema",
-      "pm.test('Required fields are present', function () {",
-      "    if (pm.response.code === 204) return;",
-      "    var jsonData = pm.response.json();",
-      "    pm.expect(jsonData).to.be.an('object');",
-      "    var keys = Object.keys(jsonData);",
-      "    if (keys.length === 1 && Array.isArray(jsonData[keys[0]])) {",
-      "        pm.expect(jsonData[keys[0]]).to.be.an('array');",
-      "    }",
-      "});",
-      "",
-      "// Validate response field types (non-null required fields)",
-      "pm.test('Field types are correct', function () {",
-      "    if (pm.response.code === 204) return;",
-      "    var jsonData = pm.response.json();",
-      "    Object.keys(jsonData).forEach(function(key) {",
-      "        pm.expect(jsonData[key]).to.not.be.undefined;",
-      "    });",
-      "});",
-      "",
-      "(function() {",
-      "    var status = pm.response.code;",
-      "    if (status === 204) return; ",
-      "    try {",
-      "        var body = pm.response.json();",
-      "        pm.test('Response body matches expected structure', function () {",
-      "            pm.expect(typeof body).to.equal('object');",
-      "            if (status >= 400) {",
-      "                pm.expect(body).to.have.property('error');",
-      "                pm.expect(body).to.have.property('message');",
-      "            }",
-      "        });",
-      "    } catch (e) {}",
-      "})();"
-    ];
-
-    const scriptsToInject = type === 'smoke' ? smokeTests : contractTests;
     const request0Item = {
       name: '00 - Resolve Secrets',
       request: {
@@ -675,12 +601,15 @@ export class PostmanAssetsClient {
       ]
     };
 
+    void type;
+
     const injectScripts = (itemNode: Record<string, unknown>) => {
       if (itemNode.name === '00 - Resolve Secrets') {
         return;
       }
 
       if (itemNode.request) {
+        const scriptsToInject = smokeTests;
         const events = Array.isArray(itemNode.event) ? itemNode.event : [];
         itemNode.event = events.filter(
           (entry: { listen?: string }) => entry.listen !== 'test'

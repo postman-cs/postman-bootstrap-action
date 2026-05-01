@@ -1,19 +1,22 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
 import { HttpError } from './lib/http-error.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
-import { detectOpenApiVersion } from './lib/spec/detect-version.js';
-import { classifySafeFetchRetryability, safeFetchText } from './lib/spec/safe-spec-fetch.js';
+import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker } from './lib/secrets.js';
+import { instrumentContractCollection } from './lib/spec/collection-contracts.js';
+import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
+import { loadOpenApiContractSpec, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 
 export interface ResolvedInputs {
   projectName: string;
@@ -396,8 +399,7 @@ export function readActionInputs(
     ),
     INPUT_WORKSPACE_TEAM_ID:
       optionalInput(actionCore, 'workspace-team-id') || process.env.POSTMAN_WORKSPACE_TEAM_ID,
-    INPUT_TEAM_ID:
-      optionalInput(actionCore, 'postman-team-id') || process.env.POSTMAN_TEAM_ID,
+    INPUT_TEAM_ID: process.env.POSTMAN_TEAM_ID,
     INPUT_REPO_URL: optionalInput(actionCore, 'repo-url'),
     INPUT_SPEC_URL: specUrl,
     INPUT_GOVERNANCE_MAPPING_JSON:
@@ -509,10 +511,6 @@ async function fetchSpecDocument(
 ): Promise<string> {
   return retry(
     async () => {
-      if (specFetcher === fetch) {
-        return safeFetchText(specUrl);
-      }
-
       const response = await specFetcher(specUrl, {
         headers: {
           'User-Agent': 'postman-bootstrap-action'
@@ -610,9 +608,12 @@ function findCloudResourceId(
   return match?.[1];
 }
 
-function sanitizeCollectionForUpdate(value: unknown): unknown {
+function sanitizeCollectionForUpdate(
+  value: unknown,
+  options: { dropResponses?: boolean } = {}
+): unknown {
   if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeCollectionForUpdate(entry));
+    return value.map((entry) => sanitizeCollectionForUpdate(entry, options));
   }
 
   if (!value || typeof value !== 'object') {
@@ -623,7 +624,9 @@ function sanitizeCollectionForUpdate(value: unknown): unknown {
   delete record.id;
   delete record.uid;
   delete record._postman_id;
-  delete record.response;
+  if (options.dropResponses !== false) {
+    delete record.response;
+  }
 
   if (record.request && typeof record.request === 'object' && record.request !== null) {
     const request = { ...(record.request as Record<string, unknown>) };
@@ -634,7 +637,7 @@ function sanitizeCollectionForUpdate(value: unknown): unknown {
   }
 
   for (const [key, entry] of Object.entries(record)) {
-    record[key] = sanitizeCollectionForUpdate(entry);
+    record[key] = sanitizeCollectionForUpdate(entry, options);
   }
 
   return record;
@@ -713,28 +716,6 @@ export function normalizeSpecDocument(raw: string, warn: (msg: string) => void):
   return asJson ? `${JSON.stringify(doc, null, 2)}\n` : `${stringify(doc, { lineWidth: 0 })}\n`;
 }
 
-function validateSpecStructure(content: string): void {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    try {
-      parsed = parse(content);
-    } catch {
-      throw new Error('Spec content is not valid JSON or YAML');
-    }
-  }
-
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('Spec content must be a JSON or YAML object');
-  }
-
-  const doc = parsed as Record<string, unknown>;
-  if (!doc.openapi && !doc.swagger) {
-    throw new Error('Spec is missing "openapi" or "swagger" version field');
-  }
-}
-
 export async function runBootstrap(
   inputs: ResolvedInputs,
   dependencies: BootstrapExecutionDependencies
@@ -756,6 +737,69 @@ export async function runBootstrap(
   });
 
   const resourcesState = readResourcesState();
+
+  let specId = inputs.specId;
+  if (!specId) {
+    specId = getFirstCloudResourceId(resourcesState?.cloudResources?.specs);
+    if (specId) {
+      dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
+    }
+  }
+
+  let previousSpecContent: string | undefined;
+  let previousSpecRollbackHash: string | undefined;
+  let detectedOpenapiVersion: '3.0' | '3.1' = '3.0';
+  let contractIndex: ContractIndex | undefined;
+  const specContent = await runGroup(
+    dependencies.core,
+    'Preflight OpenAPI Contract',
+    async () => {
+      const loaded = await loadOpenApiContractSpec(inputs.specUrl, {
+        fetchText: dependencies.specFetcher === fetch
+          ? undefined
+          : async (url) => fetchSpecDocument(url, dependencies.specFetcher)
+      });
+      const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
+        dependencies.core.warning(msg)
+      );
+      contractIndex = buildContractIndex(parseOpenApiDocument(document));
+      const incomingSpecType = normalizeSpecTypeFromContent(document);
+      detectedOpenapiVersion = incomingSpecType.replace('OPENAPI:', '') as '3.0' | '3.1';
+      for (const warning of contractIndex.warnings) {
+        dependencies.core.warning(warning);
+      }
+
+      if (inputs.openapiVersion && inputs.openapiVersion !== detectedOpenapiVersion) {
+        throw new Error(
+          `openapi-version input ${inputs.openapiVersion} does not match spec content OpenAPI ${detectedOpenapiVersion}`
+        );
+      }
+
+      if (specId) {
+        const previousRaw = await dependencies.postman.getSpecContent(specId);
+        if (!previousRaw) {
+          throw new Error(
+            `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
+          );
+        }
+        previousSpecContent = normalizeSpecDocument(previousRaw, (msg) =>
+          dependencies.core.warning(`Previous spec normalization: ${msg}`)
+        );
+        previousSpecRollbackHash = createHash('sha256').update(previousSpecContent).digest('hex');
+        const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
+        if (existingSpecType !== incomingSpecType) {
+          throw new Error(
+            `Existing Spec Hub spec version ${existingSpecType.replace('OPENAPI:', '')} cannot be updated with OpenAPI ${detectedOpenapiVersion} content; clear spec-id to create a fresh spec`
+          );
+        }
+      }
+
+      dependencies.core.info(
+        `Auto-detected OpenAPI version from spec content: ${detectedOpenapiVersion}`
+      );
+      return document;
+    }
+  );
 
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
@@ -929,14 +973,6 @@ export async function runBootstrap(
     );
   }
 
-  let specId = inputs.specId;
-  if (!specId) {
-    specId = getFirstCloudResourceId(resourcesState?.cloudResources?.specs);
-    if (specId) {
-      dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
-    }
-  }
-
   let baselineCollectionId = inputs.baselineCollectionId;
   let smokeCollectionId = inputs.smokeCollectionId;
   let contractCollectionId = inputs.contractCollectionId;
@@ -970,65 +1006,106 @@ export async function runBootstrap(
     }
   }
 
+  const assertDistinctCollectionIds = (
+    ids: Record<'baseline' | 'contract' | 'smoke', string | undefined>
+  ): void => {
+    const seen = new Map<string, string>();
+    for (const [slot, id] of Object.entries(ids)) {
+      if (!id) continue;
+      const previous = seen.get(id);
+      if (previous) {
+        throw new Error(
+          `CONTRACT_COLLECTION_ID_COLLISION: ${previous} and ${slot} collection IDs both resolve to ${id}`
+        );
+      }
+      seen.set(id, slot);
+    }
+  };
+
+  assertDistinctCollectionIds({
+    baseline: baselineCollectionId,
+    contract: contractCollectionId,
+    smoke: smokeCollectionId
+  });
+
   if (specId) {
     dependencies.core.info(`Updating existing spec ${specId} from ${sanitizeUrlForLog(inputs.specUrl)}`);
   }
 
   const isSpecUpdate = Boolean(specId);
-  let previousSpecContent: string | undefined;
-
-  const specContent = await runGroup(
-    dependencies.core,
-    specId ? 'Update Spec in Spec Hub' : 'Upload Spec to Spec Hub',
-    async () => {
-      const fetched = await fetchSpecDocument(inputs.specUrl, dependencies.specFetcher);
-      const document = normalizeSpecDocument(fetched, (msg) =>
-        dependencies.core.warning(msg)
+  let rollbackTriggerStage = 'Post-update bootstrap';
+  const completedExternalSideEffects: string[] = [];
+  const runRollbackStage = async <T>(stage: string, fn: () => Promise<T>): Promise<T> => {
+    rollbackTriggerStage = stage;
+    return await fn();
+  };
+  const restorePreviousSpecContent = async (reason: string): Promise<void> => {
+    if (!isSpecUpdate || !specId || previousSpecContent === undefined) return;
+    try {
+      await runGroup(
+        dependencies.core,
+        'Restore Previous Spec Content',
+        async () => {
+          await retry(
+            async () => dependencies.postman.updateSpec(
+              specId || '',
+              previousSpecContent || '',
+              workspaceId
+            ),
+            { maxAttempts: 3, delayMs: 1000 }
+          );
+        }
       );
-      validateSpecStructure(document);
-      // Detect the OpenAPI version from the spec content; use the explicit
-      // input only when set, so customers rarely need to configure this.
-      const detectedVersion = detectOpenApiVersion(document);
-      const effectiveOpenapiVersion = inputs.openapiVersion || detectedVersion;
-      if (inputs.openapiVersion) {
-        dependencies.core.info(
-          `Using explicit openapi-version override: ${inputs.openapiVersion}`
-        );
-      } else {
-        dependencies.core.info(
-          `Auto-detected OpenAPI version from spec content: ${detectedVersion}`
-        );
-      }
-      if (specId) {
-        previousSpecContent = await dependencies.postman.getSpecContent(specId);
-        dependencies.core.info(
-          `Updating existing spec ${specId} (detected version: ${effectiveOpenapiVersion}). ` +
-          `Note: the spec type (OPENAPI:3.0 / OPENAPI:3.1) is set at creation and cannot be changed on update. ` +
-          `If you changed OpenAPI versions, clear the spec-id input to create a fresh spec.`
-        );
-        await dependencies.postman.updateSpec(specId, document, workspaceId);
-      } else {
-        specId = await dependencies.postman.uploadSpec(
-          workspaceId || '',
-          createAssetProjectName(
-            inputs,
-            inputs.specSyncMode === 'version' ? releaseLabel : undefined
-          ),
-          document,
-          effectiveOpenapiVersion
-        );
-      }
-      outputs['spec-id'] = specId;
-      return document;
+      dependencies.core.warning(
+        `Restored previous Spec Hub content for ${specId} after failure (${reason}); previous content sha256=${previousSpecRollbackHash || '<unknown>'}`
+      );
+    } catch (rollbackError) {
+      throw new Error(
+        `CONTRACT_SPEC_ROLLBACK_FAILED: Failed to restore previous Spec Hub content for ${specId} after ${reason}. ` +
+        `Manually restore content with sha256=${previousSpecRollbackHash || '<unknown>'}. ` +
+        `Rollback error: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        { cause: rollbackError }
+      );
     }
+  };
+
+  try {
+  await runRollbackStage(
+    specId ? 'Update Spec in Spec Hub' : 'Upload Spec to Spec Hub',
+    async () => runGroup(
+      dependencies.core,
+      specId ? 'Update Spec in Spec Hub' : 'Upload Spec to Spec Hub',
+      async () => {
+        if (specId) {
+          dependencies.core.info(
+            `Updating existing spec ${specId} (detected version: ${detectedOpenapiVersion}). ` +
+            `Note: the spec type (OPENAPI:3.0 / OPENAPI:3.1) is set at creation and cannot be changed on update. ` +
+            `If you changed OpenAPI versions, clear the spec-id input to create a fresh spec.`
+          );
+          await dependencies.postman.updateSpec(specId, specContent, workspaceId);
+        } else {
+          specId = await dependencies.postman.uploadSpec(
+            workspaceId || '',
+            createAssetProjectName(
+              inputs,
+              inputs.specSyncMode === 'version' ? releaseLabel : undefined
+            ),
+            specContent,
+            detectedOpenapiVersion
+          );
+        }
+        outputs['spec-id'] = specId;
+      }
+    )
   );
 
-  void specContent;
-
-  const lintSummary = await runGroup(
-    dependencies.core,
+  const lintSummary = await runRollbackStage(
     'Lint Spec via Postman CLI',
-    async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
+    async () => runGroup(
+      dependencies.core,
+      'Lint Spec via Postman CLI',
+      async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
+    )
   );
   outputs['lint-summary-json'] = JSON.stringify({
     errors: lintSummary.errors,
@@ -1038,17 +1115,6 @@ export async function runBootstrap(
   });
 
   if (lintSummary.errors > 0) {
-    if (isSpecUpdate && specId && previousSpecContent !== undefined) {
-      const restoringSpecId = specId;
-      const previous = previousSpecContent;
-      await runGroup(
-        dependencies.core,
-        'Restore Previous Spec Content',
-        async () => {
-          await dependencies.postman.updateSpec(restoringSpecId, previous, workspaceId);
-        }
-      );
-    }
     lintSummary.violations
       .filter((entry) => entry.severity === 'ERROR')
       .forEach((entry) => {
@@ -1065,148 +1131,324 @@ export async function runBootstrap(
       );
     });
 
-  await runGroup(
-    dependencies.core,
+  await runRollbackStage(
     'Generate Collections from Spec',
-    async () => {
-      const assetProjectName =
-        inputs.collectionSyncMode === 'version'
-          ? createAssetProjectName(inputs, releaseLabel)
-          : inputs.projectName;
-      const shouldReuseCollections = inputs.collectionSyncMode !== 'refresh';
-      const temporaryCollectionIds = new Set<string>();
-      const getCollection = dependencies.postman.getCollection?.bind(dependencies.postman);
-      const updateCollection = dependencies.postman.updateCollection?.bind(dependencies.postman);
-      const deleteCollection = dependencies.postman.deleteCollection?.bind(dependencies.postman);
-
-      const refreshCollectionInPlace = async (
-        prefix: '[Baseline]' | '[Smoke]' | '[Contract]',
-        existingCollectionId: string | undefined
-      ): Promise<string> => {
-        const generatedCollectionId = await dependencies.postman.generateCollection(
-          outputs['spec-id'],
-          assetProjectName,
-          prefix,
-          inputs.folderStrategy,
-          inputs.nestedFolderHierarchy,
-          inputs.requestNameSource
-        );
-
-        if (!existingCollectionId) {
-          dependencies.core.info(
-            `No existing ${prefix} collection found; using newly generated collection ${generatedCollectionId}`
-          );
-          return generatedCollectionId;
-        }
-
-        if (!getCollection || !updateCollection) {
-          throw new Error(
-            'Refresh-in-place requires getCollection and updateCollection support from the Postman client'
-          );
-        }
-
-        const generatedCollection = await getCollection(generatedCollectionId);
-        try {
-          await updateCollection(
-            existingCollectionId,
-            sanitizeCollectionForUpdate(generatedCollection)
-          );
-        } catch (error) {
-          if (error instanceof HttpError && error.status === 404) {
+    async () => runGroup(
+      dependencies.core,
+      'Generate Collections from Spec',
+      async () => {
+        const assetProjectName =
+          inputs.collectionSyncMode === 'version'
+            ? createAssetProjectName(inputs, releaseLabel)
+            : inputs.projectName;
+        const shouldReuseCollections = inputs.collectionSyncMode !== 'refresh';
+        const temporaryCollectionIds = new Set<string>();
+        const getCollection = dependencies.postman.getCollection?.bind(dependencies.postman);
+        const updateCollection = dependencies.postman.updateCollection?.bind(dependencies.postman);
+        const deleteCollection = dependencies.postman.deleteCollection?.bind(dependencies.postman);
+        const cleanupTemporaryCollections = async (failure: unknown): Promise<void> => {
+          if (temporaryCollectionIds.size === 0) return;
+          if (failure) {
             dependencies.core.warning(
-              `Existing ${prefix} collection ${existingCollectionId} was not found during refresh; using newly generated collection ${generatedCollectionId}`
+              `Refresh failed after temporary collection generation; attempting cleanup for temporary collections: ${Array.from(temporaryCollectionIds).join(', ')}`
             );
-            return generatedCollectionId;
           }
+          for (const tempCollectionId of temporaryCollectionIds) {
+            try {
+              if (!deleteCollection) {
+                dependencies.core.warning(
+                  `Temporary collection ${tempCollectionId} was not deleted because deleteCollection is unavailable`
+                );
+                continue;
+              }
+              await deleteCollection(tempCollectionId);
+              dependencies.core.info(`Deleted temporary generated collection ${tempCollectionId}`);
+            } catch (error) {
+              dependencies.core.warning(
+                `Failed to delete temporary collection ${tempCollectionId}: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
+          }
+          temporaryCollectionIds.clear();
+        };
+        const requireContractCollectionHelpers = () => {
+          if (!getCollection || !updateCollection) {
+            throw new Error(
+              'Dynamic contract tests require getCollection and updateCollection support from the Postman client'
+            );
+          }
+          if (!contractIndex) {
+            throw new Error('CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight');
+          }
+        };
+        const instrumentAndUpdateContractCollection = async (
+          targetCollectionId: string,
+          sourceCollectionId: string = targetCollectionId
+        ): Promise<string> => {
+          requireContractCollectionHelpers();
+          const sourceCollection = await getCollection!(sourceCollectionId);
+          const planned = instrumentContractCollection(
+            sanitizeCollectionForUpdate(sourceCollection) as Record<string, unknown>,
+            contractIndex!
+          );
+          for (const warning of planned.warnings) {
+            dependencies.core.warning(warning);
+          }
+          try {
+            await updateCollection!(targetCollectionId, planned.collection);
+            return targetCollectionId;
+          } catch (error) {
+            if (targetCollectionId !== sourceCollectionId && error instanceof HttpError && error.status === 404) {
+              dependencies.core.warning(
+                `Existing [Contract] collection ${targetCollectionId} was not found during refresh; using newly generated collection ${sourceCollectionId}`
+              );
+              await updateCollection!(sourceCollectionId, planned.collection);
+              return sourceCollectionId;
+            }
+            throw error;
+          }
+        };
+
+        type RefreshPlan = {
+          existingId?: string;
+          generatedId: string;
+          outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id';
+          prefix: '[Baseline]' | '[Smoke]' | '[Contract]';
+          snapshot?: Record<string, unknown>;
+          updateBody?: Record<string, unknown>;
+        };
+        const requireRefreshCollectionHelpers = () => {
+          if (!getCollection || !updateCollection) {
+            throw new Error(
+              'Refresh-in-place requires getCollection and updateCollection support from the Postman client'
+            );
+          }
+        };
+        const refreshPlanSlot = (
+          outputKey: RefreshPlan['outputKey']
+        ): 'baseline' | 'contract' | 'smoke' => {
+          if (outputKey === 'baseline-collection-id') return 'baseline';
+          if (outputKey === 'contract-collection-id') return 'contract';
+          return 'smoke';
+        };
+        const assertDistinctRefreshPlanOutputs = (plans: RefreshPlan[]): void => {
+          const ids: Record<'baseline' | 'contract' | 'smoke', string | undefined> = {
+            baseline: undefined,
+            contract: undefined,
+            smoke: undefined
+          };
+          for (const plan of plans) {
+            ids[refreshPlanSlot(plan.outputKey)] = plan.existingId ?? plan.generatedId;
+          }
+          assertDistinctCollectionIds(ids);
+        };
+        const createRefreshPlan = async (
+          prefix: RefreshPlan['prefix'],
+          existingId: string | undefined,
+          outputKey: RefreshPlan['outputKey']
+        ): Promise<RefreshPlan> => {
+          const generatedId = await dependencies.postman.generateCollection(
+            outputs['spec-id'],
+            assetProjectName,
+            prefix,
+            inputs.folderStrategy,
+            inputs.nestedFolderHierarchy,
+            inputs.requestNameSource
+          );
+          temporaryCollectionIds.add(generatedId);
+          return {
+            existingId,
+            generatedId,
+            outputKey,
+            prefix
+          };
+        };
+        const prepareContractUpdateBody = async (sourceCollectionId: string): Promise<Record<string, unknown>> => {
+          requireContractCollectionHelpers();
+          const sourceCollection = await getCollection!(sourceCollectionId);
+          const planned = instrumentContractCollection(
+            sanitizeCollectionForUpdate(sourceCollection) as Record<string, unknown>,
+            contractIndex!
+          );
+          for (const warning of planned.warnings) {
+            dependencies.core.warning(warning);
+          }
+          return planned.collection;
+        };
+        const restoreUpdatedCollections = async (
+          updatedCollections: Array<{ collectionId: string; snapshot: Record<string, unknown> }>
+        ): Promise<void> => {
+          for (const updated of [...updatedCollections].reverse()) {
+            try {
+              await updateCollection!(
+                updated.collectionId,
+                sanitizeCollectionForUpdate(updated.snapshot, { dropResponses: false })
+              );
+              dependencies.core.warning(
+                `Restored previous collection content for ${updated.collectionId} after refresh failure`
+              );
+            } catch (error) {
+              dependencies.core.warning(
+                `Failed to restore previous collection content for ${updated.collectionId}: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
+          }
+        };
+        const adoptGeneratedCollection = async (plan: RefreshPlan): Promise<void> => {
+          if (plan.prefix === '[Contract]') {
+            await updateCollection!(plan.generatedId, plan.updateBody ?? await prepareContractUpdateBody(plan.generatedId));
+          }
+          outputs[plan.outputKey] = plan.generatedId;
+          dependencies.core.info(
+            `No existing ${plan.prefix} collection found; using newly generated collection ${plan.generatedId}`
+          );
+        };
+        const commitRefreshPlans = async (plans: RefreshPlan[]): Promise<void> => {
+          requireRefreshCollectionHelpers();
+
+          for (const plan of plans) {
+            if (plan.prefix === '[Contract]') {
+              plan.updateBody = await prepareContractUpdateBody(plan.generatedId);
+            } else {
+              const generatedCollection = await getCollection!(plan.generatedId);
+              plan.updateBody = sanitizeCollectionForUpdate(generatedCollection) as Record<string, unknown>;
+            }
+          }
+
+          for (const plan of plans.filter((entry) => entry.existingId)) {
+            try {
+              plan.snapshot = sanitizeCollectionForUpdate(
+                await getCollection!(plan.existingId!),
+                { dropResponses: false }
+              ) as Record<string, unknown>;
+            } catch (error) {
+              if (error instanceof HttpError && error.status === 404) {
+                dependencies.core.warning(
+                  `Existing ${plan.prefix} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
+                );
+                plan.existingId = undefined;
+                assertDistinctRefreshPlanOutputs(plans);
+                await adoptGeneratedCollection(plan);
+                continue;
+              }
+              throw error;
+            }
+          }
+
+          assertDistinctRefreshPlanOutputs(plans);
+
+          for (const plan of plans.filter((entry) => !entry.existingId && !outputs[entry.outputKey])) {
+            await adoptGeneratedCollection(plan);
+          }
+
+          const updatedCollections: Array<{ collectionId: string; snapshot: Record<string, unknown> }> = [];
+          try {
+            for (const plan of plans.filter((entry) => entry.existingId)) {
+              try {
+                await updateCollection!(
+                  plan.existingId!,
+                  plan.updateBody!
+                );
+                updatedCollections.push({
+                  collectionId: plan.existingId!,
+                  snapshot: plan.snapshot!
+                });
+                outputs[plan.outputKey] = plan.existingId!;
+                dependencies.core.info(
+                  `Refreshed existing ${plan.prefix} collection ${plan.existingId} with temporary collection ${plan.generatedId}`
+                );
+              } catch (error) {
+                if (error instanceof HttpError && error.status === 404) {
+                  dependencies.core.warning(
+                    `Existing ${plan.prefix} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
+                  );
+                  plan.existingId = undefined;
+                  assertDistinctRefreshPlanOutputs(plans);
+                  await adoptGeneratedCollection(plan);
+                  continue;
+                }
+                throw error;
+              }
+            }
+            for (const plan of plans) {
+              if (outputs[plan.outputKey] === plan.generatedId) {
+                temporaryCollectionIds.delete(plan.generatedId);
+              }
+            }
+          } catch (error) {
+            await restoreUpdatedCollections(updatedCollections);
+            throw error;
+          }
+        };
+
+        let generationFailure: unknown;
+        try {
+          if (shouldReuseCollections) {
+            outputs['baseline-collection-id'] = baselineCollectionId || '';
+            outputs['smoke-collection-id'] = smokeCollectionId || '';
+            outputs['contract-collection-id'] = contractCollectionId || '';
+
+            if (!outputs['baseline-collection-id']) {
+              outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
+                outputs['spec-id'],
+                assetProjectName,
+                '[Baseline]',
+                inputs.folderStrategy,
+                inputs.nestedFolderHierarchy,
+                inputs.requestNameSource
+              );
+            } else {
+              dependencies.core.info(
+                `Using existing baseline collection: ${outputs['baseline-collection-id']}`
+              );
+            }
+            if (!outputs['smoke-collection-id']) {
+              outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
+                outputs['spec-id'],
+                assetProjectName,
+                '[Smoke]',
+                inputs.folderStrategy,
+                inputs.nestedFolderHierarchy,
+                inputs.requestNameSource
+              );
+            } else {
+              dependencies.core.info(
+                `Using existing smoke collection: ${outputs['smoke-collection-id']}`
+              );
+            }
+            if (!outputs['contract-collection-id']) {
+              outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
+                outputs['spec-id'],
+                assetProjectName,
+                '[Contract]',
+                inputs.folderStrategy,
+                inputs.nestedFolderHierarchy,
+                inputs.requestNameSource
+              );
+            } else {
+              dependencies.core.info(
+                `Using existing contract collection: ${outputs['contract-collection-id']}`
+              );
+            }
+            outputs['contract-collection-id'] = await instrumentAndUpdateContractCollection(
+              outputs['contract-collection-id']
+            );
+            return;
+          }
+
+          await commitRefreshPlans([
+            await createRefreshPlan('[Baseline]', baselineCollectionId, 'baseline-collection-id'),
+            await createRefreshPlan('[Smoke]', smokeCollectionId, 'smoke-collection-id'),
+            await createRefreshPlan('[Contract]', contractCollectionId, 'contract-collection-id')
+          ]);
+        } catch (error) {
+          generationFailure = error;
           throw error;
-        }
-        temporaryCollectionIds.add(generatedCollectionId);
-        dependencies.core.info(
-          `Refreshed existing ${prefix} collection ${existingCollectionId} with temporary collection ${generatedCollectionId}`
-        );
-        return existingCollectionId;
-      };
-
-      if (shouldReuseCollections) {
-        outputs['baseline-collection-id'] = baselineCollectionId || '';
-        outputs['smoke-collection-id'] = smokeCollectionId || '';
-        outputs['contract-collection-id'] = contractCollectionId || '';
-
-        if (!outputs['baseline-collection-id']) {
-          outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
-            outputs['spec-id'],
-            assetProjectName,
-            '[Baseline]',
-            inputs.folderStrategy,
-            inputs.nestedFolderHierarchy,
-            inputs.requestNameSource
-          );
-        } else {
-          dependencies.core.info(
-            `Using existing baseline collection: ${outputs['baseline-collection-id']}`
-          );
-        }
-        if (!outputs['smoke-collection-id']) {
-          outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
-            outputs['spec-id'],
-            assetProjectName,
-            '[Smoke]',
-            inputs.folderStrategy,
-            inputs.nestedFolderHierarchy,
-            inputs.requestNameSource
-          );
-        } else {
-          dependencies.core.info(
-            `Using existing smoke collection: ${outputs['smoke-collection-id']}`
-          );
-        }
-        if (!outputs['contract-collection-id']) {
-          outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
-            outputs['spec-id'],
-            assetProjectName,
-            '[Contract]',
-            inputs.folderStrategy,
-            inputs.nestedFolderHierarchy,
-            inputs.requestNameSource
-          );
-        } else {
-          dependencies.core.info(
-            `Using existing contract collection: ${outputs['contract-collection-id']}`
-          );
-        }
-        return;
-      }
-
-      outputs['baseline-collection-id'] = await refreshCollectionInPlace(
-        '[Baseline]',
-        baselineCollectionId
-      );
-      outputs['smoke-collection-id'] = await refreshCollectionInPlace(
-        '[Smoke]',
-        smokeCollectionId
-      );
-      outputs['contract-collection-id'] = await refreshCollectionInPlace(
-        '[Contract]',
-        contractCollectionId
-      );
-
-      for (const tempCollectionId of temporaryCollectionIds) {
-        try {
-          if (!deleteCollection) {
-            dependencies.core.warning(
-              `Temporary collection ${tempCollectionId} was not deleted because deleteCollection is unavailable`
-            );
-            continue;
-          }
-          await deleteCollection(tempCollectionId);
-          dependencies.core.info(`Deleted temporary generated collection ${tempCollectionId}`);
-        } catch (error) {
-          dependencies.core.warning(
-            `Failed to delete temporary collection ${tempCollectionId}: ${error instanceof Error ? error.message : String(error)}`
-          );
+        } finally {
+          await cleanupTemporaryCollections(generationFailure);
         }
       }
-    }
+    )
   );
 
   outputs['collections-json'] = JSON.stringify({
@@ -1215,36 +1457,53 @@ export async function runBootstrap(
     smoke: outputs['smoke-collection-id']
   });
 
-  await runGroup(
-    dependencies.core,
+  rollbackTriggerStage = 'Validate Collection Outputs';
+  assertDistinctCollectionIds({
+    baseline: outputs['baseline-collection-id'],
+    contract: outputs['contract-collection-id'],
+    smoke: outputs['smoke-collection-id']
+  });
+
+  await runRollbackStage(
     'Inject Test Scripts',
-    async () => {
-      await Promise.all([
-        dependencies.postman.injectTests(outputs['smoke-collection-id'], 'smoke'),
-        dependencies.postman.injectTests(
-          outputs['contract-collection-id'],
-          'contract'
-        )
-      ]);
-    }
+    async () => runGroup(
+      dependencies.core,
+      'Inject Test Scripts',
+      async () => {
+        await dependencies.postman.injectTests(outputs['smoke-collection-id'], 'smoke');
+        completedExternalSideEffects.push(
+          `injectTests(${outputs['smoke-collection-id']}, smoke)`
+        );
+      }
+    )
   );
 
-  await runGroup(
-    dependencies.core,
+  await runRollbackStage(
     'Tag Collections',
-    async () => {
-      await Promise.all([
-        dependencies.postman.tagCollection(outputs['baseline-collection-id'], [
+    async () => runGroup(
+      dependencies.core,
+      'Tag Collections',
+      async () => {
+        await dependencies.postman.tagCollection(outputs['baseline-collection-id'], [
           'generated-docs'
-        ]),
-        dependencies.postman.tagCollection(outputs['smoke-collection-id'], [
+        ]);
+        completedExternalSideEffects.push(
+          `tagCollection(${outputs['baseline-collection-id']}, generated-docs)`
+        );
+        await dependencies.postman.tagCollection(outputs['smoke-collection-id'], [
           'generated-smoke'
-        ]),
-        dependencies.postman.tagCollection(outputs['contract-collection-id'], [
+        ]);
+        completedExternalSideEffects.push(
+          `tagCollection(${outputs['smoke-collection-id']}, generated-smoke)`
+        );
+        await dependencies.postman.tagCollection(outputs['contract-collection-id'], [
           'generated-contract'
-        ])
-      ]);
-    }
+        ]);
+        completedExternalSideEffects.push(
+          `tagCollection(${outputs['contract-collection-id']}, generated-contract)`
+        );
+      }
+    )
   );
 
   const linkedCollectionIds = [
@@ -1255,41 +1514,62 @@ export async function runBootstrap(
 
   if (linkedCollectionIds.length > 0) {
     if (dependencies.internalIntegration) {
-      await runGroup(
-        dependencies.core,
+      await runRollbackStage(
         'Link Collections to Specification',
-        async () => {
-          await dependencies.internalIntegration?.linkCollectionsToSpecification(
-            outputs['spec-id'],
-            linkedCollectionIds.map((collectionId) => ({
-              collectionId,
-              syncOptions: {
-                syncExamples: inputs.syncExamples
-              }
-            }))
-          );
-        }
+        async () => runGroup(
+          dependencies.core,
+          'Link Collections to Specification',
+          async () => {
+            await dependencies.internalIntegration?.linkCollectionsToSpecification(
+              outputs['spec-id'],
+              linkedCollectionIds.map((collectionId) => ({
+                collectionId,
+                syncOptions: {
+                  syncExamples: inputs.syncExamples
+                }
+              }))
+            );
+            completedExternalSideEffects.push(
+              `linkCollectionsToSpecification(${outputs['spec-id']}: ${linkedCollectionIds.join(', ')}; syncExamples=${inputs.syncExamples})`
+            );
+          }
+        )
       );
 
-      await runGroup(
-        dependencies.core,
+      await runRollbackStage(
         'Sync Linked Collections',
-        async () => {
-          await Promise.all(
-            linkedCollectionIds.map((collectionId) =>
-              dependencies.internalIntegration!.syncCollection(
+        async () => runGroup(
+          dependencies.core,
+          'Sync Linked Collections',
+          async () => {
+            for (const collectionId of linkedCollectionIds) {
+              await dependencies.internalIntegration!.syncCollection(
                 outputs['spec-id'],
                 collectionId
-              )
-            )
-          );
-        }
+              );
+              completedExternalSideEffects.push(
+                `syncCollection(${outputs['spec-id']}, ${collectionId})`
+              );
+            }
+          }
+        )
       );
     } else {
       dependencies.core.warning(
         'Skipping cloud spec-to-collection linking and sync because postman-access-token is not configured'
       );
     }
+  }
+
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (completedExternalSideEffects.length > 0) {
+      dependencies.core.warning(
+        `Completed external side effects before failure; these are not automatically rolled back: ${completedExternalSideEffects.join('; ')}`
+      );
+    }
+    await restorePreviousSpecContent(`${rollbackTriggerStage}: ${reason}`);
+    throw error;
   }
 
   for (const [name, value] of Object.entries(outputs)) {

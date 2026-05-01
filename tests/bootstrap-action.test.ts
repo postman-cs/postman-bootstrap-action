@@ -14,6 +14,34 @@ import {
   type ResolvedInputs
 } from '../src/index.js';
 
+const VALID_SPEC_31 = `{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Test API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/payments": {
+      "get": {
+        "summary": "GET /payments",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`;
+
 function createCoreStub(values: Record<string, string> = {}) {
   const outputs: Record<string, string> = {};
   const secrets: string[] = [];
@@ -104,6 +132,125 @@ function createIoStub(): IOLike {
   };
 }
 
+function createGeneratedContractCollection() {
+  return {
+    info: { name: '[Contract] core-payments' },
+    item: [
+      {
+        name: 'GET /payments',
+        request: {
+          method: 'GET',
+          url: { path: ['payments'] }
+        }
+      }
+    ]
+  };
+}
+
+function collectionNotFound(uid: string): HttpError {
+  return new HttpError({
+    method: 'PUT',
+    status: 404,
+    statusText: 'Not Found',
+    url: `https://api.getpostman.com/collections/${uid}`
+  });
+}
+
+function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
+  const existingGetCollection = postman.getCollection as ((uid: string) => Promise<unknown>) | undefined;
+  const existingGenerateCollection = postman.generateCollection as ((...args: unknown[]) => Promise<string>) | undefined;
+  const generatedIds = new Set<string>();
+  const getCollection = vi.fn(async (uid: string) => {
+    if (uid.toLowerCase().includes('contract')) return createGeneratedContractCollection();
+    if (existingGetCollection) return existingGetCollection(uid);
+    return createGeneratedContractCollection();
+  });
+  const generateCollection = existingGenerateCollection
+    ? vi.fn(async (...args: unknown[]) => {
+      const id = await existingGenerateCollection(...args);
+      if (!generatedIds.has(id)) {
+        generatedIds.add(id);
+        return id;
+      }
+      const prefix = String(args[2] || 'collection').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase();
+      const uniqueId = `${id}-${prefix}`;
+      generatedIds.add(uniqueId);
+      return uniqueId;
+    })
+    : undefined;
+  return {
+    ...postman,
+    ...(generateCollection ? { generateCollection } : {}),
+    getCollection,
+    updateCollection: postman.updateCollection ?? vi.fn().mockResolvedValue(undefined)
+  };
+}
+
+function createRollbackPostman(overrides: Record<string, unknown> = {}) {
+  return {
+    addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+    createWorkspace: vi.fn(),
+    deleteCollection: vi.fn().mockResolvedValue(undefined),
+    findWorkspacesByName: vi.fn().mockResolvedValue([]),
+    generateCollection: vi
+      .fn()
+      .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+        if (prefix === '[Baseline]') return 'col-baseline-generated';
+        if (prefix === '[Smoke]') return 'col-smoke-generated';
+        return 'col-contract-generated';
+      }),
+    getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+    getCollection: vi.fn().mockResolvedValue(createGeneratedContractCollection()),
+    getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+    getTeams: vi.fn().mockResolvedValue([]),
+    getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+    injectTests: vi.fn().mockResolvedValue(undefined),
+    inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+    tagCollection: vi.fn().mockResolvedValue(undefined),
+    updateCollection: vi.fn().mockResolvedValue(undefined),
+    updateSpec: vi.fn().mockResolvedValue(undefined),
+    uploadSpec: vi.fn(),
+    ...overrides
+  };
+}
+
+function createRollbackIntegration(overrides: Record<string, unknown> = {}) {
+  return {
+    assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+    linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+    syncCollection: vi.fn().mockResolvedValue(undefined),
+    ...overrides
+  };
+}
+
+async function runExistingSpecBootstrap(
+  postman: ReturnType<typeof createRollbackPostman>,
+  options: {
+    core?: CoreLike;
+    exec?: ExecLike;
+    inputs?: Partial<ResolvedInputs>;
+    internalIntegration?: ReturnType<typeof createRollbackIntegration>;
+  } = {}
+) {
+  return await runBootstrap(
+    createInputs({
+      workspaceId: 'ws-existing',
+      specId: 'spec-existing',
+      ...options.inputs
+    }),
+    {
+      core: options.core ?? createCoreStub().core,
+      exec: options.exec ?? createExecStub(),
+      internalIntegration: options.internalIntegration,
+      io: createIoStub(),
+      postman,
+      specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(VALID_SPEC_31, { status: 200 })
+      )
+    }
+  );
+}
+
 describe('bootstrap action', () => {
   afterEach(() => {
     rmSync('.postman', { recursive: true, force: true });
@@ -151,7 +298,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
@@ -159,7 +306,7 @@ describe('bootstrap action', () => {
       syncCollection: vi.fn().mockResolvedValue(undefined)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response('openapi: 3.1.0', {
+      new Response(VALID_SPEC_31, {
         status: 200
       })
     );
@@ -169,7 +316,7 @@ describe('bootstrap action', () => {
       exec: execStub,
       io: ioStub,
       internalIntegration,
-      postman,
+      postman: withContractHelpers(postman),
       specFetcher
     });
 
@@ -233,6 +380,74 @@ describe('bootstrap action', () => {
     );
   });
 
+  it('uploads the bundled OpenAPI document used for dynamic contract validation', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+          if (prefix === '[Baseline]') return 'col-baseline';
+          if (prefix === '[Smoke]') return 'col-smoke';
+          return 'col-contract';
+        }),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+    };
+    const rootSpec = `openapi: 3.1.0
+info: { title: Test API, version: 1.0.0 }
+paths:
+  /payments:
+    get:
+      summary: GET /payments
+      responses:
+        '200':
+          $ref: 'https://example.test/components.yaml#/components/responses/PaymentList'
+`;
+    const componentsSpec = `components:
+  responses:
+    PaymentList:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+`;
+    const specFetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      const href = typeof url === 'string'
+        ? url
+        : url instanceof URL
+          ? url.toString()
+          : url.url;
+      return new Response(href.includes('components.yaml') ? componentsSpec : rootSpec, { status: 200 });
+    });
+
+    await runBootstrap(createInputs(), {
+      core,
+      exec: execStub,
+      io: createIoStub(),
+      postman: withContractHelpers(postman),
+      specFetcher
+    });
+
+    const uploadedContent = vi.mocked(postman.uploadSpec).mock.calls[0]?.[2] as string;
+    expect(uploadedContent).not.toContain('components.yaml');
+    const uploaded = JSON.parse(uploadedContent) as {
+      paths: Record<string, { get: { responses: Record<string, { description?: string }> } }>;
+    };
+    expect(uploaded.paths['/payments']?.get.responses['200']?.description).toBe('OK');
+  });
+
   it('fails when spec lint returns errors', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub(
@@ -260,7 +475,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn(),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     await expect(
@@ -268,9 +483,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       })
     ).rejects.toThrow('Spec lint found 1 errors');
@@ -299,7 +514,7 @@ describe('bootstrap action', () => {
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.0.0\ninfo:\n  title: old\n'),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -315,9 +530,9 @@ describe('bootstrap action', () => {
           core,
           exec: execStub,
           io: ioStub,
-          postman,
+          postman: withContractHelpers(postman),
           specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-            new Response('openapi: 3.1.0', { status: 200 })
+            new Response(VALID_SPEC_31, { status: 200 })
           )
         }
       )
@@ -327,15 +542,541 @@ describe('bootstrap action', () => {
     expect(postman.updateSpec).toHaveBeenNthCalledWith(
       1,
       'spec-existing',
-      'openapi: 3.1.0',
+      VALID_SPEC_31,
       'ws-existing'
     );
     expect(postman.updateSpec).toHaveBeenNthCalledWith(
       2,
       'spec-existing',
-      'openapi: 3.0.0\ninfo:\n  title: old\n',
+      VALID_SPEC_31,
       'ws-existing'
     );
+  });
+
+  it('snapshots normalized previous spec content before updating an existing spec', async () => {
+    const previousRaw = `openapi: 3.1.0
+info:
+  title: Previous API
+  version: 1.0.0
+paths:
+  /payments:
+    get:
+      responses:
+        '200':
+          description: OK
+`;
+    const expectedPrevious = normalizeSpecDocument(previousRaw, () => undefined);
+    const postman = createRollbackPostman({
+      getSpecContent: vi.fn().mockResolvedValue(previousRaw)
+    });
+
+    await runExistingSpecBootstrap(postman);
+
+    expect(postman.getSpecContent).toHaveBeenCalledWith('spec-existing');
+    expect(postman.getSpecContent.mock.invocationCallOrder[0]).toBeLessThan(
+      postman.updateSpec.mock.invocationCallOrder[0]
+    );
+    expect(postman.updateSpec).toHaveBeenCalledTimes(1);
+    expect(postman.updateSpec).toHaveBeenNthCalledWith(
+      1,
+      'spec-existing',
+      VALID_SPEC_31,
+      'ws-existing'
+    );
+    expect(expectedPrevious).toContain('summary: GET /payments');
+  });
+
+  it.each([
+    {
+      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
+        expect(postman.injectTests).not.toHaveBeenCalled();
+        expect(postman.tagCollection).not.toHaveBeenCalled();
+      },
+      failure: 'generation refused',
+      name: 'collection generation',
+      overrides: {
+        generateCollection: vi.fn().mockRejectedValue(new Error('generation refused'))
+      }
+    },
+    {
+      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
+        expect(postman.updateCollection).not.toHaveBeenCalled();
+        expect(postman.injectTests).not.toHaveBeenCalled();
+        expect(postman.tagCollection).not.toHaveBeenCalled();
+      },
+      failure: 'CONTRACT_OPERATION_COVERAGE_FAILED',
+      name: 'contract instrumentation coverage',
+      overrides: {
+        getCollection: vi.fn().mockResolvedValue({
+          info: { name: '[Contract] core-payments' },
+          item: []
+        })
+      }
+    },
+    {
+      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
+        expect(postman.updateCollection).not.toHaveBeenCalled();
+        expect(postman.injectTests).not.toHaveBeenCalled();
+        expect(postman.tagCollection).not.toHaveBeenCalled();
+      },
+      failure: 'contract fetch failed',
+      name: 'contract collection fetch',
+      overrides: {
+        getCollection: vi.fn().mockRejectedValue(new Error('contract fetch failed'))
+      }
+    },
+    {
+      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
+        expect(postman.injectTests).not.toHaveBeenCalled();
+        expect(postman.tagCollection).not.toHaveBeenCalled();
+      },
+      failure: 'contract update failed',
+      name: 'contract collection update',
+      overrides: {
+        updateCollection: vi.fn().mockRejectedValue(new Error('contract update failed'))
+      }
+    },
+    {
+      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
+        expect(postman.tagCollection).not.toHaveBeenCalled();
+      },
+      failure: 'inject failed',
+      name: 'inject tests',
+      overrides: {
+        injectTests: vi.fn().mockRejectedValue(new Error('inject failed'))
+      }
+    },
+    {
+      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
+        expect(postman.injectTests).toHaveBeenCalled();
+      },
+      failure: 'tag failed',
+      name: 'tagging',
+      overrides: {
+        tagCollection: vi.fn().mockRejectedValue(new Error('tag failed'))
+      }
+    },
+    {
+      expectedSkippedCalls: (
+        postman: ReturnType<typeof createRollbackPostman>,
+        internalIntegration?: ReturnType<typeof createRollbackIntegration>
+      ) => {
+        expect(postman.tagCollection).toHaveBeenCalled();
+        expect(internalIntegration?.syncCollection).not.toHaveBeenCalled();
+      },
+      failure: 'link failed',
+      integrationOverrides: {
+        linkCollectionsToSpecification: vi.fn().mockRejectedValue(new Error('link failed'))
+      },
+      name: 'cloud linking',
+      overrides: {}
+    },
+    {
+      expectedSkippedCalls: (
+        postman: ReturnType<typeof createRollbackPostman>,
+        internalIntegration?: ReturnType<typeof createRollbackIntegration>
+      ) => {
+        expect(postman.tagCollection).toHaveBeenCalled();
+        expect(internalIntegration?.syncCollection).toHaveBeenCalledTimes(2);
+      },
+      failure: 'sync failed',
+      integrationOverrides: {
+        syncCollection: vi
+          .fn()
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('sync failed'))
+      },
+      name: 'cloud sync',
+      overrides: {}
+    },
+    {
+      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
+        expect(postman.injectTests).not.toHaveBeenCalled();
+        expect(postman.tagCollection).not.toHaveBeenCalled();
+      },
+      failure: 'baseline refresh update failed',
+      inputs: {
+        baselineCollectionId: 'col-baseline-existing',
+        contractCollectionId: 'col-contract-existing',
+        smokeCollectionId: 'col-smoke-existing'
+      },
+      name: 'non-404 refresh update',
+      overrides: {
+        updateCollection: vi.fn().mockImplementation(async (uid: string) => {
+          if (uid === 'col-baseline-existing') {
+            throw new Error('baseline refresh update failed');
+          }
+          return undefined;
+        })
+      }
+    }
+  ])(
+    'restores previous spec content and stops downstream work after $name failure',
+    async ({ expectedSkippedCalls, failure, inputs, integrationOverrides, overrides }) => {
+      const { core, outputs, warnings } = createCoreStub();
+      const postman = createRollbackPostman(overrides);
+      const internalIntegration = integrationOverrides
+        ? createRollbackIntegration(integrationOverrides)
+        : undefined;
+
+      await expect(
+        runExistingSpecBootstrap(postman, {
+          core,
+          inputs,
+          internalIntegration
+        })
+      ).rejects.toThrow(failure);
+
+      expect(postman.updateSpec).toHaveBeenNthCalledWith(
+        1,
+        'spec-existing',
+        VALID_SPEC_31,
+        'ws-existing'
+      );
+      expect(postman.updateSpec).toHaveBeenLastCalledWith(
+        'spec-existing',
+        VALID_SPEC_31,
+        'ws-existing'
+      );
+      expect(postman.updateSpec).toHaveBeenCalledTimes(2);
+      expectedSkippedCalls(postman, internalIntegration);
+      expect(outputs).toEqual({});
+      expect(
+        warnings.some((warning) =>
+          warning.includes('Restored previous Spec Hub content for spec-existing')
+          && warning.includes('sha256=')
+        )
+      ).toBe(true);
+    }
+  );
+
+  it('does not update durable refresh collections when contract instrumentation fails', async () => {
+    const postman = createRollbackPostman({
+      getCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-contract-generated') {
+          return { info: { name: '[Contract] core-payments' }, item: [] };
+        }
+        return createGeneratedContractCollection();
+      }),
+      updateCollection: vi.fn().mockResolvedValue(undefined)
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        inputs: {
+          baselineCollectionId: 'col-baseline-existing',
+          contractCollectionId: 'col-contract-existing',
+          smokeCollectionId: 'col-smoke-existing'
+        }
+      })
+    ).rejects.toThrow('CONTRACT_OPERATION_COVERAGE_FAILED');
+
+    expect(postman.updateCollection).not.toHaveBeenCalled();
+    expect(postman.deleteCollection).toHaveBeenCalledWith('col-baseline-generated');
+    expect(postman.deleteCollection).toHaveBeenCalledWith('col-smoke-generated');
+    expect(postman.deleteCollection).toHaveBeenCalledWith('col-contract-generated');
+  });
+
+  it('restores already-updated durable refresh collections when a later refresh update fails', async () => {
+    const oldBaseline = { info: { name: 'old baseline' }, item: [{ name: 'old baseline item' }] };
+    const newBaseline = { info: { name: 'new baseline' }, item: [{ name: 'new baseline item' }] };
+    const oldSmoke = { info: { name: 'old smoke' }, item: [{ name: 'old smoke item' }] };
+    const newSmoke = { info: { name: 'new smoke' }, item: [{ name: 'new smoke item' }] };
+    const postman = createRollbackPostman({
+      getCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-baseline-generated') return newBaseline;
+        if (uid === 'col-smoke-generated') return newSmoke;
+        if (uid === 'col-baseline-existing') return oldBaseline;
+        if (uid === 'col-smoke-existing') return oldSmoke;
+        return createGeneratedContractCollection();
+      }),
+      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-smoke-existing') {
+          throw new Error('smoke refresh failed');
+        }
+        return undefined;
+      })
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        inputs: {
+          baselineCollectionId: 'col-baseline-existing',
+          contractCollectionId: 'col-contract-existing',
+          smokeCollectionId: 'col-smoke-existing'
+        }
+      })
+    ).rejects.toThrow('smoke refresh failed');
+
+    const baselineUpdates = vi.mocked(postman.updateCollection).mock.calls
+      .filter(([uid]) => uid === 'col-baseline-existing');
+    expect(baselineUpdates).toHaveLength(2);
+    expect(baselineUpdates[0]?.[1]).toMatchObject(newBaseline);
+    expect(baselineUpdates[1]?.[1]).toMatchObject(oldBaseline);
+    expect(postman.updateCollection).not.toHaveBeenCalledWith(
+      'col-contract-existing',
+      expect.anything()
+    );
+  });
+
+  it('preserves saved response examples when restoring durable refresh collections', async () => {
+    const oldBaseline = {
+      info: { name: 'old baseline' },
+      item: [
+        {
+          name: 'old baseline item',
+          request: { method: 'GET', url: { path: ['payments'] } },
+          response: [{ name: 'saved example', code: 200, body: '{"ok":true}' }]
+        }
+      ]
+    };
+    const newBaseline = {
+      info: { name: 'new baseline' },
+      item: [
+        {
+          name: 'new baseline item',
+          request: { method: 'GET', url: { path: ['payments'] } },
+          response: [{ name: 'generated example', code: 200, body: '{}' }]
+        }
+      ]
+    };
+    const oldSmoke = { info: { name: 'old smoke' }, item: [{ name: 'old smoke item' }] };
+    const newSmoke = { info: { name: 'new smoke' }, item: [{ name: 'new smoke item' }] };
+    const postman = createRollbackPostman({
+      getCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-baseline-generated') return newBaseline;
+        if (uid === 'col-smoke-generated') return newSmoke;
+        if (uid === 'col-baseline-existing') return oldBaseline;
+        if (uid === 'col-smoke-existing') return oldSmoke;
+        return createGeneratedContractCollection();
+      }),
+      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-smoke-existing') {
+          throw new Error('smoke refresh failed');
+        }
+        return undefined;
+      })
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        inputs: {
+          baselineCollectionId: 'col-baseline-existing',
+          contractCollectionId: 'col-contract-existing',
+          smokeCollectionId: 'col-smoke-existing'
+        }
+      })
+    ).rejects.toThrow('smoke refresh failed');
+
+    const baselineUpdates = vi.mocked(postman.updateCollection).mock.calls
+      .filter(([uid]) => uid === 'col-baseline-existing');
+    expect(baselineUpdates).toHaveLength(2);
+    expect(baselineUpdates[0]?.[1]).toMatchObject({
+      item: [expect.not.objectContaining({ response: expect.anything() })]
+    });
+    expect(baselineUpdates[1]?.[1]).toMatchObject({
+      item: [expect.objectContaining({ response: oldBaseline.item[0].response })]
+    });
+  });
+
+  it('detects stale-refresh fallback ID collisions before durable collection updates', async () => {
+    const postman = createRollbackPostman({
+      generateCollection: vi.fn().mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+        if (prefix === '[Baseline]') return 'col-smoke-existing';
+        if (prefix === '[Smoke]') return 'col-smoke-generated';
+        return 'col-contract-generated';
+      }),
+      getCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-baseline-existing') {
+          throw collectionNotFound(uid);
+        }
+        return createGeneratedContractCollection();
+      }),
+      updateCollection: vi.fn().mockResolvedValue(undefined)
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        inputs: {
+          baselineCollectionId: 'col-baseline-existing',
+          contractCollectionId: 'col-contract-existing',
+          smokeCollectionId: 'col-smoke-existing'
+        }
+      })
+    ).rejects.toThrow('CONTRACT_COLLECTION_ID_COLLISION');
+
+    expect(postman.updateCollection).not.toHaveBeenCalled();
+  });
+
+  it('restores durable refresh updates before failing a late fallback ID collision', async () => {
+    const oldBaseline = { info: { name: 'old baseline' }, item: [{ name: 'old baseline item' }] };
+    const newBaseline = { info: { name: 'new baseline' }, item: [{ name: 'new baseline item' }] };
+    const oldSmoke = { info: { name: 'old smoke' }, item: [{ name: 'old smoke item' }] };
+    const newSmoke = { info: { name: 'new smoke' }, item: [{ name: 'new smoke item' }] };
+    const oldContract = createGeneratedContractCollection();
+    let contractExistingReads = 0;
+    const postman = createRollbackPostman({
+      generateCollection: vi.fn().mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+        if (prefix === '[Baseline]') return 'col-baseline-generated';
+        if (prefix === '[Smoke]') return 'col-contract-existing';
+        return 'col-contract-generated';
+      }),
+      getCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-baseline-generated') return newBaseline;
+        if (uid === 'col-smoke-existing') return oldSmoke;
+        if (uid === 'col-baseline-existing') return oldBaseline;
+        if (uid === 'col-contract-existing') {
+          contractExistingReads += 1;
+          return contractExistingReads === 1 ? newSmoke : oldContract;
+        }
+        return createGeneratedContractCollection();
+      }),
+      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-smoke-existing') {
+          throw collectionNotFound(uid);
+        }
+        return undefined;
+      })
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        inputs: {
+          baselineCollectionId: 'col-baseline-existing',
+          contractCollectionId: 'col-contract-existing',
+          smokeCollectionId: 'col-smoke-existing'
+        }
+      })
+    ).rejects.toThrow('CONTRACT_COLLECTION_ID_COLLISION');
+
+    const baselineUpdates = vi.mocked(postman.updateCollection).mock.calls
+      .filter(([uid]) => uid === 'col-baseline-existing');
+    expect(baselineUpdates).toHaveLength(2);
+    expect(baselineUpdates[0]?.[1]).toMatchObject(newBaseline);
+    expect(baselineUpdates[1]?.[1]).toMatchObject(oldBaseline);
+  });
+
+  it('restores previous content and preserves the incoming update failure reason when updateSpec fails', async () => {
+    const { core, outputs } = createCoreStub();
+    const postman = createRollbackPostman({
+      updateSpec: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('incoming update rejected'))
+        .mockResolvedValueOnce(undefined)
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, { core })
+    ).rejects.toThrow('incoming update rejected');
+
+    expect(postman.updateSpec).toHaveBeenNthCalledWith(
+      1,
+      'spec-existing',
+      VALID_SPEC_31,
+      'ws-existing'
+    );
+    expect(postman.updateSpec).toHaveBeenNthCalledWith(
+      2,
+      'spec-existing',
+      VALID_SPEC_31,
+      'ws-existing'
+    );
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(outputs).toEqual({});
+  });
+
+  it('emits rollback failure with previous SHA-256 and original triggering stage', async () => {
+    vi.useFakeTimers();
+    try {
+      const { core, outputs } = createCoreStub();
+      const postman = createRollbackPostman({
+        tagCollection: vi.fn().mockRejectedValue(new Error('tag stage failed')),
+        updateSpec: vi
+          .fn()
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValue(new Error('restore write failed'))
+      });
+
+      const run = runExistingSpecBootstrap(postman, { core });
+      const rejection = expect(run).rejects.toThrow(
+        /CONTRACT_SPEC_ROLLBACK_FAILED: .*after Tag Collections: tag stage failed.*sha256=[a-f0-9]{64}.*Rollback error: restore write failed/s
+      );
+      await vi.runAllTimersAsync();
+      await rejection;
+
+      expect(postman.updateSpec).toHaveBeenCalledTimes(4);
+      expect(outputs).toEqual({});
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries rollback restore and then preserves the original downstream failure on success', async () => {
+    vi.useFakeTimers();
+    try {
+      const { core, outputs, warnings } = createCoreStub();
+      const postman = createRollbackPostman({
+        injectTests: vi.fn().mockRejectedValue(new Error('inject retry trigger')),
+        updateSpec: vi
+          .fn()
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('transient restore lock'))
+          .mockResolvedValueOnce(undefined)
+      });
+
+      const run = runExistingSpecBootstrap(postman, { core });
+      const rejection = expect(run).rejects.toThrow('inject retry trigger');
+      await vi.runAllTimersAsync();
+      await rejection;
+
+      expect(postman.updateSpec).toHaveBeenCalledTimes(3);
+      expect(postman.updateSpec).toHaveBeenNthCalledWith(
+        3,
+        'spec-existing',
+        VALID_SPEC_31,
+        'ws-existing'
+      );
+      expect(outputs).toEqual({});
+      expect(
+        warnings.some((warning) =>
+          warning.includes('Inject Test Scripts: inject retry trigger')
+          && warning.includes('sha256=')
+        )
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not attempt rollback for new spec uploads when a later failure occurs', async () => {
+    const { core, outputs } = createCoreStub();
+    const postman = createRollbackPostman({
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
+      generateCollection: vi.fn().mockRejectedValue(new Error('new upload generation failed')),
+      uploadSpec: vi.fn().mockResolvedValue('spec-new')
+    });
+
+    await expect(
+      runBootstrap(createInputs(), {
+        core,
+        exec: createExecStub(),
+        io: createIoStub(),
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      })
+    ).rejects.toThrow('new upload generation failed');
+
+    expect(postman.uploadSpec).toHaveBeenCalledWith(
+      'ws-new',
+      'core-payments',
+      VALID_SPEC_31,
+      '3.1'
+    );
+    expect(postman.getSpecContent).not.toHaveBeenCalled();
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+    expect(outputs).toEqual({});
   });
 
   it('validates normalized spec structure before upload or update', async () => {
@@ -349,7 +1090,7 @@ describe('bootstrap action', () => {
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0'),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -363,15 +1104,198 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
           new Response('info:\n  title: Missing version\n', { status: 200 })
         )
       })
-    ).rejects.toThrow('Spec is missing "openapi" or "swagger" version field');
+    ).rejects.toThrow('Dynamic contract tests require OpenAPI 3.0 or 3.1 (missing openapi)');
 
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.updateSpec).not.toHaveBeenCalled();
+  });
+
+  it('uses production safe fetch preflight and rejects unsafe spec URLs before Postman mutations', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn(),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn(),
+      generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn(),
+      getTeams: vi.fn(),
+      getSpecContent: vi.fn(),
+      getWorkspaceGitRepoUrl: vi.fn(),
+      injectTests: vi.fn(),
+      inviteRequesterToWorkspace: vi.fn(),
+      tagCollection: vi.fn(),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn(),
+      deleteCollection: vi.fn(),
+      getCollection: vi.fn(),
+      updateCollection: vi.fn()
+    };
+    const internalIntegration = {
+      assignWorkspaceToGovernanceGroup: vi.fn(),
+      linkCollectionsToSpecification: vi.fn(),
+      syncCollection: vi.fn()
+    };
+
+    await expect(
+      runBootstrap(createInputs({ specUrl: 'https://2130706433/openapi.yaml' }), {
+        core,
+        exec: execStub,
+        io: ioStub,
+        internalIntegration,
+        postman,
+        specFetcher: fetch
+      })
+    ).rejects.toThrow('CONTRACT_SPEC_FETCH_BLOCKED');
+
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(postman.getCollection).not.toHaveBeenCalled();
+    expect(postman.updateCollection).not.toHaveBeenCalled();
+    expect(postman.deleteCollection).not.toHaveBeenCalled();
+    expect(postman.injectTests).not.toHaveBeenCalled();
+    expect(postman.tagCollection).not.toHaveBeenCalled();
+    expect(internalIntegration.assignWorkspaceToGovernanceGroup).not.toHaveBeenCalled();
+    expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+    expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+  });
+
+  it('rejects collection ID collisions before collection generation or tagging', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn(),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn(),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn()
+    };
+
+    await expect(runBootstrap(createInputs({
+      workspaceId: 'ws-existing',
+      specId: 'spec-existing',
+      baselineCollectionId: 'col-shared',
+      smokeCollectionId: 'col-shared',
+      contractCollectionId: 'col-contract-existing'
+    }), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman: withContractHelpers(postman),
+      specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(VALID_SPEC_31, { status: 200 })
+      )
+    })).rejects.toThrow('CONTRACT_COLLECTION_ID_COLLISION');
+
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(postman.injectTests).not.toHaveBeenCalled();
+    expect(postman.tagCollection).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing previous spec content before updating an existing Spec Hub spec', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn(),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn(),
+      generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn(),
+      getTeams: vi.fn(),
+      getSpecContent: vi.fn().mockResolvedValue(undefined),
+      getWorkspaceGitRepoUrl: vi.fn(),
+      injectTests: vi.fn(),
+      inviteRequesterToWorkspace: vi.fn(),
+      tagCollection: vi.fn(),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn()
+    };
+
+    await expect(
+      runBootstrap(createInputs({ workspaceId: 'ws-existing', specId: 'spec-existing' }), {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      })
+    ).rejects.toThrow('Unable to verify existing Spec Hub OpenAPI version for spec-id spec-existing');
+
+    expect(postman.getSpecContent).toHaveBeenCalledWith('spec-existing');
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+  });
+
+  it('rejects existing Spec Hub OpenAPI version mismatches before update', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn(),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn(),
+      generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn(),
+      getTeams: vi.fn(),
+      getSpecContent: vi.fn().mockResolvedValue(`openapi: 3.0.3
+info:
+  title: Previous
+  version: 1.0.0
+paths:
+  /payments:
+    get:
+      responses:
+        '200': { description: OK }
+`),
+      getWorkspaceGitRepoUrl: vi.fn(),
+      injectTests: vi.fn(),
+      inviteRequesterToWorkspace: vi.fn(),
+      tagCollection: vi.fn(),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn()
+    };
+
+    await expect(
+      runBootstrap(createInputs({ workspaceId: 'ws-existing', specId: 'spec-existing' }), {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      })
+    ).rejects.toThrow('Existing Spec Hub spec version 3.0 cannot be updated with OpenAPI 3.1 content');
+
+    expect(postman.getSpecContent).toHaveBeenCalledWith('spec-existing');
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+    expect(postman.generateCollection).not.toHaveBeenCalled();
   });
 
   it('reuses existing workspace, spec, and collection ids from explicit inputs in version mode', async () => {
@@ -391,7 +1315,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const result = await runBootstrap(
       createInputs({
@@ -407,9 +1331,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -417,7 +1341,7 @@ describe('bootstrap action', () => {
     expect(postman.createWorkspace).not.toHaveBeenCalled();
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
-    expect(postman.updateSpec).toHaveBeenCalledWith('spec-existing', 'openapi: 3.1.0', 'ws-existing');
+    expect(postman.updateSpec).toHaveBeenCalledWith('spec-existing', VALID_SPEC_31, 'ws-existing');
     expect(result).toMatchObject({
       'workspace-id': 'ws-existing',
       'spec-id': 'spec-existing',
@@ -450,12 +1374,14 @@ describe('bootstrap action', () => {
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      getCollection: vi.fn().mockResolvedValue(createGeneratedContractCollection()),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
+      updateCollection: vi.fn().mockResolvedValue(undefined),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     await runBootstrap(
@@ -475,7 +1401,7 @@ describe('bootstrap action', () => {
         io: ioStub,
         postman,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -529,7 +1455,7 @@ describe('bootstrap action', () => {
       uploadSpec: vi.fn(),
       updateCollection: vi.fn().mockResolvedValue(undefined),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const result = await runBootstrap(
       createInputs({
@@ -544,9 +1470,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -602,7 +1528,7 @@ describe('bootstrap action', () => {
       uploadSpec: vi.fn(),
       updateCollection: vi.fn().mockResolvedValue(undefined),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -615,14 +1541,15 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
 
-    expect(postman.updateCollection).not.toHaveBeenCalled();
+    expect(postman.updateCollection).toHaveBeenCalledTimes(1);
+    expect(postman.updateCollection).toHaveBeenCalledWith('col-contract-new', expect.any(Object));
     expect(postman.deleteCollection).not.toHaveBeenCalled();
     expect(
       warnings.some((warning) => warning.includes('deleteCollection is unavailable'))
@@ -674,17 +1601,18 @@ describe('bootstrap action', () => {
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
-      updateCollection: vi.fn().mockRejectedValue(
-        new HttpError({
+      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (!uid.includes('stale')) return undefined;
+        throw new HttpError({
           method: 'PUT',
           url: 'https://api.getpostman.com/collections/stale',
           status: 404,
           statusText: 'Not Found',
           responseBody: '{"error":{"message":"missing"}}'
-        })
-      ),
+        });
+      }),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -700,9 +1628,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -716,6 +1644,221 @@ describe('bootstrap action', () => {
     expect(
       warnings.some((warning) =>
         warning.includes('Existing [Smoke] collection col-smoke-stale was not found during refresh')
+      )
+    ).toBe(true);
+  });
+
+  it('warns without failing when temporary collection cleanup fails after a successful refresh', async () => {
+    const { core, warnings } = createCoreStub();
+    const generatedIds = ['col-baseline-temp', 'col-smoke-temp', 'col-contract-temp'];
+    const fetchedCollections = new Map(
+      generatedIds.map((id, index) => [
+        id,
+        {
+          info: { name: ['[Baseline]', '[Smoke]', '[Contract]'][index] },
+          item: [{ name: 'GET /payments', request: { method: 'GET', url: { path: ['payments'] } } }]
+        }
+      ])
+    );
+    const postman = createRollbackPostman({
+      deleteCollection: vi.fn().mockRejectedValue(new Error('cleanup denied')),
+      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
+      updateCollection: vi.fn().mockResolvedValue(undefined)
+    });
+
+    const result = await runExistingSpecBootstrap(postman, {
+      core,
+      inputs: {
+        baselineCollectionId: 'col-baseline-existing',
+        smokeCollectionId: 'col-smoke-existing',
+        contractCollectionId: 'col-contract-existing',
+        collectionSyncMode: 'refresh'
+      }
+    });
+
+    expect(result).toMatchObject({
+      'baseline-collection-id': 'col-baseline-existing',
+      'smoke-collection-id': 'col-smoke-existing',
+      'contract-collection-id': 'col-contract-existing'
+    });
+    expect(postman.deleteCollection).toHaveBeenCalledTimes(3);
+    expect(
+      warnings.filter((warning) => warning.includes('Failed to delete temporary collection'))
+    ).toHaveLength(3);
+  });
+
+  it('attempts cleanup and records residual temporary collections when refresh fails after partial updates', async () => {
+    const { core, warnings } = createCoreStub();
+    const generatedIds = ['col-baseline-temp', 'col-smoke-temp', 'col-contract-temp'];
+    const fetchedCollections = new Map(
+      generatedIds.map((id, index) => [
+        id,
+        {
+          info: { name: ['[Baseline]', '[Smoke]', '[Contract]'][index] },
+          item: [{ name: 'GET /payments', request: { method: 'GET', url: { path: ['payments'] } } }]
+        }
+      ])
+    );
+    const postman = createRollbackPostman({
+      deleteCollection: vi.fn().mockResolvedValue(undefined),
+      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
+      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-contract-existing') {
+          throw new Error('contract refresh update failed');
+        }
+        return undefined;
+      })
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          baselineCollectionId: 'col-baseline-existing',
+          smokeCollectionId: 'col-smoke-existing',
+          contractCollectionId: 'col-contract-existing',
+          collectionSyncMode: 'refresh'
+        }
+      })
+    ).rejects.toThrow('contract refresh update failed');
+
+    expect(postman.deleteCollection).toHaveBeenCalledWith('col-baseline-temp');
+    expect(postman.deleteCollection).toHaveBeenCalledWith('col-smoke-temp');
+    expect(postman.deleteCollection).toHaveBeenCalledWith('col-contract-temp');
+    expect(
+      warnings.some((warning) =>
+        warning.includes('Refresh failed after temporary collection generation')
+        && warning.includes('col-contract-temp')
+      )
+    ).toBe(true);
+  });
+
+  it('rejects collection ID collisions after refresh fallback before tagging or linking', async () => {
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const generatedIds = ['col-shared', 'col-smoke-temp', 'col-contract-temp'];
+    const fetchedCollections = new Map(
+      generatedIds.map((id) => [
+        id,
+        {
+          info: { name: id },
+          item: [
+            {
+              name: 'Generated request',
+              request: {
+                method: 'GET',
+                url: { path: ['payments'] }
+              }
+            }
+          ]
+        }
+      ])
+    );
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      deleteCollection: vi.fn().mockResolvedValue(undefined),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
+      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn(),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn(),
+      uploadSpec: vi.fn(),
+      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
+        if (uid === 'col-baseline-stale') {
+          throw new HttpError({
+            method: 'PUT',
+            url: 'https://api.getpostman.com/collections/col-baseline-stale',
+            status: 404,
+            statusText: 'Not Found',
+            responseBody: '{"error":{"message":"missing"}}'
+          });
+        }
+        return undefined;
+      }),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+    };
+    const internalIntegration = {
+      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+      linkCollectionsToSpecification: vi.fn(),
+      syncCollection: vi.fn()
+    };
+
+    await expect(runBootstrap(createInputs({
+      workspaceId: 'ws-existing',
+      specId: 'spec-existing',
+      baselineCollectionId: 'col-baseline-stale',
+      smokeCollectionId: 'col-shared',
+      contractCollectionId: 'col-contract-existing',
+      collectionSyncMode: 'refresh'
+    }), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      internalIntegration,
+      postman: withContractHelpers(postman),
+      specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(VALID_SPEC_31, { status: 200 })
+      )
+    })).rejects.toThrow('CONTRACT_COLLECTION_ID_COLLISION');
+
+    expect(postman.injectTests).not.toHaveBeenCalled();
+    expect(postman.tagCollection).not.toHaveBeenCalled();
+    expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+    expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+  });
+
+  it('records completed tag side effects when a later tag fails', async () => {
+    const { core, warnings } = createCoreStub();
+    const postman = createRollbackPostman({
+      tagCollection: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('smoke tag rejected'))
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, { core })
+    ).rejects.toThrow('smoke tag rejected');
+
+    expect(postman.tagCollection).toHaveBeenCalledTimes(2);
+    expect(
+      warnings.some((warning) =>
+        warning.includes('Completed external side effects before failure')
+        && warning.includes('tagCollection(col-baseline-generated, generated-docs)')
+      )
+    ).toBe(true);
+  });
+
+  it('records completed link and sync side effects when later sync fails', async () => {
+    const { core, warnings } = createCoreStub();
+    const postman = createRollbackPostman();
+    const internalIntegration = createRollbackIntegration({
+      syncCollection: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('second sync failed'))
+    });
+
+    await expect(
+      runExistingSpecBootstrap(postman, { core, internalIntegration })
+    ).rejects.toThrow('second sync failed');
+
+    expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
+    expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(2);
+    expect(
+      warnings.some((warning) =>
+        warning.includes('Completed external side effects before failure')
+        && warning.includes('linkCollectionsToSpecification(spec-existing: col-baseline-generated, col-smoke-generated, col-contract-generated; syncExamples=true)')
+        && warning.includes('syncCollection(spec-existing, col-baseline-generated)')
       )
     ).toBe(true);
   });
@@ -737,7 +1880,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     mkdirSync('.postman', { recursive: true });
     writeFileSync(
@@ -767,16 +1910,16 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
 
     expect(postman.updateSpec).toHaveBeenCalledWith(
       'spec-v111',
-      'openapi: 3.1.0',
+      VALID_SPEC_31,
       'ws-existing'
     );
     expect(postman.uploadSpec).not.toHaveBeenCalled();
@@ -808,7 +1951,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-v111'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     await runBootstrap(
       createInputs({
@@ -822,9 +1965,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -851,7 +1994,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-v112'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const result = await runBootstrap(
       createInputs({
@@ -865,22 +2008,22 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
 
     expect(postman.updateSpec).not.toHaveBeenCalledWith(
       'spec-current',
-      'openapi: 3.1.0',
+      VALID_SPEC_31,
       'ws-existing'
     );
     expect(postman.uploadSpec).toHaveBeenCalledWith(
       'ws-existing',
       'core-payments v1.1.2',
-      'openapi: 3.1.0',
+      VALID_SPEC_31,
       '3.1'
     );
     expect(result['spec-id']).toBe('spec-v112');
@@ -903,7 +2046,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     mkdirSync('.postman', { recursive: true });
     writeFileSync(
@@ -927,9 +2070,9 @@ describe('bootstrap action', () => {
       core,
       exec: execStub,
       io: ioStub,
-      postman,
+      postman: withContractHelpers(postman),
       specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-        new Response('openapi: 3.1.0', { status: 200 })
+        new Response(VALID_SPEC_31, { status: 200 })
       )
       }
     );
@@ -937,7 +2080,7 @@ describe('bootstrap action', () => {
     expect(postman.createWorkspace).not.toHaveBeenCalled();
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
-    expect(postman.updateSpec).toHaveBeenCalledWith('spec-from-file', 'openapi: 3.1.0', 'ws-from-file');
+    expect(postman.updateSpec).toHaveBeenCalledWith('spec-from-file', VALID_SPEC_31, 'ws-from-file');
     expect(result).toMatchObject({
       'workspace-id': 'ws-from-file',
       'spec-id': 'spec-from-file',
@@ -974,15 +2117,15 @@ describe('bootstrap action', () => {
         tagCollection: vi.fn().mockResolvedValue(undefined),
         uploadSpec: vi.fn().mockResolvedValue('spec-123'),
         updateSpec: vi.fn().mockResolvedValue(undefined),
-        getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
       };
       const result = await runBootstrap(createInputs(), {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       });
 
@@ -1014,7 +2157,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -1023,9 +2166,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -1056,7 +2199,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockRejectedValue(new Error('gateway 404')),
@@ -1071,9 +2214,9 @@ describe('bootstrap action', () => {
         exec: execStub,
         io: ioStub,
         internalIntegration,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -1113,7 +2256,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
@@ -1128,9 +2271,9 @@ describe('bootstrap action', () => {
         exec: execStub,
         io: ioStub,
         internalIntegration,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -1162,7 +2305,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -1171,9 +2314,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -1205,7 +2348,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-v2'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const resources = {
       workspace: { id: 'ws-current' },
@@ -1230,9 +2373,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -1269,7 +2412,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-v2'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -1282,9 +2425,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -1316,16 +2459,16 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     const result = await runBootstrap(createInputs(), {
       core,
       exec: execStub,
       io: ioStub,
-      postman,
+      postman: withContractHelpers(postman),
       specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-        new Response('openapi: 3.1.0', { status: 200 })
+        new Response(VALID_SPEC_31, { status: 200 })
       )
     });
 
@@ -1365,9 +2508,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}', {
+          new Response(VALID_SPEC_31, {
             status: 200
           })
         )
@@ -1382,7 +2525,7 @@ describe('bootstrap action', () => {
     );
   });
 
-  it('uses explicit openapi-version override rather than auto-detecting from spec content', async () => {
+  it('rejects explicit openapi-version when it conflicts with spec content', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -1405,28 +2548,24 @@ describe('bootstrap action', () => {
       getSpecContent: vi.fn().mockResolvedValue(undefined)
     };
 
-    // Spec says 3.1 but explicit override is 3.0 — override wins.
-    await runBootstrap(
-      createInputs({ openapiVersion: '3.0' }),
-      {
-        core,
-        exec: execStub,
-        io: ioStub,
-        postman,
-        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0\ninfo:\n  title: Test\n  version: 1.0.0\npaths: {}', {
-            status: 200
-          })
-        )
-      }
-    );
+    await expect(
+      runBootstrap(
+        createInputs({ openapiVersion: '3.0' }),
+        {
+          core,
+          exec: execStub,
+          io: ioStub,
+          postman: withContractHelpers(postman),
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response(VALID_SPEC_31, {
+              status: 200
+            })
+          )
+        }
+      )
+    ).rejects.toThrow('openapi-version input 3.0 does not match spec content OpenAPI 3.1');
 
-    expect(postman.uploadSpec).toHaveBeenCalledWith(
-      'ws-123',
-      'core-payments',
-      expect.any(String),
-      '3.0'
-    );
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
   });
 
   it('normalizeSpecDocument adds summary from operationId or METHOD+path', () => {
@@ -1553,7 +2692,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
 
     await runBootstrap(
@@ -1562,9 +2701,9 @@ describe('bootstrap action', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response('openapi: 3.1.0', { status: 200 })
+          new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
@@ -1626,10 +2765,10 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response('openapi: 3.1.0', { status: 200 })
+      new Response(VALID_SPEC_31, { status: 200 })
     );
 
     await expect(
@@ -1637,7 +2776,7 @@ describe('lintSpecViaCli', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher
       })
     ).rejects.toThrow('Org-mode account detected');
@@ -1662,17 +2801,17 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response('openapi: 3.1.0', { status: 200 })
+      new Response(VALID_SPEC_31, { status: 200 })
     );
 
     await runBootstrap(createInputs({ workspaceTeamId: '132319' }), {
       core,
       exec: execStub,
       io: ioStub,
-      postman,
+      postman: withContractHelpers(postman),
       specFetcher
     });
 
@@ -1704,17 +2843,17 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response('openapi: 3.1.0', { status: 200 })
+      new Response(VALID_SPEC_31, { status: 200 })
     );
 
     await runBootstrap(createInputs({ workspaceId: 'ws-existing' }), {
       core,
       exec: execStub,
       io: ioStub,
-      postman,
+      postman: withContractHelpers(postman),
       specFetcher
     });
 
@@ -1741,17 +2880,17 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response('openapi: 3.1.0', { status: 200 })
+      new Response(VALID_SPEC_31, { status: 200 })
     );
 
     await runBootstrap(createInputs(), {
       core,
       exec: execStub,
       io: ioStub,
-      postman,
+      postman: withContractHelpers(postman),
       specFetcher
     });
 
@@ -1776,10 +2915,10 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response('openapi: 3.1.0', { status: 200 })
+      new Response(VALID_SPEC_31, { status: 200 })
     );
 
     await expect(
@@ -1787,7 +2926,7 @@ describe('lintSpecViaCli', () => {
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher
       })
     ).rejects.toThrow('workspace-team-id must be a numeric sub-team ID');

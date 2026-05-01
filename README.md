@@ -141,6 +141,76 @@ jobs:
 
 If you want the action to discover prior bootstrap state automatically on reruns, commit `.postman/resources.yaml` and run the action on the ref whose state you want to reuse.
 
+## Dynamic contract tests
+
+Dynamic contract tests harden the generated `[Contract]` collection against the resolved OpenAPI 3.0/3.1 document before any durable contract collection is overwritten.
+
+Scope:
+
+- Safely fetch and bundle HTTPS OpenAPI specs and HTTPS external refs.
+- Validate the bundled OpenAPI document with external and file resolution disabled during validation.
+- Match generated collection requests by method and canonical server/path candidates only; suffix path matching is not used.
+- Require one generated request for every eligible `paths` operation.
+- Validate response status codes, body presence, `Content-Type`, JSON response schemas, text/string schemas, and simple response header schemas.
+- Perform static checks for required non-security query/header parameters and required request bodies.
+
+Non-goals and limitations:
+
+- Swagger 2.0, OAS webhooks, callbacks, and arbitrary user-authored collection requests are not fully validated.
+- Security/auth requirements are not proven at runtime. API-key parameters derived from `securitySchemes` are warned as `CONTRACT_SECURITY_NOT_VALIDATED`.
+- Complex non-JSON object schemas, header `content`, unsupported schema dialects, unsupported keywords, and discriminator-heavy schemas fail closed instead of generating weak tests.
+- Generated scripts target Newman/Postman runtime support for ES2020-compatible JavaScript and use compiled schemasafe IIFE validators. They do not use `pm.response.to.have.jsonSchema`, `eval`, or `new Function`.
+
+OpenAPI semantics:
+
+- OAS 3.0 `$ref` siblings are ignored, `nullable` is converted to JSON Schema unions, boolean exclusive min/max is converted, and response `writeOnly` properties are removed from response validation.
+- OAS 3.1 `$ref` siblings are applied, the default dialect is JSON Schema 2020-12, supported `$schema` values are preserved, and unsupported custom dialects fail closed.
+
+Security and size limits:
+
+- Only HTTPS spec URLs and external refs are allowed.
+- Localhost, loopback, link-local, RFC1918, RFC6598, IANA special-use IPv4/IPv6 ranges, IPv4-mapped IPv6, `.local`, and `.internal` destinations are blocked.
+- DNS results are vetted and pinned into the HTTPS socket; redirects are fully revalidated.
+- Limits: 5 redirects, 100 external refs, ref depth 20, 25 MiB per fetched resource, and 25 MiB total fetched bytes.
+- Generated request scripts warn above 256 KiB and fail above 900 KiB; instrumented contract collection uploads fail above 4 MiB before upload. The bundled action is also reviewed for dependency-driven size growth.
+
+Rollback behavior:
+
+- Spec preflight runs before Postman mutations.
+- For existing spec updates, the previous normalized spec content is fetched and hashed before update.
+- If linting, collection generation, instrumentation, tagging, or linking fails after an existing spec update, the action best-effort restores the previous spec content.
+- If rollback fails, the action emits `CONTRACT_SPEC_ROLLBACK_FAILED` with the previous content SHA-256 for manual restoration.
+- Refresh mode stages generated baseline, smoke, and contract collections and instruments the temporary contract collection before updating any durable tracked collection. If a durable refresh update fails after another durable collection was updated, the action best-effort restores previously updated collection snapshots. Collection mutations after the refresh stage, such as later tagging/linking side effects, are not automatically rolled back; rerun the action after resolving the failure to reconcile generated collections with the restored spec.
+
+| Error code | Meaning | Remediation |
+| --- | --- | --- |
+| `CONTRACT_SPEC_FETCH_BLOCKED` | Spec URL, ref URL, DNS result, redirect, or socket destination was not allowed. | Use public HTTPS spec/ref URLs that do not resolve to private or local networks. |
+| `CONTRACT_SPEC_FETCH_FAILED` | Allowed HTTPS fetch failed or redirected too many times. | Check availability, status codes, and redirect chains. |
+| `CONTRACT_REF_LIMIT_EXCEEDED` | External ref count exceeded the configured limit. | Reduce external ref fan-out or bundle the spec upstream. |
+| `CONTRACT_REF_DEPTH_EXCEEDED` | Ref nesting exceeded the configured limit. | Flatten recursive/deep ref chains. |
+| `CONTRACT_REF_SIZE_EXCEEDED` | A fetched resource or total fetched bytes exceeded limits. | Reduce spec/ref size or pre-bundle the document. |
+| `CONTRACT_SPEC_PARSE_FAILED` | The fetched document was not valid JSON/YAML object content. | Fix the source document syntax. |
+| `CONTRACT_SPEC_VALIDATION_FAILED` | The bundled document failed OpenAPI validation. | Fix OpenAPI validation errors. |
+| `CONTRACT_UNSUPPORTED_OPENAPI_VERSION` | The document was not OpenAPI 3.0 or 3.1. | Provide an OpenAPI 3.0/3.1 document. |
+| `CONTRACT_NO_ELIGIBLE_OPERATIONS` | No eligible `paths` operations with responses were found. | Add path operations with responses. |
+| `CONTRACT_OPERATION_NO_RESPONSES` | A `paths` operation had no response definitions. | Add at least one OpenAPI response to each path operation. |
+| `CONTRACT_UNRESOLVED_REF` | A ref remained unresolved after secure bundling. | Fix the ref target or make the external ref HTTPS-accessible. |
+| `CONTRACT_UNSUPPORTED_SCHEMA_DIALECT` | A schema declared an unsupported JSON Schema dialect. | Use draft-07 or 2020-12-compatible schemas. |
+| `CONTRACT_SCHEMA_COMPILE_FAILED` | schemasafe could not compile a response/header schema. | Simplify or correct the unsupported schema. |
+| `CONTRACT_STATIC_REQUEST_CHECK_FAILED` | Generated request missed a required non-security parameter or body. | Adjust generation options or the spec so generated requests include required shape. |
+| `CONTRACT_SECURITY_NOT_VALIDATED` | Security requirements were detected but dynamic tests cannot prove auth at runtime. | Run dedicated auth tests and review generated requests for required credentials. |
+| `CONTRACT_WEBHOOKS_NOT_VALIDATED` | OpenAPI webhooks were present but are not included in dynamic contract coverage. | Validate webhook behavior separately or model required behavior under `paths`. |
+| `CONTRACT_CALLBACKS_NOT_VALIDATED` | Operation callbacks were present but are not included in dynamic contract coverage. | Validate callback behavior separately or add dedicated tests. |
+| `CONTRACT_DUPLICATE_OPERATION_MATCH` | Multiple OpenAPI operations share the same canonical request mapping candidate. | Disambiguate paths, server prefixes, or templated routes. |
+| `CONTRACT_DUPLICATE_OPERATION_REQUEST` | More than one generated request mapped to the same contract operation. | Disambiguate paths/operations or generated requests. |
+| `CONTRACT_OPERATION_COVERAGE_FAILED` | Generated contract collection did not cover every eligible operation. | Regenerate the collection or fix operation paths. |
+| `CONTRACT_FORBIDDEN_SCRIPT_CONSTRUCT` | Generated script included a forbidden dynamic validation construct. | Report the schema that triggered unsafe generation. |
+| `CONTRACT_SCRIPT_SIZE_EXCEEDED` | A generated request test script exceeded the per-script size gate. | Reduce schema complexity or split the API. |
+| `CONTRACT_COLLECTION_SIZE_EXCEEDED` | Instrumented contract collection exceeded the size gate. | Reduce schema/operation count or split the API. |
+| `CONTRACT_COLLECTION_ID_COLLISION` | Baseline, smoke, and contract IDs were not pairwise distinct. | Pass distinct collection IDs or clear stale IDs. |
+| `CONTRACT_PLAN_MISSING` | Contract instrumentation ran without a preflight-generated contract plan. | Rerun with dynamic contract preflight enabled and report the failure if it persists. |
+| `CONTRACT_SPEC_ROLLBACK_FAILED` | Best-effort previous spec restoration failed after a later error. | Restore the previous spec content manually using the emitted SHA-256. |
+
 ## CLI Usage (Non-GitHub CI)
 
 The CLI is available for GitLab CI, Bitbucket Pipelines, Azure DevOps, and other CI systems.

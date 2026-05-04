@@ -12,18 +12,20 @@ Thank you for your interest in contributing. This guide covers the workflow and 
 
 ```bash
 npm ci              # Install dependencies
-npm test            # Run tests (vitest)
-npm run typecheck   # TypeScript type checking
 npm run lint        # ESLint
-npm run build       # Bundle to dist/ (esbuild)
+npm run typecheck   # TypeScript type checking
+npm test            # Run tests (vitest)
+npm run check:dist  # Rebuild and verify committed dist/ output
+actionlint          # Validate GitHub workflow syntax, if installed
 ```
 
 ## Before Submitting a PR
 
-- [ ] `npm test` passes
-- [ ] `npm run typecheck` passes
 - [ ] `npm run lint` passes
-- [ ] `npm run build` has been run and `dist/` is updated
+- [ ] `npm run typecheck` passes
+- [ ] `npm test` passes
+- [ ] `npm run check:dist` passes and `dist/` is updated
+- [ ] `actionlint` passes for workflow changes
 - [ ] Changes are focused and address a single concern
 - [ ] New functionality includes tests
 

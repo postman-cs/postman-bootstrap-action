@@ -57,6 +57,7 @@ describe('open-alpha action contract', () => {
     ]);
     expect(actionManifest.inputs['collection-sync-mode'].default).toBe('refresh');
     expect(resolveInputs({}).collectionSyncMode).toBe('refresh');
+    expect(resolveInputs({ INPUT_COLLECTION_SYNC_MODE: 'reuse' }).collectionSyncMode).toBe('refresh');
 
     expect(openAlphaActionContract.inputs['spec-sync-mode'].default).toBe('update');
     expect(openAlphaActionContract.inputs['spec-sync-mode'].allowedValues).toEqual([
@@ -66,6 +67,24 @@ describe('open-alpha action contract', () => {
     expect(actionManifest.inputs['spec-sync-mode'].default).toBe('update');
     expect(resolveInputs({}).specSyncMode).toBe('update');
 
+  });
+
+  it('preserves legacy boolean aliases while rejecting unknown values', () => {
+    expect(resolveInputs({ INPUT_SYNC_EXAMPLES: '1' }).syncExamples).toBe(true);
+    expect(resolveInputs({ INPUT_SYNC_EXAMPLES: 'yes' }).syncExamples).toBe(true);
+    expect(resolveInputs({ INPUT_SYNC_EXAMPLES: 'on' }).syncExamples).toBe(true);
+    expect(resolveInputs({ INPUT_SYNC_EXAMPLES: '0' }).syncExamples).toBe(false);
+    expect(resolveInputs({ INPUT_SYNC_EXAMPLES: 'no' }).syncExamples).toBe(false);
+    expect(resolveInputs({ INPUT_SYNC_EXAMPLES: 'off' }).syncExamples).toBe(false);
+    expect(() => resolveInputs({ INPUT_SYNC_EXAMPLES: 'sometimes' }))
+      .toThrow(/sync-examples must be a boolean/);
+  });
+
+  it('rejects unsupported lifecycle control values instead of silently falling back', () => {
+    expect(() => resolveInputs({ INPUT_COLLECTION_SYNC_MODE: 'unsupported' }))
+      .toThrow(/Unsupported collection-sync-mode/);
+    expect(() => resolveInputs({ INPUT_SPEC_SYNC_MODE: 'reuse' }))
+      .toThrow(/Unsupported spec-sync-mode/);
   });
 
   it('defaults collection generation options in contract, manifest, and runtime', () => {
@@ -98,6 +117,28 @@ describe('open-alpha action contract', () => {
         'INPUT_SPEC_URL': 'http://example.com/spec.yaml'
       })
     ).toThrow(/spec-url must be a valid HTTPS URL/);
+  });
+
+  it('redacts credential-bearing spec URL details in validation errors', () => {
+    expect(() =>
+      resolveInputs({
+        'INPUT_SPEC_URL': 'http://user:pass@example.com/spec.yaml?token=secret#frag'
+      })
+    ).toThrow('spec-url must be a valid HTTPS URL, got: http://example.com/spec.yaml');
+
+    let thrown: unknown;
+    try {
+      resolveInputs({
+        'INPUT_SPEC_URL': 'https://example .com/spec.yaml?token=secret#frag'
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).toContain('[invalid OpenAPI URL]');
+    expect(message).not.toContain('token=secret');
+    expect(message).not.toContain('#frag');
   });
 
   it('defaults openapi-version to empty string in contract, manifest, and runtime (auto-detect)', () => {

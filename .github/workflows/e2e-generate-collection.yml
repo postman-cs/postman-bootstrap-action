@@ -51,7 +51,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
 
       - name: Build action from source
@@ -62,7 +62,7 @@ jobs:
         uses: ./
         with:
           project-name: 'e2e-${{ matrix.folder-strategy }}-${{ github.run_id }}'
-          spec-url: 'https://raw.githubusercontent.com/andrewpostymt/postman-bootstrap-action/${{ github.ref_name }}/tests/fixtures/${{ matrix.spec-fixture }}'
+          spec-url: 'https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/tests/fixtures/${{ matrix.spec-fixture }}'
           postman-api-key: ${{ secrets.SMOKE_NON_ORG_API_KEY }}
           folder-strategy: ${{ matrix.folder-strategy }}
           nested-folder-hierarchy: ${{ matrix.nested-folder-hierarchy }}

@@ -40,7 +40,7 @@ If you do not set those inputs, the action refreshes collection pointers from th
 - **Repository side is async:** Later stages may fail due to repo permissions, branch protection, or pending approval. Bootstrap completion is not blocked by these downstream concerns.
 - **Idempotent reruns:** If a later stage fails, subsequent reruns of the action will reuse existing Postman assets (via `workspace-id`, `spec-id`, collection IDs) and focus on the failed stage without recreating everything.
 
-**When bootstrap fails:** The action stops and does not proceed to repo sync. Postman assets are left in the state they reached before the failure. Clear error messages identify which bootstrap step failed (e.g. spec lint, governance assignment, collection generation).
+**When bootstrap fails:** The action stops and does not proceed to repo sync. Postman assets are left in the state they reached before the failure. Clear error messages identify which required bootstrap step failed (for example, spec lint or collection generation). Optional workspace enrichment steps, such as governance assignment and requester invitation, warn and continue so created workspaces and collections remain usable.
 
 This layered design means customers can:
 1. Verify Postman workspace health independently.
@@ -145,8 +145,10 @@ GitHub Actions users should continue using the `action.yml` interface.
 Install globally:
 
 ```bash
-npm install -g postman-bootstrap-action
+npm install -g @postman-cse/onboarding-bootstrap
 ```
+
+The CLI package supports Node.js 20+. The examples below use Node.js 24 to match the GitHub Action runtime.
 
 Basic usage:
 
@@ -170,7 +172,7 @@ Example GitLab CI job:
 bootstrap:
   image: node:24
   script:
-    - npm install -g postman-bootstrap-action
+    - npm install -g @postman-cse/onboarding-bootstrap
     - postman-bootstrap --project-name core-payments --spec-url "$SPEC_URL" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
   artifacts:
     paths:
@@ -186,7 +188,7 @@ pipelines:
     - step:
         image: node:24
         script:
-          - npm install -g postman-bootstrap-action
+          - npm install -g @postman-cse/onboarding-bootstrap
           - postman-bootstrap --project-name core-payments --spec-url "$SPEC_URL" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
         artifacts:
           - bootstrap-result.json
@@ -199,9 +201,9 @@ Example Azure DevOps job:
 steps:
   - task: NodeTool@0
     inputs:
-      versionSpec: '20.x'
+      versionSpec: '24.x'
   - script: |
-      npm install -g postman-bootstrap-action
+      npm install -g @postman-cse/onboarding-bootstrap
       postman-bootstrap --project-name core-payments --spec-url "$(SPEC_URL)" --postman-api-key "$(POSTMAN_API_KEY)" --postman-access-token "$(POSTMAN_ACCESS_TOKEN)" --result-json bootstrap-result.json --dotenv-path bootstrap.env
     displayName: Bootstrap Postman assets
   - publish: bootstrap-result.json
@@ -237,7 +239,7 @@ steps:
 
 ### Collection sync
 
-- `reuse`: existing collection IDs are reused when available.
+- `reuse`: legacy alias for `refresh`; existing collection IDs are reused when available and updated from the resolved spec.
 - `refresh`: baseline, smoke, and contract collections are regenerated from the resolved spec and become the current/default collection pointers.
 - `version`: a release-scoped collection set is created or reused from the checked-out ref's state when available.
 
@@ -260,7 +262,7 @@ If versioned sync is requested and no usable label can be derived, the run fails
 
 Current Postman asset state lives in `.postman/resources.yaml`.
 
-- `update` and `reuse` modes resolve current-state mappings from the checked-out ref.
+- `update`, `refresh`, and legacy `reuse` modes resolve current-state mappings from the checked-out ref.
 - `version` mode reuses only the checked-out ref's mappings; release history lives in git history and tags, not in a separate manifest file or repository variables.
 
 ### Cloud spec-to-collection syncing

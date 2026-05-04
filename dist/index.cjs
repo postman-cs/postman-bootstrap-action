@@ -30147,24 +30147,60 @@ function requireInput(actionCore, name) {
 function optionalInput(actionCore, name) {
   return normalizeInputValue(actionCore.getInput(name));
 }
-function parseBooleanInput(value, defaultValue) {
+function parseBooleanInput(name, value, defaultValue) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized) return defaultValue;
   if (["true", "1", "yes", "on"].includes(normalized)) return true;
   if (["false", "0", "no", "off"].includes(normalized)) return false;
-  return defaultValue;
+  throw new Error(`${name} must be a boolean value: true or false`);
 }
 function parseCollectionSyncMode(value) {
-  if (value === "version") {
-    return value;
+  const v = value?.trim() || openAlphaActionContract.inputs["collection-sync-mode"].default || "refresh";
+  if (v === "reuse") {
+    return "refresh";
   }
-  return "refresh";
+  const allowed = openAlphaActionContract.inputs["collection-sync-mode"].allowedValues ?? [];
+  if (allowed.includes(v)) {
+    return v;
+  }
+  throw new Error(`Unsupported collection-sync-mode "${v}". Supported values: ${allowed.join(", ")}`);
 }
 function parseSpecSyncMode(value) {
-  if (value === "version") {
-    return value;
+  const v = value?.trim() || openAlphaActionContract.inputs["spec-sync-mode"].default || "update";
+  const allowed = openAlphaActionContract.inputs["spec-sync-mode"].allowedValues ?? [];
+  if (allowed.includes(v)) {
+    return v;
   }
-  return "update";
+  throw new Error(`Unsupported spec-sync-mode "${v}". Supported values: ${allowed.join(", ")}`);
+}
+function parseEnumInput(name, value, defaultValue) {
+  const allowed = openAlphaActionContract.inputs[name].allowedValues ?? [];
+  const v = value?.trim() || defaultValue;
+  if (allowed.includes(v)) {
+    return v;
+  }
+  throw new Error(`Unsupported ${name} "${v}". Supported values: ${allowed.join(", ")}`);
+}
+function parseWorkspaceTeamId(value) {
+  if (!value) {
+    return void 0;
+  }
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`workspace-team-id must be a numeric sub-team ID, got: ${value}`);
+  }
+  return value;
+}
+function parseGovernanceMappingJson(value) {
+  const mapping = value ?? openAlphaActionContract.inputs["governance-mapping-json"].default ?? "{}";
+  try {
+    const parsed = JSON.parse(mapping);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("not an object");
+    }
+    return mapping;
+  } catch (error) {
+    throw new Error("governance-mapping-json must be valid JSON object content", { cause: error });
+  }
 }
 function resolveOpenapiVersion(value) {
   const allowed = openAlphaActionContract.inputs["openapi-version"].allowedValues ?? [];
@@ -30175,6 +30211,18 @@ function resolveOpenapiVersion(value) {
     );
   }
   return v;
+}
+function sanitizeUrlForLog(value) {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "[invalid OpenAPI URL]";
+  }
 }
 function resolveInputs(env = process.env) {
   const repoContext = detectRepoContext(
@@ -30198,7 +30246,7 @@ function resolveInputs(env = process.env) {
         throw new Error("not https");
       }
     } catch (error) {
-      throw new Error(`spec-url must be a valid HTTPS URL, got: ${specUrl}`, { cause: error });
+      throw new Error(`spec-url must be a valid HTTPS URL, got: ${sanitizeUrlForLog(specUrl)}`, { cause: error });
     }
   }
   return {
@@ -30208,7 +30256,7 @@ function resolveInputs(env = process.env) {
     baselineCollectionId: getInput("baseline-collection-id", env),
     smokeCollectionId: getInput("smoke-collection-id", env),
     contractCollectionId: getInput("contract-collection-id", env),
-    syncExamples: parseBooleanInput(getInput("sync-examples", env), true),
+    syncExamples: parseBooleanInput("sync-examples", getInput("sync-examples", env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput("collection-sync-mode", env)),
     specSyncMode: parseSpecSyncMode(getInput("spec-sync-mode", env)),
     releaseLabel: getInput("release-label", env),
@@ -30216,18 +30264,18 @@ function resolveInputs(env = process.env) {
     domainCode: getInput("domain-code", env),
     requesterEmail: getInput("requester-email", env),
     workspaceAdminUserIds: getInput("workspace-admin-user-ids", env) || env.WORKSPACE_ADMIN_USER_IDS || "",
-    workspaceTeamId: getInput("workspace-team-id", env) || env.POSTMAN_WORKSPACE_TEAM_ID,
+    workspaceTeamId: parseWorkspaceTeamId(getInput("workspace-team-id", env) || env.POSTMAN_WORKSPACE_TEAM_ID),
     teamId: getInput("team-id", env) || env.POSTMAN_TEAM_ID || "",
     repoUrl: repoContext.repoUrl || "",
     specUrl,
     openapiVersion: resolveOpenapiVersion(getInput("openapi-version", env)),
-    governanceMappingJson: getInput("governance-mapping-json", env) ?? openAlphaActionContract.inputs["governance-mapping-json"].default ?? "{}",
+    governanceMappingJson: parseGovernanceMappingJson(getInput("governance-mapping-json", env)),
     postmanApiKey: getInput("postman-api-key", env) ?? "",
     postmanAccessToken: getInput("postman-access-token", env),
     integrationBackend,
-    folderStrategy: getInput("folder-strategy", env) ?? openAlphaActionContract.inputs["folder-strategy"].default ?? "Paths",
-    nestedFolderHierarchy: parseBooleanInput(getInput("nested-folder-hierarchy", env), false),
-    requestNameSource: getInput("request-name-source", env) ?? openAlphaActionContract.inputs["request-name-source"].default ?? "Fallback",
+    folderStrategy: parseEnumInput("folder-strategy", getInput("folder-strategy", env), "Paths"),
+    nestedFolderHierarchy: parseBooleanInput("nested-folder-hierarchy", getInput("nested-folder-hierarchy", env), false),
+    requestNameSource: parseEnumInput("request-name-source", getInput("request-name-source", env), "Fallback"),
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -30734,7 +30782,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     }
   }
   if (specId) {
-    dependencies.core.info(`Updating existing spec ${specId} from ${inputs.specUrl}`);
+    dependencies.core.info(`Updating existing spec ${specId} from ${sanitizeUrlForLog(inputs.specUrl)}`);
   }
   const isSpecUpdate = Boolean(specId);
   let previousSpecContent;

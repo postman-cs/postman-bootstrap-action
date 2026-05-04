@@ -167,28 +167,67 @@ function optionalInput(
   return normalizeInputValue(actionCore.getInput(name));
 }
 
-function parseBooleanInput(value: string | undefined, defaultValue: boolean): boolean {
+function parseBooleanInput(name: string, value: string | undefined, defaultValue: boolean): boolean {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return defaultValue;
   if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
   if (['false', '0', 'no', 'off'].includes(normalized)) return false;
-  return defaultValue;
+  throw new Error(`${name} must be a boolean value: true or false`);
 }
 
 function parseCollectionSyncMode(
   value: string | undefined
 ): 'refresh' | 'version' {
-  if (value === 'version') {
-    return value;
+  const v = value?.trim() || openAlphaActionContract.inputs['collection-sync-mode'].default || 'refresh';
+  if (v === 'reuse') {
+    return 'refresh';
   }
-  return 'refresh';
+  const allowed = openAlphaActionContract.inputs['collection-sync-mode'].allowedValues ?? [];
+  if (allowed.includes(v)) {
+    return v as 'refresh' | 'version';
+  }
+  throw new Error(`Unsupported collection-sync-mode "${v}". Supported values: ${allowed.join(', ')}`);
 }
 
 function parseSpecSyncMode(value: string | undefined): 'update' | 'version' {
-  if (value === 'version') {
-    return value;
+  const v = value?.trim() || openAlphaActionContract.inputs['spec-sync-mode'].default || 'update';
+  const allowed = openAlphaActionContract.inputs['spec-sync-mode'].allowedValues ?? [];
+  if (allowed.includes(v)) {
+    return v as 'update' | 'version';
   }
-  return 'update';
+  throw new Error(`Unsupported spec-sync-mode "${v}". Supported values: ${allowed.join(', ')}`);
+}
+
+function parseEnumInput<T extends string>(name: string, value: string | undefined, defaultValue: T): T {
+  const allowed = openAlphaActionContract.inputs[name].allowedValues ?? [];
+  const v = value?.trim() || defaultValue;
+  if (allowed.includes(v)) {
+    return v as T;
+  }
+  throw new Error(`Unsupported ${name} "${v}". Supported values: ${allowed.join(', ')}`);
+}
+
+function parseWorkspaceTeamId(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`workspace-team-id must be a numeric sub-team ID, got: ${value}`);
+  }
+  return value;
+}
+
+function parseGovernanceMappingJson(value: string | undefined): string {
+  const mapping = value ?? openAlphaActionContract.inputs['governance-mapping-json'].default ?? '{}';
+  try {
+    const parsed = JSON.parse(mapping) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('not an object');
+    }
+    return mapping;
+  } catch (error) {
+    throw new Error('governance-mapping-json must be valid JSON object content', { cause: error });
+  }
 }
 
 function resolveOpenapiVersion(value: string | undefined): string {
@@ -201,6 +240,19 @@ function resolveOpenapiVersion(value: string | undefined): string {
   }
   // Empty string is intentional — signals auto-detect from spec content at runtime.
   return v;
+}
+
+function sanitizeUrlForLog(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '[invalid OpenAPI URL]';
+  }
 }
 
 export function resolveInputs(
@@ -234,7 +286,7 @@ export function resolveInputs(
         throw new Error('not https');
       }
     } catch (error) {
-      throw new Error(`spec-url must be a valid HTTPS URL, got: ${specUrl}`, { cause: error });
+      throw new Error(`spec-url must be a valid HTTPS URL, got: ${sanitizeUrlForLog(specUrl)}`, { cause: error });
     }
   }
 
@@ -248,7 +300,7 @@ export function resolveInputs(
     baselineCollectionId: getInput('baseline-collection-id', env),
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
-    syncExamples: parseBooleanInput(getInput('sync-examples', env), true),
+    syncExamples: parseBooleanInput('sync-examples', getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
     releaseLabel: getInput('release-label', env),
@@ -257,27 +309,20 @@ export function resolveInputs(
     requesterEmail: getInput('requester-email', env),
     workspaceAdminUserIds:
       getInput('workspace-admin-user-ids', env) || env.WORKSPACE_ADMIN_USER_IDS || '',
-    workspaceTeamId: getInput('workspace-team-id', env) || env.POSTMAN_WORKSPACE_TEAM_ID,
+    workspaceTeamId: parseWorkspaceTeamId(getInput('workspace-team-id', env) || env.POSTMAN_WORKSPACE_TEAM_ID),
     teamId: getInput('team-id', env) || env.POSTMAN_TEAM_ID || '',
     repoUrl: repoContext.repoUrl || '',
     specUrl,
     openapiVersion: resolveOpenapiVersion(getInput('openapi-version', env)),
-    governanceMappingJson:
-      getInput('governance-mapping-json', env) ??
-      openAlphaActionContract.inputs['governance-mapping-json'].default ??
-      '{}',
+    governanceMappingJson: parseGovernanceMappingJson(getInput('governance-mapping-json', env)),
     postmanApiKey: getInput('postman-api-key', env) ?? '',
     postmanAccessToken: getInput('postman-access-token', env),
     integrationBackend,
     folderStrategy:
-      getInput('folder-strategy', env) ??
-      openAlphaActionContract.inputs['folder-strategy'].default ??
-      'Paths',
-    nestedFolderHierarchy: parseBooleanInput(getInput('nested-folder-hierarchy', env), false),
+      parseEnumInput('folder-strategy', getInput('folder-strategy', env), 'Paths'),
+    nestedFolderHierarchy: parseBooleanInput('nested-folder-hierarchy', getInput('nested-folder-hierarchy', env), false),
     requestNameSource:
-      getInput('request-name-source', env) ??
-      openAlphaActionContract.inputs['request-name-source'].default ??
-      'Fallback',
+      parseEnumInput('request-name-source', getInput('request-name-source', env), 'Fallback'),
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -915,7 +960,7 @@ export async function runBootstrap(
   }
 
   if (specId) {
-    dependencies.core.info(`Updating existing spec ${specId} from ${inputs.specUrl}`);
+    dependencies.core.info(`Updating existing spec ${specId} from ${sanitizeUrlForLog(inputs.specUrl)}`);
   }
 
   const isSpecUpdate = Boolean(specId);

@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+import { existsSync, lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
@@ -69,6 +71,34 @@ function readFlag(argv: string[], name: string): string | undefined {
 function normalizeCliFlag(name: string): string {
   return `INPUT_${name.replace(/-/g, '_').toUpperCase()}`;
 }
+
+const cliInputNames = [
+  'project-name',
+  'spec-url',
+  'postman-api-key',
+  'postman-access-token',
+  'workspace-id',
+  'spec-id',
+  'baseline-collection-id',
+  'smoke-collection-id',
+  'contract-collection-id',
+  'sync-examples',
+  'collection-sync-mode',
+  'spec-sync-mode',
+  'release-label',
+  'domain',
+  'domain-code',
+  'requester-email',
+  'workspace-admin-user-ids',
+  'governance-mapping-json',
+  'integration-backend',
+  'folder-strategy',
+  'nested-folder-hierarchy',
+  'request-name-source',
+  'workspace-team-id',
+  'repo-url',
+  'openapi-version'
+] as const;
 
 const execFileAsync = promisify(execFile);
 
@@ -181,36 +211,8 @@ export function createCliDependencies(
 }
 
 export function parseCliArgs(argv: string[], env: NodeJS.ProcessEnv = process.env): CliConfig {
-  const inputNames = [
-    'project-name',
-    'spec-url',
-    'postman-api-key',
-    'postman-access-token',
-    'workspace-id',
-    'spec-id',
-    'baseline-collection-id',
-    'smoke-collection-id',
-    'contract-collection-id',
-    'sync-examples',
-    'collection-sync-mode',
-    'spec-sync-mode',
-    'release-label',
-    'domain',
-    'domain-code',
-    'requester-email',
-    'workspace-admin-user-ids',
-    'governance-mapping-json',
-    'integration-backend',
-    'folder-strategy',
-    'nested-folder-hierarchy',
-    'request-name-source',
-    'team-id',
-    'workspace-team-id',
-    'repo-url'
-  ];
-
   const inputEnv: NodeJS.ProcessEnv = { ...env };
-  for (const name of inputNames) {
+  for (const name of cliInputNames) {
     const value = readFlag(argv, name);
     if (value !== undefined) {
       inputEnv[normalizeCliFlag(name)] = value;
@@ -230,22 +232,90 @@ export function toDotenv(outputs: PlannedOutputs): string {
       `POSTMAN_BOOTSTRAP_${key.replace(/-/g, '_').toUpperCase()}`,
       value
     ] as const)
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .map(([key, value]) => `${key}=${shellQuote(value)}`)
     .join('\n');
 }
 
-async function writeOptionalFile(filePath: string | undefined, content: string): Promise<void> {
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function ensureInsideWorkspace(workspaceRoot: string, candidate: string): void {
+  const relative = path.relative(workspaceRoot, candidate);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Output path must stay within workspace');
+  }
+}
+
+function nearestExistingPath(candidate: string): string {
+  let current = candidate;
+  while (!pathExists(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return current;
+    }
+    current = parent;
+  }
+  return current;
+}
+
+function pathExists(candidate: string): boolean {
+  if (existsSync(candidate)) {
+    return true;
+  }
+  try {
+    lstatSync(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function checkedRealPath(existingPath: string, workspaceRealPath: string): string {
+  try {
+    return realpathSync(existingPath);
+  } catch (error) {
+    if (lstatSync(existingPath).isSymbolicLink()) {
+      const linkTarget = readlinkSync(existingPath);
+      const resolvedTarget = path.resolve(path.dirname(existingPath), linkTarget);
+      ensureInsideWorkspace(workspaceRealPath, resolvedTarget);
+    }
+    throw error;
+  }
+}
+
+function assertOutputFileAllowed(filePath: string | undefined): string | undefined {
   if (!filePath) {
-    return;
+    return undefined;
   }
   const workspaceRoot = path.resolve(process.cwd());
-  const resolved = path.resolve(workspaceRoot, filePath);
-  const relative = path.relative(workspaceRoot, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Output path must stay within workspace: ${filePath}`);
+  const workspaceRealPath = realpathSync(workspaceRoot);
+  const resolved = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(workspaceRoot, filePath);
+  const existingPath = nearestExistingPath(resolved);
+  ensureInsideWorkspace(workspaceRealPath, checkedRealPath(existingPath, workspaceRealPath));
+  return resolved;
+}
+
+async function writeOptionalFile(filePath: string | undefined, content: string): Promise<void> {
+  const resolved = assertOutputFileAllowed(filePath);
+  if (!resolved) {
+    return;
   }
   await mkdir(path.dirname(resolved), { recursive: true });
+  ensureInsideWorkspace(realpathSync(path.resolve(process.cwd())), realpathSync(path.dirname(resolved)));
   await writeFile(resolved, content, 'utf8');
+}
+
+function requireCliInput(name: string, value: string | undefined): void {
+  if (!value) {
+    throw new Error(`${name} is required`);
+  }
+}
+
+function validateCliInputs(inputs: ResolvedInputs): void {
+  requireCliInput('project-name', inputs.projectName);
+  requireCliInput('spec-url', inputs.specUrl);
+  requireCliInput('postman-api-key', inputs.postmanApiKey);
 }
 
 export async function runCli(
@@ -255,6 +325,9 @@ export async function runCli(
   const env = runtime.env ?? process.env;
   const config = parseCliArgs(argv, env);
   const inputs = resolveInputs(config.inputEnv);
+  validateCliInputs(inputs);
+  assertOutputFileAllowed(config.resultJsonPath);
+  assertOutputFileAllowed(config.dotenvPath);
   const dependencies = createCliDependencies(inputs);
 
   if (inputs.domain && !dependencies.internalIntegration) {
@@ -275,7 +348,18 @@ export async function runCli(
 const currentModulePath = typeof __filename === 'string' ? __filename : '';
 const entrypoint = process.argv[1];
 
-if (entrypoint && currentModulePath === entrypoint) {
+function isEntrypoint(currentPath: string, entrypointPath: string | undefined): boolean {
+  if (!currentPath || !entrypointPath) {
+    return false;
+  }
+  try {
+    return realpathSync(currentPath) === realpathSync(entrypointPath);
+  } catch {
+    return path.resolve(currentPath) === path.resolve(entrypointPath);
+  }
+}
+
+if (isEntrypoint(currentModulePath, entrypoint)) {
   runCli().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);

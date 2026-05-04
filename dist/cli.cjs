@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 "use strict";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -28690,6 +28691,7 @@ __export(cli_exports, {
   toDotenv: () => toDotenv
 });
 module.exports = __toCommonJS(cli_exports);
+var import_node_fs2 = require("node:fs");
 var import_promises = require("node:fs/promises");
 var import_node_child_process = require("node:child_process");
 var import_node_path = __toESM(require("node:path"), 1);
@@ -30151,24 +30153,60 @@ function requireInput(actionCore, name) {
 function optionalInput(actionCore, name) {
   return normalizeInputValue(actionCore.getInput(name));
 }
-function parseBooleanInput(value, defaultValue) {
+function parseBooleanInput(name, value, defaultValue) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!normalized) return defaultValue;
   if (["true", "1", "yes", "on"].includes(normalized)) return true;
   if (["false", "0", "no", "off"].includes(normalized)) return false;
-  return defaultValue;
+  throw new Error(`${name} must be a boolean value: true or false`);
 }
 function parseCollectionSyncMode(value) {
-  if (value === "version") {
-    return value;
+  const v = value?.trim() || openAlphaActionContract.inputs["collection-sync-mode"].default || "refresh";
+  if (v === "reuse") {
+    return "refresh";
   }
-  return "refresh";
+  const allowed = openAlphaActionContract.inputs["collection-sync-mode"].allowedValues ?? [];
+  if (allowed.includes(v)) {
+    return v;
+  }
+  throw new Error(`Unsupported collection-sync-mode "${v}". Supported values: ${allowed.join(", ")}`);
 }
 function parseSpecSyncMode(value) {
-  if (value === "version") {
-    return value;
+  const v = value?.trim() || openAlphaActionContract.inputs["spec-sync-mode"].default || "update";
+  const allowed = openAlphaActionContract.inputs["spec-sync-mode"].allowedValues ?? [];
+  if (allowed.includes(v)) {
+    return v;
   }
-  return "update";
+  throw new Error(`Unsupported spec-sync-mode "${v}". Supported values: ${allowed.join(", ")}`);
+}
+function parseEnumInput(name, value, defaultValue) {
+  const allowed = openAlphaActionContract.inputs[name].allowedValues ?? [];
+  const v = value?.trim() || defaultValue;
+  if (allowed.includes(v)) {
+    return v;
+  }
+  throw new Error(`Unsupported ${name} "${v}". Supported values: ${allowed.join(", ")}`);
+}
+function parseWorkspaceTeamId(value) {
+  if (!value) {
+    return void 0;
+  }
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`workspace-team-id must be a numeric sub-team ID, got: ${value}`);
+  }
+  return value;
+}
+function parseGovernanceMappingJson(value) {
+  const mapping = value ?? openAlphaActionContract.inputs["governance-mapping-json"].default ?? "{}";
+  try {
+    const parsed = JSON.parse(mapping);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("not an object");
+    }
+    return mapping;
+  } catch (error) {
+    throw new Error("governance-mapping-json must be valid JSON object content", { cause: error });
+  }
 }
 function resolveOpenapiVersion(value) {
   const allowed = openAlphaActionContract.inputs["openapi-version"].allowedValues ?? [];
@@ -30179,6 +30217,18 @@ function resolveOpenapiVersion(value) {
     );
   }
   return v;
+}
+function sanitizeUrlForLog(value) {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "[invalid OpenAPI URL]";
+  }
 }
 function resolveInputs(env = process.env) {
   const repoContext = detectRepoContext(
@@ -30202,7 +30252,7 @@ function resolveInputs(env = process.env) {
         throw new Error("not https");
       }
     } catch (error) {
-      throw new Error(`spec-url must be a valid HTTPS URL, got: ${specUrl}`, { cause: error });
+      throw new Error(`spec-url must be a valid HTTPS URL, got: ${sanitizeUrlForLog(specUrl)}`, { cause: error });
     }
   }
   return {
@@ -30212,7 +30262,7 @@ function resolveInputs(env = process.env) {
     baselineCollectionId: getInput("baseline-collection-id", env),
     smokeCollectionId: getInput("smoke-collection-id", env),
     contractCollectionId: getInput("contract-collection-id", env),
-    syncExamples: parseBooleanInput(getInput("sync-examples", env), true),
+    syncExamples: parseBooleanInput("sync-examples", getInput("sync-examples", env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput("collection-sync-mode", env)),
     specSyncMode: parseSpecSyncMode(getInput("spec-sync-mode", env)),
     releaseLabel: getInput("release-label", env),
@@ -30220,18 +30270,18 @@ function resolveInputs(env = process.env) {
     domainCode: getInput("domain-code", env),
     requesterEmail: getInput("requester-email", env),
     workspaceAdminUserIds: getInput("workspace-admin-user-ids", env) || env.WORKSPACE_ADMIN_USER_IDS || "",
-    workspaceTeamId: getInput("workspace-team-id", env) || env.POSTMAN_WORKSPACE_TEAM_ID,
+    workspaceTeamId: parseWorkspaceTeamId(getInput("workspace-team-id", env) || env.POSTMAN_WORKSPACE_TEAM_ID),
     teamId: getInput("team-id", env) || env.POSTMAN_TEAM_ID || "",
     repoUrl: repoContext.repoUrl || "",
     specUrl,
     openapiVersion: resolveOpenapiVersion(getInput("openapi-version", env)),
-    governanceMappingJson: getInput("governance-mapping-json", env) ?? openAlphaActionContract.inputs["governance-mapping-json"].default ?? "{}",
+    governanceMappingJson: parseGovernanceMappingJson(getInput("governance-mapping-json", env)),
     postmanApiKey: getInput("postman-api-key", env) ?? "",
     postmanAccessToken: getInput("postman-access-token", env),
     integrationBackend,
-    folderStrategy: getInput("folder-strategy", env) ?? openAlphaActionContract.inputs["folder-strategy"].default ?? "Paths",
-    nestedFolderHierarchy: parseBooleanInput(getInput("nested-folder-hierarchy", env), false),
-    requestNameSource: getInput("request-name-source", env) ?? openAlphaActionContract.inputs["request-name-source"].default ?? "Fallback",
+    folderStrategy: parseEnumInput("folder-strategy", getInput("folder-strategy", env), "Paths"),
+    nestedFolderHierarchy: parseBooleanInput("nested-folder-hierarchy", getInput("nested-folder-hierarchy", env), false),
+    requestNameSource: parseEnumInput("request-name-source", getInput("request-name-source", env), "Fallback"),
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -30738,7 +30788,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     }
   }
   if (specId) {
-    dependencies.core.info(`Updating existing spec ${specId} from ${inputs.specUrl}`);
+    dependencies.core.info(`Updating existing spec ${specId} from ${sanitizeUrlForLog(inputs.specUrl)}`);
   }
   const isSpecUpdate = Boolean(specId);
   let previousSpecContent;
@@ -31114,6 +31164,33 @@ function readFlag(argv, name) {
 function normalizeCliFlag(name) {
   return `INPUT_${name.replace(/-/g, "_").toUpperCase()}`;
 }
+var cliInputNames = [
+  "project-name",
+  "spec-url",
+  "postman-api-key",
+  "postman-access-token",
+  "workspace-id",
+  "spec-id",
+  "baseline-collection-id",
+  "smoke-collection-id",
+  "contract-collection-id",
+  "sync-examples",
+  "collection-sync-mode",
+  "spec-sync-mode",
+  "release-label",
+  "domain",
+  "domain-code",
+  "requester-email",
+  "workspace-admin-user-ids",
+  "governance-mapping-json",
+  "integration-backend",
+  "folder-strategy",
+  "nested-folder-hierarchy",
+  "request-name-source",
+  "workspace-team-id",
+  "repo-url",
+  "openapi-version"
+];
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 function toCommandLabel(commandLine, args, secretMasker) {
   const rendered = [commandLine, ...args].join(" ");
@@ -31201,35 +31278,8 @@ function createCliDependencies(inputs) {
   });
 }
 function parseCliArgs(argv, env = process.env) {
-  const inputNames = [
-    "project-name",
-    "spec-url",
-    "postman-api-key",
-    "postman-access-token",
-    "workspace-id",
-    "spec-id",
-    "baseline-collection-id",
-    "smoke-collection-id",
-    "contract-collection-id",
-    "sync-examples",
-    "collection-sync-mode",
-    "spec-sync-mode",
-    "release-label",
-    "domain",
-    "domain-code",
-    "requester-email",
-    "workspace-admin-user-ids",
-    "governance-mapping-json",
-    "integration-backend",
-    "folder-strategy",
-    "nested-folder-hierarchy",
-    "request-name-source",
-    "team-id",
-    "workspace-team-id",
-    "repo-url"
-  ];
   const inputEnv = { ...env };
-  for (const name of inputNames) {
+  for (const name of cliInputNames) {
     const value = readFlag(argv, name);
     if (value !== void 0) {
       inputEnv[normalizeCliFlag(name)] = value;
@@ -31245,25 +31295,88 @@ function toDotenv(outputs) {
   return Object.entries(outputs).map(([key, value]) => [
     `POSTMAN_BOOTSTRAP_${key.replace(/-/g, "_").toUpperCase()}`,
     value
-  ]).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join("\n");
+  ]).map(([key, value]) => `${key}=${shellQuote(value)}`).join("\n");
 }
-async function writeOptionalFile(filePath, content) {
+function shellQuote(value) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+function ensureInsideWorkspace(workspaceRoot, candidate) {
+  const relative = import_node_path.default.relative(workspaceRoot, candidate);
+  if (relative.startsWith("..") || import_node_path.default.isAbsolute(relative)) {
+    throw new Error("Output path must stay within workspace");
+  }
+}
+function nearestExistingPath(candidate) {
+  let current = candidate;
+  while (!pathExists(current)) {
+    const parent = import_node_path.default.dirname(current);
+    if (parent === current) {
+      return current;
+    }
+    current = parent;
+  }
+  return current;
+}
+function pathExists(candidate) {
+  if ((0, import_node_fs2.existsSync)(candidate)) {
+    return true;
+  }
+  try {
+    (0, import_node_fs2.lstatSync)(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function checkedRealPath(existingPath, workspaceRealPath) {
+  try {
+    return (0, import_node_fs2.realpathSync)(existingPath);
+  } catch (error) {
+    if ((0, import_node_fs2.lstatSync)(existingPath).isSymbolicLink()) {
+      const linkTarget = (0, import_node_fs2.readlinkSync)(existingPath);
+      const resolvedTarget = import_node_path.default.resolve(import_node_path.default.dirname(existingPath), linkTarget);
+      ensureInsideWorkspace(workspaceRealPath, resolvedTarget);
+    }
+    throw error;
+  }
+}
+function assertOutputFileAllowed(filePath) {
   if (!filePath) {
-    return;
+    return void 0;
   }
   const workspaceRoot = import_node_path.default.resolve(process.cwd());
-  const resolved = import_node_path.default.resolve(workspaceRoot, filePath);
-  const relative = import_node_path.default.relative(workspaceRoot, resolved);
-  if (relative.startsWith("..") || import_node_path.default.isAbsolute(relative)) {
-    throw new Error(`Output path must stay within workspace: ${filePath}`);
+  const workspaceRealPath = (0, import_node_fs2.realpathSync)(workspaceRoot);
+  const resolved = import_node_path.default.isAbsolute(filePath) ? import_node_path.default.resolve(filePath) : import_node_path.default.resolve(workspaceRoot, filePath);
+  const existingPath = nearestExistingPath(resolved);
+  ensureInsideWorkspace(workspaceRealPath, checkedRealPath(existingPath, workspaceRealPath));
+  return resolved;
+}
+async function writeOptionalFile(filePath, content) {
+  const resolved = assertOutputFileAllowed(filePath);
+  if (!resolved) {
+    return;
   }
   await (0, import_promises.mkdir)(import_node_path.default.dirname(resolved), { recursive: true });
+  ensureInsideWorkspace((0, import_node_fs2.realpathSync)(import_node_path.default.resolve(process.cwd())), (0, import_node_fs2.realpathSync)(import_node_path.default.dirname(resolved)));
   await (0, import_promises.writeFile)(resolved, content, "utf8");
+}
+function requireCliInput(name, value) {
+  if (!value) {
+    throw new Error(`${name} is required`);
+  }
+}
+function validateCliInputs(inputs) {
+  requireCliInput("project-name", inputs.projectName);
+  requireCliInput("spec-url", inputs.specUrl);
+  requireCliInput("postman-api-key", inputs.postmanApiKey);
 }
 async function runCli(argv = process.argv.slice(2), runtime = {}) {
   const env = runtime.env ?? process.env;
   const config = parseCliArgs(argv, env);
   const inputs = resolveInputs(config.inputEnv);
+  validateCliInputs(inputs);
+  assertOutputFileAllowed(config.resultJsonPath);
+  assertOutputFileAllowed(config.dotenvPath);
   const dependencies = createCliDependencies(inputs);
   if (inputs.domain && !dependencies.internalIntegration) {
     dependencies.core.warning(
@@ -31279,7 +31392,17 @@ async function runCli(argv = process.argv.slice(2), runtime = {}) {
 }
 var currentModulePath2 = typeof __filename === "string" ? __filename : "";
 var entrypoint2 = process.argv[1];
-if (entrypoint2 && currentModulePath2 === entrypoint2) {
+function isEntrypoint(currentPath, entrypointPath) {
+  if (!currentPath || !entrypointPath) {
+    return false;
+  }
+  try {
+    return (0, import_node_fs2.realpathSync)(currentPath) === (0, import_node_fs2.realpathSync)(entrypointPath);
+  } catch {
+    return import_node_path.default.resolve(currentPath) === import_node_path.default.resolve(entrypointPath);
+  }
+}
+if (isEntrypoint(currentModulePath2, entrypoint2)) {
   runCli().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}

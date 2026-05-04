@@ -438,6 +438,55 @@ describe('bootstrap action', () => {
     expect(infos).toContain('Using existing contract collection: col-contract-existing');
   });
 
+  it('sanitizes spec URLs before writing existing-spec update logs', async () => {
+    const { core, infos } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+
+    await runBootstrap(
+      createInputs({
+        workspaceId: 'ws-existing',
+        specId: 'spec-existing',
+        baselineCollectionId: 'col-baseline-existing',
+        smokeCollectionId: 'col-smoke-existing',
+        contractCollectionId: 'col-contract-existing',
+        collectionSyncMode: 'version',
+        releaseLabel: 'v1',
+        specUrl: 'https://user:pass@example.test/openapi.yaml?token=secret#frag'
+      }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    const infoLog = infos.join('\n');
+    expect(infoLog).toContain('Updating existing spec spec-existing from https://example.test/openapi.yaml');
+    expect(infoLog).not.toContain('user:pass');
+    expect(infoLog).not.toContain('token=secret');
+    expect(infoLog).not.toContain('#frag');
+  });
+
   it('refresh mode regenerates collections even when ids already exist', async () => {
     const { core, infos } = createCoreStub();
     const execStub = createExecStub();
@@ -988,6 +1037,59 @@ describe('bootstrap action', () => {
         warning.includes('Skipping cloud spec-to-collection linking and sync because postman-access-token is not configured')
       )
     ).toBe(true);
+  });
+
+  it('warns and continues when governance assignment fails', async () => {
+    const { core, warnings } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-id'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue('openapi: 3.1.0')
+    };
+    const internalIntegration = {
+      assignWorkspaceToGovernanceGroup: vi.fn().mockRejectedValue(new Error('gateway 404')),
+      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+      syncCollection: vi.fn().mockResolvedValue(undefined)
+    };
+
+    const result = await runBootstrap(
+      createInputs(),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        internalIntegration,
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response('openapi: 3.1.0', { status: 200 })
+        )
+      }
+    );
+
+    expect(result['workspace-id']).toBe('ws-123');
+    expect(internalIntegration.assignWorkspaceToGovernanceGroup).toHaveBeenCalledWith(
+      'ws-123',
+      'core-banking',
+      '{"core-banking":"Core Banking"}'
+    );
+    expect(
+      warnings.some((warning) =>
+        warning.includes('Failed to assign governance group: gateway 404')
+      )
+    ).toBe(true);
+    expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalled();
   });
 
   it('passes syncExamples=false when configured', async () => {

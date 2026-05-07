@@ -1626,12 +1626,30 @@ export async function runAction(
   actionIo: IOLike = io
 ): Promise<PlannedOutputs> {
   const inputs = readActionInputs(actionCore);
+
+  // Early org-mode detection for proper adapter configuration
+  let orgMode = false;
+  if (inputs.postmanAccessToken && inputs.teamId) {
+    try {
+      const tempPostman = new PostmanAssetsClient({
+        apiKey: inputs.postmanApiKey,
+        baseUrl: inputs.postmanApiBase,
+        bifrostBaseUrl: inputs.postmanBifrostBase,
+        secretMasker: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+      });
+      const teams = await tempPostman.getTeams();
+      orgMode = teams.some(t => t.organizationId != null);
+    } catch {
+      // Org-mode detection failure is not fatal; default to false
+    }
+  }
+
   const dependencies = createBootstrapDependencies(inputs, {
     core: actionCore,
     exec: actionExec,
     io: actionIo,
     specFetcher: fetch
-  });
+  }, orgMode);
 
   if (inputs.domain && !dependencies.internalIntegration) {
     actionCore.warning(
@@ -1644,7 +1662,8 @@ export async function runAction(
 
 export function createBootstrapDependencies(
   inputs: ResolvedInputs,
-  factories: BootstrapDependencyFactories
+  factories: BootstrapDependencyFactories,
+  orgMode = false
 ): BootstrapExecutionDependencies {
   const secretMasker = createSecretMasker([
     inputs.postmanApiKey,
@@ -1663,6 +1682,7 @@ export function createBootstrapDependencies(
         backend: inputs.integrationBackend,
         bifrostBaseUrl: inputs.postmanBifrostBase,
         gatewayBaseUrl: inputs.postmanGatewayBase,
+        orgMode,
         secretMasker,
         teamId: inputs.teamId || ''
       })

@@ -22,6 +22,7 @@ export interface InternalIntegrationAdapterOptions {
   bifrostBaseUrl?: string;
   fetchImpl?: typeof fetch;
   gatewayBaseUrl?: string;
+  orgMode?: boolean;
   secretMasker?: SecretMasker;
   teamId: string;
   workerBaseUrl?: string;
@@ -56,6 +57,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private readonly bifrostBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly gatewayBaseUrl: string;
+  private readonly orgMode: boolean;
   private readonly secretMasker: SecretMasker;
   private readonly teamId: string;
   private readonly workerBaseUrl: string;
@@ -69,6 +71,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     this.gatewayBaseUrl = String(
       options.gatewayBaseUrl || 'https://gateway.postman.com'
     ).replace(/\/+$/, '');
+    this.orgMode = options.orgMode ?? false;
     this.secretMasker =
       options.secretMasker ?? createSecretMasker([this.accessToken]);
     this.teamId = String(options.teamId || '').trim();
@@ -89,7 +92,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       'Content-Type': 'application/json',
       'x-access-token': this.accessToken
     };
-    if (this.teamId) {
+    if (this.teamId && this.orgMode) {
       headers['x-entity-team-id'] = this.teamId;
     }
 
@@ -259,7 +262,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       requestHeaders: {
         'Content-Type': 'application/json',
         'x-access-token': this.accessToken,
-        ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
+        ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
       },
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
@@ -293,7 +296,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       requestHeaders: {
         'Content-Type': 'application/json',
         'x-access-token': this.accessToken,
-        ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
+        ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
       },
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
@@ -319,7 +322,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       requestHeaders: {
         'Content-Type': 'application/json',
         'x-access-token': this.accessToken,
-        ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
+        ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
       },
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`

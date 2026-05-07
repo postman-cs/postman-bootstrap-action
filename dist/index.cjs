@@ -47814,6 +47814,7 @@ var BifrostInternalIntegrationAdapter = class {
   bifrostBaseUrl;
   fetchImpl;
   gatewayBaseUrl;
+  orgMode;
   secretMasker;
   teamId;
   workerBaseUrl;
@@ -47826,6 +47827,7 @@ var BifrostInternalIntegrationAdapter = class {
     this.gatewayBaseUrl = String(
       options.gatewayBaseUrl || "https://gateway.postman.com"
     ).replace(/\/+$/, "");
+    this.orgMode = options.orgMode ?? false;
     this.secretMasker = options.secretMasker ?? createSecretMasker([this.accessToken]);
     this.teamId = String(options.teamId || "").trim();
     this.workerBaseUrl = String(
@@ -47838,7 +47840,7 @@ var BifrostInternalIntegrationAdapter = class {
       "Content-Type": "application/json",
       "x-access-token": this.accessToken
     };
-    if (this.teamId) {
+    if (this.teamId && this.orgMode) {
       headers["x-entity-team-id"] = this.teamId;
     }
     return this.fetchImpl(url, {
@@ -47976,7 +47978,7 @@ var BifrostInternalIntegrationAdapter = class {
       requestHeaders: {
         "Content-Type": "application/json",
         "x-access-token": this.accessToken,
-        ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
+        ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
       },
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
@@ -48003,7 +48005,7 @@ var BifrostInternalIntegrationAdapter = class {
       requestHeaders: {
         "Content-Type": "application/json",
         "x-access-token": this.accessToken,
-        ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
+        ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
       },
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
@@ -48023,7 +48025,7 @@ var BifrostInternalIntegrationAdapter = class {
       requestHeaders: {
         "Content-Type": "application/json",
         "x-access-token": this.accessToken,
-        ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
+        ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
       },
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
@@ -62878,12 +62880,26 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
 }
 async function runAction(actionCore = core2, actionExec = exec, actionIo = io) {
   const inputs = readActionInputs(actionCore);
+  let orgMode = false;
+  if (inputs.postmanAccessToken && inputs.teamId) {
+    try {
+      const tempPostman = new PostmanAssetsClient({
+        apiKey: inputs.postmanApiKey,
+        baseUrl: inputs.postmanApiBase,
+        bifrostBaseUrl: inputs.postmanBifrostBase,
+        secretMasker: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+      });
+      const teams = await tempPostman.getTeams();
+      orgMode = teams.some((t) => t.organizationId != null);
+    } catch {
+    }
+  }
   const dependencies = createBootstrapDependencies(inputs, {
     core: actionCore,
     exec: actionExec,
     io: actionIo,
     specFetcher: fetch
-  });
+  }, orgMode);
   if (inputs.domain && !dependencies.internalIntegration) {
     actionCore.warning(
       "Skipping governance assignment because postman-access-token is not configured"
@@ -62891,7 +62907,7 @@ async function runAction(actionCore = core2, actionExec = exec, actionIo = io) {
   }
   return runBootstrap(inputs, dependencies);
 }
-function createBootstrapDependencies(inputs, factories) {
+function createBootstrapDependencies(inputs, factories, orgMode = false) {
   const secretMasker = createSecretMasker([
     inputs.postmanApiKey,
     inputs.postmanAccessToken
@@ -62907,6 +62923,7 @@ function createBootstrapDependencies(inputs, factories) {
     backend: inputs.integrationBackend,
     bifrostBaseUrl: inputs.postmanBifrostBase,
     gatewayBaseUrl: inputs.postmanGatewayBase,
+    orgMode,
     secretMasker,
     teamId: inputs.teamId || ""
   }) : void 0;

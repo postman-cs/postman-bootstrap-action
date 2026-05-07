@@ -115,6 +115,7 @@ describe('internal integration adapter', () => {
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
+      orgMode: true,
       fetchImpl
     });
 
@@ -158,6 +159,7 @@ describe('internal integration adapter', () => {
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
+      orgMode: true,
       fetchImpl
     });
 
@@ -193,6 +195,7 @@ describe('internal integration adapter', () => {
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
+      orgMode: true,
       fetchImpl
     });
 
@@ -235,6 +238,7 @@ describe('internal integration adapter', () => {
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
+      orgMode: true,
       fetchImpl
     });
 
@@ -273,6 +277,7 @@ describe('internal integration adapter', () => {
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
+      orgMode: true,
       fetchImpl
     });
 
@@ -300,6 +305,7 @@ describe('internal integration adapter', () => {
       backend: 'bifrost',
       accessToken: 'token-beta',
       teamId: '99999999',
+      orgMode: true,
       bifrostBaseUrl: 'https://bifrost-premium-https-v4.gw.postman-beta.com/',
       gatewayBaseUrl: 'https://gateway.postman-beta.com/',
       fetchImpl
@@ -349,11 +355,95 @@ describe('internal integration adapter', () => {
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
+      orgMode: true,
       fetchImpl
     });
 
     await expect(
       adapter.connectWorkspaceToRepository('ws-456', 'https://gitlab.com/org/my-service')
     ).rejects.toThrow(/linked to a different repo/);
+  });
+
+  it('omits x-entity-team-id header when orgMode is false even with teamId set', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ data: { ok: true } })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: false,
+      fetchImpl
+    });
+
+    await adapter.connectWorkspaceToRepository(
+      'ws-non-org',
+      'https://github.com/example/repo'
+    );
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.not.objectContaining({
+          'x-entity-team-id': expect.anything()
+        })
+      })
+    );
+
+    const callHeaders = (fetchImpl.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(callHeaders['x-entity-team-id']).toBeUndefined();
+  });
+
+  it('includes x-entity-team-id header when orgMode is true and teamId is set', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ data: { ok: true } })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-org',
+      teamId: '99999999',
+      orgMode: true,
+      fetchImpl
+    });
+
+    await adapter.connectWorkspaceToRepository(
+      'ws-org',
+      'https://github.com/example/org-repo'
+    );
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'x-access-token': 'token-org',
+          'x-entity-team-id': '99999999'
+        })
+      })
+    );
+  });
+
+  it('omits x-entity-team-id header when teamId is empty regardless of orgMode', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ data: { ok: true } })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '',
+      orgMode: true,
+      fetchImpl
+    });
+
+    await adapter.linkCollectionsToSpecification('spec-123', [
+      { collectionId: 'col-1' }
+    ]);
+
+    const callHeaders = (fetchImpl.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
+    expect(callHeaders['x-entity-team-id']).toBeUndefined();
   });
 });

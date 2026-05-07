@@ -906,18 +906,26 @@ export async function runBootstrap(
       const isOrgMode = teams.some(t => t.organizationId != null);
 
       if (isOrgMode) {
-        const teamList = teams
-          .map(t => `  ${t.id}  ${t.name}`)
-          .join('\n');
-        throw new Error(
-          `Org-mode account detected. Workspace creation requires a specific sub-team ID.\n\n` +
-          `Available sub-teams:\n${teamList}\n\n` +
-          `To fix this, set the workspace-team-id input in your workflow:\n` +
-          `  workspace-team-id: '<id>'\n\n` +
-          `Or for reuse across runs, create a repository variable and reference it:\n` +
-          `  workspace-team-id: \${{ vars.POSTMAN_WORKSPACE_TEAM_ID }}\n\n` +
-          `For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID=<id>.`
-        );
+        if (teams.length === 1) {
+          // Unambiguous: only one sub-team the key can operate in.
+          workspaceTeamId = teams[0].id;
+          dependencies.core.info(
+            `Org-mode account detected. Using sub-team ${teams[0].id} (${teams[0].name}) for workspace creation.`
+          );
+        } else {
+          const teamList = teams
+            .map(t => `  ${t.id}  ${t.name}`)
+            .join('\n');
+          throw new Error(
+            `Org-mode account detected. Workspace creation requires a specific sub-team ID.\n\n` +
+            `Available sub-teams:\n${teamList}\n\n` +
+            `To fix this, set the workspace-team-id input in your workflow:\n` +
+            `  workspace-team-id: '<id>'\n\n` +
+            `Or for reuse across runs, create a repository variable and reference it:\n` +
+            `  workspace-team-id: \${{ vars.POSTMAN_WORKSPACE_TEAM_ID }}\n\n` +
+            `For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID=<id>.`
+          );
+        }
       } else if (teams.length > 1) {
         dependencies.core.warning(
           `API key has access to ${teams.length} teams but org-mode could not be confirmed. ` +

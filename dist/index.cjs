@@ -62232,9 +62232,15 @@ async function runBootstrap(inputs, dependencies) {
       }
       const isOrgMode = teams.some((t) => t.organizationId != null);
       if (isOrgMode) {
-        const teamList = teams.map((t) => `  ${t.id}  ${t.name}`).join("\n");
-        throw new Error(
-          `Org-mode account detected. Workspace creation requires a specific sub-team ID.
+        if (teams.length === 1) {
+          workspaceTeamId = teams[0].id;
+          dependencies.core.info(
+            `Org-mode account detected. Using sub-team ${teams[0].id} (${teams[0].name}) for workspace creation.`
+          );
+        } else {
+          const teamList = teams.map((t) => `  ${t.id}  ${t.name}`).join("\n");
+          throw new Error(
+            `Org-mode account detected. Workspace creation requires a specific sub-team ID.
 
 Available sub-teams:
 ${teamList}
@@ -62246,7 +62252,8 @@ Or for reuse across runs, create a repository variable and reference it:
   workspace-team-id: \${{ vars.POSTMAN_WORKSPACE_TEAM_ID }}
 
 For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID=<id>.`
-        );
+          );
+        }
       } else if (teams.length > 1) {
         dependencies.core.warning(
           `API key has access to ${teams.length} teams but org-mode could not be confirmed. Proceeding without teamId. If workspace creation fails, set workspace-team-id explicitly.`

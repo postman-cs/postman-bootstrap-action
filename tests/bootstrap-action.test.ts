@@ -2936,12 +2936,56 @@ describe('lintSpecViaCli', () => {
     ).rejects.toThrow('workspace-team-id must be a numeric sub-team ID');
   });
 
-  it('detects org-mode when a service-account PMAK returns exactly one sub-team carrying organizationId', async () => {
+  it('auto-picks sub-team when a service-account PMAK returns exactly one sub-team carrying organizationId', async () => {
     // Real-world service-account key case: GET /teams returns a single team,
-    // but that team's organizationId is non-null because the parent account is
-    // org-mode. Previously isOrgMode only fired for teams.length > 1, so the
-    // action fell through to POST /workspaces and got a non-descriptive
-    // "Workspace creation failed" error. The actionable error must fire here.
+    // the team's organizationId is non-null (parent account is org-mode). Since
+    // there is no ambiguity, the action should auto-pick teams[0].id as
+    // workspaceTeamId, log an info message, and proceed to createWorkspace
+    // instead of throwing and requiring the caller to echo the ID back.
+    const { core, infos } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-auto' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('83498'),
+      getTeams: vi.fn().mockResolvedValue([
+        { id: 83498, name: 'jared-service-account-test', handle: 'jaredserviceaccounttest', organizationId: 987442 }
+      ]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(VALID_SPEC_31, { status: 200 })
+    );
+
+    await runBootstrap(createInputs(), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman: withContractHelpers(postman),
+      specFetcher
+    });
+
+    expect(postman.createWorkspace).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      83498
+    );
+    expect(infos.some(msg => msg.includes('Org-mode account detected. Using sub-team 83498 (jared-service-account-test)'))).toBe(true);
+  });
+
+  it('throws with team list when org-mode detected with multiple sub-teams and no workspace-team-id', async () => {
+    // Ambiguous case: PMAK has access to more than one sub-team. We cannot pick
+    // for the caller, so the existing actionable error must still fire and list
+    // all available sub-teams.
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -2952,7 +2996,8 @@ describe('lintSpecViaCli', () => {
       generateCollection: vi.fn().mockResolvedValue('col-1'),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('83498'),
       getTeams: vi.fn().mockResolvedValue([
-        { id: 83498, name: 'jared-service-account-test', handle: 'jaredserviceaccounttest', organizationId: 987442 }
+        { id: 83498, name: 'jared-service-account-test', handle: 'jaredserviceaccounttest', organizationId: 987442 },
+        { id: 83499, name: 'jared-service-account-test-2', handle: 'jaredserviceaccounttest2', organizationId: 987442 }
       ]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       injectTests: vi.fn().mockResolvedValue(undefined),
@@ -2974,9 +3019,53 @@ describe('lintSpecViaCli', () => {
         postman: withContractHelpers(postman),
         specFetcher
       })
-    ).rejects.toThrow(/Org-mode account detected[\s\S]*83498[\s\S]*jared-service-account-test/);
+    ).rejects.toThrow(/Org-mode account detected[\s\S]*83498[\s\S]*jared-service-account-test[\s\S]*83499[\s\S]*jared-service-account-test-2/);
 
     expect(postman.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('honors explicit workspace-team-id override even when single org-mode sub-team is present', async () => {
+    // Override path: when the caller passes workspaceTeamId explicitly the
+    // auto-pick block must be skipped entirely and createWorkspace must receive
+    // the caller-supplied ID, not teams[0].id.
+    const { core, outputs } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-override' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('83498'),
+      getTeams: vi.fn().mockResolvedValue([
+        { id: 83498, name: 'jared-service-account-test', handle: 'jaredserviceaccounttest', organizationId: 987442 }
+      ]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(VALID_SPEC_31, { status: 200 })
+    );
+
+    await runBootstrap(createInputs({ workspaceTeamId: '999' }), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman: withContractHelpers(postman),
+      specFetcher
+    });
+
+    expect(postman.createWorkspace).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      999
+    );
+    expect(outputs['workspace-id']).toBe('ws-override');
   });
 
   it('does not flag org-mode when a single team has a null organizationId (non-org account)', async () => {

@@ -7,6 +7,11 @@ import { parse, stringify } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
 import { HttpError } from './lib/http-error.js';
+import {
+  parsePostmanStack,
+  resolvePostmanEndpointProfile,
+  type PostmanStack
+} from './lib/postman/base-urls.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
@@ -45,6 +50,7 @@ export interface ResolvedInputs {
   folderStrategy: string;
   nestedFolderHierarchy: boolean;
   requestNameSource: string;
+  postmanStack: PostmanStack;
   postmanApiBase: string;
   postmanBifrostBase: string;
   postmanGatewayBase: string;
@@ -298,6 +304,9 @@ export function resolveInputs(
     }
   }
 
+  const postmanStack = parsePostmanStack(getInput('postman-stack', env));
+  const endpointProfile = resolvePostmanEndpointProfile(postmanStack);
+
   return {
     projectName: getInput('project-name', env)
       ?? env.GITHUB_REPOSITORY?.split('/').pop()
@@ -331,22 +340,11 @@ export function resolveInputs(
     nestedFolderHierarchy: parseBooleanInput('nested-folder-hierarchy', getInput('nested-folder-hierarchy', env), false),
     requestNameSource:
       parseEnumInput('request-name-source', getInput('request-name-source', env), 'Fallback'),
-    postmanApiBase:
-      getInput('postman-api-base', env) ??
-      openAlphaActionContract.inputs['postman-api-base'].default ??
-      'https://api.getpostman.com',
-    postmanBifrostBase:
-      getInput('postman-bifrost-base', env) ??
-      openAlphaActionContract.inputs['postman-bifrost-base'].default ??
-      'https://bifrost-premium-https-v4.gw.postman.com',
-    postmanGatewayBase:
-      getInput('postman-gateway-base', env) ??
-      openAlphaActionContract.inputs['postman-gateway-base'].default ??
-      'https://gateway.postman.com',
-    postmanCliInstallUrl:
-      getInput('postman-cli-install-url', env) ??
-      openAlphaActionContract.inputs['postman-cli-install-url'].default ??
-      'https://dl-cli.pstmn.io/install/unix.sh',
+    postmanStack,
+    postmanApiBase: endpointProfile.apiBaseUrl,
+    postmanBifrostBase: endpointProfile.bifrostBaseUrl,
+    postmanGatewayBase: endpointProfile.gatewayBaseUrl,
+    postmanCliInstallUrl: endpointProfile.cliInstallUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -440,18 +438,9 @@ export function readActionInputs(
       optionalInput(actionCore, 'request-name-source') ??
       openAlphaActionContract.inputs['request-name-source'].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? '',
-    INPUT_POSTMAN_API_BASE:
-      optionalInput(actionCore, 'postman-api-base') ??
-      openAlphaActionContract.inputs['postman-api-base'].default,
-    INPUT_POSTMAN_BIFROST_BASE:
-      optionalInput(actionCore, 'postman-bifrost-base') ??
-      openAlphaActionContract.inputs['postman-bifrost-base'].default,
-    INPUT_POSTMAN_GATEWAY_BASE:
-      optionalInput(actionCore, 'postman-gateway-base') ??
-      openAlphaActionContract.inputs['postman-gateway-base'].default,
-    INPUT_POSTMAN_CLI_INSTALL_URL:
-      optionalInput(actionCore, 'postman-cli-install-url') ??
-      openAlphaActionContract.inputs['postman-cli-install-url'].default
+    INPUT_POSTMAN_STACK:
+      optionalInput(actionCore, 'postman-stack') ??
+      openAlphaActionContract.inputs['postman-stack'].default
   });
 
   return inputs;

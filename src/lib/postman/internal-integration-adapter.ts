@@ -1,13 +1,9 @@
 import { HttpError } from '../http-error.js';
 import { normalizeGitRepoUrl } from './postman-assets-client.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
+import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 
 export type InternalIntegrationBackend = 'bifrost';
-
-export interface GovernanceAssociation {
-  envUid: string;
-  systemEnvId: string;
-}
 
 export interface SpecificationCollectionLink {
   collectionId: string;
@@ -25,7 +21,6 @@ export interface InternalIntegrationAdapterOptions {
   orgMode?: boolean;
   secretMasker?: SecretMasker;
   teamId: string;
-  workerBaseUrl?: string;
 }
 
 export interface InternalIntegrationAdapter {
@@ -33,10 +28,6 @@ export interface InternalIntegrationAdapter {
     workspaceId: string,
     domain: string,
     mappingJson: string
-  ): Promise<void>;
-  associateSystemEnvironments(
-    workspaceId: string,
-    associations: GovernanceAssociation[]
   ): Promise<void>;
   connectWorkspaceToRepository(
     workspaceId: string,
@@ -60,25 +51,20 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private readonly orgMode: boolean;
   private readonly secretMasker: SecretMasker;
   private readonly teamId: string;
-  private readonly workerBaseUrl: string;
 
   constructor(options: InternalIntegrationAdapterOptions) {
     this.accessToken = String(options.accessToken || '').trim();
     this.bifrostBaseUrl = String(
-      options.bifrostBaseUrl || 'https://bifrost-premium-https-v4.gw.postman.com'
+      options.bifrostBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.bifrostBaseUrl
     ).replace(/\/+$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.gatewayBaseUrl = String(
-      options.gatewayBaseUrl || 'https://gateway.postman.com'
+      options.gatewayBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.gatewayBaseUrl
     ).replace(/\/+$/, '');
     this.orgMode = options.orgMode ?? false;
     this.secretMasker =
       options.secretMasker ?? createSecretMasker([this.accessToken]);
     this.teamId = String(options.teamId || '').trim();
-    this.workerBaseUrl = String(
-      options.workerBaseUrl ||
-        'https://catalog-admin.postman-account2009.workers.dev'
-    ).replace(/\/+$/, '');
   }
 
   private async proxyRequest(
@@ -172,45 +158,6 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         },
         secretValues: [this.accessToken],
         url: patchUrl
-      });
-    }
-  }
-
-  async associateSystemEnvironments(
-    workspaceId: string,
-    associations: GovernanceAssociation[]
-  ): Promise<void> {
-    if (associations.length === 0) {
-      return;
-    }
-
-    const response = await this.fetchImpl(
-      `${this.workerBaseUrl}/api/internal/system-envs/associate`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          workspace_id: workspaceId,
-          associations: associations.map((entry) => ({
-            env_uid: entry.envUid,
-            system_env_id: entry.systemEnvId
-          }))
-        })
-      }
-    );
-
-    if (!response.ok) {
-      throw await HttpError.fromResponse(response, {
-        method: 'POST',
-        requestHeaders: {
-          Authorization: `Bearer ${this.accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        secretValues: [this.accessToken],
-        url: `${this.workerBaseUrl}/api/internal/system-envs/associate`
       });
     }
   }

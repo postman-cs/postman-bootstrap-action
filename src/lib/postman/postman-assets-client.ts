@@ -1,6 +1,7 @@
 import { HttpError } from '../http-error.js';
 import { retry } from '../retry.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
+import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 
 type EnvironmentValue = {
   key: string;
@@ -24,6 +25,25 @@ export interface PostmanAssetsClientOptions {
   bifrostBaseUrl?: string;
   fetchImpl?: typeof fetch;
   secretMasker?: SecretMasker;
+}
+
+function extractWorkspacesPage(data: FetchResult): {
+  nextCursor?: string;
+  workspaces: unknown[];
+} {
+  const workspaces = Array.isArray(data?.workspaces) ? data.workspaces : [];
+  const meta = asRecord(data?.meta);
+  const pagination = asRecord(data?.pagination);
+  const nextCursor = String(
+    data?.nextCursor ??
+    data?.next_cursor ??
+    meta?.nextCursor ??
+    meta?.next_cursor ??
+    pagination?.nextCursor ??
+    pagination?.next_cursor ??
+    ''
+  ).trim() || undefined;
+  return { nextCursor, workspaces };
 }
 
 export function normalizeGitRepoUrl(url: string | null | undefined): string {
@@ -90,12 +110,12 @@ export class PostmanAssetsClient {
 
   constructor(options: PostmanAssetsClientOptions) {
     this.apiKey = String(options.apiKey || '').trim();
-    this.baseUrl = String(options.baseUrl || 'https://api.getpostman.com').replace(
+    this.baseUrl = String(options.baseUrl || POSTMAN_ENDPOINT_PROFILES.prod.apiBaseUrl).replace(
       /\/+$/,
       ''
     );
     this.bifrostBaseUrl = String(
-      options.bifrostBaseUrl || 'https://bifrost-premium-https-v4.gw.postman.com'
+      options.bifrostBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.bifrostBaseUrl
     ).replace(/\/+$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.secretMasker =
@@ -232,18 +252,32 @@ export class PostmanAssetsClient {
   }
 
   async listWorkspaces(): Promise<Array<{ id: string; name: string; type: string }>> {
-    const data = await this.request('/workspaces');
-    const workspaces = data?.workspaces ?? [];
-    return Array.isArray(workspaces)
-      ? workspaces
+    const allWorkspaces: unknown[] = [];
+    const seenCursors = new Set<string>();
+    let nextCursor: string | undefined;
+
+    do {
+      const query = nextCursor ? `?cursor=${encodeURIComponent(nextCursor)}` : '';
+      const data = await this.request(`/workspaces${query}`);
+      const page = extractWorkspacesPage(data);
+      allWorkspaces.push(...page.workspaces);
+
+      if (!page.nextCursor || seenCursors.has(page.nextCursor)) {
+        nextCursor = undefined;
+      } else {
+        seenCursors.add(page.nextCursor);
+        nextCursor = page.nextCursor;
+      }
+    } while (nextCursor);
+
+    return allWorkspaces
           .map((entry) => asRecord(entry))
           .filter((workspace): workspace is JsonRecord => Boolean(workspace?.id && workspace?.name))
           .map((workspace) => ({
             id: String(workspace.id),
             name: String(workspace.name),
             type: String(workspace.type ?? 'team')
-          }))
-      : [];
+          }));
   }
 
   async findWorkspacesByName(name: string): Promise<Array<{ id: string; name: string }>> {
@@ -280,8 +314,12 @@ export class PostmanAssetsClient {
 
     if (response.status === 404) return null;
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Bifrost workspace lookup failed: ${response.status} - ${body}`);
+      throw await HttpError.fromResponse(response, {
+        method: 'POST',
+        requestHeaders: headers,
+        secretValues: [this.apiKey, accessToken],
+        url
+      });
     }
 
     const body = await response.text();

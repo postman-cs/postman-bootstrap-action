@@ -57,43 +57,6 @@ describe('internal integration adapter', () => {
     );
   });
 
-  it('routes system-env association through the worker internal endpoint', async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse({
-        data: {
-          associations: 1
-        }
-      })
-    );
-
-    const adapter = createInternalIntegrationAdapter({
-      backend: 'bifrost',
-      accessToken: 'token-123',
-      teamId: '11430732',
-      workerBaseUrl: 'https://catalog-admin.example.test',
-      fetchImpl
-    });
-
-    await adapter.associateSystemEnvironments('ws-123', [
-      { envUid: 'env-prod', systemEnvId: 'sys-prod' }
-    ]);
-
-    expect(fetchImpl).toHaveBeenCalledWith(
-      'https://catalog-admin.example.test/api/internal/system-envs/associate',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer token-123',
-          'Content-Type': 'application/json'
-        }),
-        body: JSON.stringify({
-          workspace_id: 'ws-123',
-          associations: [{ env_uid: 'env-prod', system_env_id: 'sys-prod' }]
-        })
-      })
-    );
-  });
-
   it('uses the Bifrost proxy for workspace repository linking and rejects unsupported backends', async () => {
     expect(() =>
       createInternalIntegrationAdapter({
@@ -306,7 +269,7 @@ describe('internal integration adapter', () => {
       accessToken: 'token-beta',
       teamId: '99999999',
       orgMode: true,
-      bifrostBaseUrl: 'https://bifrost-premium-https-v4.gw.postman-beta.com/',
+      bifrostBaseUrl: 'https://bifrost-https-v4.gw.postman-beta.com/',
       gatewayBaseUrl: 'https://gateway.postman-beta.com/',
       fetchImpl
     });
@@ -332,7 +295,7 @@ describe('internal integration adapter', () => {
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
-      'https://bifrost-premium-https-v4.gw.postman-beta.com/ws/proxy',
+      'https://bifrost-https-v4.gw.postman-beta.com/ws/proxy',
       expect.any(Object)
     );
   });

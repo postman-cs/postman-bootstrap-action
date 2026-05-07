@@ -34,19 +34,88 @@ describe('PostmanAssetsClient', () => {
     const client = new PostmanAssetsClient({
       apiKey: 'pmak-test',
       baseUrl: 'https://api.getpostman-beta.com/',
-      bifrostBaseUrl: 'https://bifrost-premium-https-v4.gw.postman-beta.com/',
+      bifrostBaseUrl: 'https://bifrost-https-v4.gw.postman-beta.com/',
       fetchImpl
     });
 
     expect(client.getBaseUrl()).toBe('https://api.getpostman-beta.com');
-    expect(client.getBifrostBaseUrl()).toBe('https://bifrost-premium-https-v4.gw.postman-beta.com');
+    expect(client.getBifrostBaseUrl()).toBe('https://bifrost-https-v4.gw.postman-beta.com');
 
     await client.getWorkspaceGitRepoUrl('ws-1', 'team-1', 'access-token');
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://bifrost-premium-https-v4.gw.postman-beta.com/ws/proxy',
+      'https://bifrost-https-v4.gw.postman-beta.com/ws/proxy',
       expect.objectContaining({ method: 'POST' })
     );
+  });
+
+  it('lists workspaces across cursor-paginated responses', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({
+        workspaces: [{ id: 'ws-1', name: 'Payments', type: 'team' }],
+        meta: { nextCursor: 'cursor-2' }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        workspaces: [{ id: 'ws-2', name: 'Orders', type: 'team' }]
+      }));
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.listWorkspaces()).resolves.toEqual([
+      { id: 'ws-1', name: 'Payments', type: 'team' },
+      { id: 'ws-2', name: 'Orders', type: 'team' }
+    ]);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://api.getpostman.com/workspaces?cursor=cursor-2',
+      expect.any(Object)
+    );
+  });
+
+  it('stops workspace pagination on repeated cursors', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({
+        workspaces: [{ id: 'ws-1', name: 'Payments' }],
+        meta: { nextCursor: 'cursor-1' }
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        workspaces: [{ id: 'ws-1', name: 'Payments' }],
+        meta: { nextCursor: 'cursor-1' }
+      }));
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.listWorkspaces()).resolves.toEqual([
+      { id: 'ws-1', name: 'Payments', type: 'team' },
+      { id: 'ws-1', name: 'Payments', type: 'team' }
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('masks Bifrost workspace lookup failures with HttpError handling', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('access-token leaked', { status: 500, statusText: 'Server Error' })
+    );
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    let thrown: unknown;
+    try {
+      await client.getWorkspaceGitRepoUrl('ws-1', 'team-1', 'access-token');
+    } catch (error) {
+      thrown = error;
+    }
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).toContain('500 Server Error');
+    expect(message).not.toContain('access-token leaked');
   });
 
   it('creates a workspace and enforces team visibility', async () => {

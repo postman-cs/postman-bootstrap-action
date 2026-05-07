@@ -2935,3 +2935,86 @@ describe('lintSpecViaCli', () => {
       })
     ).rejects.toThrow('workspace-team-id must be a numeric sub-team ID');
   });
+
+  it('detects org-mode when a service-account PMAK returns exactly one sub-team carrying organizationId', async () => {
+    // Real-world service-account key case: GET /teams returns a single team,
+    // but that team's organizationId is non-null because the parent account is
+    // org-mode. Previously isOrgMode only fired for teams.length > 1, so the
+    // action fell through to POST /workspaces and got a non-descriptive
+    // "Workspace creation failed" error. The actionable error must fire here.
+    const { core } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-unused' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('83498'),
+      getTeams: vi.fn().mockResolvedValue([
+        { id: 83498, name: 'jared-service-account-test', handle: 'jaredserviceaccounttest', organizationId: 987442 }
+      ]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(VALID_SPEC_31, { status: 200 })
+    );
+
+    await expect(
+      runBootstrap(createInputs(), {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman: withContractHelpers(postman),
+        specFetcher
+      })
+    ).rejects.toThrow(/Org-mode account detected[\s\S]*83498[\s\S]*jared-service-account-test/);
+
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('does not flag org-mode when a single team has a null organizationId (non-org account)', async () => {
+    // Negative case: single-team accounts that are NOT org-mode must keep
+    // proceeding to workspace creation. A null organizationId on the one and
+    // only team is the authoritative "not org-mode" signal.
+    const { core, outputs } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-created' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([
+        { id: 12345, name: 'solo-team', handle: 'soloteam', organizationId: null }
+      ]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(VALID_SPEC_31, { status: 200 })
+    );
+
+    await runBootstrap(createInputs(), {
+      core,
+      exec: execStub,
+      io: ioStub,
+      postman: withContractHelpers(postman),
+      specFetcher
+    });
+
+    expect(postman.createWorkspace).toHaveBeenCalled();
+    expect(outputs['workspace-id']).toBe('ws-created');
+  });

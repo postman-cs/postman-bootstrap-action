@@ -62230,9 +62230,7 @@ async function runBootstrap(inputs, dependencies) {
           "GET /teams returned multiple teams but none include organizationId. Org-mode detection may be degraded due to an upstream API change. If workspace creation fails, set workspace-team-id explicitly."
         );
       }
-      const orgIds = new Set(teams.filter((t) => t.organizationId != null).map((t) => t.organizationId));
-      const meTeamId = parseInt(teamId, 10);
-      const isOrgMode = teams.length > 1 && orgIds.size === 1 && orgIds.has(meTeamId);
+      const isOrgMode = teams.some((t) => t.organizationId != null);
       if (isOrgMode) {
         const teamList = teams.map((t) => `  ${t.id}  ${t.name}`).join("\n");
         throw new Error(

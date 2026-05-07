@@ -899,11 +899,11 @@ export async function runBootstrap(
           'If workspace creation fails, set workspace-team-id explicitly.'
         );
       }
-      const orgIds = new Set(teams.filter(t => t.organizationId != null).map(t => t.organizationId));
-      const meTeamId = parseInt(teamId, 10);
-      const isOrgMode = teams.length > 1
-        && orgIds.size === 1
-        && orgIds.has(meTeamId);
+      // Org-mode is a property of the account, not of the key's scope. Any team
+      // carrying a non-null organizationId means the parent account is org-mode,
+      // even if the PMAK is scoped to a single sub-team (typical for service
+      // accounts). POST /workspaces at the org level rejects these keys too.
+      const isOrgMode = teams.some(t => t.organizationId != null);
 
       if (isOrgMode) {
         const teamList = teams

@@ -107,6 +107,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     folderStrategy: 'Paths',
     nestedFolderHierarchy: false,
     requestNameSource: 'Fallback',
+    postmanStack: 'prod',
     postmanApiBase: 'https://api.getpostman.com',
     postmanBifrostBase: 'https://bifrost-premium-https-v4.gw.postman.com',
     postmanGatewayBase: 'https://gateway.postman.com',

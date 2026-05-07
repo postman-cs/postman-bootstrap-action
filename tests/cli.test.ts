@@ -114,6 +114,8 @@ describe('parseCliArgs', () => {
         '12345',
         '--repo-url',
         'https://github.com/postman-cs/postman-bootstrap-action',
+        '--postman-stack',
+        'beta',
         '--result-json',
         'tmp/result.json',
         '--dotenv-path',
@@ -132,13 +134,25 @@ describe('parseCliArgs', () => {
     expect(config.inputEnv.INPUT_RELEASE_LABEL).toBe('v1.2.3');
     expect(config.inputEnv.INPUT_WORKSPACE_TEAM_ID).toBe('12345');
     expect(config.inputEnv.INPUT_REPO_URL).toBe('https://github.com/postman-cs/postman-bootstrap-action');
+    expect(config.inputEnv.INPUT_POSTMAN_STACK).toBe('beta');
     expect(config.resultJsonPath).toBe('tmp/result.json');
     expect(config.dotenvPath).toBe('tmp/result.env');
   });
 
   it('maps every public action input and ignores legacy aliases', () => {
+    const values: Record<string, string> = {
+      'collection-sync-mode': 'refresh',
+      'folder-strategy': 'Paths',
+      'integration-backend': 'bifrost',
+      'nested-folder-hierarchy': 'false',
+      'openapi-version': '3.1',
+      'postman-stack': 'prod',
+      'request-name-source': 'Fallback',
+      'spec-sync-mode': 'update',
+      'sync-examples': 'true'
+    };
     const argv = contractInputNames.flatMap((name, index) =>
-      index % 2 === 0 ? [`--${name}`, `value-${name}`] : [`--${name}=value-${name}`]
+      index % 2 === 0 ? [`--${name}`, values[name] ?? `value-${name}`] : [`--${name}=${values[name] ?? `value-${name}`}`]
     );
     const config = parseCliArgs([
       ...argv,
@@ -150,7 +164,7 @@ describe('parseCliArgs', () => {
 
     for (const name of contractInputNames) {
       const envName = `INPUT_${name.replace(/-/g, '_').toUpperCase()}`;
-      expect(config.inputEnv[envName]).toBe(`value-${name}`);
+      expect(config.inputEnv[envName]).toBe(values[name] ?? `value-${name}`);
     }
     expect(config.inputEnv.INPUT_TEAM_ID).toBeUndefined();
     expect(config.inputEnv.INPUT_POSTMAN_TEAM_ID).toBeUndefined();
@@ -549,10 +563,10 @@ describe('package CLI bin', () => {
     expect(packageJson).toMatchObject({
       files: ['action.yml', 'dist/', 'README.md', 'LICENSE']
     });
-    expect(packageJson.engines?.node).toBe('>=20');
+    expect(packageJson.engines?.node).toBe('>=24');
     expect(readme).toContain(`npm install -g ${packageJson.name}`);
     expect(readme).not.toContain('npm install -g postman-bootstrap-action');
-    expect(readme).toContain('The CLI package supports Node.js 20+');
+    expect(readme).toContain('The CLI package supports Node.js 24+');
     expect(readme).toContain("versionSpec: '24.x'");
     expect(readme).not.toContain("versionSpec: '20.x'");
     expect(gitignore.split(/\r?\n/)).toEqual(expect.arrayContaining(['.env', '.env.*', '!.env.example']));

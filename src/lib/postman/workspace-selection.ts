@@ -103,10 +103,20 @@ export async function resolveCanonicalWorkspaceSelection(args: {
   }
 
   if (matchingWorkspaces.length > 0) {
-    matchingWorkspaces = await Promise.all(matchingWorkspaces.map(async (workspace) => ({
+    const lookupResults = await Promise.allSettled(matchingWorkspaces.map(async (workspace) => ({
       ...workspace,
       linkedRepoUrl: await args.postman.getWorkspaceGitRepoUrl(workspace.id, args.teamId, args.accessToken),
     })));
+    matchingWorkspaces = lookupResults
+      .map((result, index) => {
+        if (result.status === 'fulfilled') {
+          return result.value;
+        }
+        const workspace = matchingWorkspaces[index];
+        args.warn?.(`Workspace Git repo lookup failed for ${workspace?.id ?? 'unknown workspace'}; ignoring linked-repo metadata for that candidate: ${result.reason}`);
+        return workspace ? { ...workspace, linkedRepoUrl: null } : undefined;
+      })
+      .filter((workspace): workspace is { id: string; name: string; linkedRepoUrl: string | null } => Boolean(workspace));
   }
 
   return chooseCanonicalWorkspace({

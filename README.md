@@ -222,7 +222,7 @@ Install globally:
 npm install -g @postman-cse/onboarding-bootstrap
 ```
 
-The CLI package supports Node.js 20+. The examples below use Node.js 24 to match the GitHub Action runtime.
+The CLI package supports Node.js 24+ to match the GitHub Action runtime.
 
 Basic usage:
 

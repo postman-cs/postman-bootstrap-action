@@ -46952,25 +46952,11 @@ var openAlphaActionContract = {
       default: "Fallback",
       allowedValues: ["Fallback", "URL"]
     },
-    "postman-api-base": {
-      description: "Base URL for the public Postman API (override for beta/staging stacks).",
+    "postman-stack": {
+      description: "Postman stack profile.",
       required: false,
-      default: "https://api.getpostman.com"
-    },
-    "postman-bifrost-base": {
-      description: "Base URL for the Bifrost gateway used by internal integration calls (override for beta/staging stacks).",
-      required: false,
-      default: "https://bifrost-premium-https-v4.gw.postman.com"
-    },
-    "postman-gateway-base": {
-      description: "Base URL for the Postman gateway used by governance and workspace-group calls (override for beta/staging stacks).",
-      required: false,
-      default: "https://gateway.postman.com"
-    },
-    "postman-cli-install-url": {
-      description: "Installer URL for the Postman CLI (override for beta/staging stacks).",
-      required: false,
-      default: "https://dl-cli.pstmn.io/install/unix.sh"
+      default: "prod",
+      allowedValues: ["prod", "beta"]
     }
   },
   outputs: {
@@ -47161,6 +47147,32 @@ var HttpError = class _HttpError extends Error {
   }
 };
 
+// src/lib/postman/base-urls.ts
+var POSTMAN_ENDPOINT_PROFILES = {
+  prod: {
+    apiBaseUrl: "https://api.getpostman.com",
+    bifrostBaseUrl: "https://bifrost-premium-https-v4.gw.postman.com",
+    cliInstallUrl: "https://dl-cli.pstmn.io/install/unix.sh",
+    gatewayBaseUrl: "https://gateway.postman.com"
+  },
+  beta: {
+    apiBaseUrl: "https://api.getpostman-beta.com",
+    bifrostBaseUrl: "https://bifrost-https-v4.gw.postman-beta.com",
+    cliInstallUrl: "https://dl-cli.pstmn-beta.io/install/unix.sh",
+    gatewayBaseUrl: "https://gateway.postman-beta.com"
+  }
+};
+function parsePostmanStack(value) {
+  const normalized = String(value || "prod").trim().toLowerCase();
+  if (normalized === "prod" || normalized === "beta") {
+    return normalized;
+  }
+  throw new Error(`Unsupported postman-stack "${value}". Supported values: prod, beta`);
+}
+function resolvePostmanEndpointProfile(stack) {
+  return POSTMAN_ENDPOINT_PROFILES[stack];
+}
+
 // src/lib/retry.ts
 function sleep(delayMs) {
   return new Promise((resolve3) => {
@@ -47215,6 +47227,15 @@ function asRecord(value) {
   }
   return value;
 }
+function extractWorkspacesPage(data) {
+  const workspaces = Array.isArray(data?.workspaces) ? data.workspaces : [];
+  const meta = asRecord(data?.meta);
+  const pagination = asRecord(data?.pagination);
+  const nextCursor = String(
+    data?.nextCursor ?? data?.next_cursor ?? meta?.nextCursor ?? meta?.next_cursor ?? pagination?.nextCursor ?? pagination?.next_cursor ?? ""
+  ).trim() || void 0;
+  return { nextCursor, workspaces };
+}
 function normalizeGitRepoUrl(url) {
   const raw = String(url || "").trim();
   if (!raw) return "";
@@ -47268,12 +47289,12 @@ var PostmanAssetsClient = class {
   secretMasker;
   constructor(options) {
     this.apiKey = String(options.apiKey || "").trim();
-    this.baseUrl = String(options.baseUrl || "https://api.getpostman.com").replace(
+    this.baseUrl = String(options.baseUrl || POSTMAN_ENDPOINT_PROFILES.prod.apiBaseUrl).replace(
       /\/+$/,
       ""
     );
     this.bifrostBaseUrl = String(
-      options.bifrostBaseUrl || "https://bifrost-premium-https-v4.gw.postman.com"
+      options.bifrostBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.bifrostBaseUrl
     ).replace(/\/+$/, "");
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.secretMasker = options.secretMasker ?? createSecretMasker([this.apiKey]);
@@ -47384,13 +47405,26 @@ var PostmanAssetsClient = class {
     });
   }
   async listWorkspaces() {
-    const data = await this.request("/workspaces");
-    const workspaces = data?.workspaces ?? [];
-    return Array.isArray(workspaces) ? workspaces.map((entry) => asRecord(entry)).filter((workspace) => Boolean(workspace?.id && workspace?.name)).map((workspace) => ({
+    const allWorkspaces = [];
+    const seenCursors = /* @__PURE__ */ new Set();
+    let nextCursor;
+    do {
+      const query = nextCursor ? `?cursor=${encodeURIComponent(nextCursor)}` : "";
+      const data = await this.request(`/workspaces${query}`);
+      const page = extractWorkspacesPage(data);
+      allWorkspaces.push(...page.workspaces);
+      if (!page.nextCursor || seenCursors.has(page.nextCursor)) {
+        nextCursor = void 0;
+      } else {
+        seenCursors.add(page.nextCursor);
+        nextCursor = page.nextCursor;
+      }
+    } while (nextCursor);
+    return allWorkspaces.map((entry) => asRecord(entry)).filter((workspace) => Boolean(workspace?.id && workspace?.name)).map((workspace) => ({
       id: String(workspace.id),
       name: String(workspace.name),
       type: String(workspace.type ?? "team")
-    })) : [];
+    }));
   }
   async findWorkspacesByName(name) {
     const workspaces = await this.listWorkspaces();
@@ -47416,8 +47450,12 @@ var PostmanAssetsClient = class {
     });
     if (response.status === 404) return null;
     if (!response.ok) {
-      const body2 = await response.text();
-      throw new Error(`Bifrost workspace lookup failed: ${response.status} - ${body2}`);
+      throw await HttpError.fromResponse(response, {
+        method: "POST",
+        requestHeaders: headers,
+        secretValues: [this.apiKey, accessToken],
+        url
+      });
     }
     const body = await response.text();
     if (!body.trim()) return null;
@@ -47823,22 +47861,18 @@ var BifrostInternalIntegrationAdapter = class {
   orgMode;
   secretMasker;
   teamId;
-  workerBaseUrl;
   constructor(options) {
     this.accessToken = String(options.accessToken || "").trim();
     this.bifrostBaseUrl = String(
-      options.bifrostBaseUrl || "https://bifrost-premium-https-v4.gw.postman.com"
+      options.bifrostBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.bifrostBaseUrl
     ).replace(/\/+$/, "");
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.gatewayBaseUrl = String(
-      options.gatewayBaseUrl || "https://gateway.postman.com"
+      options.gatewayBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.gatewayBaseUrl
     ).replace(/\/+$/, "");
     this.orgMode = options.orgMode ?? false;
     this.secretMasker = options.secretMasker ?? createSecretMasker([this.accessToken]);
     this.teamId = String(options.teamId || "").trim();
-    this.workerBaseUrl = String(
-      options.workerBaseUrl || "https://catalog-admin.postman-account2009.workers.dev"
-    ).replace(/\/+$/, "");
   }
   async proxyRequest(service, method, requestPath2, body) {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
@@ -47912,39 +47946,6 @@ var BifrostInternalIntegrationAdapter = class {
         },
         secretValues: [this.accessToken],
         url: patchUrl
-      });
-    }
-  }
-  async associateSystemEnvironments(workspaceId, associations) {
-    if (associations.length === 0) {
-      return;
-    }
-    const response = await this.fetchImpl(
-      `${this.workerBaseUrl}/api/internal/system-envs/associate`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.accessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          workspace_id: workspaceId,
-          associations: associations.map((entry) => ({
-            env_uid: entry.envUid,
-            system_env_id: entry.systemEnvId
-          }))
-        })
-      }
-    );
-    if (!response.ok) {
-      throw await HttpError.fromResponse(response, {
-        method: "POST",
-        requestHeaders: {
-          Authorization: `Bearer ${this.accessToken}`,
-          "Content-Type": "application/json"
-        },
-        secretValues: [this.accessToken],
-        url: `${this.workerBaseUrl}/api/internal/system-envs/associate`
       });
     }
   }
@@ -48455,10 +48456,18 @@ async function resolveCanonicalWorkspaceSelection(args) {
     args.warn?.(`Workspace duplicate check failed; falling back to repo workspace ${args.repoWorkspaceId}: ${error}`);
   }
   if (matchingWorkspaces.length > 0) {
-    matchingWorkspaces = await Promise.all(matchingWorkspaces.map(async (workspace) => ({
+    const lookupResults = await Promise.allSettled(matchingWorkspaces.map(async (workspace) => ({
       ...workspace,
       linkedRepoUrl: await args.postman.getWorkspaceGitRepoUrl(workspace.id, args.teamId, args.accessToken)
     })));
+    matchingWorkspaces = lookupResults.map((result, index) => {
+      if (result.status === "fulfilled") {
+        return result.value;
+      }
+      const workspace = matchingWorkspaces[index];
+      args.warn?.(`Workspace Git repo lookup failed for ${workspace?.id ?? "unknown workspace"}; ignoring linked-repo metadata for that candidate: ${result.reason}`);
+      return workspace ? { ...workspace, linkedRepoUrl: null } : void 0;
+    }).filter((workspace) => Boolean(workspace));
   }
   return chooseCanonicalWorkspace({
     repoWorkspaceId: args.repoWorkspaceId,
@@ -61787,6 +61796,8 @@ function resolveInputs(env = process.env) {
       throw new Error(`spec-url must be a valid HTTPS URL, got: ${sanitizeUrlForLog(specUrl)}`, { cause: error });
     }
   }
+  const postmanStack = parsePostmanStack(getInput("postman-stack", env));
+  const endpointProfile = resolvePostmanEndpointProfile(postmanStack);
   return {
     projectName: getInput("project-name", env) ?? env.GITHUB_REPOSITORY?.split("/").pop() ?? env.CI_PROJECT_NAME ?? "",
     workspaceId: getInput("workspace-id", env),
@@ -61814,10 +61825,11 @@ function resolveInputs(env = process.env) {
     folderStrategy: parseEnumInput("folder-strategy", getInput("folder-strategy", env), "Paths"),
     nestedFolderHierarchy: parseBooleanInput("nested-folder-hierarchy", getInput("nested-folder-hierarchy", env), false),
     requestNameSource: parseEnumInput("request-name-source", getInput("request-name-source", env), "Fallback"),
-    postmanApiBase: getInput("postman-api-base", env) ?? openAlphaActionContract.inputs["postman-api-base"].default ?? "https://api.getpostman.com",
-    postmanBifrostBase: getInput("postman-bifrost-base", env) ?? openAlphaActionContract.inputs["postman-bifrost-base"].default ?? "https://bifrost-premium-https-v4.gw.postman.com",
-    postmanGatewayBase: getInput("postman-gateway-base", env) ?? openAlphaActionContract.inputs["postman-gateway-base"].default ?? "https://gateway.postman.com",
-    postmanCliInstallUrl: getInput("postman-cli-install-url", env) ?? openAlphaActionContract.inputs["postman-cli-install-url"].default ?? "https://dl-cli.pstmn.io/install/unix.sh",
+    postmanStack,
+    postmanApiBase: endpointProfile.apiBaseUrl,
+    postmanBifrostBase: endpointProfile.bifrostBaseUrl,
+    postmanGatewayBase: endpointProfile.gatewayBaseUrl,
+    postmanCliInstallUrl: endpointProfile.cliInstallUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -61885,10 +61897,7 @@ function readActionInputs(actionCore) {
     INPUT_NESTED_FOLDER_HIERARCHY: optionalInput(actionCore, "nested-folder-hierarchy") ?? openAlphaActionContract.inputs["nested-folder-hierarchy"].default,
     INPUT_REQUEST_NAME_SOURCE: optionalInput(actionCore, "request-name-source") ?? openAlphaActionContract.inputs["request-name-source"].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, "openapi-version") ?? "",
-    INPUT_POSTMAN_API_BASE: optionalInput(actionCore, "postman-api-base") ?? openAlphaActionContract.inputs["postman-api-base"].default,
-    INPUT_POSTMAN_BIFROST_BASE: optionalInput(actionCore, "postman-bifrost-base") ?? openAlphaActionContract.inputs["postman-bifrost-base"].default,
-    INPUT_POSTMAN_GATEWAY_BASE: optionalInput(actionCore, "postman-gateway-base") ?? openAlphaActionContract.inputs["postman-gateway-base"].default,
-    INPUT_POSTMAN_CLI_INSTALL_URL: optionalInput(actionCore, "postman-cli-install-url") ?? openAlphaActionContract.inputs["postman-cli-install-url"].default
+    INPUT_POSTMAN_STACK: optionalInput(actionCore, "postman-stack") ?? openAlphaActionContract.inputs["postman-stack"].default
   });
   return inputs;
 }
@@ -63030,10 +63039,7 @@ var cliInputNames = [
   "workspace-team-id",
   "repo-url",
   "openapi-version",
-  "postman-api-base",
-  "postman-bifrost-base",
-  "postman-gateway-base",
-  "postman-cli-install-url"
+  "postman-stack"
 ];
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 function toCommandLabel(commandLine, args, secretMasker) {

@@ -120,6 +120,41 @@ describe('open-alpha action contract', () => {
       .toThrow(/Unsupported request-name-source/);
   });
 
+  it('selects Postman endpoint profiles from the hidden postman-stack input', () => {
+    expect(openAlphaActionContract.inputs['postman-stack'].default).toBe('prod');
+    expect(openAlphaActionContract.inputs['postman-stack'].allowedValues).toEqual(['prod', 'beta']);
+    expect(actionManifest.inputs['postman-stack'].default).toBe('prod');
+
+    const prod = resolveInputs({});
+    expect(prod.postmanStack).toBe('prod');
+    expect(prod.postmanApiBase).toBe('https://api.getpostman.com');
+    expect(prod.postmanBifrostBase).toBe('https://bifrost-premium-https-v4.gw.postman.com');
+    expect(prod.postmanGatewayBase).toBe('https://gateway.postman.com');
+    expect(prod.postmanCliInstallUrl).toBe('https://dl-cli.pstmn.io/install/unix.sh');
+
+    const beta = resolveInputs({ INPUT_POSTMAN_STACK: 'beta' });
+    expect(beta.postmanStack).toBe('beta');
+    expect(beta.postmanApiBase).toBe('https://api.getpostman-beta.com');
+    expect(beta.postmanBifrostBase).toBe('https://bifrost-https-v4.gw.postman-beta.com');
+    expect(beta.postmanGatewayBase).toBe('https://gateway.postman-beta.com');
+    expect(beta.postmanCliInstallUrl).toBe('https://dl-cli.pstmn-beta.io/install/unix.sh');
+
+    const betaWithLegacyOverrides = resolveInputs({
+      INPUT_POSTMAN_STACK: 'beta',
+      INPUT_POSTMAN_API_BASE: 'https://override.example.com',
+      INPUT_POSTMAN_BIFROST_BASE: 'https://override.example.com',
+      INPUT_POSTMAN_GATEWAY_BASE: 'https://override.example.com',
+      INPUT_POSTMAN_CLI_INSTALL_URL: 'https://override.example.com/install.sh'
+    });
+    expect(betaWithLegacyOverrides.postmanApiBase).toBe(beta.postmanApiBase);
+    expect(betaWithLegacyOverrides.postmanBifrostBase).toBe(beta.postmanBifrostBase);
+    expect(betaWithLegacyOverrides.postmanGatewayBase).toBe(beta.postmanGatewayBase);
+    expect(betaWithLegacyOverrides.postmanCliInstallUrl).toBe(beta.postmanCliInstallUrl);
+
+    expect(() => resolveInputs({ INPUT_POSTMAN_STACK: 'stage' }))
+      .toThrow(/Unsupported postman-stack/);
+  });
+
   it('rejects malformed governance JSON and non-numeric workspace team IDs during resolution', () => {
     expect(() => resolveInputs({ INPUT_GOVERNANCE_MAPPING_JSON: '{not-json' }))
       .toThrow(/governance-mapping-json must be valid JSON/);
@@ -204,6 +239,24 @@ describe('open-alpha action contract', () => {
     };
     const inputs = readActionInputs(coreStub);
     expect(inputs.openapiVersion).toBe('3.1');
+  });
+
+  it('readActionInputs explicitly wires postman-stack from core.getInput', () => {
+    const coreStub = {
+      getInput: (name: string) => {
+        const map: Record<string, string> = {
+          'project-name': 'my-api',
+          'spec-url': 'https://example.com/openapi.yaml',
+          'postman-api-key': 'pmak-test',
+          'postman-stack': 'beta'
+        };
+        return map[name] ?? '';
+      },
+      setSecret: () => {}
+    };
+    const inputs = readActionInputs(coreStub);
+    expect(inputs.postmanStack).toBe('beta');
+    expect(inputs.postmanApiBase).toBe('https://api.getpostman-beta.com');
   });
 
   it('readActionInputs ignores removed legacy team inputs', () => {

@@ -257,6 +257,36 @@ describe('resolveCanonicalWorkspaceSelection', () => {
     expect(postman.getWorkspaceGitRepoUrl).toHaveBeenCalledTimes(2);
   });
 
+  it('warns and keeps selecting when one workspace repo lookup fails', async () => {
+    const warn = vi.fn();
+    const postman = {
+      findWorkspacesByName: vi.fn().mockResolvedValue([
+        { id: 'ws-1', name: workspaceName },
+        { id: 'ws-2', name: workspaceName }
+      ]),
+      getWorkspaceGitRepoUrl: vi.fn().mockImplementation(async (id: string) => {
+        if (id === 'ws-1') throw new Error('bifrost unavailable');
+        return repoUrl;
+      })
+    };
+
+    const result = await resolveCanonicalWorkspaceSelection({
+      postman,
+      workspaceName,
+      repoUrl,
+      teamId: 'team-123',
+      accessToken: 'token-abc',
+      warn
+    });
+
+    expect(result.type).toBe('existing');
+    if (result.type === 'existing') {
+      expect(result.workspaceId).toBe('ws-2');
+      expect(result.source).toBe('linked_match');
+    }
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ws-1'));
+  });
+
   it('falls back to repoWorkspaceId when workspace lookup fails', async () => {
     const warn = vi.fn();
     const postman = {

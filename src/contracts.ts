@@ -138,25 +138,11 @@ export const openAlphaActionContract: BetaActionContract = {
       default: 'Fallback',
       allowedValues: ['Fallback', 'URL']
     },
-    'postman-api-base': {
-      description: 'Base URL for the public Postman API (override for beta/staging stacks).',
+    'postman-stack': {
+      description: 'Postman stack profile.',
       required: false,
-      default: 'https://api.getpostman.com'
-    },
-    'postman-bifrost-base': {
-      description: 'Base URL for the Bifrost gateway used by internal integration calls (override for beta/staging stacks).',
-      required: false,
-      default: 'https://bifrost-premium-https-v4.gw.postman.com'
-    },
-    'postman-gateway-base': {
-      description: 'Base URL for the Postman gateway used by governance and workspace-group calls (override for beta/staging stacks).',
-      required: false,
-      default: 'https://gateway.postman.com'
-    },
-    'postman-cli-install-url': {
-      description: 'Installer URL for the Postman CLI (override for beta/staging stacks).',
-      required: false,
-      default: 'https://dl-cli.pstmn.io/install/unix.sh'
+      default: 'prod',
+      allowedValues: ['prod', 'beta']
     }
   },
   outputs: {

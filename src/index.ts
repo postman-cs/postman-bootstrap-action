@@ -471,17 +471,34 @@ async function runGroup<T>(
   return actionCore.group(name, fn);
 }
 
+function validateHttpsInstallUrl(url: string): string {
+  const safeUrlPattern = /^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~/?=&%-]+$/;
+  if (!safeUrlPattern.test(url)) {
+    throw new Error(
+      `postman-cli-install-url must be an https URL with safe characters; got: ${url}`
+    );
+  }
+  return url;
+}
+
 async function ensurePostmanCli(
   dependencies: Pick<BootstrapExecutionDependencies, 'exec' | 'io'>,
   postmanApiKey: string,
   installUrl: string = 'https://dl-cli.pstmn.io/install/unix.sh'
 ): Promise<void> {
+  const validatedUrl = validateHttpsInstallUrl(installUrl);
   const existing = await dependencies.io.which('postman', false).catch(() => '');
   if (!existing) {
-    await dependencies.exec.exec('sh', [
-      '-c',
-      `curl -o- "${installUrl}" | sh`
-    ]);
+    await dependencies.exec.exec(
+      'sh',
+      ['-c', 'curl -fsSL "$POSTMAN_CLI_INSTALL_URL" | sh'],
+      {
+        env: {
+          ...process.env,
+          POSTMAN_CLI_INSTALL_URL: validatedUrl
+        }
+      }
+    );
   }
 
   await dependencies.exec.exec('postman', ['login', '--with-api-key', postmanApiKey]);

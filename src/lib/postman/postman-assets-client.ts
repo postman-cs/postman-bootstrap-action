@@ -21,6 +21,7 @@ function asRecord(value: unknown): JsonRecord | null {
 export interface PostmanAssetsClientOptions {
   apiKey: string;
   baseUrl?: string;
+  bifrostBaseUrl?: string;
   fetchImpl?: typeof fetch;
   secretMasker?: SecretMasker;
 }
@@ -83,6 +84,7 @@ function extractGitRepoUrl(value: unknown): string | null {
 export class PostmanAssetsClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly bifrostBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly secretMasker: SecretMasker;
 
@@ -92,6 +94,9 @@ export class PostmanAssetsClient {
       /\/+$/,
       ''
     );
+    this.bifrostBaseUrl = String(
+      options.bifrostBaseUrl || 'https://bifrost-premium-https-v4.gw.postman.com'
+    ).replace(/\/+$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.secretMasker =
       options.secretMasker ?? createSecretMasker([this.apiKey]);
@@ -99,6 +104,10 @@ export class PostmanAssetsClient {
 
   getBaseUrl(): string {
     return this.baseUrl;
+  }
+
+  getBifrostBaseUrl(): string {
+    return this.bifrostBaseUrl;
   }
 
   async getMe(): Promise<Record<string, unknown> | null> {
@@ -250,7 +259,7 @@ export class PostmanAssetsClient {
     teamId: string,
     accessToken: string
   ): Promise<string | null> {
-    const url = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
+    const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers: Record<string, string> = {
       'x-access-token': accessToken,
       'Content-Type': 'application/json'

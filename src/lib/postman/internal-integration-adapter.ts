@@ -19,7 +19,9 @@ export interface SpecificationCollectionLink {
 export interface InternalIntegrationAdapterOptions {
   accessToken: string;
   backend: string;
+  bifrostBaseUrl?: string;
   fetchImpl?: typeof fetch;
+  gatewayBaseUrl?: string;
   secretMasker?: SecretMasker;
   teamId: string;
   workerBaseUrl?: string;
@@ -51,14 +53,22 @@ export interface InternalIntegrationAdapter {
 
 class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private readonly accessToken: string;
+  private readonly bifrostBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly gatewayBaseUrl: string;
   private readonly secretMasker: SecretMasker;
   private readonly teamId: string;
   private readonly workerBaseUrl: string;
 
   constructor(options: InternalIntegrationAdapterOptions) {
     this.accessToken = String(options.accessToken || '').trim();
+    this.bifrostBaseUrl = String(
+      options.bifrostBaseUrl || 'https://bifrost-premium-https-v4.gw.postman.com'
+    ).replace(/\/+$/, '');
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.gatewayBaseUrl = String(
+      options.gatewayBaseUrl || 'https://gateway.postman.com'
+    ).replace(/\/+$/, '');
     this.secretMasker =
       options.secretMasker ?? createSecretMasker([this.accessToken]);
     this.teamId = String(options.teamId || '').trim();
@@ -74,7 +84,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     requestPath: string,
     body?: unknown
   ): Promise<Response> {
-    const url = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
+    const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-access-token': this.accessToken
@@ -112,14 +122,12 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       return;
     }
 
-    const listResponse = await this.fetchImpl(
-      'https://gateway.postman.com/configure/workspace-groups',
-      {
-        headers: {
-          'x-access-token': this.accessToken
-        }
+    const listUrl = `${this.gatewayBaseUrl}/configure/workspace-groups`;
+    const listResponse = await this.fetchImpl(listUrl, {
+      headers: {
+        'x-access-token': this.accessToken
       }
-    );
+    });
 
     if (!listResponse.ok) {
       throw await HttpError.fromResponse(listResponse, {
@@ -128,7 +136,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
           'x-access-token': this.accessToken
         },
         secretValues: [this.accessToken],
-        url: 'https://gateway.postman.com/configure/workspace-groups'
+        url: listUrl
       });
     }
 
@@ -140,19 +148,17 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       return;
     }
 
-    const patchResponse = await this.fetchImpl(
-      `https://gateway.postman.com/configure/workspace-groups/${group.id}`,
-      {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-access-token': this.accessToken
-        },
-        body: JSON.stringify({
-          workspaces: [workspaceId]
-        })
-      }
-    );
+    const patchUrl = `${this.gatewayBaseUrl}/configure/workspace-groups/${group.id}`;
+    const patchResponse = await this.fetchImpl(patchUrl, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-access-token': this.accessToken
+      },
+      body: JSON.stringify({
+        workspaces: [workspaceId]
+      })
+    });
 
     if (!patchResponse.ok) {
       throw await HttpError.fromResponse(patchResponse, {
@@ -162,7 +168,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
           'x-access-token': this.accessToken
         },
         secretValues: [this.accessToken],
-        url: `https://gateway.postman.com/configure/workspace-groups/${group.id}`
+        url: patchUrl
       });
     }
   }
@@ -256,7 +262,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
       },
       secretValues: [this.accessToken],
-      url: 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy'
+      url: `${this.bifrostBaseUrl}/ws/proxy`
     });
   }
 
@@ -290,7 +296,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
       },
       secretValues: [this.accessToken],
-      url: 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy'
+      url: `${this.bifrostBaseUrl}/ws/proxy`
     });
   }
 
@@ -316,7 +322,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         ...(this.teamId ? { 'x-entity-team-id': this.teamId } : {})
       },
       secretValues: [this.accessToken],
-      url: 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy'
+      url: `${this.bifrostBaseUrl}/ws/proxy`
     });
   }
 

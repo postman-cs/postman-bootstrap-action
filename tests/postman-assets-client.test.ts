@@ -27,6 +27,28 @@ describe('PostmanAssetsClient', () => {
     expect(client.getBaseUrl()).toBe('https://api.getpostman.com');
   });
 
+  it('honors custom baseUrl and bifrostBaseUrl for beta stacks', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ repo: 'https://github.com/example/repo' })
+    );
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      baseUrl: 'https://api.getpostman-beta.com/',
+      bifrostBaseUrl: 'https://bifrost-premium-https-v4.gw.postman-beta.com/',
+      fetchImpl
+    });
+
+    expect(client.getBaseUrl()).toBe('https://api.getpostman-beta.com');
+    expect(client.getBifrostBaseUrl()).toBe('https://bifrost-premium-https-v4.gw.postman-beta.com');
+
+    await client.getWorkspaceGitRepoUrl('ws-1', 'team-1', 'access-token');
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://bifrost-premium-https-v4.gw.postman-beta.com/ws/proxy',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
   it('creates a workspace and enforces team visibility', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

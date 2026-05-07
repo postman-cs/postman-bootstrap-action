@@ -45,6 +45,10 @@ export interface ResolvedInputs {
   folderStrategy: string;
   nestedFolderHierarchy: boolean;
   requestNameSource: string;
+  postmanApiBase: string;
+  postmanBifrostBase: string;
+  postmanGatewayBase: string;
+  postmanCliInstallUrl: string;
   githubRefName?: string;
   githubHeadRef?: string;
   githubRef?: string;
@@ -327,6 +331,22 @@ export function resolveInputs(
     nestedFolderHierarchy: parseBooleanInput('nested-folder-hierarchy', getInput('nested-folder-hierarchy', env), false),
     requestNameSource:
       parseEnumInput('request-name-source', getInput('request-name-source', env), 'Fallback'),
+    postmanApiBase:
+      getInput('postman-api-base', env) ??
+      openAlphaActionContract.inputs['postman-api-base'].default ??
+      'https://api.getpostman.com',
+    postmanBifrostBase:
+      getInput('postman-bifrost-base', env) ??
+      openAlphaActionContract.inputs['postman-bifrost-base'].default ??
+      'https://bifrost-premium-https-v4.gw.postman.com',
+    postmanGatewayBase:
+      getInput('postman-gateway-base', env) ??
+      openAlphaActionContract.inputs['postman-gateway-base'].default ??
+      'https://gateway.postman.com',
+    postmanCliInstallUrl:
+      getInput('postman-cli-install-url', env) ??
+      openAlphaActionContract.inputs['postman-cli-install-url'].default ??
+      'https://dl-cli.pstmn.io/install/unix.sh',
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -419,7 +439,19 @@ export function readActionInputs(
     INPUT_REQUEST_NAME_SOURCE:
       optionalInput(actionCore, 'request-name-source') ??
       openAlphaActionContract.inputs['request-name-source'].default,
-    INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? ''
+    INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? '',
+    INPUT_POSTMAN_API_BASE:
+      optionalInput(actionCore, 'postman-api-base') ??
+      openAlphaActionContract.inputs['postman-api-base'].default,
+    INPUT_POSTMAN_BIFROST_BASE:
+      optionalInput(actionCore, 'postman-bifrost-base') ??
+      openAlphaActionContract.inputs['postman-bifrost-base'].default,
+    INPUT_POSTMAN_GATEWAY_BASE:
+      optionalInput(actionCore, 'postman-gateway-base') ??
+      openAlphaActionContract.inputs['postman-gateway-base'].default,
+    INPUT_POSTMAN_CLI_INSTALL_URL:
+      optionalInput(actionCore, 'postman-cli-install-url') ??
+      openAlphaActionContract.inputs['postman-cli-install-url'].default
   });
 
   return inputs;
@@ -441,13 +473,14 @@ async function runGroup<T>(
 
 async function ensurePostmanCli(
   dependencies: Pick<BootstrapExecutionDependencies, 'exec' | 'io'>,
-  postmanApiKey: string
+  postmanApiKey: string,
+  installUrl: string = 'https://dl-cli.pstmn.io/install/unix.sh'
 ): Promise<void> {
   const existing = await dependencies.io.which('postman', false).catch(() => '');
   if (!existing) {
     await dependencies.exec.exec('sh', [
       '-c',
-      'curl -o- "https://dl-cli.pstmn.io/install/unix.sh" | sh'
+      `curl -o- "${installUrl}" | sh`
     ]);
   }
 
@@ -733,7 +766,7 @@ export async function runBootstrap(
   const aboutText = `Auto-provisioned by Postman CS open-alpha for ${inputs.projectName}`;
 
   await runGroup(dependencies.core, 'Install Postman CLI', async () => {
-    await ensurePostmanCli(dependencies, inputs.postmanApiKey);
+    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl);
   });
 
   const resourcesState = readResourcesState();
@@ -1611,6 +1644,8 @@ export function createBootstrapDependencies(
   ]);
   const postman = new PostmanAssetsClient({
     apiKey: inputs.postmanApiKey,
+    baseUrl: inputs.postmanApiBase,
+    bifrostBaseUrl: inputs.postmanBifrostBase,
     secretMasker
   });
   const internalIntegration =
@@ -1618,6 +1653,8 @@ export function createBootstrapDependencies(
       ? createInternalIntegrationAdapter({
         accessToken: inputs.postmanAccessToken,
         backend: inputs.integrationBackend,
+        bifrostBaseUrl: inputs.postmanBifrostBase,
+        gatewayBaseUrl: inputs.postmanGatewayBase,
         secretMasker,
         teamId: inputs.teamId || ''
       })

@@ -285,6 +285,52 @@ describe('internal integration adapter', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('honors custom bifrostBaseUrl and gatewayBaseUrl overrides for beta stacks', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          data: [{ id: 'group-beta', name: 'Core Banking' }]
+        })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(jsonResponse({ data: { ok: true } }));
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-beta',
+      teamId: '99999999',
+      bifrostBaseUrl: 'https://bifrost-premium-https-v4.gw.postman-beta.com/',
+      gatewayBaseUrl: 'https://gateway.postman-beta.com/',
+      fetchImpl
+    });
+
+    await adapter.assignWorkspaceToGovernanceGroup(
+      'ws-beta',
+      'core-banking',
+      JSON.stringify({ 'core-banking': 'Core Banking' })
+    );
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://gateway.postman-beta.com/configure/workspace-groups',
+      expect.any(Object)
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://gateway.postman-beta.com/configure/workspace-groups/group-beta',
+      expect.objectContaining({ method: 'PATCH' })
+    );
+
+    await adapter.syncCollection('spec-beta', 'col-beta');
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://bifrost-premium-https-v4.gw.postman-beta.com/ws/proxy',
+      expect.any(Object)
+    );
+  });
+
   it('throws when projectAlreadyConnected but linked to a different repo', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(

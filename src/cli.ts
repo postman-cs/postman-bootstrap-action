@@ -97,7 +97,11 @@ const cliInputNames = [
   'request-name-source',
   'workspace-team-id',
   'repo-url',
-  'openapi-version'
+  'openapi-version',
+  'postman-api-base',
+  'postman-bifrost-base',
+  'postman-gateway-base',
+  'postman-cli-install-url'
 ] as const;
 
 const execFileAsync = promisify(execFile);

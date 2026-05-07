@@ -46951,6 +46951,26 @@ var openAlphaActionContract = {
       required: false,
       default: "Fallback",
       allowedValues: ["Fallback", "URL"]
+    },
+    "postman-api-base": {
+      description: "Base URL for the public Postman API (override for beta/staging stacks).",
+      required: false,
+      default: "https://api.getpostman.com"
+    },
+    "postman-bifrost-base": {
+      description: "Base URL for the Bifrost gateway used by internal integration calls (override for beta/staging stacks).",
+      required: false,
+      default: "https://bifrost-premium-https-v4.gw.postman.com"
+    },
+    "postman-gateway-base": {
+      description: "Base URL for the Postman gateway used by governance and workspace-group calls (override for beta/staging stacks).",
+      required: false,
+      default: "https://gateway.postman.com"
+    },
+    "postman-cli-install-url": {
+      description: "Installer URL for the Postman CLI (override for beta/staging stacks).",
+      required: false,
+      default: "https://dl-cli.pstmn.io/install/unix.sh"
     }
   },
   outputs: {
@@ -47243,6 +47263,7 @@ function extractGitRepoUrl(value) {
 var PostmanAssetsClient = class {
   apiKey;
   baseUrl;
+  bifrostBaseUrl;
   fetchImpl;
   secretMasker;
   constructor(options) {
@@ -47251,11 +47272,17 @@ var PostmanAssetsClient = class {
       /\/+$/,
       ""
     );
+    this.bifrostBaseUrl = String(
+      options.bifrostBaseUrl || "https://bifrost-premium-https-v4.gw.postman.com"
+    ).replace(/\/+$/, "");
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.secretMasker = options.secretMasker ?? createSecretMasker([this.apiKey]);
   }
   getBaseUrl() {
     return this.baseUrl;
+  }
+  getBifrostBaseUrl() {
+    return this.bifrostBaseUrl;
   }
   async getMe() {
     return this.request("/me", { method: "GET" });
@@ -47370,7 +47397,7 @@ var PostmanAssetsClient = class {
     return workspaces.filter((w) => w.name === name).sort((a, b) => a.id.localeCompare(b.id)).map((w) => ({ id: w.id, name: w.name }));
   }
   async getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken) {
-    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
+    const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers = {
       "x-access-token": accessToken,
       "Content-Type": "application/json"
@@ -47790,13 +47817,21 @@ var PostmanAssetsClient = class {
 // src/lib/postman/internal-integration-adapter.ts
 var BifrostInternalIntegrationAdapter = class {
   accessToken;
+  bifrostBaseUrl;
   fetchImpl;
+  gatewayBaseUrl;
   secretMasker;
   teamId;
   workerBaseUrl;
   constructor(options) {
     this.accessToken = String(options.accessToken || "").trim();
+    this.bifrostBaseUrl = String(
+      options.bifrostBaseUrl || "https://bifrost-premium-https-v4.gw.postman.com"
+    ).replace(/\/+$/, "");
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.gatewayBaseUrl = String(
+      options.gatewayBaseUrl || "https://gateway.postman.com"
+    ).replace(/\/+$/, "");
     this.secretMasker = options.secretMasker ?? createSecretMasker([this.accessToken]);
     this.teamId = String(options.teamId || "").trim();
     this.workerBaseUrl = String(
@@ -47804,7 +47839,7 @@ var BifrostInternalIntegrationAdapter = class {
     ).replace(/\/+$/, "");
   }
   async proxyRequest(service, method, requestPath2, body) {
-    const url = "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy";
+    const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers = {
       "Content-Type": "application/json",
       "x-access-token": this.accessToken
@@ -47834,14 +47869,12 @@ var BifrostInternalIntegrationAdapter = class {
     if (!groupName) {
       return;
     }
-    const listResponse = await this.fetchImpl(
-      "https://gateway.postman.com/configure/workspace-groups",
-      {
-        headers: {
-          "x-access-token": this.accessToken
-        }
+    const listUrl = `${this.gatewayBaseUrl}/configure/workspace-groups`;
+    const listResponse = await this.fetchImpl(listUrl, {
+      headers: {
+        "x-access-token": this.accessToken
       }
-    );
+    });
     if (!listResponse.ok) {
       throw await HttpError.fromResponse(listResponse, {
         method: "GET",
@@ -47849,7 +47882,7 @@ var BifrostInternalIntegrationAdapter = class {
           "x-access-token": this.accessToken
         },
         secretValues: [this.accessToken],
-        url: "https://gateway.postman.com/configure/workspace-groups"
+        url: listUrl
       });
     }
     const groups = await listResponse.json();
@@ -47857,19 +47890,17 @@ var BifrostInternalIntegrationAdapter = class {
     if (!group?.id) {
       return;
     }
-    const patchResponse = await this.fetchImpl(
-      `https://gateway.postman.com/configure/workspace-groups/${group.id}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "x-access-token": this.accessToken
-        },
-        body: JSON.stringify({
-          workspaces: [workspaceId]
-        })
-      }
-    );
+    const patchUrl = `${this.gatewayBaseUrl}/configure/workspace-groups/${group.id}`;
+    const patchResponse = await this.fetchImpl(patchUrl, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "x-access-token": this.accessToken
+      },
+      body: JSON.stringify({
+        workspaces: [workspaceId]
+      })
+    });
     if (!patchResponse.ok) {
       throw await HttpError.fromResponse(patchResponse, {
         method: "PATCH",
@@ -47878,7 +47909,7 @@ var BifrostInternalIntegrationAdapter = class {
           "x-access-token": this.accessToken
         },
         secretValues: [this.accessToken],
-        url: `https://gateway.postman.com/configure/workspace-groups/${group.id}`
+        url: patchUrl
       });
     }
   }
@@ -47954,7 +47985,7 @@ var BifrostInternalIntegrationAdapter = class {
         ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
       },
       secretValues: [this.accessToken],
-      url: "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy"
+      url: `${this.bifrostBaseUrl}/ws/proxy`
     });
   }
   async linkCollectionsToSpecification(specificationId, collections) {
@@ -47981,7 +48012,7 @@ var BifrostInternalIntegrationAdapter = class {
         ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
       },
       secretValues: [this.accessToken],
-      url: "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy"
+      url: `${this.bifrostBaseUrl}/ws/proxy`
     });
   }
   async syncCollection(specificationId, collectionId) {
@@ -48001,7 +48032,7 @@ var BifrostInternalIntegrationAdapter = class {
         ...this.teamId ? { "x-entity-team-id": this.teamId } : {}
       },
       secretValues: [this.accessToken],
-      url: "https://bifrost-premium-https-v4.gw.postman.com/ws/proxy"
+      url: `${this.bifrostBaseUrl}/ws/proxy`
     });
   }
   async getWorkspaceGitRepoUrl(workspaceId) {
@@ -61781,6 +61812,10 @@ function resolveInputs(env = process.env) {
     folderStrategy: parseEnumInput("folder-strategy", getInput("folder-strategy", env), "Paths"),
     nestedFolderHierarchy: parseBooleanInput("nested-folder-hierarchy", getInput("nested-folder-hierarchy", env), false),
     requestNameSource: parseEnumInput("request-name-source", getInput("request-name-source", env), "Fallback"),
+    postmanApiBase: getInput("postman-api-base", env) ?? openAlphaActionContract.inputs["postman-api-base"].default ?? "https://api.getpostman.com",
+    postmanBifrostBase: getInput("postman-bifrost-base", env) ?? openAlphaActionContract.inputs["postman-bifrost-base"].default ?? "https://bifrost-premium-https-v4.gw.postman.com",
+    postmanGatewayBase: getInput("postman-gateway-base", env) ?? openAlphaActionContract.inputs["postman-gateway-base"].default ?? "https://gateway.postman.com",
+    postmanCliInstallUrl: getInput("postman-cli-install-url", env) ?? openAlphaActionContract.inputs["postman-cli-install-url"].default ?? "https://dl-cli.pstmn.io/install/unix.sh",
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -61847,7 +61882,11 @@ function readActionInputs(actionCore) {
     INPUT_FOLDER_STRATEGY: optionalInput(actionCore, "folder-strategy") ?? openAlphaActionContract.inputs["folder-strategy"].default,
     INPUT_NESTED_FOLDER_HIERARCHY: optionalInput(actionCore, "nested-folder-hierarchy") ?? openAlphaActionContract.inputs["nested-folder-hierarchy"].default,
     INPUT_REQUEST_NAME_SOURCE: optionalInput(actionCore, "request-name-source") ?? openAlphaActionContract.inputs["request-name-source"].default,
-    INPUT_OPENAPI_VERSION: optionalInput(actionCore, "openapi-version") ?? ""
+    INPUT_OPENAPI_VERSION: optionalInput(actionCore, "openapi-version") ?? "",
+    INPUT_POSTMAN_API_BASE: optionalInput(actionCore, "postman-api-base") ?? openAlphaActionContract.inputs["postman-api-base"].default,
+    INPUT_POSTMAN_BIFROST_BASE: optionalInput(actionCore, "postman-bifrost-base") ?? openAlphaActionContract.inputs["postman-bifrost-base"].default,
+    INPUT_POSTMAN_GATEWAY_BASE: optionalInput(actionCore, "postman-gateway-base") ?? openAlphaActionContract.inputs["postman-gateway-base"].default,
+    INPUT_POSTMAN_CLI_INSTALL_URL: optionalInput(actionCore, "postman-cli-install-url") ?? openAlphaActionContract.inputs["postman-cli-install-url"].default
   });
   return inputs;
 }
@@ -61857,12 +61896,12 @@ function createWorkspaceName(inputs) {
 async function runGroup(actionCore, name, fn) {
   return actionCore.group(name, fn);
 }
-async function ensurePostmanCli(dependencies, postmanApiKey) {
+async function ensurePostmanCli(dependencies, postmanApiKey, installUrl = "https://dl-cli.pstmn.io/install/unix.sh") {
   const existing = await dependencies.io.which("postman", false).catch(() => "");
   if (!existing) {
     await dependencies.exec.exec("sh", [
       "-c",
-      'curl -o- "https://dl-cli.pstmn.io/install/unix.sh" | sh'
+      `curl -o- "${installUrl}" | sh`
     ]);
   }
   await dependencies.exec.exec("postman", ["login", "--with-api-key", postmanApiKey]);
@@ -62081,7 +62120,7 @@ async function runBootstrap(inputs, dependencies) {
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman CS open-alpha for ${inputs.projectName}`;
   await runGroup(dependencies.core, "Install Postman CLI", async () => {
-    await ensurePostmanCli(dependencies, inputs.postmanApiKey);
+    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl);
   });
   const resourcesState = readResourcesState();
   let specId = inputs.specId;
@@ -62860,11 +62899,15 @@ function createBootstrapDependencies(inputs, factories) {
   ]);
   const postman = new PostmanAssetsClient({
     apiKey: inputs.postmanApiKey,
+    baseUrl: inputs.postmanApiBase,
+    bifrostBaseUrl: inputs.postmanBifrostBase,
     secretMasker
   });
   const internalIntegration = inputs.postmanAccessToken ? createInternalIntegrationAdapter({
     accessToken: inputs.postmanAccessToken,
     backend: inputs.integrationBackend,
+    bifrostBaseUrl: inputs.postmanBifrostBase,
+    gatewayBaseUrl: inputs.postmanGatewayBase,
     secretMasker,
     teamId: inputs.teamId || ""
   }) : void 0;
@@ -62948,7 +62991,11 @@ var cliInputNames = [
   "request-name-source",
   "workspace-team-id",
   "repo-url",
-  "openapi-version"
+  "openapi-version",
+  "postman-api-base",
+  "postman-bifrost-base",
+  "postman-gateway-base",
+  "postman-cli-install-url"
 ];
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 function toCommandLabel(commandLine, args, secretMasker) {

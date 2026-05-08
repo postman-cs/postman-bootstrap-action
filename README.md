@@ -110,7 +110,7 @@ jobs:
       actions: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: postman-cs/postman-bootstrap-action@v0
         with:
           project-name: core-payments
@@ -126,7 +126,7 @@ jobs:
   bootstrap-existing:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: postman-cs/postman-bootstrap-action@v0
         with:
           project-name: core-payments

@@ -568,7 +568,7 @@ describe('package CLI bin', () => {
     expect(readme).not.toContain('npm install -g postman-bootstrap-action');
     expect(readme).toContain('The CLI package supports Node.js 24+');
     expect(readme).toContain("versionSpec: '24.x'");
-    expect(readme).not.toContain("versionSpec: '20.x'");
+    expect(readme).not.toContain(`versionSpec: '${20}.x'`);
     expect(gitignore.split(/\r?\n/)).toEqual(expect.arrayContaining(['.env', '.env.*', '!.env.example']));
   });
 });

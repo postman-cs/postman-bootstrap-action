@@ -98,8 +98,7 @@ async function prefetchExternalRefs(
   options: OpenApiLoaderOptions,
   budget: SafeFetchBudget,
   visited: Set<string>,
-  depth: number,
-  httpsOnly = false
+  depth: number
 ): Promise<void> {
   const maxDepth = options.maxDepth ?? SAFE_FETCH_LIMITS.maxDepth;
   if (depth > maxDepth) {
@@ -108,14 +107,15 @@ async function prefetchExternalRefs(
   const refs = new Set<string>();
   collectExternalRefs(parseReferencedDocument(content, baseUrl), baseUrl, refs);
   for (const refUrl of refs) {
-    if (httpsOnly && !refUrl.startsWith('https://')) continue;
     if (visited.has(refUrl)) continue;
     if (depth + 1 > maxDepth) {
       throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
     }
     visited.add(refUrl);
+    // Non-HTTPS refs (file://, http://, ...) are rejected by safeFetchText
+    // with CONTRACT_SPEC_FETCH_BLOCKED, matching the URL-loader contract.
     const refContent = await fetchText(refUrl, { ...options, budget, depth: depth + 1 });
-    await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1, httpsOnly);
+    await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1);
   }
 }
 
@@ -296,6 +296,6 @@ export async function loadOpenApiContractSpecFromPath(
 
   const fetchText = createCachedFetchText(options);
   const baseRef = pathToFileURL(absolutePath).toString();
-  await prefetchExternalRefs(content, baseRef, fetchText, options, budget, new Set([baseRef]), 0, true);
+  await prefetchExternalRefs(content, baseRef, fetchText, options, budget, new Set([baseRef]), 0);
   return buildLoadedSpec(content, baseRef, options, fetchText, budget);
 }

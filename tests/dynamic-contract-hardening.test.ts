@@ -329,7 +329,7 @@ properties:
       ).rejects.toThrow('CONTRACT_REF_DEPTH_EXCEEDED');
     });
 
-    it('does not follow local-file $refs from a local spec', async () => {
+    it('rejects local-file $refs with CONTRACT_SPEC_FETCH_BLOCKED', async () => {
       writeSpec('apis/svc/sibling.yaml', 'type: object\n');
       writeSpec(
         'apis/svc/openapi.yaml',
@@ -347,14 +347,33 @@ paths:
                 $ref: './sibling.yaml'
 `
       );
-      const fetchText = vi.fn();
-      // Local-file $refs are never followed: the prefetch skips them and the
-      // bundler's file resolver is disabled, so $RefParser fails loudly
-      // rather than reading from disk.
+      // No mock fetchText - exercise the real safeFetchText so the
+      // protocol guard fires and surfaces the documented contract error.
       await expect(
-        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', { fetchText })
-      ).rejects.toThrow();
-      expect(fetchText).not.toHaveBeenCalled();
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml')
+      ).rejects.toThrow('CONTRACT_SPEC_FETCH_BLOCKED');
+    });
+
+    it('rejects non-HTTPS external $refs with CONTRACT_SPEC_FETCH_BLOCKED', async () => {
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: 'http://example.test/schema.yaml'
+`
+      );
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml')
+      ).rejects.toThrow('CONTRACT_SPEC_FETCH_BLOCKED');
     });
   });
 

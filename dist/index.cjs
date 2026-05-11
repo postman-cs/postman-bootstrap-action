@@ -61679,6 +61679,7 @@ async function loadOpenApiContractSpec(specUrl, options = {}) {
   const budget = options.budget ?? { refs: 0, totalBytes: 0 };
   const fetchText = createCachedFetchText(options);
   const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
+  detectOpenApiVersion2(parseOpenApiDocument(content));
   await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, /* @__PURE__ */ new Set([resourceUrl(specUrl)]), 0);
   return buildLoadedSpec(content, specUrl, options, fetchText, budget);
 }
@@ -61720,6 +61721,7 @@ async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
   }
   budget.refs += 1;
   budget.totalBytes += bytes;
+  detectOpenApiVersion2(parseOpenApiDocument(content));
   const fetchText = createCachedFetchText(options);
   const baseRef = (0, import_node_url2.pathToFileURL)(absolutePath).toString();
   await prefetchExternalRefs(content, baseRef, fetchText, options, budget, /* @__PURE__ */ new Set([baseRef]), 0, true);

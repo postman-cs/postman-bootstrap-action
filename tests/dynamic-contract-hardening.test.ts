@@ -255,6 +255,28 @@ paths:
       ).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED');
     });
 
+    it('fails fast on an unsupported root spec without fetching its refs', async () => {
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `swagger: '2.0'
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: 'https://cdn.example.test/level-0.yaml'
+`
+      );
+      const fetchText = vi.fn();
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', { fetchText })
+      ).rejects.toThrow('CONTRACT_UNSUPPORTED_OPENAPI_VERSION');
+      expect(fetchText).not.toHaveBeenCalled();
+    });
+
     it('rejects a local spec that would blow the total byte budget', async () => {
       writeSpec('apis/svc/openapi.yaml', baseSpec);
       await expect(

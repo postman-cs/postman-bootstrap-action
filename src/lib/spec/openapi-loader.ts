@@ -221,6 +221,10 @@ export async function loadOpenApiContractSpec(
   const budget = options.budget ?? { refs: 0, totalBytes: 0 };
   const fetchText = createCachedFetchText(options);
   const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
+  // Validate the root before chasing $refs so a malformed or unsupported
+  // root spec surfaces CONTRACT_SPEC_PARSE_FAILED / CONTRACT_UNSUPPORTED_OPENAPI_VERSION
+  // rather than a downstream ref-fetch error.
+  detectOpenApiVersion(parseOpenApiDocument(content));
   await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, new Set([resourceUrl(specUrl)]), 0);
   return buildLoadedSpec(content, specUrl, options, fetchText, budget);
 }
@@ -273,6 +277,10 @@ export async function loadOpenApiContractSpecFromPath(
   }
   budget.refs += 1;
   budget.totalBytes += bytes;
+
+  // Same root-first validation as the URL loader: reject parse/version
+  // failures before doing any network work for HTTPS $refs.
+  detectOpenApiVersion(parseOpenApiDocument(content));
 
   const fetchText = createCachedFetchText(options);
   const baseRef = pathToFileURL(absolutePath).toString();

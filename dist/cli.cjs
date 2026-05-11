@@ -29602,10 +29602,10 @@ var require_tracing = __commonJS({
       },
       unknown: A.unknown || B.unknown
     }));
-    var applyDelta = (stat, delta) => Object.assign(stat, andDelta(stat, delta));
-    var isDynamic = wrapArgs(({ unknown, items, dyn, ...stat }) => ({
+    var applyDelta = (stat2, delta) => Object.assign(stat2, andDelta(stat2, delta));
+    var isDynamic = wrapArgs(({ unknown, items, dyn, ...stat2 }) => ({
       items: items !== Infinity && (unknown || dyn.items > items || dyn.item),
-      properties: !stat.properties.includes(true) && (unknown || !inProperties(stat, dyn))
+      properties: !stat2.properties.includes(true) && (unknown || !inProperties(stat2, dyn))
     }));
     module2.exports = { initTracing, andDelta, orDelta, applyDelta, isDynamic, inProperties };
   }
@@ -29837,23 +29837,23 @@ var require_compile = __commonJS({
         const uncertain = (msg) => enforce(!removeAdditional && !useDefaults, `[removeAdditional/useDefaults] uncertain: ${msg}`);
         const complex = (msg, arg) => enforce(!complexityChecks, `[complexityChecks] ${msg}`, arg);
         const saveMeta = ($sch) => generateMeta(root, $sch || $schemaDefault, enforce, requireSchema);
-        const stat2 = initTracing();
-        const evaluateDelta = (delta) => applyDelta(stat2, delta);
+        const stat3 = initTracing();
+        const evaluateDelta = (delta) => applyDelta(stat3, delta);
         if (typeof node === "boolean") {
           if (node === true) {
             enforceValidation("schema = true", "is not allowed");
-            return { stat: stat2 };
+            return { stat: stat3 };
           }
           errorIf(definitelyPresent || current.inKeys ? true : present(current), {});
           evaluateDelta({ type: [] });
-          return { stat: stat2 };
+          return { stat: stat3 };
         }
         enforce(isPlainObject(node), "Schema is not an object");
         for (const key of Object.keys(node))
           enforce(knownKeywords.includes(key) || allowUnusedKeywords, "Keyword not supported:", key);
         if (Object.keys(node).length === 0) {
           enforceValidation("empty rules node", "is not allowed");
-          return { stat: stat2 };
+          return { stat: stat3 };
         }
         const unused = new Set(Object.keys(node));
         const multiConsumable = /* @__PURE__ */ new Set();
@@ -29944,15 +29944,15 @@ var require_compile = __commonJS({
           items: local2.items || trace.items,
           props: local2.props || trace.props
         });
-        const canSkipDynamic = () => (!dyn.items || stat2.items === Infinity) && (!dyn.props || stat2.properties.includes(true));
+        const canSkipDynamic = () => (!dyn.items || stat3.items === Infinity) && (!dyn.props || stat3.properties.includes(true));
         const evaluateDeltaDynamic = (delta) => {
-          if (dyn.item && delta.item && stat2.items !== Infinity)
+          if (dyn.item && delta.item && stat3.items !== Infinity)
             fun.write("%s.push(%s)", dyn.item, delta.item);
-          if (dyn.items && delta.items > stat2.items) fun.write("%s.push(%d)", dyn.items, delta.items);
-          if (dyn.props && (delta.properties || []).includes(true) && !stat2.properties.includes(true)) {
+          if (dyn.items && delta.items > stat3.items) fun.write("%s.push(%d)", dyn.items, delta.items);
+          if (dyn.props && (delta.properties || []).includes(true) && !stat3.properties.includes(true)) {
             fun.write("%s[0].push(true)", dyn.props);
           } else if (dyn.props) {
-            const inStat = (properties2, patterns2) => inProperties(stat2, { properties: properties2, patterns: patterns2 });
+            const inStat = (properties2, patterns2) => inProperties(stat3, { properties: properties2, patterns: patterns2 });
             const properties = (delta.properties || []).filter((x) => !inStat([x], []));
             const patterns = (delta.patterns || []).filter((x) => !inStat([], [x]));
             if (properties.length > 0) fun.write("%s[0].push(...%j)", dyn.props, properties);
@@ -29961,11 +29961,11 @@ var require_compile = __commonJS({
           }
         };
         const applyDynamicToDynamic = (target, item, items, props) => {
-          if (isDynamic(stat2).items && target.item && item)
+          if (isDynamic(stat3).items && target.item && item)
             fun.write("%s.push(...%s)", target.item, item);
-          if (isDynamic(stat2).items && target.items && items)
+          if (isDynamic(stat3).items && target.items && items)
             fun.write("%s.push(...%s)", target.items, items);
-          if (isDynamic(stat2).properties && target.props && props) {
+          if (isDynamic(stat3).properties && target.props && props) {
             fun.write("%s[0].push(...%s[0])", target.props, props);
             fun.write("%s[1].push(...%s[1])", target.props, props);
           }
@@ -29999,8 +29999,8 @@ var require_compile = __commonJS({
         const allIn = (arr, valid) => arr && arr.every((s) => valid.includes(s));
         const someIn = (arr, possible) => possible.some((x) => arr === null || arr.includes(x));
         const parentCheckedType = (...valid) => queryCurrent().some((h) => allIn(h.stat.type, valid));
-        const definitelyType = (...valid) => allIn(stat2.type, valid) || parentCheckedType(...valid);
-        const typeApplicable = (...possible) => someIn(stat2.type, possible) && queryCurrent().every((h) => someIn(h.stat.type, possible));
+        const definitelyType = (...valid) => allIn(stat3.type, valid) || parentCheckedType(...valid);
+        const typeApplicable = (...possible) => someIn(stat3.type, possible) && queryCurrent().every((h) => someIn(h.stat.type, possible));
         const enforceRegex = (source, target = node) => {
           enforce(typeof source === "string", "Invalid pattern:", source);
           if (requireValidation || requireStringValidation)
@@ -30012,7 +30012,7 @@ var require_compile = __commonJS({
         const haveComplex = node.uniqueItems || havePattern || node.patternProperties || node.format;
         const prev = allErrors && haveComplex ? gensym("prev") : null;
         const prevWrap = (shouldWrap, writeBody) => fun.if(shouldWrap && prev !== null ? format("errorCount === %s", prev) : true, writeBody);
-        const nexthistory = () => [...history, { stat: stat2, prop: current }];
+        const nexthistory = () => [...history, { stat: stat3, prop: current }];
         const rule = (...args) => visit(errors, nexthistory(), ...args).stat;
         const subrule = (suberr, ...args) => {
           if (args[0] === current) {
@@ -30083,7 +30083,7 @@ var require_compile = __commonJS({
         const lintRequired = (properties, patterns) => {
           const regexps = patterns.map((p) => new RegExp(p, "u"));
           const known = (key) => properties.includes(key) || regexps.some((r) => r.test(key));
-          for (const key of stat2.required) enforce(known(key), `Unknown required property:`, key);
+          for (const key of stat3.required) enforce(known(key), `Unknown required property:`, key);
         };
         const finalLint = [];
         const checkNumbers = () => {
@@ -30256,7 +30256,7 @@ var require_compile = __commonJS({
             });
           });
         };
-        const checked = (p) => !allErrors && (stat2.required.includes(p) || queryCurrent().some((h) => h.stat.required.includes(p)));
+        const checked = (p) => !allErrors && (stat3.required.includes(p) || queryCurrent().some((h) => h.stat.required.includes(p)));
         const checkObjects = () => {
           const propertiesCount = format("Object.keys(%s).length", name);
           handle("maxProperties", ["natural"], (max) => format("%s > %d", propertiesCount, max));
@@ -30490,11 +30490,11 @@ var require_compile = __commonJS({
                   fun.if(present(prop), runDiscriminator, () => error({ path: errorPath, prop }));
                 } else runDiscriminator();
               };
-              if (allErrors || !functions.deepEqual(stat2.type, ["object"])) {
+              if (allErrors || !functions.deepEqual(stat3.type, ["object"])) {
                 fun.if(types2.get("object")(name), propCheck, () => error({ path: ["discriminator"] }));
               } else propCheck();
-              fix(functions.deepEqual(stat2.type, ["object"]), "has to be checked for type:", "object");
-              fix(stat2.required.includes(pname), "propertyName should be placed in required:", pname);
+              fix(functions.deepEqual(stat3.type, ["object"]), "has to be checked for type:", "object");
+              fix(stat3.required.includes(pname), "propertyName should be placed in required:", pname);
               return null;
             };
             return null;
@@ -30577,33 +30577,33 @@ var require_compile = __commonJS({
             enforce(typeApplicable(...validTypes), `Unexpected rules in type`, node.type);
         };
         const checkArraysFinal = () => {
-          if (stat2.items === Infinity) {
+          if (stat3.items === Infinity) {
             if (node.unevaluatedItems === false) consume("unevaluatedItems", "boolean");
           } else if (node.unevaluatedItems || node.unevaluatedItems === false) {
-            if (isDynamic(stat2).items) {
+            if (isDynamic(stat3).items) {
               if (!opts[optDynamic]) throw new Error("[opt] Dynamic unevaluated tracing not enabled");
-              const limit = format("Math.max(%d, ...%s)", stat2.items, dyn.items);
+              const limit = format("Math.max(%d, ...%s)", stat3.items, dyn.items);
               const extra = (i) => format("%s.includes(%s)", dyn.item, i);
               additionalItems("unevaluatedItems", limit, getMeta().containsEvaluates ? extra : null);
             } else {
-              additionalItems("unevaluatedItems", format("%d", stat2.items));
+              additionalItems("unevaluatedItems", format("%d", stat3.items));
             }
           }
         };
         const checkObjectsFinal = () => {
-          prevWrap(stat2.patterns.length > 0 || stat2.dyn.patterns.length > 0 || stat2.unknown, () => {
-            if (stat2.properties.includes(true)) {
+          prevWrap(stat3.patterns.length > 0 || stat3.dyn.patterns.length > 0 || stat3.unknown, () => {
+            if (stat3.properties.includes(true)) {
               if (node.unevaluatedProperties === false) consume("unevaluatedProperties", "boolean");
             } else if (node.unevaluatedProperties || node.unevaluatedProperties === false) {
-              const notStatic = (key) => additionalCondition(key, stat2.properties, stat2.patterns);
-              if (isDynamic(stat2).properties) {
+              const notStatic = (key) => additionalCondition(key, stat3.properties, stat3.patterns);
+              if (isDynamic(stat3).properties) {
                 if (!opts[optDynamic]) throw new Error("[opt] Dynamic unevaluated tracing not enabled");
                 scope.propertyIn = functions.propertyIn;
                 const notDynamic = (key) => format("!propertyIn(%s, %s)", key, dyn.props);
                 const condition = (key) => safeand(notStatic(key), notDynamic(key));
                 additionalProperties("unevaluatedProperties", condition);
               } else {
-                if (node.unevaluatedProperties === false) lintRequired(stat2.properties, stat2.patterns);
+                if (node.unevaluatedProperties === false) lintRequired(stat3.properties, stat3.patterns);
                 additionalProperties("unevaluatedProperties", notStatic);
               }
             }
@@ -30714,7 +30714,7 @@ var require_compile = __commonJS({
             if (typeCheck) errorIf(typeCheck, { path: ["type"] });
             performValidation();
           }
-          if (stat2.items < Infinity && node.maxItems <= stat2.items) evaluateDelta({ items: Infinity });
+          if (stat3.items < Infinity && node.maxItems <= stat3.items) evaluateDelta({ items: Infinity });
         };
         if (node.default !== void 0 && useDefaults) {
           if (definitelyPresent) fail2("Can not apply default value here (e.g. at root)");
@@ -30738,12 +30738,12 @@ var require_compile = __commonJS({
           const isRefTop = schema2 !== root && node === schema2;
           if (!isRefTop || refsNeedFullValidation.has(funname)) {
             refsNeedFullValidation.delete(funname);
-            if (!stat2.type) enforceValidation("type");
-            if (typeApplicable("array") && stat2.items !== Infinity)
+            if (!stat3.type) enforceValidation("type");
+            if (typeApplicable("array") && stat3.items !== Infinity)
               enforceValidation(node.items ? "additionalItems or unevaluatedItems" : "items rule");
-            if (typeApplicable("object") && !stat2.properties.includes(true))
+            if (typeApplicable("object") && !stat3.properties.includes(true))
               enforceValidation("additionalProperties or unevaluatedProperties");
-            if (!stat2.fullstring && requireStringValidation) {
+            if (!stat3.fullstring && requireStringValidation) {
               const stringWarning = "pattern, format or contentSchema should be specified for strings";
               fail2(`[requireStringValidation] ${stringWarning}, use pattern: ^[\\s\\S]*$ to opt-out`);
             }
@@ -30755,11 +30755,11 @@ var require_compile = __commonJS({
         }
         if (node.properties && !node.required) enforceValidation("if properties is used, required");
         enforce(unused.size === 0 || allowUnusedKeywords, "Unprocessed keywords:", [...unused]);
-        return { stat: stat2, local: local2 };
+        return { stat: stat3, local: local2 };
       };
-      const { stat, local } = visit(format("validate.errors"), [], { name: safe("data") }, schema2, []);
+      const { stat: stat2, local } = visit(format("validate.errors"), [], { name: safe("data") }, schema2, []);
       if (refsNeedFullValidation.has(funname)) throw new Error("Unexpected: unvalidated cyclic ref");
-      if (opts[optDynamic] && (isDynamic(stat).items || isDynamic(stat).properties)) {
+      if (opts[optDynamic] && (isDynamic(stat2).items || isDynamic(stat2).properties)) {
         if (!local) throw new Error("Failed to trace dynamic properties");
         fun.write("validate.evaluatedDynamic = [%s, %s, %s]", local.item, local.items, local.props);
       }
@@ -30771,7 +30771,7 @@ var require_compile = __commonJS({
         delete scope[funname];
         scope[funname] = validate2;
       }
-      scope[funname][evaluatedStatic] = stat;
+      scope[funname][evaluatedStatic] = stat2;
       return funname;
     };
     var compile = (schemas, opts) => {
@@ -61973,13 +61973,23 @@ async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
   if (!rel || rel.startsWith("..") || import_node_path.default.isAbsolute(rel)) {
     throw new Error(`CONTRACT_SPEC_READ_FAILED: spec-path must resolve inside ${workspaceRoot}, got: ${specPath}`);
   }
+  const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
+  const maxTotalBytes = options.maxTotalBytes ?? SAFE_FETCH_LIMITS.maxTotalBytes;
+  const onDiskBytes = (await (0, import_promises2.stat)(absolutePath)).size;
+  if (onDiskBytes > maxBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
+  }
+  const budget = options.budget ?? { refs: 0, totalBytes: 0 };
+  if (budget.totalBytes + onDiskBytes > maxTotalBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resources exceeded ${maxTotalBytes} total bytes`);
+  }
   const content = await (0, import_promises2.readFile)(absolutePath, "utf8");
   const bytes = Buffer.byteLength(content, "utf8");
-  const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
   if (bytes > maxBytes) {
     throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
   }
-  const budget = options.budget ?? { refs: 1, totalBytes: bytes };
+  budget.refs += 1;
+  budget.totalBytes += bytes;
   const fetchText = createCachedFetchText(options);
   const baseRef = (0, import_node_url2.pathToFileURL)(absolutePath).toString();
   await prefetchExternalRefs(content, baseRef, fetchText, options, budget, /* @__PURE__ */ new Set([baseRef]), 0, true);

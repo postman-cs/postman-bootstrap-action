@@ -1,5 +1,5 @@
 import { realpathSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
@@ -253,14 +253,27 @@ export async function loadOpenApiContractSpecFromPath(
     throw new Error(`CONTRACT_SPEC_READ_FAILED: spec-path must resolve inside ${workspaceRoot}, got: ${specPath}`);
   }
 
+  // Gate on stat() before readFile so a 1GB checked-in file can't OOM us
+  // between the read and the limit check.
+  const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
+  const maxTotalBytes = options.maxTotalBytes ?? SAFE_FETCH_LIMITS.maxTotalBytes;
+  const onDiskBytes = (await stat(absolutePath)).size;
+  if (onDiskBytes > maxBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
+  }
+  const budget: SafeFetchBudget = options.budget ?? { refs: 0, totalBytes: 0 };
+  if (budget.totalBytes + onDiskBytes > maxTotalBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resources exceeded ${maxTotalBytes} total bytes`);
+  }
+
   const content = await readFile(absolutePath, 'utf8');
   const bytes = Buffer.byteLength(content, 'utf8');
-  const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
   if (bytes > maxBytes) {
     throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
   }
+  budget.refs += 1;
+  budget.totalBytes += bytes;
 
-  const budget: SafeFetchBudget = options.budget ?? { refs: 1, totalBytes: bytes };
   const fetchText = createCachedFetchText(options);
   const baseRef = pathToFileURL(absolutePath).toString();
   await prefetchExternalRefs(content, baseRef, fetchText, options, budget, new Set([baseRef]), 0, true);

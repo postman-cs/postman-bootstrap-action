@@ -255,6 +255,15 @@ paths:
       ).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED');
     });
 
+    it('rejects a local spec that would blow the total byte budget', async () => {
+      writeSpec('apis/svc/openapi.yaml', baseSpec);
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', {
+          maxTotalBytes: 16
+        })
+      ).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED');
+    });
+
     it('enforces ref-depth limits on HTTPS $ref chains starting from a local spec', async () => {
       writeSpec(
         'apis/svc/openapi.yaml',

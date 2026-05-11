@@ -61575,7 +61575,7 @@ function collectExternalRefs(node, baseUrl, refs) {
     collectExternalRefs(value, baseUrl, refs);
   }
 }
-async function prefetchExternalRefs(content, baseUrl, fetchText, options, budget, visited, depth, httpsOnly = false) {
+async function prefetchExternalRefs(content, baseUrl, fetchText, options, budget, visited, depth) {
   const maxDepth = options.maxDepth ?? SAFE_FETCH_LIMITS.maxDepth;
   if (depth > maxDepth) {
     throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
@@ -61583,14 +61583,13 @@ async function prefetchExternalRefs(content, baseUrl, fetchText, options, budget
   const refs = /* @__PURE__ */ new Set();
   collectExternalRefs(parseReferencedDocument(content, baseUrl), baseUrl, refs);
   for (const refUrl of refs) {
-    if (httpsOnly && !refUrl.startsWith("https://")) continue;
     if (visited.has(refUrl)) continue;
     if (depth + 1 > maxDepth) {
       throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
     }
     visited.add(refUrl);
     const refContent = await fetchText(refUrl, { ...options, budget, depth: depth + 1 });
-    await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1, httpsOnly);
+    await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1);
   }
 }
 function detectOpenApiVersion2(doc) {
@@ -61734,7 +61733,7 @@ async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
   detectOpenApiVersion2(parseOpenApiDocument(content));
   const fetchText = createCachedFetchText(options);
   const baseRef = (0, import_node_url2.pathToFileURL)(absolutePath).toString();
-  await prefetchExternalRefs(content, baseRef, fetchText, options, budget, /* @__PURE__ */ new Set([baseRef]), 0, true);
+  await prefetchExternalRefs(content, baseRef, fetchText, options, budget, /* @__PURE__ */ new Set([baseRef]), 0);
   return buildLoadedSpec(content, baseRef, options, fetchText, budget);
 }
 

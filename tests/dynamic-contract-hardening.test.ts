@@ -246,6 +246,15 @@ paths:
       }
     });
 
+    it('wraps directory targets and other read failures as CONTRACT_SPEC_READ_FAILED', async () => {
+      mkdirSync(join(workspaceDir, 'apis/svc'), { recursive: true });
+      // Pointing spec-path at a directory: realpath/stat succeed but
+      // readFile rejects with EISDIR. Should surface the contract error.
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc')
+      ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+    });
+
     it('rejects oversized local specs before parsing', async () => {
       writeSpec('apis/svc/openapi.yaml', baseSpec);
       await expect(

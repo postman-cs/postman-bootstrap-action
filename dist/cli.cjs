@@ -61976,7 +61976,12 @@ async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
   }
   const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
   const maxTotalBytes = options.maxTotalBytes ?? SAFE_FETCH_LIMITS.maxTotalBytes;
-  const onDiskBytes = (await (0, import_promises2.stat)(absolutePath)).size;
+  let onDiskBytes;
+  try {
+    onDiskBytes = (await (0, import_promises2.stat)(absolutePath)).size;
+  } catch (error) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error });
+  }
   if (onDiskBytes > maxBytes) {
     throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
   }
@@ -61984,7 +61989,12 @@ async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
   if (budget.totalBytes + onDiskBytes > maxTotalBytes) {
     throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resources exceeded ${maxTotalBytes} total bytes`);
   }
-  const content = await (0, import_promises2.readFile)(absolutePath, "utf8");
+  let content;
+  try {
+    content = await (0, import_promises2.readFile)(absolutePath, "utf8");
+  } catch (error) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error });
+  }
   const bytes = Buffer.byteLength(content, "utf8");
   if (bytes > maxBytes) {
     throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);

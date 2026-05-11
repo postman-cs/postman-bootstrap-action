@@ -21,7 +21,7 @@ import { retry } from './lib/retry.js';
 import { createSecretMasker } from './lib/secrets.js';
 import { instrumentContractCollection } from './lib/spec/collection-contracts.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
-import { loadOpenApiContractSpec, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
+import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 
 export interface ResolvedInputs {
   projectName: string;
@@ -42,6 +42,7 @@ export interface ResolvedInputs {
   teamId?: string;
   repoUrl?: string;
   specUrl: string;
+  specPath?: string;
   openapiVersion: string;
   governanceMappingJson: string;
   postmanApiKey: string;
@@ -293,6 +294,10 @@ export function resolveInputs(
   }
 
   const specUrl = getInput('spec-url', env) ?? '';
+  const specPath = getInput('spec-path', env) ?? '';
+  if (specUrl && specPath) {
+    throw new Error('Provide either spec-url or spec-path, not both.');
+  }
   if (specUrl) {
     try {
       const parsedUrl = new URL(specUrl);
@@ -330,6 +335,7 @@ export function resolveInputs(
     teamId: getInput('team-id', env) || env.POSTMAN_TEAM_ID || '',
     repoUrl: repoContext.repoUrl || '',
     specUrl,
+    specPath,
     openapiVersion: resolveOpenapiVersion(getInput('openapi-version', env)),
     governanceMappingJson: parseGovernanceMappingJson(getInput('governance-mapping-json', env)),
     postmanApiKey: getInput('postman-api-key', env) ?? '',
@@ -383,7 +389,14 @@ export function readActionInputs(
   actionCore: Pick<CoreLike, 'getInput' | 'setSecret'>
 ): ResolvedInputs {
   const projectName = requireInput(actionCore, 'project-name');
-  const specUrl = requireInput(actionCore, 'spec-url');
+  const specUrl = optionalInput(actionCore, 'spec-url') ?? '';
+  const specPath = optionalInput(actionCore, 'spec-path') ?? '';
+  if (!specUrl && !specPath) {
+    throw new Error('One of spec-url or spec-path is required');
+  }
+  if (specUrl && specPath) {
+    throw new Error('Provide either spec-url or spec-path, not both.');
+  }
   const postmanApiKey = requireInput(actionCore, 'postman-api-key');
   const postmanAccessToken = optionalInput(actionCore, 'postman-access-token');
 
@@ -420,6 +433,7 @@ export function readActionInputs(
     INPUT_TEAM_ID: process.env.POSTMAN_TEAM_ID,
     INPUT_REPO_URL: optionalInput(actionCore, 'repo-url'),
     INPUT_SPEC_URL: specUrl,
+    INPUT_SPEC_PATH: specPath,
     INPUT_GOVERNANCE_MAPPING_JSON:
       optionalInput(actionCore, 'governance-mapping-json') ??
       openAlphaActionContract.inputs['governance-mapping-json'].default,
@@ -793,11 +807,14 @@ export async function runBootstrap(
     dependencies.core,
     'Preflight OpenAPI Contract',
     async () => {
-      const loaded = await loadOpenApiContractSpec(inputs.specUrl, {
+      const loaderOptions = {
         fetchText: dependencies.specFetcher === fetch
           ? undefined
-          : async (url) => fetchSpecDocument(url, dependencies.specFetcher)
-      });
+          : async (url: string) => fetchSpecDocument(url, dependencies.specFetcher)
+      };
+      const loaded = inputs.specPath
+        ? await loadOpenApiContractSpecFromPath(inputs.specPath, loaderOptions)
+        : await loadOpenApiContractSpec(inputs.specUrl, loaderOptions);
       const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
         dependencies.core.warning(msg)
       );
@@ -1076,7 +1093,8 @@ export async function runBootstrap(
   });
 
   if (specId) {
-    dependencies.core.info(`Updating existing spec ${specId} from ${sanitizeUrlForLog(inputs.specUrl)}`);
+    const specSource = inputs.specPath ? `path ${inputs.specPath}` : sanitizeUrlForLog(inputs.specUrl);
+    dependencies.core.info(`Updating existing spec ${specId} from ${specSource}`);
   }
 
   const isSpecUpdate = Boolean(specId);

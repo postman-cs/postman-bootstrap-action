@@ -93,8 +93,12 @@ export const openAlphaActionContract: BetaActionContract = {
       required: false
     },
     'spec-url': {
-      description: 'HTTPS URL to the OpenAPI document.',
-      required: true
+      description: 'HTTPS URL to the OpenAPI document. Provide either spec-url or spec-path.',
+      required: false
+    },
+    'spec-path': {
+      description: 'Local filesystem path to the OpenAPI document (read from the workspace). Provide either spec-url or spec-path.',
+      required: false
     },
     'openapi-version': {
       description: 'OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.',

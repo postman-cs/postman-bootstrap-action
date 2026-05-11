@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CONTRACT_SIZE_LIMITS, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
-import { loadOpenApiContractSpec, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
+import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
 import { createPinnedLookup, isBlockedAddress, safeFetchText, validateSafeHttpsUrl } from '../src/lib/spec/safe-spec-fetch.js';
 
 const BASE_SPEC = `openapi: 3.1.0
@@ -175,6 +175,40 @@ describe('dynamic contract hardening', () => {
       maxBytesPerResource: 2,
       transport: async () => ({ statusCode: 200, headers: {}, body: 'abc', remoteAddress: '93.184.216.34' })
     })).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded 2 bytes');
+  });
+
+  it('loads a spec from a local filesystem path', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const pathMod = await import('node:path');
+    const dir = mkdtempSync(pathMod.join(tmpdir(), 'spec-path-'));
+    const specFile = pathMod.join(dir, 'openapi.yaml');
+    writeFileSync(specFile, `openapi: 3.0.3
+info:
+  title: Local Spec
+  version: 1.0.0
+paths:
+  /ping:
+    get:
+      responses:
+        '200':
+          description: OK
+`);
+    try {
+      const fetchText = vi.fn();
+      const loaded = await loadOpenApiContractSpecFromPath(specFile, { fetchText });
+      expect(fetchText).not.toHaveBeenCalled();
+      expect(loaded.version).toBe('3.0');
+      expect(loaded.contractIndex.operations[0]?.path).toBe('/ping');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports CONTRACT_SPEC_READ_FAILED when the local spec is missing', async () => {
+    await expect(
+      loadOpenApiContractSpecFromPath('/definitely/not/here.yaml')
+    ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
   });
 
   it('loads external refs through the custom resolver and validates with external resolution disabled', async () => {

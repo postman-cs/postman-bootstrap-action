@@ -1,3 +1,7 @@
+import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+
 import $RefParser from '@apidevtools/json-schema-ref-parser';
 import { compileErrors, validate as validateOpenApi } from '@readme/openapi-parser';
 import { parse } from 'yaml';
@@ -155,6 +159,34 @@ async function bundleSpec(baseUrl: string, document: JsonRecord, options: OpenAp
   return bundled;
 }
 
+async function validateAndBuildLoadedSpec(
+  content: string,
+  baseRef: string,
+  options: OpenApiLoaderOptions,
+  fetchText: (url: string, fetchOptions: SafeFetchOptions) => Promise<string>,
+  budget: SafeFetchBudget
+): Promise<LoadedOpenApiContractSpec> {
+  const document = parseOpenApiDocument(content);
+  const version = detectOpenApiVersion(document);
+  const bundledDocument = await bundleSpec(baseRef, document, { ...options, budget, fetchText });
+  const validation = await validateOpenApi(bundledDocument as never, {
+    resolve: { external: false, file: false },
+    dereference: { circular: 'ignore' },
+    validate: { errors: { colorize: false } }
+  });
+  if (!validation.valid) {
+    throw new Error(`CONTRACT_SPEC_VALIDATION_FAILED: ${compileErrors(validation)}`);
+  }
+  const contractIndex = buildContractIndex(bundledDocument);
+  return {
+    bundledContent: serializeOpenApiDocument(bundledDocument),
+    bundledDocument,
+    contractIndex,
+    content,
+    version
+  };
+}
+
 export async function loadOpenApiContractSpec(
   specUrl: string,
   options: OpenApiLoaderOptions = {}
@@ -178,24 +210,39 @@ export async function loadOpenApiContractSpec(
     return text;
   };
   const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
-  const document = parseOpenApiDocument(content);
-  const version = detectOpenApiVersion(document);
   await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, new Set([resourceUrl(specUrl)]), 0);
-  const bundledDocument = await bundleSpec(specUrl, document, { ...options, budget, fetchText });
-  const validation = await validateOpenApi(bundledDocument as never, {
-    resolve: { external: false, file: false },
-    dereference: { circular: 'ignore' },
-    validate: { errors: { colorize: false } }
-  });
-  if (!validation.valid) {
-    throw new Error(`CONTRACT_SPEC_VALIDATION_FAILED: ${compileErrors(validation)}`);
+  return validateAndBuildLoadedSpec(content, specUrl, options, fetchText, budget);
+}
+
+export async function loadOpenApiContractSpecFromPath(
+  specPath: string,
+  options: OpenApiLoaderOptions = {}
+): Promise<LoadedOpenApiContractSpec> {
+  const absolutePath = path.resolve(specPath);
+  let content: string;
+  try {
+    content = await readFile(absolutePath, 'utf8');
+  } catch (error) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error });
   }
-  const contractIndex = buildContractIndex(bundledDocument);
-  return {
-    bundledContent: serializeOpenApiDocument(bundledDocument),
-    bundledDocument,
-    contractIndex,
-    content,
-    version
+  const budget = options.budget ?? { refs: 0, totalBytes: Buffer.byteLength(content, 'utf8') };
+  const baseFetchText = options.fetchText ?? safeFetchText;
+  const cache = new Map<string, string>();
+  const fetchText = async (url: string, fetchOptions: SafeFetchOptions): Promise<string> => {
+    const key = resourceUrl(url);
+    const cached = cache.get(key);
+    if (cached !== undefined) return cached;
+    const text = await retry(
+      () => baseFetchText(key, fetchOptions),
+      {
+        maxAttempts: 3,
+        delayMs: 3000,
+        shouldRetry: (error) => classifySafeFetchRetryability(error) === 'retryable'
+      }
+    );
+    cache.set(key, text);
+    return text;
   };
+  const baseRef = pathToFileURL(absolutePath).toString();
+  return validateAndBuildLoadedSpec(content, baseRef, options, fetchText, budget);
 }

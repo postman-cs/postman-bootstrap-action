@@ -75,6 +75,7 @@ function normalizeCliFlag(name: string): string {
 const cliInputNames = [
   'project-name',
   'spec-url',
+  'spec-path',
   'postman-api-key',
   'postman-access-token',
   'workspace-id',
@@ -315,7 +316,12 @@ function requireCliInput(name: string, value: string | undefined): void {
 
 function validateCliInputs(inputs: ResolvedInputs): void {
   requireCliInput('project-name', inputs.projectName);
-  requireCliInput('spec-url', inputs.specUrl);
+  if (!inputs.specUrl && !inputs.specPath) {
+    throw new Error('One of spec-url or spec-path is required');
+  }
+  if (inputs.specUrl && inputs.specPath) {
+    throw new Error('Provide either spec-url or spec-path, not both.');
+  }
   requireCliInput('postman-api-key', inputs.postmanApiKey);
 }
 

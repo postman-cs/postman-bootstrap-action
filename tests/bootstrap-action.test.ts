@@ -278,6 +278,35 @@ describe('bootstrap action', () => {
     ]);
   });
 
+  it('accepts spec-path instead of spec-url', () => {
+    const { core } = createCoreStub({
+      'project-name': 'core-payments',
+      'spec-path': 'apis/core-payments/openapi.yaml',
+      'postman-api-key': 'pmak-test'
+    });
+
+    const inputs = readActionInputs(core);
+
+    expect(inputs.specPath).toBe('apis/core-payments/openapi.yaml');
+    expect(inputs.specUrl).toBe('');
+  });
+
+  it('requires exactly one of spec-url or spec-path', () => {
+    const neither = createCoreStub({
+      'project-name': 'core-payments',
+      'postman-api-key': 'pmak-test'
+    });
+    expect(() => readActionInputs(neither.core)).toThrow(/spec-url or spec-path/);
+
+    const both = createCoreStub({
+      'project-name': 'core-payments',
+      'spec-url': 'https://example.test/openapi.yaml',
+      'spec-path': 'apis/core-payments/openapi.yaml',
+      'postman-api-key': 'pmak-test'
+    });
+    expect(() => readActionInputs(both.core)).toThrow(/not both/);
+  });
+
   it('runs the bootstrap flow end to end and emits outputs', async () => {
     const { core, outputs } = createCoreStub();
     const execStub = createExecStub();

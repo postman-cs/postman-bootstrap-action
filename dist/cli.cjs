@@ -46820,7 +46820,7 @@ __export(cli_exports, {
   toDotenv: () => toDotenv
 });
 module.exports = __toCommonJS(cli_exports);
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var import_promises3 = require("node:fs/promises");
 var import_node_child_process = require("node:child_process");
 var import_node_path2 = __toESM(require("node:path"), 1);
@@ -46832,7 +46832,7 @@ var core2 = __toESM(require_core(), 1);
 var exec = __toESM(require_exec(), 1);
 var io = __toESM(require_io(), 1);
 var import_node_crypto = require("node:crypto");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_yaml3 = __toESM(require_dist(), 1);
 
 // src/contracts.ts
@@ -49405,6 +49405,7 @@ function instrumentContractCollection(collection, index) {
 }
 
 // src/lib/spec/openapi-loader.ts
+var import_node_fs = require("node:fs");
 var import_promises2 = require("node:fs/promises");
 var import_node_url2 = require("node:url");
 var import_node_path = __toESM(require("node:path"), 1);
@@ -61580,21 +61581,22 @@ function collectExternalRefs(node, baseUrl, refs) {
     collectExternalRefs(value, baseUrl, refs);
   }
 }
-async function prefetchExternalRefs(content, baseUrl, fetchText, options, budget, visited, depth) {
-  const maxDepth = options.maxDepth ?? 20;
+async function prefetchExternalRefs(content, baseUrl, fetchText, options, budget, visited, depth, httpsOnly = false) {
+  const maxDepth = options.maxDepth ?? SAFE_FETCH_LIMITS.maxDepth;
   if (depth > maxDepth) {
     throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
   }
   const refs = /* @__PURE__ */ new Set();
   collectExternalRefs(parseReferencedDocument(content, baseUrl), baseUrl, refs);
   for (const refUrl of refs) {
+    if (httpsOnly && !refUrl.startsWith("https://")) continue;
     if (visited.has(refUrl)) continue;
     if (depth + 1 > maxDepth) {
       throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
     }
     visited.add(refUrl);
     const refContent = await fetchText(refUrl, { ...options, budget, depth: depth + 1 });
-    await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1);
+    await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1, httpsOnly);
   }
 }
 function detectOpenApiVersion2(doc) {
@@ -61643,7 +61645,23 @@ async function bundleSpec(baseUrl, document, options) {
   });
   return bundled;
 }
-async function validateAndBuildLoadedSpec(content, baseRef, options, fetchText, budget) {
+function createCachedFetchText(options) {
+  const baseFetchText = options.fetchText ?? safeFetchText;
+  const cache = /* @__PURE__ */ new Map();
+  return async (url, fetchOptions) => {
+    const key = resourceUrl(url);
+    const cached = cache.get(key);
+    if (cached !== void 0) return cached;
+    const text = await retry(() => baseFetchText(key, fetchOptions), {
+      maxAttempts: 3,
+      delayMs: 3e3,
+      shouldRetry: (error) => classifySafeFetchRetryability(error) === "retryable"
+    });
+    cache.set(key, text);
+    return text;
+  };
+}
+async function buildLoadedSpec(content, baseRef, options, fetchText, budget) {
   const document = parseOpenApiDocument(content);
   const version = detectOpenApiVersion2(document);
   const bundledDocument = await bundleSpec(baseRef, document, { ...options, budget, fetchText });
@@ -61655,66 +61673,53 @@ async function validateAndBuildLoadedSpec(content, baseRef, options, fetchText, 
   if (!validation.valid) {
     throw new Error(`CONTRACT_SPEC_VALIDATION_FAILED: ${compileErrors(validation)}`);
   }
-  const contractIndex = buildContractIndex(bundledDocument);
   return {
     bundledContent: serializeOpenApiDocument(bundledDocument),
     bundledDocument,
-    contractIndex,
+    contractIndex: buildContractIndex(bundledDocument),
     content,
     version
   };
 }
 async function loadOpenApiContractSpec(specUrl, options = {}) {
   const budget = options.budget ?? { refs: 0, totalBytes: 0 };
-  const baseFetchText = options.fetchText ?? safeFetchText;
-  const cache = /* @__PURE__ */ new Map();
-  const fetchText = async (url, fetchOptions) => {
-    const key = resourceUrl(url);
-    const cached = cache.get(key);
-    if (cached !== void 0) return cached;
-    const text = await retry(
-      () => baseFetchText(key, fetchOptions),
-      {
-        maxAttempts: 3,
-        delayMs: 3e3,
-        shouldRetry: (error) => classifySafeFetchRetryability(error) === "retryable"
-      }
-    );
-    cache.set(key, text);
-    return text;
-  };
+  const fetchText = createCachedFetchText(options);
   const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
   await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, /* @__PURE__ */ new Set([resourceUrl(specUrl)]), 0);
-  return validateAndBuildLoadedSpec(content, specUrl, options, fetchText, budget);
+  return buildLoadedSpec(content, specUrl, options, fetchText, budget);
 }
 async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
-  const absolutePath = import_node_path.default.resolve(specPath);
-  let content;
+  if (!specPath) throw new Error("CONTRACT_SPEC_READ_FAILED: spec-path must not be empty");
+  const workspaceRoot = (() => {
+    const root = import_node_path.default.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+    try {
+      return (0, import_node_fs.realpathSync)(root);
+    } catch {
+      return root;
+    }
+  })();
+  const resolved = import_node_path.default.resolve(workspaceRoot, specPath);
+  let absolutePath;
   try {
-    content = await (0, import_promises2.readFile)(absolutePath, "utf8");
+    absolutePath = (0, import_node_fs.realpathSync)(resolved);
   } catch (error) {
     throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error });
   }
-  const budget = options.budget ?? { refs: 0, totalBytes: Buffer.byteLength(content, "utf8") };
-  const baseFetchText = options.fetchText ?? safeFetchText;
-  const cache = /* @__PURE__ */ new Map();
-  const fetchText = async (url, fetchOptions) => {
-    const key = resourceUrl(url);
-    const cached = cache.get(key);
-    if (cached !== void 0) return cached;
-    const text = await retry(
-      () => baseFetchText(key, fetchOptions),
-      {
-        maxAttempts: 3,
-        delayMs: 3e3,
-        shouldRetry: (error) => classifySafeFetchRetryability(error) === "retryable"
-      }
-    );
-    cache.set(key, text);
-    return text;
-  };
+  const rel = import_node_path.default.relative(workspaceRoot, absolutePath);
+  if (!rel || rel.startsWith("..") || import_node_path.default.isAbsolute(rel)) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: spec-path must resolve inside ${workspaceRoot}, got: ${specPath}`);
+  }
+  const content = await (0, import_promises2.readFile)(absolutePath, "utf8");
+  const bytes = Buffer.byteLength(content, "utf8");
+  const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
+  if (bytes > maxBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
+  }
+  const budget = options.budget ?? { refs: 1, totalBytes: bytes };
+  const fetchText = createCachedFetchText(options);
   const baseRef = (0, import_node_url2.pathToFileURL)(absolutePath).toString();
-  return validateAndBuildLoadedSpec(content, baseRef, options, fetchText, budget);
+  await prefetchExternalRefs(content, baseRef, fetchText, options, budget, /* @__PURE__ */ new Set([baseRef]), 0, true);
+  return buildLoadedSpec(content, baseRef, options, fetchText, budget);
 }
 
 // src/index.ts
@@ -62069,7 +62074,7 @@ function createAssetProjectName(inputs, releaseLabel) {
 }
 function readResourcesState() {
   try {
-    return (0, import_yaml3.parse)((0, import_node_fs.readFileSync)(".postman/resources.yaml", "utf8"));
+    return (0, import_yaml3.parse)((0, import_node_fs2.readFileSync)(".postman/resources.yaml", "utf8"));
   } catch {
     return null;
   }
@@ -63225,11 +63230,11 @@ function nearestExistingPath(candidate) {
   return current;
 }
 function pathExists(candidate) {
-  if ((0, import_node_fs2.existsSync)(candidate)) {
+  if ((0, import_node_fs3.existsSync)(candidate)) {
     return true;
   }
   try {
-    (0, import_node_fs2.lstatSync)(candidate);
+    (0, import_node_fs3.lstatSync)(candidate);
     return true;
   } catch {
     return false;
@@ -63237,10 +63242,10 @@ function pathExists(candidate) {
 }
 function checkedRealPath(existingPath, workspaceRealPath) {
   try {
-    return (0, import_node_fs2.realpathSync)(existingPath);
+    return (0, import_node_fs3.realpathSync)(existingPath);
   } catch (error) {
-    if ((0, import_node_fs2.lstatSync)(existingPath).isSymbolicLink()) {
-      const linkTarget = (0, import_node_fs2.readlinkSync)(existingPath);
+    if ((0, import_node_fs3.lstatSync)(existingPath).isSymbolicLink()) {
+      const linkTarget = (0, import_node_fs3.readlinkSync)(existingPath);
       const resolvedTarget = import_node_path2.default.resolve(import_node_path2.default.dirname(existingPath), linkTarget);
       ensureInsideWorkspace(workspaceRealPath, resolvedTarget);
     }
@@ -63252,7 +63257,7 @@ function assertOutputFileAllowed(filePath) {
     return void 0;
   }
   const workspaceRoot = import_node_path2.default.resolve(process.cwd());
-  const workspaceRealPath = (0, import_node_fs2.realpathSync)(workspaceRoot);
+  const workspaceRealPath = (0, import_node_fs3.realpathSync)(workspaceRoot);
   const resolved = import_node_path2.default.isAbsolute(filePath) ? import_node_path2.default.resolve(filePath) : import_node_path2.default.resolve(workspaceRoot, filePath);
   const existingPath = nearestExistingPath(resolved);
   ensureInsideWorkspace(workspaceRealPath, checkedRealPath(existingPath, workspaceRealPath));
@@ -63264,7 +63269,7 @@ async function writeOptionalFile(filePath, content) {
     return;
   }
   await (0, import_promises3.mkdir)(import_node_path2.default.dirname(resolved), { recursive: true });
-  ensureInsideWorkspace((0, import_node_fs2.realpathSync)(import_node_path2.default.resolve(process.cwd())), (0, import_node_fs2.realpathSync)(import_node_path2.default.dirname(resolved)));
+  ensureInsideWorkspace((0, import_node_fs3.realpathSync)(import_node_path2.default.resolve(process.cwd())), (0, import_node_fs3.realpathSync)(import_node_path2.default.dirname(resolved)));
   await (0, import_promises3.writeFile)(resolved, content, "utf8");
 }
 function requireCliInput(name, value) {
@@ -63309,7 +63314,7 @@ function isEntrypoint(currentPath, entrypointPath) {
     return false;
   }
   try {
-    return (0, import_node_fs2.realpathSync)(currentPath) === (0, import_node_fs2.realpathSync)(entrypointPath);
+    return (0, import_node_fs3.realpathSync)(currentPath) === (0, import_node_fs3.realpathSync)(entrypointPath);
   } catch {
     return import_node_path2.default.resolve(currentPath) === import_node_path2.default.resolve(entrypointPath);
   }

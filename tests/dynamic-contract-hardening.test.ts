@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTRACT_SIZE_LIMITS, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
@@ -177,13 +178,33 @@ describe('dynamic contract hardening', () => {
     })).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded 2 bytes');
   });
 
-  it('loads a spec from a local filesystem path', async () => {
-    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
-    const { tmpdir } = await import('node:os');
-    const pathMod = await import('node:path');
-    const dir = mkdtempSync(pathMod.join(tmpdir(), 'spec-path-'));
-    const specFile = pathMod.join(dir, 'openapi.yaml');
-    writeFileSync(specFile, `openapi: 3.0.3
+  describe('loadOpenApiContractSpecFromPath', () => {
+    let workspaceDir = '';
+    let originalWorkspace: string | undefined;
+
+    beforeEach(() => {
+      workspaceDir = realpathSync(mkdtempSync(join(tmpdir(), 'spec-ws-')));
+      originalWorkspace = process.env.GITHUB_WORKSPACE;
+      process.env.GITHUB_WORKSPACE = workspaceDir;
+    });
+
+    afterEach(() => {
+      if (originalWorkspace === undefined) {
+        delete process.env.GITHUB_WORKSPACE;
+      } else {
+        process.env.GITHUB_WORKSPACE = originalWorkspace;
+      }
+      rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    const writeSpec = (relPath: string, body: string): string => {
+      const full = join(workspaceDir, relPath);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, body);
+      return full;
+    };
+
+    const baseSpec = `openapi: 3.0.3
 info:
   title: Local Spec
   version: 1.0.0
@@ -193,22 +214,108 @@ paths:
       responses:
         '200':
           description: OK
-`);
-    try {
+`;
+
+    it('loads a spec from a local filesystem path', async () => {
+      writeSpec('apis/svc/openapi.yaml', baseSpec);
       const fetchText = vi.fn();
-      const loaded = await loadOpenApiContractSpecFromPath(specFile, { fetchText });
+      const loaded = await loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', { fetchText });
       expect(fetchText).not.toHaveBeenCalled();
       expect(loaded.version).toBe('3.0');
       expect(loaded.contractIndex.operations[0]?.path).toBe('/ping');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+    });
 
-  it('reports CONTRACT_SPEC_READ_FAILED when the local spec is missing', async () => {
-    await expect(
-      loadOpenApiContractSpecFromPath('/definitely/not/here.yaml')
-    ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+    it('reports CONTRACT_SPEC_READ_FAILED when the local spec is missing', async () => {
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/missing.yaml')
+      ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+    });
+
+    it('rejects paths that traverse outside the workspace', async () => {
+      const outside = realpathSync(mkdtempSync(join(tmpdir(), 'spec-outside-')));
+      try {
+        writeFileSync(join(outside, 'openapi.yaml'), baseSpec);
+        await expect(
+          loadOpenApiContractSpecFromPath(join(outside, 'openapi.yaml'))
+        ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+        await expect(
+          loadOpenApiContractSpecFromPath('../outside/openapi.yaml')
+        ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects oversized local specs before parsing', async () => {
+      writeSpec('apis/svc/openapi.yaml', baseSpec);
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', {
+          maxBytesPerResource: 16
+        })
+      ).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED');
+    });
+
+    it('enforces ref-depth limits on HTTPS $ref chains starting from a local spec', async () => {
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: 'https://cdn.example.test/level-0.yaml'
+`
+      );
+      const fetchText = vi.fn(async (url: string) => {
+        const match = /level-(\d+)\.yaml$/.exec(url);
+        const next = Number(match?.[1] ?? '0') + 1;
+        return `type: object
+properties:
+  next:
+    $ref: 'https://cdn.example.test/level-${next}.yaml'
+`;
+      });
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', {
+          fetchText,
+          maxDepth: 3
+        })
+      ).rejects.toThrow('CONTRACT_REF_DEPTH_EXCEEDED');
+    });
+
+    it('does not follow local-file $refs from a local spec', async () => {
+      writeSpec('apis/svc/sibling.yaml', 'type: object\n');
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './sibling.yaml'
+`
+      );
+      const fetchText = vi.fn();
+      // Local-file $refs are never followed: the prefetch skips them and the
+      // bundler's file resolver is disabled, so $RefParser fails loudly
+      // rather than reading from disk.
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', { fetchText })
+      ).rejects.toThrow();
+      expect(fetchText).not.toHaveBeenCalled();
+    });
   });
 
   it('loads external refs through the custom resolver and validates with external resolution disabled', async () => {

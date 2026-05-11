@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
@@ -8,7 +9,13 @@ import { parse } from 'yaml';
 
 import { retry } from '../retry.js';
 import { buildContractIndex, type ContractIndex } from './contract-index.js';
-import { classifySafeFetchRetryability, safeFetchText, type SafeFetchBudget, type SafeFetchOptions } from './safe-spec-fetch.js';
+import {
+  SAFE_FETCH_LIMITS,
+  classifySafeFetchRetryability,
+  safeFetchText,
+  type SafeFetchBudget,
+  type SafeFetchOptions
+} from './safe-spec-fetch.js';
 import type { OpenApiVersion } from './schema-pack.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -91,22 +98,24 @@ async function prefetchExternalRefs(
   options: OpenApiLoaderOptions,
   budget: SafeFetchBudget,
   visited: Set<string>,
-  depth: number
+  depth: number,
+  httpsOnly = false
 ): Promise<void> {
-  const maxDepth = options.maxDepth ?? 20;
+  const maxDepth = options.maxDepth ?? SAFE_FETCH_LIMITS.maxDepth;
   if (depth > maxDepth) {
     throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
   }
   const refs = new Set<string>();
   collectExternalRefs(parseReferencedDocument(content, baseUrl), baseUrl, refs);
   for (const refUrl of refs) {
+    if (httpsOnly && !refUrl.startsWith('https://')) continue;
     if (visited.has(refUrl)) continue;
     if (depth + 1 > maxDepth) {
       throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
     }
     visited.add(refUrl);
     const refContent = await fetchText(refUrl, { ...options, budget, depth: depth + 1 });
-    await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1);
+    await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1, httpsOnly);
   }
 }
 
@@ -159,7 +168,26 @@ async function bundleSpec(baseUrl: string, document: JsonRecord, options: OpenAp
   return bundled;
 }
 
-async function validateAndBuildLoadedSpec(
+function createCachedFetchText(
+  options: OpenApiLoaderOptions
+): (url: string, fetchOptions: SafeFetchOptions) => Promise<string> {
+  const baseFetchText = options.fetchText ?? safeFetchText;
+  const cache = new Map<string, string>();
+  return async (url, fetchOptions) => {
+    const key = resourceUrl(url);
+    const cached = cache.get(key);
+    if (cached !== undefined) return cached;
+    const text = await retry(() => baseFetchText(key, fetchOptions), {
+      maxAttempts: 3,
+      delayMs: 3000,
+      shouldRetry: (error) => classifySafeFetchRetryability(error) === 'retryable'
+    });
+    cache.set(key, text);
+    return text;
+  };
+}
+
+async function buildLoadedSpec(
   content: string,
   baseRef: string,
   options: OpenApiLoaderOptions,
@@ -177,11 +205,10 @@ async function validateAndBuildLoadedSpec(
   if (!validation.valid) {
     throw new Error(`CONTRACT_SPEC_VALIDATION_FAILED: ${compileErrors(validation)}`);
   }
-  const contractIndex = buildContractIndex(bundledDocument);
   return {
     bundledContent: serializeOpenApiDocument(bundledDocument),
     bundledDocument,
-    contractIndex,
+    contractIndex: buildContractIndex(bundledDocument),
     content,
     version
   };
@@ -192,57 +219,50 @@ export async function loadOpenApiContractSpec(
   options: OpenApiLoaderOptions = {}
 ): Promise<LoadedOpenApiContractSpec> {
   const budget = options.budget ?? { refs: 0, totalBytes: 0 };
-  const baseFetchText = options.fetchText ?? safeFetchText;
-  const cache = new Map<string, string>();
-  const fetchText = async (url: string, fetchOptions: SafeFetchOptions): Promise<string> => {
-    const key = resourceUrl(url);
-    const cached = cache.get(key);
-    if (cached !== undefined) return cached;
-    const text = await retry(
-      () => baseFetchText(key, fetchOptions),
-      {
-        maxAttempts: 3,
-        delayMs: 3000,
-        shouldRetry: (error) => classifySafeFetchRetryability(error) === 'retryable'
-      }
-    );
-    cache.set(key, text);
-    return text;
-  };
+  const fetchText = createCachedFetchText(options);
   const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
   await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, new Set([resourceUrl(specUrl)]), 0);
-  return validateAndBuildLoadedSpec(content, specUrl, options, fetchText, budget);
+  return buildLoadedSpec(content, specUrl, options, fetchText, budget);
 }
 
+// spec-path is just "spec-url, but the bytes are already on disk in the
+// checked-out workspace". The on-the-wire safety machinery (DNS pinning,
+// SSRF guards, redirect caps) is unnecessary for a trusted local file; we
+// only need to (a) keep the read inside the workspace and (b) cap its
+// size. Any HTTPS $refs inside the spec still flow through the URL
+// hardening via prefetchExternalRefs + bundleSpec.
 export async function loadOpenApiContractSpecFromPath(
   specPath: string,
   options: OpenApiLoaderOptions = {}
 ): Promise<LoadedOpenApiContractSpec> {
-  const absolutePath = path.resolve(specPath);
-  let content: string;
+  if (!specPath) throw new Error('CONTRACT_SPEC_READ_FAILED: spec-path must not be empty');
+
+  const workspaceRoot = (() => {
+    const root = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+    try { return realpathSync(root); } catch { return root; }
+  })();
+  const resolved = path.resolve(workspaceRoot, specPath);
+  let absolutePath: string;
   try {
-    content = await readFile(absolutePath, 'utf8');
+    absolutePath = realpathSync(resolved);
   } catch (error) {
     throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error });
   }
-  const budget = options.budget ?? { refs: 0, totalBytes: Buffer.byteLength(content, 'utf8') };
-  const baseFetchText = options.fetchText ?? safeFetchText;
-  const cache = new Map<string, string>();
-  const fetchText = async (url: string, fetchOptions: SafeFetchOptions): Promise<string> => {
-    const key = resourceUrl(url);
-    const cached = cache.get(key);
-    if (cached !== undefined) return cached;
-    const text = await retry(
-      () => baseFetchText(key, fetchOptions),
-      {
-        maxAttempts: 3,
-        delayMs: 3000,
-        shouldRetry: (error) => classifySafeFetchRetryability(error) === 'retryable'
-      }
-    );
-    cache.set(key, text);
-    return text;
-  };
+  const rel = path.relative(workspaceRoot, absolutePath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: spec-path must resolve inside ${workspaceRoot}, got: ${specPath}`);
+  }
+
+  const content = await readFile(absolutePath, 'utf8');
+  const bytes = Buffer.byteLength(content, 'utf8');
+  const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
+  if (bytes > maxBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
+  }
+
+  const budget: SafeFetchBudget = options.budget ?? { refs: 1, totalBytes: bytes };
+  const fetchText = createCachedFetchText(options);
   const baseRef = pathToFileURL(absolutePath).toString();
-  return validateAndBuildLoadedSpec(content, baseRef, options, fetchText, budget);
+  await prefetchExternalRefs(content, baseRef, fetchText, options, budget, new Set([baseRef]), 0, true);
+  return buildLoadedSpec(content, baseRef, options, fetchText, budget);
 }

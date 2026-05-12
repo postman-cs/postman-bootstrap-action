@@ -97,6 +97,7 @@ export class GitHubApiClient {
   private canUseFallback(path: string): boolean {
     return (
       this.isVariablesEndpoint(path) ||
+      path === `/repos/${this.owner}/${this.repo}/properties/values` ||
       path.includes(`/repos/${this.owner}/${this.repo}/contents`) ||
       path.includes('/dispatches')
     );
@@ -242,6 +243,34 @@ export class GitHubApiClient {
 
     const data = (await response.json()) as { value?: string };
     return String(data.value || '');
+  }
+
+  async getRepositoryCustomProperty(name: string): Promise<string> {
+    const path = `/repos/${this.repository}/properties/values`;
+    const response = await this.request(path, {
+      method: 'GET'
+    });
+
+    if (response.status === 404) {
+      return '';
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        buildErrorMessage('GET', path, response, text, this.secretMasker)
+      );
+    }
+
+    const values = (await response.json()) as Array<{
+      property_name?: string;
+      value?: string | string[] | null;
+    }>;
+    const entry = values.find((item) => item.property_name === name);
+    const value = entry?.value;
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item).trim()).filter(Boolean).join(',');
+    }
+    return String(value || '').trim();
   }
 }
 

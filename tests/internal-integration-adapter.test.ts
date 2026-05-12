@@ -14,12 +14,13 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 describe('internal integration adapter', () => {
-  it('routes governance assignment through the internal gateway API', async () => {
+  it('routes governance assignment through the Bifrost ruleset proxy', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ version: '12.10.0' }))
       .mockResolvedValueOnce(
         jsonResponse({
-          data: [{ id: 'group-1', name: 'Core Banking' }]
+          workspaceGroups: [{ id: 'group-1', name: 'Core Banking' }]
         })
       )
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -37,22 +38,50 @@ describe('internal integration adapter', () => {
       JSON.stringify({ 'core-banking': 'Core Banking' })
     );
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      'https://gateway.postman.com/configure/workspace-groups',
+      'https://dl.pstmn.io/update/status?currentVersion=12.0.0&platform=osx_arm64',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
       expect.objectContaining({
+        method: 'POST',
         headers: expect.objectContaining({
-          'x-access-token': 'token-123'
+          'Content-Type': 'application/json',
+          'x-access-token': 'token-123',
+          'x-app-version': '12.10.0'
+        }),
+        body: JSON.stringify({
+          service: 'ruleset',
+          method: 'get',
+          path: '/configure/workspace-groups',
+          query: { tag: 'governance' }
         })
       })
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      2,
-      'https://gateway.postman.com/configure/workspace-groups/group-1',
+      3,
+      'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
       expect.objectContaining({
-        method: 'PATCH',
-        body: JSON.stringify({ workspaces: ['ws-123'] })
+        method: 'POST',
+        body: JSON.stringify({
+          service: 'ruleset',
+          method: 'patch',
+          path: '/configure/workspace-groups/group-1',
+          body: {
+            workspaces: {
+              add: ['ws-123'],
+              remove: []
+            },
+            vulnerabilities: {
+              add: [],
+              remove: []
+            }
+          }
+        })
       })
     );
   });
@@ -256,9 +285,10 @@ describe('internal integration adapter', () => {
   it('honors custom bifrostBaseUrl and gatewayBaseUrl overrides for beta stacks', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ version: '12.10.0' }))
       .mockResolvedValueOnce(
         jsonResponse({
-          data: [{ id: 'group-beta', name: 'Core Banking' }]
+          workspaceGroups: [{ id: 'group-beta', name: 'Core Banking' }]
         })
       )
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
@@ -281,20 +311,20 @@ describe('internal integration adapter', () => {
     );
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      1,
-      'https://gateway.postman-beta.com/configure/workspace-groups',
+      2,
+      'https://bifrost-https-v4.gw.postman-beta.com/ws/proxy',
       expect.any(Object)
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      2,
-      'https://gateway.postman-beta.com/configure/workspace-groups/group-beta',
-      expect.objectContaining({ method: 'PATCH' })
+      3,
+      'https://bifrost-https-v4.gw.postman-beta.com/ws/proxy',
+      expect.objectContaining({ method: 'POST' })
     );
 
     await adapter.syncCollection('spec-beta', 'col-beta');
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      3,
+      4,
       'https://bifrost-https-v4.gw.postman-beta.com/ws/proxy',
       expect.any(Object)
     );

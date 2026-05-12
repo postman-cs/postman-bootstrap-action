@@ -160,4 +160,26 @@ describe('GitHubApiClient', () => {
       })
     });
   });
+
+  it('reads repository custom property values', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse([
+        { property_name: 'postman-governance-group', value: 'Core Banking' }
+      ])
+    );
+
+    const client = new GitHubApiClient({
+      repository: 'postman-cs/bootstrap-demo',
+      token: 'primary-token',
+      fetch: fetchMock
+    });
+
+    await expect(
+      client.getRepositoryCustomProperty('postman-governance-group')
+    ).resolves.toBe('Core Banking');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/repos/postman-cs/bootstrap-demo/properties/values',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
 });

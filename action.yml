@@ -41,6 +41,9 @@ inputs:
   domain-code:
     description: Workspace naming prefix
     required: false
+  governance-group:
+    description: Postman governance workspace group name. Overrides the postman-governance-group repository custom property and domain mapping.
+    required: false
   requester-email:
     description: Requester email for audit context
     required: false
@@ -61,9 +64,15 @@ inputs:
     required: false
     default: ''
   governance-mapping-json:
-    description: JSON map of business domain to governance group name
+    description: Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property.
     required: false
     default: '{}'
+  github-token:
+    description: GitHub token used to read the postman-governance-group repository custom property
+    required: false
+  gh-fallback-token:
+    description: Fallback GitHub token used to read repository custom properties when github-token cannot
+    required: false
   postman-api-key:
     description: Postman API key used for bootstrap operations
     required: true

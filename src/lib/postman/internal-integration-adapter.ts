@@ -24,10 +24,12 @@ export interface InternalIntegrationAdapterOptions {
 }
 
 export interface InternalIntegrationAdapter {
+  configureTeamContext(teamId: string, orgMode: boolean): void;
   assignWorkspaceToGovernanceGroup(
     workspaceId: string,
     domain: string,
-    mappingJson: string
+    mappingJson: string,
+    governanceGroupName?: string
   ): Promise<void>;
   connectWorkspaceToRepository(
     workspaceId: string,
@@ -44,13 +46,17 @@ export interface InternalIntegrationAdapter {
 }
 
 class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
+  private static readonly MINIMUM_POSTMAN_APP_VERSION = '12.0.0';
+  private static readonly POSTMAN_APP_VERSION_URL = `https://dl.pstmn.io/update/status?currentVersion=${BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION}&platform=osx_arm64`;
+
   private readonly accessToken: string;
+  private appVersionPromise?: Promise<string>;
   private readonly bifrostBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly gatewayBaseUrl: string;
-  private readonly orgMode: boolean;
+  private orgMode: boolean;
   private readonly secretMasker: SecretMasker;
-  private readonly teamId: string;
+  private teamId: string;
 
   constructor(options: InternalIntegrationAdapterOptions) {
     this.accessToken = String(options.accessToken || '').trim();
@@ -67,17 +73,26 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     this.teamId = String(options.teamId || '').trim();
   }
 
+  configureTeamContext(teamId: string, orgMode: boolean): void {
+    this.teamId = String(teamId || '').trim();
+    this.orgMode = orgMode;
+  }
+
   private async proxyRequest(
     service: string,
     method: string,
     requestPath: string,
-    body?: unknown
+    body?: unknown,
+    options: { appVersion?: string; query?: Record<string, unknown> } = {}
   ): Promise<Response> {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-access-token': this.accessToken
     };
+    if (options.appVersion) {
+      headers['x-app-version'] = options.appVersion;
+    }
     if (this.teamId && this.orgMode) {
       headers['x-entity-team-id'] = this.teamId;
     }
@@ -89,75 +104,115 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         service,
         method,
         path: requestPath,
+        ...(options.query !== undefined ? { query: options.query } : {}),
         ...(body !== undefined ? { body } : {})
       })
     });
   }
 
+  private resolvePostmanAppVersion(): Promise<string> {
+    this.appVersionPromise ??= (async () => {
+      try {
+        const response = await this.fetchImpl(
+          BifrostInternalIntegrationAdapter.POSTMAN_APP_VERSION_URL,
+          { method: 'GET' }
+        );
+        if (!response.ok) {
+          return BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
+        }
+        const payload = (await response.json()) as { version?: unknown };
+        const version = String(payload.version || '').trim();
+        return version || BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
+      } catch {
+        return BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
+      }
+    })();
+
+    return this.appVersionPromise;
+  }
+
   async assignWorkspaceToGovernanceGroup(
     workspaceId: string,
     domain: string,
-    mappingJson: string
+    mappingJson: string,
+    governanceGroupName?: string
   ): Promise<void> {
-    let mapping: Record<string, string>;
-    try {
-      mapping = JSON.parse(mappingJson || '{}');
-    } catch {
-      return;
+    let groupName = String(governanceGroupName || '').trim();
+    if (!groupName) {
+      let mapping: Record<string, string>;
+      try {
+        mapping = JSON.parse(mappingJson || '{}');
+      } catch {
+        return;
+      }
+      groupName = String(mapping[domain] || '').trim();
     }
-
-    const groupName = String(mapping[domain] || '').trim();
     if (!groupName) {
       return;
     }
 
-    const listUrl = `${this.gatewayBaseUrl}/configure/workspace-groups`;
-    const listResponse = await this.fetchImpl(listUrl, {
-      headers: {
-        'x-access-token': this.accessToken
-      }
-    });
+    const appVersion = await this.resolvePostmanAppVersion();
+    const listResponse = await this.proxyRequest(
+      'ruleset',
+      'get',
+      '/configure/workspace-groups',
+      undefined,
+      { appVersion, query: { tag: 'governance' } }
+    );
 
     if (!listResponse.ok) {
       throw await HttpError.fromResponse(listResponse, {
         method: 'GET',
         requestHeaders: {
-          'x-access-token': this.accessToken
+          'Content-Type': 'application/json',
+          'x-access-token': this.accessToken,
+          'x-app-version': appVersion,
+          ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
         },
         secretValues: [this.accessToken],
-        url: listUrl
+        url: `${this.bifrostBaseUrl}/ws/proxy`
       });
     }
 
     const groups = (await listResponse.json()) as {
       data?: Array<{ id: string; name: string }>;
+      workspaceGroups?: Array<{ id: string; name: string }>;
     };
-    const group = groups.data?.find((entry) => entry.name === groupName);
+    const group = (groups.workspaceGroups ?? groups.data)?.find(
+      (entry) => entry.name === groupName
+    );
     if (!group?.id) {
       return;
     }
 
-    const patchUrl = `${this.gatewayBaseUrl}/configure/workspace-groups/${group.id}`;
-    const patchResponse = await this.fetchImpl(patchUrl, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-access-token': this.accessToken
+    const patchResponse = await this.proxyRequest(
+      'ruleset',
+      'patch',
+      `/configure/workspace-groups/${group.id}`,
+      {
+        workspaces: {
+          add: [workspaceId],
+          remove: []
+        },
+        vulnerabilities: {
+          add: [],
+          remove: []
+        }
       },
-      body: JSON.stringify({
-        workspaces: [workspaceId]
-      })
-    });
+      { appVersion }
+    );
 
     if (!patchResponse.ok) {
       throw await HttpError.fromResponse(patchResponse, {
         method: 'PATCH',
         requestHeaders: {
           'Content-Type': 'application/json',
-          'x-access-token': this.accessToken
+          'x-access-token': this.accessToken,
+          'x-app-version': appVersion,
+          ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
         },
         secretValues: [this.accessToken],
-        url: patchUrl
+        url: `${this.bifrostBaseUrl}/ws/proxy`
       });
     }
   }

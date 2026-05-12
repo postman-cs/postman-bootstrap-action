@@ -46888,6 +46888,10 @@ var openAlphaActionContract = {
       description: "Short domain code used in workspace naming.",
       required: false
     },
+    "governance-group": {
+      description: "Postman governance workspace group name. Overrides the postman-governance-group repository custom property and domain mapping.",
+      required: false
+    },
     "requester-email": {
       description: "Requester email for audit context.",
       required: false
@@ -46911,9 +46915,17 @@ var openAlphaActionContract = {
       allowedValues: ["3.0", "3.1"]
     },
     "governance-mapping-json": {
-      description: "JSON map of business domain to governance group name.",
+      description: "Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property.",
       required: false,
       default: "{}"
+    },
+    "github-token": {
+      description: "GitHub token used to read repository custom properties.",
+      required: false
+    },
+    "gh-fallback-token": {
+      description: "Fallback GitHub token used to read repository custom properties.",
+      required: false
     },
     "postman-api-key": {
       description: "Postman API key used for bootstrap operations.",
@@ -47081,6 +47093,211 @@ function sanitizeHeaders(headers, secretValues) {
     sanitized[normalizedName] = SENSITIVE_HEADER_NAMES.has(normalizedName) ? REDACTED : redactSecrets(value, secretValues);
   }
   return sanitized;
+}
+
+// src/lib/github/github-api-client.ts
+function buildErrorMessage(method, path, response, body, masker) {
+  const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+  const sanitizedBody = masker(body || "");
+  return sanitizedBody ? masker(`${method} ${path} failed with ${status} - ${sanitizedBody}`) : masker(`${method} ${path} failed with ${status} - [REDACTED]`);
+}
+var GitHubApiClient = class {
+  apiBase;
+  authMode;
+  appToken;
+  fallbackToken;
+  fetchImpl;
+  owner;
+  repo;
+  repository;
+  secretMasker;
+  token;
+  constructor(options) {
+    this.apiBase = String(options.apiBase || "https://api.github.com").replace(
+      /\/+$/,
+      ""
+    );
+    this.appToken = String(options.appToken || "").trim();
+    this.authMode = options.authMode || "github_token_first";
+    this.fallbackToken = String(options.fallbackToken || "").trim();
+    this.fetchImpl = options.fetch ?? fetch;
+    this.repository = options.repository;
+    const [owner, repo] = options.repository.split("/");
+    this.owner = owner;
+    this.repo = repo;
+    this.token = String(options.token || "").trim();
+    this.secretMasker = options.secretMasker ?? createSecretMasker([this.token, this.fallbackToken, this.appToken]);
+  }
+  getTokenOrder() {
+    const ordered = [];
+    if (this.authMode === "app_token") {
+      if (this.appToken) ordered.push(this.appToken);
+      if (this.token && this.token !== this.appToken) ordered.push(this.token);
+      if (this.fallbackToken && this.fallbackToken !== this.appToken && this.fallbackToken !== this.token) {
+        ordered.push(this.fallbackToken);
+      }
+      return ordered;
+    }
+    if (this.authMode === "fallback_pat_first") {
+      if (this.fallbackToken) ordered.push(this.fallbackToken);
+      if (this.token && this.token !== this.fallbackToken) ordered.push(this.token);
+      return ordered;
+    }
+    if (this.token) ordered.push(this.token);
+    if (this.fallbackToken && this.fallbackToken !== this.token) {
+      ordered.push(this.fallbackToken);
+    }
+    return ordered;
+  }
+  isVariablesEndpoint(path) {
+    return path.startsWith(`/repos/${this.owner}/${this.repo}/actions/variables`);
+  }
+  canUseFallback(path) {
+    return this.isVariablesEndpoint(path) || path === `/repos/${this.owner}/${this.repo}/properties/values` || path.includes(`/repos/${this.owner}/${this.repo}/contents`) || path.includes("/dispatches");
+  }
+  rateLimitDelayMs(response, attempt) {
+    const retryAfter = Number(response.headers.get("retry-after") || "");
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.min(retryAfter * 1e3, 12e4);
+    }
+    const resetAtSeconds = Number(response.headers.get("x-ratelimit-reset") || "");
+    if (Number.isFinite(resetAtSeconds) && resetAtSeconds > 0) {
+      const delta = resetAtSeconds * 1e3 - Date.now();
+      if (delta > 0) {
+        return Math.min(delta + 250, 12e4);
+      }
+    }
+    const base = Math.min(5e3 * Math.pow(2, attempt), 12e4);
+    const jitter = Math.floor(Math.random() * 250);
+    return Math.min(base + jitter, 12e4);
+  }
+  async requestWithToken(path, init, token) {
+    const MAX_RETRIES = 5;
+    const normalizedToken = String(token || "").trim();
+    if (!normalizedToken) {
+      throw new Error(`Missing GitHub auth token for request ${path}`);
+    }
+    for (let attempt = 0; ; attempt++) {
+      const response = await this.fetchImpl(`${this.apiBase}${path}`, {
+        ...init,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${normalizedToken}`,
+          "Content-Type": "application/json",
+          ...init.headers || {}
+        }
+      });
+      if (attempt < MAX_RETRIES && (response.status === 403 || response.status === 429)) {
+        const body = await response.clone().text().catch(() => "");
+        if (isRateLimitedResponse(response, body)) {
+          const delay = this.rateLimitDelayMs(response, attempt);
+          console.log(
+            `GitHub API rate limited, retrying in ${Math.ceil(delay / 1e3)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+      }
+      return response;
+    }
+  }
+  async request(path, init = {}) {
+    const orderedTokens = this.getTokenOrder();
+    if (orderedTokens.length === 0) {
+      throw new Error("No GitHub auth token configured");
+    }
+    const first = await this.requestWithToken(path, init, orderedTokens[0]);
+    if (orderedTokens.length < 2 || !this.canUseFallback(path)) {
+      return first;
+    }
+    const isVariableGet404 = first.status === 404 && (!init.method || init.method === "GET") && this.isVariablesEndpoint(path);
+    if (first.status !== 403 && !isVariableGet404) {
+      return first;
+    }
+    return this.requestWithToken(path, init, orderedTokens[1]);
+  }
+  async setRepositoryVariable(name, value) {
+    if (!value) {
+      throw new Error(`Repo variable ${name} is empty`);
+    }
+    const path = `/repos/${this.repository}/actions/variables`;
+    const body = JSON.stringify({ name, value: String(value) });
+    const createResponse = await this.request(path, {
+      method: "POST",
+      body
+    });
+    if (createResponse.ok || createResponse.status === 201) {
+      return;
+    }
+    if (createResponse.status === 409 || createResponse.status === 422) {
+      const updatePath = `/repos/${this.repository}/actions/variables/${name}`;
+      const updateResponse = await this.request(updatePath, {
+        method: "PATCH",
+        body
+      });
+      if (updateResponse.ok) {
+        return;
+      }
+      const text2 = await updateResponse.text().catch(() => "");
+      throw new Error(
+        buildErrorMessage("PATCH", updatePath, updateResponse, text2, this.secretMasker)
+      );
+    }
+    const text = await createResponse.text().catch(() => "");
+    throw new Error(
+      buildErrorMessage("POST", path, createResponse, text, this.secretMasker)
+    );
+  }
+  async getRepositoryVariable(name) {
+    const path = `/repos/${this.repository}/actions/variables/${name}`;
+    const response = await this.request(path, {
+      method: "GET"
+    });
+    if (response.status === 404) {
+      return "";
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(
+        buildErrorMessage("GET", path, response, text, this.secretMasker)
+      );
+    }
+    const data = await response.json();
+    return String(data.value || "");
+  }
+  async getRepositoryCustomProperty(name) {
+    const path = `/repos/${this.repository}/properties/values`;
+    const response = await this.request(path, {
+      method: "GET"
+    });
+    if (response.status === 404) {
+      return "";
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(
+        buildErrorMessage("GET", path, response, text, this.secretMasker)
+      );
+    }
+    const values = await response.json();
+    const entry = values.find((item) => item.property_name === name);
+    const value = entry?.value;
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item).trim()).filter(Boolean).join(",");
+    }
+    return String(value || "").trim();
+  }
+};
+function isRateLimitedResponse(response, body) {
+  if (response.status !== 403 && response.status !== 429) return false;
+  const remaining = response.headers.get("x-ratelimit-remaining");
+  const retryAfter = response.headers.get("retry-after");
+  if (remaining === "0") return true;
+  if (retryAfter) return true;
+  const message = body.toLowerCase();
+  if (message.includes("secondary rate limit")) return true;
+  if (message.includes("api rate limit exceeded")) return true;
+  return response.status === 429;
 }
 
 // src/lib/http-error.ts
@@ -47847,8 +48064,11 @@ var PostmanAssetsClient = class {
 };
 
 // src/lib/postman/internal-integration-adapter.ts
-var BifrostInternalIntegrationAdapter = class {
+var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter {
+  static MINIMUM_POSTMAN_APP_VERSION = "12.0.0";
+  static POSTMAN_APP_VERSION_URL = `https://dl.pstmn.io/update/status?currentVersion=${_BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION}&platform=osx_arm64`;
   accessToken;
+  appVersionPromise;
   bifrostBaseUrl;
   fetchImpl;
   gatewayBaseUrl;
@@ -47868,12 +48088,19 @@ var BifrostInternalIntegrationAdapter = class {
     this.secretMasker = options.secretMasker ?? createSecretMasker([this.accessToken]);
     this.teamId = String(options.teamId || "").trim();
   }
-  async proxyRequest(service, method, requestPath2, body) {
+  configureTeamContext(teamId, orgMode) {
+    this.teamId = String(teamId || "").trim();
+    this.orgMode = orgMode;
+  }
+  async proxyRequest(service, method, requestPath2, body, options = {}) {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers = {
       "Content-Type": "application/json",
       "x-access-token": this.accessToken
     };
+    if (options.appVersion) {
+      headers["x-app-version"] = options.appVersion;
+    }
     if (this.teamId && this.orgMode) {
       headers["x-entity-team-id"] = this.teamId;
     }
@@ -47884,62 +48111,99 @@ var BifrostInternalIntegrationAdapter = class {
         service,
         method,
         path: requestPath2,
+        ...options.query !== void 0 ? { query: options.query } : {},
         ...body !== void 0 ? { body } : {}
       })
     });
   }
-  async assignWorkspaceToGovernanceGroup(workspaceId, domain, mappingJson) {
-    let mapping;
-    try {
-      mapping = JSON.parse(mappingJson || "{}");
-    } catch {
-      return;
+  resolvePostmanAppVersion() {
+    this.appVersionPromise ??= (async () => {
+      try {
+        const response = await this.fetchImpl(
+          _BifrostInternalIntegrationAdapter.POSTMAN_APP_VERSION_URL,
+          { method: "GET" }
+        );
+        if (!response.ok) {
+          return _BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
+        }
+        const payload = await response.json();
+        const version = String(payload.version || "").trim();
+        return version || _BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
+      } catch {
+        return _BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
+      }
+    })();
+    return this.appVersionPromise;
+  }
+  async assignWorkspaceToGovernanceGroup(workspaceId, domain, mappingJson, governanceGroupName) {
+    let groupName = String(governanceGroupName || "").trim();
+    if (!groupName) {
+      let mapping;
+      try {
+        mapping = JSON.parse(mappingJson || "{}");
+      } catch {
+        return;
+      }
+      groupName = String(mapping[domain] || "").trim();
     }
-    const groupName = String(mapping[domain] || "").trim();
     if (!groupName) {
       return;
     }
-    const listUrl = `${this.gatewayBaseUrl}/configure/workspace-groups`;
-    const listResponse = await this.fetchImpl(listUrl, {
-      headers: {
-        "x-access-token": this.accessToken
-      }
-    });
+    const appVersion = await this.resolvePostmanAppVersion();
+    const listResponse = await this.proxyRequest(
+      "ruleset",
+      "get",
+      "/configure/workspace-groups",
+      void 0,
+      { appVersion, query: { tag: "governance" } }
+    );
     if (!listResponse.ok) {
       throw await HttpError.fromResponse(listResponse, {
         method: "GET",
         requestHeaders: {
-          "x-access-token": this.accessToken
+          "Content-Type": "application/json",
+          "x-access-token": this.accessToken,
+          "x-app-version": appVersion,
+          ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
         },
         secretValues: [this.accessToken],
-        url: listUrl
+        url: `${this.bifrostBaseUrl}/ws/proxy`
       });
     }
     const groups = await listResponse.json();
-    const group = groups.data?.find((entry) => entry.name === groupName);
+    const group = (groups.workspaceGroups ?? groups.data)?.find(
+      (entry) => entry.name === groupName
+    );
     if (!group?.id) {
       return;
     }
-    const patchUrl = `${this.gatewayBaseUrl}/configure/workspace-groups/${group.id}`;
-    const patchResponse = await this.fetchImpl(patchUrl, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        "x-access-token": this.accessToken
+    const patchResponse = await this.proxyRequest(
+      "ruleset",
+      "patch",
+      `/configure/workspace-groups/${group.id}`,
+      {
+        workspaces: {
+          add: [workspaceId],
+          remove: []
+        },
+        vulnerabilities: {
+          add: [],
+          remove: []
+        }
       },
-      body: JSON.stringify({
-        workspaces: [workspaceId]
-      })
-    });
+      { appVersion }
+    );
     if (!patchResponse.ok) {
       throw await HttpError.fromResponse(patchResponse, {
         method: "PATCH",
         requestHeaders: {
           "Content-Type": "application/json",
-          "x-access-token": this.accessToken
+          "x-access-token": this.accessToken,
+          "x-app-version": appVersion,
+          ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
         },
         secretValues: [this.accessToken],
-        url: patchUrl
+        url: `${this.bifrostBaseUrl}/ws/proxy`
       });
     }
   }
@@ -61671,6 +61935,7 @@ async function loadOpenApiContractSpec(specUrl, options = {}) {
 }
 
 // src/index.ts
+var GOVERNANCE_GROUP_PROPERTY_NAME = "postman-governance-group";
 function normalizeInputValue(value) {
   if (value === void 0) {
     return void 0;
@@ -61805,11 +62070,13 @@ function resolveInputs(env = process.env) {
     releaseLabel: getInput("release-label", env),
     domain: getInput("domain", env),
     domainCode: getInput("domain-code", env),
+    governanceGroup: getInput("governance-group", env),
     requesterEmail: getInput("requester-email", env),
     workspaceAdminUserIds: getInput("workspace-admin-user-ids", env) || env.WORKSPACE_ADMIN_USER_IDS || "",
     workspaceTeamId: parseWorkspaceTeamId(getInput("workspace-team-id", env) || env.POSTMAN_WORKSPACE_TEAM_ID),
     teamId: getInput("team-id", env) || env.POSTMAN_TEAM_ID || "",
     repoUrl: repoContext.repoUrl || "",
+    repoSlug: repoContext.repoSlug || "",
     specUrl,
     openapiVersion: resolveOpenapiVersion(getInput("openapi-version", env)),
     governanceMappingJson: parseGovernanceMappingJson(getInput("governance-mapping-json", env)),
@@ -61827,7 +62094,9 @@ function resolveInputs(env = process.env) {
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
-    githubSha: env.GITHUB_SHA
+    githubSha: env.GITHUB_SHA,
+    githubToken: getInput("github-token", env) || env.GITHUB_TOKEN || "",
+    ghFallbackToken: getInput("gh-fallback-token", env) || env.GH_FALLBACK_TOKEN || ""
   };
 }
 function createPlannedOutputs(inputs) {
@@ -61858,8 +62127,12 @@ function readActionInputs(actionCore) {
   const specUrl = requireInput(actionCore, "spec-url");
   const postmanApiKey = requireInput(actionCore, "postman-api-key");
   const postmanAccessToken = optionalInput(actionCore, "postman-access-token");
+  const githubToken = optionalInput(actionCore, "github-token") || process.env.GITHUB_TOKEN;
+  const ghFallbackToken = optionalInput(actionCore, "gh-fallback-token") || process.env.GH_FALLBACK_TOKEN;
   actionCore.setSecret(postmanApiKey);
   if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
+  if (githubToken) actionCore.setSecret(githubToken);
+  if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
   const inputs = resolveInputs({
     ...process.env,
     INPUT_PROJECT_NAME: projectName,
@@ -61874,6 +62147,7 @@ function readActionInputs(actionCore) {
     INPUT_RELEASE_LABEL: optionalInput(actionCore, "release-label"),
     INPUT_DOMAIN: optionalInput(actionCore, "domain"),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, "domain-code"),
+    INPUT_GOVERNANCE_GROUP: optionalInput(actionCore, "governance-group"),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, "requester-email"),
     INPUT_WORKSPACE_ADMIN_USER_IDS: optionalInput(
       actionCore,
@@ -61891,12 +62165,40 @@ function readActionInputs(actionCore) {
     INPUT_NESTED_FOLDER_HIERARCHY: optionalInput(actionCore, "nested-folder-hierarchy") ?? openAlphaActionContract.inputs["nested-folder-hierarchy"].default,
     INPUT_REQUEST_NAME_SOURCE: optionalInput(actionCore, "request-name-source") ?? openAlphaActionContract.inputs["request-name-source"].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, "openapi-version") ?? "",
-    INPUT_POSTMAN_STACK: optionalInput(actionCore, "postman-stack") ?? openAlphaActionContract.inputs["postman-stack"].default
+    INPUT_POSTMAN_STACK: optionalInput(actionCore, "postman-stack") ?? openAlphaActionContract.inputs["postman-stack"].default,
+    INPUT_GITHUB_TOKEN: githubToken,
+    INPUT_GH_FALLBACK_TOKEN: ghFallbackToken
   });
   return inputs;
 }
 function createWorkspaceName(inputs) {
   return inputs.domainCode ? `[${inputs.domainCode}] ${inputs.projectName}` : inputs.projectName;
+}
+async function resolveGovernanceGroupName(inputs, dependencies) {
+  const explicitGroup = normalizeInputValue(inputs.governanceGroup);
+  if (explicitGroup) {
+    dependencies.core.info(`Resolved governance group from explicit input: ${explicitGroup}`);
+    return explicitGroup;
+  }
+  if (!dependencies.github) {
+    return void 0;
+  }
+  try {
+    const propertyGroup = normalizeInputValue(
+      await dependencies.github.getRepositoryCustomProperty(GOVERNANCE_GROUP_PROPERTY_NAME)
+    );
+    if (propertyGroup) {
+      dependencies.core.info(
+        `Resolved governance group from GitHub repository property ${GOVERNANCE_GROUP_PROPERTY_NAME}: ${propertyGroup}`
+      );
+      return propertyGroup;
+    }
+  } catch (error) {
+    dependencies.core.warning(
+      `Could not read GitHub repository property ${GOVERNANCE_GROUP_PROPERTY_NAME}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  return void 0;
 }
 async function runGroup(actionCore, name, fn) {
   return actionCore.group(name, fn);
@@ -62306,7 +62608,9 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
   outputs["workspace-id"] = workspaceId || "";
   outputs["workspace-url"] = `https://go.postman.co/workspace/${workspaceId}`;
   outputs["workspace-name"] = workspaceName;
-  if (inputs.domain && dependencies.internalIntegration) {
+  const governanceGroupName = await resolveGovernanceGroupName(inputs, dependencies);
+  const shouldAssignGovernance = Boolean(inputs.domain || governanceGroupName);
+  if (shouldAssignGovernance && dependencies.internalIntegration) {
     await runGroup(
       dependencies.core,
       "Assign Workspace to Governance Group",
@@ -62315,7 +62619,8 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
           await dependencies.internalIntegration?.assignWorkspaceToGovernanceGroup(
             workspaceId || "",
             inputs.domain || "",
-            inputs.governanceMappingJson
+            inputs.governanceMappingJson,
+            governanceGroupName
           );
         } catch (error) {
           dependencies.core.warning(
@@ -62925,7 +63230,7 @@ async function runAction(actionCore = core2, actionExec = exec, actionIo = io) {
     io: actionIo,
     specFetcher: fetch
   }, orgMode);
-  if (inputs.domain && !dependencies.internalIntegration) {
+  if ((inputs.domain || inputs.governanceGroup) && !dependencies.internalIntegration) {
     actionCore.warning(
       "Skipping governance assignment because postman-access-token is not configured"
     );
@@ -62952,9 +63257,16 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
     secretMasker,
     teamId: inputs.teamId || ""
   }) : void 0;
+  const github = (inputs.githubToken || inputs.ghFallbackToken) && inputs.repoSlug ? new GitHubApiClient({
+    repository: inputs.repoSlug,
+    token: inputs.githubToken || "",
+    fallbackToken: inputs.ghFallbackToken,
+    secretMasker
+  }) : void 0;
   return {
     core: factories.core,
     exec: factories.exec,
+    github,
     io: factories.io,
     internalIntegration,
     postman,

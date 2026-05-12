@@ -88,9 +88,12 @@ const cliInputNames = [
   'release-label',
   'domain',
   'domain-code',
+  'governance-group',
   'requester-email',
   'workspace-admin-user-ids',
   'governance-mapping-json',
+  'github-token',
+  'gh-fallback-token',
   'integration-backend',
   'folder-strategy',
   'nested-folder-hierarchy',
@@ -331,7 +334,7 @@ export async function runCli(
   assertOutputFileAllowed(config.dotenvPath);
   const dependencies = createCliDependencies(inputs);
 
-  if (inputs.domain && !dependencies.internalIntegration) {
+  if ((inputs.domain || inputs.governanceGroup) && !dependencies.internalIntegration) {
     dependencies.core.warning(
       'Skipping governance assignment because postman-access-token is not configured'
     );

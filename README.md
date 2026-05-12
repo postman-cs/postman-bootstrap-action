@@ -7,7 +7,7 @@ Public open-alpha GitHub Action for Postman workspace bootstrap from a registry-
 This action preserves the bootstrap slice of the API Catalog demo flow:
 
 - create or reuse a Postman workspace
-- assign the workspace to a governance group through the current Bifrost and internal path
+- assign the workspace to a configured governance group when a group name and `postman-access-token` are provided
 - invite the requester and add workspace admins
 - upload or update a remote spec in Spec Hub (after normalizing operation summaries — see below)
 - lint the uploaded spec by UID with the Postman CLI
@@ -87,6 +87,30 @@ postman-bootstrap --workspace-team-id 132319 ...
 Or via environment variable: `export POSTMAN_WORKSPACE_TEAM_ID=132319`
 
 Non-org accounts (single team) are unaffected and do not need this input.
+
+### Governance group assignment
+
+Governance assignment is optional and customer-configured:
+
+1. Set the repository custom property `postman-governance-group` to the Postman governance group name.
+2. Set `postman-access-token` so the action can perform workspace enrichment after the workspace exists.
+
+Example:
+
+```yaml
+with:
+  github-token: ${{ github.token }}
+  postman-access-token: ${{ secrets.POSTMAN_ACCESS_TOKEN }}
+```
+
+For one-off runs, `governance-group` can be passed directly and overrides the
+repository custom property. `governance-mapping-json` remains supported as a
+domain-map fallback for older workflows.
+
+If the group configuration is missing, the group is not found, or the access token is
+expired, bootstrap logs a warning and continues with the created workspace,
+spec, and collections.
+
 ### OpenAPI operation summaries (normalization)
 
 Before upload to Spec Hub, the action parses JSON or YAML OpenAPI documents and adjusts **path operations** so collection generation is less likely to fail:
@@ -119,7 +143,7 @@ jobs:
           requester-email: owner@example.com
           workspace-admin-user-ids: 101,102
           spec-url: https://example.com/openapi.yaml
-          governance-mapping-json: '{"core-banking":"Core Banking"}'
+          github-token: ${{ github.token }}
           postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
           postman-access-token: ${{ secrets.POSTMAN_ACCESS_TOKEN }}
 
@@ -298,15 +322,17 @@ steps:
 | `spec-sync-mode` | `update` | Spec lifecycle policy. `update` keeps one canonical spec current in Spec Hub, while `version` creates or reuses a release-scoped spec asset. |
 | `release-label` | | Optional release label used for versioned specs and collections. When omitted for versioned sync, the action derives one from GitHub tag or branch metadata. |
 | `project-name` | | Service name used in workspace and asset naming. |
-| `domain` | | Business domain used for governance assignment. |
+| `domain` | | Business domain metadata. Also used by the legacy `governance-mapping-json` fallback. |
 | `domain-code` | | Short prefix used when constructing the workspace name. |
 | `requester-email` | | Optional user invited into the workspace. |
 | `workspace-admin-user-ids` | | Comma-separated Postman user IDs to grant admin access. |
 | `workspace-team-id` | | Numeric sub-team ID for org-mode workspace creation. Required when the API key belongs to an org with multiple sub-teams. |
 | `spec-url` | | Required registry-backed OpenAPI document URL. |
-| `governance-mapping-json` | `{}` | Map of domain to governance group name. |
+| `governance-group` | | Postman governance group name. Overrides the `postman-governance-group` repository custom property and legacy domain mapping. |
+| `governance-mapping-json` | `{}` | Legacy fallback map of `domain` value to Postman governance group name. Prefer the repository custom property or `governance-group`. |
+| `github-token` | | GitHub token used to read the `postman-governance-group` repository custom property. |
 | `postman-api-key` | | Required for all Postman asset operations. |
-| `postman-access-token` | | Required for governance assignment and canonical workspace validation during reruns. |
+| `postman-access-token` | | Required for governance assignment, cloud spec-to-collection syncing, and canonical workspace validation during reruns. |
 | `integration-backend` | `bifrost` | Current public open-alpha backend. |
 
 ## Lifecycle Modes
@@ -410,7 +436,7 @@ The `postman-api-key` is a Postman API key (PMAK) used for all standard Postman 
 
 > **⚠️ Open-alpha limitation:** The `postman-access-token` input requires a manually-extracted session token. There is currently no public API to exchange a Postman API key (PMAK) for an access token programmatically. This manual step will be eliminated before GA.
 
-The `postman-access-token` is a Postman session token (`x-access-token`) required for internal API operations that the standard PMAK API key cannot perform — specifically governance group assignment and canonical workspace validation during reruns in this action. Without it, those steps degrade to warning-based behavior and name-based workspace fallback during provisioning.
+The `postman-access-token` is a Postman session token required for workspace enrichment operations that the standard PMAK API key cannot perform, including governance group assignment, cloud spec-to-collection syncing, and canonical workspace validation during reruns. Without it, those steps degrade to warning-based behavior and name-based workspace fallback during provisioning.
 
 **To obtain and configure the token:**
 

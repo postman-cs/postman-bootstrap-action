@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 
 import { openAlphaActionContract } from './contracts.js';
+import { GitHubApiClient } from './lib/github/github-api-client.js';
 import { HttpError } from './lib/http-error.js';
 import {
   parsePostmanStack,
@@ -36,11 +37,13 @@ export interface ResolvedInputs {
   releaseLabel?: string;
   domain?: string;
   domainCode?: string;
+  governanceGroup?: string;
   requesterEmail?: string;
   workspaceAdminUserIds?: string;
   workspaceTeamId?: string;
   teamId?: string;
   repoUrl?: string;
+  repoSlug?: string;
   specUrl: string;
   openapiVersion: string;
   governanceMappingJson: string;
@@ -59,6 +62,8 @@ export interface ResolvedInputs {
   githubHeadRef?: string;
   githubRef?: string;
   githubSha?: string;
+  githubToken?: string;
+  ghFallbackToken?: string;
 }
 
 export interface PlannedOutputs {
@@ -122,8 +127,9 @@ export interface BootstrapExecutionDependencies {
   io: IOLike;
   internalIntegration?: Pick<
     InternalIntegrationAdapter,
-    'assignWorkspaceToGovernanceGroup' | 'linkCollectionsToSpecification' | 'syncCollection'
+    'assignWorkspaceToGovernanceGroup' | 'configureTeamContext' | 'linkCollectionsToSpecification' | 'syncCollection'
   >;
+  github?: Pick<GitHubApiClient, 'getRepositoryCustomProperty'>;
   postman: Pick<
     PostmanAssetsClient,
     | 'addAdminsToWorkspace'
@@ -143,6 +149,8 @@ export interface BootstrapExecutionDependencies {
     Partial<Pick<PostmanAssetsClient, 'deleteCollection' | 'getCollection' | 'updateCollection'>>;
   specFetcher: typeof fetch;
 }
+
+const GOVERNANCE_GROUP_PROPERTY_NAME = 'postman-governance-group';
 
 export interface BootstrapDependencyFactories {
   core: Pick<CoreLike, 'error' | 'group' | 'info' | 'setOutput' | 'warning'>;
@@ -323,12 +331,14 @@ export function resolveInputs(
     releaseLabel: getInput('release-label', env),
     domain: getInput('domain', env),
     domainCode: getInput('domain-code', env),
+    governanceGroup: getInput('governance-group', env),
     requesterEmail: getInput('requester-email', env),
     workspaceAdminUserIds:
       getInput('workspace-admin-user-ids', env) || env.WORKSPACE_ADMIN_USER_IDS || '',
     workspaceTeamId: parseWorkspaceTeamId(getInput('workspace-team-id', env) || env.POSTMAN_WORKSPACE_TEAM_ID),
     teamId: getInput('team-id', env) || env.POSTMAN_TEAM_ID || '',
     repoUrl: repoContext.repoUrl || '',
+    repoSlug: repoContext.repoSlug || '',
     specUrl,
     openapiVersion: resolveOpenapiVersion(getInput('openapi-version', env)),
     governanceMappingJson: parseGovernanceMappingJson(getInput('governance-mapping-json', env)),
@@ -348,7 +358,9 @@ export function resolveInputs(
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
-    githubSha: env.GITHUB_SHA
+    githubSha: env.GITHUB_SHA,
+    githubToken: getInput('github-token', env) || env.GITHUB_TOKEN || '',
+    ghFallbackToken: getInput('gh-fallback-token', env) || env.GH_FALLBACK_TOKEN || ''
   };
 }
 
@@ -386,9 +398,13 @@ export function readActionInputs(
   const specUrl = requireInput(actionCore, 'spec-url');
   const postmanApiKey = requireInput(actionCore, 'postman-api-key');
   const postmanAccessToken = optionalInput(actionCore, 'postman-access-token');
+  const githubToken = optionalInput(actionCore, 'github-token') || process.env.GITHUB_TOKEN;
+  const ghFallbackToken = optionalInput(actionCore, 'gh-fallback-token') || process.env.GH_FALLBACK_TOKEN;
 
   actionCore.setSecret(postmanApiKey);
   if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
+  if (githubToken) actionCore.setSecret(githubToken);
+  if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
 
   const inputs = resolveInputs({
     ...process.env,
@@ -410,6 +426,7 @@ export function readActionInputs(
     INPUT_RELEASE_LABEL: optionalInput(actionCore, 'release-label'),
     INPUT_DOMAIN: optionalInput(actionCore, 'domain'),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, 'domain-code'),
+    INPUT_GOVERNANCE_GROUP: optionalInput(actionCore, 'governance-group'),
     INPUT_REQUESTER_EMAIL: optionalInput(actionCore, 'requester-email'),
     INPUT_WORKSPACE_ADMIN_USER_IDS: optionalInput(
       actionCore,
@@ -440,7 +457,9 @@ export function readActionInputs(
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? '',
     INPUT_POSTMAN_STACK:
       optionalInput(actionCore, 'postman-stack') ??
-      openAlphaActionContract.inputs['postman-stack'].default
+      openAlphaActionContract.inputs['postman-stack'].default,
+    INPUT_GITHUB_TOKEN: githubToken,
+    INPUT_GH_FALLBACK_TOKEN: ghFallbackToken
   });
 
   return inputs;
@@ -450,6 +469,39 @@ function createWorkspaceName(inputs: ResolvedInputs): string {
   return inputs.domainCode
     ? `[${inputs.domainCode}] ${inputs.projectName}`
     : inputs.projectName;
+}
+
+async function resolveGovernanceGroupName(
+  inputs: ResolvedInputs,
+  dependencies: Pick<BootstrapExecutionDependencies, 'core' | 'github'>
+): Promise<string | undefined> {
+  const explicitGroup = normalizeInputValue(inputs.governanceGroup);
+  if (explicitGroup) {
+    dependencies.core.info(`Resolved governance group from explicit input: ${explicitGroup}`);
+    return explicitGroup;
+  }
+
+  if (!dependencies.github) {
+    return undefined;
+  }
+
+  try {
+    const propertyGroup = normalizeInputValue(
+      await dependencies.github.getRepositoryCustomProperty(GOVERNANCE_GROUP_PROPERTY_NAME)
+    );
+    if (propertyGroup) {
+      dependencies.core.info(
+        `Resolved governance group from GitHub repository property ${GOVERNANCE_GROUP_PROPERTY_NAME}: ${propertyGroup}`
+      );
+      return propertyGroup;
+    }
+  } catch (error) {
+    dependencies.core.warning(
+      `Could not read GitHub repository property ${GOVERNANCE_GROUP_PROPERTY_NAME}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+
+  return undefined;
 }
 
 async function runGroup<T>(
@@ -961,7 +1013,10 @@ export async function runBootstrap(
   outputs['workspace-url'] = `https://go.postman.co/workspace/${workspaceId}`;
   outputs['workspace-name'] = workspaceName;
 
-  if (inputs.domain && dependencies.internalIntegration) {
+  const governanceGroupName = await resolveGovernanceGroupName(inputs, dependencies);
+  const shouldAssignGovernance = Boolean(inputs.domain || governanceGroupName);
+
+  if (shouldAssignGovernance && dependencies.internalIntegration) {
     await runGroup(
       dependencies.core,
       'Assign Workspace to Governance Group',
@@ -970,7 +1025,8 @@ export async function runBootstrap(
           await dependencies.internalIntegration?.assignWorkspaceToGovernanceGroup(
             workspaceId || '',
             inputs.domain || '',
-            inputs.governanceMappingJson
+            inputs.governanceMappingJson,
+            governanceGroupName
           );
         } catch (error) {
           dependencies.core.warning(
@@ -1657,7 +1713,7 @@ export async function runAction(
     specFetcher: fetch
   }, orgMode);
 
-  if (inputs.domain && !dependencies.internalIntegration) {
+  if ((inputs.domain || inputs.governanceGroup) && !dependencies.internalIntegration) {
     actionCore.warning(
       'Skipping governance assignment because postman-access-token is not configured'
     );
@@ -1693,10 +1749,20 @@ export function createBootstrapDependencies(
         teamId: inputs.teamId || ''
       })
       : undefined;
+  const github =
+    (inputs.githubToken || inputs.ghFallbackToken) && inputs.repoSlug
+      ? new GitHubApiClient({
+        repository: inputs.repoSlug,
+        token: inputs.githubToken || '',
+        fallbackToken: inputs.ghFallbackToken,
+        secretMasker
+      })
+      : undefined;
 
   return {
     core: factories.core,
     exec: factories.exec,
+    github,
     io: factories.io,
     internalIntegration,
     postman,

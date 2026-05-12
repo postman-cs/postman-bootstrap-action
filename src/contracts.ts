@@ -80,6 +80,10 @@ export const openAlphaActionContract: BetaActionContract = {
       description: 'Short domain code used in workspace naming.',
       required: false
     },
+    'governance-group': {
+      description: 'Postman governance workspace group name. Overrides the postman-governance-group repository custom property and domain mapping.',
+      required: false
+    },
     'requester-email': {
       description: 'Requester email for audit context.',
       required: false
@@ -103,9 +107,18 @@ export const openAlphaActionContract: BetaActionContract = {
       allowedValues: ['3.0', '3.1']
     },
     'governance-mapping-json': {
-      description: 'JSON map of business domain to governance group name.',
+      description:
+        'Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property.',
       required: false,
       default: '{}'
+    },
+    'github-token': {
+      description: 'GitHub token used to read repository custom properties.',
+      required: false
+    },
+    'gh-fallback-token': {
+      description: 'Fallback GitHub token used to read repository custom properties.',
+      required: false
     },
     'postman-api-key': {
       description: 'Postman API key used for bootstrap operations.',

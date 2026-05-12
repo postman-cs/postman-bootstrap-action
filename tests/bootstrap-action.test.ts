@@ -222,6 +222,7 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
 function createRollbackIntegration(overrides: Record<string, unknown> = {}) {
   return {
     assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+    configureTeamContext: vi.fn(),
     linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
     syncCollection: vi.fn().mockResolvedValue(undefined),
     ...overrides
@@ -233,6 +234,7 @@ async function runExistingSpecBootstrap(
   options: {
     core?: CoreLike;
     exec?: ExecLike;
+    github?: { getRepositoryCustomProperty: (name: string) => Promise<string> };
     inputs?: Partial<ResolvedInputs>;
     internalIntegration?: ReturnType<typeof createRollbackIntegration>;
   } = {}
@@ -246,6 +248,7 @@ async function runExistingSpecBootstrap(
     {
       core: options.core ?? createCoreStub().core,
       exec: options.exec ?? createExecStub(),
+      github: options.github,
       internalIntegration: options.internalIntegration,
       io: createIoStub(),
       postman,
@@ -307,6 +310,7 @@ describe('bootstrap action', () => {
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+      configureTeamContext: vi.fn(),
       linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
       syncCollection: vi.fn().mockResolvedValue(undefined)
     };
@@ -329,7 +333,8 @@ describe('bootstrap action', () => {
     expect(internalIntegration.assignWorkspaceToGovernanceGroup).toHaveBeenCalledWith(
       'ws-123',
       'core-banking',
-      '{"core-banking":"Core Banking"}'
+      '{"core-banking":"Core Banking"}',
+      undefined
     );
     expect(postman.inviteRequesterToWorkspace).toHaveBeenCalledWith(
       'ws-123',
@@ -382,6 +387,34 @@ describe('bootstrap action', () => {
         violations: [],
         warnings: 0
       })
+    );
+  });
+
+  it('uses postman-governance-group repository custom property when no explicit group is provided', async () => {
+    const postman = createRollbackPostman({
+      uploadSpec: vi.fn().mockResolvedValue('spec-123')
+    });
+    const internalIntegration = createRollbackIntegration();
+    const github = {
+      getRepositoryCustomProperty: vi.fn().mockResolvedValue('Core Banking')
+    };
+
+    await runExistingSpecBootstrap(postman, {
+      github,
+      inputs: {
+        domain: undefined,
+        githubToken: 'gh-token',
+        repoSlug: 'postman-cs/bootstrap-action-test'
+      },
+      internalIntegration
+    });
+
+    expect(github.getRepositoryCustomProperty).toHaveBeenCalledWith('postman-governance-group');
+    expect(internalIntegration.assignWorkspaceToGovernanceGroup).toHaveBeenCalledWith(
+      'ws-existing',
+      '',
+      '{"core-banking":"Core Banking"}',
+      'Core Banking'
     );
   });
 
@@ -1144,6 +1177,7 @@ paths:
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn(),
+      configureTeamContext: vi.fn(),
       linkCollectionsToSpecification: vi.fn(),
       syncCollection: vi.fn()
     };
@@ -1793,6 +1827,7 @@ paths:
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+      configureTeamContext: vi.fn(),
       linkCollectionsToSpecification: vi.fn(),
       syncCollection: vi.fn()
     };
@@ -2208,6 +2243,7 @@ paths:
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockRejectedValue(new Error('gateway 404')),
+      configureTeamContext: vi.fn(),
       linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
       syncCollection: vi.fn().mockResolvedValue(undefined)
     };
@@ -2230,7 +2266,8 @@ paths:
     expect(internalIntegration.assignWorkspaceToGovernanceGroup).toHaveBeenCalledWith(
       'ws-123',
       'core-banking',
-      '{"core-banking":"Core Banking"}'
+      '{"core-banking":"Core Banking"}',
+      undefined
     );
     expect(
       warnings.some((warning) =>
@@ -2265,6 +2302,7 @@ paths:
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+      configureTeamContext: vi.fn(),
       linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
       syncCollection: vi.fn().mockResolvedValue(undefined)
     };

@@ -1787,16 +1787,3 @@ export function createBootstrapDependencies(
     specFetcher: factories.specFetcher ?? fetch
   };
 }
-
-const currentModulePath = typeof __filename === 'string' ? __filename : '';
-const entrypoint = process.argv[1];
-
-if (entrypoint && currentModulePath === entrypoint) {
-  runAction().catch((error) => {
-    if (error instanceof Error) {
-      core.setFailed(error.message);
-      return;
-    }
-    core.setFailed(String(error));
-  });
-}

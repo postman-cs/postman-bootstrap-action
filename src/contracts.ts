@@ -9,7 +9,7 @@ export interface ActionOutputContract {
   description: string;
 }
 
-export interface BetaActionContract {
+export interface CustomerPreviewActionContract {
   name: string;
   description: string;
   inputs: Record<string, ActionInputContract>;
@@ -18,9 +18,9 @@ export interface BetaActionContract {
   removedBehavior: string[];
 }
 
-export const openAlphaActionContract: BetaActionContract = {
+export const customerPreviewActionContract: CustomerPreviewActionContract = {
   name: 'postman-bootstrap-action',
-  description: 'Public open-alpha contract for bootstrapping Postman assets from a registry-backed spec.',
+  description: 'Public customer preview contract for bootstrapping Postman assets from a registry-backed spec.',
   inputs: {
 
     'workspace-id': {
@@ -214,5 +214,5 @@ export const openAlphaActionContract: BetaActionContract = {
   ]
 };
 
-export const contractInputNames = Object.keys(openAlphaActionContract.inputs);
-export const contractOutputNames = Object.keys(openAlphaActionContract.outputs);
+export const contractInputNames = Object.keys(customerPreviewActionContract.inputs);
+export const contractOutputNames = Object.keys(customerPreviewActionContract.outputs);

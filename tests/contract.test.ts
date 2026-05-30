@@ -4,7 +4,7 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import {
-  openAlphaActionContract,
+  customerPreviewActionContract,
   contractInputNames,
   contractOutputNames
 } from '../src/contracts.js';
@@ -18,8 +18,14 @@ const actionManifest = parse(
   outputs: Record<string, unknown>;
   runs: { using: string; main: string };
 };
+const packageManifest = JSON.parse(
+  readFileSync(resolve(repoRoot, 'package.json'), 'utf8')
+) as {
+  main: string;
+  scripts: { build: string };
+};
 
-describe('open-alpha action contract', () => {
+describe('customer preview action contract', () => {
   it('uses kebab-case input and output names', () => {
     const kebabCasePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -36,13 +42,18 @@ describe('open-alpha action contract', () => {
   it('keeps the action metadata on the committed Node 24 bundle', () => {
     expect(actionManifest.runs).toEqual({
       using: 'node24',
-      main: 'dist/index.cjs'
+      main: 'dist/action.cjs'
     });
+    expect(packageManifest.main).toBe('dist/index.cjs');
+    expect(packageManifest.scripts.build).toContain('src/index.ts --bundle');
+    expect(packageManifest.scripts.build).toContain('--outfile=dist/index.cjs');
+    expect(packageManifest.scripts.build).toContain('src/main.ts --bundle');
+    expect(packageManifest.scripts.build).toContain('--outfile=dist/action.cjs');
   });
 
   it('defaults integration-backend to bifrost in the contract, manifest, and runtime', () => {
-    expect(openAlphaActionContract.inputs['integration-backend'].default).toBe('bifrost');
-    expect(openAlphaActionContract.inputs['integration-backend'].allowedValues).toEqual([
+    expect(customerPreviewActionContract.inputs['integration-backend'].default).toBe('bifrost');
+    expect(customerPreviewActionContract.inputs['integration-backend'].allowedValues).toEqual([
       'bifrost'
     ]);
     expect(actionManifest.inputs['integration-backend'].default).toBe('bifrost');
@@ -50,16 +61,16 @@ describe('open-alpha action contract', () => {
   });
 
   it('defaults lifecycle controls in contract, manifest, and runtime', () => {
-    expect(openAlphaActionContract.inputs['sync-examples'].default).toBe('true');
-    expect(openAlphaActionContract.inputs['sync-examples'].allowedValues).toEqual([
+    expect(customerPreviewActionContract.inputs['sync-examples'].default).toBe('true');
+    expect(customerPreviewActionContract.inputs['sync-examples'].allowedValues).toEqual([
       'true',
       'false'
     ]);
     expect(actionManifest.inputs['sync-examples'].default).toBe('true');
     expect(resolveInputs({}).syncExamples).toBe(true);
 
-    expect(openAlphaActionContract.inputs['collection-sync-mode'].default).toBe('refresh');
-    expect(openAlphaActionContract.inputs['collection-sync-mode'].allowedValues).toEqual([
+    expect(customerPreviewActionContract.inputs['collection-sync-mode'].default).toBe('refresh');
+    expect(customerPreviewActionContract.inputs['collection-sync-mode'].allowedValues).toEqual([
       'refresh',
       'version'
     ]);
@@ -67,8 +78,8 @@ describe('open-alpha action contract', () => {
     expect(resolveInputs({}).collectionSyncMode).toBe('refresh');
     expect(resolveInputs({ INPUT_COLLECTION_SYNC_MODE: 'reuse' }).collectionSyncMode).toBe('refresh');
 
-    expect(openAlphaActionContract.inputs['spec-sync-mode'].default).toBe('update');
-    expect(openAlphaActionContract.inputs['spec-sync-mode'].allowedValues).toEqual([
+    expect(customerPreviewActionContract.inputs['spec-sync-mode'].default).toBe('update');
+    expect(customerPreviewActionContract.inputs['spec-sync-mode'].allowedValues).toEqual([
       'update',
       'version'
     ]);
@@ -96,17 +107,17 @@ describe('open-alpha action contract', () => {
   });
 
   it('defaults collection generation options in contract, manifest, and runtime', () => {
-    expect(openAlphaActionContract.inputs['folder-strategy'].default).toBe('Paths');
-    expect(openAlphaActionContract.inputs['folder-strategy'].allowedValues).toEqual(['Paths', 'Tags']);
+    expect(customerPreviewActionContract.inputs['folder-strategy'].default).toBe('Paths');
+    expect(customerPreviewActionContract.inputs['folder-strategy'].allowedValues).toEqual(['Paths', 'Tags']);
     expect(actionManifest.inputs['folder-strategy'].default).toBe('Paths');
     expect(resolveInputs({}).folderStrategy).toBe('Paths');
 
-    expect(openAlphaActionContract.inputs['nested-folder-hierarchy'].default).toBe('false');
+    expect(customerPreviewActionContract.inputs['nested-folder-hierarchy'].default).toBe('false');
     expect(actionManifest.inputs['nested-folder-hierarchy'].default).toBe('false');
     expect(resolveInputs({}).nestedFolderHierarchy).toBe(false);
 
-    expect(openAlphaActionContract.inputs['request-name-source'].default).toBe('Fallback');
-    expect(openAlphaActionContract.inputs['request-name-source'].allowedValues).toEqual(['Fallback', 'URL']);
+    expect(customerPreviewActionContract.inputs['request-name-source'].default).toBe('Fallback');
+    expect(customerPreviewActionContract.inputs['request-name-source'].allowedValues).toEqual(['Fallback', 'URL']);
     expect(actionManifest.inputs['request-name-source'].default).toBe('Fallback');
     expect(resolveInputs({}).requestNameSource).toBe('Fallback');
   });
@@ -121,8 +132,8 @@ describe('open-alpha action contract', () => {
   });
 
   it('selects Postman endpoint profiles from the hidden postman-stack input', () => {
-    expect(openAlphaActionContract.inputs['postman-stack'].default).toBe('prod');
-    expect(openAlphaActionContract.inputs['postman-stack'].allowedValues).toEqual(['prod', 'beta']);
+    expect(customerPreviewActionContract.inputs['postman-stack'].default).toBe('prod');
+    expect(customerPreviewActionContract.inputs['postman-stack'].allowedValues).toEqual(['prod', 'beta']);
     expect(actionManifest.inputs['postman-stack'].default).toBe('prod');
 
     const prod = resolveInputs({});
@@ -201,8 +212,8 @@ describe('open-alpha action contract', () => {
   });
 
   it('defaults openapi-version to empty string in contract, manifest, and runtime (auto-detect)', () => {
-    expect(openAlphaActionContract.inputs['openapi-version'].default).toBe('');
-    expect(openAlphaActionContract.inputs['openapi-version'].allowedValues).toEqual(['3.0', '3.1']);
+    expect(customerPreviewActionContract.inputs['openapi-version'].default).toBe('');
+    expect(customerPreviewActionContract.inputs['openapi-version'].allowedValues).toEqual(['3.0', '3.1']);
     expect(actionManifest.inputs['openapi-version'].default).toBe('');
     // Empty string signals auto-detect from spec content at runtime.
     expect(resolveInputs({}).openapiVersion).toBe('');
@@ -277,18 +288,18 @@ describe('open-alpha action contract', () => {
   });
 
   it('documents the retained bootstrap steps and removed internal-only behavior', () => {
-    expect(openAlphaActionContract.retainedBehavior).toContain('spec linting by UID');
-    expect(openAlphaActionContract.retainedBehavior).toContain('workspace creation');
-    expect(openAlphaActionContract.retainedBehavior).toContain(
+    expect(customerPreviewActionContract.retainedBehavior).toContain('spec linting by UID');
+    expect(customerPreviewActionContract.retainedBehavior).toContain('workspace creation');
+    expect(customerPreviewActionContract.retainedBehavior).toContain(
       'governance group assignment'
     );
-    expect(openAlphaActionContract.removedBehavior).toContain('step mode');
-    expect(openAlphaActionContract.removedBehavior).toContain(
+    expect(customerPreviewActionContract.removedBehavior).toContain('step mode');
+    expect(customerPreviewActionContract.removedBehavior).toContain(
       'aws, docker, and infra workflow concerns'
     );
   });
 
-  it('builds placeholder outputs that match the public open-alpha output surface', () => {
+  it('builds placeholder outputs that match the public customer preview output surface', () => {
     const outputs = createPlannedOutputs(
       resolveInputs({
         INPUT_PROJECT_NAME: 'core-payments',

@@ -1,7 +1,7 @@
 {
   "name": "@postman-cse/onboarding-bootstrap",
-  "version": "0.13.0",
-  "description": "Public open-alpha Postman bootstrap GitHub Action.",
+  "version": "0.13.1",
+  "description": "Public customer preview Postman bootstrap GitHub Action.",
   "type": "module",
   "main": "dist/index.cjs",
   "bin": {
@@ -17,7 +17,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run typecheck && rm -rf dist && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/cli.cjs",
+    "build": "npm run typecheck && rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/cli.cjs",
     "check:dist": "npm run build && git diff --exit-code -- dist",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

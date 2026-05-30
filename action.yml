@@ -1,5 +1,5 @@
 name: postman-bootstrap-action
-description: Public open-alpha action contract for Postman workspace, spec, and collection bootstrap.
+description: Public customer preview action contract for Postman workspace, spec, and collection bootstrap.
 inputs:
 
   workspace-id:
@@ -123,4 +123,4 @@ outputs:
     description: JSON summary of lint errors and warnings
 runs:
   using: node24
-  main: dist/index.cjs
+  main: dist/action.cjs

@@ -44957,9 +44957,9 @@ var import_node_fs2 = require("node:fs");
 var import_yaml3 = __toESM(require_dist(), 1);
 
 // src/contracts.ts
-var openAlphaActionContract = {
+var customerPreviewActionContract = {
   name: "postman-bootstrap-action",
-  description: "Public open-alpha contract for bootstrapping Postman assets from a registry-backed spec.",
+  description: "Public customer preview contract for bootstrapping Postman assets from a registry-backed spec.",
   inputs: {
     "workspace-id": {
       description: "Existing Postman workspace ID.",
@@ -45147,8 +45147,8 @@ var openAlphaActionContract = {
     "legacy placeholder inputs such as team-id"
   ]
 };
-var contractInputNames = Object.keys(openAlphaActionContract.inputs);
-var contractOutputNames = Object.keys(openAlphaActionContract.outputs);
+var contractInputNames = Object.keys(customerPreviewActionContract.inputs);
+var contractOutputNames = Object.keys(customerPreviewActionContract.outputs);
 
 // src/lib/secrets.ts
 var REDACTED = "[REDACTED]";
@@ -60373,26 +60373,26 @@ function parseBooleanInput(name, value, defaultValue) {
   throw new Error(`${name} must be a boolean value: true or false`);
 }
 function parseCollectionSyncMode(value) {
-  const v = value?.trim() || openAlphaActionContract.inputs["collection-sync-mode"].default || "refresh";
+  const v = value?.trim() || customerPreviewActionContract.inputs["collection-sync-mode"].default || "refresh";
   if (v === "reuse") {
     return "refresh";
   }
-  const allowed = openAlphaActionContract.inputs["collection-sync-mode"].allowedValues ?? [];
+  const allowed = customerPreviewActionContract.inputs["collection-sync-mode"].allowedValues ?? [];
   if (allowed.includes(v)) {
     return v;
   }
   throw new Error(`Unsupported collection-sync-mode "${v}". Supported values: ${allowed.join(", ")}`);
 }
 function parseSpecSyncMode(value) {
-  const v = value?.trim() || openAlphaActionContract.inputs["spec-sync-mode"].default || "update";
-  const allowed = openAlphaActionContract.inputs["spec-sync-mode"].allowedValues ?? [];
+  const v = value?.trim() || customerPreviewActionContract.inputs["spec-sync-mode"].default || "update";
+  const allowed = customerPreviewActionContract.inputs["spec-sync-mode"].allowedValues ?? [];
   if (allowed.includes(v)) {
     return v;
   }
   throw new Error(`Unsupported spec-sync-mode "${v}". Supported values: ${allowed.join(", ")}`);
 }
 function parseEnumInput(name, value, defaultValue) {
-  const allowed = openAlphaActionContract.inputs[name].allowedValues ?? [];
+  const allowed = customerPreviewActionContract.inputs[name].allowedValues ?? [];
   const v = value?.trim() || defaultValue;
   if (allowed.includes(v)) {
     return v;
@@ -60409,7 +60409,7 @@ function parseWorkspaceTeamId(value) {
   return value;
 }
 function parseGovernanceMappingJson(value) {
-  const mapping = value ?? openAlphaActionContract.inputs["governance-mapping-json"].default ?? "{}";
+  const mapping = value ?? customerPreviewActionContract.inputs["governance-mapping-json"].default ?? "{}";
   try {
     const parsed = JSON.parse(mapping);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -60421,7 +60421,7 @@ function parseGovernanceMappingJson(value) {
   }
 }
 function resolveOpenapiVersion(value) {
-  const allowed = openAlphaActionContract.inputs["openapi-version"].allowedValues ?? [];
+  const allowed = customerPreviewActionContract.inputs["openapi-version"].allowedValues ?? [];
   const v = value?.trim() ?? "";
   if (allowed.length > 0 && v && !allowed.includes(v)) {
     throw new Error(
@@ -60449,8 +60449,8 @@ function resolveInputs(env = process.env) {
     },
     env
   );
-  const integrationBackend = getInput("integration-backend", env) ?? openAlphaActionContract.inputs["integration-backend"].default ?? "bifrost";
-  const allowedBackends = openAlphaActionContract.inputs["integration-backend"].allowedValues ?? [];
+  const integrationBackend = getInput("integration-backend", env) ?? customerPreviewActionContract.inputs["integration-backend"].default ?? "bifrost";
+  const allowedBackends = customerPreviewActionContract.inputs["integration-backend"].allowedValues ?? [];
   if (allowedBackends.length > 0 && !allowedBackends.includes(integrationBackend)) {
     throw new Error(
       `Unsupported integration-backend "${integrationBackend}". Supported values: ${allowedBackends.join(", ")}`
@@ -60809,7 +60809,7 @@ async function runBootstrap(inputs, dependencies) {
     );
   }
   const workspaceName = createWorkspaceName(inputs);
-  const aboutText = `Auto-provisioned by Postman CS open-alpha for ${inputs.projectName}`;
+  const aboutText = `Auto-provisioned by Postman CS customer preview for ${inputs.projectName}`;
   await runGroup(dependencies.core, "Install Postman CLI", async () => {
     await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl);
   });

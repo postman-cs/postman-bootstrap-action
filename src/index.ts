@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 
-import { openAlphaActionContract } from './contracts.js';
+import { customerPreviewActionContract } from './contracts.js';
 import { GitHubApiClient } from './lib/github/github-api-client.js';
 import { HttpError } from './lib/http-error.js';
 import {
@@ -201,11 +201,11 @@ function parseBooleanInput(name: string, value: string | undefined, defaultValue
 function parseCollectionSyncMode(
   value: string | undefined
 ): 'refresh' | 'version' {
-  const v = value?.trim() || openAlphaActionContract.inputs['collection-sync-mode'].default || 'refresh';
+  const v = value?.trim() || customerPreviewActionContract.inputs['collection-sync-mode'].default || 'refresh';
   if (v === 'reuse') {
     return 'refresh';
   }
-  const allowed = openAlphaActionContract.inputs['collection-sync-mode'].allowedValues ?? [];
+  const allowed = customerPreviewActionContract.inputs['collection-sync-mode'].allowedValues ?? [];
   if (allowed.includes(v)) {
     return v as 'refresh' | 'version';
   }
@@ -213,8 +213,8 @@ function parseCollectionSyncMode(
 }
 
 function parseSpecSyncMode(value: string | undefined): 'update' | 'version' {
-  const v = value?.trim() || openAlphaActionContract.inputs['spec-sync-mode'].default || 'update';
-  const allowed = openAlphaActionContract.inputs['spec-sync-mode'].allowedValues ?? [];
+  const v = value?.trim() || customerPreviewActionContract.inputs['spec-sync-mode'].default || 'update';
+  const allowed = customerPreviewActionContract.inputs['spec-sync-mode'].allowedValues ?? [];
   if (allowed.includes(v)) {
     return v as 'update' | 'version';
   }
@@ -222,7 +222,7 @@ function parseSpecSyncMode(value: string | undefined): 'update' | 'version' {
 }
 
 function parseEnumInput<T extends string>(name: string, value: string | undefined, defaultValue: T): T {
-  const allowed = openAlphaActionContract.inputs[name].allowedValues ?? [];
+  const allowed = customerPreviewActionContract.inputs[name].allowedValues ?? [];
   const v = value?.trim() || defaultValue;
   if (allowed.includes(v)) {
     return v as T;
@@ -241,7 +241,7 @@ function parseWorkspaceTeamId(value: string | undefined): string | undefined {
 }
 
 function parseGovernanceMappingJson(value: string | undefined): string {
-  const mapping = value ?? openAlphaActionContract.inputs['governance-mapping-json'].default ?? '{}';
+  const mapping = value ?? customerPreviewActionContract.inputs['governance-mapping-json'].default ?? '{}';
   try {
     const parsed = JSON.parse(mapping) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -254,7 +254,7 @@ function parseGovernanceMappingJson(value: string | undefined): string {
 }
 
 function resolveOpenapiVersion(value: string | undefined): string {
-  const allowed = openAlphaActionContract.inputs['openapi-version'].allowedValues ?? [];
+  const allowed = customerPreviewActionContract.inputs['openapi-version'].allowedValues ?? [];
   const v = value?.trim() ?? '';
   if (allowed.length > 0 && v && !allowed.includes(v)) {
     throw new Error(
@@ -290,11 +290,11 @@ export function resolveInputs(
 
   const integrationBackend =
     getInput('integration-backend', env) ??
-    openAlphaActionContract.inputs['integration-backend'].default ??
+    customerPreviewActionContract.inputs['integration-backend'].default ??
     'bifrost';
 
   const allowedBackends =
-    openAlphaActionContract.inputs['integration-backend'].allowedValues ?? [];
+    customerPreviewActionContract.inputs['integration-backend'].allowedValues ?? [];
   if (allowedBackends.length > 0 && !allowedBackends.includes(integrationBackend)) {
     throw new Error(
       `Unsupported integration-backend "${integrationBackend}". Supported values: ${allowedBackends.join(', ')}`
@@ -429,13 +429,13 @@ export function readActionInputs(
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_SYNC_EXAMPLES:
       optionalInput(actionCore, 'sync-examples') ??
-      openAlphaActionContract.inputs['sync-examples'].default,
+      customerPreviewActionContract.inputs['sync-examples'].default,
     INPUT_COLLECTION_SYNC_MODE:
       optionalInput(actionCore, 'collection-sync-mode') ??
-      openAlphaActionContract.inputs['collection-sync-mode'].default,
+      customerPreviewActionContract.inputs['collection-sync-mode'].default,
     INPUT_SPEC_SYNC_MODE:
       optionalInput(actionCore, 'spec-sync-mode') ??
-      openAlphaActionContract.inputs['spec-sync-mode'].default,
+      customerPreviewActionContract.inputs['spec-sync-mode'].default,
     INPUT_RELEASE_LABEL: optionalInput(actionCore, 'release-label'),
     INPUT_DOMAIN: optionalInput(actionCore, 'domain'),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, 'domain-code'),
@@ -453,25 +453,25 @@ export function readActionInputs(
     INPUT_SPEC_PATH: specPath,
     INPUT_GOVERNANCE_MAPPING_JSON:
       optionalInput(actionCore, 'governance-mapping-json') ??
-      openAlphaActionContract.inputs['governance-mapping-json'].default,
+      customerPreviewActionContract.inputs['governance-mapping-json'].default,
     INPUT_POSTMAN_API_KEY: postmanApiKey,
     INPUT_POSTMAN_ACCESS_TOKEN: postmanAccessToken,
     INPUT_INTEGRATION_BACKEND:
       optionalInput(actionCore, 'integration-backend') ??
-      openAlphaActionContract.inputs['integration-backend'].default,
+      customerPreviewActionContract.inputs['integration-backend'].default,
     INPUT_FOLDER_STRATEGY:
       optionalInput(actionCore, 'folder-strategy') ??
-      openAlphaActionContract.inputs['folder-strategy'].default,
+      customerPreviewActionContract.inputs['folder-strategy'].default,
     INPUT_NESTED_FOLDER_HIERARCHY:
       optionalInput(actionCore, 'nested-folder-hierarchy') ??
-      openAlphaActionContract.inputs['nested-folder-hierarchy'].default,
+      customerPreviewActionContract.inputs['nested-folder-hierarchy'].default,
     INPUT_REQUEST_NAME_SOURCE:
       optionalInput(actionCore, 'request-name-source') ??
-      openAlphaActionContract.inputs['request-name-source'].default,
+      customerPreviewActionContract.inputs['request-name-source'].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? '',
     INPUT_POSTMAN_STACK:
       optionalInput(actionCore, 'postman-stack') ??
-      openAlphaActionContract.inputs['postman-stack'].default,
+      customerPreviewActionContract.inputs['postman-stack'].default,
     INPUT_GITHUB_TOKEN: githubToken,
     INPUT_GH_FALLBACK_TOKEN: ghFallbackToken
   });
@@ -835,7 +835,7 @@ export async function runBootstrap(
     );
   }
   const workspaceName = createWorkspaceName(inputs);
-  const aboutText = `Auto-provisioned by Postman CS open-alpha for ${inputs.projectName}`;
+  const aboutText = `Auto-provisioned by Postman CS customer preview for ${inputs.projectName}`;
 
   await runGroup(dependencies.core, 'Install Postman CLI', async () => {
     await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl);

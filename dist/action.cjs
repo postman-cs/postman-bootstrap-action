@@ -28,7 +28,6 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
-var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // node_modules/tunnel/lib/tunnel.js
 var require_tunnel = __commonJS({
@@ -44214,21 +44213,6 @@ var require__ = __commonJS({
   }
 });
 
-// src/index.ts
-var index_exports = {};
-__export(index_exports, {
-  createBootstrapDependencies: () => createBootstrapDependencies,
-  createPlannedOutputs: () => createPlannedOutputs,
-  getInput: () => getInput2,
-  lintSpecViaCli: () => lintSpecViaCli,
-  normalizeSpecDocument: () => normalizeSpecDocument,
-  readActionInputs: () => readActionInputs,
-  resolveInputs: () => resolveInputs,
-  runAction: () => runAction,
-  runBootstrap: () => runBootstrap
-});
-module.exports = __toCommonJS(index_exports);
-
 // node_modules/@actions/core/lib/core.js
 var core_exports = {};
 __export(core_exports, {
@@ -63403,17 +63387,10 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
     specFetcher: factories.specFetcher ?? fetch
   };
 }
-// Annotate the CommonJS export names for ESM import in node:
-0 && (module.exports = {
-  createBootstrapDependencies,
-  createPlannedOutputs,
-  getInput,
-  lintSpecViaCli,
-  normalizeSpecDocument,
-  readActionInputs,
-  resolveInputs,
-  runAction,
-  runBootstrap
+
+// src/main.ts
+runAction().catch((error2) => {
+  setFailed(error2 instanceof Error ? error2.message : String(error2));
 });
 /*! Bundled license information:
 

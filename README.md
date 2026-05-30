@@ -1,6 +1,6 @@
 # postman-bootstrap-action
 
-Public open-alpha GitHub Action for Postman workspace bootstrap from a registry-backed OpenAPI spec.
+Public customer preview GitHub Action for Postman workspace bootstrap from a registry-backed OpenAPI spec.
 
 ## Scope
 
@@ -16,12 +16,12 @@ This action preserves the bootstrap slice of the API Catalog demo flow:
 - inject generated tests and apply collection tags
 - reuse committed `.postman/resources.yaml` state from the checked-out ref when present
 
-The public open-alpha contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
+The public customer preview contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
 
 ### Git provider support
 
 Workspace-to-repository linking via Bifrost supports both **GitHub** and **GitLab** (cloud and self-hosted) repository URLs. The `repo-url` value (or the auto-derived URL from CI environment variables) is stored as-is by Bifrost without provider-specific validation. URL normalization handles HTTPS, SSH (`git@`), and `.git` suffix variants for both providers.
-The public open-alpha contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
+The public customer preview contract uses kebab-case inputs and outputs and defaults `integration-backend` to `bifrost`.
 
 For existing services, pass `workspace-id`, `spec-id`, and any existing collection IDs to rerun the bootstrap safely without creating duplicate Postman assets. When `.postman/resources.yaml` is present in the checked-out ref, the action also reuses its workspace/spec/collection mappings automatically.
 
@@ -351,7 +351,7 @@ steps:
 | `gh-fallback-token` | | Fallback GitHub token used to read repository custom properties when `github-token` cannot. |
 | `postman-api-key` | | Required for all Postman asset operations. |
 | `postman-access-token` | | Required for governance assignment, cloud spec-to-collection syncing, and canonical workspace validation during reruns. |
-| `integration-backend` | `bifrost` | Current public open-alpha backend. |
+| `integration-backend` | `bifrost` | Current public customer preview backend. |
 
 ## Lifecycle Modes
 
@@ -450,9 +450,9 @@ The `postman-api-key` is a Postman API key (PMAK) used for all standard Postman 
 
 > **Note:** The PMAK is a long-lived key tied to your Postman account. It does not require periodic renewal like the `postman-access-token`.
 
-### Obtaining `postman-access-token` (Open Alpha)
+### Obtaining `postman-access-token` (Customer Preview)
 
-> **⚠️ Open-alpha limitation:** The `postman-access-token` input requires a manually-extracted session token. There is currently no public API to exchange a Postman API key (PMAK) for an access token programmatically. This manual step will be eliminated before GA.
+> **⚠️ Customer Preview limitation:** The `postman-access-token` input requires a manually-extracted session token. There is currently no public API to exchange a Postman API key (PMAK) for an access token programmatically. This manual step will be eliminated before GA.
 
 The `postman-access-token` is a Postman session token required for workspace enrichment operations that the standard PMAK API key cannot perform, including governance group assignment, cloud spec-to-collection syncing, and canonical workspace validation during reruns. Without it, those steps degrade to warning-based behavior and name-based workspace fallback during provisioning.
 
@@ -506,11 +506,11 @@ npm run build
 
 `npm run build` produces the committed `dist/index.cjs` action bundle used by `action.yml`.
 
-## Open-Alpha Release Strategy
+## Customer Preview Release Strategy
 
-- Open-alpha channel tags use `v0.x.y`.
+- Customer Preview channel tags use `v0.x.y`.
 - Consumers can pin immutable tags such as `v0.2.0` for reproducibility.
-- Moving tag `v0` is used only as the rolling open-alpha channel.
+- Moving tag `v0` is used only as the rolling customer preview channel.
 
 ## REST Migration Seam
 

@@ -57,8 +57,11 @@ inputs:
       this input to see available sub-teams listed in the error output.
     required: false
   spec-url:
-    description: URL to the OpenAPI document to bootstrap
-    required: true
+    description: HTTPS URL to the OpenAPI document to bootstrap. Provide either spec-url or spec-path.
+    required: false
+  spec-path:
+    description: Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path.
+    required: false
   openapi-version:
     description: OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.
     required: false

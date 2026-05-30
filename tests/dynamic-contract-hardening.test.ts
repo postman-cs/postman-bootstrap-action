@@ -1,10 +1,11 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTRACT_SIZE_LIMITS, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
-import { loadOpenApiContractSpec, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
+import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
 import { createPinnedLookup, isBlockedAddress, safeFetchText, validateSafeHttpsUrl } from '../src/lib/spec/safe-spec-fetch.js';
 
 const BASE_SPEC = `openapi: 3.1.0
@@ -175,6 +176,205 @@ describe('dynamic contract hardening', () => {
       maxBytesPerResource: 2,
       transport: async () => ({ statusCode: 200, headers: {}, body: 'abc', remoteAddress: '93.184.216.34' })
     })).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded 2 bytes');
+  });
+
+  describe('loadOpenApiContractSpecFromPath', () => {
+    let workspaceDir = '';
+    let originalWorkspace: string | undefined;
+
+    beforeEach(() => {
+      workspaceDir = realpathSync(mkdtempSync(join(tmpdir(), 'spec-ws-')));
+      originalWorkspace = process.env.GITHUB_WORKSPACE;
+      process.env.GITHUB_WORKSPACE = workspaceDir;
+    });
+
+    afterEach(() => {
+      if (originalWorkspace === undefined) {
+        delete process.env.GITHUB_WORKSPACE;
+      } else {
+        process.env.GITHUB_WORKSPACE = originalWorkspace;
+      }
+      rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    const writeSpec = (relPath: string, body: string): string => {
+      const full = join(workspaceDir, relPath);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, body);
+      return full;
+    };
+
+    const baseSpec = `openapi: 3.0.3
+info:
+  title: Local Spec
+  version: 1.0.0
+paths:
+  /ping:
+    get:
+      responses:
+        '200':
+          description: OK
+`;
+
+    it('loads a spec from a local filesystem path', async () => {
+      writeSpec('apis/svc/openapi.yaml', baseSpec);
+      const fetchText = vi.fn();
+      const loaded = await loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', { fetchText });
+      expect(fetchText).not.toHaveBeenCalled();
+      expect(loaded.version).toBe('3.0');
+      expect(loaded.contractIndex.operations[0]?.path).toBe('/ping');
+    });
+
+    it('reports CONTRACT_SPEC_READ_FAILED when the local spec is missing', async () => {
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/missing.yaml')
+      ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+    });
+
+    it('rejects paths that traverse outside the workspace', async () => {
+      const outside = realpathSync(mkdtempSync(join(tmpdir(), 'spec-outside-')));
+      try {
+        writeFileSync(join(outside, 'openapi.yaml'), baseSpec);
+        await expect(
+          loadOpenApiContractSpecFromPath(join(outside, 'openapi.yaml'))
+        ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+        await expect(
+          loadOpenApiContractSpecFromPath('../outside/openapi.yaml')
+        ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('wraps directory targets and other read failures as CONTRACT_SPEC_READ_FAILED', async () => {
+      mkdirSync(join(workspaceDir, 'apis/svc'), { recursive: true });
+      // Pointing spec-path at a directory: realpath/stat succeed but
+      // readFile rejects with EISDIR. Should surface the contract error.
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc')
+      ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+    });
+
+    it('rejects oversized local specs before parsing', async () => {
+      writeSpec('apis/svc/openapi.yaml', baseSpec);
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', {
+          maxBytesPerResource: 16
+        })
+      ).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED');
+    });
+
+    it('fails fast on an unsupported root spec without fetching its refs', async () => {
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `swagger: '2.0'
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: 'https://cdn.example.test/level-0.yaml'
+`
+      );
+      const fetchText = vi.fn();
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', { fetchText })
+      ).rejects.toThrow('CONTRACT_UNSUPPORTED_OPENAPI_VERSION');
+      expect(fetchText).not.toHaveBeenCalled();
+    });
+
+    it('rejects a local spec that would blow the total byte budget', async () => {
+      writeSpec('apis/svc/openapi.yaml', baseSpec);
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', {
+          maxTotalBytes: 16
+        })
+      ).rejects.toThrow('CONTRACT_REF_SIZE_EXCEEDED');
+    });
+
+    it('enforces ref-depth limits on HTTPS $ref chains starting from a local spec', async () => {
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: 'https://cdn.example.test/level-0.yaml'
+`
+      );
+      const fetchText = vi.fn(async (url: string) => {
+        const match = /level-(\d+)\.yaml$/.exec(url);
+        const next = Number(match?.[1] ?? '0') + 1;
+        return `type: object
+properties:
+  next:
+    $ref: 'https://cdn.example.test/level-${next}.yaml'
+`;
+      });
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', {
+          fetchText,
+          maxDepth: 3
+        })
+      ).rejects.toThrow('CONTRACT_REF_DEPTH_EXCEEDED');
+    });
+
+    it('rejects local-file $refs with CONTRACT_SPEC_FETCH_BLOCKED', async () => {
+      writeSpec('apis/svc/sibling.yaml', 'type: object\n');
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: './sibling.yaml'
+`
+      );
+      // No mock fetchText - exercise the real safeFetchText so the
+      // protocol guard fires and surfaces the documented contract error.
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml')
+      ).rejects.toThrow('CONTRACT_SPEC_FETCH_BLOCKED');
+    });
+
+    it('rejects non-HTTPS external $refs with CONTRACT_SPEC_FETCH_BLOCKED', async () => {
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: 'http://example.test/schema.yaml'
+`
+      );
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml')
+      ).rejects.toThrow('CONTRACT_SPEC_FETCH_BLOCKED');
+    });
   });
 
   it('loads external refs through the custom resolver and validates with external resolution disabled', async () => {
@@ -580,6 +780,33 @@ paths:
     get: { responses: { '200': { description: OK } } }
 `);
     expect(matchOperation(ambiguous, { method: 'GET', url: { path: ['pets', '123'] } }).ambiguous?.map((op) => op.id)).toEqual(['GET /pets/{id}', 'GET /pets/{name}']);
+  });
+
+  it('prefers exact literal matches over server-prefixed template matches when both have the same segment length', () => {
+    // Regression for CONTRACT_DUPLICATE_OPERATION_REQUEST hit by Fox's spec:
+    // both `/login` and `/otp/login` exist, and the server has a basePath
+    // template, so the contract index produces a `/{serverVariable}/login`
+    // candidate for `POST /login`. A request to `/otp/login` matches both
+    // that template candidate and the literal `/otp/login`; the matcher must
+    // pick the literal one rather than the template (otherwise two distinct
+    // requests both resolve to `POST /login` and bootstrap throws
+    // CONTRACT_DUPLICATE_OPERATION_REQUEST).
+    const index = indexFrom(`openapi: 3.0.3
+info: { title: account, version: '1' }
+servers:
+  - url: 'https://example.com/{basePath}'
+    variables:
+      basePath: { default: account }
+paths:
+  /login:
+    post: { responses: { '200': { description: OK } } }
+  /otp/login:
+    post: { responses: { '200': { description: OK } } }
+`);
+    expect(matchOperation(index, { method: 'POST', url: { path: ['otp', 'login'] } }).operation?.id).toBe('POST /otp/login');
+    expect(matchOperation(index, { method: 'POST', url: { path: ['login'] } }).operation?.id).toBe('POST /login');
+    expect(matchOperation(index, { method: 'POST', url: { path: ['account', 'login'] } }).operation?.id).toBe('POST /login');
+    expect(matchOperation(index, { method: 'POST', url: { path: ['account', 'otp', 'login'] } }).operation?.id).toBe('POST /otp/login');
   });
 
   it('fails closed for missing eligible operations and warns about callbacks and webhooks', () => {

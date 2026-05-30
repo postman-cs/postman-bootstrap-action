@@ -1069,14 +1069,14 @@ var require_util = __commonJS({
         }
         const port = url.port != null ? url.port : url.protocol === "https:" ? 443 : 80;
         let origin = url.origin != null ? url.origin : `${url.protocol || ""}//${url.hostname || ""}:${port}`;
-        let path6 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
+        let path7 = url.path != null ? url.path : `${url.pathname || ""}${url.search || ""}`;
         if (origin[origin.length - 1] === "/") {
           origin = origin.slice(0, origin.length - 1);
         }
-        if (path6 && path6[0] !== "/") {
-          path6 = `/${path6}`;
+        if (path7 && path7[0] !== "/") {
+          path7 = `/${path7}`;
         }
-        return new URL(`${origin}${path6}`);
+        return new URL(`${origin}${path7}`);
       }
       if (!isHttpOrHttpsPrefixed(url.origin || url.protocol)) {
         throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
@@ -1527,39 +1527,39 @@ var require_diagnostics = __commonJS({
       });
       diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
         const {
-          request: { method, path: path6, origin }
+          request: { method, path: path7, origin }
         } = evt;
-        debuglog("sending request to %s %s/%s", method, origin, path6);
+        debuglog("sending request to %s %s/%s", method, origin, path7);
       });
       diagnosticsChannel.channel("undici:request:headers").subscribe((evt) => {
         const {
-          request: { method, path: path6, origin },
+          request: { method, path: path7, origin },
           response: { statusCode }
         } = evt;
         debuglog(
           "received response to %s %s/%s - HTTP %d",
           method,
           origin,
-          path6,
+          path7,
           statusCode
         );
       });
       diagnosticsChannel.channel("undici:request:trailers").subscribe((evt) => {
         const {
-          request: { method, path: path6, origin }
+          request: { method, path: path7, origin }
         } = evt;
-        debuglog("trailers received from %s %s/%s", method, origin, path6);
+        debuglog("trailers received from %s %s/%s", method, origin, path7);
       });
       diagnosticsChannel.channel("undici:request:error").subscribe((evt) => {
         const {
-          request: { method, path: path6, origin },
+          request: { method, path: path7, origin },
           error: error2
         } = evt;
         debuglog(
           "request to %s %s/%s errored - %s",
           method,
           origin,
-          path6,
+          path7,
           error2.message
         );
       });
@@ -1608,9 +1608,9 @@ var require_diagnostics = __commonJS({
         });
         diagnosticsChannel.channel("undici:client:sendHeaders").subscribe((evt) => {
           const {
-            request: { method, path: path6, origin }
+            request: { method, path: path7, origin }
           } = evt;
-          debuglog("sending request to %s %s/%s", method, origin, path6);
+          debuglog("sending request to %s %s/%s", method, origin, path7);
         });
       }
       diagnosticsChannel.channel("undici:websocket:open").subscribe((evt) => {
@@ -1673,7 +1673,7 @@ var require_request = __commonJS({
     var kHandler = /* @__PURE__ */ Symbol("handler");
     var Request = class {
       constructor(origin, {
-        path: path6,
+        path: path7,
         method,
         body,
         headers,
@@ -1688,11 +1688,11 @@ var require_request = __commonJS({
         expectContinue,
         servername
       }, handler) {
-        if (typeof path6 !== "string") {
+        if (typeof path7 !== "string") {
           throw new InvalidArgumentError("path must be a string");
-        } else if (path6[0] !== "/" && !(path6.startsWith("http://") || path6.startsWith("https://")) && method !== "CONNECT") {
+        } else if (path7[0] !== "/" && !(path7.startsWith("http://") || path7.startsWith("https://")) && method !== "CONNECT") {
           throw new InvalidArgumentError("path must be an absolute URL or start with a slash");
-        } else if (invalidPathRegex.test(path6)) {
+        } else if (invalidPathRegex.test(path7)) {
           throw new InvalidArgumentError("invalid request path");
         }
         if (typeof method !== "string") {
@@ -1758,7 +1758,7 @@ var require_request = __commonJS({
         this.completed = false;
         this.aborted = false;
         this.upgrade = upgrade || null;
-        this.path = query ? buildURL(path6, query) : path6;
+        this.path = query ? buildURL(path7, query) : path7;
         this.origin = origin;
         this.idempotent = idempotent == null ? method === "HEAD" || method === "GET" : idempotent;
         this.blocking = blocking == null ? false : blocking;
@@ -6322,7 +6322,7 @@ var require_client_h1 = __commonJS({
       return method !== "GET" && method !== "HEAD" && method !== "OPTIONS" && method !== "TRACE" && method !== "CONNECT";
     }
     function writeH1(client, request) {
-      const { method, path: path6, host, upgrade, blocking, reset } = request;
+      const { method, path: path7, host, upgrade, blocking, reset } = request;
       let { body, headers, contentLength } = request;
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH" || method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH";
       if (util.isFormDataLike(body)) {
@@ -6388,7 +6388,7 @@ var require_client_h1 = __commonJS({
       if (blocking) {
         socket[kBlocking] = true;
       }
-      let header = `${method} ${path6} HTTP/1.1\r
+      let header = `${method} ${path7} HTTP/1.1\r
 `;
       if (typeof host === "string") {
         header += `host: ${host}\r
@@ -6914,7 +6914,7 @@ var require_client_h2 = __commonJS({
     }
     function writeH2(client, request) {
       const session = client[kHTTP2Session];
-      const { method, path: path6, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
+      const { method, path: path7, host, upgrade, expectContinue, signal, headers: reqHeaders } = request;
       let { body } = request;
       if (upgrade) {
         util.errorRequest(client, request, new Error("Upgrade not supported for H2"));
@@ -6981,7 +6981,7 @@ var require_client_h2 = __commonJS({
         });
         return true;
       }
-      headers[HTTP2_HEADER_PATH] = path6;
+      headers[HTTP2_HEADER_PATH] = path7;
       headers[HTTP2_HEADER_SCHEME] = "https";
       const expectsPayload = method === "PUT" || method === "POST" || method === "PATCH";
       if (body && typeof body.read === "function") {
@@ -7334,9 +7334,9 @@ var require_redirect_handler = __commonJS({
           return this.handler.onHeaders(statusCode, headers, resume, statusText);
         }
         const { origin, pathname, search } = util.parseURL(new URL(this.location, this.opts.origin && new URL(this.opts.path, this.opts.origin)));
-        const path6 = search ? `${pathname}${search}` : pathname;
+        const path7 = search ? `${pathname}${search}` : pathname;
         this.opts.headers = cleanRequestHeaders(this.opts.headers, statusCode === 303, this.opts.origin !== origin);
-        this.opts.path = path6;
+        this.opts.path = path7;
         this.opts.origin = origin;
         this.opts.maxRedirections = 0;
         this.opts.query = null;
@@ -8571,10 +8571,10 @@ var require_proxy_agent = __commonJS({
         };
         const {
           origin,
-          path: path6 = "/",
+          path: path7 = "/",
           headers = {}
         } = opts;
-        opts.path = origin + path6;
+        opts.path = origin + path7;
         if (!("host" in headers) && !("Host" in headers)) {
           const { host } = new URL3(origin);
           headers.host = host;
@@ -10495,20 +10495,20 @@ var require_mock_utils = __commonJS({
       }
       return true;
     }
-    function safeUrl(path6) {
-      if (typeof path6 !== "string") {
-        return path6;
+    function safeUrl(path7) {
+      if (typeof path7 !== "string") {
+        return path7;
       }
-      const pathSegments = path6.split("?");
+      const pathSegments = path7.split("?");
       if (pathSegments.length !== 2) {
-        return path6;
+        return path7;
       }
       const qp = new URLSearchParams(pathSegments.pop());
       qp.sort();
       return [...pathSegments, qp.toString()].join("?");
     }
-    function matchKey(mockDispatch2, { path: path6, method, body, headers }) {
-      const pathMatch = matchValue(mockDispatch2.path, path6);
+    function matchKey(mockDispatch2, { path: path7, method, body, headers }) {
+      const pathMatch = matchValue(mockDispatch2.path, path7);
       const methodMatch = matchValue(mockDispatch2.method, method);
       const bodyMatch = typeof mockDispatch2.body !== "undefined" ? matchValue(mockDispatch2.body, body) : true;
       const headersMatch = matchHeaders(mockDispatch2, headers);
@@ -10530,7 +10530,7 @@ var require_mock_utils = __commonJS({
     function getMockDispatch(mockDispatches, key) {
       const basePath = key.query ? buildURL(key.path, key.query) : key.path;
       const resolvedPath = typeof basePath === "string" ? safeUrl(basePath) : basePath;
-      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path6 }) => matchValue(safeUrl(path6), resolvedPath));
+      let matchedMockDispatches = mockDispatches.filter(({ consumed }) => !consumed).filter(({ path: path7 }) => matchValue(safeUrl(path7), resolvedPath));
       if (matchedMockDispatches.length === 0) {
         throw new MockNotMatchedError(`Mock dispatch not matched for path '${resolvedPath}'`);
       }
@@ -10568,9 +10568,9 @@ var require_mock_utils = __commonJS({
       }
     }
     function buildKey(opts) {
-      const { path: path6, method, body, headers, query } = opts;
+      const { path: path7, method, body, headers, query } = opts;
       return {
-        path: path6,
+        path: path7,
         method,
         body,
         headers,
@@ -11033,10 +11033,10 @@ var require_pending_interceptors_formatter = __commonJS({
       }
       format(pendingInterceptors) {
         const withPrettyHeaders = pendingInterceptors.map(
-          ({ method, path: path6, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
+          ({ method, path: path7, data: { statusCode }, persist, times, timesInvoked, origin }) => ({
             Method: method,
             Origin: origin,
-            Path: path6,
+            Path: path7,
             "Status code": statusCode,
             Persistent: persist ? PERSISTENT : NOT_PERSISTENT,
             Invocations: timesInvoked,
@@ -15917,9 +15917,9 @@ var require_util6 = __commonJS({
         }
       }
     }
-    function validateCookiePath(path6) {
-      for (let i = 0; i < path6.length; ++i) {
-        const code = path6.charCodeAt(i);
+    function validateCookiePath(path7) {
+      for (let i = 0; i < path7.length; ++i) {
+        const code = path7.charCodeAt(i);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -18596,11 +18596,11 @@ var require_undici = __commonJS({
           if (typeof opts.path !== "string") {
             throw new InvalidArgumentError("invalid opts.path");
           }
-          let path6 = opts.path;
+          let path7 = opts.path;
           if (!opts.path.startsWith("/")) {
-            path6 = `/${path6}`;
+            path7 = `/${path7}`;
           }
-          url = new URL(util.parseOrigin(url).origin + path6);
+          url = new URL(util.parseOrigin(url).origin + path7);
         } else {
           if (!opts) {
             opts = typeof url === "object" ? url : {};
@@ -18748,17 +18748,17 @@ var require_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    function visit_(key, node, visitor, path6) {
-      const ctrl = callVisitor(key, node, visitor, path6);
+    function visit_(key, node, visitor, path7) {
+      const ctrl = callVisitor(key, node, visitor, path7);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path6, ctrl);
-        return visit_(key, ctrl, visitor, path6);
+        replaceNode(key, path7, ctrl);
+        return visit_(key, ctrl, visitor, path7);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path6 = Object.freeze(path6.concat(node));
+          path7 = Object.freeze(path7.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = visit_(i, node.items[i], visitor, path6);
+            const ci = visit_(i, node.items[i], visitor, path7);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -18769,13 +18769,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path6 = Object.freeze(path6.concat(node));
-          const ck = visit_("key", node.key, visitor, path6);
+          path7 = Object.freeze(path7.concat(node));
+          const ck = visit_("key", node.key, visitor, path7);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = visit_("value", node.value, visitor, path6);
+          const cv = visit_("value", node.value, visitor, path7);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -18796,17 +18796,17 @@ var require_visit = __commonJS({
     visitAsync.BREAK = BREAK;
     visitAsync.SKIP = SKIP;
     visitAsync.REMOVE = REMOVE;
-    async function visitAsync_(key, node, visitor, path6) {
-      const ctrl = await callVisitor(key, node, visitor, path6);
+    async function visitAsync_(key, node, visitor, path7) {
+      const ctrl = await callVisitor(key, node, visitor, path7);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path6, ctrl);
-        return visitAsync_(key, ctrl, visitor, path6);
+        replaceNode(key, path7, ctrl);
+        return visitAsync_(key, ctrl, visitor, path7);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path6 = Object.freeze(path6.concat(node));
+          path7 = Object.freeze(path7.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = await visitAsync_(i, node.items[i], visitor, path6);
+            const ci = await visitAsync_(i, node.items[i], visitor, path7);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -18817,13 +18817,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path6 = Object.freeze(path6.concat(node));
-          const ck = await visitAsync_("key", node.key, visitor, path6);
+          path7 = Object.freeze(path7.concat(node));
+          const ck = await visitAsync_("key", node.key, visitor, path7);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = await visitAsync_("value", node.value, visitor, path6);
+          const cv = await visitAsync_("value", node.value, visitor, path7);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -18850,23 +18850,23 @@ var require_visit = __commonJS({
       }
       return visitor;
     }
-    function callVisitor(key, node, visitor, path6) {
+    function callVisitor(key, node, visitor, path7) {
       if (typeof visitor === "function")
-        return visitor(key, node, path6);
+        return visitor(key, node, path7);
       if (identity.isMap(node))
-        return visitor.Map?.(key, node, path6);
+        return visitor.Map?.(key, node, path7);
       if (identity.isSeq(node))
-        return visitor.Seq?.(key, node, path6);
+        return visitor.Seq?.(key, node, path7);
       if (identity.isPair(node))
-        return visitor.Pair?.(key, node, path6);
+        return visitor.Pair?.(key, node, path7);
       if (identity.isScalar(node))
-        return visitor.Scalar?.(key, node, path6);
+        return visitor.Scalar?.(key, node, path7);
       if (identity.isAlias(node))
-        return visitor.Alias?.(key, node, path6);
+        return visitor.Alias?.(key, node, path7);
       return void 0;
     }
-    function replaceNode(key, path6, node) {
-      const parent = path6[path6.length - 1];
+    function replaceNode(key, path7, node) {
+      const parent = path7[path7.length - 1];
       if (identity.isCollection(parent)) {
         parent.items[key] = node;
       } else if (identity.isPair(parent)) {
@@ -19476,10 +19476,10 @@ var require_Collection = __commonJS({
     var createNode = require_createNode();
     var identity = require_identity();
     var Node = require_Node();
-    function collectionFromPath(schema2, path6, value) {
+    function collectionFromPath(schema2, path7, value) {
       let v = value;
-      for (let i = path6.length - 1; i >= 0; --i) {
-        const k = path6[i];
+      for (let i = path7.length - 1; i >= 0; --i) {
+        const k = path7[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
           a[k] = v;
@@ -19498,7 +19498,7 @@ var require_Collection = __commonJS({
         sourceObjects: /* @__PURE__ */ new Map()
       });
     }
-    var isEmptyPath = (path6) => path6 == null || typeof path6 === "object" && !!path6[Symbol.iterator]().next().done;
+    var isEmptyPath = (path7) => path7 == null || typeof path7 === "object" && !!path7[Symbol.iterator]().next().done;
     var Collection = class extends Node.NodeBase {
       constructor(type2, schema2) {
         super(type2);
@@ -19528,11 +19528,11 @@ var require_Collection = __commonJS({
        * be a Pair instance or a `{ key, value }` object, which may not have a key
        * that already exists in the map.
        */
-      addIn(path6, value) {
-        if (isEmptyPath(path6))
+      addIn(path7, value) {
+        if (isEmptyPath(path7))
           this.add(value);
         else {
-          const [key, ...rest] = path6;
+          const [key, ...rest] = path7;
           const node = this.get(key, true);
           if (identity.isCollection(node))
             node.addIn(rest, value);
@@ -19546,8 +19546,8 @@ var require_Collection = __commonJS({
        * Removes a value from the collection.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path6) {
-        const [key, ...rest] = path6;
+      deleteIn(path7) {
+        const [key, ...rest] = path7;
         if (rest.length === 0)
           return this.delete(key);
         const node = this.get(key, true);
@@ -19561,8 +19561,8 @@ var require_Collection = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path6, keepScalar) {
-        const [key, ...rest] = path6;
+      getIn(path7, keepScalar) {
+        const [key, ...rest] = path7;
         const node = this.get(key, true);
         if (rest.length === 0)
           return !keepScalar && identity.isScalar(node) ? node.value : node;
@@ -19580,8 +19580,8 @@ var require_Collection = __commonJS({
       /**
        * Checks if the collection includes a value with the key `key`.
        */
-      hasIn(path6) {
-        const [key, ...rest] = path6;
+      hasIn(path7) {
+        const [key, ...rest] = path7;
         if (rest.length === 0)
           return this.has(key);
         const node = this.get(key, true);
@@ -19591,8 +19591,8 @@ var require_Collection = __commonJS({
        * Sets a value in this collection. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path6, value) {
-        const [key, ...rest] = path6;
+      setIn(path7, value) {
+        const [key, ...rest] = path7;
         if (rest.length === 0) {
           this.set(key, value);
         } else {
@@ -22107,9 +22107,9 @@ var require_Document = __commonJS({
           this.contents.add(value);
       }
       /** Adds a value to the document. */
-      addIn(path6, value) {
+      addIn(path7, value) {
         if (assertCollection(this.contents))
-          this.contents.addIn(path6, value);
+          this.contents.addIn(path7, value);
       }
       /**
        * Create a new `Alias` node, ensuring that the target `node` has the required anchor.
@@ -22184,14 +22184,14 @@ var require_Document = __commonJS({
        * Removes a value from the document.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path6) {
-        if (Collection.isEmptyPath(path6)) {
+      deleteIn(path7) {
+        if (Collection.isEmptyPath(path7)) {
           if (this.contents == null)
             return false;
           this.contents = null;
           return true;
         }
-        return assertCollection(this.contents) ? this.contents.deleteIn(path6) : false;
+        return assertCollection(this.contents) ? this.contents.deleteIn(path7) : false;
       }
       /**
        * Returns item at `key`, or `undefined` if not found. By default unwraps
@@ -22206,10 +22206,10 @@ var require_Document = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path6, keepScalar) {
-        if (Collection.isEmptyPath(path6))
+      getIn(path7, keepScalar) {
+        if (Collection.isEmptyPath(path7))
           return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
-        return identity.isCollection(this.contents) ? this.contents.getIn(path6, keepScalar) : void 0;
+        return identity.isCollection(this.contents) ? this.contents.getIn(path7, keepScalar) : void 0;
       }
       /**
        * Checks if the document includes a value with the key `key`.
@@ -22220,10 +22220,10 @@ var require_Document = __commonJS({
       /**
        * Checks if the document includes a value at `path`.
        */
-      hasIn(path6) {
-        if (Collection.isEmptyPath(path6))
+      hasIn(path7) {
+        if (Collection.isEmptyPath(path7))
           return this.contents !== void 0;
-        return identity.isCollection(this.contents) ? this.contents.hasIn(path6) : false;
+        return identity.isCollection(this.contents) ? this.contents.hasIn(path7) : false;
       }
       /**
        * Sets a value in this document. For `!!set`, `value` needs to be a
@@ -22240,13 +22240,13 @@ var require_Document = __commonJS({
        * Sets a value in this document. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path6, value) {
-        if (Collection.isEmptyPath(path6)) {
+      setIn(path7, value) {
+        if (Collection.isEmptyPath(path7)) {
           this.contents = value;
         } else if (this.contents == null) {
-          this.contents = Collection.collectionFromPath(this.schema, Array.from(path6), value);
+          this.contents = Collection.collectionFromPath(this.schema, Array.from(path7), value);
         } else if (assertCollection(this.contents)) {
-          this.contents.setIn(path6, value);
+          this.contents.setIn(path7, value);
         }
       }
       /**
@@ -24206,9 +24206,9 @@ var require_cst_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    visit.itemAtPath = (cst, path6) => {
+    visit.itemAtPath = (cst, path7) => {
       let item = cst;
-      for (const [field, index] of path6) {
+      for (const [field, index] of path7) {
         const tok = item?.[field];
         if (tok && "items" in tok) {
           item = tok.items[index];
@@ -24217,23 +24217,23 @@ var require_cst_visit = __commonJS({
       }
       return item;
     };
-    visit.parentCollection = (cst, path6) => {
-      const parent = visit.itemAtPath(cst, path6.slice(0, -1));
-      const field = path6[path6.length - 1][0];
+    visit.parentCollection = (cst, path7) => {
+      const parent = visit.itemAtPath(cst, path7.slice(0, -1));
+      const field = path7[path7.length - 1][0];
       const coll = parent?.[field];
       if (coll && "items" in coll)
         return coll;
       throw new Error("Parent collection not found");
     };
-    function _visit(path6, item, visitor) {
-      let ctrl = visitor(item, path6);
+    function _visit(path7, item, visitor) {
+      let ctrl = visitor(item, path7);
       if (typeof ctrl === "symbol")
         return ctrl;
       for (const field of ["key", "value"]) {
         const token = item[field];
         if (token && "items" in token) {
           for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path6.concat([[field, i]])), token.items[i], visitor);
+            const ci = _visit(Object.freeze(path7.concat([[field, i]])), token.items[i], visitor);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -24244,10 +24244,10 @@ var require_cst_visit = __commonJS({
             }
           }
           if (typeof ctrl === "function" && field === "key")
-            ctrl = ctrl(item, path6);
+            ctrl = ctrl(item, path7);
         }
       }
-      return typeof ctrl === "function" ? ctrl(item, path6) : ctrl;
+      return typeof ctrl === "function" ? ctrl(item, path7) : ctrl;
     }
     exports2.visit = visit;
   }
@@ -26187,7 +26187,7 @@ var require_scope_functions = __commonJS({
     var hasOwn = Function.prototype.call.bind(Object.prototype.hasOwnProperty);
     hasOwn[/* @__PURE__ */ Symbol.for("toJayString")] = "Function.prototype.call.bind(Object.prototype.hasOwnProperty)";
     var pointerPart = (s) => /~\//.test(s) ? `${s}`.replace(/~/g, "~0").replace(/\//g, "~1") : s;
-    var toPointer = (path6) => path6.length === 0 ? "#" : `#/${path6.map(pointerPart).join("/")}`;
+    var toPointer = (path7) => path7.length === 0 ? "#" : `#/${path7.map(pointerPart).join("/")}`;
     var errorMerge = ({ keywordLocation, instanceLocation }, schemaBase, dataBase) => ({
       keywordLocation: `${schemaBase}${keywordLocation.slice(1)}`,
       instanceLocation: `${dataBase}${instanceLocation.slice(1)}`
@@ -26581,12 +26581,12 @@ var require_pointer = __commonJS({
       const visit = (sub, oldPath, specialChilds = false, dynamic = false) => {
         if (!sub || typeof sub !== "object") return;
         const id = sub.$id || sub.id;
-        let path6 = oldPath;
+        let path7 = oldPath;
         if (id && typeof id === "string") {
-          path6 = joinPath(path6, id);
-          if (path6 === ptr || path6 === main && local === "") {
+          path7 = joinPath(path7, id);
+          if (path7 === ptr || path7 === main && local === "") {
             results.push([sub, root, oldPath]);
-          } else if (path6 === main && local[0] === "/") {
+          } else if (path7 === main && local[0] === "/") {
             const objpath = [];
             const res = get2(sub, local, objpath);
             if (res !== void 0) results.push([res, root, joinPath(oldPath, objpath2path(objpath))]);
@@ -26596,13 +26596,13 @@ var require_pointer = __commonJS({
         if (anchor && typeof anchor === "string") {
           if (anchor.includes("#")) throw new Error("$anchor can't include '#'");
           if (anchor.startsWith("/")) throw new Error("$anchor can't start with '/'");
-          path6 = joinPath(path6, `#${anchor}`);
-          if (path6 === ptr) results.push([sub, root, oldPath]);
+          path7 = joinPath(path7, `#${anchor}`);
+          if (path7 === ptr) results.push([sub, root, oldPath]);
         }
         for (const k of Object.keys(sub)) {
           if (!specialChilds && !Array.isArray(sub) && !knownKeywords.includes(k)) continue;
           if (!specialChilds && skipChilds.includes(k)) continue;
-          visit(sub[k], path6, !specialChilds && withSpecialChilds.includes(k));
+          visit(sub[k], path7, !specialChilds && withSpecialChilds.includes(k));
         }
         if (!dynamic && sub.$dynamicAnchor) visit(sub, oldPath, specialChilds, true);
       };
@@ -26920,10 +26920,10 @@ var require_tracing = __commonJS({
       },
       unknown: A.unknown || B.unknown
     }));
-    var applyDelta = (stat2, delta) => Object.assign(stat2, andDelta(stat2, delta));
-    var isDynamic = wrapArgs(({ unknown, items, dyn, ...stat2 }) => ({
+    var applyDelta = (stat3, delta) => Object.assign(stat3, andDelta(stat3, delta));
+    var isDynamic = wrapArgs(({ unknown, items, dyn, ...stat3 }) => ({
       items: items !== Infinity && (unknown || dyn.items > items || dyn.item),
-      properties: !stat2.properties.includes(true) && (unknown || !inProperties(stat2, dyn))
+      properties: !stat3.properties.includes(true) && (unknown || !inProperties(stat3, dyn))
     }));
     module2.exports = { initTracing, andDelta, orDelta, applyDelta, isDynamic, inProperties };
   }
@@ -27048,14 +27048,14 @@ var require_compile = __commonJS({
       }
       const { gensym, getref, genref, genformat } = scopeMethods(scope);
       const buildPath = (prop) => {
-        const path6 = [];
+        const path7 = [];
         let curr = prop;
         while (curr) {
-          if (!curr.name) path6.unshift(curr);
+          if (!curr.name) path7.unshift(curr);
           curr = curr.parent || curr.errorParent;
         }
-        if (path6.every((part) => part.keyval !== void 0))
-          return format("%j", toPointer(path6.map((part) => part.keyval)));
+        if (path7.every((part) => part.keyval !== void 0))
+          return format("%j", toPointer(path7.map((part) => part.keyval)));
         const stringParts = ["#"];
         const stringJoined = () => {
           const value = stringParts.map(functions.pointerPart).join("/");
@@ -27063,7 +27063,7 @@ var require_compile = __commonJS({
           return value;
         };
         let res = null;
-        for (const { keyname, keyval, number } of path6) {
+        for (const { keyname, keyval, number } of path7) {
           if (keyname) {
             if (!number) scope.pointerPart = functions.pointerPart;
             const value = number ? keyname : format("pointerPart(%s)", keyname);
@@ -27109,8 +27109,8 @@ var require_compile = __commonJS({
         const definitelyPresent = !current.parent || current.checked || current.inKeys && isJSON || queryCurrent().length > 0;
         const name = buildName(current);
         const currPropImm = (...args) => propimm(current, ...args);
-        const error2 = ({ path: path6 = [], prop = current, source, suberr }) => {
-          const schemaP = toPointer([...schemaPath, ...path6]);
+        const error2 = ({ path: path7 = [], prop = current, source, suberr }) => {
+          const schemaP = toPointer([...schemaPath, ...path7]);
           const dataP = includeErrors ? buildPath(prop) : null;
           if (includeErrors === true && errors && source) {
             scope.errorMerge = functions.errorMerge;
@@ -27155,23 +27155,23 @@ var require_compile = __commonJS({
         const uncertain = (msg) => enforce(!removeAdditional && !useDefaults, `[removeAdditional/useDefaults] uncertain: ${msg}`);
         const complex = (msg, arg) => enforce(!complexityChecks, `[complexityChecks] ${msg}`, arg);
         const saveMeta = ($sch) => generateMeta(root, $sch || $schemaDefault, enforce, requireSchema);
-        const stat3 = initTracing();
-        const evaluateDelta = (delta) => applyDelta(stat3, delta);
+        const stat4 = initTracing();
+        const evaluateDelta = (delta) => applyDelta(stat4, delta);
         if (typeof node === "boolean") {
           if (node === true) {
             enforceValidation("schema = true", "is not allowed");
-            return { stat: stat3 };
+            return { stat: stat4 };
           }
           errorIf(definitelyPresent || current.inKeys ? true : present(current), {});
           evaluateDelta({ type: [] });
-          return { stat: stat3 };
+          return { stat: stat4 };
         }
         enforce(isPlainObject(node), "Schema is not an object");
         for (const key of Object.keys(node))
           enforce(knownKeywords.includes(key) || allowUnusedKeywords, "Keyword not supported:", key);
         if (Object.keys(node).length === 0) {
           enforceValidation("empty rules node", "is not allowed");
-          return { stat: stat3 };
+          return { stat: stat4 };
         }
         const unused = new Set(Object.keys(node));
         const multiConsumable = /* @__PURE__ */ new Set();
@@ -27221,7 +27221,7 @@ var require_compile = __commonJS({
         for (const ignore of ["title", "description", "$comment"]) handle(ignore, ["string"], null);
         for (const ignore of ["deprecated", "readOnly", "writeOnly"]) handle(ignore, ["boolean"], null);
         handle("$defs", ["object"], null) || handle("definitions", ["object"], null);
-        const compileSub = (sub, subR, path6) => sub === schema2 ? safe("validate") : getref(sub) || compileSchema(sub, subR, opts, scope, path6);
+        const compileSub = (sub, subR, path7) => sub === schema2 ? safe("validate") : getref(sub) || compileSchema(sub, subR, opts, scope, path7);
         const basePath = () => basePathStack.length > 0 ? basePathStack[basePathStack.length - 1] : "";
         const basePathStackLength = basePathStack.length;
         const setId = ($id) => {
@@ -27245,9 +27245,9 @@ var require_compile = __commonJS({
           if (node !== schema2) fun.write("dynLocal.unshift({})");
           for (const [key, subcheck] of allDynamic) {
             const resolved = resolveReference(root, schemas, `#${key}`, basePath());
-            const [sub, subRoot, path6] = resolved[0] || [];
+            const [sub, subRoot, path7] = resolved[0] || [];
             enforce(sub === subcheck, `Unexpected $dynamicAnchor resolution: ${key}`);
-            const n = compileSub(sub, subRoot, path6);
+            const n = compileSub(sub, subRoot, path7);
             fun.write("dynLocal[0][%j] = %s", `#${key}`, n);
           }
         }
@@ -27262,15 +27262,15 @@ var require_compile = __commonJS({
           items: local2.items || trace.items,
           props: local2.props || trace.props
         });
-        const canSkipDynamic = () => (!dyn.items || stat3.items === Infinity) && (!dyn.props || stat3.properties.includes(true));
+        const canSkipDynamic = () => (!dyn.items || stat4.items === Infinity) && (!dyn.props || stat4.properties.includes(true));
         const evaluateDeltaDynamic = (delta) => {
-          if (dyn.item && delta.item && stat3.items !== Infinity)
+          if (dyn.item && delta.item && stat4.items !== Infinity)
             fun.write("%s.push(%s)", dyn.item, delta.item);
-          if (dyn.items && delta.items > stat3.items) fun.write("%s.push(%d)", dyn.items, delta.items);
-          if (dyn.props && (delta.properties || []).includes(true) && !stat3.properties.includes(true)) {
+          if (dyn.items && delta.items > stat4.items) fun.write("%s.push(%d)", dyn.items, delta.items);
+          if (dyn.props && (delta.properties || []).includes(true) && !stat4.properties.includes(true)) {
             fun.write("%s[0].push(true)", dyn.props);
           } else if (dyn.props) {
-            const inStat = (properties2, patterns2) => inProperties(stat3, { properties: properties2, patterns: patterns2 });
+            const inStat = (properties2, patterns2) => inProperties(stat4, { properties: properties2, patterns: patterns2 });
             const properties = (delta.properties || []).filter((x) => !inStat([x], []));
             const patterns = (delta.patterns || []).filter((x) => !inStat([], [x]));
             if (properties.length > 0) fun.write("%s[0].push(...%j)", dyn.props, properties);
@@ -27279,11 +27279,11 @@ var require_compile = __commonJS({
           }
         };
         const applyDynamicToDynamic = (target, item, items, props) => {
-          if (isDynamic(stat3).items && target.item && item)
+          if (isDynamic(stat4).items && target.item && item)
             fun.write("%s.push(...%s)", target.item, item);
-          if (isDynamic(stat3).items && target.items && items)
+          if (isDynamic(stat4).items && target.items && items)
             fun.write("%s.push(...%s)", target.items, items);
-          if (isDynamic(stat3).properties && target.props && props) {
+          if (isDynamic(stat4).properties && target.props && props) {
             fun.write("%s[0].push(...%s[0])", target.props, props);
             fun.write("%s[1].push(...%s[1])", target.props, props);
           }
@@ -27317,8 +27317,8 @@ var require_compile = __commonJS({
         const allIn = (arr, valid) => arr && arr.every((s) => valid.includes(s));
         const someIn = (arr, possible) => possible.some((x) => arr === null || arr.includes(x));
         const parentCheckedType = (...valid) => queryCurrent().some((h) => allIn(h.stat.type, valid));
-        const definitelyType = (...valid) => allIn(stat3.type, valid) || parentCheckedType(...valid);
-        const typeApplicable = (...possible) => someIn(stat3.type, possible) && queryCurrent().every((h) => someIn(h.stat.type, possible));
+        const definitelyType = (...valid) => allIn(stat4.type, valid) || parentCheckedType(...valid);
+        const typeApplicable = (...possible) => someIn(stat4.type, possible) && queryCurrent().every((h) => someIn(h.stat.type, possible));
         const enforceRegex = (source, target = node) => {
           enforce(typeof source === "string", "Invalid pattern:", source);
           if (requireValidation || requireStringValidation)
@@ -27330,7 +27330,7 @@ var require_compile = __commonJS({
         const haveComplex = node.uniqueItems || havePattern || node.patternProperties || node.format;
         const prev = allErrors && haveComplex ? gensym("prev") : null;
         const prevWrap = (shouldWrap, writeBody) => fun.if(shouldWrap && prev !== null ? format("errorCount === %s", prev) : true, writeBody);
-        const nexthistory = () => [...history, { stat: stat3, prop: current }];
+        const nexthistory = () => [...history, { stat: stat4, prop: current }];
         const rule = (...args) => visit(errors, nexthistory(), ...args).stat;
         const subrule = (suberr, ...args) => {
           if (args[0] === current) {
@@ -27401,7 +27401,7 @@ var require_compile = __commonJS({
         const lintRequired = (properties, patterns) => {
           const regexps = patterns.map((p) => new RegExp(p, "u"));
           const known = (key) => properties.includes(key) || regexps.some((r) => r.test(key));
-          for (const key of stat3.required) enforce(known(key), `Unknown required property:`, key);
+          for (const key of stat4.required) enforce(known(key), `Unknown required property:`, key);
         };
         const finalLint = [];
         const checkNumbers = () => {
@@ -27574,7 +27574,7 @@ var require_compile = __commonJS({
             });
           });
         };
-        const checked = (p) => !allErrors && (stat3.required.includes(p) || queryCurrent().some((h) => h.stat.required.includes(p)));
+        const checked = (p) => !allErrors && (stat4.required.includes(p) || queryCurrent().some((h) => h.stat.required.includes(p)));
         const checkObjects = () => {
           const propertiesCount = format("Object.keys(%s).length", name);
           handle("maxProperties", ["natural"], (max) => format("%s > %d", propertiesCount, max));
@@ -27808,11 +27808,11 @@ var require_compile = __commonJS({
                   fun.if(present(prop), runDiscriminator, () => error2({ path: errorPath, prop }));
                 } else runDiscriminator();
               };
-              if (allErrors || !functions.deepEqual(stat3.type, ["object"])) {
+              if (allErrors || !functions.deepEqual(stat4.type, ["object"])) {
                 fun.if(types2.get("object")(name), propCheck, () => error2({ path: ["discriminator"] }));
               } else propCheck();
-              fix(functions.deepEqual(stat3.type, ["object"]), "has to be checked for type:", "object");
-              fix(stat3.required.includes(pname), "propertyName should be placed in required:", pname);
+              fix(functions.deepEqual(stat4.type, ["object"]), "has to be checked for type:", "object");
+              fix(stat4.required.includes(pname), "propertyName should be placed in required:", pname);
               return null;
             };
             return null;
@@ -27895,33 +27895,33 @@ var require_compile = __commonJS({
             enforce(typeApplicable(...validTypes), `Unexpected rules in type`, node.type);
         };
         const checkArraysFinal = () => {
-          if (stat3.items === Infinity) {
+          if (stat4.items === Infinity) {
             if (node.unevaluatedItems === false) consume("unevaluatedItems", "boolean");
           } else if (node.unevaluatedItems || node.unevaluatedItems === false) {
-            if (isDynamic(stat3).items) {
+            if (isDynamic(stat4).items) {
               if (!opts[optDynamic]) throw new Error("[opt] Dynamic unevaluated tracing not enabled");
-              const limit = format("Math.max(%d, ...%s)", stat3.items, dyn.items);
+              const limit = format("Math.max(%d, ...%s)", stat4.items, dyn.items);
               const extra = (i) => format("%s.includes(%s)", dyn.item, i);
               additionalItems("unevaluatedItems", limit, getMeta().containsEvaluates ? extra : null);
             } else {
-              additionalItems("unevaluatedItems", format("%d", stat3.items));
+              additionalItems("unevaluatedItems", format("%d", stat4.items));
             }
           }
         };
         const checkObjectsFinal = () => {
-          prevWrap(stat3.patterns.length > 0 || stat3.dyn.patterns.length > 0 || stat3.unknown, () => {
-            if (stat3.properties.includes(true)) {
+          prevWrap(stat4.patterns.length > 0 || stat4.dyn.patterns.length > 0 || stat4.unknown, () => {
+            if (stat4.properties.includes(true)) {
               if (node.unevaluatedProperties === false) consume("unevaluatedProperties", "boolean");
             } else if (node.unevaluatedProperties || node.unevaluatedProperties === false) {
-              const notStatic = (key) => additionalCondition(key, stat3.properties, stat3.patterns);
-              if (isDynamic(stat3).properties) {
+              const notStatic = (key) => additionalCondition(key, stat4.properties, stat4.patterns);
+              if (isDynamic(stat4).properties) {
                 if (!opts[optDynamic]) throw new Error("[opt] Dynamic unevaluated tracing not enabled");
                 scope.propertyIn = functions.propertyIn;
                 const notDynamic = (key) => format("!propertyIn(%s, %s)", key, dyn.props);
                 const condition = (key) => safeand(notStatic(key), notDynamic(key));
                 additionalProperties("unevaluatedProperties", condition);
               } else {
-                if (node.unevaluatedProperties === false) lintRequired(stat3.properties, stat3.patterns);
+                if (node.unevaluatedProperties === false) lintRequired(stat4.properties, stat4.patterns);
                 additionalProperties("unevaluatedProperties", notStatic);
               }
             }
@@ -27953,12 +27953,12 @@ var require_compile = __commonJS({
           if (local2.props) fun.write("const %s = [[], []]", local2.props);
           handle("$ref", ["string"], ($ref) => {
             const resolved = resolveReference(root, schemas, $ref, basePath());
-            const [sub, subRoot, path6] = resolved[0] || [];
+            const [sub, subRoot, path7] = resolved[0] || [];
             if (!sub && sub !== false) {
               fail2("failed to resolve $ref:", $ref);
               if (lintOnly) return null;
             }
-            const n = compileSub(sub, subRoot, path6);
+            const n = compileSub(sub, subRoot, path7);
             const rn = sub === schema2 ? funname : n;
             if (!scope[rn]) throw new Error("Unexpected: coherence check failed");
             if (!scope[rn][evaluatedStatic] && sub.type) {
@@ -27984,9 +27984,9 @@ var require_compile = __commonJS({
             if (!opts[optRecAnchors]) throw new Error("[opt] Recursive anchors are not enabled");
             enforce($recursiveRef === "#", 'Behavior of $recursiveRef is defined only for "#"');
             const resolved = resolveReference(root, schemas, "#", basePath());
-            const [sub, subRoot, path6] = resolved[0];
+            const [sub, subRoot, path7] = resolved[0];
             laxMode(sub.$recursiveAnchor, "$recursiveRef without $recursiveAnchor");
-            const n = compileSub(sub, subRoot, path6);
+            const n = compileSub(sub, subRoot, path7);
             const nrec = sub.$recursiveAnchor ? format("(recursive || %s)", n) : n;
             return applyRef(nrec, { path: ["$recursiveRef"] });
           });
@@ -28002,10 +28002,10 @@ var require_compile = __commonJS({
               return applyRef(nrec2, { path: ["$dynamicRef"] });
             }
             enforce(resolved[0], "$dynamicRef bookending resolution failed", $dynamicRef);
-            const [sub, subRoot, path6] = resolved[0];
+            const [sub, subRoot, path7] = resolved[0];
             const ok2 = sub.$dynamicAnchor && `#${sub.$dynamicAnchor}` === dynamicTail;
             laxMode(ok2, "$dynamicRef without $dynamicAnchor in the same scope");
-            const n = compileSub(sub, subRoot, path6);
+            const n = compileSub(sub, subRoot, path7);
             scope.dynamicResolve = functions.dynamicResolve;
             const nrec = ok2 ? format("(dynamicResolve(dynAnchors || [], %j) || %s)", dynamicTail, n) : n;
             return applyRef(nrec, { path: ["$dynamicRef"] });
@@ -28032,7 +28032,7 @@ var require_compile = __commonJS({
             if (typeCheck) errorIf(typeCheck, { path: ["type"] });
             performValidation();
           }
-          if (stat3.items < Infinity && node.maxItems <= stat3.items) evaluateDelta({ items: Infinity });
+          if (stat4.items < Infinity && node.maxItems <= stat4.items) evaluateDelta({ items: Infinity });
         };
         if (node.default !== void 0 && useDefaults) {
           if (definitelyPresent) fail2("Can not apply default value here (e.g. at root)");
@@ -28056,12 +28056,12 @@ var require_compile = __commonJS({
           const isRefTop = schema2 !== root && node === schema2;
           if (!isRefTop || refsNeedFullValidation.has(funname)) {
             refsNeedFullValidation.delete(funname);
-            if (!stat3.type) enforceValidation("type");
-            if (typeApplicable("array") && stat3.items !== Infinity)
+            if (!stat4.type) enforceValidation("type");
+            if (typeApplicable("array") && stat4.items !== Infinity)
               enforceValidation(node.items ? "additionalItems or unevaluatedItems" : "items rule");
-            if (typeApplicable("object") && !stat3.properties.includes(true))
+            if (typeApplicable("object") && !stat4.properties.includes(true))
               enforceValidation("additionalProperties or unevaluatedProperties");
-            if (!stat3.fullstring && requireStringValidation) {
+            if (!stat4.fullstring && requireStringValidation) {
               const stringWarning = "pattern, format or contentSchema should be specified for strings";
               fail2(`[requireStringValidation] ${stringWarning}, use pattern: ^[\\s\\S]*$ to opt-out`);
             }
@@ -28073,11 +28073,11 @@ var require_compile = __commonJS({
         }
         if (node.properties && !node.required) enforceValidation("if properties is used, required");
         enforce(unused.size === 0 || allowUnusedKeywords, "Unprocessed keywords:", [...unused]);
-        return { stat: stat3, local: local2 };
+        return { stat: stat4, local: local2 };
       };
-      const { stat: stat2, local } = visit(format("validate.errors"), [], { name: safe("data") }, schema2, []);
+      const { stat: stat3, local } = visit(format("validate.errors"), [], { name: safe("data") }, schema2, []);
       if (refsNeedFullValidation.has(funname)) throw new Error("Unexpected: unvalidated cyclic ref");
-      if (opts[optDynamic] && (isDynamic(stat2).items || isDynamic(stat2).properties)) {
+      if (opts[optDynamic] && (isDynamic(stat3).items || isDynamic(stat3).properties)) {
         if (!local) throw new Error("Failed to trace dynamic properties");
         fun.write("validate.evaluatedDynamic = [%s, %s, %s]", local.item, local.items, local.props);
       }
@@ -28089,7 +28089,7 @@ var require_compile = __commonJS({
         delete scope[funname];
         scope[funname] = validate2;
       }
-      scope[funname][evaluatedStatic] = stat2;
+      scope[funname][evaluatedStatic] = stat3;
       return funname;
     };
     var compile = (schemas, opts) => {
@@ -28340,59 +28340,59 @@ var require_url = __commonJS({
         return href;
       }
       if (typeof process !== "undefined" && process.cwd) {
-        const path6 = process.cwd();
-        const lastChar = path6.slice(-1);
+        const path7 = process.cwd();
+        const lastChar = path7.slice(-1);
         if (lastChar === "/" || lastChar === "\\") {
-          return path6;
+          return path7;
         } else {
-          return path6 + "/";
+          return path7 + "/";
         }
       }
       return "/";
     }
-    function getProtocol2(path6) {
-      const match = protocolPattern2.exec(path6 || "");
+    function getProtocol2(path7) {
+      const match = protocolPattern2.exec(path7 || "");
       if (match) {
         return match[1].toLowerCase();
       }
       return void 0;
     }
-    function getExtension2(path6) {
-      const lastDot = path6.lastIndexOf(".");
+    function getExtension2(path7) {
+      const lastDot = path7.lastIndexOf(".");
       if (lastDot >= 0) {
-        return stripQuery2(path6.substring(lastDot).toLowerCase());
+        return stripQuery2(path7.substring(lastDot).toLowerCase());
       }
       return "";
     }
-    function stripQuery2(path6) {
-      const queryIndex = path6.indexOf("?");
+    function stripQuery2(path7) {
+      const queryIndex = path7.indexOf("?");
       if (queryIndex >= 0) {
-        path6 = path6.substring(0, queryIndex);
+        path7 = path7.substring(0, queryIndex);
       }
-      return path6;
+      return path7;
     }
-    function getHash2(path6) {
-      if (!path6) {
+    function getHash2(path7) {
+      if (!path7) {
         return "#";
       }
-      const hashIndex = path6.indexOf("#");
+      const hashIndex = path7.indexOf("#");
       if (hashIndex >= 0) {
-        return path6.substring(hashIndex);
+        return path7.substring(hashIndex);
       }
       return "#";
     }
-    function stripHash2(path6) {
-      if (!path6) {
+    function stripHash2(path7) {
+      if (!path7) {
         return "";
       }
-      const hashIndex = path6.indexOf("#");
+      const hashIndex = path7.indexOf("#");
       if (hashIndex >= 0) {
-        path6 = path6.substring(0, hashIndex);
+        path7 = path7.substring(0, hashIndex);
       }
-      return path6;
+      return path7;
     }
-    function isHttp2(path6) {
-      const protocol = getProtocol2(path6);
+    function isHttp2(path7) {
+      const protocol = getProtocol2(path7);
       if (protocol === "http" || protocol === "https") {
         return true;
       } else if (protocol === void 0) {
@@ -28401,11 +28401,11 @@ var require_url = __commonJS({
         return false;
       }
     }
-    function isUnsafeUrl2(path6) {
-      if (!path6 || typeof path6 !== "string") {
+    function isUnsafeUrl2(path7) {
+      if (!path7 || typeof path7 !== "string") {
         return true;
       }
-      const normalizedPath = path6.trim().toLowerCase();
+      const normalizedPath = path7.trim().toLowerCase();
       if (!normalizedPath) {
         return true;
       }
@@ -28536,58 +28536,58 @@ var require_url = __commonJS({
       ];
       return internalPorts.includes(port);
     }
-    function isFileSystemPath2(path6) {
+    function isFileSystemPath2(path7) {
       if (typeof window !== "undefined" || typeof process !== "undefined" && process.browser) {
         return false;
       }
-      const protocol = getProtocol2(path6);
+      const protocol = getProtocol2(path7);
       return protocol === void 0 || protocol === "file";
     }
-    function fromFileSystemPath2(path6) {
+    function fromFileSystemPath2(path7) {
       if ((0, is_windows_1.isWindows)()) {
         const projectDir = cwd2();
-        const upperPath = path6.toUpperCase();
+        const upperPath = path7.toUpperCase();
         const projectDirPosixPath = (0, convert_path_to_posix_1.default)(projectDir);
         const posixUpper = projectDirPosixPath.toUpperCase();
         const hasProjectDir = upperPath.includes(posixUpper);
         const hasProjectUri = upperPath.includes(posixUpper);
-        const isAbsolutePath = path_1.win32?.isAbsolute(path6) || path6.startsWith("http://") || path6.startsWith("https://") || path6.startsWith("file://");
+        const isAbsolutePath = path_1.win32?.isAbsolute(path7) || path7.startsWith("http://") || path7.startsWith("https://") || path7.startsWith("file://");
         if (!(hasProjectDir || hasProjectUri || isAbsolutePath) && !projectDir.startsWith("http")) {
-          path6 = (0, path_2.join)(projectDir, path6);
+          path7 = (0, path_2.join)(projectDir, path7);
         }
-        path6 = (0, convert_path_to_posix_1.default)(path6);
+        path7 = (0, convert_path_to_posix_1.default)(path7);
       }
-      path6 = encodeURI(path6);
+      path7 = encodeURI(path7);
       for (const pattern of urlEncodePatterns2) {
-        path6 = path6.replace(pattern[0], pattern[1]);
+        path7 = path7.replace(pattern[0], pattern[1]);
       }
-      return path6;
+      return path7;
     }
-    function toFileSystemPath2(path6, keepFileProtocol) {
-      path6 = decodeURI(path6);
+    function toFileSystemPath2(path7, keepFileProtocol) {
+      path7 = decodeURI(path7);
       for (let i = 0; i < urlDecodePatterns2.length; i += 2) {
-        path6 = path6.replace(urlDecodePatterns2[i], urlDecodePatterns2[i + 1]);
+        path7 = path7.replace(urlDecodePatterns2[i], urlDecodePatterns2[i + 1]);
       }
-      let isFileUrl = path6.toLowerCase().startsWith("file://");
+      let isFileUrl = path7.toLowerCase().startsWith("file://");
       if (isFileUrl) {
-        path6 = path6.replace(/^file:\/\//, "").replace(/^\//, "");
-        if ((0, is_windows_1.isWindows)() && path6[1] === "/") {
-          path6 = `${path6[0]}:${path6.substring(1)}`;
+        path7 = path7.replace(/^file:\/\//, "").replace(/^\//, "");
+        if ((0, is_windows_1.isWindows)() && path7[1] === "/") {
+          path7 = `${path7[0]}:${path7.substring(1)}`;
         }
         if (keepFileProtocol) {
-          path6 = "file:///" + path6;
+          path7 = "file:///" + path7;
         } else {
           isFileUrl = false;
-          path6 = (0, is_windows_1.isWindows)() ? path6 : "/" + path6;
+          path7 = (0, is_windows_1.isWindows)() ? path7 : "/" + path7;
         }
       }
       if ((0, is_windows_1.isWindows)() && !isFileUrl) {
-        path6 = path6.replace(forwardSlashPattern2, "\\");
-        if (path6.match(/^[a-z]:\\/i)) {
-          path6 = path6[0].toUpperCase() + path6.substring(1);
+        path7 = path7.replace(forwardSlashPattern2, "\\");
+        if (path7.match(/^[a-z]:\\/i)) {
+          path7 = path7[0].toUpperCase() + path7.substring(1);
         }
       }
-      return path6;
+      return path7;
     }
     function safePointerToPath2(pointer) {
       if (pointer.length <= 1 || pointer[0] !== "#" || pointer[1] !== "/") {
@@ -28735,8 +28735,8 @@ var require_errors3 = __commonJS({
       targetRef;
       targetFound;
       parentPath;
-      constructor(token, path6, targetRef, targetFound, parentPath) {
-        super(`Missing $ref pointer "${(0, url_js_1.getHash)(path6)}". Token "${token}" does not exist.`, (0, url_js_1.stripHash)(path6));
+      constructor(token, path7, targetRef, targetFound, parentPath) {
+        super(`Missing $ref pointer "${(0, url_js_1.getHash)(path7)}". Token "${token}" does not exist.`, (0, url_js_1.stripHash)(path7));
         this.targetToken = token;
         this.targetRef = targetRef;
         this.targetFound = targetFound;
@@ -28755,8 +28755,8 @@ var require_errors3 = __commonJS({
     var InvalidPointerError2 = class extends JSONParserError2 {
       code = "EUNMATCHEDRESOLVER";
       name = "InvalidPointerError";
-      constructor(pointer, path6) {
-        super(`Invalid $ref pointer "${pointer}". Pointers must begin with "#/"`, (0, url_js_1.stripHash)(path6));
+      constructor(pointer, path7) {
+        super(`Invalid $ref pointer "${pointer}". Pointers must begin with "#/"`, (0, url_js_1.stripHash)(path7));
       }
     };
     exports2.InvalidPointerError = InvalidPointerError2;
@@ -28861,10 +28861,10 @@ var require_pointer2 = __commonJS({
        * Resolving a single pointer may require resolving multiple $Refs.
        */
       indirections;
-      constructor($ref, path6, friendlyPath) {
+      constructor($ref, path7, friendlyPath) {
         this.$ref = $ref;
-        this.path = path6;
-        this.originalPath = friendlyPath || path6;
+        this.path = path7;
+        this.originalPath = friendlyPath || path7;
         this.value = void 0;
         this.circular = false;
         this.indirections = 0;
@@ -28910,10 +28910,10 @@ var require_pointer2 = __commonJS({
               continue;
             }
             this.value = null;
-            const path6 = this.$ref.path || "";
-            const targetRef = this.path.replace(path6, "");
+            const path7 = this.$ref.path || "";
+            const targetRef = this.path.replace(path7, "");
             const targetFound = _Pointer.join("", found);
-            const parentPath = pathFromRoot?.replace(path6, "");
+            const parentPath = pathFromRoot?.replace(path7, "");
             throw new errors_js_1.MissingPointerError(token, decodeURI(this.originalPath), targetRef, targetFound, parentPath);
           } else {
             this.value = this.value[token];
@@ -28969,8 +28969,8 @@ var require_pointer2 = __commonJS({
        * @param [originalPath]
        * @returns
        */
-      static parse(path6, originalPath) {
-        const pointer = url.getHash(path6).substring(1);
+      static parse(path7, originalPath) {
+        const pointer = url.getHash(path7).substring(1);
         if (!pointer) {
           return [];
         }
@@ -28979,7 +28979,7 @@ var require_pointer2 = __commonJS({
           split[i] = safeDecodeURIComponent(split[i].replace(escapedSlash2, "/").replace(escapedTilde2, "~"));
         }
         if (split[0] !== "") {
-          throw new errors_js_1.InvalidPointerError(pointer, originalPath === void 0 ? path6 : originalPath);
+          throw new errors_js_1.InvalidPointerError(pointer, originalPath === void 0 ? path7 : originalPath);
         }
         return split.slice(1);
       }
@@ -29157,9 +29157,9 @@ var require_ref = __commonJS({
        * @param options
        * @returns
        */
-      exists(path6, options) {
+      exists(path7, options) {
         try {
-          this.resolve(path6, options);
+          this.resolve(path7, options);
           return true;
         } catch {
           return false;
@@ -29172,8 +29172,8 @@ var require_ref = __commonJS({
        * @param options
        * @returns - Returns the resolved value
        */
-      get(path6, options) {
-        return this.resolve(path6, options)?.value;
+      get(path7, options) {
+        return this.resolve(path7, options)?.value;
       }
       /**
        * Resolves the given JSON reference within this {@link $Ref#value}.
@@ -29184,8 +29184,8 @@ var require_ref = __commonJS({
        * @param pathFromRoot - The path of `obj` from the schema root
        * @returns
        */
-      resolve(path6, options, friendlyPath, pathFromRoot) {
-        const pointer = new pointer_js_1.default(this, path6, friendlyPath);
+      resolve(path7, options, friendlyPath, pathFromRoot) {
+        const pointer = new pointer_js_1.default(this, path7, friendlyPath);
         try {
           const resolved = pointer.resolve(this.value, options, pathFromRoot);
           if (resolved.value === pointer_js_1.nullSymbol) {
@@ -29213,8 +29213,8 @@ var require_ref = __commonJS({
        * @param path - The full path of the property to set, optionally with a JSON pointer in the hash
        * @param value - The value to assign
        */
-      set(path6, value) {
-        const pointer = new pointer_js_1.default(this, path6);
+      set(path7, value) {
+        const pointer = new pointer_js_1.default(this, path7);
         this.value = pointer.set(this.value, value);
         if (this.value === pointer_js_1.nullSymbol) {
           this.value = null;
@@ -29411,8 +29411,8 @@ var require_refs = __commonJS({
        */
       paths(...types2) {
         const paths = getPaths2(this._$refs, types2.flat());
-        return paths.map((path6) => {
-          return (0, convert_path_to_posix_1.default)(path6.decoded);
+        return paths.map((path7) => {
+          return (0, convert_path_to_posix_1.default)(path7.decoded);
         });
       }
       /**
@@ -29425,8 +29425,8 @@ var require_refs = __commonJS({
       values(...types2) {
         const $refs = this._$refs;
         const paths = getPaths2($refs, types2.flat());
-        return paths.reduce((obj, path6) => {
-          obj[(0, convert_path_to_posix_1.default)(path6.decoded)] = $refs[path6.encoded].value;
+        return paths.reduce((obj, path7) => {
+          obj[(0, convert_path_to_posix_1.default)(path7.decoded)] = $refs[path7.encoded].value;
           return obj;
         }, {});
       }
@@ -29444,9 +29444,9 @@ var require_refs = __commonJS({
        * @param [options]
        * @returns
        */
-      exists(path6, options) {
+      exists(path7, options) {
         try {
-          this._resolve(path6, "", options);
+          this._resolve(path7, "", options);
           return true;
         } catch {
           return false;
@@ -29459,8 +29459,8 @@ var require_refs = __commonJS({
        * @param [options]
        * @returns - Returns the resolved value
        */
-      get(path6, options) {
-        return this._resolve(path6, "", options).value;
+      get(path7, options) {
+        return this._resolve(path7, "", options).value;
       }
       /**
        * Sets the value at the given path in the schema. If the property, or any of its parents, don't exist, they will be created.
@@ -29468,12 +29468,12 @@ var require_refs = __commonJS({
        * @param path The JSON Reference path, optionally with a JSON Pointer in the hash
        * @param value The value to assign. Can be anything (object, string, number, etc.)
        */
-      set(path6, value) {
-        const absPath = url.resolve(this._root$Ref.path, path6);
+      set(path7, value) {
+        const absPath = url.resolve(this._root$Ref.path, path7);
         const withoutHash = url.stripHash(absPath);
         const $ref = this._$refs[withoutHash];
         if (!$ref) {
-          throw new Error(`Error resolving $ref pointer "${path6}". 
+          throw new Error(`Error resolving $ref pointer "${path7}". 
 "${withoutHash}" not found.`);
         }
         $ref.set(absPath, value);
@@ -29485,9 +29485,9 @@ var require_refs = __commonJS({
        * @returns
        * @protected
        */
-      _get$Ref(path6) {
-        path6 = url.resolve(this._root$Ref.path, path6);
-        const withoutHash = url.stripHash(path6);
+      _get$Ref(path7) {
+        path7 = url.resolve(this._root$Ref.path, path7);
+        const withoutHash = url.stripHash(path7);
         return this._$refs[withoutHash];
       }
       /**
@@ -29495,8 +29495,8 @@ var require_refs = __commonJS({
        *
        * @param path  - The file path or URL of the referenced file
        */
-      _add(path6) {
-        const withoutHash = url.stripHash(path6);
+      _add(path7) {
+        const withoutHash = url.stripHash(path7);
         const $ref = new ref_js_1.default(this);
         $ref.path = withoutHash;
         this._$refs[withoutHash] = $ref;
@@ -29512,15 +29512,15 @@ var require_refs = __commonJS({
        * @returns
        * @protected
        */
-      _resolve(path6, pathFromRoot, options) {
-        const absPath = url.resolve(this._root$Ref.path, path6);
+      _resolve(path7, pathFromRoot, options) {
+        const absPath = url.resolve(this._root$Ref.path, path7);
         const withoutHash = url.stripHash(absPath);
         const $ref = this._$refs[withoutHash];
         if (!$ref) {
-          throw new Error(`Error resolving $ref pointer "${path6}". 
+          throw new Error(`Error resolving $ref pointer "${path7}". 
 "${withoutHash}" not found.`);
         }
-        return $ref.resolve(absPath, options, path6, pathFromRoot);
+        return $ref.resolve(absPath, options, path7, pathFromRoot);
       }
       /**
        * A map of paths/urls to {@link $Ref} objects
@@ -29570,10 +29570,10 @@ var require_refs = __commonJS({
           return types2.includes($refs[key].pathType);
         });
       }
-      return paths.map((path6) => {
+      return paths.map((path7) => {
         return {
-          encoded: path6,
-          decoded: $refs[path6].pathType === "file" ? url.toFileSystemPath(path6, true) : path6
+          encoded: path7,
+          decoded: $refs[path7].pathType === "file" ? url.toFileSystemPath(path7, true) : path7
         };
       });
     }
@@ -29720,21 +29720,21 @@ var require_parse2 = __commonJS({
     var url = __importStar(require_url());
     var plugins = __importStar(require_plugins());
     var errors_js_1 = require_errors3();
-    async function parse6(path6, $refs, options) {
-      const hashIndex = path6.indexOf("#");
+    async function parse6(path7, $refs, options) {
+      const hashIndex = path7.indexOf("#");
       let hash = "";
       if (hashIndex >= 0) {
-        hash = path6.substring(hashIndex);
-        path6 = path6.substring(0, hashIndex);
+        hash = path7.substring(hashIndex);
+        path7 = path7.substring(0, hashIndex);
       }
-      const $ref = $refs._add(path6);
+      const $ref = $refs._add(path7);
       const file = {
-        url: path6,
+        url: path7,
         hash,
-        extension: url.getExtension(path6)
+        extension: url.getExtension(path7)
       };
       try {
-        const resolver = await readFile2(file, options, $refs);
+        const resolver = await readFile3(file, options, $refs);
         $ref.pathType = resolver.plugin.name;
         file.data = resolver.result;
         const parser = await parseFile2(file, options, $refs);
@@ -29747,7 +29747,7 @@ var require_parse2 = __commonJS({
         throw err;
       }
     }
-    async function readFile2(file, options, $refs) {
+    async function readFile3(file, options, $refs) {
       let resolvers = plugins.all(options.resolve);
       resolvers = plugins.filter(resolvers, "canRead", file);
       plugins.sort(resolvers);
@@ -32864,23 +32864,23 @@ var require_file2 = __commonJS({
        * Reads the given file and returns its raw contents as a Buffer.
        */
       async read(file) {
-        let path6;
+        let path7;
         try {
-          path6 = url.toFileSystemPath(file.url);
+          path7 = url.toFileSystemPath(file.url);
         } catch (err) {
           const e = err;
           e.message = `Malformed URI: ${file.url}: ${e.message}`;
           throw new errors_js_1.ResolverError(e, file.url);
         }
-        if (path6.endsWith("/") || path6.endsWith("\\")) {
-          path6 = path6.slice(0, -1);
+        if (path7.endsWith("/") || path7.endsWith("\\")) {
+          path7 = path7.slice(0, -1);
         }
         try {
-          return await fs_1.default.promises.readFile(path6);
+          return await fs_1.default.promises.readFile(path7);
         } catch (err) {
           const e = err;
-          e.message = `Error opening file ${path6}: ${e.message}`;
-          throw new errors_js_1.ResolverError(e, path6);
+          e.message = `Error opening file ${path7}: ${e.message}`;
+          throw new errors_js_1.ResolverError(e, path7);
         }
       }
     };
@@ -33174,7 +33174,7 @@ var require_normalize_args = __commonJS({
     exports2.normalizeArgs = normalizeArgs2;
     var options_js_1 = require_options();
     function normalizeArgs2(_args) {
-      let path6;
+      let path7;
       let schema2;
       let options;
       let callback;
@@ -33183,7 +33183,7 @@ var require_normalize_args = __commonJS({
         callback = args.pop();
       }
       if (typeof args[0] === "string") {
-        path6 = args[0];
+        path7 = args[0];
         if (typeof args[2] === "object") {
           schema2 = args[1];
           options = args[2];
@@ -33192,7 +33192,7 @@ var require_normalize_args = __commonJS({
           options = args[1];
         }
       } else {
-        path6 = "";
+        path7 = "";
         schema2 = args[0];
         options = args[1];
       }
@@ -33205,7 +33205,7 @@ var require_normalize_args = __commonJS({
         schema2 = JSON.parse(JSON.stringify(schema2));
       }
       return {
-        path: path6,
+        path: path7,
         schema: schema2,
         options,
         callback
@@ -33276,26 +33276,26 @@ var require_resolve_external = __commonJS({
         return Promise.reject(e);
       }
     }
-    function crawl4(obj, path6, $refs, options, seen, external) {
+    function crawl4(obj, path7, $refs, options, seen, external) {
       seen ||= /* @__PURE__ */ new Set();
       let promises3 = [];
       if (obj && typeof obj === "object" && !ArrayBuffer.isView(obj) && !seen.has(obj)) {
         seen.add(obj);
         if (ref_js_1.default.isExternal$Ref(obj)) {
-          promises3.push(resolve$Ref2(obj, path6, $refs, options));
+          promises3.push(resolve$Ref2(obj, path7, $refs, options));
         }
         const keys = Object.keys(obj);
         for (const key of keys) {
-          const keyPath = pointer_js_1.default.join(path6, key);
+          const keyPath = pointer_js_1.default.join(path7, key);
           const value = obj[key];
           promises3 = promises3.concat(crawl4(value, keyPath, $refs, options, seen, external));
         }
       }
       return promises3;
     }
-    async function resolve$Ref2($ref, path6, $refs, options) {
+    async function resolve$Ref2($ref, path7, $refs, options) {
       const shouldResolveOnCwd = options.dereference?.externalReferenceResolution === "root";
-      const resolvedPath = url.resolve(shouldResolveOnCwd ? url.cwd() : path6, $ref.$ref);
+      const resolvedPath = url.resolve(shouldResolveOnCwd ? url.cwd() : path7, $ref.$ref);
       const withoutHash = url.stripHash(resolvedPath);
       const ref = $refs._$refs[withoutHash];
       if (ref) {
@@ -33310,8 +33310,8 @@ var require_resolve_external = __commonJS({
           throw err;
         }
         if ($refs._$refs[withoutHash]) {
-          err.source = decodeURI(url.stripHash(path6));
-          err.path = url.safePointerToPath(url.getHash(path6));
+          err.source = decodeURI(url.stripHash(path7));
+          err.path = url.safePointerToPath(url.getHash(path7));
         }
         return [];
       }
@@ -33373,13 +33373,13 @@ var require_bundle = __commonJS({
       crawl4(parser, "schema", parser.$refs._root$Ref.path + "#", "#", 0, inventory, parser.$refs, options);
       remap2(inventory);
     }
-    function crawl4(parent, key, path6, pathFromRoot, indirections, inventory, $refs, options) {
+    function crawl4(parent, key, path7, pathFromRoot, indirections, inventory, $refs, options) {
       const obj = key === null ? parent : parent[key];
       const bundleOptions = options.bundle || {};
       const isExcludedPath = bundleOptions.excludedPathMatcher || (() => false);
       if (obj && typeof obj === "object" && !ArrayBuffer.isView(obj) && !isExcludedPath(pathFromRoot)) {
         if (ref_js_1.default.isAllowed$Ref(obj)) {
-          inventory$Ref2(parent, key, path6, pathFromRoot, indirections, inventory, $refs, options);
+          inventory$Ref2(parent, key, path7, pathFromRoot, indirections, inventory, $refs, options);
         } else {
           const keys = Object.keys(obj).sort((a, b) => {
             if (a === "definitions" || a === "$defs") {
@@ -33391,11 +33391,11 @@ var require_bundle = __commonJS({
             }
           });
           for (const key2 of keys) {
-            const keyPath = pointer_js_1.default.join(path6, key2);
+            const keyPath = pointer_js_1.default.join(path7, key2);
             const keyPathFromRoot = pointer_js_1.default.join(pathFromRoot, key2);
             const value = obj[key2];
             if (ref_js_1.default.isAllowed$Ref(value)) {
-              inventory$Ref2(obj, key2, path6, keyPathFromRoot, indirections, inventory, $refs, options);
+              inventory$Ref2(obj, key2, path7, keyPathFromRoot, indirections, inventory, $refs, options);
             } else {
               crawl4(obj, key2, keyPath, keyPathFromRoot, indirections, inventory, $refs, options);
             }
@@ -33408,9 +33408,9 @@ var require_bundle = __commonJS({
         }
       }
     }
-    function inventory$Ref2($refParent, $refKey, path6, pathFromRoot, indirections, inventory, $refs, options) {
+    function inventory$Ref2($refParent, $refKey, path7, pathFromRoot, indirections, inventory, $refs, options) {
       const $ref = $refKey === null ? $refParent : $refParent[$refKey];
-      const $refPath = url.resolve(path6, $ref.$ref);
+      const $refPath = url.resolve(path7, $ref.$ref);
       const pointer = $refs._resolve($refPath, pathFromRoot, options);
       if (pointer === null) {
         return;
@@ -33575,7 +33575,7 @@ var require_dereference = __commonJS({
       parser.$refs.circular = dereferenced.circular;
       parser.schema = dereferenced.value;
     }
-    function crawl4(obj, path6, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime) {
+    function crawl4(obj, path7, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime) {
       let dereferenced;
       const result = {
         value: obj,
@@ -33589,13 +33589,13 @@ var require_dereference = __commonJS({
           parents.add(obj);
           processedObjects.add(obj);
           if (ref_js_1.default.isAllowed$Ref(obj, options)) {
-            dereferenced = dereference$Ref2(obj, path6, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime);
+            dereferenced = dereference$Ref2(obj, path7, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime);
             result.circular = dereferenced.circular;
             result.value = dereferenced.value;
           } else {
             for (const key of Object.keys(obj)) {
               checkDereferenceTimeout2(startTime, options);
-              const keyPath = pointer_js_1.default.join(path6, key);
+              const keyPath = pointer_js_1.default.join(path7, key);
               const keyPathFromRoot = pointer_js_1.default.join(pathFromRoot, key);
               if (isExcludedPath(keyPathFromRoot)) {
                 continue;
@@ -33645,10 +33645,10 @@ var require_dereference = __commonJS({
       }
       return result;
     }
-    function dereference$Ref2($ref, path6, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime) {
+    function dereference$Ref2($ref, path7, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime) {
       const isExternalRef = ref_js_1.default.isExternal$Ref($ref);
       const shouldResolveOnCwd = isExternalRef && options?.dereference?.externalReferenceResolution === "root";
-      const $refPath = url.resolve(shouldResolveOnCwd ? url.cwd() : path6, $ref.$ref);
+      const $refPath = url.resolve(shouldResolveOnCwd ? url.cwd() : path7, $ref.$ref);
       const cache = dereferencedCache.get($refPath);
       if (cache) {
         if (!cache.circular) {
@@ -33676,7 +33676,7 @@ var require_dereference = __commonJS({
           return cache;
         }
       }
-      const pointer = $refs._resolve($refPath, path6, options);
+      const pointer = $refs._resolve($refPath, path7, options);
       if (pointer === null) {
         return {
           circular: false,
@@ -33686,7 +33686,7 @@ var require_dereference = __commonJS({
       const directCircular = pointer.circular;
       let circular = directCircular || parents.has(pointer.value);
       if (circular) {
-        foundCircularReference2(path6, $refs, options);
+        foundCircularReference2(path7, $refs, options);
       }
       let dereferencedValue = ref_js_1.default.dereference($ref, pointer.value);
       if (!circular) {
@@ -36618,15 +36618,15 @@ var require_helpers = __commonJS({
         var instancePath = typeof ajvError.instancePath !== "undefined" ? ajvError.instancePath : ajvError.dataPath;
         var paths = instancePath === "" ? [""] : instancePath.match(JSON_POINTERS_REGEX);
         if (paths) {
-          paths.reduce(function(obj, path6, i) {
-            obj.children[path6] = obj.children[path6] || {
+          paths.reduce(function(obj, path7, i) {
+            obj.children[path7] = obj.children[path7] || {
               children: {},
               errors: []
             };
             if (i === paths.length - 1) {
-              obj.children[path6].errors.push(ajvError);
+              obj.children[path7].errors.push(ajvError);
             }
-            return obj.children[path6];
+            return obj.children[path7];
           }, root);
         }
       });
@@ -39934,8 +39934,8 @@ var require_utils4 = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path6) {
-      let input = path6;
+    function removeDotSegments(path7) {
+      let input = path7;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -40187,8 +40187,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path6, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path6 && path6 !== "/" ? path6 : void 0;
+        const [path7, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path7 && path7 !== "/" ? path7 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -46650,7 +46650,7 @@ function getIDToken(aud) {
 
 // src/index.ts
 var import_node_crypto = require("node:crypto");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_yaml3 = __toESM(require_dist(), 1);
 
 // src/contracts.ts
@@ -46729,8 +46729,12 @@ var openAlphaActionContract = {
       required: false
     },
     "spec-url": {
-      description: "HTTPS URL to the OpenAPI document.",
-      required: true
+      description: "HTTPS URL to the OpenAPI document. Provide either spec-url or spec-path.",
+      required: false
+    },
+    "spec-path": {
+      description: "Local filesystem path to the OpenAPI document (read from the workspace). Provide either spec-url or spec-path.",
+      required: false
     },
     "openapi-version": {
       description: "OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.",
@@ -46920,10 +46924,10 @@ function sanitizeHeaders(headers, secretValues) {
 }
 
 // src/lib/github/github-api-client.ts
-function buildErrorMessage(method, path6, response, body, masker) {
+function buildErrorMessage(method, path7, response, body, masker) {
   const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
   const sanitizedBody = masker(body || "");
-  return sanitizedBody ? masker(`${method} ${path6} failed with ${status} - ${sanitizedBody}`) : masker(`${method} ${path6} failed with ${status} - [REDACTED]`);
+  return sanitizedBody ? masker(`${method} ${path7} failed with ${status} - ${sanitizedBody}`) : masker(`${method} ${path7} failed with ${status} - [REDACTED]`);
 }
 var GitHubApiClient = class {
   apiBase;
@@ -46973,11 +46977,11 @@ var GitHubApiClient = class {
     }
     return ordered;
   }
-  isVariablesEndpoint(path6) {
-    return path6.startsWith(`/repos/${this.owner}/${this.repo}/actions/variables`);
+  isVariablesEndpoint(path7) {
+    return path7.startsWith(`/repos/${this.owner}/${this.repo}/actions/variables`);
   }
-  canUseFallback(path6) {
-    return this.isVariablesEndpoint(path6) || path6 === `/repos/${this.owner}/${this.repo}/properties/values` || path6.includes(`/repos/${this.owner}/${this.repo}/contents`) || path6.includes("/dispatches");
+  canUseFallback(path7) {
+    return this.isVariablesEndpoint(path7) || path7 === `/repos/${this.owner}/${this.repo}/properties/values` || path7.includes(`/repos/${this.owner}/${this.repo}/contents`) || path7.includes("/dispatches");
   }
   rateLimitDelayMs(response, attempt) {
     const retryAfter = Number(response.headers.get("retry-after") || "");
@@ -46995,14 +46999,14 @@ var GitHubApiClient = class {
     const jitter = Math.floor(Math.random() * 250);
     return Math.min(base + jitter, 12e4);
   }
-  async requestWithToken(path6, init, token) {
+  async requestWithToken(path7, init, token) {
     const MAX_RETRIES = 5;
     const normalizedToken = String(token || "").trim();
     if (!normalizedToken) {
-      throw new Error(`Missing GitHub auth token for request ${path6}`);
+      throw new Error(`Missing GitHub auth token for request ${path7}`);
     }
     for (let attempt = 0; ; attempt++) {
-      const response = await this.fetchImpl(`${this.apiBase}${path6}`, {
+      const response = await this.fetchImpl(`${this.apiBase}${path7}`, {
         ...init,
         headers: {
           Accept: "application/vnd.github+json",
@@ -47025,28 +47029,28 @@ var GitHubApiClient = class {
       return response;
     }
   }
-  async request(path6, init = {}) {
+  async request(path7, init = {}) {
     const orderedTokens = this.getTokenOrder();
     if (orderedTokens.length === 0) {
       throw new Error("No GitHub auth token configured");
     }
-    const first = await this.requestWithToken(path6, init, orderedTokens[0]);
-    if (orderedTokens.length < 2 || !this.canUseFallback(path6)) {
+    const first = await this.requestWithToken(path7, init, orderedTokens[0]);
+    if (orderedTokens.length < 2 || !this.canUseFallback(path7)) {
       return first;
     }
-    const isVariableGet404 = first.status === 404 && (!init.method || init.method === "GET") && this.isVariablesEndpoint(path6);
+    const isVariableGet404 = first.status === 404 && (!init.method || init.method === "GET") && this.isVariablesEndpoint(path7);
     if (first.status !== 403 && !isVariableGet404) {
       return first;
     }
-    return this.requestWithToken(path6, init, orderedTokens[1]);
+    return this.requestWithToken(path7, init, orderedTokens[1]);
   }
   async setRepositoryVariable(name, value) {
     if (!value) {
       throw new Error(`Repo variable ${name} is empty`);
     }
-    const path6 = `/repos/${this.repository}/actions/variables`;
+    const path7 = `/repos/${this.repository}/actions/variables`;
     const body = JSON.stringify({ name, value: String(value) });
-    const createResponse = await this.request(path6, {
+    const createResponse = await this.request(path7, {
       method: "POST",
       body
     });
@@ -47069,12 +47073,12 @@ var GitHubApiClient = class {
     }
     const text = await createResponse.text().catch(() => "");
     throw new Error(
-      buildErrorMessage("POST", path6, createResponse, text, this.secretMasker)
+      buildErrorMessage("POST", path7, createResponse, text, this.secretMasker)
     );
   }
   async getRepositoryVariable(name) {
-    const path6 = `/repos/${this.repository}/actions/variables/${name}`;
-    const response = await this.request(path6, {
+    const path7 = `/repos/${this.repository}/actions/variables/${name}`;
+    const response = await this.request(path7, {
       method: "GET"
     });
     if (response.status === 404) {
@@ -47083,15 +47087,15 @@ var GitHubApiClient = class {
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       throw new Error(
-        buildErrorMessage("GET", path6, response, text, this.secretMasker)
+        buildErrorMessage("GET", path7, response, text, this.secretMasker)
       );
     }
     const data = await response.json();
     return String(data.value || "");
   }
   async getRepositoryCustomProperty(name) {
-    const path6 = `/repos/${this.repository}/properties/values`;
-    const response = await this.request(path6, {
+    const path7 = `/repos/${this.repository}/properties/values`;
+    const response = await this.request(path7, {
       method: "GET"
     });
     if (response.status === 404) {
@@ -47100,7 +47104,7 @@ var GitHubApiClient = class {
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       throw new Error(
-        buildErrorMessage("GET", path6, response, text, this.secretMasker)
+        buildErrorMessage("GET", path7, response, text, this.secretMasker)
       );
     }
     const values = await response.json();
@@ -47364,8 +47368,8 @@ var PostmanAssetsClient = class {
       ...team.organizationId != null ? { organizationId: Number(team.organizationId) } : {}
     })) : [];
   }
-  async request(path6, init = {}) {
-    const url = path6.startsWith("http") ? path6 : `${this.baseUrl}${path6}`;
+  async request(path7, init = {}) {
+    const url = path7.startsWith("http") ? path7 : `${this.baseUrl}${path7}`;
     const response = await this.fetchImpl(url, {
       ...init,
       headers: {
@@ -48571,8 +48575,8 @@ function normalizeRepoUrl(url) {
   const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
   if (sshMatch) {
     const host = sshMatch[1];
-    const path6 = sshMatch[2];
-    return `https://${host}/${path6}`;
+    const path7 = sshMatch[2];
+    return `https://${host}/${path7}`;
   }
   return raw.replace(/\.git$/, "");
 }
@@ -48892,8 +48896,8 @@ function safeDecodeSegment(segment) {
     return segment;
   }
 }
-function normalizePath(path6) {
-  const raw = String(path6 || "").split(/[?#]/, 1)[0] || "/";
+function normalizePath(path7) {
+  const raw = String(path7 || "").split(/[?#]/, 1)[0] || "/";
   const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
   const normalized = withSlash.replace(/\/+/g, "/");
   const trimmed = normalized.length > 1 ? normalized.replace(/\/+$/g, "") : normalized;
@@ -48917,8 +48921,8 @@ function serverPathPrefix(url) {
     return normalizePath(noProtocol).replace(/__server_variable__/g, "{serverVariable}");
   }
 }
-function joinPaths(prefix, path6) {
-  return normalizePath(`${prefix}/${path6}`.replace(/\/+/g, "/"));
+function joinPaths(prefix, path7) {
+  return normalizePath(`${prefix}/${path7}`.replace(/\/+/g, "/"));
 }
 function normalizeResponseKey(status) {
   const raw = String(status);
@@ -49022,7 +49026,7 @@ function buildContractIndex(root) {
   const warnings = [];
   if (asRecord3(root.webhooks)) warnings.push("CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests");
   if (paths) {
-    for (const [path6, rawPathItem] of Object.entries(paths)) {
+    for (const [path7, rawPathItem] of Object.entries(paths)) {
       const pathItem = resolveInternalRef(root, rawPathItem);
       if (!pathItem) continue;
       for (const [method, rawOperation] of Object.entries(pathItem)) {
@@ -49030,10 +49034,10 @@ function buildContractIndex(root) {
         if (!HTTP_METHODS.has(lowerMethod)) continue;
         const operation = resolveInternalRef(root, rawOperation);
         if (!operation) continue;
-        if (operation.callbacks) warnings.push(`CONTRACT_CALLBACKS_NOT_VALIDATED: callbacks are not validated for ${lowerMethod.toUpperCase()} ${path6}`);
+        if (operation.callbacks) warnings.push(`CONTRACT_CALLBACKS_NOT_VALIDATED: callbacks are not validated for ${lowerMethod.toUpperCase()} ${path7}`);
         const responses = asRecord3(operation.responses);
         if (!responses || Object.keys(responses).length === 0) {
-          throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path6} must define at least one response`);
+          throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path7} must define at least one response`);
         }
         const contractResponses = {};
         for (const [status, rawResponse] of Object.entries(responses)) {
@@ -49048,8 +49052,8 @@ function buildContractIndex(root) {
           };
         }
         const candidates = [...new Set([
-          path6,
-          ...operationServers(root, pathItem, operation).map((server) => joinPaths(serverPathPrefix(server), path6))
+          path7,
+          ...operationServers(root, pathItem, operation).map((server) => joinPaths(serverPathPrefix(server), path7))
         ].map(normalizePath))];
         const opWarnings = [];
         opWarnings.push(...collectSecuritySchemeWarnings(root, operation));
@@ -49058,10 +49062,10 @@ function buildContractIndex(root) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);
         }
         operations.push({
-          id: `${lowerMethod.toUpperCase()} ${path6}`,
+          id: `${lowerMethod.toUpperCase()} ${path7}`,
           method: lowerMethod.toUpperCase(),
-          path: path6,
-          pointer: `/paths/${path6.replace(/~/g, "~0").replace(/\//g, "~1")}/${lowerMethod}`,
+          path: path7,
+          pointer: `/paths/${path7.replace(/~/g, "~0").replace(/\//g, "~1")}/${lowerMethod}`,
           candidates,
           responses: contractResponses,
           requiredParameters,
@@ -49158,8 +49162,8 @@ function requestPath(request) {
   if (typeof urlRecord.raw === "string") return pathFromRaw(urlRecord.raw);
   return "/";
 }
-function segments(path6) {
-  return normalizePath(path6).split("/").filter(Boolean);
+function segments(path7) {
+  return normalizePath(path7).split("/").filter(Boolean);
 }
 function isTemplateSegment(segment) {
   return /^\{[^}]+\}$/.test(segment) || /^:[^/]+$/.test(segment) || /^\{\{[^}]+\}\}$/.test(segment) || /^<[^>]+>$/.test(segment);
@@ -49185,8 +49189,8 @@ function matchCandidate(candidate, request) {
 function matchOperation(index, request) {
   const record = asRecord4(request);
   const method = String(record?.method || "").toUpperCase();
-  const path6 = requestPath(request);
-  const candidates = index.operations.filter((operation) => operation.method === method).flatMap((operation) => operation.candidates.map((candidate) => ({ operation, score: matchCandidate(candidate, path6), serverFull: candidate !== normalizePath(operation.path) }))).filter((entry) => entry.score.matched).map((entry) => ({ operation: entry.operation, score: [entry.serverFull ? 2 : 1, entry.score.staticCount, -entry.score.templateCount] })).sort((a, b) => {
+  const path7 = requestPath(request);
+  const candidates = index.operations.filter((operation) => operation.method === method).flatMap((operation) => operation.candidates.map((candidate) => ({ operation, score: matchCandidate(candidate, path7), serverFull: candidate !== normalizePath(operation.path) }))).filter((entry) => entry.score.matched).map((entry) => ({ operation: entry.operation, score: [entry.score.staticCount, entry.serverFull ? 2 : 1, -entry.score.templateCount] })).sort((a, b) => {
     for (let index2 = 0; index2 < a.score.length; index2 += 1) {
       const delta = b.score[index2] - a.score[index2];
       if (delta !== 0) return delta;
@@ -49194,11 +49198,11 @@ function matchOperation(index, request) {
     return a.operation.id.localeCompare(b.operation.id);
   });
   const best = candidates[0];
-  if (!best) return { path: path6, method };
+  if (!best) return { path: path7, method };
   const tied = candidates.filter((entry) => entry.score.every((value, index2) => value === best.score[index2]));
   const uniqueTied = [...new Map(tied.map((entry) => [entry.operation.id, entry.operation])).values()];
-  if (uniqueTied.length > 1) return { path: path6, method, ambiguous: uniqueTied };
-  return { path: path6, method, operation: best.operation };
+  if (uniqueTied.length > 1) return { path: path7, method, ambiguous: uniqueTied };
+  return { path: path7, method, operation: best.operation };
 }
 function assignValidator(lines, target, source) {
   lines.push(`${target} = ${source};`);
@@ -49482,6 +49486,12 @@ function instrumentContractCollection(collection, index) {
   return { collection, warnings };
 }
 
+// src/lib/spec/openapi-loader.ts
+var import_node_fs = require("node:fs");
+var import_promises2 = require("node:fs/promises");
+var import_node_url2 = require("node:url");
+var import_node_path = __toESM(require("node:path"), 1);
+
 // node_modules/@apidevtools/json-schema-ref-parser/dist/lib/util/convert-path-to-posix.js
 var win32Sep = "\\";
 function convertPathToPosix(filePath) {
@@ -49537,59 +49547,59 @@ function cwd() {
     return href;
   }
   if (typeof process !== "undefined" && process.cwd) {
-    const path6 = process.cwd();
-    const lastChar = path6.slice(-1);
+    const path7 = process.cwd();
+    const lastChar = path7.slice(-1);
     if (lastChar === "/" || lastChar === "\\") {
-      return path6;
+      return path7;
     } else {
-      return path6 + "/";
+      return path7 + "/";
     }
   }
   return "/";
 }
-function getProtocol(path6) {
-  const match = protocolPattern.exec(path6 || "");
+function getProtocol(path7) {
+  const match = protocolPattern.exec(path7 || "");
   if (match) {
     return match[1].toLowerCase();
   }
   return void 0;
 }
-function getExtension(path6) {
-  const lastDot = path6.lastIndexOf(".");
+function getExtension(path7) {
+  const lastDot = path7.lastIndexOf(".");
   if (lastDot >= 0) {
-    return stripQuery(path6.substring(lastDot).toLowerCase());
+    return stripQuery(path7.substring(lastDot).toLowerCase());
   }
   return "";
 }
-function stripQuery(path6) {
-  const queryIndex = path6.indexOf("?");
+function stripQuery(path7) {
+  const queryIndex = path7.indexOf("?");
   if (queryIndex >= 0) {
-    path6 = path6.substring(0, queryIndex);
+    path7 = path7.substring(0, queryIndex);
   }
-  return path6;
+  return path7;
 }
-function getHash(path6) {
-  if (!path6) {
+function getHash(path7) {
+  if (!path7) {
     return "#";
   }
-  const hashIndex = path6.indexOf("#");
+  const hashIndex = path7.indexOf("#");
   if (hashIndex >= 0) {
-    return path6.substring(hashIndex);
+    return path7.substring(hashIndex);
   }
   return "#";
 }
-function stripHash(path6) {
-  if (!path6) {
+function stripHash(path7) {
+  if (!path7) {
     return "";
   }
-  const hashIndex = path6.indexOf("#");
+  const hashIndex = path7.indexOf("#");
   if (hashIndex >= 0) {
-    path6 = path6.substring(0, hashIndex);
+    path7 = path7.substring(0, hashIndex);
   }
-  return path6;
+  return path7;
 }
-function isHttp(path6) {
-  const protocol = getProtocol(path6);
+function isHttp(path7) {
+  const protocol = getProtocol(path7);
   if (protocol === "http" || protocol === "https") {
     return true;
   } else if (protocol === void 0) {
@@ -49598,11 +49608,11 @@ function isHttp(path6) {
     return false;
   }
 }
-function isUnsafeUrl(path6) {
-  if (!path6 || typeof path6 !== "string") {
+function isUnsafeUrl(path7) {
+  if (!path7 || typeof path7 !== "string") {
     return true;
   }
-  const normalizedPath = path6.trim().toLowerCase();
+  const normalizedPath = path7.trim().toLowerCase();
   if (!normalizedPath) {
     return true;
   }
@@ -49733,22 +49743,22 @@ function isInternalPort(port) {
   ];
   return internalPorts.includes(port);
 }
-function isFileSystemPath(path6) {
+function isFileSystemPath(path7) {
   if (typeof window !== "undefined" || typeof process !== "undefined" && process.browser) {
     return false;
   }
-  const protocol = getProtocol(path6);
+  const protocol = getProtocol(path7);
   return protocol === void 0 || protocol === "file";
 }
-function fromFileSystemPath(path6) {
+function fromFileSystemPath(path7) {
   if (isWindows2()) {
     const projectDir = cwd();
-    const upperPath = path6.toUpperCase();
+    const upperPath = path7.toUpperCase();
     const projectDirPosixPath = convertPathToPosix(projectDir);
     const posixUpper = projectDirPosixPath.toUpperCase();
     const hasProjectDir = upperPath.includes(posixUpper);
     const hasProjectUri = upperPath.includes(posixUpper);
-    const isAbsolutePath = isAbsoluteWin32Path.test(path6) || path6.startsWith("http://") || path6.startsWith("https://") || path6.startsWith("file://");
+    const isAbsolutePath = isAbsoluteWin32Path.test(path7) || path7.startsWith("http://") || path7.startsWith("https://") || path7.startsWith("file://");
     if (!(hasProjectDir || hasProjectUri || isAbsolutePath) && !projectDir.startsWith("http")) {
       const join3 = (a, b) => {
         if (a.endsWith("/") || a.endsWith("\\")) {
@@ -49757,42 +49767,42 @@ function fromFileSystemPath(path6) {
           return a + "/" + b;
         }
       };
-      path6 = join3(projectDir, path6);
+      path7 = join3(projectDir, path7);
     }
-    path6 = convertPathToPosix(path6);
+    path7 = convertPathToPosix(path7);
   }
-  path6 = encodeURI(path6);
+  path7 = encodeURI(path7);
   for (const pattern of urlEncodePatterns) {
-    path6 = path6.replace(pattern[0], pattern[1]);
+    path7 = path7.replace(pattern[0], pattern[1]);
   }
-  return path6;
+  return path7;
 }
-function toFileSystemPath(path6, keepFileProtocol) {
-  path6 = path6.replace(/%(?![0-9A-Fa-f]{2})/g, "%25");
-  path6 = decodeURI(path6);
+function toFileSystemPath(path7, keepFileProtocol) {
+  path7 = path7.replace(/%(?![0-9A-Fa-f]{2})/g, "%25");
+  path7 = decodeURI(path7);
   for (let i = 0; i < urlDecodePatterns.length; i += 2) {
-    path6 = path6.replace(urlDecodePatterns[i], urlDecodePatterns[i + 1]);
+    path7 = path7.replace(urlDecodePatterns[i], urlDecodePatterns[i + 1]);
   }
-  let isFileUrl = path6.toLowerCase().startsWith("file://");
+  let isFileUrl = path7.toLowerCase().startsWith("file://");
   if (isFileUrl) {
-    path6 = path6.replace(/^file:\/\//, "").replace(/^\//, "");
-    if (isWindows2() && path6[1] === "/") {
-      path6 = `${path6[0]}:${path6.substring(1)}`;
+    path7 = path7.replace(/^file:\/\//, "").replace(/^\//, "");
+    if (isWindows2() && path7[1] === "/") {
+      path7 = `${path7[0]}:${path7.substring(1)}`;
     }
     if (keepFileProtocol) {
-      path6 = "file:///" + path6;
+      path7 = "file:///" + path7;
     } else {
       isFileUrl = false;
-      path6 = isWindows2() ? path6 : "/" + path6;
+      path7 = isWindows2() ? path7 : "/" + path7;
     }
   }
   if (isWindows2() && !isFileUrl) {
-    path6 = path6.replace(forwardSlashPattern, "\\");
-    if (path6.match(/^[a-z]:\\/i)) {
-      path6 = path6[0].toUpperCase() + path6.substring(1);
+    path7 = path7.replace(forwardSlashPattern, "\\");
+    if (path7.match(/^[a-z]:\\/i)) {
+      path7 = path7[0].toUpperCase() + path7.substring(1);
     }
   }
-  return path6;
+  return path7;
 }
 function safePointerToPath(pointer) {
   if (pointer.length <= 1 || pointer[0] !== "#" || pointer[1] !== "/") {
@@ -49913,8 +49923,8 @@ var MissingPointerError = class extends JSONParserError {
   targetRef;
   targetFound;
   parentPath;
-  constructor(token, path6, targetRef, targetFound, parentPath) {
-    super(`Missing $ref pointer "${getHash(path6)}". Token "${token}" does not exist.`, stripHash(path6));
+  constructor(token, path7, targetRef, targetFound, parentPath) {
+    super(`Missing $ref pointer "${getHash(path7)}". Token "${token}" does not exist.`, stripHash(path7));
     this.targetToken = token;
     this.targetRef = targetRef;
     this.targetFound = targetFound;
@@ -49931,8 +49941,8 @@ var TimeoutError = class extends JSONParserError {
 var InvalidPointerError = class extends JSONParserError {
   code = "EUNMATCHEDRESOLVER";
   name = "InvalidPointerError";
-  constructor(pointer, path6) {
-    super(`Invalid $ref pointer "${pointer}". Pointers must begin with "#/"`, stripHash(path6));
+  constructor(pointer, path7) {
+    super(`Invalid $ref pointer "${pointer}". Pointers must begin with "#/"`, stripHash(path7));
   }
 };
 function isHandledError(err) {
@@ -50026,11 +50036,11 @@ var Pointer = class _Pointer {
    * Resolving a single pointer may require resolving multiple $Refs.
    */
   indirections;
-  constructor($ref, path6, friendlyPath) {
+  constructor($ref, path7, friendlyPath) {
     this.$ref = $ref;
-    this.path = path6;
-    this.originalPath = friendlyPath || path6;
-    this.scopeBase = $ref.path || stripHash(path6);
+    this.path = path7;
+    this.originalPath = friendlyPath || path7;
+    this.scopeBase = $ref.path || stripHash(path7);
     this.value = void 0;
     this.circular = false;
     this.indirections = 0;
@@ -50083,10 +50093,10 @@ var Pointer = class _Pointer {
           continue;
         }
         this.value = null;
-        const path6 = this.$ref.path || "";
-        const targetRef = this.path.replace(path6, "");
+        const path7 = this.$ref.path || "";
+        const targetRef = this.path.replace(path7, "");
         const targetFound = _Pointer.join("", found);
-        const parentPath = pathFromRoot?.replace(path6, "");
+        const parentPath = pathFromRoot?.replace(path7, "");
         throw new MissingPointerError(token, decodeURI(this.originalPath), targetRef, targetFound, parentPath);
       } else {
         this.value = this.value[token];
@@ -50152,8 +50162,8 @@ var Pointer = class _Pointer {
    * @param [originalPath]
    * @returns
    */
-  static parse(path6, originalPath) {
-    const pointer = getHash(path6).substring(1);
+  static parse(path7, originalPath) {
+    const pointer = getHash(path7).substring(1);
     if (!pointer) {
       return [];
     }
@@ -50162,7 +50172,7 @@ var Pointer = class _Pointer {
       split[i] = split[i].replace(escapedSlash, "/").replace(escapedTilde, "~");
     }
     if (split[0] !== "") {
-      throw new InvalidPointerError(pointer, originalPath === void 0 ? path6 : originalPath);
+      throw new InvalidPointerError(pointer, originalPath === void 0 ? path7 : originalPath);
     }
     return split.slice(1);
   }
@@ -50303,9 +50313,9 @@ var $Ref = class _$Ref {
    * @param options
    * @returns
    */
-  exists(path6, options) {
+  exists(path7, options) {
     try {
-      this.resolve(path6, options);
+      this.resolve(path7, options);
       return true;
     } catch {
       return false;
@@ -50318,8 +50328,8 @@ var $Ref = class _$Ref {
    * @param options
    * @returns - Returns the resolved value
    */
-  get(path6, options) {
-    return this.resolve(path6, options)?.value;
+  get(path7, options) {
+    return this.resolve(path7, options)?.value;
   }
   /**
    * Resolves the given JSON reference within this {@link $Ref#value}.
@@ -50330,8 +50340,8 @@ var $Ref = class _$Ref {
    * @param pathFromRoot - The path of `obj` from the schema root
    * @returns
    */
-  resolve(path6, options, friendlyPath, pathFromRoot) {
-    const pointer = new pointer_default(this, path6, friendlyPath);
+  resolve(path7, options, friendlyPath, pathFromRoot) {
+    const pointer = new pointer_default(this, path7, friendlyPath);
     try {
       const resolved = pointer.resolve(this.value, options, pathFromRoot);
       if (resolved.value === nullSymbol) {
@@ -50359,8 +50369,8 @@ var $Ref = class _$Ref {
    * @param path - The full path of the property to set, optionally with a JSON pointer in the hash
    * @param value - The value to assign
    */
-  set(path6, value) {
-    const pointer = new pointer_default(this, path6);
+  set(path7, value) {
+    const pointer = new pointer_default(this, path7);
     this.value = pointer.set(this.value, value);
     if (this.value === nullSymbol) {
       this.value = null;
@@ -50534,8 +50544,8 @@ var $Refs = class {
    */
   paths(...types2) {
     const paths = getPaths(this._$refs, types2.flat());
-    return paths.map((path6) => {
-      return convertPathToPosix(path6.decoded);
+    return paths.map((path7) => {
+      return convertPathToPosix(path7.decoded);
     });
   }
   /**
@@ -50548,8 +50558,8 @@ var $Refs = class {
   values(...types2) {
     const $refs = this._$refs;
     const paths = getPaths($refs, types2.flat());
-    return paths.reduce((obj, path6) => {
-      obj[convertPathToPosix(path6.decoded)] = $refs[path6.encoded].value;
+    return paths.reduce((obj, path7) => {
+      obj[convertPathToPosix(path7.decoded)] = $refs[path7.encoded].value;
       return obj;
     }, {});
   }
@@ -50567,9 +50577,9 @@ var $Refs = class {
    * @param [options]
    * @returns
    */
-  exists(path6, options) {
+  exists(path7, options) {
     try {
-      this._resolve(path6, "", options);
+      this._resolve(path7, "", options);
       return true;
     } catch {
       return false;
@@ -50582,8 +50592,8 @@ var $Refs = class {
    * @param [options]
    * @returns - Returns the resolved value
    */
-  get(path6, options) {
-    return this._resolve(path6, "", options).value;
+  get(path7, options) {
+    return this._resolve(path7, "", options).value;
   }
   /**
    * Sets the value at the given path in the schema. If the property, or any of its parents, don't exist, they will be created.
@@ -50591,11 +50601,11 @@ var $Refs = class {
    * @param path The JSON Reference path, optionally with a JSON Pointer in the hash
    * @param value The value to assign. Can be anything (object, string, number, etc.)
    */
-  set(path6, value) {
-    const absPath = resolve2(this._root$Ref.path, path6);
+  set(path7, value) {
+    const absPath = resolve2(this._root$Ref.path, path7);
     const $ref = this._getRef(absPath);
     if (!$ref) {
-      throw new Error(`Error resolving $ref pointer "${path6}". 
+      throw new Error(`Error resolving $ref pointer "${path7}". 
 "${stripHash(absPath)}" not found.`);
     }
     $ref.set(absPath, value);
@@ -50607,25 +50617,25 @@ var $Refs = class {
    * @returns
    * @protected
    */
-  _get$Ref(path6) {
-    path6 = resolve2(this._root$Ref.path, path6);
-    return this._getRef(path6);
+  _get$Ref(path7) {
+    path7 = resolve2(this._root$Ref.path, path7);
+    return this._getRef(path7);
   }
   /**
    * Creates a new {@link $Ref} object and adds it to this {@link $Refs} object.
    *
    * @param path  - The file path or URL of the referenced file
    */
-  _add(path6) {
-    const withoutHash = stripHash(path6);
+  _add(path7) {
+    const withoutHash = stripHash(path7);
     const $ref = new ref_default(this);
     $ref.path = withoutHash;
     this._$refs[withoutHash] = $ref;
     this._root$Ref = this._root$Ref || $ref;
     return $ref;
   }
-  _addAlias(path6, value, pathType, dynamicIdScope = false) {
-    const withoutHash = stripHash(path6);
+  _addAlias(path7, value, pathType, dynamicIdScope = false) {
+    const withoutHash = stripHash(path7);
     if (!withoutHash || this._$refs[withoutHash] || this._aliases[withoutHash]) {
       return this._$refs[withoutHash] || this._aliases[withoutHash];
     }
@@ -50646,14 +50656,14 @@ var $Refs = class {
    * @returns
    * @protected
    */
-  _resolve(path6, pathFromRoot, options) {
-    const absPath = resolve2(this._root$Ref.path, path6);
+  _resolve(path7, pathFromRoot, options) {
+    const absPath = resolve2(this._root$Ref.path, path7);
     const $ref = this._getRef(absPath);
     if (!$ref) {
-      throw new Error(`Error resolving $ref pointer "${path6}". 
+      throw new Error(`Error resolving $ref pointer "${path7}". 
 "${stripHash(absPath)}" not found.`);
     }
-    return $ref.resolve(absPath, options, path6, pathFromRoot);
+    return $ref.resolve(absPath, options, path7, pathFromRoot);
   }
   /**
    * A map of paths/urls to {@link $Ref} objects
@@ -50695,8 +50705,8 @@ var $Refs = class {
    * @returns {object}
    */
   toJSON = this.values;
-  _getRef(path6) {
-    const withoutHash = stripHash(path6);
+  _getRef(path7) {
+    const withoutHash = stripHash(path7);
     return this._$refs[withoutHash] || this._aliases[withoutHash];
   }
 };
@@ -50708,10 +50718,10 @@ function getPaths($refs, types2) {
       return types2.includes($refs[key].pathType);
     });
   }
-  return paths.map((path6) => {
+  return paths.map((path7) => {
     return {
-      encoded: path6,
-      decoded: $refs[path6].pathType === "file" ? toFileSystemPath(path6, true) : path6
+      encoded: path7,
+      decoded: $refs[path7].pathType === "file" ? toFileSystemPath(path7, true) : path7
     };
   });
 }
@@ -50803,14 +50813,14 @@ function getResult(obj, prop, file, callback, $refs) {
 
 // node_modules/@apidevtools/json-schema-ref-parser/dist/lib/parse.js
 async function parse2(target, $refs, options) {
-  let path6 = typeof target === "string" ? target : target.url;
+  let path7 = typeof target === "string" ? target : target.url;
   const baseUrl = typeof target === "string" ? void 0 : target.baseUrl;
   let reference = typeof target === "string" ? void 0 : target.reference;
-  const hashIndex = path6.indexOf("#");
+  const hashIndex = path7.indexOf("#");
   let hash = "";
   if (hashIndex >= 0) {
-    hash = path6.substring(hashIndex);
-    path6 = path6.substring(0, hashIndex);
+    hash = path7.substring(hashIndex);
+    path7 = path7.substring(0, hashIndex);
   }
   if (reference) {
     const referenceHashIndex = reference.indexOf("#");
@@ -50818,11 +50828,11 @@ async function parse2(target, $refs, options) {
       reference = reference.substring(0, referenceHashIndex);
     }
   }
-  const $ref = $refs._add(path6);
+  const $ref = $refs._add(path7);
   const file = {
-    url: path6,
+    url: path7,
     hash,
-    extension: getExtension(path6),
+    extension: getExtension(path7),
     ...reference !== void 0 ? { reference } : {},
     ...baseUrl !== void 0 ? { baseUrl } : {}
   };
@@ -53707,24 +53717,24 @@ var file_default = {
    * Reads the given file and returns its raw contents as a Buffer.
    */
   async read(file) {
-    let path6;
+    let path7;
     const fs3 = await import("fs");
     try {
-      path6 = toFileSystemPath(file.url);
+      path7 = toFileSystemPath(file.url);
     } catch (err) {
       const e = err;
       e.message = `Malformed URI: ${file.url}: ${e.message}`;
       throw new ResolverError(e, file.url);
     }
-    if (path6.endsWith("/") || path6.endsWith("\\")) {
-      path6 = path6.slice(0, -1);
+    if (path7.endsWith("/") || path7.endsWith("\\")) {
+      path7 = path7.slice(0, -1);
     }
     try {
-      return await fs3.promises.readFile(path6);
+      return await fs3.promises.readFile(path7);
     } catch (err) {
       const e = err;
-      e.message = `Error opening file ${path6}: ${e.message}`;
-      throw new ResolverError(e, path6);
+      e.message = `Error opening file ${path7}: ${e.message}`;
+      throw new ResolverError(e, path7);
     }
   }
 };
@@ -53948,7 +53958,7 @@ function isMergeable(val) {
 
 // node_modules/@apidevtools/json-schema-ref-parser/dist/lib/normalize-args.js
 function normalizeArgs(_args) {
-  let path6;
+  let path7;
   let schema2;
   let options;
   let callback;
@@ -53957,7 +53967,7 @@ function normalizeArgs(_args) {
     callback = args.pop();
   }
   if (typeof args[0] === "string") {
-    path6 = args[0];
+    path7 = args[0];
     if (typeof args[2] === "object") {
       schema2 = args[1];
       options = args[2];
@@ -53966,7 +53976,7 @@ function normalizeArgs(_args) {
       options = args[1];
     }
   } else {
-    path6 = "";
+    path7 = "";
     schema2 = args[0];
     options = args[1];
   }
@@ -53979,7 +53989,7 @@ function normalizeArgs(_args) {
     schema2 = JSON.parse(JSON.stringify(schema2));
   }
   return {
-    path: path6,
+    path: path7,
     schema: schema2,
     options,
     callback
@@ -54000,18 +54010,18 @@ function resolveExternal(parser, options) {
     return Promise.reject(e);
   }
 }
-function crawl(obj, path6, scopeBase, dynamicIdScope, $refs, options, seen, external) {
+function crawl(obj, path7, scopeBase, dynamicIdScope, $refs, options, seen, external) {
   seen ||= /* @__PURE__ */ new Set();
   let promises3 = [];
   if (obj && typeof obj === "object" && !ArrayBuffer.isView(obj) && !seen.has(obj)) {
     seen.add(obj);
     const currentScopeBase = scopeBase;
     if (ref_default.isExternal$Ref(obj)) {
-      promises3.push(resolve$Ref(obj, path6, currentScopeBase, dynamicIdScope, $refs, options));
+      promises3.push(resolve$Ref(obj, path7, currentScopeBase, dynamicIdScope, $refs, options));
     }
     const keys = Object.keys(obj);
     for (const key of keys) {
-      const keyPath = pointer_default.join(path6, key);
+      const keyPath = pointer_default.join(path7, key);
       const value = obj[key];
       const childScopeBase = dynamicIdScope && value && typeof value === "object" && !ArrayBuffer.isView(value) ? getSchemaBasePath(currentScopeBase, value) : currentScopeBase;
       promises3 = promises3.concat(crawl(value, keyPath, childScopeBase, dynamicIdScope, $refs, options, seen, external));
@@ -54019,9 +54029,9 @@ function crawl(obj, path6, scopeBase, dynamicIdScope, $refs, options, seen, exte
   }
   return promises3;
 }
-async function resolve$Ref($ref, path6, scopeBase, dynamicIdScope, $refs, options) {
+async function resolve$Ref($ref, path7, scopeBase, dynamicIdScope, $refs, options) {
   const shouldResolveOnCwd = options.dereference?.externalReferenceResolution === "root";
-  const resolutionBase = shouldResolveOnCwd ? cwd() : dynamicIdScope ? scopeBase : path6;
+  const resolutionBase = shouldResolveOnCwd ? cwd() : dynamicIdScope ? scopeBase : path7;
   const resolvedPath = resolve2(resolutionBase, $ref.$ref);
   const withoutHash = stripHash(resolvedPath);
   const ref = $refs._get$Ref(withoutHash);
@@ -54046,8 +54056,8 @@ async function resolve$Ref($ref, path6, scopeBase, dynamicIdScope, $refs, option
       throw err;
     }
     if ($refs._$refs[withoutHash]) {
-      err.source = decodeURI(stripHash(path6));
-      err.path = safePointerToPath(getHash(path6));
+      err.source = decodeURI(stripHash(path7));
+      err.path = safePointerToPath(getHash(path7));
     }
     return [];
   }
@@ -54066,14 +54076,14 @@ function bundle(parser, options) {
     fixRefsThroughRefs(inventory, parser.schema);
   }
 }
-function crawl2(parent, key, path6, scopeBase, dynamicIdScope, pathFromRoot, indirections, inventory, $refs, options) {
+function crawl2(parent, key, path7, scopeBase, dynamicIdScope, pathFromRoot, indirections, inventory, $refs, options) {
   const obj = key === null ? parent : parent[key];
   const bundleOptions = options.bundle || {};
   const isExcludedPath = bundleOptions.excludedPathMatcher || (() => false);
   if (obj && typeof obj === "object" && !ArrayBuffer.isView(obj) && !isExcludedPath(pathFromRoot)) {
     const currentScopeBase = scopeBase;
     if (ref_default.isAllowed$Ref(obj)) {
-      inventory$Ref(parent, key, path6, currentScopeBase, dynamicIdScope, pathFromRoot, indirections, inventory, $refs, options);
+      inventory$Ref(parent, key, path7, currentScopeBase, dynamicIdScope, pathFromRoot, indirections, inventory, $refs, options);
     } else {
       const keys = Object.keys(obj).sort((a, b) => {
         if (a === "definitions" || a === "$defs") {
@@ -54085,7 +54095,7 @@ function crawl2(parent, key, path6, scopeBase, dynamicIdScope, pathFromRoot, ind
         }
       });
       for (const key2 of keys) {
-        const keyPath = pointer_default.join(path6, key2);
+        const keyPath = pointer_default.join(path7, key2);
         const keyPathFromRoot = pointer_default.join(pathFromRoot, key2);
         const value = obj[key2];
         const childScopeBase = dynamicIdScope && value && typeof value === "object" && !ArrayBuffer.isView(value) ? getSchemaBasePath(currentScopeBase, value) : currentScopeBase;
@@ -54103,9 +54113,9 @@ function crawl2(parent, key, path6, scopeBase, dynamicIdScope, pathFromRoot, ind
     }
   }
 }
-function inventory$Ref($refParent, $refKey, path6, scopeBase, dynamicIdScope, pathFromRoot, indirections, inventory, $refs, options) {
+function inventory$Ref($refParent, $refKey, path7, scopeBase, dynamicIdScope, pathFromRoot, indirections, inventory, $refs, options) {
   const $ref = $refKey === null ? $refParent : $refParent[$refKey];
-  const $refPath = resolve2(dynamicIdScope ? scopeBase : path6, $ref.$ref);
+  const $refPath = resolve2(dynamicIdScope ? scopeBase : path7, $ref.$ref);
   const pointer = $refs._resolve($refPath, pathFromRoot, options);
   if (pointer === null) {
     return;
@@ -54265,11 +54275,11 @@ function resolvePathThroughRefs(schema2, refPath) {
   const result = "#/" + resolvedSegments.join("/");
   return result;
 }
-function walkPath(schema2, path6) {
-  if (!path6.startsWith("#/")) {
+function walkPath(schema2, path7) {
+  if (!path7.startsWith("#/")) {
     return void 0;
   }
-  const segments2 = path6.slice(2).split("/");
+  const segments2 = path7.slice(2).split("/");
   let current = schema2;
   for (const seg of segments2) {
     if (current === null || current === void 0 || typeof current !== "object") {
@@ -54305,7 +54315,7 @@ function dereference(parser, options) {
   parser.$refs.circular = dereferenced.circular;
   parser.schema = dereferenced.value;
 }
-function crawl3(obj, path6, scopeBase, dynamicIdScope, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime, depth) {
+function crawl3(obj, path7, scopeBase, dynamicIdScope, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime, depth) {
   let dereferenced;
   const result = {
     value: obj,
@@ -54324,13 +54334,13 @@ function crawl3(obj, path6, scopeBase, dynamicIdScope, pathFromRoot, parents, pr
       processedObjects.add(obj);
       const currentScopeBase = scopeBase;
       if (ref_default.isAllowed$Ref(obj, options)) {
-        dereferenced = dereference$Ref(obj, path6, currentScopeBase, dynamicIdScope, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime, depth);
+        dereferenced = dereference$Ref(obj, path7, currentScopeBase, dynamicIdScope, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime, depth);
         result.circular = dereferenced.circular;
         result.value = dereferenced.value;
       } else {
         for (const key of Object.keys(obj)) {
           checkDereferenceTimeout(startTime, options);
-          const keyPath = pointer_default.join(path6, key);
+          const keyPath = pointer_default.join(path7, key);
           const keyPathFromRoot = pointer_default.join(pathFromRoot, key);
           if (isExcludedPath(keyPathFromRoot)) {
             continue;
@@ -54385,10 +54395,10 @@ function crawl3(obj, path6, scopeBase, dynamicIdScope, pathFromRoot, parents, pr
   }
   return result;
 }
-function dereference$Ref($ref, path6, scopeBase, dynamicIdScope, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime, depth) {
+function dereference$Ref($ref, path7, scopeBase, dynamicIdScope, pathFromRoot, parents, processedObjects, dereferencedCache, $refs, options, startTime, depth) {
   const isExternalRef = ref_default.isExternal$Ref($ref);
   const shouldResolveOnCwd = isExternalRef && options?.dereference?.externalReferenceResolution === "root";
-  const resolutionBase = shouldResolveOnCwd ? cwd() : dynamicIdScope ? scopeBase : path6;
+  const resolutionBase = shouldResolveOnCwd ? cwd() : dynamicIdScope ? scopeBase : path7;
   const $refPath = resolve2(resolutionBase, $ref.$ref);
   const cache = dereferencedCache.get($refPath);
   if (cache) {
@@ -54410,16 +54420,16 @@ function dereference$Ref($ref, path6, scopeBase, dynamicIdScope, pathFromRoot, p
     }
     if (typeof cache.value === "object" && "$ref" in cache.value && "$ref" in $ref) {
       if (cache.value.$ref === $ref.$ref) {
-        foundCircularReference(path6, $refs, options);
+        foundCircularReference(path7, $refs, options);
         return cache;
       } else {
       }
     } else {
-      foundCircularReference(path6, $refs, options);
+      foundCircularReference(path7, $refs, options);
       return cache;
     }
   }
-  const pointer = $refs._resolve($refPath, path6, options);
+  const pointer = $refs._resolve($refPath, path7, options);
   if (pointer === null) {
     return {
       circular: false,
@@ -54429,7 +54439,7 @@ function dereference$Ref($ref, path6, scopeBase, dynamicIdScope, pathFromRoot, p
   const directCircular = pointer.circular;
   let circular = directCircular || parents.has(pointer.value);
   if (circular) {
-    foundCircularReference(path6, $refs, options);
+    foundCircularReference(path7, $refs, options);
   }
   let dereferencedValue = ref_default.dereference($ref, pointer.value, options);
   if (!circular) {
@@ -60837,7 +60847,7 @@ function hasInvalidPaths(api) {
   if (!api.paths || typeof api.paths !== "object" || Array.isArray(api.paths)) {
     return false;
   }
-  return Object.keys(api.paths).some((path6) => !path6.startsWith("/"));
+  return Object.keys(api.paths).some((path7) => !path7.startsWith("/"));
 }
 function reduceAjvErrors(errors) {
   const flattened = /* @__PURE__ */ new Map();
@@ -60922,7 +60932,7 @@ function validateSchema(api, options = {}, suppressedInstancePaths = []) {
   }
   let additionalErrors = 0;
   let reducedErrors = reduceAjvErrors(ajv.errors).filter((err) => {
-    return !suppressedInstancePaths.some((path6) => err.instancePath === path6 || err.instancePath.startsWith(`${path6}/`));
+    return !suppressedInstancePaths.some((path7) => err.instancePath === path7 || err.instancePath.startsWith(`${path7}/`));
   });
   if (!reducedErrors.length) {
     return { valid: true, warnings: [], specification: specificationName };
@@ -60973,9 +60983,9 @@ var SpecificationValidator = class {
   reportWarning(message) {
     this.warnings.push({ message });
   }
-  flagInstancePath(path6) {
-    if (!this.flaggedInstancePaths.includes(path6)) {
-      this.flaggedInstancePaths.push(path6);
+  flagInstancePath(path7) {
+    if (!this.flaggedInstancePaths.includes(path7)) {
+      this.flaggedInstancePaths.push(path7);
     }
   }
 };
@@ -60993,10 +61003,10 @@ var OpenAPISpecificationValidator = class extends SpecificationValidator {
   run() {
     const operationIds = [];
     Object.keys(this.api.paths || {}).forEach((pathName) => {
-      const path6 = this.api.paths[pathName];
+      const path7 = this.api.paths[pathName];
       const pathId = `/paths${pathName}`;
-      if (path6 && pathName.startsWith("/")) {
-        this.validatePath(path6, pathId, operationIds);
+      if (path7 && pathName.startsWith("/")) {
+        this.validatePath(path7, pathId, operationIds);
       }
     });
     if (isOpenAPI30(this.api)) {
@@ -61025,9 +61035,9 @@ var OpenAPISpecificationValidator = class extends SpecificationValidator {
    * Validates the given path.
    *
    */
-  validatePath(path6, pathId, operationIds) {
+  validatePath(path7, pathId, operationIds) {
     supportedHTTPMethods.forEach((operationName) => {
-      const operation = path6[operationName];
+      const operation = path7[operationName];
       const operationId = `${pathId}/${operationName}`;
       if (operation) {
         const declaredOperationId = operation.operationId;
@@ -61040,7 +61050,7 @@ var OpenAPISpecificationValidator = class extends SpecificationValidator {
             this.reportError(`The operationId \`${declaredOperationId}\` is duplicated and must be made unique.`);
           }
         }
-        this.validateParameters(path6, pathId, operation, operationId);
+        this.validateParameters(path7, pathId, operation, operationId);
         Object.keys(operation.responses || {}).forEach((responseCode) => {
           const response = operation.responses[responseCode];
           const responseId = `${operationId}/responses/${responseCode}`;
@@ -61055,8 +61065,8 @@ var OpenAPISpecificationValidator = class extends SpecificationValidator {
    * Validates the parameters for the given operation.
    *
    */
-  validateParameters(path6, pathId, operation, operationId) {
-    const pathParams = path6.parameters || [];
+  validateParameters(path7, pathId, operation, operationId) {
+    const pathParams = path7.parameters || [];
     const operationParams = operation.parameters || [];
     this.checkForDuplicates(pathParams, pathId);
     this.checkForDuplicates(operationParams, operationId);
@@ -61355,10 +61365,10 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
   run() {
     const operationIds = [];
     Object.keys(this.api.paths || {}).forEach((pathName) => {
-      const path6 = this.api.paths[pathName];
+      const path7 = this.api.paths[pathName];
       const pathId = `/paths${pathName}`;
-      if (path6 && pathName.startsWith("/")) {
-        this.validatePath(path6, pathId, operationIds);
+      if (path7 && pathName.startsWith("/")) {
+        this.validatePath(path7, pathId, operationIds);
       }
     });
     Object.keys(this.api.definitions || {}).forEach((definitionName) => {
@@ -61376,9 +61386,9 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
    * Validates the given path.
    *
    */
-  validatePath(path6, pathId, operationIds) {
+  validatePath(path7, pathId, operationIds) {
     swaggerHTTPMethods.forEach((operationName) => {
-      const operation = path6[operationName];
+      const operation = path7[operationName];
       const operationId = `${pathId}/${operationName}`;
       if (operation) {
         const declaredOperationId = operation.operationId;
@@ -61391,7 +61401,7 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
             this.reportError(`The operationId \`${declaredOperationId}\` is duplicated and must be made unique.`);
           }
         }
-        this.validateParameters(path6, pathId, operation, operationId);
+        this.validateParameters(path7, pathId, operation, operationId);
         Object.keys(operation.responses || {}).forEach((responseName) => {
           const response = operation.responses[responseName];
           if ("$ref" in response || !response) {
@@ -61407,8 +61417,8 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
    * Validates the parameters for the given operation.
    *
    */
-  validateParameters(path6, pathId, operation, operationId) {
-    const pathParams = (path6.parameters || []).filter((param) => !("$ref" in param));
+  validateParameters(path7, pathId, operation, operationId) {
+    const pathParams = (path7.parameters || []).filter((param) => !("$ref" in param));
     const operationParams = (operation.parameters || []).filter(
       (param) => !("$ref" in param)
     );
@@ -61878,7 +61888,7 @@ function collectExternalRefs(node, baseUrl, refs) {
   }
 }
 async function prefetchExternalRefs(content, baseUrl, fetchText, options, budget, visited, depth) {
-  const maxDepth = options.maxDepth ?? 20;
+  const maxDepth = options.maxDepth ?? SAFE_FETCH_LIMITS.maxDepth;
   if (depth > maxDepth) {
     throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
   }
@@ -61940,30 +61950,26 @@ async function bundleSpec(baseUrl, document, options) {
   });
   return bundled;
 }
-async function loadOpenApiContractSpec(specUrl, options = {}) {
-  const budget = options.budget ?? { refs: 0, totalBytes: 0 };
+function createCachedFetchText(options) {
   const baseFetchText = options.fetchText ?? safeFetchText;
   const cache = /* @__PURE__ */ new Map();
-  const fetchText = async (url, fetchOptions) => {
+  return async (url, fetchOptions) => {
     const key = resourceUrl(url);
     const cached = cache.get(key);
     if (cached !== void 0) return cached;
-    const text = await retry(
-      () => baseFetchText(key, fetchOptions),
-      {
-        maxAttempts: 3,
-        delayMs: 3e3,
-        shouldRetry: (error2) => classifySafeFetchRetryability(error2) === "retryable"
-      }
-    );
+    const text = await retry(() => baseFetchText(key, fetchOptions), {
+      maxAttempts: 3,
+      delayMs: 3e3,
+      shouldRetry: (error2) => classifySafeFetchRetryability(error2) === "retryable"
+    });
     cache.set(key, text);
     return text;
   };
-  const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
+}
+async function buildLoadedSpec(content, baseRef, options, fetchText, budget) {
   const document = parseOpenApiDocument(content);
   const version = detectOpenApiVersion2(document);
-  await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, /* @__PURE__ */ new Set([resourceUrl(specUrl)]), 0);
-  const bundledDocument = await bundleSpec(specUrl, document, { ...options, budget, fetchText });
+  const bundledDocument = await bundleSpec(baseRef, document, { ...options, budget, fetchText });
   const validation = await validate(bundledDocument, {
     resolve: { external: false, file: false },
     dereference: { circular: "ignore" },
@@ -61972,14 +61978,75 @@ async function loadOpenApiContractSpec(specUrl, options = {}) {
   if (!validation.valid) {
     throw new Error(`CONTRACT_SPEC_VALIDATION_FAILED: ${compileErrors(validation)}`);
   }
-  const contractIndex = buildContractIndex(bundledDocument);
   return {
     bundledContent: serializeOpenApiDocument(bundledDocument),
     bundledDocument,
-    contractIndex,
+    contractIndex: buildContractIndex(bundledDocument),
     content,
     version
   };
+}
+async function loadOpenApiContractSpec(specUrl, options = {}) {
+  const budget = options.budget ?? { refs: 0, totalBytes: 0 };
+  const fetchText = createCachedFetchText(options);
+  const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
+  detectOpenApiVersion2(parseOpenApiDocument(content));
+  await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, /* @__PURE__ */ new Set([resourceUrl(specUrl)]), 0);
+  return buildLoadedSpec(content, specUrl, options, fetchText, budget);
+}
+async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
+  if (!specPath) throw new Error("CONTRACT_SPEC_READ_FAILED: spec-path must not be empty");
+  const workspaceRoot = (() => {
+    const root = import_node_path.default.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+    try {
+      return (0, import_node_fs.realpathSync)(root);
+    } catch {
+      return root;
+    }
+  })();
+  const resolved = import_node_path.default.resolve(workspaceRoot, specPath);
+  let absolutePath;
+  try {
+    absolutePath = (0, import_node_fs.realpathSync)(resolved);
+  } catch (error2) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error2 });
+  }
+  const rel = import_node_path.default.relative(workspaceRoot, absolutePath);
+  if (!rel || rel.startsWith("..") || import_node_path.default.isAbsolute(rel)) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: spec-path must resolve inside ${workspaceRoot}, got: ${specPath}`);
+  }
+  const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
+  const maxTotalBytes = options.maxTotalBytes ?? SAFE_FETCH_LIMITS.maxTotalBytes;
+  let onDiskBytes;
+  try {
+    onDiskBytes = (await (0, import_promises2.stat)(absolutePath)).size;
+  } catch (error2) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error2 });
+  }
+  if (onDiskBytes > maxBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
+  }
+  const budget = options.budget ?? { refs: 0, totalBytes: 0 };
+  if (budget.totalBytes + onDiskBytes > maxTotalBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resources exceeded ${maxTotalBytes} total bytes`);
+  }
+  let content;
+  try {
+    content = await (0, import_promises2.readFile)(absolutePath, "utf8");
+  } catch (error2) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error2 });
+  }
+  const bytes = Buffer.byteLength(content, "utf8");
+  if (bytes > maxBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
+  }
+  budget.refs += 1;
+  budget.totalBytes += bytes;
+  detectOpenApiVersion2(parseOpenApiDocument(content));
+  const fetchText = createCachedFetchText(options);
+  const baseRef = (0, import_node_url2.pathToFileURL)(absolutePath).toString();
+  await prefetchExternalRefs(content, baseRef, fetchText, options, budget, /* @__PURE__ */ new Set([baseRef]), 0);
+  return buildLoadedSpec(content, baseRef, options, fetchText, budget);
 }
 
 // src/index.ts
@@ -62093,6 +62160,10 @@ function resolveInputs(env = process.env) {
     );
   }
   const specUrl = getInput2("spec-url", env) ?? "";
+  const specPath = getInput2("spec-path", env) ?? "";
+  if (specUrl && specPath) {
+    throw new Error("Provide either spec-url or spec-path, not both.");
+  }
   if (specUrl) {
     try {
       const parsedUrl = new URL(specUrl);
@@ -62126,6 +62197,7 @@ function resolveInputs(env = process.env) {
     repoUrl: repoContext.repoUrl || "",
     repoSlug: repoContext.repoSlug || "",
     specUrl,
+    specPath,
     openapiVersion: resolveOpenapiVersion(getInput2("openapi-version", env)),
     governanceMappingJson: parseGovernanceMappingJson(getInput2("governance-mapping-json", env)),
     postmanApiKey: getInput2("postman-api-key", env) ?? "",
@@ -62172,7 +62244,14 @@ function createPlannedOutputs(inputs) {
 }
 function readActionInputs(actionCore) {
   const projectName = requireInput(actionCore, "project-name");
-  const specUrl = requireInput(actionCore, "spec-url");
+  const specUrl = optionalInput(actionCore, "spec-url") ?? "";
+  const specPath = optionalInput(actionCore, "spec-path") ?? "";
+  if (!specUrl && !specPath) {
+    throw new Error("One of spec-url or spec-path is required");
+  }
+  if (specUrl && specPath) {
+    throw new Error("Provide either spec-url or spec-path, not both.");
+  }
   const postmanApiKey = requireInput(actionCore, "postman-api-key");
   const postmanAccessToken = optionalInput(actionCore, "postman-access-token");
   const githubToken = optionalInput(actionCore, "github-token") || process.env.GITHUB_TOKEN;
@@ -62205,6 +62284,7 @@ function readActionInputs(actionCore) {
     INPUT_TEAM_ID: process.env.POSTMAN_TEAM_ID,
     INPUT_REPO_URL: optionalInput(actionCore, "repo-url"),
     INPUT_SPEC_URL: specUrl,
+    INPUT_SPEC_PATH: specPath,
     INPUT_GOVERNANCE_MAPPING_JSON: optionalInput(actionCore, "governance-mapping-json") ?? openAlphaActionContract.inputs["governance-mapping-json"].default,
     INPUT_POSTMAN_API_KEY: postmanApiKey,
     INPUT_POSTMAN_ACCESS_TOKEN: postmanAccessToken,
@@ -62359,7 +62439,7 @@ function createAssetProjectName(inputs, releaseLabel) {
 }
 function readResourcesState() {
   try {
-    return (0, import_yaml3.parse)((0, import_node_fs.readFileSync)(".postman/resources.yaml", "utf8"));
+    return (0, import_yaml3.parse)((0, import_node_fs2.readFileSync)(".postman/resources.yaml", "utf8"));
   } catch {
     return null;
   }
@@ -62509,9 +62589,10 @@ async function runBootstrap(inputs, dependencies) {
     dependencies.core,
     "Preflight OpenAPI Contract",
     async () => {
-      const loaded = await loadOpenApiContractSpec(inputs.specUrl, {
+      const loaderOptions = {
         fetchText: dependencies.specFetcher === fetch ? void 0 : async (url) => fetchSpecDocument(url, dependencies.specFetcher)
-      });
+      };
+      const loaded = inputs.specPath ? await loadOpenApiContractSpecFromPath(inputs.specPath, loaderOptions) : await loadOpenApiContractSpec(inputs.specUrl, loaderOptions);
       const document = normalizeSpecDocument(
         loaded.bundledContent,
         (msg) => dependencies.core.warning(msg)
@@ -62762,7 +62843,8 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     smoke: smokeCollectionId
   });
   if (specId) {
-    dependencies.core.info(`Updating existing spec ${specId} from ${sanitizeUrlForLog(inputs.specUrl)}`);
+    const specSource = inputs.specPath ? `path ${inputs.specPath}` : sanitizeUrlForLog(inputs.specUrl);
+    dependencies.core.info(`Updating existing spec ${specId} from ${specSource}`);
   }
   const isSpecUpdate = Boolean(specId);
   let rollbackTriggerStage = "Post-update bootstrap";

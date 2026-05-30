@@ -94,7 +94,14 @@ export function matchOperation(
     .filter((operation) => operation.method === method)
     .flatMap((operation) => operation.candidates.map((candidate) => ({ operation, score: matchCandidate(candidate, path), serverFull: candidate !== normalizePath(operation.path) })))
     .filter((entry) => entry.score.matched)
-    .map((entry) => ({ operation: entry.operation, score: [entry.serverFull ? 2 : 1, entry.score.staticCount, -entry.score.templateCount] as const }))
+    // Rank exact literal matches above server-prefixed template matches: a
+    // candidate that matches more path segments verbatim is always a stronger
+    // signal than one that relies on a {serverVariable} placeholder. The old
+    // order (serverFull first) caused /otp/login to match `POST /login` via
+    // `/{serverVariable}/login` instead of the exact `/otp/login` candidate
+    // of `POST /otp/login`, surfacing as CONTRACT_DUPLICATE_OPERATION_REQUEST
+    // whenever a spec had both `/foo` and `/bar/foo` for the same HTTP method.
+    .map((entry) => ({ operation: entry.operation, score: [entry.score.staticCount, entry.serverFull ? 2 : 1, -entry.score.templateCount] as const }))
     .sort((a, b) => {
       for (let index = 0; index < a.score.length; index += 1) {
         const delta = b.score[index] - a.score[index];

@@ -1,10 +1,21 @@
+import { realpathSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+
 import $RefParser from '@apidevtools/json-schema-ref-parser';
 import { compileErrors, validate as validateOpenApi } from '@readme/openapi-parser';
 import { parse } from 'yaml';
 
 import { retry } from '../retry.js';
 import { buildContractIndex, type ContractIndex } from './contract-index.js';
-import { classifySafeFetchRetryability, safeFetchText, type SafeFetchBudget, type SafeFetchOptions } from './safe-spec-fetch.js';
+import {
+  SAFE_FETCH_LIMITS,
+  classifySafeFetchRetryability,
+  safeFetchText,
+  type SafeFetchBudget,
+  type SafeFetchOptions
+} from './safe-spec-fetch.js';
 import type { OpenApiVersion } from './schema-pack.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -89,7 +100,7 @@ async function prefetchExternalRefs(
   visited: Set<string>,
   depth: number
 ): Promise<void> {
-  const maxDepth = options.maxDepth ?? 20;
+  const maxDepth = options.maxDepth ?? SAFE_FETCH_LIMITS.maxDepth;
   if (depth > maxDepth) {
     throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
   }
@@ -101,6 +112,8 @@ async function prefetchExternalRefs(
       throw new Error(`CONTRACT_REF_DEPTH_EXCEEDED: OpenAPI ref depth exceeded ${maxDepth}`);
     }
     visited.add(refUrl);
+    // Non-HTTPS refs (file://, http://, ...) are rejected by safeFetchText
+    // with CONTRACT_SPEC_FETCH_BLOCKED, matching the URL-loader contract.
     const refContent = await fetchText(refUrl, { ...options, budget, depth: depth + 1 });
     await prefetchExternalRefs(refContent, refUrl, fetchText, options, budget, visited, depth + 1);
   }
@@ -155,33 +168,35 @@ async function bundleSpec(baseUrl: string, document: JsonRecord, options: OpenAp
   return bundled;
 }
 
-export async function loadOpenApiContractSpec(
-  specUrl: string,
-  options: OpenApiLoaderOptions = {}
-): Promise<LoadedOpenApiContractSpec> {
-  const budget = options.budget ?? { refs: 0, totalBytes: 0 };
+function createCachedFetchText(
+  options: OpenApiLoaderOptions
+): (url: string, fetchOptions: SafeFetchOptions) => Promise<string> {
   const baseFetchText = options.fetchText ?? safeFetchText;
   const cache = new Map<string, string>();
-  const fetchText = async (url: string, fetchOptions: SafeFetchOptions): Promise<string> => {
+  return async (url, fetchOptions) => {
     const key = resourceUrl(url);
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
-    const text = await retry(
-      () => baseFetchText(key, fetchOptions),
-      {
-        maxAttempts: 3,
-        delayMs: 3000,
-        shouldRetry: (error) => classifySafeFetchRetryability(error) === 'retryable'
-      }
-    );
+    const text = await retry(() => baseFetchText(key, fetchOptions), {
+      maxAttempts: 3,
+      delayMs: 3000,
+      shouldRetry: (error) => classifySafeFetchRetryability(error) === 'retryable'
+    });
     cache.set(key, text);
     return text;
   };
-  const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
+}
+
+async function buildLoadedSpec(
+  content: string,
+  baseRef: string,
+  options: OpenApiLoaderOptions,
+  fetchText: (url: string, fetchOptions: SafeFetchOptions) => Promise<string>,
+  budget: SafeFetchBudget
+): Promise<LoadedOpenApiContractSpec> {
   const document = parseOpenApiDocument(content);
   const version = detectOpenApiVersion(document);
-  await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, new Set([resourceUrl(specUrl)]), 0);
-  const bundledDocument = await bundleSpec(specUrl, document, { ...options, budget, fetchText });
+  const bundledDocument = await bundleSpec(baseRef, document, { ...options, budget, fetchText });
   const validation = await validateOpenApi(bundledDocument as never, {
     resolve: { external: false, file: false },
     dereference: { circular: 'ignore' },
@@ -190,12 +205,97 @@ export async function loadOpenApiContractSpec(
   if (!validation.valid) {
     throw new Error(`CONTRACT_SPEC_VALIDATION_FAILED: ${compileErrors(validation)}`);
   }
-  const contractIndex = buildContractIndex(bundledDocument);
   return {
     bundledContent: serializeOpenApiDocument(bundledDocument),
     bundledDocument,
-    contractIndex,
+    contractIndex: buildContractIndex(bundledDocument),
     content,
     version
   };
+}
+
+export async function loadOpenApiContractSpec(
+  specUrl: string,
+  options: OpenApiLoaderOptions = {}
+): Promise<LoadedOpenApiContractSpec> {
+  const budget = options.budget ?? { refs: 0, totalBytes: 0 };
+  const fetchText = createCachedFetchText(options);
+  const content = await fetchText(specUrl, { ...options, budget, depth: 0 });
+  // Validate the root before chasing $refs so a malformed or unsupported
+  // root spec surfaces CONTRACT_SPEC_PARSE_FAILED / CONTRACT_UNSUPPORTED_OPENAPI_VERSION
+  // rather than a downstream ref-fetch error.
+  detectOpenApiVersion(parseOpenApiDocument(content));
+  await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, new Set([resourceUrl(specUrl)]), 0);
+  return buildLoadedSpec(content, specUrl, options, fetchText, budget);
+}
+
+// spec-path is just "spec-url, but the bytes are already on disk in the
+// checked-out workspace". The on-the-wire safety machinery (DNS pinning,
+// SSRF guards, redirect caps) is unnecessary for a trusted local file; we
+// only need to (a) keep the read inside the workspace and (b) cap its
+// size. Any HTTPS $refs inside the spec still flow through the URL
+// hardening via prefetchExternalRefs + bundleSpec.
+export async function loadOpenApiContractSpecFromPath(
+  specPath: string,
+  options: OpenApiLoaderOptions = {}
+): Promise<LoadedOpenApiContractSpec> {
+  if (!specPath) throw new Error('CONTRACT_SPEC_READ_FAILED: spec-path must not be empty');
+
+  const workspaceRoot = (() => {
+    const root = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+    try { return realpathSync(root); } catch { return root; }
+  })();
+  const resolved = path.resolve(workspaceRoot, specPath);
+  let absolutePath: string;
+  try {
+    absolutePath = realpathSync(resolved);
+  } catch (error) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error });
+  }
+  const rel = path.relative(workspaceRoot, absolutePath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: spec-path must resolve inside ${workspaceRoot}, got: ${specPath}`);
+  }
+
+  // Gate on stat() before readFile so a 1GB checked-in file can't OOM us
+  // between the read and the limit check.
+  const maxBytes = options.maxBytesPerResource ?? SAFE_FETCH_LIMITS.maxBytesPerResource;
+  const maxTotalBytes = options.maxTotalBytes ?? SAFE_FETCH_LIMITS.maxTotalBytes;
+  let onDiskBytes: number;
+  try {
+    onDiskBytes = (await stat(absolutePath)).size;
+  } catch (error) {
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error });
+  }
+  if (onDiskBytes > maxBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
+  }
+  const budget: SafeFetchBudget = options.budget ?? { refs: 0, totalBytes: 0 };
+  if (budget.totalBytes + onDiskBytes > maxTotalBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resources exceeded ${maxTotalBytes} total bytes`);
+  }
+
+  let content: string;
+  try {
+    content = await readFile(absolutePath, 'utf8');
+  } catch (error) {
+    // Directory targets, permission denied, EISDIR, etc. surface the same
+    // contract error as a missing file so callers get an actionable code.
+    throw new Error(`CONTRACT_SPEC_READ_FAILED: Unable to read spec at ${specPath}`, { cause: error });
+  }
+  const bytes = Buffer.byteLength(content, 'utf8');
+  if (bytes > maxBytes) {
+    throw new Error(`CONTRACT_REF_SIZE_EXCEEDED: OpenAPI resource exceeded ${maxBytes} bytes`);
+  }
+  budget.refs += 1;
+  budget.totalBytes += bytes;
+
+  // Same root-first validation as the URL loader: reject parse/version
+  // failures before doing any network work for HTTPS $refs.
+  detectOpenApiVersion(parseOpenApiDocument(content));
+
+  const fetchText = createCachedFetchText(options);
+  const baseRef = pathToFileURL(absolutePath).toString();
+  await prefetchExternalRefs(content, baseRef, fetchText, options, budget, new Set([baseRef]), 0);
+  return buildLoadedSpec(content, baseRef, options, fetchText, budget);
 }

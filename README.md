@@ -124,6 +124,21 @@ This runs in `src/index.ts` before upload. If nothing under `paths` needs changi
 
 The root `spec-url` must be HTTPS and is fetched with pinned DNS resolution. The action blocks credential-bearing URLs, localhost/private/link-local/internal destinations, unsafe redirects, DNS rebinding attempts, and oversized OpenAPI resources before uploading content to Spec Hub. Root fetches are capped at 25 MiB, and fetch errors redact URL credentials, query strings, and fragments before logging.
 
+### Loading the spec from the workspace (`spec-path`)
+
+For Git-first workflows the spec is usually checked into the same repo that runs the action, so an HTTPS URL is redundant (or impossible without making the repo public). Pass `spec-path` instead of `spec-url` to read the document directly from the checked-out workspace:
+
+```yaml
+- uses: actions/checkout@v5
+- uses: postman-cs/postman-bootstrap-action@v0
+  with:
+    project-name: core-payments
+    spec-path: apis/core-payments/openapi.yaml
+    postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
+```
+
+Only one of `spec-url` or `spec-path` may be set. When `spec-path` is used the action reads the file from disk, skips the URL-safety machinery, and still resolves any external HTTPS `$ref`s through the same hardened fetcher. Local-file `$ref`s are not followed.
+
 ## Usage
 
 ```yaml
@@ -214,6 +229,7 @@ Rollback behavior:
 | `CONTRACT_REF_DEPTH_EXCEEDED` | Ref nesting exceeded the configured limit. | Flatten recursive/deep ref chains. |
 | `CONTRACT_REF_SIZE_EXCEEDED` | A fetched resource or total fetched bytes exceeded limits. | Reduce spec/ref size or pre-bundle the document. |
 | `CONTRACT_SPEC_PARSE_FAILED` | The fetched document was not valid JSON/YAML object content. | Fix the source document syntax. |
+| `CONTRACT_SPEC_READ_FAILED` | The `spec-path` file could not be read from the workspace. | Verify the file exists at the configured path and that the workflow checked out the branch that contains it. |
 | `CONTRACT_SPEC_VALIDATION_FAILED` | The bundled document failed OpenAPI validation. | Fix OpenAPI validation errors. |
 | `CONTRACT_UNSUPPORTED_OPENAPI_VERSION` | The document was not OpenAPI 3.0 or 3.1. | Provide an OpenAPI 3.0/3.1 document. |
 | `CONTRACT_NO_ELIGIBLE_OPERATIONS` | No eligible `paths` operations with responses were found. | Add path operations with responses. |
@@ -327,10 +343,12 @@ steps:
 | `requester-email` | | Optional user invited into the workspace. |
 | `workspace-admin-user-ids` | | Comma-separated Postman user IDs to grant admin access. |
 | `workspace-team-id` | | Numeric sub-team ID for org-mode workspace creation. Required when the API key belongs to an org with multiple sub-teams. |
-| `spec-url` | | Required registry-backed OpenAPI document URL. |
+| `spec-url` | | HTTPS URL to the OpenAPI document. Provide either `spec-url` or `spec-path`. |
+| `spec-path` | | Local filesystem path to the OpenAPI document, relative to the checked-out workspace (e.g. `apis/identity/openapi.yaml`). Use this when the spec lives in the repo and you don't want to host it over HTTPS. Provide either `spec-url` or `spec-path`. |
 | `governance-group` | | Postman governance group name. Overrides the `postman-governance-group` repository custom property and legacy domain mapping. |
 | `governance-mapping-json` | `{}` | Legacy fallback map of `domain` value to Postman governance group name. Prefer the repository custom property or `governance-group`. |
 | `github-token` | | GitHub token used to read the `postman-governance-group` repository custom property. |
+| `gh-fallback-token` | | Fallback GitHub token used to read repository custom properties when `github-token` cannot. |
 | `postman-api-key` | | Required for all Postman asset operations. |
 | `postman-access-token` | | Required for governance assignment, cloud spec-to-collection syncing, and canonical workspace validation during reruns. |
 | `integration-backend` | `bifrost` | Current public open-alpha backend. |

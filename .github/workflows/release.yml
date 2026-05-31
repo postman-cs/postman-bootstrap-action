@@ -5,14 +5,22 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      e2e_failure_injection:
+        description: 'Internal release-gate test hook. Use pre_live_fail to prove publish is blocked before live e2e work.'
+        required: false
+        type: string
 
 permissions:
   contents: write
   id-token: write
 
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
+    outputs:
+      npm_publish: ${{ steps.release_tag.outputs.npm_publish }}
+      gate_required: ${{ steps.release_tag.outputs.gate_required }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -49,12 +57,14 @@ jobs:
           for PUBLISH_TAG in "${PUBLISH_TAGS[@]}"; do
             if [ "$TAG_VERSION" = "$PUBLISH_TAG" ]; then
               echo "npm_publish=true" >> "$GITHUB_OUTPUT"
+              echo "gate_required=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           done
           if [ "$TAG_VERSION" = "0" ]; then
             echo "npm_publish=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Tag v$TAG_VERSION is the rolling customer preview alias for package version $PKG_VERSION; skipping npm publish."
+            echo "gate_required=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tag v$TAG_VERSION is the rolling customer preview alias for package version $PKG_VERSION; skipping npm publish and live e2e gate."
             exit 0
           fi
           if [ "${#PUBLISH_TAGS[@]}" -eq 2 ]; then
@@ -64,18 +74,45 @@ jobs:
           fi
           echo "::error::Tag v$TAG_VERSION does not match package.json version $PKG_VERSION; expected $EXPECTED"
           exit 1
+
+  live-e2e-gate:
+    # Covered immutable release tags must pass the central live sandbox e2e before
+    # any public artifact (GitHub release, npm package, or tarball upload) is
+    # created. The central workflow owns live Postman credentials and serializes
+    # sandbox access; this repo only dispatches and waits for the correlated run.
+    needs: validate
+    if: ${{ needs.validate.outputs.gate_required == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Wait for postman-actions-e2e release gate
+        env:
+          E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
+          E2E_GATE_FAILURE_INJECTION: ${{ inputs.e2e_failure_injection || '' }}
+        run: node .github/scripts/wait-for-e2e-gate.mjs
+
+  publish:
+    needs:
+      - validate
+      - live-e2e-gate
+    if: ${{ always() && needs.validate.result == 'success' && (needs.validate.outputs.gate_required != 'true' || needs.live-e2e-gate.result == 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-      - uses: actions/setup-node@v5
-        if: steps.release_tag.outputs.npm_publish == 'true'
-        with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
       - name: Check npm package version
         id: npm_package
-        if: steps.release_tag.outputs.npm_publish == 'true'
+        if: needs.validate.outputs.npm_publish == 'true'
         run: |
           PKG_NAME=$(node -p "require('./package.json').name")
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -86,7 +123,7 @@ jobs:
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Publish to npm
-        if: steps.release_tag.outputs.npm_publish == 'true' && steps.npm_package.outputs.already_published != 'true'
+        if: needs.validate.outputs.npm_publish == 'true' && steps.npm_package.outputs.already_published != 'true'
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -98,34 +135,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: release.tgz
-
-  notify-e2e:
-    # Trigger the integration e2e (postman-cs/postman-actions-e2e) for this exact
-    # release. Runs only after a successful release, only on an immutable
-    # vMAJOR.MINOR.PATCH tag (never the rolling v0 / vMAJOR.MINOR aliases, so one
-    # release fires exactly one e2e run). Until E2E_DISPATCH_TOKEN is set this is
-    # a no-op; once set, dispatch failures fail the release workflow. The e2e
-    # checks THIS action out at the dispatched tag and siblings on main.
-    needs: release
-    runs-on: ubuntu-latest
-    env:
-      E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
-    steps:
-      - name: Dispatch action-released to postman-actions-e2e
-        if: ${{ env.E2E_DISPATCH_TOKEN != '' && startsWith(github.ref, 'refs/tags/v') }}
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::notice::Tag $TAG is an alias (not vX.Y.Z); skipping e2e dispatch."
-            exit 0
-          fi
-          ACTION="${GITHUB_REPOSITORY#*/}"
-          curl -sSf -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${E2E_DISPATCH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/postman-cs/postman-actions-e2e/dispatches" \
-            -d "$(jq -nc --arg action "$ACTION" --arg ref "$TAG" \
-              '{event_type:"action-released",client_payload:{action:$action,ref:$ref}}')"
-          echo "::notice::Dispatched action-released (action=$ACTION ref=$TAG) to postman-actions-e2e."

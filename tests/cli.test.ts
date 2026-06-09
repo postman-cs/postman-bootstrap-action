@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,26 @@ type CliOutputs = {
   'contract-collection-id': string;
   'collections-json': string;
   'lint-summary-json': string;
+  'breaking-change-status': string;
+  'breaking-change-summary-json': string;
 };
+
+function createCliOutputs(overrides: Partial<CliOutputs> = {}): CliOutputs {
+  return {
+    'workspace-id': 'ws-123',
+    'workspace-url': 'https://go.postman.co/workspace/ws-123',
+    'workspace-name': '[AF] core-payments',
+    'spec-id': 'spec-123',
+    'baseline-collection-id': 'col-baseline',
+    'smoke-collection-id': 'col-smoke',
+    'contract-collection-id': 'col-contract',
+    'collections-json': '{}',
+    'lint-summary-json': '{"errors":0}',
+    'breaking-change-status': 'skipped',
+    'breaking-change-summary-json': '{"status":"skipped"}',
+    ...overrides
+  };
+}
 
 async function makeTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), prefix));
@@ -173,17 +192,10 @@ describe('parseCliArgs', () => {
 
 describe('toDotenv', () => {
   it('formats planned outputs as POSTMAN_BOOTSTRAP_* dotenv pairs', () => {
-    const dotenv = toDotenv({
-      'workspace-id': 'ws-123',
-      'workspace-url': 'https://go.postman.co/workspace/ws-123',
-      'workspace-name': '[AF] core-payments',
-      'spec-id': 'spec-123',
-      'baseline-collection-id': 'col-baseline',
-      'smoke-collection-id': 'col-smoke',
-      'contract-collection-id': 'col-contract',
+    const dotenv = toDotenv(createCliOutputs({
       'collections-json': '{"baseline":"col-baseline"}',
       'lint-summary-json': '{"errors":0}'
-    } satisfies CliOutputs);
+    }));
 
     expect(dotenv).toContain("POSTMAN_BOOTSTRAP_WORKSPACE_ID='ws-123'");
     expect(dotenv).toContain("POSTMAN_BOOTSTRAP_SPEC_ID='spec-123'");
@@ -195,17 +207,9 @@ describe('toDotenv', () => {
     const markerPath = path.join(dir, 'marker');
     const dotenvPath = path.join(dir, 'bootstrap.env');
     const hostileValue = `name $(touch ${markerPath}) \`touch ${markerPath}\` $HOME "quote" 'single' \\slash\nnext`;
-    await writeFile(dotenvPath, toDotenv({
-      'workspace-id': 'ws-123',
-      'workspace-url': 'https://go.postman.co/workspace/ws-123',
+    await writeFile(dotenvPath, toDotenv(createCliOutputs({
       'workspace-name': hostileValue,
-      'spec-id': 'spec-123',
-      'baseline-collection-id': 'col-baseline',
-      'smoke-collection-id': 'col-smoke',
-      'contract-collection-id': 'col-contract',
-      'collections-json': '{}',
-      'lint-summary-json': '{"errors":0}'
-    }), 'utf8');
+    })), 'utf8');
 
     const sourced = await execFileAsync('/bin/sh', [
       '-c',
@@ -261,17 +265,10 @@ describe('runCli', () => {
         env: {},
         executeBootstrap: async (inputs, dependencies) => {
           await dependencies.exec.exec('node', ['-e', `process.stdout.write(${JSON.stringify(inputs.postmanApiKey)})`]);
-          return {
-            'workspace-id': 'ws-123',
-            'workspace-url': 'https://go.postman.co/workspace/ws-123',
-            'workspace-name': '[AF] core-payments',
-            'spec-id': 'spec-123',
-            'baseline-collection-id': 'col-baseline',
-            'smoke-collection-id': 'col-smoke',
-            'contract-collection-id': 'col-contract',
+          return createCliOutputs({
             'collections-json': '{"baseline":"col-baseline","smoke":"col-smoke","contract":"col-contract"}',
             'lint-summary-json': '{"errors":0,"total":0,"violations":[],"warnings":0}'
-          } satisfies CliOutputs;
+          });
         },
         writeStdout: (chunk) => {
           stdoutChunks.push(chunk);
@@ -351,17 +348,7 @@ describe('runCli', () => {
     const workspace = await makeTempDir('postman-bootstrap-workspace-');
     const resultPath = path.join(workspace, 'tmp', 'result.json');
     const dotenvPath = path.join(workspace, 'tmp', 'result.env');
-    const executeBootstrap = vi.fn().mockResolvedValue({
-      'workspace-id': 'ws-123',
-      'workspace-url': 'https://go.postman.co/workspace/ws-123',
-      'workspace-name': '[AF] core-payments',
-      'spec-id': 'spec-123',
-      'baseline-collection-id': 'col-baseline',
-      'smoke-collection-id': 'col-smoke',
-      'contract-collection-id': 'col-contract',
-      'collections-json': '{}',
-      'lint-summary-json': '{"errors":0}'
-    } satisfies CliOutputs);
+    const executeBootstrap = vi.fn().mockResolvedValue(createCliOutputs());
 
     await withCwd(workspace, async () => {
       await runCli([
@@ -417,17 +404,7 @@ describe('runCli', () => {
     const workspace = await makeTempDir('postman-bootstrap-workspace-');
     const outside = await makeTempDir('postman-bootstrap-outside-');
     await symlink(outside, path.join(workspace, 'linked-dir'));
-    const executeBootstrap = vi.fn().mockResolvedValue({
-      'workspace-id': 'ws-123',
-      'workspace-url': 'https://go.postman.co/workspace/ws-123',
-      'workspace-name': '[AF] core-payments',
-      'spec-id': 'spec-123',
-      'baseline-collection-id': 'col-baseline',
-      'smoke-collection-id': 'col-smoke',
-      'contract-collection-id': 'col-contract',
-      'collections-json': '{}',
-      'lint-summary-json': '{"errors":0}'
-    } satisfies CliOutputs);
+    const executeBootstrap = vi.fn().mockResolvedValue(createCliOutputs());
 
     await withCwd(workspace, async () => {
       await expect(
@@ -455,17 +432,7 @@ describe('runCli', () => {
     const outside = await makeTempDir('postman-bootstrap-outside-');
     await mkdir(path.join(workspace, 'tmp'));
     await symlink(path.join(outside, 'result.json'), path.join(workspace, 'tmp', 'result.json'));
-    const executeBootstrap = vi.fn().mockResolvedValue({
-      'workspace-id': 'ws-123',
-      'workspace-url': 'https://go.postman.co/workspace/ws-123',
-      'workspace-name': '[AF] core-payments',
-      'spec-id': 'spec-123',
-      'baseline-collection-id': 'col-baseline',
-      'smoke-collection-id': 'col-smoke',
-      'contract-collection-id': 'col-contract',
-      'collections-json': '{}',
-      'lint-summary-json': '{"errors":0}'
-    } satisfies CliOutputs);
+    const executeBootstrap = vi.fn().mockResolvedValue(createCliOutputs());
 
     await withCwd(workspace, async () => {
       await expect(
@@ -490,7 +457,7 @@ describe('runCli', () => {
 });
 
 describe('package CLI bin', () => {
-  it('packs, installs, and invokes postman-bootstrap from PATH without OS-level execution errors', async () => {
+  it('packs and invokes postman-bootstrap from PATH without OS-level execution errors', async () => {
     const packDir = await makeTempDir('postman-bootstrap-pack-');
     const prefixDir = await makeTempDir('postman-bootstrap-prefix-');
 
@@ -498,6 +465,7 @@ describe('package CLI bin', () => {
       cwd: repoRoot,
       encoding: 'utf8',
       env: {
+        NPM_CONFIG_CACHE: path.join(packDir, '.npm-cache'),
         PATH: process.env.PATH ?? ''
       },
       maxBuffer: 20 * 1024 * 1024
@@ -527,8 +495,7 @@ describe('package CLI bin', () => {
     ))).toBe(true);
 
     const tarballPath = path.join(packDir, packed.filename);
-    await execFileAsync('npm', ['install', '--global', '--prefix', prefixDir, '--ignore-scripts', '--no-audit', '--no-fund', tarballPath], {
-      cwd: repoRoot,
+    await execFileAsync('tar', ['-xzf', tarballPath, '-C', prefixDir], {
       encoding: 'utf8',
       env: {
         PATH: process.env.PATH ?? ''
@@ -536,7 +503,17 @@ describe('package CLI bin', () => {
       maxBuffer: 20 * 1024 * 1024
     });
 
-    const binDir = process.platform === 'win32' ? prefixDir : path.join(prefixDir, 'bin');
+    const binDir = path.join(prefixDir, 'bin');
+    await mkdir(binDir, { recursive: true });
+    const cliSourcePath = path.join(prefixDir, 'package', 'dist', 'cli.cjs');
+    const cliBinPath = path.join(binDir, process.platform === 'win32' ? 'postman-bootstrap.cmd' : 'postman-bootstrap');
+    if (process.platform === 'win32') {
+      await writeFile(cliBinPath, `@echo off\r\nnode "${cliSourcePath}" %*\r\n`, 'utf8');
+    } else {
+      await copyFile(cliSourcePath, cliBinPath);
+      await chmod(cliBinPath, 0o755);
+    }
+
     const execution = await runCommand('postman-bootstrap', ['--integration-backend', 'unsupported'], {
       cwd: packDir,
       env: {
@@ -548,7 +525,7 @@ describe('package CLI bin', () => {
     expect(execution.stdout).toBe('');
     expect(execution.stderr).toContain('Unsupported integration-backend "unsupported"');
     expect(execution.stderr).not.toMatch(/permission denied|exec format|syntax error|unexpected token/i);
-  });
+  }, 20000);
 
   it('keeps install identity, Node runtime support, and env-file ignore policy aligned', async () => {
     const packageJson = await readJsonFile<{

@@ -12,8 +12,9 @@ function namedStep(name: string): string {
 }
 
 function npmRegistrySetupStep(): string {
-  const match = releaseWorkflow.match(/ {6}- uses: actions\/setup-node@v5\n[\s\S]*?registry-url: 'https:\/\/registry\.npmjs\.org'\n/);
-  return match?.[0] ?? '';
+  return releaseWorkflow
+    .match(/ {6}- uses: actions\/setup-node@v5\n(?: {8}[^\n]+\n| {10}[^\n]+\n)*/g)
+    ?.find((step) => step.includes("registry-url: 'https://registry.npmjs.org'")) ?? '';
 }
 
 describe('release workflow publishing contract', () => {
@@ -32,11 +33,11 @@ describe('release workflow publishing contract', () => {
 
   it('keeps GitHub release artifacts while making npm publication idempotent', () => {
     expect(namedStep('Publish GitHub release')).not.toMatch(/\n\s+if:/);
-    expect(npmRegistrySetupStep()).toContain("if: steps.release_tag.outputs.npm_publish == 'true'");
+    expect(npmRegistrySetupStep()).not.toMatch(/\n\s+if:/);
     expect(namedStep('Check npm package version')).toContain('id: npm_package');
     expect(namedStep('Check npm package version')).toContain('npm view "$PKG_NAME@$PKG_VERSION" version');
     expect(namedStep('Check npm package version')).toContain('already_published=true');
-    expect(namedStep('Publish to npm')).toContain("if: steps.release_tag.outputs.npm_publish == 'true' && steps.npm_package.outputs.already_published != 'true'");
+    expect(namedStep('Publish to npm')).toContain("if: needs.validate.outputs.npm_publish == 'true' && steps.npm_package.outputs.already_published != 'true'");
     expect(namedStep('Attach npm tarball to release')).not.toMatch(/\n\s+if:/);
     expect(namedStep('Upload tarball')).not.toMatch(/\n\s+if:/);
   });

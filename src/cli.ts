@@ -102,6 +102,12 @@ const cliInputNames = [
   'workspace-team-id',
   'repo-url',
   'openapi-version',
+  'breaking-change-mode',
+  'breaking-baseline-spec-path',
+  'breaking-rules-path',
+  'breaking-target-ref',
+  'breaking-summary-path',
+  'breaking-log-path',
   'postman-stack'
 ] as const;
 

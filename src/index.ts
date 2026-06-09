@@ -9,6 +9,12 @@ import { customerPreviewActionContract } from './contracts.js';
 import { GitHubApiClient } from './lib/github/github-api-client.js';
 import { HttpError } from './lib/http-error.js';
 import {
+  createBreakingChangeSummaryJson,
+  runOpenApiBreakingChangeCheck,
+  type BreakingChangeMode,
+  type OpenApiBreakingChangeCheckRunner
+} from './lib/openapi-changes.js';
+import {
   parsePostmanStack,
   resolvePostmanEndpointProfile,
   type PostmanStack
@@ -47,6 +53,12 @@ export interface ResolvedInputs {
   specUrl: string;
   specPath?: string;
   openapiVersion: string;
+  breakingChangeMode: BreakingChangeMode;
+  breakingBaselineSpecPath?: string;
+  breakingRulesPath?: string;
+  breakingTargetRef?: string;
+  breakingSummaryPath?: string;
+  breakingLogPath?: string;
   governanceMappingJson: string;
   postmanApiKey: string;
   postmanAccessToken?: string;
@@ -77,6 +89,8 @@ export interface PlannedOutputs {
   'contract-collection-id': string;
   'collections-json': string;
   'lint-summary-json': string;
+  'breaking-change-status': string;
+  'breaking-change-summary-json': string;
 }
 
 export interface LintViolation {
@@ -148,6 +162,7 @@ export interface BootstrapExecutionDependencies {
     | 'updateSpec'
   > &
     Partial<Pick<PostmanAssetsClient, 'deleteCollection' | 'getCollection' | 'updateCollection'>>;
+  openApiChanges?: OpenApiBreakingChangeCheckRunner;
   specFetcher: typeof fetch;
 }
 
@@ -219,6 +234,14 @@ function parseSpecSyncMode(value: string | undefined): 'update' | 'version' {
     return v as 'update' | 'version';
   }
   throw new Error(`Unsupported spec-sync-mode "${v}". Supported values: ${allowed.join(', ')}`);
+}
+
+function parseBreakingChangeMode(value: string | undefined): BreakingChangeMode {
+  return parseEnumInput(
+    'breaking-change-mode',
+    value,
+    (customerPreviewActionContract.inputs['breaking-change-mode'].default ?? 'off') as BreakingChangeMode
+  );
 }
 
 function parseEnumInput<T extends string>(name: string, value: string | undefined, defaultValue: T): T {
@@ -347,6 +370,14 @@ export function resolveInputs(
     specUrl,
     specPath,
     openapiVersion: resolveOpenapiVersion(getInput('openapi-version', env)),
+    breakingChangeMode: parseBreakingChangeMode(getInput('breaking-change-mode', env)),
+    breakingBaselineSpecPath: getInput('breaking-baseline-spec-path', env),
+    breakingRulesPath:
+      getInput('breaking-rules-path', env) ??
+      customerPreviewActionContract.inputs['breaking-rules-path'].default,
+    breakingTargetRef: getInput('breaking-target-ref', env),
+    breakingSummaryPath: getInput('breaking-summary-path', env),
+    breakingLogPath: getInput('breaking-log-path', env),
     governanceMappingJson: parseGovernanceMappingJson(getInput('governance-mapping-json', env)),
     postmanApiKey: getInput('postman-api-key', env) ?? '',
     postmanAccessToken: getInput('postman-access-token', env),
@@ -393,6 +424,17 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
       total: 0,
       violations: [],
       warnings: 0
+    }),
+    'breaking-change-status': 'skipped',
+    'breaking-change-summary-json': JSON.stringify({
+      breakingChanges: 0,
+      comparison: '',
+      exitCode: 0,
+      logPath: '',
+      message: 'Breaking-change check is disabled.',
+      mode: inputs.breakingChangeMode,
+      status: 'skipped',
+      summaryPath: ''
     })
   };
 }
@@ -469,6 +511,16 @@ export function readActionInputs(
       optionalInput(actionCore, 'request-name-source') ??
       customerPreviewActionContract.inputs['request-name-source'].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? '',
+    INPUT_BREAKING_CHANGE_MODE:
+      optionalInput(actionCore, 'breaking-change-mode') ??
+      customerPreviewActionContract.inputs['breaking-change-mode'].default,
+    INPUT_BREAKING_BASELINE_SPEC_PATH: optionalInput(actionCore, 'breaking-baseline-spec-path'),
+    INPUT_BREAKING_RULES_PATH:
+      optionalInput(actionCore, 'breaking-rules-path') ??
+      customerPreviewActionContract.inputs['breaking-rules-path'].default,
+    INPUT_BREAKING_TARGET_REF: optionalInput(actionCore, 'breaking-target-ref'),
+    INPUT_BREAKING_SUMMARY_PATH: optionalInput(actionCore, 'breaking-summary-path'),
+    INPUT_BREAKING_LOG_PATH: optionalInput(actionCore, 'breaking-log-path'),
     INPUT_POSTMAN_STACK:
       optionalInput(actionCore, 'postman-stack') ??
       customerPreviewActionContract.inputs['postman-stack'].default,
@@ -855,6 +907,7 @@ export async function runBootstrap(
   let previousSpecRollbackHash: string | undefined;
   let detectedOpenapiVersion: '3.0' | '3.1' = '3.0';
   let contractIndex: ContractIndex | undefined;
+  let sourceSpecContent = '';
   const specContent = await runGroup(
     dependencies.core,
     'Preflight OpenAPI Contract',
@@ -867,6 +920,7 @@ export async function runBootstrap(
       const loaded = inputs.specPath
         ? await loadOpenApiContractSpecFromPath(inputs.specPath, loaderOptions)
         : await loadOpenApiContractSpec(inputs.specUrl, loaderOptions);
+      sourceSpecContent = loaded.content;
       const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
         dependencies.core.warning(msg)
       );
@@ -908,6 +962,39 @@ export async function runBootstrap(
       return document;
     }
   );
+
+  const breakingChangeResult = await runGroup(
+    dependencies.core,
+    'OpenAPI Breaking Change Check',
+    async () => (dependencies.openApiChanges ?? runOpenApiBreakingChangeCheck)(
+      {
+        baselineSpecPath: inputs.breakingBaselineSpecPath,
+        currentSourceContent: sourceSpecContent,
+        currentUploadContent: specContent,
+        logPath: inputs.breakingLogPath,
+        mode: inputs.breakingChangeMode,
+        previousSpecContent,
+        rulesPath: inputs.breakingRulesPath,
+        specPath: inputs.specPath,
+        summaryPath: inputs.breakingSummaryPath,
+        targetRef: inputs.breakingTargetRef
+      },
+      {
+        core: dependencies.core,
+        env: process.env,
+        exec: dependencies.exec
+      }
+    )
+  );
+  outputs['breaking-change-status'] = breakingChangeResult.status;
+  outputs['breaking-change-summary-json'] = createBreakingChangeSummaryJson(breakingChangeResult);
+  if (breakingChangeResult.status === 'failed') {
+    dependencies.core.setOutput('breaking-change-status', outputs['breaking-change-status']);
+    dependencies.core.setOutput('breaking-change-summary-json', outputs['breaking-change-summary-json']);
+    throw new Error(
+      `OpenAPI breaking-change check failed: ${breakingChangeResult.message || 'breaking changes detected'}`
+    );
+  }
 
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {

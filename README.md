@@ -10,6 +10,7 @@ This action preserves the bootstrap slice of the API Catalog demo flow:
 - assign the workspace to a configured governance group when a group name and `postman-access-token` are provided
 - invite the requester and add workspace admins
 - upload or update a remote spec in Spec Hub (after normalizing operation summaries — see below)
+- optionally check for OpenAPI breaking changes before any Postman mutations
 - lint the uploaded spec by UID with the Postman CLI
 - generate missing baseline, smoke, and contract collections or reuse existing ones
 - optionally refresh current collections from the latest spec or create release-scoped spec and collection assets
@@ -138,6 +139,39 @@ For Git-first workflows the spec is usually checked into the same repo that runs
 ```
 
 Only one of `spec-url` or `spec-path` may be set. When `spec-path` is used the action reads the file from disk, skips the URL-safety machinery, and still resolves any external HTTPS `$ref`s through the same hardened fetcher. Local-file `$ref`s are not followed.
+
+### OpenAPI breaking-change check
+
+Breaking-change detection is disabled by default. Enable it with `breaking-change-mode` when you want bootstrap to compare the incoming OpenAPI contract before creating or updating Postman resources.
+
+Modes:
+
+- `off`: default. No comparison runs and `openapi-changes` is not installed.
+- `previous-spec`: compares the incoming Spec Hub upload content with the existing `spec-id` content. If there is no previous spec, the check is marked `skipped`.
+- `pr-native`: compares `breaking-target-ref` or the detected PR target branch version of `spec-path` against the checked-out working tree. If no target-branch spec is available, it falls back to `breaking-baseline-spec-path` when configured.
+- `baseline-only`: compares `breaking-baseline-spec-path` against the incoming spec. If the baseline file is missing, the check is marked `skipped`.
+
+The action installs a pinned `pb33f/openapi-changes` release into the runner temp directory, verifies the archive checksum, validates archive paths before extraction, and runs the binary by absolute path. It does not require customers to preinstall the tool, and it does not use `npx`, global npm installs, or `curl | sh`.
+
+Summary and log files default to `$RUNNER_TEMP/postman-bootstrap/`, so they are runner files, not committed repo changes. The markdown summary is also appended to the GitHub job summary when `$GITHUB_STEP_SUMMARY` is available. Pass `breaking-summary-path` or `breaking-log-path` only if your workflow wants explicit file locations for later `actions/upload-artifact` steps.
+
+Example:
+
+```yaml
+- uses: actions/checkout@v5
+  with:
+    fetch-depth: 0
+- uses: postman-cs/postman-bootstrap-action@v0
+  with:
+    project-name: core-payments
+    spec-path: apis/core-payments/openapi.yaml
+    breaking-change-mode: pr-native
+    breaking-target-ref: ${{ github.base_ref }}
+    breaking-baseline-spec-path: apis/core-payments/openapi.baseline.yaml
+    postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
+```
+
+If breaking changes are detected, bootstrap fails before workspace, spec, or collection mutation. Missing comparison sources are reported as `skipped` and do not fail the run.
 
 ## Usage
 
@@ -345,6 +379,12 @@ steps:
 | `workspace-team-id` | | Numeric sub-team ID for org-mode workspace creation. Required when the API key belongs to an org with multiple sub-teams. |
 | `spec-url` | | HTTPS URL to the OpenAPI document. Provide either `spec-url` or `spec-path`. |
 | `spec-path` | | Local filesystem path to the OpenAPI document, relative to the checked-out workspace (e.g. `apis/identity/openapi.yaml`). Use this when the spec lives in the repo and you don't want to host it over HTTPS. Provide either `spec-url` or `spec-path`. |
+| `breaking-change-mode` | `off` | OpenAPI breaking-change comparison mode: `off`, `pr-native`, `baseline-only`, or `previous-spec`. |
+| `breaking-baseline-spec-path` | | Workspace-relative baseline OpenAPI spec path used by `baseline-only` and as `pr-native` fallback. |
+| `breaking-rules-path` | `changes-rules.yaml` | Workspace-relative `openapi-changes` rules file. Missing files are ignored. |
+| `breaking-target-ref` | | Optional target branch or git ref override for `pr-native`. |
+| `breaking-summary-path` | | Optional markdown report output path. Defaults to a runner-temp file. |
+| `breaking-log-path` | | Optional raw command log output path. Defaults to a runner-temp file. |
 | `governance-group` | | Postman governance group name. Overrides the `postman-governance-group` repository custom property and legacy domain mapping. |
 | `governance-mapping-json` | `{}` | Legacy fallback map of `domain` value to Postman governance group name. Prefer the repository custom property or `governance-group`. |
 | `github-token` | | GitHub token used to read the `postman-governance-group` repository custom property. |
@@ -494,6 +534,8 @@ The `postman-access-token` is a Postman session token required for workspace enr
 - `contract-collection-id`
 - `collections-json`
 - `lint-summary-json`
+- `breaking-change-status`
+- `breaking-change-summary-json`
 
 ## Local development
 

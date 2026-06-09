@@ -219,6 +219,27 @@ describe('customer preview action contract', () => {
     expect(resolveInputs({}).openapiVersion).toBe('');
   });
 
+  it('defaults breaking-change controls in contract, manifest, and runtime', () => {
+    expect(customerPreviewActionContract.inputs['breaking-change-mode'].default).toBe('off');
+    expect(customerPreviewActionContract.inputs['breaking-change-mode'].allowedValues).toEqual([
+      'off',
+      'pr-native',
+      'baseline-only',
+      'previous-spec'
+    ]);
+    expect(actionManifest.inputs['breaking-change-mode'].default).toBe('off');
+    expect(resolveInputs({}).breakingChangeMode).toBe('off');
+
+    expect(customerPreviewActionContract.inputs['breaking-rules-path'].default).toBe('changes-rules.yaml');
+    expect(actionManifest.inputs['breaking-rules-path'].default).toBe('changes-rules.yaml');
+    expect(resolveInputs({}).breakingRulesPath).toBe('changes-rules.yaml');
+
+    expect(resolveInputs({ INPUT_BREAKING_CHANGE_MODE: 'previous-spec' }).breakingChangeMode)
+      .toBe('previous-spec');
+    expect(() => resolveInputs({ INPUT_BREAKING_CHANGE_MODE: 'strict' }))
+      .toThrow(/Unsupported breaking-change-mode/);
+  });
+
   it('accepts explicit openapi-version 3.1 override at runtime', () => {
     const inputs = resolveInputs({ INPUT_OPENAPI_VERSION: '3.1' });
     expect(inputs.openapiVersion).toBe('3.1');
@@ -242,7 +263,13 @@ describe('customer preview action contract', () => {
           'project-name': 'my-api',
           'spec-url': 'https://example.com/openapi.yaml',
           'postman-api-key': 'pmak-test',
-          'openapi-version': '3.1'
+          'openapi-version': '3.1',
+          'breaking-change-mode': 'previous-spec',
+          'breaking-baseline-spec-path': 'specs/baseline.yaml',
+          'breaking-rules-path': 'config/rules.yaml',
+          'breaking-target-ref': 'release/main',
+          'breaking-summary-path': 'tmp/summary.md',
+          'breaking-log-path': 'tmp/check.log'
         };
         return map[name] ?? '';
       },
@@ -250,6 +277,12 @@ describe('customer preview action contract', () => {
     };
     const inputs = readActionInputs(coreStub);
     expect(inputs.openapiVersion).toBe('3.1');
+    expect(inputs.breakingChangeMode).toBe('previous-spec');
+    expect(inputs.breakingBaselineSpecPath).toBe('specs/baseline.yaml');
+    expect(inputs.breakingRulesPath).toBe('config/rules.yaml');
+    expect(inputs.breakingTargetRef).toBe('release/main');
+    expect(inputs.breakingSummaryPath).toBe('tmp/summary.md');
+    expect(inputs.breakingLogPath).toBe('tmp/check.log');
   });
 
   it('readActionInputs explicitly wires postman-stack from core.getInput', () => {
@@ -327,6 +360,17 @@ describe('customer preview action contract', () => {
         total: 0,
         violations: [],
         warnings: 0
+      }),
+      'breaking-change-status': 'skipped',
+      'breaking-change-summary-json': JSON.stringify({
+        breakingChanges: 0,
+        comparison: '',
+        exitCode: 0,
+        logPath: '',
+        message: 'Breaking-change check is disabled.',
+        mode: 'off',
+        status: 'skipped',
+        summaryPath: ''
       })
     });
   });

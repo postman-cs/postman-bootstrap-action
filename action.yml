@@ -66,6 +66,28 @@ inputs:
     description: OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.
     required: false
     default: ''
+  breaking-change-mode:
+    description: OpenAPI breaking-change comparison mode (off, pr-native, baseline-only, or previous-spec)
+    required: false
+    default: 'off'
+  breaking-baseline-spec-path:
+    description: Workspace-relative baseline OpenAPI spec path used by baseline-only mode and pr-native fallback
+    required: false
+  breaking-rules-path:
+    description: Workspace-relative openapi-changes rules file. Missing files are ignored.
+    required: false
+    default: changes-rules.yaml
+  breaking-target-ref:
+    description: Optional target branch or git ref override for pr-native breaking-change comparisons
+    required: false
+  breaking-summary-path:
+    description: Optional markdown report output path. Defaults to a runner-temp file.
+    required: false
+    default: ''
+  breaking-log-path:
+    description: Optional raw command log output path. Defaults to a runner-temp file.
+    required: false
+    default: ''
   governance-mapping-json:
     description: Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property.
     required: false
@@ -121,6 +143,10 @@ outputs:
     description: JSON summary of generated collections
   lint-summary-json:
     description: JSON summary of lint errors and warnings
+  breaking-change-status:
+    description: OpenAPI breaking-change check status
+  breaking-change-summary-json:
+    description: JSON summary of the OpenAPI breaking-change check
 runs:
   using: node24
   main: dist/action.cjs

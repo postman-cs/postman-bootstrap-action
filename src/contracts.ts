@@ -110,6 +110,35 @@ export const customerPreviewActionContract: CustomerPreviewActionContract = {
       default: '',
       allowedValues: ['3.0', '3.1']
     },
+    'breaking-change-mode': {
+      description: 'OpenAPI breaking-change comparison mode.',
+      required: false,
+      default: 'off',
+      allowedValues: ['off', 'pr-native', 'baseline-only', 'previous-spec']
+    },
+    'breaking-baseline-spec-path': {
+      description: 'Workspace-relative baseline OpenAPI spec path used by baseline-only mode and pr-native fallback.',
+      required: false
+    },
+    'breaking-rules-path': {
+      description: 'Workspace-relative openapi-changes rules file. Missing files are ignored.',
+      required: false,
+      default: 'changes-rules.yaml'
+    },
+    'breaking-target-ref': {
+      description: 'Optional target branch or git ref override for pr-native breaking-change comparisons.',
+      required: false
+    },
+    'breaking-summary-path': {
+      description: 'Optional markdown report output path. Defaults to a runner-temp file.',
+      required: false,
+      default: ''
+    },
+    'breaking-log-path': {
+      description: 'Optional raw command log output path. Defaults to a runner-temp file.',
+      required: false,
+      default: ''
+    },
     'governance-mapping-json': {
       description:
         'Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property.',
@@ -189,6 +218,12 @@ export const customerPreviewActionContract: CustomerPreviewActionContract = {
     },
     'lint-summary-json': {
       description: 'JSON summary of lint errors and warnings.'
+    },
+    'breaking-change-status': {
+      description: 'OpenAPI breaking-change check status.'
+    },
+    'breaking-change-summary-json': {
+      description: 'JSON summary of the OpenAPI breaking-change check.'
     }
   },
   retainedBehavior: [
@@ -198,6 +233,7 @@ export const customerPreviewActionContract: CustomerPreviewActionContract = {
     'workspace admin assignment',
     'spec upload to Spec Hub',
     'OpenAPI operation summary normalization before upload (missing or oversized summaries)',
+    'optional OpenAPI breaking-change detection before Postman mutations',
     'spec linting by UID',
     'baseline, smoke, and contract collection generation',
     'collection refresh and versioning policies',

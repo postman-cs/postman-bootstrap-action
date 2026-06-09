@@ -100,6 +100,12 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     repoUrl: 'https://github.com/postman-cs/bootstrap-action-test',
     specUrl: 'https://example.test/openapi.yaml',
     openapiVersion: '',
+    breakingChangeMode: 'off',
+    breakingBaselineSpecPath: undefined,
+    breakingRulesPath: 'changes-rules.yaml',
+    breakingTargetRef: undefined,
+    breakingSummaryPath: undefined,
+    breakingLogPath: undefined,
     governanceMappingJson: '{"core-banking":"Core Banking"}',
     postmanApiKey: 'pmak-test',
     postmanAccessToken: 'postman-access-token',
@@ -279,6 +285,62 @@ describe('bootstrap action', () => {
       'pmak-test',
       'postman-access-token'
     ]);
+  });
+
+  it('fails the breaking-change check before Postman resource mutations', async () => {
+    const { core, outputs } = createCoreStub();
+    const postman = createRollbackPostman({
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
+      updateSpec: vi.fn().mockResolvedValue(undefined)
+    });
+    const openApiChanges = vi.fn().mockResolvedValue({
+      breakingChanges: 1,
+      comparison: 'Spec Hub previous version -> incoming spec',
+      exitCode: 1,
+      logPath: '/tmp/openapi-changes.log',
+      message: '1 breaking change marker detected.',
+      mode: 'previous-spec',
+      status: 'failed',
+      summaryPath: '/tmp/openapi-changes-summary.md'
+    });
+
+    await expect(
+      runBootstrap(
+        createInputs({
+          breakingChangeMode: 'previous-spec',
+          specId: 'spec-existing',
+          workspaceId: undefined
+        }),
+        {
+          core,
+          exec: createExecStub(),
+          internalIntegration: createRollbackIntegration(),
+          io: createIoStub(),
+          openApiChanges,
+          postman,
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response(VALID_SPEC_31, { status: 200 })
+          )
+        }
+      )
+    ).rejects.toThrow(/OpenAPI breaking-change check failed/);
+
+    expect(openApiChanges).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'previous-spec',
+        previousSpecContent: expect.stringContaining('"openapi": "3.1.0"')
+      }),
+      expect.objectContaining({
+        exec: expect.any(Object)
+      })
+    );
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+    expect(outputs['breaking-change-status']).toBe('failed');
+    expect(JSON.parse(outputs['breaking-change-summary-json'])).toMatchObject({
+      breakingChanges: 1,
+      status: 'failed'
+    });
   });
 
   it('accepts spec-path instead of spec-url', () => {

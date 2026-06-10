@@ -232,12 +232,41 @@ export class PostmanAssetsClient {
       }
 
       const workspace = await this.request(`/workspaces/${workspaceId}`);
-      const workspaceDetails = asRecord(workspace?.workspace);
-      if (workspaceDetails?.visibility !== 'team') {
+      let visibility = asRecord(workspace?.workspace)?.visibility;
+      if (visibility !== 'team') {
         await this.request(`/workspaces/${workspaceId}`, {
           method: 'PUT',
           body: JSON.stringify(payload)
         });
+        const reread = await this.request(`/workspaces/${workspaceId}`);
+        visibility = asRecord(reread?.workspace)?.visibility;
+      }
+
+      // Org-mode teams silently accept the corrective PUT above without
+      // changing anything: a workspace created at the organization level
+      // (missing or wrong teamId) stays personal-visibility, invisible to
+      // teammates, other API keys, and the API Catalog, while every
+      // downstream step still succeeds for the creator. Verify the
+      // visibility actually took and refuse to hand back an invisible
+      // workspace.
+      if (typeof visibility === 'string' && visibility !== 'team') {
+        let cleanedUp = false;
+        try {
+          await this.request(`/workspaces/${workspaceId}`, { method: 'DELETE' });
+          cleanedUp = true;
+        } catch {
+          // The error below tells the operator to delete it manually.
+        }
+        throw new Error(
+          `Workspace ${workspaceId} was created with visibility '${visibility}' and could not be promoted to team visibility. ` +
+            'On org-mode accounts this happens when the workspace-team-id input is missing or wrong: ' +
+            'the workspace is created at the organization level with personal visibility, so teammates, ' +
+            'other API keys, and the API Catalog cannot see it. Set workspace-team-id to the sub-team ' +
+            'that should own this workspace and re-run. ' +
+            (cleanedUp
+              ? 'The just-created workspace has been deleted so it does not hold the repository link invisibly.'
+              : `Cleanup of the just-created workspace failed; delete workspace ${workspaceId} manually before re-running.`)
+        );
       }
 
       return {
@@ -249,6 +278,20 @@ export class PostmanAssetsClient {
       shouldRetry: (err) =>
         !(err instanceof Error && err.message.includes('workspace-team-id'))
     });
+  }
+
+  /**
+   * Visibility of a workspace as seen by this API key, or null when the
+   * workspace cannot be read (deleted, or invisible to these credentials).
+   */
+  async getWorkspaceVisibility(workspaceId: string): Promise<string | null> {
+    try {
+      const workspace = await this.request(`/workspaces/${workspaceId}`);
+      const visibility = asRecord(workspace?.workspace)?.visibility;
+      return typeof visibility === 'string' ? visibility : null;
+    } catch {
+      return null;
+    }
   }
 
   async listWorkspaces(): Promise<Array<{ id: string; name: string; type: string }>> {

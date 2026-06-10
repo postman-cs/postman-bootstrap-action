@@ -1,6 +1,6 @@
 {
   "name": "@postman-cse/onboarding-bootstrap",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Public customer preview Postman bootstrap GitHub Action.",
   "type": "module",
   "main": "dist/index.cjs",

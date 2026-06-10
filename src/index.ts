@@ -155,6 +155,7 @@ export interface BootstrapExecutionDependencies {
     | 'getSpecContent'
     | 'getTeams'
     | 'getWorkspaceGitRepoUrl'
+    | 'getWorkspaceVisibility'
     | 'injectTests'
     | 'inviteRequesterToWorkspace'
     | 'tagCollection'
@@ -1111,6 +1112,20 @@ export async function runBootstrap(
       async () => dependencies.postman.createWorkspace(workspaceName, aboutText, workspaceTeamId)
     );
     workspaceId = workspace.id;
+  } else {
+    // Reused workspaces skip createWorkspace's visibility enforcement, so a
+    // personal-visibility workspace minted by an earlier org-mode run without
+    // workspace-team-id would silently stay invisible to teammates and the
+    // API Catalog run after run. Surface that loudly.
+    const visibility = await dependencies.postman.getWorkspaceVisibility(workspaceId);
+    if (visibility && visibility !== 'team') {
+      dependencies.core.warning(
+        `Workspace ${workspaceId} has visibility '${visibility}', so it does not appear in the API Catalog ` +
+          'and teammates or other API keys cannot see it. This usually means an org-mode run created it ' +
+          'without workspace-team-id. Recreate it with workspace-team-id set (delete the workspace and ' +
+          'clear the POSTMAN_WORKSPACE_ID repository variable), or share it to the team from Workspace Settings.'
+      );
+    }
   }
 
   outputs['workspace-id'] = workspaceId || '';

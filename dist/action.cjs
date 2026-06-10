@@ -48034,12 +48034,25 @@ var PostmanAssetsClient = class {
         throw new Error("Workspace create did not return an id");
       }
       const workspace = await this.request(`/workspaces/${workspaceId}`);
-      const workspaceDetails = asRecord(workspace?.workspace);
-      if (workspaceDetails?.visibility !== "team") {
+      let visibility = asRecord(workspace?.workspace)?.visibility;
+      if (visibility !== "team") {
         await this.request(`/workspaces/${workspaceId}`, {
           method: "PUT",
           body: JSON.stringify(payload)
         });
+        const reread = await this.request(`/workspaces/${workspaceId}`);
+        visibility = asRecord(reread?.workspace)?.visibility;
+      }
+      if (typeof visibility === "string" && visibility !== "team") {
+        let cleanedUp = false;
+        try {
+          await this.request(`/workspaces/${workspaceId}`, { method: "DELETE" });
+          cleanedUp = true;
+        } catch {
+        }
+        throw new Error(
+          `Workspace ${workspaceId} was created with visibility '${visibility}' and could not be promoted to team visibility. On org-mode accounts this happens when the workspace-team-id input is missing or wrong: the workspace is created at the organization level with personal visibility, so teammates, other API keys, and the API Catalog cannot see it. Set workspace-team-id to the sub-team that should own this workspace and re-run. ` + (cleanedUp ? "The just-created workspace has been deleted so it does not hold the repository link invisibly." : `Cleanup of the just-created workspace failed; delete workspace ${workspaceId} manually before re-running.`)
+        );
       }
       return {
         id: workspaceId
@@ -48049,6 +48062,19 @@ var PostmanAssetsClient = class {
       delayMs: 2e3,
       shouldRetry: (err) => !(err instanceof Error && err.message.includes("workspace-team-id"))
     });
+  }
+  /**
+   * Visibility of a workspace as seen by this API key, or null when the
+   * workspace cannot be read (deleted, or invisible to these credentials).
+   */
+  async getWorkspaceVisibility(workspaceId) {
+    try {
+      const workspace = await this.request(`/workspaces/${workspaceId}`);
+      const visibility = asRecord(workspace?.workspace)?.visibility;
+      return typeof visibility === "string" ? visibility : null;
+    } catch {
+      return null;
+    }
   }
   async listWorkspaces() {
     const allWorkspaces = [];
@@ -63404,6 +63430,13 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
       async () => dependencies.postman.createWorkspace(workspaceName, aboutText, workspaceTeamId)
     );
     workspaceId = workspace.id;
+  } else {
+    const visibility = await dependencies.postman.getWorkspaceVisibility(workspaceId);
+    if (visibility && visibility !== "team") {
+      dependencies.core.warning(
+        `Workspace ${workspaceId} has visibility '${visibility}', so it does not appear in the API Catalog and teammates or other API keys cannot see it. This usually means an org-mode run created it without workspace-team-id. Recreate it with workspace-team-id set (delete the workspace and clear the POSTMAN_WORKSPACE_ID repository variable), or share it to the team from Workspace Settings.`
+      );
+    }
   }
   outputs["workspace-id"] = workspaceId || "";
   outputs["workspace-url"] = `https://go.postman.co/workspace/${workspaceId}`;

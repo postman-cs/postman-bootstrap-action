@@ -143,6 +143,14 @@ describe('PostmanAssetsClient', () => {
             visibility: 'team'
           }
         })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          workspace: {
+            id: 'ws-123',
+            visibility: 'team'
+          }
+        })
       );
 
     const client = new PostmanAssetsClient({
@@ -153,7 +161,7 @@ describe('PostmanAssetsClient', () => {
     await expect(client.createWorkspace('Core Banking', 'desc')).resolves.toEqual({
       id: 'ws-123'
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     expect(fetchImpl).toHaveBeenNthCalledWith(
       3,
       'https://api.getpostman.com/workspaces/ws-123',
@@ -161,6 +169,83 @@ describe('PostmanAssetsClient', () => {
         method: 'PUT'
       })
     );
+  });
+
+  it('deletes the workspace and fails when team visibility cannot be enforced', async () => {
+    const personal = () =>
+      jsonResponse({
+        workspace: {
+          id: 'ws-456',
+          visibility: 'personal'
+        }
+      });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ workspace: { id: 'ws-456' } }))
+      .mockResolvedValueOnce(personal())
+      .mockResolvedValueOnce(personal())
+      .mockResolvedValueOnce(personal())
+      .mockResolvedValueOnce(jsonResponse({ workspace: { id: 'ws-456' } }));
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.createWorkspace('Org WS', 'desc')).rejects.toThrow(
+      /visibility 'personal'.*workspace-team-id.*has been deleted/s
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      5,
+      'https://api.getpostman.com/workspaces/ws-456',
+      expect.objectContaining({
+        method: 'DELETE'
+      })
+    );
+  });
+
+  it('reports manual cleanup when the failed workspace cannot be deleted', async () => {
+    const personal = () =>
+      jsonResponse({
+        workspace: {
+          id: 'ws-456',
+          visibility: 'personal'
+        }
+      });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ workspace: { id: 'ws-456' } }))
+      .mockResolvedValueOnce(personal())
+      .mockResolvedValueOnce(personal())
+      .mockResolvedValueOnce(personal())
+      .mockResolvedValueOnce(new Response('nope', { status: 500 }));
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.createWorkspace('Org WS', 'desc')).rejects.toThrow(
+      /delete workspace ws-456 manually/
+    );
+  });
+
+  it('reads workspace visibility and degrades to null on errors', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse({ workspace: { id: 'ws-1', visibility: 'personal' } })
+      )
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403 }));
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.getWorkspaceVisibility('ws-1')).resolves.toBe('personal');
+    await expect(client.getWorkspaceVisibility('ws-2')).resolves.toBeNull();
   });
 
   it('normalizes collection tags to valid Postman slugs', async () => {

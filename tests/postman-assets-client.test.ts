@@ -429,6 +429,27 @@ describe('PostmanAssetsClient', () => {
     );
   });
 
+  it('maps unauthorized teamId rejections to workspace-team-id guidance', async () => {
+    const errorBody = JSON.stringify({
+      error: {
+        name: 'forbiddenError',
+        message: 'You are not authorized to perform this action'
+      }
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () => new Response(errorBody, { status: 403 })
+    );
+
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.createWorkspace('Org WS', 'desc', 999999999)).rejects.toThrow(
+      /workspace-team-id.*999999999.*GET https:\/\/api\.getpostman\.com\/teams/s
+    );
+  });
+
   it('returns parsed sub-teams from getTeams', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
       jsonResponse({

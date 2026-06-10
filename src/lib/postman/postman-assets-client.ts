@@ -222,6 +222,21 @@ export class PostmanAssetsClient {
             { cause: err }
           );
         }
+        if (
+          targetTeamId != null &&
+          err instanceof Error &&
+          err.message.includes('You are not authorized to perform this action')
+        ) {
+          // A teamId outside this key's organization (or a typo) is rejected
+          // with a bare 403; surface which input caused it instead.
+          throw new Error(
+            `The workspace-team-id input (${targetTeamId}) was rejected as unauthorized by the Postman API. ` +
+              'In org-mode accounts it must be the numeric id of a sub-team this API key can access; ' +
+              'GET https://api.getpostman.com/teams lists the available sub-teams. ' +
+              'Fix the workspace-team-id value and re-run.',
+            { cause: err }
+          );
+        }
         throw err;
       }
 

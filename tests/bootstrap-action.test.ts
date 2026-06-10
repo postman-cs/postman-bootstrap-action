@@ -1438,6 +1438,57 @@ paths:
     expect(postman.generateCollection).not.toHaveBeenCalled();
   });
 
+  it('warns when a reused workspace is not team-visible', async () => {
+    const { core, warnings } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn(),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn(),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      getWorkspaceVisibility: vi.fn().mockResolvedValue('personal'),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn(),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+    };
+    await runBootstrap(
+      createInputs({
+        workspaceId: 'ws-existing',
+        specId: 'spec-existing',
+        baselineCollectionId: 'col-baseline-existing',
+        smokeCollectionId: 'col-smoke-existing',
+        contractCollectionId: 'col-contract-existing',
+        collectionSyncMode: 'version',
+        releaseLabel: 'v1'
+      }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      }
+    );
+
+    expect(postman.getWorkspaceVisibility).toHaveBeenCalledWith('ws-existing');
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.includes("visibility 'personal'") && warning.includes('API Catalog')
+      ),
+      `expected personal-visibility warning, got: ${warnings.join(' | ')}`
+    ).toBe(true);
+  });
+
   it('reuses existing workspace, spec, and collection ids from explicit inputs in version mode', async () => {
     const { core, infos, outputs } = createCoreStub();
     const execStub = createExecStub();

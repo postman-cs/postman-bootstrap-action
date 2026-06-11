@@ -46240,20 +46240,22 @@ async function probeSessionIdentity(baseUrl, accessToken, fetchImpl) {
     if (!payload) {
       return void 0;
     }
-    const identity = asRecord(payload.identity);
-    const data = asRecord(payload.data);
+    const root = asRecord(payload.session) ?? payload;
+    const identity = asRecord(root.identity);
+    const data = asRecord(root.data);
     const user = asRecord(data?.user);
     const roleEntries = Array.isArray(user?.roles) ? user.roles.map((entry) => coerceText(entry) ?? coerceId(entry)).filter((entry) => Boolean(entry)) : [];
     const singleRole = coerceText(user?.role);
     const roles = roleEntries.length > 0 ? roleEntries : singleRole ? [singleRole] : void 0;
     const resolved = {
       source: "iapub/sessions",
-      userId: coerceId(user?.id),
+      userId: coerceId(identity?.user) ?? coerceId(user?.id),
       fullName: coerceText(user?.fullName) ?? coerceText(user?.name) ?? coerceText(user?.username),
       teamId: coerceId(identity?.team),
+      teamName: coerceText(user?.teamName),
       teamDomain: coerceText(identity?.domain),
       ...roles ? { roles } : {},
-      consumerType: coerceText(payload.consumerType) ?? coerceText(data?.consumerType) ?? coerceText(user?.consumerType)
+      consumerType: coerceText(root.consumerType) ?? coerceText(data?.consumerType) ?? coerceText(user?.consumerType)
     };
     memoizedSessionIdentity = resolved;
     return resolved;

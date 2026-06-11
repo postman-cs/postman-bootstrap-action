@@ -183,9 +183,11 @@ async function probeSessionIdentity(
     if (!payload) {
       return undefined;
     }
+    // iapub wraps the live session under `session`; tolerate an unwrapped shape too.
     // Whitelisted extraction only; the raw session body (incl. session.token) is discarded.
-    const identity = asRecord(payload.identity);
-    const data = asRecord(payload.data);
+    const root = asRecord(payload.session) ?? payload;
+    const identity = asRecord(root.identity);
+    const data = asRecord(root.data);
     const user = asRecord(data?.user);
     const roleEntries = Array.isArray(user?.roles)
       ? user.roles
@@ -197,14 +199,15 @@ async function probeSessionIdentity(
       roleEntries.length > 0 ? roleEntries : singleRole ? [singleRole] : undefined;
     const resolved: CredentialIdentity = {
       source: 'iapub/sessions',
-      userId: coerceId(user?.id),
+      userId: coerceId(identity?.user) ?? coerceId(user?.id),
       fullName:
         coerceText(user?.fullName) ?? coerceText(user?.name) ?? coerceText(user?.username),
       teamId: coerceId(identity?.team),
+      teamName: coerceText(user?.teamName),
       teamDomain: coerceText(identity?.domain),
       ...(roles ? { roles } : {}),
       consumerType:
-        coerceText(payload.consumerType) ??
+        coerceText(root.consumerType) ??
         coerceText(data?.consumerType) ??
         coerceText(user?.consumerType)
     };

@@ -192,6 +192,45 @@ describe('credential identity', () => {
     );
   });
 
+  it('resolveSessionIdentity unwraps the live iapub shape (session.identity.team, session.data.user)', async () => {
+    const fetchImpl = sessionFetch({
+      session: {
+        status: 'active',
+        consumerType: 'service_account',
+        identity: { user: 55363555, team: 10490519, domain: 'jared-demo' },
+        data: {
+          user: {
+            name: 'actions-integration-tests',
+            teamName: "Jared's Demo",
+            roles: ['admin', 'user'],
+            role: 'admin'
+          }
+        },
+        token: 'session-token-must-never-copy'
+      }
+    });
+
+    const identity = await resolveSessionIdentity({
+      iapubBaseUrl: IAPUB_BASE,
+      accessToken: 'access-token-wrapped',
+      fetchImpl
+    });
+
+    expect(identity).toMatchObject({
+      source: 'iapub/sessions',
+      userId: '55363555',
+      teamId: '10490519',
+      teamName: "Jared's Demo",
+      teamDomain: 'jared-demo',
+      roles: ['admin', 'user'],
+      consumerType: 'service_account'
+    });
+    expect(JSON.stringify(identity)).not.toContain('session-token-must-never-copy');
+    expect(formatIdentityLine(identity!, passthroughMask)).toBe(
+      "postman: access-token session identity - team 10490519 (Jared's Demo), domain jared-demo [source: iapub/sessions]"
+    );
+  });
+
   it('resolveSessionIdentity coerces a numeric identity.team to a string (raw ? String(raw) : undefined)', async () => {
     const identity = await resolveSessionIdentity({
       iapubBaseUrl: IAPUB_BASE,

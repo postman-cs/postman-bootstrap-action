@@ -1,12 +1,16 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HttpError } from '../src/lib/http-error.js';
+import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 import {
   lintSpecViaCli,
   normalizeSpecDocument,
   readActionInputs,
+  runAction,
   runBootstrap,
   type CoreLike,
   type ExecLike,
@@ -109,6 +113,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     governanceMappingJson: '{"core-banking":"Core Banking"}',
     postmanApiKey: 'pmak-test',
     postmanAccessToken: 'postman-access-token',
+    credentialPreflight: 'warn',
     integrationBackend: 'bifrost',
     folderStrategy: 'Paths',
     nestedFolderHierarchy: false,
@@ -118,6 +123,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     postmanBifrostBase: 'https://bifrost-premium-https-v4.gw.postman.com',
     postmanGatewayBase: 'https://gateway.postman.com',
     postmanCliInstallUrl: 'https://dl-cli.pstmn.io/install/unix.sh',
+    postmanIapubBase: 'https://iapub.postman.co',
     githubRefName: undefined,
     githubHeadRef: undefined,
     githubRef: undefined,
@@ -3328,3 +3334,331 @@ describe('lintSpecViaCli', () => {
     expect(postman.createWorkspace).toHaveBeenCalled();
     expect(outputs['workspace-id']).toBe('ws-created');
   });
+
+describe('runAction credential preflight', () => {
+  let specDir: string;
+
+  const NEUTRALIZED_ENV_VARS = [
+    'GITHUB_REPOSITORY',
+    'GITHUB_SERVER_URL',
+    'CI_PROJECT_URL',
+    'CI_PROJECT_PATH',
+    'CI_PROJECT_NAME',
+    'BITBUCKET_GIT_HTTP_ORIGIN',
+    'BITBUCKET_WORKSPACE',
+    'BITBUCKET_REPO_SLUG',
+    'BUILD_REPOSITORY_URI',
+    'BUILD_REPOSITORY_NAME',
+    'POSTMAN_TEAM_ID',
+    'POSTMAN_WORKSPACE_TEAM_ID',
+    'WORKSPACE_ADMIN_USER_IDS',
+    'GITHUB_TOKEN',
+    'GH_FALLBACK_TOKEN'
+  ];
+
+  beforeEach(() => {
+    __resetIdentityMemo();
+    specDir = mkdtempSync(join(tmpdir(), 'bootstrap-preflight-'));
+    writeFileSync(join(specDir, 'openapi.json'), VALID_SPEC_31);
+    vi.stubEnv('GITHUB_WORKSPACE', specDir);
+    for (const name of NEUTRALIZED_ENV_VARS) {
+      vi.stubEnv(name, '');
+    }
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    rmSync(specDir, { recursive: true, force: true });
+  });
+
+  function baseInputValues(overrides: Record<string, string> = {}): Record<string, string> {
+    return {
+      'project-name': 'core-payments',
+      'spec-path': 'openapi.json',
+      'postman-api-key': 'pmak-test',
+      'postman-access-token': 'access-token-test',
+      ...overrides
+    };
+  }
+
+  function createRunActionCore(values: Record<string, string>, events: string[]) {
+    const infos: string[] = [];
+    const warnings: string[] = [];
+    const outputs: Record<string, string> = {};
+    const core: CoreLike = {
+      error: () => {},
+      getInput: (name: string, options?: { required?: boolean }) => {
+        const value = values[name] ?? '';
+        if (options?.required && !value) {
+          throw new Error(`Input required and not supplied: ${name}`);
+        }
+        return value;
+      },
+      group: async <T>(_name: string, fn: () => Promise<T>): Promise<T> => fn(),
+      info: (message: string) => {
+        infos.push(message);
+        events.push(`info:${message}`);
+      },
+      setFailed: () => {},
+      setOutput: (name: string, value: string) => {
+        outputs[name] = value;
+      },
+      setSecret: () => {},
+      warning: (message: string) => {
+        warnings.push(message);
+        events.push(`warning:${message}`);
+      }
+    };
+    return { core, infos, outputs, warnings };
+  }
+
+  interface RunActionRouterOptions {
+    events: string[];
+    meStatus?: number;
+    meUser?: Record<string, unknown>;
+    sessionStatus?: number;
+    sessionBody?: Record<string, unknown>;
+    proxyResponse?: (payload: { service?: string; path?: string }) => Response | undefined;
+  }
+
+  function createRunActionFetchRouter(options: RunActionRouterOptions): typeof fetch {
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status });
+    const router = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      const method = String(init?.method || 'GET').toUpperCase();
+      options.events.push(`fetch:${method} ${url}`);
+
+      if (url === 'https://api.getpostman.com/me') {
+        if (options.meStatus && options.meStatus !== 200) {
+          return json({ error: { name: 'AuthenticationError' } }, options.meStatus);
+        }
+        return json({
+          user: options.meUser ?? {
+            id: 12345678,
+            fullName: 'Ada Lovelace',
+            teamId: 10490519,
+            teamName: 'jared-demo',
+            teamDomain: 'jared-demo'
+          }
+        });
+      }
+      if (url === 'https://iapub.postman.co/api/sessions/current') {
+        if (options.sessionStatus && options.sessionStatus !== 200) {
+          return json({ error: 'denied' }, options.sessionStatus);
+        }
+        return json(
+          options.sessionBody ?? {
+            identity: { team: 10490519, domain: 'jared-demo' },
+            data: { user: { id: 555, roles: ['admin'] } },
+            consumerType: 'service_account'
+          }
+        );
+      }
+      if (url === 'https://api.getpostman.com/teams') {
+        return json({ data: [] });
+      }
+      if (url === 'https://api.getpostman.com/workspaces' && method === 'POST') {
+        return json({ workspace: { id: 'ws-runaction' } });
+      }
+      if (url.startsWith('https://api.getpostman.com/workspaces/ws-runaction')) {
+        return json({ workspace: { id: 'ws-runaction', visibility: 'team' } });
+      }
+      if (url === 'https://api.getpostman.com/specs/spec-runaction/generations/collection') {
+        const name = String(
+          (JSON.parse(String(init?.body ?? '{}')) as { name?: string }).name ?? ''
+        );
+        const slot = name.includes('[Baseline]')
+          ? 'baseline'
+          : name.includes('[Smoke]')
+            ? 'smoke'
+            : 'contract';
+        return json({ collection: { id: `col-${slot}` } });
+      }
+      if (url.startsWith('https://api.getpostman.com/specs?workspaceId=') && method === 'POST') {
+        return json({ id: 'spec-runaction' });
+      }
+      if (url.startsWith('https://api.getpostman.com/specs/spec-runaction')) {
+        return json({ id: 'spec-runaction' });
+      }
+      if (/^https:\/\/api\.getpostman\.com\/collections\/[^/]+\/tags$/.test(url)) {
+        return json({});
+      }
+      if (/^https:\/\/api\.getpostman\.com\/collections\/[^/]+$/.test(url)) {
+        if (method === 'GET') {
+          return json({ collection: createGeneratedContractCollection() });
+        }
+        return json({});
+      }
+      if (url === 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy') {
+        const payload = JSON.parse(String(init?.body ?? '{}')) as {
+          service?: string;
+          path?: string;
+        };
+        const custom = options.proxyResponse?.(payload);
+        return custom ?? json({ data: { ok: true } });
+      }
+      if (url.startsWith('https://dl.pstmn.io/')) {
+        return json({ version: '12.0.0' });
+      }
+      throw new Error(`Unrouted fetch in runAction test: ${method} ${url}`);
+    };
+    return router as typeof fetch;
+  }
+
+  it('runAction logs PMAK and session identity lines before the first workspace call', async () => {
+    const events: string[] = [];
+    vi.stubGlobal('fetch', createRunActionFetchRouter({ events }));
+    const { core, infos, outputs } = createRunActionCore(baseInputValues(), events);
+
+    await runAction(core, createExecStub(), createIoStub());
+
+    expect(outputs['workspace-id']).toBe('ws-runaction');
+    const pmakLineIndex = events.findIndex((entry) =>
+      entry.startsWith('info:postman: PMAK identity')
+    );
+    const sessionLineIndex = events.findIndex((entry) =>
+      entry.startsWith('info:postman: access-token session identity')
+    );
+    const createWorkspaceIndex = events.findIndex(
+      (entry) => entry === 'fetch:POST https://api.getpostman.com/workspaces'
+    );
+    expect(pmakLineIndex).toBeGreaterThanOrEqual(0);
+    expect(sessionLineIndex).toBeGreaterThan(pmakLineIndex);
+    expect(createWorkspaceIndex).toBeGreaterThan(sessionLineIndex);
+    expect(infos.some((line) => line.includes('credential preflight OK'))).toBe(true);
+  });
+
+  it('runAction completes when /me and iapub both 404 (preflight non-fatal)', async () => {
+    const events: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      createRunActionFetchRouter({ events, meStatus: 404, sessionStatus: 404 })
+    );
+    const { core, warnings, outputs } = createRunActionCore(baseInputValues(), events);
+
+    await runAction(core, createExecStub(), createIoStub());
+
+    expect(outputs['workspace-id']).toBe('ws-runaction');
+    expect(
+      warnings.some((line) => line.includes('could not resolve PMAK identity'))
+    ).toBe(true);
+    expect(
+      warnings.some((line) => line.includes('could not resolve the access-token session identity'))
+    ).toBe(true);
+  });
+
+  it('runAction under credential-preflight=enforce FAILS fast with both parent-org ids named when injected /me teamId differs from iapub identity.team', async () => {
+    const events: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      createRunActionFetchRouter({
+        events,
+        meUser: { id: 1, fullName: 'Ada Lovelace', teamId: 10490519, teamName: 'jared-demo' },
+        sessionBody: {
+          identity: { team: 13347347, domain: 'field-services-v12-demo' },
+          data: { user: { id: 2, roles: ['admin'] } },
+          consumerType: 'service_account'
+        }
+      })
+    );
+    const { core } = createRunActionCore(
+      baseInputValues({ 'credential-preflight': 'enforce' }),
+      events
+    );
+
+    let thrown: unknown;
+    try {
+      await runAction(core, createExecStub(), createIoStub());
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).toContain('credential preflight FAILED');
+    expect(message).toContain('10490519');
+    expect(message).toContain('13347347');
+    expect(
+      events.some((entry) => entry === 'fetch:POST https://api.getpostman.com/workspaces')
+    ).toBe(false);
+  });
+
+  it('runAction under the default (warn) logs a NOTE and continues on that same mismatch (does not fail)', async () => {
+    const events: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      createRunActionFetchRouter({
+        events,
+        meUser: { id: 1, fullName: 'Ada Lovelace', teamId: 10490519, teamName: 'jared-demo' },
+        sessionBody: {
+          identity: { team: 13347347, domain: 'field-services-v12-demo' },
+          data: { user: { id: 2, roles: ['admin'] } },
+          consumerType: 'service_account'
+        }
+      })
+    );
+    const { core, warnings, outputs } = createRunActionCore(baseInputValues(), events);
+
+    await runAction(core, createExecStub(), createIoStub());
+
+    expect(outputs['workspace-id']).toBe('ws-runaction');
+    const note = warnings.find((line) => line.includes('credential preflight note'));
+    expect(note).toBeDefined();
+    expect(note).toContain('10490519');
+    expect(note).toContain('13347347');
+    expect(
+      events.some((entry) => entry === 'fetch:POST https://api.getpostman.com/workspaces')
+    ).toBe(true);
+  });
+
+  it('runAction with credential-preflight=off makes no /me/iapub probe', async () => {
+    vi.stubEnv('POSTMAN_TEAM_ID', '10490519');
+    const events: string[] = [];
+    vi.stubGlobal('fetch', createRunActionFetchRouter({ events }));
+    const { core, outputs } = createRunActionCore(
+      baseInputValues({ 'credential-preflight': 'off' }),
+      events
+    );
+
+    await runAction(core, createExecStub(), createIoStub());
+
+    expect(outputs['workspace-id']).toBe('ws-runaction');
+    expect(
+      events.some((entry) => entry.includes('https://api.getpostman.com/me'))
+    ).toBe(false);
+    expect(events.some((entry) => entry.includes('iapub.postman.co'))).toBe(false);
+  });
+
+  it('reactive advice still rewrites a Bifrost UNAUTHENTICATED even when credential-preflight=off', async () => {
+    const events: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      createRunActionFetchRouter({
+        events,
+        proxyResponse: (payload) =>
+          String(payload.path ?? '').includes('/specifications/')
+            ? new Response(JSON.stringify({ error: { code: 'UNAUTHENTICATED' } }), {
+                status: 401
+              })
+            : undefined
+      })
+    );
+    const { core } = createRunActionCore(
+      baseInputValues({ 'credential-preflight': 'off' }),
+      events
+    );
+
+    let thrown: unknown;
+    try {
+      await runAction(core, createExecStub(), createIoStub());
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).toContain('Bifrost rejected the access token (UNAUTHENTICATED)');
+    expect(message).toContain('POST https://api.getpostman.com/service-account-tokens');
+    expect(events.some((entry) => entry.includes('iapub.postman.co'))).toBe(false);
+  });
+});

@@ -374,4 +374,45 @@ describe('customer preview action contract', () => {
       })
     });
   });
+
+  it('exposes credential-preflight as an optional kebab-case input defaulting to warn', () => {
+    expect('credential-preflight').toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+    expect(contractInputNames).toContain('credential-preflight');
+
+    expect(customerPreviewActionContract.inputs['credential-preflight'].required).toBe(false);
+    expect(customerPreviewActionContract.inputs['credential-preflight'].default).toBe('warn');
+    expect(customerPreviewActionContract.inputs['credential-preflight'].allowedValues).toEqual([
+      'enforce',
+      'warn',
+      'off'
+    ]);
+
+    expect(actionManifest.inputs['credential-preflight'].required).toBe(false);
+    expect(actionManifest.inputs['credential-preflight'].default).toBe('warn');
+
+    expect(resolveInputs({}).credentialPreflight).toBe('warn');
+    expect(resolveInputs({ INPUT_CREDENTIAL_PREFLIGHT: 'enforce' }).credentialPreflight).toBe(
+      'enforce'
+    );
+    expect(resolveInputs({ INPUT_CREDENTIAL_PREFLIGHT: 'off' }).credentialPreflight).toBe('off');
+    expect(() => resolveInputs({ INPUT_CREDENTIAL_PREFLIGHT: 'loud' })).toThrow(
+      /Unsupported credential-preflight/
+    );
+  });
+
+  it('readActionInputs explicitly wires credential-preflight from core.getInput', () => {
+    const coreStub = {
+      getInput: (name: string) => {
+        const map: Record<string, string> = {
+          'project-name': 'my-api',
+          'spec-url': 'https://example.com/openapi.yaml',
+          'postman-api-key': 'pmak-test',
+          'credential-preflight': 'enforce'
+        };
+        return map[name] ?? '';
+      },
+      setSecret: () => {}
+    };
+    expect(readActionInputs(coreStub).credentialPreflight).toBe('enforce');
+  });
 });

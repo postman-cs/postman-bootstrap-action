@@ -78,6 +78,7 @@ const cliInputNames = [
   'spec-path',
   'postman-api-key',
   'postman-access-token',
+  'credential-preflight',
   'workspace-id',
   'spec-id',
   'baseline-collection-id',

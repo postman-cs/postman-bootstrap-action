@@ -2,6 +2,8 @@ import { HttpError } from '../http-error.js';
 import { normalizeGitRepoUrl } from './postman-assets-client.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
+import { getMemoizedSessionIdentity } from './credential-identity.js';
+import { adviseFromHttpError, type ErrorAdviceContext } from './error-advice.js';
 
 export type InternalIntegrationBackend = 'bifrost';
 
@@ -76,6 +78,19 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   configureTeamContext(teamId: string, orgMode: boolean): void {
     this.teamId = String(teamId || '').trim();
     this.orgMode = orgMode;
+  }
+
+  private adviceContext(operation: string): ErrorAdviceContext {
+    const session = getMemoizedSessionIdentity();
+    return {
+      operation,
+      hasAccessToken: Boolean(this.accessToken),
+      sessionTeamId: session?.teamId,
+      sessionRoles: session?.roles,
+      sessionConsumerType: session?.consumerType,
+      explicitTeamId: this.teamId || undefined,
+      mask: this.secretMasker
+    };
   }
 
   private async proxyRequest(
@@ -161,7 +176,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     );
 
     if (!listResponse.ok) {
-      throw await HttpError.fromResponse(listResponse, {
+      const httpErr = await HttpError.fromResponse(listResponse, {
         method: 'GET',
         requestHeaders: {
           'Content-Type': 'application/json',
@@ -172,6 +187,8 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         secretValues: [this.accessToken],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
+      const advised = adviseFromHttpError(httpErr, this.adviceContext('governance assignment'));
+      throw advised ?? httpErr;
     }
 
     const groups = (await listResponse.json()) as {
@@ -203,7 +220,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     );
 
     if (!patchResponse.ok) {
-      throw await HttpError.fromResponse(patchResponse, {
+      const httpErr = await HttpError.fromResponse(patchResponse, {
         method: 'PATCH',
         requestHeaders: {
           'Content-Type': 'application/json',
@@ -214,6 +231,8 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         secretValues: [this.accessToken],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
+      const advised = adviseFromHttpError(httpErr, this.adviceContext('governance assignment'));
+      throw advised ?? httpErr;
     }
   }
 
@@ -259,7 +278,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       }
     }
 
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: 'POST',
       requestHeaders: {
         'Content-Type': 'application/json',
@@ -269,6 +288,8 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(httpErr, this.adviceContext('workspace repository linking'));
+    throw advised ?? httpErr;
   }
 
   async linkCollectionsToSpecification(
@@ -293,7 +314,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       return;
     }
 
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: 'POST',
       requestHeaders: {
         'Content-Type': 'application/json',
@@ -303,6 +324,11 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(
+      httpErr,
+      this.adviceContext('collection-to-specification linking')
+    );
+    throw advised ?? httpErr;
   }
 
   async syncCollection(
@@ -319,7 +345,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       return;
     }
 
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: 'POST',
       requestHeaders: {
         'Content-Type': 'application/json',
@@ -329,6 +355,8 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(httpErr, this.adviceContext('collection sync'));
+    throw advised ?? httpErr;
   }
 
   private async getWorkspaceGitRepoUrl(workspaceId: string): Promise<string | null> {

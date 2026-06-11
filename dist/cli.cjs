@@ -45095,6 +45095,12 @@ var customerPreviewActionContract = {
       description: "Postman access token used for governance and workspace mutations.",
       required: false
     },
+    "credential-preflight": {
+      description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created; off skips the identity probes entirely (the reactive error guidance still applies). Promotion of the default to enforce is planned once the live e2e legs prove both directions.",
+      required: false,
+      default: "warn",
+      allowedValues: ["enforce", "warn", "off"]
+    },
     "integration-backend": {
       description: "Integration backend for downstream workspace connectivity.",
       required: false,
@@ -46118,13 +46124,15 @@ var POSTMAN_ENDPOINT_PROFILES = {
     apiBaseUrl: "https://api.getpostman.com",
     bifrostBaseUrl: "https://bifrost-premium-https-v4.gw.postman.com",
     cliInstallUrl: "https://dl-cli.pstmn.io/install/unix.sh",
-    gatewayBaseUrl: "https://gateway.postman.com"
+    gatewayBaseUrl: "https://gateway.postman.com",
+    iapubBaseUrl: "https://iapub.postman.co"
   },
   beta: {
     apiBaseUrl: "https://api.getpostman-beta.com",
     bifrostBaseUrl: "https://bifrost-https-v4.gw.postman-beta.com",
     cliInstallUrl: "https://dl-cli.pstmn-beta.io/install/unix.sh",
-    gatewayBaseUrl: "https://gateway.postman-beta.com"
+    gatewayBaseUrl: "https://gateway.postman-beta.com",
+    iapubBaseUrl: "https://iapub.postman.co"
   }
 };
 function parsePostmanStack(value) {
@@ -46136,6 +46144,68 @@ function parsePostmanStack(value) {
 }
 function resolvePostmanEndpointProfile(stack) {
   return POSTMAN_ENDPOINT_PROFILES[stack];
+}
+
+// src/lib/postman/credential-identity.ts
+var memoizedSessionIdentity;
+function getMemoizedSessionIdentity() {
+  return memoizedSessionIdentity;
+}
+
+// src/lib/postman/error-advice.ts
+var WORKSPACE_PERSONAL_ONLY_ADVICE = "Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. The Postman API does not allow creating team workspaces at the organization level. Use the workspace-team-id input to specify which sub-team should own this workspace.";
+function workspaceTeamIdUnauthorizedAdvice(targetTeamId) {
+  return `The workspace-team-id input (${targetTeamId}) was rejected as unauthorized by the Postman API. In org-mode accounts it must be the numeric id of a sub-team this API key can access; GET https://api.getpostman.com/teams lists the available sub-teams. Fix the workspace-team-id value and re-run.`;
+}
+function adviseFromWorkspaceCreateError(err, targetTeamId) {
+  if (err.message.includes("Only personal workspaces")) {
+    return new Error(WORKSPACE_PERSONAL_ONLY_ADVICE, { cause: err });
+  }
+  if (targetTeamId != null && err.message.includes("You are not authorized to perform this action")) {
+    return new Error(workspaceTeamIdUnauthorizedAdvice(targetTeamId), { cause: err });
+  }
+  return void 0;
+}
+function expiryAdvice(code) {
+  return `postman: Bifrost rejected the access token (${code}). Service-account access tokens expire after about 1 to 1.5 hours; this run likely outlived its token. Re-mint a fresh token (postman-resolve-service-token-action, or POST https://api.getpostman.com/service-account-tokens) and re-run. If it was just minted, confirm postman-access-token is the token for the same parent org as postman-api-key.`;
+}
+function forbiddenAdvice(ctx) {
+  const sessionDetail = ctx.sessionTeamId ? ` while the access token is valid (it resolved to team ${ctx.sessionTeamId}${ctx.sessionRoles && ctx.sessionRoles.length > 0 ? `, roles [${ctx.sessionRoles.join(", ")}]` : ""}${ctx.sessionConsumerType ? `, consumerType ${ctx.sessionConsumerType}` : ""} at preflight)` : "";
+  const scopedTeamId = ctx.workspaceTeamId || ctx.explicitTeamId;
+  const teamClause = scopedTeamId ? `, or workspace-team-id ${scopedTeamId} names a sub-team it cannot act in` : ", or the workspace-team-id / POSTMAN_TEAM_ID in use names a sub-team it cannot act in";
+  return `postman: Bifrost refused ${ctx.operation || "this operation"} with 403${sessionDetail}. The token's identity lacks permission for this endpoint${teamClause}. Verify the token's role and that workspace-team-id / POSTMAN_TEAM_ID matches a sub-team from GET https://api.getpostman.com/teams.`;
+}
+function buildAdvice(status, body, ctx) {
+  if (body.includes("UNAUTHENTICATED")) {
+    return expiryAdvice("UNAUTHENTICATED");
+  }
+  if (body.includes("authenticationError")) {
+    return expiryAdvice("authenticationError");
+  }
+  if (body.includes("Only personal workspaces")) {
+    return WORKSPACE_PERSONAL_ONLY_ADVICE;
+  }
+  if (body.includes("projectAlreadyConnected")) {
+    return `postman: ${ctx.operation || "this operation"} reports projectAlreadyConnected with no workspace id in the error body. The repository is already linked to a workspace this credential cannot see, usually one created by a different credential pair or sub-team. Delete the stale link or its workspace, then re-run with one credential pair from a single parent org.`;
+  }
+  if (body.includes("invalidParamError") && body.includes("already exists")) {
+    return `postman: ${ctx.operation || "this operation"} hit a duplicate resource error (invalidParamError: already exists). A matching resource already exists, possibly under another credential pair or sub-team where this credential cannot see it. Identify which workspace holds the existing resource and re-run with one credential pair from a single parent org.`;
+  }
+  if (body.includes("Team feature is not available for your organization")) {
+    return `postman: ${ctx.operation || "this operation"} failed because the team feature is not available for this organization. The credential belongs to an account whose plan lacks team features; use credentials from the intended team and confirm the plan supports this operation.`;
+  }
+  if (body.includes("You are not authorized to perform this action") || status === 403 && ctx.hasAccessToken) {
+    return forbiddenAdvice(ctx);
+  }
+  return void 0;
+}
+function adviseFromHttpError(err, ctx) {
+  const body = err.responseBody || err.message || "";
+  const advice = buildAdvice(err.status, body, ctx);
+  if (!advice) {
+    return void 0;
+  }
+  return new Error(ctx.mask(advice), { cause: err });
 }
 
 // src/lib/retry.ts
@@ -46339,17 +46409,11 @@ var PostmanAssetsClient = class {
           body: JSON.stringify(payload)
         });
       } catch (err) {
-        if (err instanceof Error && err.message.includes("Only personal workspaces")) {
-          throw new Error(
-            "Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. The Postman API does not allow creating team workspaces at the organization level. Use the workspace-team-id input to specify which sub-team should own this workspace.",
-            { cause: err }
-          );
-        }
-        if (targetTeamId != null && err instanceof Error && err.message.includes("You are not authorized to perform this action")) {
-          throw new Error(
-            `The workspace-team-id input (${targetTeamId}) was rejected as unauthorized by the Postman API. In org-mode accounts it must be the numeric id of a sub-team this API key can access; GET https://api.getpostman.com/teams lists the available sub-teams. Fix the workspace-team-id value and re-run.`,
-            { cause: err }
-          );
+        if (err instanceof Error) {
+          const advised = adviseFromWorkspaceCreateError(err, targetTeamId);
+          if (advised) {
+            throw advised;
+          }
         }
         throw err;
       }
@@ -46878,6 +46942,18 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
     this.teamId = String(teamId || "").trim();
     this.orgMode = orgMode;
   }
+  adviceContext(operation) {
+    const session = getMemoizedSessionIdentity();
+    return {
+      operation,
+      hasAccessToken: Boolean(this.accessToken),
+      sessionTeamId: session?.teamId,
+      sessionRoles: session?.roles,
+      sessionConsumerType: session?.consumerType,
+      explicitTeamId: this.teamId || void 0,
+      mask: this.secretMasker
+    };
+  }
   async proxyRequest(service, method, requestPath2, body, options = {}) {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers = {
@@ -46944,7 +47020,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       { appVersion, query: { tag: "governance" } }
     );
     if (!listResponse.ok) {
-      throw await HttpError.fromResponse(listResponse, {
+      const httpErr = await HttpError.fromResponse(listResponse, {
         method: "GET",
         requestHeaders: {
           "Content-Type": "application/json",
@@ -46955,6 +47031,8 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
         secretValues: [this.accessToken],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
+      const advised = adviseFromHttpError(httpErr, this.adviceContext("governance assignment"));
+      throw advised ?? httpErr;
     }
     const groups = await listResponse.json();
     const group = (groups.workspaceGroups ?? groups.data)?.find(
@@ -46980,7 +47058,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       { appVersion }
     );
     if (!patchResponse.ok) {
-      throw await HttpError.fromResponse(patchResponse, {
+      const httpErr = await HttpError.fromResponse(patchResponse, {
         method: "PATCH",
         requestHeaders: {
           "Content-Type": "application/json",
@@ -46991,6 +47069,8 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
         secretValues: [this.accessToken],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
+      const advised = adviseFromHttpError(httpErr, this.adviceContext("governance assignment"));
+      throw advised ?? httpErr;
     }
   }
   async connectWorkspaceToRepository(workspaceId, repoUrl) {
@@ -47024,7 +47104,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
         );
       }
     }
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
@@ -47034,6 +47114,8 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(httpErr, this.adviceContext("workspace repository linking"));
+    throw advised ?? httpErr;
   }
   async linkCollectionsToSpecification(specificationId, collections) {
     if (collections.length === 0) {
@@ -47051,7 +47133,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
     if (response.ok) {
       return;
     }
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
@@ -47061,6 +47143,11 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(
+      httpErr,
+      this.adviceContext("collection-to-specification linking")
+    );
+    throw advised ?? httpErr;
   }
   async syncCollection(specificationId, collectionId) {
     const response = await this.proxyRequest(
@@ -47071,7 +47158,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
     if (response.ok) {
       return;
     }
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
@@ -47081,6 +47168,8 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(httpErr, this.adviceContext("collection sync"));
+    throw advised ?? httpErr;
   }
   async getWorkspaceGitRepoUrl(workspaceId) {
     const response = await this.proxyRequest(
@@ -61167,6 +61256,11 @@ function resolveInputs(env = process.env) {
     governanceMappingJson: parseGovernanceMappingJson(getInput("governance-mapping-json", env)),
     postmanApiKey: getInput("postman-api-key", env) ?? "",
     postmanAccessToken: getInput("postman-access-token", env),
+    credentialPreflight: parseEnumInput(
+      "credential-preflight",
+      getInput("credential-preflight", env),
+      customerPreviewActionContract.inputs["credential-preflight"].default ?? "warn"
+    ),
     integrationBackend,
     folderStrategy: parseEnumInput("folder-strategy", getInput("folder-strategy", env), "Paths"),
     nestedFolderHierarchy: parseBooleanInput("nested-folder-hierarchy", getInput("nested-folder-hierarchy", env), false),
@@ -61176,6 +61270,7 @@ function resolveInputs(env = process.env) {
     postmanBifrostBase: endpointProfile.bifrostBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
     postmanCliInstallUrl: endpointProfile.cliInstallUrl,
+    postmanIapubBase: endpointProfile.iapubBaseUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -61712,8 +61807,20 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
             governanceGroupName
           );
         } catch (error) {
+          const session = getMemoizedSessionIdentity();
+          const advised = error instanceof HttpError ? adviseFromHttpError(error, {
+            operation: "governance assignment",
+            hasAccessToken: Boolean(inputs.postmanAccessToken),
+            sessionTeamId: session?.teamId,
+            sessionRoles: session?.roles,
+            sessionConsumerType: session?.consumerType,
+            workspaceTeamId: inputs.workspaceTeamId,
+            explicitTeamId: inputs.teamId || void 0,
+            mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+          }) : void 0;
+          const reported = advised ?? error;
           dependencies.core.warning(
-            `Failed to assign governance group: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to assign governance group: ${reported instanceof Error ? reported.message : String(reported)}`
           );
         }
       }
@@ -62375,6 +62482,7 @@ var cliInputNames = [
   "spec-path",
   "postman-api-key",
   "postman-access-token",
+  "credential-preflight",
   "workspace-id",
   "spec-id",
   "baseline-collection-id",

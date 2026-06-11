@@ -19,6 +19,12 @@ import {
   resolvePostmanEndpointProfile,
   type PostmanStack
 } from './lib/postman/base-urls.js';
+import {
+  getMemoizedSessionIdentity,
+  runCredentialPreflight,
+  type PreflightMode
+} from './lib/postman/credential-identity.js';
+import { adviseFromHttpError } from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
@@ -62,6 +68,7 @@ export interface ResolvedInputs {
   governanceMappingJson: string;
   postmanApiKey: string;
   postmanAccessToken?: string;
+  credentialPreflight: PreflightMode;
   integrationBackend: string;
   folderStrategy: string;
   nestedFolderHierarchy: boolean;
@@ -71,6 +78,7 @@ export interface ResolvedInputs {
   postmanBifrostBase: string;
   postmanGatewayBase: string;
   postmanCliInstallUrl: string;
+  postmanIapubBase: string;
   githubRefName?: string;
   githubHeadRef?: string;
   githubRef?: string;
@@ -382,6 +390,11 @@ export function resolveInputs(
     governanceMappingJson: parseGovernanceMappingJson(getInput('governance-mapping-json', env)),
     postmanApiKey: getInput('postman-api-key', env) ?? '',
     postmanAccessToken: getInput('postman-access-token', env),
+    credentialPreflight: parseEnumInput<PreflightMode>(
+      'credential-preflight',
+      getInput('credential-preflight', env),
+      (customerPreviewActionContract.inputs['credential-preflight'].default ?? 'warn') as PreflightMode
+    ),
     integrationBackend,
     folderStrategy:
       parseEnumInput('folder-strategy', getInput('folder-strategy', env), 'Paths'),
@@ -393,6 +406,7 @@ export function resolveInputs(
     postmanBifrostBase: endpointProfile.bifrostBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
     postmanCliInstallUrl: endpointProfile.cliInstallUrl,
+    postmanIapubBase: endpointProfile.iapubBaseUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -499,6 +513,9 @@ export function readActionInputs(
       customerPreviewActionContract.inputs['governance-mapping-json'].default,
     INPUT_POSTMAN_API_KEY: postmanApiKey,
     INPUT_POSTMAN_ACCESS_TOKEN: postmanAccessToken,
+    INPUT_CREDENTIAL_PREFLIGHT:
+      optionalInput(actionCore, 'credential-preflight') ??
+      customerPreviewActionContract.inputs['credential-preflight'].default,
     INPUT_INTEGRATION_BACKEND:
       optionalInput(actionCore, 'integration-backend') ??
       customerPreviewActionContract.inputs['integration-backend'].default,
@@ -1148,8 +1165,23 @@ export async function runBootstrap(
             governanceGroupName
           );
         } catch (error) {
+          const session = getMemoizedSessionIdentity();
+          const advised =
+            error instanceof HttpError
+              ? adviseFromHttpError(error, {
+                  operation: 'governance assignment',
+                  hasAccessToken: Boolean(inputs.postmanAccessToken),
+                  sessionTeamId: session?.teamId,
+                  sessionRoles: session?.roles,
+                  sessionConsumerType: session?.consumerType,
+                  workspaceTeamId: inputs.workspaceTeamId,
+                  explicitTeamId: inputs.teamId || undefined,
+                  mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+                })
+              : undefined;
+          const reported = advised ?? error;
           dependencies.core.warning(
-            `Failed to assign governance group: ${error instanceof Error ? error.message : String(error)
+            `Failed to assign governance group: ${reported instanceof Error ? reported.message : String(reported)
             }`
           );
         }
@@ -1808,6 +1840,20 @@ export async function runAction(
   actionIo: IOLike = io
 ): Promise<PlannedOutputs> {
   const inputs = readActionInputs(actionCore);
+
+  // Proactive credential preflight: resolve and cross-check both identities once,
+  // before any write. Independent of getTeams()/orgMode below.
+  await runCredentialPreflight({
+    apiBaseUrl: inputs.postmanApiBase,
+    iapubBaseUrl: inputs.postmanIapubBase,
+    postmanApiKey: inputs.postmanApiKey,
+    postmanAccessToken: inputs.postmanAccessToken,
+    workspaceTeamId: inputs.workspaceTeamId,
+    explicitTeamId: inputs.teamId || undefined,
+    mode: inputs.credentialPreflight,
+    mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
+    log: actionCore
+  });
 
   // Early org-mode detection for proper adapter configuration
   let orgMode = false;

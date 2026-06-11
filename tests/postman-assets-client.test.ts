@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import {
+  WORKSPACE_PERSONAL_ONLY_ADVICE,
+  workspaceTeamIdUnauthorizedAdvice
+} from '../src/lib/postman/error-advice.js';
 import { PostmanAssetsClient } from '../src/lib/postman/postman-assets-client.js';
 import { instrumentContractCollection } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
@@ -798,5 +802,47 @@ paths:
         ]
       }, buildContractIndex(parseOpenApiDocument(spec)))
     ).toThrow('Contract collection is missing generated request coverage for GET /pets');
+  });
+});
+
+describe('createWorkspace error-advice delegation', () => {
+  it('createWorkspace mapping is sourced from shared error-advice module', async () => {
+    const personalBody = JSON.stringify({
+      error: {
+        name: 'invalidParamError',
+        message: 'Only personal workspaces (internal) can be created outside team'
+      }
+    });
+    const personalClient = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockImplementation(async () => new Response(personalBody, { status: 400 }))
+    });
+    const personalError = await personalClient
+      .createWorkspace('Org WS', 'desc')
+      .then(() => undefined)
+      .catch((error: unknown) => error);
+    expect(personalError).toBeInstanceOf(Error);
+    expect((personalError as Error).message).toBe(WORKSPACE_PERSONAL_ONLY_ADVICE);
+
+    const forbiddenBody = JSON.stringify({
+      error: {
+        name: 'forbiddenError',
+        message: 'You are not authorized to perform this action'
+      }
+    });
+    const forbiddenClient = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl: vi
+        .fn<typeof fetch>()
+        .mockImplementation(async () => new Response(forbiddenBody, { status: 403 }))
+    });
+    const forbiddenError = await forbiddenClient
+      .createWorkspace('Org WS', 'desc', 999999999)
+      .then(() => undefined)
+      .catch((error: unknown) => error);
+    expect(forbiddenError).toBeInstanceOf(Error);
+    expect((forbiddenError as Error).message).toBe(workspaceTeamIdUnauthorizedAdvice(999999999));
   });
 });

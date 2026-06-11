@@ -46792,6 +46792,12 @@ var customerPreviewActionContract = {
       description: "Postman access token used for governance and workspace mutations.",
       required: false
     },
+    "credential-preflight": {
+      description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created; off skips the identity probes entirely (the reactive error guidance still applies). Promotion of the default to enforce is planned once the live e2e legs prove both directions.",
+      required: false,
+      default: "warn",
+      allowedValues: ["enforce", "warn", "off"]
+    },
     "integration-backend": {
       description: "Integration backend for downstream workspace connectivity.",
       required: false,
@@ -47815,13 +47821,15 @@ var POSTMAN_ENDPOINT_PROFILES = {
     apiBaseUrl: "https://api.getpostman.com",
     bifrostBaseUrl: "https://bifrost-premium-https-v4.gw.postman.com",
     cliInstallUrl: "https://dl-cli.pstmn.io/install/unix.sh",
-    gatewayBaseUrl: "https://gateway.postman.com"
+    gatewayBaseUrl: "https://gateway.postman.com",
+    iapubBaseUrl: "https://iapub.postman.co"
   },
   beta: {
     apiBaseUrl: "https://api.getpostman-beta.com",
     bifrostBaseUrl: "https://bifrost-https-v4.gw.postman-beta.com",
     cliInstallUrl: "https://dl-cli.pstmn-beta.io/install/unix.sh",
-    gatewayBaseUrl: "https://gateway.postman-beta.com"
+    gatewayBaseUrl: "https://gateway.postman-beta.com",
+    iapubBaseUrl: "https://iapub.postman.co"
   }
 };
 function parsePostmanStack(value) {
@@ -47833,6 +47841,311 @@ function parsePostmanStack(value) {
 }
 function resolvePostmanEndpointProfile(stack) {
   return POSTMAN_ENDPOINT_PROFILES[stack];
+}
+
+// src/lib/postman/credential-identity.ts
+var sessionPath = "/api/sessions/current";
+var pmakMemo = /* @__PURE__ */ new Map();
+var sessionMemo = /* @__PURE__ */ new Map();
+var memoizedSessionIdentity;
+function getMemoizedSessionIdentity() {
+  return memoizedSessionIdentity;
+}
+function asRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return void 0;
+  }
+  return value;
+}
+function coerceId(raw) {
+  return raw ? String(raw) : void 0;
+}
+function coerceText(raw) {
+  if (typeof raw !== "string") {
+    return void 0;
+  }
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : void 0;
+}
+function normalizeBaseUrl(raw) {
+  return String(raw || "").replace(/\/+$/, "");
+}
+async function resolvePmakIdentity(opts) {
+  const apiKey = String(opts.apiKey || "").trim();
+  if (!apiKey) {
+    return void 0;
+  }
+  const baseUrl = normalizeBaseUrl(opts.apiBaseUrl);
+  const memoKey = `${baseUrl}::${apiKey}`;
+  let pending = pmakMemo.get(memoKey);
+  if (!pending) {
+    pending = probePmakIdentity(baseUrl, apiKey, opts.fetchImpl ?? fetch);
+    pmakMemo.set(memoKey, pending);
+  }
+  return pending;
+}
+async function probePmakIdentity(baseUrl, apiKey, fetchImpl) {
+  try {
+    const response = await fetchImpl(`${baseUrl}/me`, {
+      method: "GET",
+      headers: { "X-Api-Key": apiKey }
+    });
+    if (!response.ok) {
+      return void 0;
+    }
+    const payload = asRecord(await response.json());
+    const user = asRecord(payload?.user);
+    if (!user) {
+      return void 0;
+    }
+    return {
+      source: "pmak/me",
+      userId: coerceId(user.id),
+      fullName: coerceText(user.fullName) ?? coerceText(user.username),
+      teamId: coerceId(user.teamId),
+      teamName: coerceText(user.teamName),
+      teamDomain: coerceText(user.teamDomain)
+    };
+  } catch {
+    return void 0;
+  }
+}
+async function resolveSessionIdentity(opts) {
+  const accessToken = String(opts.accessToken || "").trim();
+  if (!accessToken) {
+    return void 0;
+  }
+  const baseUrl = normalizeBaseUrl(opts.iapubBaseUrl);
+  const memoKey = `${baseUrl}::${accessToken}`;
+  let pending = sessionMemo.get(memoKey);
+  if (!pending) {
+    pending = probeSessionIdentity(baseUrl, accessToken, opts.fetchImpl ?? fetch);
+    sessionMemo.set(memoKey, pending);
+  }
+  return pending;
+}
+async function probeSessionIdentity(baseUrl, accessToken, fetchImpl) {
+  try {
+    const response = await fetchImpl(`${baseUrl}${sessionPath}`, {
+      method: "GET",
+      headers: { "x-access-token": accessToken }
+    });
+    if (!response.ok) {
+      return void 0;
+    }
+    const payload = asRecord(await response.json());
+    if (!payload) {
+      return void 0;
+    }
+    const identity = asRecord(payload.identity);
+    const data = asRecord(payload.data);
+    const user = asRecord(data?.user);
+    const roleEntries = Array.isArray(user?.roles) ? user.roles.map((entry) => coerceText(entry) ?? coerceId(entry)).filter((entry) => Boolean(entry)) : [];
+    const singleRole = coerceText(user?.role);
+    const roles = roleEntries.length > 0 ? roleEntries : singleRole ? [singleRole] : void 0;
+    const resolved = {
+      source: "iapub/sessions",
+      userId: coerceId(user?.id),
+      fullName: coerceText(user?.fullName) ?? coerceText(user?.name) ?? coerceText(user?.username),
+      teamId: coerceId(identity?.team),
+      teamDomain: coerceText(identity?.domain),
+      ...roles ? { roles } : {},
+      consumerType: coerceText(payload.consumerType) ?? coerceText(data?.consumerType) ?? coerceText(user?.consumerType)
+    };
+    memoizedSessionIdentity = resolved;
+    return resolved;
+  } catch {
+    return void 0;
+  }
+}
+function describeTeam(id) {
+  const label = id?.teamName ?? id?.teamDomain;
+  return `team ${id?.teamId ?? "unresolved"}${label ? ` (${label})` : ""}`;
+}
+function formatIdentityLine(id, mask) {
+  const teamPart = id.teamId ? describeTeam(id) : "team unresolved";
+  const domainPart = id.teamDomain ? `, domain ${id.teamDomain}` : "";
+  if (id.source === "pmak/me") {
+    const userPart = id.userId ? `user ${id.userId}${id.fullName ? ` (${id.fullName})` : ""}, ` : "";
+    return mask(`postman: PMAK identity - ${userPart}${teamPart}${domainPart}`);
+  }
+  return mask(
+    `postman: access-token session identity - ${teamPart}${domainPart} [source: iapub/sessions]`
+  );
+}
+function crossCheckIdentities(args) {
+  if (args.mode === "off") {
+    return { ok: true, level: "ok", message: "" };
+  }
+  const pmakTeamId = args.pmak?.teamId;
+  const sessionTeamId = args.session?.teamId;
+  if (pmakTeamId && sessionTeamId && pmakTeamId !== sessionTeamId) {
+    const level = args.mode === "enforce" ? "fail" : "note";
+    const lead = level === "fail" ? "credential preflight FAILED" : "credential preflight note";
+    const fix = level === "fail" ? "Use one credential pair from a single parent org: re-mint the access token from the same parent org as postman-api-key (postman-resolve-service-token-action, or POST https://api.getpostman.com/service-account-tokens with that team's PMAK), or set postman-api-key to the matching parent org." : "Use one credential pair from a single parent org. Set credential-preflight: enforce to fail the run on this condition.";
+    return {
+      ok: false,
+      level,
+      message: args.mask(
+        `postman: ${lead} - PMAK belongs to ${describeTeam(args.pmak)} but the access token's session belongs to a different parent org, ${describeTeam(args.session)}. Assets would be created against one team while Bifrost linking and governance act under the other, producing duplicate-link 400s and workspaces not visible to the other credential. ` + fix
+      )
+    };
+  }
+  if (pmakTeamId && sessionTeamId) {
+    const scope = args.workspaceTeamId || args.explicitTeamId ? "parent org team" : "team";
+    const label = args.pmak?.teamName ?? args.pmak?.teamDomain ?? args.session?.teamName ?? args.session?.teamDomain;
+    return {
+      ok: true,
+      level: "ok",
+      message: args.mask(
+        `postman: credential preflight OK - PMAK and access token both resolve to ${scope} ${pmakTeamId}${label ? ` (${label})` : ""}`
+      )
+    };
+  }
+  const missing = [
+    !pmakTeamId ? "PMAK identity" : void 0,
+    !sessionTeamId ? "access-token session identity" : void 0
+  ].filter(Boolean).join(" and ");
+  return {
+    ok: false,
+    level: "note",
+    message: args.mask(
+      `postman: credential preflight note - cross-check skipped because the ${missing} did not resolve a team id; continuing with reactive error guidance only`
+    )
+  };
+}
+async function runCredentialPreflight(args) {
+  if (args.mode === "off") {
+    return;
+  }
+  const mask = args.mask;
+  const apiKey = String(args.postmanApiKey || "").trim();
+  const accessToken = String(args.postmanAccessToken || "").trim();
+  let pmak;
+  if (apiKey) {
+    try {
+      pmak = await resolvePmakIdentity({
+        apiBaseUrl: args.apiBaseUrl,
+        apiKey,
+        fetchImpl: args.fetchImpl
+      });
+    } catch (error2) {
+      args.log.warning(
+        mask(
+          `postman: credential preflight could not resolve PMAK identity: ${error2 instanceof Error ? error2.message : String(error2)}`
+        )
+      );
+    }
+    if (pmak) {
+      args.log.info(formatIdentityLine(pmak, mask));
+    } else {
+      args.log.warning(
+        mask("postman: credential preflight could not resolve PMAK identity from GET /me; continuing")
+      );
+    }
+  }
+  if (!accessToken) {
+    args.log.info(mask("postman: Bifrost diagnostics limited: no access token"));
+    return;
+  }
+  let session;
+  try {
+    session = await resolveSessionIdentity({
+      iapubBaseUrl: args.iapubBaseUrl,
+      accessToken,
+      fetchImpl: args.fetchImpl
+    });
+  } catch (error2) {
+    args.log.warning(
+      mask(
+        `postman: credential preflight could not resolve access-token session identity: ${error2 instanceof Error ? error2.message : String(error2)}`
+      )
+    );
+  }
+  if (session) {
+    args.log.info(formatIdentityLine(session, mask));
+  } else {
+    args.log.warning(
+      mask(
+        "postman: credential preflight could not resolve the access-token session identity from iapub; continuing with reactive error guidance only"
+      )
+    );
+  }
+  const result = crossCheckIdentities({
+    pmak,
+    session,
+    workspaceTeamId: args.workspaceTeamId,
+    explicitTeamId: args.explicitTeamId,
+    mode: args.mode,
+    mask
+  });
+  if (!result.message) {
+    return;
+  }
+  if (result.level === "fail") {
+    throw new Error(result.message);
+  }
+  if (result.level === "note") {
+    args.log.warning(result.message);
+    return;
+  }
+  args.log.info(result.message);
+}
+
+// src/lib/postman/error-advice.ts
+var WORKSPACE_PERSONAL_ONLY_ADVICE = "Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. The Postman API does not allow creating team workspaces at the organization level. Use the workspace-team-id input to specify which sub-team should own this workspace.";
+function workspaceTeamIdUnauthorizedAdvice(targetTeamId) {
+  return `The workspace-team-id input (${targetTeamId}) was rejected as unauthorized by the Postman API. In org-mode accounts it must be the numeric id of a sub-team this API key can access; GET https://api.getpostman.com/teams lists the available sub-teams. Fix the workspace-team-id value and re-run.`;
+}
+function adviseFromWorkspaceCreateError(err, targetTeamId) {
+  if (err.message.includes("Only personal workspaces")) {
+    return new Error(WORKSPACE_PERSONAL_ONLY_ADVICE, { cause: err });
+  }
+  if (targetTeamId != null && err.message.includes("You are not authorized to perform this action")) {
+    return new Error(workspaceTeamIdUnauthorizedAdvice(targetTeamId), { cause: err });
+  }
+  return void 0;
+}
+function expiryAdvice(code) {
+  return `postman: Bifrost rejected the access token (${code}). Service-account access tokens expire after about 1 to 1.5 hours; this run likely outlived its token. Re-mint a fresh token (postman-resolve-service-token-action, or POST https://api.getpostman.com/service-account-tokens) and re-run. If it was just minted, confirm postman-access-token is the token for the same parent org as postman-api-key.`;
+}
+function forbiddenAdvice(ctx) {
+  const sessionDetail = ctx.sessionTeamId ? ` while the access token is valid (it resolved to team ${ctx.sessionTeamId}${ctx.sessionRoles && ctx.sessionRoles.length > 0 ? `, roles [${ctx.sessionRoles.join(", ")}]` : ""}${ctx.sessionConsumerType ? `, consumerType ${ctx.sessionConsumerType}` : ""} at preflight)` : "";
+  const scopedTeamId = ctx.workspaceTeamId || ctx.explicitTeamId;
+  const teamClause = scopedTeamId ? `, or workspace-team-id ${scopedTeamId} names a sub-team it cannot act in` : ", or the workspace-team-id / POSTMAN_TEAM_ID in use names a sub-team it cannot act in";
+  return `postman: Bifrost refused ${ctx.operation || "this operation"} with 403${sessionDetail}. The token's identity lacks permission for this endpoint${teamClause}. Verify the token's role and that workspace-team-id / POSTMAN_TEAM_ID matches a sub-team from GET https://api.getpostman.com/teams.`;
+}
+function buildAdvice(status, body, ctx) {
+  if (body.includes("UNAUTHENTICATED")) {
+    return expiryAdvice("UNAUTHENTICATED");
+  }
+  if (body.includes("authenticationError")) {
+    return expiryAdvice("authenticationError");
+  }
+  if (body.includes("Only personal workspaces")) {
+    return WORKSPACE_PERSONAL_ONLY_ADVICE;
+  }
+  if (body.includes("projectAlreadyConnected")) {
+    return `postman: ${ctx.operation || "this operation"} reports projectAlreadyConnected with no workspace id in the error body. The repository is already linked to a workspace this credential cannot see, usually one created by a different credential pair or sub-team. Delete the stale link or its workspace, then re-run with one credential pair from a single parent org.`;
+  }
+  if (body.includes("invalidParamError") && body.includes("already exists")) {
+    return `postman: ${ctx.operation || "this operation"} hit a duplicate resource error (invalidParamError: already exists). A matching resource already exists, possibly under another credential pair or sub-team where this credential cannot see it. Identify which workspace holds the existing resource and re-run with one credential pair from a single parent org.`;
+  }
+  if (body.includes("Team feature is not available for your organization")) {
+    return `postman: ${ctx.operation || "this operation"} failed because the team feature is not available for this organization. The credential belongs to an account whose plan lacks team features; use credentials from the intended team and confirm the plan supports this operation.`;
+  }
+  if (body.includes("You are not authorized to perform this action") || status === 403 && ctx.hasAccessToken) {
+    return forbiddenAdvice(ctx);
+  }
+  return void 0;
+}
+function adviseFromHttpError(err, ctx) {
+  const body = err.responseBody || err.message || "";
+  const advice = buildAdvice(err.status, body, ctx);
+  if (!advice) {
+    return void 0;
+  }
+  return new Error(ctx.mask(advice), { cause: err });
 }
 
 // src/lib/retry.ts
@@ -47883,7 +48196,7 @@ async function retry(operation, options = {}) {
 }
 
 // src/lib/postman/postman-assets-client.ts
-function asRecord(value) {
+function asRecord2(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -47891,8 +48204,8 @@ function asRecord(value) {
 }
 function extractWorkspacesPage(data) {
   const workspaces = Array.isArray(data?.workspaces) ? data.workspaces : [];
-  const meta = asRecord(data?.meta);
-  const pagination = asRecord(data?.pagination);
+  const meta = asRecord2(data?.meta);
+  const pagination = asRecord2(data?.pagination);
   const nextCursor = String(
     data?.nextCursor ?? data?.next_cursor ?? meta?.nextCursor ?? meta?.next_cursor ?? pagination?.nextCursor ?? pagination?.next_cursor ?? ""
   ).trim() || void 0;
@@ -47984,7 +48297,7 @@ var PostmanAssetsClient = class {
   async getTeams() {
     const data = await this.request("/teams");
     const teams = data?.data ?? [];
-    return Array.isArray(teams) ? teams.map((entry) => asRecord(entry)).filter((team) => Boolean(team?.id && team?.name)).map((team) => ({
+    return Array.isArray(teams) ? teams.map((entry) => asRecord2(entry)).filter((team) => Boolean(team?.id && team?.name)).map((team) => ({
       id: Number(team.id),
       name: String(team.name),
       handle: String(team.handle || ""),
@@ -48036,34 +48349,28 @@ var PostmanAssetsClient = class {
           body: JSON.stringify(payload)
         });
       } catch (err) {
-        if (err instanceof Error && err.message.includes("Only personal workspaces")) {
-          throw new Error(
-            "Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. The Postman API does not allow creating team workspaces at the organization level. Use the workspace-team-id input to specify which sub-team should own this workspace.",
-            { cause: err }
-          );
-        }
-        if (targetTeamId != null && err instanceof Error && err.message.includes("You are not authorized to perform this action")) {
-          throw new Error(
-            `The workspace-team-id input (${targetTeamId}) was rejected as unauthorized by the Postman API. In org-mode accounts it must be the numeric id of a sub-team this API key can access; GET https://api.getpostman.com/teams lists the available sub-teams. Fix the workspace-team-id value and re-run.`,
-            { cause: err }
-          );
+        if (err instanceof Error) {
+          const advised = adviseFromWorkspaceCreateError(err, targetTeamId);
+          if (advised) {
+            throw advised;
+          }
         }
         throw err;
       }
-      const createdWorkspace = asRecord(created?.workspace);
+      const createdWorkspace = asRecord2(created?.workspace);
       const workspaceId = String(createdWorkspace?.id || "").trim();
       if (!workspaceId) {
         throw new Error("Workspace create did not return an id");
       }
       const workspace = await this.request(`/workspaces/${workspaceId}`);
-      let visibility = asRecord(workspace?.workspace)?.visibility;
+      let visibility = asRecord2(workspace?.workspace)?.visibility;
       if (visibility !== "team") {
         await this.request(`/workspaces/${workspaceId}`, {
           method: "PUT",
           body: JSON.stringify(payload)
         });
         const reread = await this.request(`/workspaces/${workspaceId}`);
-        visibility = asRecord(reread?.workspace)?.visibility;
+        visibility = asRecord2(reread?.workspace)?.visibility;
       }
       if (typeof visibility === "string" && visibility !== "team") {
         let cleanedUp = false;
@@ -48092,7 +48399,7 @@ var PostmanAssetsClient = class {
   async getWorkspaceVisibility(workspaceId) {
     try {
       const workspace = await this.request(`/workspaces/${workspaceId}`);
-      const visibility = asRecord(workspace?.workspace)?.visibility;
+      const visibility = asRecord2(workspace?.workspace)?.visibility;
       return typeof visibility === "string" ? visibility : null;
     } catch {
       return null;
@@ -48114,7 +48421,7 @@ var PostmanAssetsClient = class {
         nextCursor = page.nextCursor;
       }
     } while (nextCursor);
-    return allWorkspaces.map((entry) => asRecord(entry)).filter((workspace) => Boolean(workspace?.id && workspace?.name)).map((workspace) => ({
+    return allWorkspaces.map((entry) => asRecord2(entry)).filter((workspace) => Boolean(workspace?.id && workspace?.name)).map((workspace) => ({
       id: String(workspace.id),
       name: String(workspace.name),
       type: String(workspace.type ?? "team")
@@ -48162,7 +48469,7 @@ var PostmanAssetsClient = class {
   async inviteRequesterToWorkspace(workspaceId, email) {
     const users = await this.request("/users");
     const userList = Array.isArray(users?.data) ? users.data : [];
-    const user = userList.map((entry) => asRecord(entry)).find((entry) => entry?.email === email);
+    const user = userList.map((entry) => asRecord2(entry)).find((entry) => entry?.email === email);
     if (!user?.id) {
       return;
     }
@@ -48250,12 +48557,12 @@ var PostmanAssetsClient = class {
       }
     };
     const extractUid = (data) => {
-      const root = asRecord(data);
-      const details = asRecord(root?.details);
+      const root = asRecord2(data);
+      const details = asRecord2(root?.details);
       const resources = Array.isArray(details?.resources) ? details.resources : [];
-      const firstResource = asRecord(resources[0]);
-      const collection = asRecord(root?.collection);
-      const resource = asRecord(root?.resource);
+      const firstResource = asRecord2(resources[0]);
+      const collection = asRecord2(root?.collection);
+      const resource = asRecord2(root?.resource);
       return String(
         firstResource?.id ?? collection?.id ?? collection?.uid ?? resource?.uid ?? resource?.id ?? ""
       ).trim() || void 0;
@@ -48289,9 +48596,9 @@ var PostmanAssetsClient = class {
     if (directUid) {
       return directUid;
     }
-    let taskUrl = String(generationResponse?.url ?? "") || String(generationResponse?.task_url ?? "") || String(generationResponse?.taskUrl ?? "") || String(asRecord(generationResponse?.links)?.task ?? "");
+    let taskUrl = String(generationResponse?.url ?? "") || String(generationResponse?.task_url ?? "") || String(generationResponse?.taskUrl ?? "") || String(asRecord2(generationResponse?.links)?.task ?? "");
     if (!taskUrl) {
-      const task = asRecord(generationResponse?.task);
+      const task = asRecord2(generationResponse?.task);
       const taskId = generationResponse?.taskId || task?.id || generationResponse?.id;
       if (!taskId) {
         throw new Error(
@@ -48305,8 +48612,8 @@ var PostmanAssetsClient = class {
         setTimeout(resolve4, 2e3);
       });
       const task = await this.request(taskUrl);
-      const taskRecord = asRecord(task);
-      const taskNested = asRecord(taskRecord?.task);
+      const taskRecord = asRecord2(task);
+      const taskNested = asRecord2(taskRecord?.task);
       const status = String(taskRecord?.status || taskNested?.status || "").toLowerCase();
       if (status === "completed") {
         const taskUid = extractUid(task);
@@ -48337,7 +48644,7 @@ var PostmanAssetsClient = class {
   }
   async injectTests(collectionUid, type2) {
     const collectionResponse = await this.request(`/collections/${collectionUid}`);
-    const collection = asRecord(collectionResponse?.collection);
+    const collection = asRecord2(collectionResponse?.collection);
     if (!collection) {
       throw new Error(`Failed to fetch collection ${collectionUid}`);
     }
@@ -48423,7 +48730,7 @@ var PostmanAssetsClient = class {
         });
       }
       if (Array.isArray(itemNode.item)) {
-        itemNode.item.map((entry) => asRecord(entry)).filter((entry) => Boolean(entry)).forEach(injectScripts);
+        itemNode.item.map((entry) => asRecord2(entry)).filter((entry) => Boolean(entry)).forEach(injectScripts);
       }
     };
     if (Array.isArray(collection.item)) {
@@ -48451,7 +48758,7 @@ var PostmanAssetsClient = class {
         }
       })
     });
-    const environment = asRecord(response?.environment);
+    const environment = asRecord2(response?.environment);
     const uid = String(environment?.uid || "").trim();
     if (!uid) {
       throw new Error("Environment create did not return a UID");
@@ -48484,7 +48791,7 @@ var PostmanAssetsClient = class {
         }
       })
     });
-    const monitor = asRecord(response?.monitor);
+    const monitor = asRecord2(response?.monitor);
     const uid = String(monitor?.uid || "").trim();
     if (!uid) {
       throw new Error("Monitor create did not return a UID");
@@ -48503,8 +48810,8 @@ var PostmanAssetsClient = class {
         }
       })
     });
-    const mock = asRecord(response?.mock);
-    const mockConfig = asRecord(mock?.config);
+    const mock = asRecord2(response?.mock);
+    const mockConfig = asRecord2(mock?.config);
     const uid = String(mock?.uid || "").trim();
     if (!uid) {
       throw new Error("Mock create did not return a UID");
@@ -48575,6 +48882,18 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
     this.teamId = String(teamId || "").trim();
     this.orgMode = orgMode;
   }
+  adviceContext(operation) {
+    const session = getMemoizedSessionIdentity();
+    return {
+      operation,
+      hasAccessToken: Boolean(this.accessToken),
+      sessionTeamId: session?.teamId,
+      sessionRoles: session?.roles,
+      sessionConsumerType: session?.consumerType,
+      explicitTeamId: this.teamId || void 0,
+      mask: this.secretMasker
+    };
+  }
   async proxyRequest(service, method, requestPath2, body, options = {}) {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers = {
@@ -48641,7 +48960,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       { appVersion, query: { tag: "governance" } }
     );
     if (!listResponse.ok) {
-      throw await HttpError.fromResponse(listResponse, {
+      const httpErr = await HttpError.fromResponse(listResponse, {
         method: "GET",
         requestHeaders: {
           "Content-Type": "application/json",
@@ -48652,6 +48971,8 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
         secretValues: [this.accessToken],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
+      const advised = adviseFromHttpError(httpErr, this.adviceContext("governance assignment"));
+      throw advised ?? httpErr;
     }
     const groups = await listResponse.json();
     const group2 = (groups.workspaceGroups ?? groups.data)?.find(
@@ -48677,7 +48998,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       { appVersion }
     );
     if (!patchResponse.ok) {
-      throw await HttpError.fromResponse(patchResponse, {
+      const httpErr = await HttpError.fromResponse(patchResponse, {
         method: "PATCH",
         requestHeaders: {
           "Content-Type": "application/json",
@@ -48688,6 +49009,8 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
         secretValues: [this.accessToken],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
+      const advised = adviseFromHttpError(httpErr, this.adviceContext("governance assignment"));
+      throw advised ?? httpErr;
     }
   }
   async connectWorkspaceToRepository(workspaceId, repoUrl) {
@@ -48721,7 +49044,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
         );
       }
     }
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
@@ -48731,6 +49054,8 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(httpErr, this.adviceContext("workspace repository linking"));
+    throw advised ?? httpErr;
   }
   async linkCollectionsToSpecification(specificationId, collections) {
     if (collections.length === 0) {
@@ -48748,7 +49073,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
     if (response.ok) {
       return;
     }
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
@@ -48758,6 +49083,11 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(
+      httpErr,
+      this.adviceContext("collection-to-specification linking")
+    );
+    throw advised ?? httpErr;
   }
   async syncCollection(specificationId, collectionId) {
     const response = await this.proxyRequest(
@@ -48768,7 +49098,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
     if (response.ok) {
       return;
     }
-    throw await HttpError.fromResponse(response, {
+    const httpErr = await HttpError.fromResponse(response, {
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
@@ -48778,6 +49108,8 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       secretValues: [this.accessToken],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
+    const advised = adviseFromHttpError(httpErr, this.adviceContext("collection sync"));
+    throw advised ?? httpErr;
   }
   async getWorkspaceGitRepoUrl(workspaceId) {
     const response = await this.proxyRequest(
@@ -49351,7 +49683,7 @@ var STRIP_KEYS = /* @__PURE__ */ new Set([
   "discriminator",
   "format"
 ]);
-function asRecord2(value) {
+function asRecord3(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -49363,7 +49695,7 @@ function decodePointerSegment(segment) {
 }
 function resolvePointer(root, ref) {
   if (!ref.startsWith("#/")) return void 0;
-  return ref.slice(2).split("/").map(decodePointerSegment).reduce((node, segment) => asRecord2(node)?.[segment], root);
+  return ref.slice(2).split("/").map(decodePointerSegment).reduce((node, segment) => asRecord3(node)?.[segment], root);
 }
 function unsupported(message) {
   return { unsupported: message };
@@ -49373,7 +49705,7 @@ function mergeRequiredWithoutWriteOnly(required, writeOnlyProperties) {
   return values.length > 0 ? values : void 0;
 }
 function hasUnsupported(child2) {
-  return asRecord2(child2)?.unsupported;
+  return asRecord3(child2)?.unsupported;
 }
 function rootDialect(root, version, schemaRecord) {
   if (version === "3.0") return DRAFT_07_SCHEMA_URI;
@@ -49393,7 +49725,7 @@ function normalizeSchema(root, schema2, options) {
     const bad = normalized2.map(hasUnsupported).find(Boolean);
     return bad ? unsupported(bad) : normalized2;
   }
-  const record = asRecord2(schema2);
+  const record = asRecord3(schema2);
   if (!record) return schema2;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (ref) {
@@ -49428,10 +49760,10 @@ function normalizeSchema(root, schema2, options) {
   const nullable = sourceSchema.nullable === true && options.version === "3.0";
   delete sourceSchema.nullable;
   const writeOnlyProperties = /* @__PURE__ */ new Set();
-  const rawProperties = asRecord2(sourceSchema.properties);
+  const rawProperties = asRecord3(sourceSchema.properties);
   if (rawProperties) {
     for (const [propertyName, propertySchema] of Object.entries(rawProperties)) {
-      if (asRecord2(propertySchema)?.writeOnly === true) writeOnlyProperties.add(propertyName);
+      if (asRecord3(propertySchema)?.writeOnly === true) writeOnlyProperties.add(propertyName);
     }
   }
   const normalized = {};
@@ -49463,7 +49795,7 @@ function normalizeSchema(root, schema2, options) {
       return unsupported("Tuple array items are unsupported in OpenAPI 3.0");
     }
     if (key === "properties") {
-      const properties = asRecord2(value);
+      const properties = asRecord3(value);
       if (!properties) continue;
       const nextProperties = {};
       for (const [propertyName, propertySchema] of Object.entries(properties)) {
@@ -49506,7 +49838,7 @@ function normalizeSchema(root, schema2, options) {
 }
 function packSchema(root, schema2, version) {
   try {
-    const dialect = rootDialect(root, version, asRecord2(schema2) ?? void 0);
+    const dialect = rootDialect(root, version, asRecord3(schema2) ?? void 0);
     const normalized = normalizeSchema(root, schema2, { version, rootSchema: true, dialect });
     const message = hasUnsupported(normalized);
     return message ? unsupported(message) : { schema: normalized };
@@ -49517,7 +49849,7 @@ function packSchema(root, schema2, version) {
 
 // src/lib/spec/contract-index.ts
 var HTTP_METHODS = /* @__PURE__ */ new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
-function asRecord3(value) {
+function asRecord4(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -49534,12 +49866,12 @@ function detectOpenApiVersion(root) {
   return match[1] === "1" ? "3.1" : "3.0";
 }
 function resolveInternalRef(root, value) {
-  const record = asRecord3(value);
+  const record = asRecord4(value);
   if (!record) return null;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (!ref) return record;
   if (!ref.startsWith("#/")) throw new Error(`CONTRACT_UNRESOLVED_REF: External ref remained after bundling: ${ref}`);
-  const resolved = asRecord3(resolvePointer(root, ref));
+  const resolved = asRecord4(resolvePointer(root, ref));
   if (!resolved) throw new Error(`CONTRACT_UNRESOLVED_REF: Unresolved OpenAPI $ref: ${ref}`);
   return resolved;
 }
@@ -49559,11 +49891,11 @@ function normalizePath(path8) {
   return trimmed.split("/").map((segment, index) => index === 0 ? "" : safeDecodeSegment(segment)).join("/") || "/";
 }
 function pathItemServers(pathItem) {
-  return asArray2(pathItem.servers).map((entry) => asRecord3(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
+  return asArray2(pathItem.servers).map((entry) => asRecord4(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
 }
 function operationServers(root, pathItem, operation) {
   const rawServers = asArray2(operation.servers).length > 0 ? asArray2(operation.servers) : pathItemServers(pathItem).length > 0 ? asArray2(pathItem.servers) : asArray2(root.servers);
-  const values = rawServers.map((entry) => asRecord3(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
+  const values = rawServers.map((entry) => asRecord4(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
   return values.length > 0 ? values : [""];
 }
 function serverPathPrefix(url) {
@@ -49584,10 +49916,10 @@ function normalizeResponseKey(status) {
   return /^[1-5]xx$/i.test(raw) ? raw.toUpperCase() : raw;
 }
 function collectSecurityApiKeys(root, operation) {
-  const securitySchemes = asRecord3(asRecord3(root.components)?.securitySchemes);
+  const securitySchemes = asRecord4(asRecord4(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
   const names = /* @__PURE__ */ new Set();
-  for (const requirement of requirements.map((entry) => asRecord3(entry)).filter(Boolean)) {
+  for (const requirement of requirements.map((entry) => asRecord4(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
       const scheme = resolveInternalRef(root, securitySchemes?.[schemeName]);
       if (scheme?.type === "apiKey" && typeof scheme.name === "string" && ["query", "header"].includes(String(scheme.in))) {
@@ -49605,10 +49937,10 @@ function securitySchemeKind(scheme) {
   return type2;
 }
 function collectSecuritySchemeWarnings(root, operation) {
-  const securitySchemes = asRecord3(asRecord3(root.components)?.securitySchemes);
+  const securitySchemes = asRecord4(asRecord4(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
   const warnings = /* @__PURE__ */ new Set();
-  for (const requirement of requirements.map((entry) => asRecord3(entry)).filter(Boolean)) {
+  for (const requirement of requirements.map((entry) => asRecord4(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
       const scheme = resolveInternalRef(root, securitySchemes?.[schemeName]);
       warnings.add(
@@ -49644,24 +49976,24 @@ function collectParameters(root, pathItem, operation) {
 function collectRequestBody(root, operation) {
   const body = resolveInternalRef(root, operation.requestBody);
   if (!body || body.required !== true) return void 0;
-  const content = asRecord3(body.content);
+  const content = asRecord4(body.content);
   return {
     required: true,
     contentTypes: content ? Object.keys(content) : []
   };
 }
 function responseContent(root, version, response) {
-  const content = asRecord3(response.content);
+  const content = asRecord4(response.content);
   if (!content) return {};
   const media = {};
   for (const [contentType, mediaObject] of Object.entries(content)) {
-    const schema2 = asRecord3(mediaObject)?.schema;
+    const schema2 = asRecord4(mediaObject)?.schema;
     media[contentType] = schema2 === void 0 ? {} : packSchema(root, schema2, version);
   }
   return media;
 }
 function responseHeaders(root, version, response) {
-  const headers = asRecord3(response.headers);
+  const headers = asRecord4(response.headers);
   if (!headers) return [];
   return Object.entries(headers).map(([name, rawHeader]) => {
     const header = resolveInternalRef(root, rawHeader);
@@ -49676,10 +50008,10 @@ function buildContractIndex(root) {
   if (root.swagger === "2.0") throw new Error("CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (found swagger 2.0)");
   if (!("openapi" in root)) throw new Error("CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (missing openapi)");
   const version = detectOpenApiVersion(root);
-  const paths = asRecord3(root.paths);
+  const paths = asRecord4(root.paths);
   const operations = [];
   const warnings = [];
-  if (asRecord3(root.webhooks)) warnings.push("CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests");
+  if (asRecord4(root.webhooks)) warnings.push("CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests");
   if (paths) {
     for (const [path8, rawPathItem] of Object.entries(paths)) {
       const pathItem = resolveInternalRef(root, rawPathItem);
@@ -49690,7 +50022,7 @@ function buildContractIndex(root) {
         const operation = resolveInternalRef(root, rawOperation);
         if (!operation) continue;
         if (operation.callbacks) warnings.push(`CONTRACT_CALLBACKS_NOT_VALIDATED: callbacks are not validated for ${lowerMethod.toUpperCase()} ${path8}`);
-        const responses = asRecord3(operation.responses);
+        const responses = asRecord4(operation.responses);
         if (!responses || Object.keys(responses).length === 0) {
           throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path8} must define at least one response`);
         }
@@ -49780,7 +50112,7 @@ var CONTRACT_SIZE_LIMITS = {
   maxTestScriptBytes: 9e5,
   maxCollectionUpdateBytes: 4e6
 };
-function asRecord4(value) {
+function asRecord5(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -49789,7 +50121,7 @@ function asArray3(value) {
 }
 function stringifyPathSegment(segment) {
   if (typeof segment === "string") return segment;
-  const record = asRecord4(segment);
+  const record = asRecord5(segment);
   if (!record) return String(segment ?? "");
   for (const key of ["value", "key", "name"]) {
     if (typeof record[key] === "string" && record[key]) return String(record[key]);
@@ -49807,10 +50139,10 @@ function pathFromRaw(raw) {
   }
 }
 function requestPath(request) {
-  const record = asRecord4(request);
+  const record = asRecord5(request);
   const url = record?.url ?? request;
   if (typeof url === "string") return pathFromRaw(url);
-  const urlRecord = asRecord4(url);
+  const urlRecord = asRecord5(url);
   if (!urlRecord) return "/";
   if (Array.isArray(urlRecord.path)) return normalizePath(`/${urlRecord.path.map(stringifyPathSegment).filter(Boolean).join("/")}`);
   if (typeof urlRecord.path === "string") return normalizePath(urlRecord.path);
@@ -49842,7 +50174,7 @@ function matchCandidate(candidate, request) {
   return { matched: true, staticCount, templateCount };
 }
 function matchOperation(index, request) {
-  const record = asRecord4(request);
+  const record = asRecord5(request);
   const method = String(record?.method || "").toUpperCase();
   const path8 = requestPath(request);
   const candidates = index.operations.filter((operation) => operation.method === method).flatMap((operation) => operation.candidates.map((candidate) => ({ operation, score: matchCandidate(candidate, path8), serverFull: candidate !== normalizePath(operation.path) }))).filter((entry) => entry.score.matched).map((entry) => ({ operation: entry.operation, score: [entry.score.staticCount, entry.serverFull ? 2 : 1, -entry.score.templateCount] })).sort((a, b) => {
@@ -49993,17 +50325,17 @@ function createSecretsResolverItem() {
 }
 function isResolverItem(item) {
   if (item.name !== "00 - Resolve Secrets") return false;
-  const request = asRecord4(item.request);
+  const request = asRecord5(item.request);
   if (String(request?.method || "").toUpperCase() !== "POST") return false;
-  const headers = asArray3(request?.header).map((entry) => asRecord4(entry));
+  const headers = asArray3(request?.header).map((entry) => asRecord5(entry));
   const target = headers.find((entry) => entry?.key === "X-Amz-Target");
   return String(target?.value || "") === "secretsmanager.GetSecretValue" && !requestPath(request).includes("secretsmanager");
 }
 function requestQueryNames(request) {
-  const url = asRecord4(request.url);
+  const url = asRecord5(request.url);
   const names = /* @__PURE__ */ new Set();
   if (Array.isArray(url?.query)) {
-    for (const entry of url.query.map((item) => asRecord4(item)).filter(Boolean)) {
+    for (const entry of url.query.map((item) => asRecord5(item)).filter(Boolean)) {
       if (entry.disabled !== true && typeof entry.key === "string") names.add(entry.key.toLowerCase());
     }
   }
@@ -50018,17 +50350,17 @@ function requestQueryNames(request) {
 }
 function requestHeaderNames(request) {
   const names = /* @__PURE__ */ new Set();
-  for (const entry of asArray3(request.header).map((item) => asRecord4(item)).filter(Boolean)) {
+  for (const entry of asArray3(request.header).map((item) => asRecord5(item)).filter(Boolean)) {
     if (entry.disabled !== true && typeof entry.key === "string") names.add(entry.key.toLowerCase());
   }
   return names;
 }
 function requestHeaderValue(request, name) {
-  const match = asArray3(request.header).map((item) => asRecord4(item)).filter(Boolean).find((entry) => String(entry.key || "").toLowerCase() === name.toLowerCase() && entry.disabled !== true);
+  const match = asArray3(request.header).map((item) => asRecord5(item)).filter(Boolean).find((entry) => String(entry.key || "").toLowerCase() === name.toLowerCase() && entry.disabled !== true);
   return typeof match?.value === "string" ? match.value : void 0;
 }
 function hasRequestBody(request) {
-  const body = asRecord4(request.body);
+  const body = asRecord5(request.body);
   if (!body) return false;
   if (typeof body.raw === "string" && body.raw.trim()) return true;
   return ["urlencoded", "formdata", "graphql"].some((key) => Array.isArray(body[key]) ? body[key].length > 0 : Boolean(body[key]));
@@ -50079,21 +50411,21 @@ function validateScript(script) {
   return void 0;
 }
 function scriptExecLines(script) {
-  const record = asRecord4(script);
+  const record = asRecord5(script);
   if (!record) return [];
   if (Array.isArray(record.exec)) return record.exec.map((line) => String(line));
   if (typeof record.exec === "string") return [record.exec];
   return [];
 }
 function scanExecutableScripts(node, warnings) {
-  for (const event of asArray3(node.event).map((entry) => asRecord4(entry)).filter(Boolean)) {
+  for (const event of asArray3(node.event).map((entry) => asRecord5(entry)).filter(Boolean)) {
     const lines = scriptExecLines(event.script);
     if (lines.length === 0) continue;
     const warning2 = validateScript(lines);
     if (warning2) warnings.push(warning2);
   }
   for (const child2 of asArray3(node.item)) {
-    const childRecord = asRecord4(child2);
+    const childRecord = asRecord5(child2);
     if (childRecord) scanExecutableScripts(childRecord, warnings);
   }
 }
@@ -50103,7 +50435,7 @@ function instrumentContractCollection(collection, index) {
   const inject = (item) => {
     if (isResolverItem(item)) return;
     if (item.request) {
-      const request = asRecord4(item.request) ?? {};
+      const request = asRecord5(item.request) ?? {};
       const result = matchOperation(index, request);
       let script;
       if (result.operation) {
@@ -50117,15 +50449,15 @@ function instrumentContractCollection(collection, index) {
       } else {
         script = createMappingFailureScript(`No OpenAPI operation matched request ${result.method} ${result.path}`);
       }
-      const events2 = asArray3(item.event).filter((entry) => asRecord4(entry)?.listen !== "test");
+      const events2 = asArray3(item.event).filter((entry) => asRecord5(entry)?.listen !== "test");
       item.event = [...events2, { listen: "test", script: { type: "text/javascript", exec: script } }];
     }
     for (const child2 of asArray3(item.item)) {
-      const childRecord = asRecord4(child2);
+      const childRecord = asRecord5(child2);
       if (childRecord) inject(childRecord);
     }
   };
-  const items = asArray3(collection.item).map((entry) => asRecord4(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isResolverItem(entry));
+  const items = asArray3(collection.item).map((entry) => asRecord5(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isResolverItem(entry));
   collection.item = items;
   for (const item of items) inject(item);
   const missing = index.operations.filter((operation) => !covered.has(operation.id));
@@ -62489,7 +62821,7 @@ function compileErrors(result) {
 
 // src/lib/spec/openapi-loader.ts
 var import_yaml2 = __toESM(require_dist(), 1);
-function asRecord5(value) {
+function asRecord6(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -62504,7 +62836,7 @@ function parseOpenApiDocument(content) {
       throw new Error("CONTRACT_SPEC_PARSE_FAILED: Spec content is not valid JSON or YAML");
     }
   }
-  const doc = asRecord5(parsed);
+  const doc = asRecord6(parsed);
   if (!doc) throw new Error("CONTRACT_SPEC_PARSE_FAILED: Spec content must be a JSON or YAML object");
   return doc;
 }
@@ -62532,7 +62864,7 @@ function collectExternalRefs(node, baseUrl, refs) {
     node.forEach((entry) => collectExternalRefs(entry, baseUrl, refs));
     return;
   }
-  const record = asRecord5(node);
+  const record = asRecord6(node);
   if (!record) return;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (ref && !ref.startsWith("#")) {
@@ -62870,6 +63202,11 @@ function resolveInputs(env = process.env) {
     governanceMappingJson: parseGovernanceMappingJson(getInput2("governance-mapping-json", env)),
     postmanApiKey: getInput2("postman-api-key", env) ?? "",
     postmanAccessToken: getInput2("postman-access-token", env),
+    credentialPreflight: parseEnumInput(
+      "credential-preflight",
+      getInput2("credential-preflight", env),
+      customerPreviewActionContract.inputs["credential-preflight"].default ?? "warn"
+    ),
     integrationBackend,
     folderStrategy: parseEnumInput("folder-strategy", getInput2("folder-strategy", env), "Paths"),
     nestedFolderHierarchy: parseBooleanInput("nested-folder-hierarchy", getInput2("nested-folder-hierarchy", env), false),
@@ -62879,6 +63216,7 @@ function resolveInputs(env = process.env) {
     postmanBifrostBase: endpointProfile.bifrostBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
     postmanCliInstallUrl: endpointProfile.cliInstallUrl,
+    postmanIapubBase: endpointProfile.iapubBaseUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -62967,6 +63305,7 @@ function readActionInputs(actionCore) {
     INPUT_GOVERNANCE_MAPPING_JSON: optionalInput(actionCore, "governance-mapping-json") ?? customerPreviewActionContract.inputs["governance-mapping-json"].default,
     INPUT_POSTMAN_API_KEY: postmanApiKey,
     INPUT_POSTMAN_ACCESS_TOKEN: postmanAccessToken,
+    INPUT_CREDENTIAL_PREFLIGHT: optionalInput(actionCore, "credential-preflight") ?? customerPreviewActionContract.inputs["credential-preflight"].default,
     INPUT_INTEGRATION_BACKEND: optionalInput(actionCore, "integration-backend") ?? customerPreviewActionContract.inputs["integration-backend"].default,
     INPUT_FOLDER_STRATEGY: optionalInput(actionCore, "folder-strategy") ?? customerPreviewActionContract.inputs["folder-strategy"].default,
     INPUT_NESTED_FOLDER_HIERARCHY: optionalInput(actionCore, "nested-folder-hierarchy") ?? customerPreviewActionContract.inputs["nested-folder-hierarchy"].default,
@@ -63478,8 +63817,20 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
             governanceGroupName
           );
         } catch (error2) {
+          const session = getMemoizedSessionIdentity();
+          const advised = error2 instanceof HttpError ? adviseFromHttpError(error2, {
+            operation: "governance assignment",
+            hasAccessToken: Boolean(inputs.postmanAccessToken),
+            sessionTeamId: session?.teamId,
+            sessionRoles: session?.roles,
+            sessionConsumerType: session?.consumerType,
+            workspaceTeamId: inputs.workspaceTeamId,
+            explicitTeamId: inputs.teamId || void 0,
+            mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+          }) : void 0;
+          const reported = advised ?? error2;
           dependencies.core.warning(
-            `Failed to assign governance group: ${error2 instanceof Error ? error2.message : String(error2)}`
+            `Failed to assign governance group: ${reported instanceof Error ? reported.message : String(reported)}`
           );
         }
       }
@@ -64066,6 +64417,17 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
 }
 async function runAction(actionCore = core_exports, actionExec = exec_exports, actionIo = io_exports) {
   const inputs = readActionInputs(actionCore);
+  await runCredentialPreflight({
+    apiBaseUrl: inputs.postmanApiBase,
+    iapubBaseUrl: inputs.postmanIapubBase,
+    postmanApiKey: inputs.postmanApiKey,
+    postmanAccessToken: inputs.postmanAccessToken,
+    workspaceTeamId: inputs.workspaceTeamId,
+    explicitTeamId: inputs.teamId || void 0,
+    mode: inputs.credentialPreflight,
+    mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
+    log: actionCore
+  });
   let orgMode = false;
   if (inputs.postmanAccessToken && inputs.teamId) {
     try {

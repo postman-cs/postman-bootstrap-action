@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 import {
   createInternalIntegrationAdapter
 } from '../src/lib/postman/internal-integration-adapter.js';
@@ -438,5 +439,73 @@ describe('internal integration adapter', () => {
 
     const callHeaders = (fetchImpl.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
     expect(callHeaders['x-entity-team-id']).toBeUndefined();
+  });
+});
+
+describe('internal integration adapter error advice', () => {
+  beforeEach(() => {
+    __resetIdentityMemo();
+  });
+
+  function createGovernanceAdapter(listResponse: Response) {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ version: '12.10.0' }))
+      .mockResolvedValueOnce(listResponse);
+    return createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      fetchImpl
+    });
+  }
+
+  it('governance 401 yields re-mint guidance', async () => {
+    const adapter = createGovernanceAdapter(
+      new Response(JSON.stringify({ error: { code: 'UNAUTHENTICATED' } }), { status: 401 })
+    );
+
+    let thrown: unknown;
+    try {
+      await adapter.assignWorkspaceToGovernanceGroup(
+        'ws-123',
+        'core-banking',
+        JSON.stringify({ 'core-banking': 'Core Banking' })
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).toContain('Bifrost rejected the access token (UNAUTHENTICATED)');
+    expect(message).toContain('postman-resolve-service-token-action');
+    expect(message).toContain('POST https://api.getpostman.com/service-account-tokens');
+  });
+
+  it('governance 403 yields role/team guidance', async () => {
+    const adapter = createGovernanceAdapter(
+      new Response(
+        JSON.stringify({ error: { message: 'You are not authorized to perform this action' } }),
+        { status: 403 }
+      )
+    );
+
+    let thrown: unknown;
+    try {
+      await adapter.assignWorkspaceToGovernanceGroup(
+        'ws-123',
+        'core-banking',
+        JSON.stringify({ 'core-banking': 'Core Banking' })
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).toContain('Bifrost refused governance assignment with 403');
+    expect(message).toContain('workspace-team-id 11430732');
+    expect(message).toContain('GET https://api.getpostman.com/teams');
   });
 });

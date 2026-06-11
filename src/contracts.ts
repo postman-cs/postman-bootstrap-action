@@ -161,6 +161,13 @@ export const customerPreviewActionContract: CustomerPreviewActionContract = {
       description: 'Postman access token used for governance and workspace mutations.',
       required: false
     },
+    'credential-preflight': {
+      description:
+        'Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created; off skips the identity probes entirely (the reactive error guidance still applies). Promotion of the default to enforce is planned once the live e2e legs prove both directions.',
+      required: false,
+      default: 'warn',
+      allowedValues: ['enforce', 'warn', 'off']
+    },
     'integration-backend': {
       description: 'Integration backend for downstream workspace connectivity.',
       required: false,

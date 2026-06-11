@@ -50253,7 +50253,7 @@ function jsonContentParameterMedia(param) {
   const schema2 = asRecord4(mediaObject)?.schema;
   return schema2 === void 0 ? void 0 : schema2;
 }
-function collectSerializationWarnings(root, pathItem, operation) {
+function collectSerializationWarnings(root, pathItem, operation, decodedKeys) {
   const warnings = [];
   for (const param of resolvedParameters(root, pathItem, operation)) {
     const location2 = String(param.in || "").toLowerCase();
@@ -50265,6 +50265,7 @@ function collectSerializationWarnings(root, pathItem, operation) {
     const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
     const unvalidatedContent = param.content !== void 0 && (jsonContentParameterMedia(param) === void 0 || location2 !== "query" && location2 !== "header");
     if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || unvalidatedContent) {
+      if (decodedKeys.has(`${location2}:${name.toLowerCase()}`) && param.allowReserved !== true && param.content === void 0) continue;
       warnings.push(`CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter ${location2}:${name} declares non-default style, explode, allowReserved, or content and its serialization is not validated`);
     }
   }
@@ -50279,7 +50280,27 @@ function packedScalarSchema(packed) {
   if (!types2.every((entry) => typeof entry === "string" && SCALAR_SCHEMA_TYPES.has(entry))) return void 0;
   return packed.schema;
 }
-function collectParameterChecks(root, pathItem, operation, version, operationId, warnings) {
+function packedArrayItemsSchema(packed) {
+  if (packed.unsupported || packed.schema === void 0) return void 0;
+  const record = asRecord4(packed.schema);
+  if (!record) return void 0;
+  const types2 = Array.isArray(record.type) ? record.type : [record.type];
+  if (types2.length !== 1 || types2[0] !== "array") return void 0;
+  if (record.prefixItems !== void 0 || Array.isArray(record.items)) return void 0;
+  if (record.items === void 0) return {};
+  const items = asRecord4(record.items);
+  if (!items || typeof items.$ref === "string") return void 0;
+  const itemTypes = Array.isArray(items.type) ? items.type : [items.type];
+  if (!itemTypes.every((entry) => typeof entry === "string" && SCALAR_SCHEMA_TYPES.has(entry))) return void 0;
+  return items;
+}
+var QUERY_ARRAY_DECODES = {
+  "form:true": "multi",
+  "form:false": "csv",
+  "spaceDelimited:false": "ssv",
+  "pipeDelimited:false": "pipes"
+};
+function collectParameterChecks(root, pathItem, operation, version, operationId, pathTemplate, warnings) {
   const securityKeys = collectSecurityApiKeys(root, operation);
   const checks = [];
   const seen = /* @__PURE__ */ new Set();
@@ -50292,7 +50313,7 @@ function collectParameterChecks(root, pathItem, operation, version, operationId,
   }).filter((param) => Boolean(param));
   for (const param of orderedParams) {
     const location2 = String(param.in || "").toLowerCase();
-    if (location2 !== "query" && location2 !== "header") continue;
+    if (location2 !== "query" && location2 !== "header" && location2 !== "path" && location2 !== "cookie") continue;
     const name = String(param.name || "");
     if (!name || isIgnoredParameter(location2, name)) continue;
     const key = `${location2}:${name.toLowerCase()}`;
@@ -50300,7 +50321,7 @@ function collectParameterChecks(root, pathItem, operation, version, operationId,
     seen.add(key);
     if (securityKeys.has(key)) continue;
     const contentMedia = jsonContentParameterMedia(param);
-    if (contentMedia !== void 0) {
+    if (contentMedia !== void 0 && (location2 === "query" || location2 === "header")) {
       const packed2 = packSchema(root, contentMedia, version, "request");
       warnings.push(...packNoteWarnings(packed2, `parameter ${location2}:${name} of ${operationId}`));
       if (packed2.unsupported) {
@@ -50317,16 +50338,30 @@ function collectParameterChecks(root, pathItem, operation, version, operationId,
     const style = typeof param.style === "string" ? param.style : defaultStyle;
     const defaultExplode = style === "form";
     const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
-    if (style !== defaultStyle || explode !== defaultExplode) continue;
+    const defaultSerialization = style === defaultStyle && explode === defaultExplode;
     const packed = packSchema(root, param.schema, version);
-    warnings.push(...packNoteWarnings(packed, `parameter ${location2}:${name} of ${operationId}`));
+    const noteWarnings = packNoteWarnings(packed, `parameter ${location2}:${name} of ${operationId}`);
+    if (defaultSerialization) warnings.push(...noteWarnings);
     if (packed.unsupported) {
-      warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location2}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
+      if (defaultSerialization) warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location2}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
       continue;
     }
-    const schema2 = packedScalarSchema(packed);
-    if (schema2 === void 0) continue;
-    const check = { in: location2, name, required: param.required === true, schema: schema2 };
+    if (location2 === "path" && !pathTemplate.split("/").includes(`{${name}}`)) continue;
+    const scalarSchema = packedScalarSchema(packed);
+    if (scalarSchema !== void 0) {
+      if (!defaultSerialization) continue;
+      const check2 = { in: location2, name, required: param.required === true, schema: scalarSchema };
+      if (location2 === "query" && param.allowEmptyValue === true) check2.allowEmptyValue = true;
+      checks.push(check2);
+      continue;
+    }
+    if (location2 !== "query" && location2 !== "header") continue;
+    const items = packedArrayItemsSchema(packed);
+    if (items === void 0) continue;
+    const decode = location2 === "query" ? QUERY_ARRAY_DECODES[`${style}:${explode}`] : style === "simple" && !explode ? "csv" : void 0;
+    if (!decode) continue;
+    if (!defaultSerialization) warnings.push(...noteWarnings);
+    const check = { in: location2, name, required: param.required === true, schema: packed.schema, decode, items };
     if (location2 === "query" && param.allowEmptyValue === true) check.allowEmptyValue = true;
     checks.push(check);
   }
@@ -50435,6 +50470,9 @@ function fieldEncodings(root, base, mediaObject, properties) {
       if (typeof encoding.contentType === "string" && encoding.contentType.trim()) {
         entry.contentType = encoding.contentType.toLowerCase();
       }
+      if (base === "multipart/form-data" && asRecord4(encoding.headers)) {
+        entry.hasHeaders = true;
+      }
       if (base === "application/x-www-form-urlencoded") {
         const style = typeof encoding.style === "string" ? encoding.style : "form";
         const explode = typeof encoding.explode === "boolean" ? encoding.explode : style === "form";
@@ -50523,6 +50561,11 @@ function collectRequestBody(root, operation, version, operationId, warnings) {
             `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: ${base} request body field ${field} on ${operationId} declares non-default encoding style, explode, or allowReserved and its serialization is not validated`
           );
         }
+        if (encoding.hasHeaders) {
+          warnings.push(
+            `CONTRACT_ENCODING_HEADERS_NOT_VALIDATED: ${base} request body field ${field} on ${operationId} declares per-part headers that generated formdata entries cannot carry`
+          );
+        }
       }
     }
   }
@@ -50609,6 +50652,11 @@ function responseHeaders(root, version, response, context, warnings) {
       continue;
     }
     if (!packed.unsupported && packed.schema !== void 0 && packedScalarSchema(packed) === void 0) {
+      const items = packedArrayItemsSchema(packed);
+      if (items !== void 0) {
+        entries.push({ name, required, schema: packed.schema, items });
+        continue;
+      }
       warnings.add(`CONTRACT_HEADER_SCHEMA_NOT_VALIDATED: response header ${name} on ${context} declares a non-scalar schema and its value is not validated`);
       entries.push({ name, required });
       continue;
@@ -50667,10 +50715,14 @@ function buildContractIndex(root) {
           path8,
           ...operationServers(root, pathItem, operation).map((server) => joinPaths(serverPathPrefix(server), path8))
         ].map(normalizePath))];
+        const operationId = `${lowerMethod.toUpperCase()} ${path8}`;
         const opWarnings = [];
         opWarnings.push(...responseWarnings);
         opWarnings.push(...collectSecuritySchemeWarnings(root, operation));
-        opWarnings.push(...collectSerializationWarnings(root, pathItem, operation));
+        const parameterChecks = collectParameterChecks(root, pathItem, operation, version, operationId, path8, opWarnings);
+        const checkedKeys = new Set((parameterChecks ?? []).map((check) => `${check.in}:${check.name.toLowerCase()}`));
+        const decodedKeys = new Set((parameterChecks ?? []).filter((check) => check.decode).map((check) => `${check.in}:${check.name.toLowerCase()}`));
+        opWarnings.push(...collectSerializationWarnings(root, pathItem, operation, decodedKeys));
         if (operation.deprecated === true) {
           opWarnings.push(`CONTRACT_OPERATION_DEPRECATED: ${lowerMethod.toUpperCase()} ${path8} is marked deprecated in the OpenAPI document`);
         }
@@ -50679,17 +50731,19 @@ function buildContractIndex(root) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);
         }
         for (const parameter of requiredParameters.filter((entry) => entry.in === "cookie" && !entry.securityDerived)) {
-          opWarnings.push(`CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not statically required in generated requests`);
+          opWarnings.push(checkedKeys.has(`cookie:${parameter.name.toLowerCase()}`) ? `CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not included in generated requests; the runtime test fails until the cookie is supplied at send time` : `CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not included in generated requests and its value is not runtime-validated`);
         }
         const pathParamWarnings = /* @__PURE__ */ new Set();
         for (const param of resolvedParameters(root, pathItem, operation)) {
           if (String(param.in || "").toLowerCase() !== "path") continue;
           const name = String(param.name || "");
-          if (name) pathParamWarnings.add(`CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter ${name} value is not validated at runtime`);
+          if (name && !checkedKeys.has(`path:${name.toLowerCase()}`)) {
+            pathParamWarnings.add(`CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter ${name} value is not validated at runtime`);
+          }
         }
         opWarnings.push(...pathParamWarnings);
         operations.push({
-          id: `${lowerMethod.toUpperCase()} ${path8}`,
+          id: operationId,
           method: lowerMethod.toUpperCase(),
           path: path8,
           pointer: `/paths/${path8.replace(/~/g, "~0").replace(/\//g, "~1")}/${lowerMethod}`,
@@ -50697,8 +50751,8 @@ function buildContractIndex(root) {
           responses: contractResponses,
           requiredParameters,
           declaredQueryParameters: collectDeclaredQueryParameters(root, pathItem, operation),
-          parameterChecks: collectParameterChecks(root, pathItem, operation, version, `${lowerMethod.toUpperCase()} ${path8}`, opWarnings),
-          requestBody: collectRequestBody(root, operation, version, `${lowerMethod.toUpperCase()} ${path8}`, opWarnings),
+          parameterChecks,
+          requestBody: collectRequestBody(root, operation, version, operationId, opWarnings),
           security: collectSecurityRuntimeChecks(root, operation),
           warnings: opWarnings
         });
@@ -50905,8 +50959,11 @@ function createContractScript(operation, warnings = []) {
     "    if (!actual) return;",
     '    if (header.unsupported) pm.expect.fail("OpenAPI response header unsupported for " + contract.method + " " + contract.path + ": " + header.unsupported);',
     "    var headerValidator = validators[selected.key] && validators[selected.key].__headers && validators[selected.key].__headers[String(header.name).toLowerCase()];",
-    "    if (headerValidator && headerValidator.skip) return;",
-    '    if (headerValidator && !headerValidator(coerceBySchema(actual, header.schema))) pm.expect.fail("OpenAPI response header validation failed for " + header.name + ": " + JSON.stringify(headerValidator.errors || []));',
+    "    if (!headerValidator || headerValidator.skip) return;",
+    "    var expected;",
+    '    if (header.items) { var joined = String(actual).trim(); expected = joined === "" ? [] : joined.split(",").map(function (entry) { return coerceBySchema(entry.trim(), header.items); }); }',
+    "    else expected = coerceBySchema(actual, header.schema);",
+    '    if (!headerValidator(expected)) pm.expect.fail("OpenAPI response header validation failed for " + header.name + ": " + JSON.stringify(headerValidator.errors || []));',
     "  });",
     "});",
     "pm.test('Response body matches OpenAPI body contract', function () {",
@@ -50962,23 +51019,64 @@ function createContractScript(operation, warnings = []) {
     ...operation.parameterChecks && operation.parameterChecks.length > 0 ? [
       "pm.test('Request parameters match OpenAPI schemas', function () {",
       '  function queryValue(name) { var value; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) value = param.value === null || param.value === undefined ? "" : String(param.value); }); return value; }',
+      '  function queryValues(name) { var values = []; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) values.push(param.value === null || param.value === undefined ? "" : String(param.value)); }); return values; }',
       '  function headerValue(name) { var value; pm.request.headers.each(function (header) { if (header && header.disabled !== true && String(header.key).toLowerCase() === String(name).toLowerCase()) value = header.value === null || header.value === undefined ? "" : String(header.value); }); return value; }',
+      '  function cookieValue(name) { try { if (pm.cookies && pm.cookies.get) { var jar = pm.cookies.get(String(name)); if (jar !== null && jar !== undefined) return String(jar); } } catch (ignored) {} var raw = requestHeader("Cookie"); if (!raw) return undefined; var found; raw.split(";").forEach(function (part) { var split = part.indexOf("="); if (split === -1) return; if (part.slice(0, split).trim() === String(name)) found = part.slice(split + 1).trim(); }); return found; }',
+      '  function requestPathSegments() { var raw = ""; try { raw = typeof pm.request.url.getPath === "function" ? String(pm.request.url.getPath() || "") : ""; } catch (ignored) {} if (!raw) { var path = pm.request.url.path; raw = Array.isArray(path) ? "/" + path.join("/") : String(path || ""); } return raw.split("?")[0].split("#")[0].split("/").filter(function (segment) { return segment.length > 0; }); }',
+      // Server path prefixes sit ahead of the template segments, so the
+      // template aligns against the trailing request segments.
+      '  function pathParamValue(name) { var template = String(contract.path).split("/").filter(function (segment) { return segment.length > 0; }); var actual = requestPathSegments(); var offset = actual.length - template.length; if (offset < 0) return undefined; for (var i = 0; i < template.length; i += 1) { if (template[i] === "{" + name + "}") { var segment = actual[offset + i]; try { return decodeURIComponent(segment); } catch (ignored) { return segment; } } } return undefined; }',
       '  function isPlaceholder(value) { var text = String(value).trim(); return /^<[^<>]*>$/.test(text) || text.indexOf("{{") !== -1; }',
+      '  function splitDelimited(value, decode) { if (decode === "csv") return value.split(","); if (decode === "ssv") return value.split(/%20| /); return value.split(/%7C|\\|/i); }',
+      "  function decodeComponent(value) { try { return decodeURIComponent(value); } catch (ignored) { return value; } }",
       "  (contract.parameters || []).forEach(function (param) {",
       '    var key = param.in + ":" + String(param.name).toLowerCase();',
       "    var validate = paramValidators[key];",
       "    if (!validate || validate.skip) return;",
-      '    var value = param.in === "query" ? queryValue(String(param.name).toLowerCase()) : headerValue(param.name);',
-      '    if (value === undefined) { if (param.required) pm.expect.fail("Required parameter " + param.in + ":" + param.name + " was not sent for " + contract.method + " " + contract.path); return; }',
-      '    if (value === "" && param.allowEmptyValue) return;',
-      "    if (isPlaceholder(value)) return;",
-      "    if (param.content) {",
-      "      var parsed;",
-      '      try { parsed = JSON.parse(value); } catch (parseError) { pm.expect.fail("Parameter " + param.in + ":" + param.name + " declares JSON content but its value is not parseable JSON for " + contract.method + " " + contract.path); return; }',
-      '      if (!validate(parsed)) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
-      "      return;",
+      "    var value;",
+      '    if (param.decode === "multi") {',
+      "      var entries = queryValues(String(param.name).toLowerCase());",
+      '      if (entries.length === 0) { if (param.required) pm.expect.fail("Required parameter " + param.in + ":" + param.name + " was not sent for " + contract.method + " " + contract.path); return; }',
+      '      if (param.allowEmptyValue && entries.length === 1 && entries[0] === "") return;',
+      "      if (entries.some(isPlaceholder)) return;",
+      "      value = entries.map(function (entry) { return coerceBySchema(decodeComponent(entry), param.items); });",
+      "    } else if (param.decode) {",
+      '      var joined = param.in === "query" ? queryValue(String(param.name).toLowerCase()) : headerValue(param.name);',
+      '      if (joined === undefined) { if (param.required) pm.expect.fail("Required parameter " + param.in + ":" + param.name + " was not sent for " + contract.method + " " + contract.path); return; }',
+      '      if (joined === "" && param.allowEmptyValue) return;',
+      "      if (isPlaceholder(joined)) return;",
+      '      var parts = joined === "" ? [] : splitDelimited(String(joined), param.decode);',
+      // HTTP header lists allow optional whitespace after the comma, so
+      // header-sourced items are trimmed; query values stay literal.
+      '      if (param.in === "header") parts = parts.map(function (entry) { return entry.trim(); });',
+      "      if (parts.some(isPlaceholder)) return;",
+      // Query values arrive percent-encoded while the server validates the
+      // decoded form; header values are never percent-encoded.
+      '      value = parts.map(function (entry) { return coerceBySchema(param.in === "query" ? decodeComponent(entry) : entry, param.items); });',
+      '    } else if (param.in === "path") {',
+      "      value = pathParamValue(param.name);",
+      "      if (value === undefined) return;",
+      '      if (isPlaceholder(value) || value.charAt(0) === ":" || value.charAt(0) === "{") return;',
+      "      value = coerceBySchema(value, param.schema);",
+      '    } else if (param.in === "cookie") {',
+      "      value = cookieValue(param.name);",
+      '      if (value === undefined) { if (param.required) pm.expect.fail("Required cookie parameter " + param.name + " was not sent for " + contract.method + " " + contract.path); return; }',
+      "      if (isPlaceholder(value)) return;",
+      "      value = coerceBySchema(value, param.schema);",
+      "    } else {",
+      '      value = param.in === "query" ? queryValue(String(param.name).toLowerCase()) : headerValue(param.name);',
+      '      if (value === undefined) { if (param.required) pm.expect.fail("Required parameter " + param.in + ":" + param.name + " was not sent for " + contract.method + " " + contract.path); return; }',
+      '      if (value === "" && param.allowEmptyValue) return;',
+      "      if (isPlaceholder(value)) return;",
+      "      if (param.content) {",
+      "        var parsed;",
+      '        try { parsed = JSON.parse(value); } catch (parseError) { pm.expect.fail("Parameter " + param.in + ":" + param.name + " declares JSON content but its value is not parseable JSON for " + contract.method + " " + contract.path); return; }',
+      '        if (!validate(parsed)) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
+      "        return;",
+      "      }",
+      "      value = coerceBySchema(value, param.schema);",
       "    }",
-      '    if (!validate(coerceBySchema(value, param.schema))) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
+      '    if (!validate(value)) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
       "  });",
       "});"
     ] : [],

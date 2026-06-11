@@ -1,5 +1,5 @@
 import { normalizePath, type ContractBodyFieldRules, type ContractHeader, type ContractIndex, type ContractMedia, type ContractOperation } from './contract-index.js';
-import { compileSchemaValidatorCode } from './schema-validator-code.js';
+import { compileSchemaValidator, compileSchemaValidatorCode } from './schema-validator-code.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -292,6 +292,12 @@ export function createContractScript(operation: ContractOperation, warnings: str
       '    if (value === undefined) { if (param.required) pm.expect.fail("Required parameter " + param.in + ":" + param.name + " was not sent for " + contract.method + " " + contract.path); return; }',
       '    if (value === "" && param.allowEmptyValue) return;',
       '    if (isPlaceholder(value)) return;',
+      '    if (param.content) {',
+      '      var parsed;',
+      '      try { parsed = JSON.parse(value); } catch (parseError) { pm.expect.fail("Parameter " + param.in + ":" + param.name + " declares JSON content but its value is not parseable JSON for " + contract.method + " " + contract.path); return; }',
+      '      if (!validate(parsed)) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
+      '      return;',
+      '    }',
       '    if (!validate(coerceBySchema(value, param.schema))) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
       '  });',
       '});'
@@ -427,15 +433,30 @@ function assertStaticRequestShape(operation: ContractOperation, request: JsonRec
     if (!contentType) {
       throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} missing required request Content-Type`);
     }
-    const actual = contentType.toLowerCase().split(';')[0]?.trim();
-    const matches = operation.requestBody.contentTypes.some((expected) => expected.toLowerCase() === actual);
+    // Spec content keys are media types or ranges and may carry parameters,
+    // so the comparison strips parameters on both sides and honors wildcards.
+    const actual = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
+    const matches = operation.requestBody.contentTypes.some((expected) => mediaTypeMatchesPattern(expected.toLowerCase(), actual));
     if (!matches) {
       throw new Error(
         `CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} request Content-Type ${contentType} does not match ${operation.requestBody.contentTypes.join(', ')}`
       );
     }
   }
-  return collectStaticBodyWarnings(operation, request, contentType);
+  const warnings = collectStaticBodyWarnings(operation, request, contentType);
+  // An optional request body still constrains the Content-Type of a body the
+  // generator chose to send; a mismatch is a warning rather than a failure
+  // because omitting the body entirely would have been legal.
+  if (operation.requestBody && !operation.requestBody.required && operation.requestBody.contentTypes.length > 0 && hasRequestBody(request) && contentType) {
+    const actual = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
+    const matches = operation.requestBody.contentTypes.some((expected) => mediaTypeMatchesPattern(expected.toLowerCase(), actual));
+    if (!matches) {
+      warnings.push(
+        `CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} optional request body Content-Type ${contentType} does not match ${operation.requestBody.contentTypes.join(', ')}`
+      );
+    }
+  }
+  return warnings;
 }
 
 function requestBodyFieldNames(request: JsonRecord, base: string): string[] | undefined {
@@ -487,32 +508,96 @@ function mediaTypeMatchesPattern(pattern: string, actual: string): boolean {
   });
 }
 
+function isJsonEncodingContentType(declared: string): boolean {
+  return declared.split(',').some((candidate) => {
+    const entry = (candidate.split(';')[0] ?? '').trim();
+    return entry === 'application/json' || entry.endsWith('+json');
+  });
+}
+
+function isPlaceholderValue(value: string): boolean {
+  return /^<[^>]*>$/.test(value.trim()) || value.includes('{{');
+}
+
 // Encoding Objects are checked against the generated artifact: a declared
-// per-part contentType must appear on the matching multipart entry, and
-// binary-typed fields must be generated as file parts. Wire-level multipart
-// framing is owned by the Postman runtime and is not reconstructed here.
+// per-part contentType must appear on every matching multipart entry
+// (duplicate keys are all checked), binary-typed fields must be generated as
+// file parts, and fields declaring a JSON contentType must carry parseable
+// JSON values in both multipart text parts and urlencoded entries.
+// Wire-level multipart framing is owned by the Postman runtime and is not
+// reconstructed here.
 function collectStaticEncodingWarnings(operation: ContractOperation, request: JsonRecord, base: string, rule: ContractBodyFieldRules): string[] {
   const encodings = rule.encodings;
-  if (!encodings || base !== 'multipart/form-data') return [];
+  if (!encodings) return [];
+  const multipart = base === 'multipart/form-data';
   const entries = requestBodyEntries(request, base);
   if (!entries) return [];
   const warnings: string[] = [];
+  const part = multipart ? 'multipart' : 'urlencoded';
   for (const [field, encoding] of Object.entries(encodings)) {
-    const entry = entries.find((candidate) => String(candidate.key || '') === field);
-    if (!entry) continue;
-    if (encoding.binary && String(entry.type || '') !== 'file') {
-      warnings.push(`CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} should be a file part per its binary schema`);
+    for (const entry of entries.filter((candidate) => String(candidate.key || '') === field)) {
+      if (multipart && encoding.binary && String(entry.type || '') !== 'file') {
+        warnings.push(`CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} should be a file part per its binary schema`);
+      }
+      if (multipart && encoding.contentType) {
+        const actual = typeof entry.contentType === 'string' ? (entry.contentType.toLowerCase().split(';')[0] ?? '').trim() : '';
+        if (!actual) {
+          warnings.push(
+            `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} does not declare Content-Type ${encoding.contentType} from its encoding object`
+          );
+        } else if (!mediaTypeMatchesPattern(encoding.contentType, actual)) {
+          warnings.push(
+            `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} Content-Type ${actual} does not match declared encoding ${encoding.contentType}`
+          );
+        }
+      }
+      if (encoding.contentType && isJsonEncodingContentType(encoding.contentType) && String(entry.type || 'text') !== 'file') {
+        const value = typeof entry.value === 'string' ? entry.value : '';
+        if (value.trim() && !isPlaceholderValue(value)) {
+          try {
+            JSON.parse(value);
+          } catch {
+            warnings.push(
+              `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated ${part} field ${field} declares JSON encoding ${encoding.contentType} but its value is not parseable JSON`
+            );
+          }
+        }
+      }
     }
-    if (encoding.contentType) {
-      const actual = typeof entry.contentType === 'string' ? (entry.contentType.toLowerCase().split(';')[0] ?? '').trim() : '';
-      if (!actual) {
-        warnings.push(
-          `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} does not declare Content-Type ${encoding.contentType} from its encoding object`
-        );
-      } else if (!mediaTypeMatchesPattern(encoding.contentType, actual)) {
-        warnings.push(
-          `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} Content-Type ${actual} does not match declared encoding ${encoding.contentType}`
-        );
+  }
+  return warnings;
+}
+
+// Mirrors the runtime coerceBySchema semantics exactly, including type
+// arrays from nullable schemas and the strict numeric form (no Infinity or
+// hex), so static form-field findings match what the sandbox would compute.
+function coerceFormValue(value: string, schema: unknown): unknown {
+  const record = asRecord(schema);
+  const type = record?.type;
+  const types = Array.isArray(type) ? type : [type];
+  if ((types.includes('integer') || types.includes('number')) && /^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/.test(value.trim())) return Number(value);
+  if (types.includes('boolean') && (value === 'true' || value === 'false')) return value === 'true';
+  return value;
+}
+
+// Generated urlencoded and multipart text values are validated statically
+// against their scalar property schemas; placeholder and file entries skip.
+function collectStaticFieldSchemaWarnings(operation: ContractOperation, request: JsonRecord, base: string, rule: ContractBodyFieldRules): string[] {
+  const fieldSchemas = rule.fieldSchemas;
+  if (!fieldSchemas) return [];
+  const entries = requestBodyEntries(request, base);
+  if (!entries) return [];
+  const part = base === 'multipart/form-data' ? 'multipart' : 'urlencoded';
+  const warnings: string[] = [];
+  for (const [field, schema] of Object.entries(fieldSchemas)) {
+    const validate = compileSchemaValidator(schema);
+    if (!validate) continue;
+    for (const entry of entries.filter((candidate) => String(candidate.key || '') === field)) {
+      if (String(entry.type || 'text') === 'file') continue;
+      const value = typeof entry.value === 'string' ? entry.value : '';
+      if (!value.trim() || isPlaceholderValue(value)) continue;
+      if (!validate(coerceFormValue(value, schema))) {
+        warnings.push(`CONTRACT_FORM_FIELD_SCHEMA_MISMATCH: ${operation.id} generated ${part} field ${field} value does not match its schema`);
       }
     }
   }
@@ -528,7 +613,10 @@ function collectStaticBodyWarnings(operation: ContractOperation, request: JsonRe
   const base = (contentType || '').toLowerCase().split(';')[0]?.trim() ?? '';
   const rule = rules[base];
   if (!rule) return [];
-  const warnings: string[] = [...collectStaticEncodingWarnings(operation, request, base, rule)];
+  const warnings: string[] = [
+    ...collectStaticEncodingWarnings(operation, request, base, rule),
+    ...collectStaticFieldSchemaWarnings(operation, request, base, rule)
+  ];
   const names = requestBodyFieldNames(request, base);
   if (!names) return warnings;
   const present = new Set(names);

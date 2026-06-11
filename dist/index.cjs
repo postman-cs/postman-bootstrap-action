@@ -49804,6 +49804,38 @@ function normalizeSchema(ctx, schema2, options) {
   const sourceSchema = { ...record };
   const nullable = sourceSchema.nullable === true && ctx.version === "3.0";
   delete sourceSchema.nullable;
+  const discriminator = asRecord3(sourceSchema.discriminator);
+  if (discriminator && typeof discriminator.propertyName === "string" && discriminator.propertyName) {
+    const propertyName = discriminator.propertyName;
+    const branchKey = Array.isArray(sourceSchema.oneOf) ? "oneOf" : Array.isArray(sourceSchema.anyOf) ? "anyOf" : "";
+    const members = branchKey ? sourceSchema[branchKey] : [];
+    const memberRefs = members.map((member) => {
+      const memberRecord = asRecord3(member);
+      const memberRef = memberRecord && Object.keys(memberRecord).length === 1 && typeof memberRecord.$ref === "string" ? memberRecord.$ref : "";
+      return memberRef.startsWith("#/") ? memberRef : "";
+    });
+    if (branchKey && members.length > 0 && memberRefs.every(Boolean)) {
+      const valuesByRef = /* @__PURE__ */ new Map();
+      const refByMappingKey = /* @__PURE__ */ new Map();
+      for (const [value, target] of Object.entries(asRecord3(discriminator.mapping) ?? {})) {
+        if (typeof target !== "string" || !target) continue;
+        const targetRef = target.startsWith("#/") ? target : `#/components/schemas/${target}`;
+        valuesByRef.set(targetRef, [...valuesByRef.get(targetRef) ?? [], value]);
+        refByMappingKey.set(value, targetRef);
+      }
+      sourceSchema[branchKey] = members.map((member, index) => {
+        const memberRef = memberRefs[index] ?? "";
+        const tail = (memberRef.split("/").pop() ?? "").replace(/~1/g, "/").replace(/~0/g, "~");
+        const values = [...valuesByRef.get(memberRef) ?? []];
+        const tailClaimedElsewhere = refByMappingKey.has(tail) && refByMappingKey.get(tail) !== memberRef;
+        if (tail && !tailClaimedElsewhere && !values.includes(tail)) values.push(tail);
+        const dispatch = values.length === 1 ? { const: values[0] } : { enum: values };
+        return { allOf: [member, { type: "object", required: [propertyName], properties: { [propertyName]: dispatch } }] };
+      });
+    } else {
+      ctx.notes.add("discriminator");
+    }
+  }
   const directionStrippedFlag = ctx.direction === "request" ? "readOnly" : "writeOnly";
   const strippedProperties = /* @__PURE__ */ new Set();
   const rawProperties = asRecord3(sourceSchema.properties);
@@ -49976,7 +50008,7 @@ function packSchema(root, schema2, version, direction = "response") {
     if (schema2 === true) return { schema: { $schema: rootDialect(root, version) } };
     if (schema2 === false) return unsupported("Boolean false JSON Schema rejects every instance and is unsupported");
     const dialect = rootDialect(root, version, asRecord3(schema2) ?? void 0);
-    const ctx = { root, version, direction, dialect, defs: /* @__PURE__ */ new Map() };
+    const ctx = { root, version, direction, dialect, defs: /* @__PURE__ */ new Map(), notes: /* @__PURE__ */ new Set() };
     const normalized = normalizeSchema(ctx, schema2, { depth: 0, rootSchema: true });
     const message = hasUnsupported(normalized);
     if (message) return unsupported(message);
@@ -50001,7 +50033,9 @@ function packSchema(root, schema2, version, direction = "response") {
       if (!normalizedRecord) return unsupported("Referenced schemas require an object root schema");
       normalizedRecord.$defs = Object.fromEntries([...ctx.defs.values()].map((entry) => [entry.name, entry.schema]));
     }
-    return { schema: normalized };
+    const packed = { schema: normalized };
+    if (ctx.notes.size > 0) packed.notes = [...ctx.notes].sort();
+    return packed;
   } catch (error2) {
     return unsupported(error2 instanceof Error ? error2.message : String(error2));
   }
@@ -50174,6 +50208,7 @@ function securityCheckFor(schemeName, scheme) {
     const httpScheme = String(scheme.scheme || "").toLowerCase();
     if (httpScheme === "basic") return { scheme: schemeName, kind, checkable: true, prefix: "Basic " };
     if (httpScheme === "bearer") return { scheme: schemeName, kind, checkable: true, prefix: "Bearer " };
+    if (httpScheme) return { scheme: schemeName, kind, checkable: true, prefix: `${httpScheme.charAt(0).toUpperCase()}${httpScheme.slice(1)} ` };
     return { scheme: schemeName, kind, checkable: true, in: "header", name: "Authorization" };
   }
   if (scheme?.type === "oauth2" || scheme?.type === "openIdConnect") {
@@ -50207,6 +50242,17 @@ var IGNORED_HEADER_PARAMS = /* @__PURE__ */ new Set(["accept", "content-type", "
 function isIgnoredParameter(location2, name) {
   return location2 === "header" && IGNORED_HEADER_PARAMS.has(name.toLowerCase());
 }
+function jsonContentParameterMedia(param) {
+  const content = asRecord4(param.content);
+  if (!content) return void 0;
+  const entries = Object.entries(content);
+  if (entries.length !== 1) return void 0;
+  const [contentType, mediaObject] = entries[0];
+  const base = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+  if (!isJsonBaseType(base)) return void 0;
+  const schema2 = asRecord4(mediaObject)?.schema;
+  return schema2 === void 0 ? void 0 : schema2;
+}
 function collectSerializationWarnings(root, pathItem, operation) {
   const warnings = [];
   for (const param of resolvedParameters(root, pathItem, operation)) {
@@ -50217,7 +50263,8 @@ function collectSerializationWarnings(root, pathItem, operation) {
     const style = typeof param.style === "string" ? param.style : defaultStyle;
     const defaultExplode = style === "form";
     const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
-    if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || param.content !== void 0) {
+    const unvalidatedContent = param.content !== void 0 && (jsonContentParameterMedia(param) === void 0 || location2 !== "query" && location2 !== "header");
+    if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || unvalidatedContent) {
       warnings.push(`CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter ${location2}:${name} declares non-default style, explode, allowReserved, or content and its serialization is not validated`);
     }
   }
@@ -50252,6 +50299,19 @@ function collectParameterChecks(root, pathItem, operation, version, operationId,
     if (seen.has(key)) continue;
     seen.add(key);
     if (securityKeys.has(key)) continue;
+    const contentMedia = jsonContentParameterMedia(param);
+    if (contentMedia !== void 0) {
+      const packed2 = packSchema(root, contentMedia, version, "request");
+      warnings.push(...packNoteWarnings(packed2, `parameter ${location2}:${name} of ${operationId}`));
+      if (packed2.unsupported) {
+        warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location2}:${name} schema on ${operationId} skipped (${packed2.unsupported})`);
+      } else if (packed2.schema !== void 0) {
+        const check2 = { in: location2, name, required: param.required === true, content: true, schema: packed2.schema };
+        if (location2 === "query" && param.allowEmptyValue === true) check2.allowEmptyValue = true;
+        checks.push(check2);
+      }
+      continue;
+    }
     if (param.content !== void 0 || param.schema === void 0) continue;
     const defaultStyle = DEFAULT_PARAM_STYLES[location2];
     const style = typeof param.style === "string" ? param.style : defaultStyle;
@@ -50259,6 +50319,7 @@ function collectParameterChecks(root, pathItem, operation, version, operationId,
     const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
     if (style !== defaultStyle || explode !== defaultExplode) continue;
     const packed = packSchema(root, param.schema, version);
+    warnings.push(...packNoteWarnings(packed, `parameter ${location2}:${name} of ${operationId}`));
     if (packed.unsupported) {
       warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location2}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
       continue;
@@ -50270,6 +50331,11 @@ function collectParameterChecks(root, pathItem, operation, version, operationId,
     checks.push(check);
   }
   return checks.length > 0 ? checks : void 0;
+}
+function packNoteWarnings(packed, context) {
+  return (packed.notes ?? []).map(
+    (note) => note === "discriminator" ? `CONTRACT_DISCRIMINATOR_NOT_VALIDATED: discriminator on ${context} has no sibling oneOf/anyOf of internal $ref members and is not validated` : `CONTRACT_SCHEMA_NOT_COMPILED: ${note} on ${context} is not validated`
+  );
 }
 function collectDeclaredQueryParameters(root, pathItem, operation) {
   const names = /* @__PURE__ */ new Set();
@@ -50348,7 +50414,10 @@ function propertyIsBinary(root, properties, name) {
   }
   if (!schema2) return false;
   if (schema2.format === "binary") return true;
-  return typeof schema2.contentMediaType === "string" && schema2.contentMediaType.toLowerCase().startsWith("application/octet-stream");
+  if (typeof schema2.contentMediaType !== "string" || typeof schema2.contentEncoding === "string") return false;
+  const media = schema2.contentMediaType.toLowerCase().split(";")[0]?.trim() ?? "";
+  if (!media) return false;
+  return media !== "application/json" && !media.endsWith("+json") && !media.startsWith("text/");
 }
 function fieldEncodings(root, base, mediaObject, properties) {
   const declared = asRecord4(mediaObject?.encoding);
@@ -50378,7 +50447,22 @@ function fieldEncodings(root, base, mediaObject, properties) {
   }
   return Object.keys(encodings).length > 0 ? encodings : void 0;
 }
-function requestBodyFieldRules(root, content) {
+function formFieldSchemas(root, version, properties, context, warnings) {
+  const schemas = {};
+  for (const name of Object.keys(properties)) {
+    const packed = packSchema(root, properties[name], version, "request");
+    warnings.push(...packNoteWarnings(packed, `field ${name} of ${context}`));
+    if (packed.unsupported) {
+      warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: field ${name} of ${context} skipped (${packed.unsupported})`);
+      continue;
+    }
+    if (packed.schema === void 0) continue;
+    const schema2 = packedScalarSchema(packed);
+    if (schema2 !== void 0) schemas[name] = schema2;
+  }
+  return Object.keys(schemas).length > 0 ? schemas : void 0;
+}
+function requestBodyFieldRules(root, content, version, operationId, warnings) {
   const rules = {};
   for (const [contentType, mediaObject] of Object.entries(content)) {
     const base = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
@@ -50388,10 +50472,13 @@ function requestBodyFieldRules(root, content) {
     if (!merged) continue;
     const readOnly = Object.keys(merged.properties).filter((name) => propertyIsReadOnly(root, merged.properties, name));
     const required = merged.required.filter((name) => !propertyIsReadOnly(root, merged.properties, name));
-    const encodings = BODY_FIELD_RULE_TYPES.has(base) ? fieldEncodings(root, base, mediaRecord, merged.properties) : void 0;
-    if (required.length > 0 || readOnly.length > 0 || encodings) {
+    const formRules = BODY_FIELD_RULE_TYPES.has(base);
+    const encodings = formRules ? fieldEncodings(root, base, mediaRecord, merged.properties) : void 0;
+    const fieldSchemas = formRules ? formFieldSchemas(root, version, merged.properties, `request body ${contentType} of ${operationId}`, warnings) : void 0;
+    if (required.length > 0 || readOnly.length > 0 || encodings || fieldSchemas) {
       const rule = { required, readOnly };
       if (encodings) rule.encodings = encodings;
+      if (fieldSchemas) rule.fieldSchemas = fieldSchemas;
       rules[base] = rule;
     }
   }
@@ -50412,6 +50499,7 @@ function requestBodyJsonSchemas(root, content, version, operationId, warnings) {
     }
     if (schema2 === void 0) continue;
     const packed = packSchema(root, schema2, version, "request");
+    warnings.push(...packNoteWarnings(packed, `request body ${contentType} of ${operationId}`));
     if (mediaRecord) validateExamples(root, mediaRecord, packed, contentType, operationId, exampleWarnings);
     if (packed.unsupported) {
       warnings.push(`CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED: request body schema for ${contentType} on ${operationId} is not validated (${packed.unsupported})`);
@@ -50426,7 +50514,7 @@ function collectRequestBody(root, operation, version, operationId, warnings) {
   const body = resolveInternalRef(root, operation.requestBody);
   if (!body) return void 0;
   const content = asRecord4(body.content);
-  const fieldRules = content ? requestBodyFieldRules(root, content) : void 0;
+  const fieldRules = content ? requestBodyFieldRules(root, content, version, operationId, warnings) : void 0;
   if (fieldRules) {
     for (const [base, rule] of Object.entries(fieldRules)) {
       for (const [field, encoding] of Object.entries(rule.encodings ?? {})) {
@@ -50482,6 +50570,7 @@ function responseContent(root, version, response, context, warnings) {
     const mediaRecord = asRecord4(mediaObject);
     const schema2 = mediaRecord?.schema;
     let packed = schema2 === void 0 ? {} : packSchema(root, schema2, version);
+    for (const warning2 of packNoteWarnings(packed, `response ${contentType} of ${context}`)) warnings.add(warning2);
     if (isSchemaGraphOverflow(packed)) {
       warnings.add(`CONTRACT_SCHEMA_NOT_COMPILED: response schema for ${contentType} on ${context} skipped (${packed.unsupported})`);
       packed = {};
@@ -50513,6 +50602,7 @@ function responseHeaders(root, version, response, context, warnings) {
       continue;
     }
     const packed = packSchema(root, header.schema, version);
+    for (const warning2 of packNoteWarnings(packed, `response header ${name} of ${context}`)) warnings.add(warning2);
     if (isSchemaGraphOverflow(packed)) {
       warnings.add(`CONTRACT_SCHEMA_NOT_COMPILED: response header ${name} schema on ${context} skipped (${packed.unsupported})`);
       entries.push({ name, required });
@@ -50882,6 +50972,12 @@ function createContractScript(operation, warnings = []) {
       '    if (value === undefined) { if (param.required) pm.expect.fail("Required parameter " + param.in + ":" + param.name + " was not sent for " + contract.method + " " + contract.path); return; }',
       '    if (value === "" && param.allowEmptyValue) return;',
       "    if (isPlaceholder(value)) return;",
+      "    if (param.content) {",
+      "      var parsed;",
+      '      try { parsed = JSON.parse(value); } catch (parseError) { pm.expect.fail("Parameter " + param.in + ":" + param.name + " declares JSON content but its value is not parseable JSON for " + contract.method + " " + contract.path); return; }',
+      '      if (!validate(parsed)) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
+      "      return;",
+      "    }",
       '    if (!validate(coerceBySchema(value, param.schema))) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
       "  });",
       "});"
@@ -51005,15 +51101,25 @@ function assertStaticRequestShape(operation, request) {
     if (!contentType) {
       throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} missing required request Content-Type`);
     }
-    const actual = contentType.toLowerCase().split(";")[0]?.trim();
-    const matches = operation.requestBody.contentTypes.some((expected) => expected.toLowerCase() === actual);
+    const actual = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+    const matches = operation.requestBody.contentTypes.some((expected) => mediaTypeMatchesPattern(expected.toLowerCase(), actual));
     if (!matches) {
       throw new Error(
         `CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} request Content-Type ${contentType} does not match ${operation.requestBody.contentTypes.join(", ")}`
       );
     }
   }
-  return collectStaticBodyWarnings(operation, request, contentType);
+  const warnings = collectStaticBodyWarnings(operation, request, contentType);
+  if (operation.requestBody && !operation.requestBody.required && operation.requestBody.contentTypes.length > 0 && hasRequestBody(request) && contentType) {
+    const actual = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+    const matches = operation.requestBody.contentTypes.some((expected) => mediaTypeMatchesPattern(expected.toLowerCase(), actual));
+    if (!matches) {
+      warnings.push(
+        `CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} optional request body Content-Type ${contentType} does not match ${operation.requestBody.contentTypes.join(", ")}`
+      );
+    }
+  }
+  return warnings;
 }
 function requestBodyFieldNames(request, base) {
   const body = asRecord5(request.body);
@@ -51048,28 +51154,80 @@ function mediaTypeMatchesPattern(pattern, actual) {
     return false;
   });
 }
+function isJsonEncodingContentType(declared) {
+  return declared.split(",").some((candidate) => {
+    const entry = (candidate.split(";")[0] ?? "").trim();
+    return entry === "application/json" || entry.endsWith("+json");
+  });
+}
+function isPlaceholderValue(value) {
+  return /^<[^>]*>$/.test(value.trim()) || value.includes("{{");
+}
 function collectStaticEncodingWarnings(operation, request, base, rule) {
   const encodings = rule.encodings;
-  if (!encodings || base !== "multipart/form-data") return [];
+  if (!encodings) return [];
+  const multipart = base === "multipart/form-data";
   const entries = requestBodyEntries(request, base);
   if (!entries) return [];
   const warnings = [];
+  const part = multipart ? "multipart" : "urlencoded";
   for (const [field, encoding] of Object.entries(encodings)) {
-    const entry = entries.find((candidate) => String(candidate.key || "") === field);
-    if (!entry) continue;
-    if (encoding.binary && String(entry.type || "") !== "file") {
-      warnings.push(`CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} should be a file part per its binary schema`);
+    for (const entry of entries.filter((candidate) => String(candidate.key || "") === field)) {
+      if (multipart && encoding.binary && String(entry.type || "") !== "file") {
+        warnings.push(`CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} should be a file part per its binary schema`);
+      }
+      if (multipart && encoding.contentType) {
+        const actual = typeof entry.contentType === "string" ? (entry.contentType.toLowerCase().split(";")[0] ?? "").trim() : "";
+        if (!actual) {
+          warnings.push(
+            `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} does not declare Content-Type ${encoding.contentType} from its encoding object`
+          );
+        } else if (!mediaTypeMatchesPattern(encoding.contentType, actual)) {
+          warnings.push(
+            `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} Content-Type ${actual} does not match declared encoding ${encoding.contentType}`
+          );
+        }
+      }
+      if (encoding.contentType && isJsonEncodingContentType(encoding.contentType) && String(entry.type || "text") !== "file") {
+        const value = typeof entry.value === "string" ? entry.value : "";
+        if (value.trim() && !isPlaceholderValue(value)) {
+          try {
+            JSON.parse(value);
+          } catch {
+            warnings.push(
+              `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated ${part} field ${field} declares JSON encoding ${encoding.contentType} but its value is not parseable JSON`
+            );
+          }
+        }
+      }
     }
-    if (encoding.contentType) {
-      const actual = typeof entry.contentType === "string" ? (entry.contentType.toLowerCase().split(";")[0] ?? "").trim() : "";
-      if (!actual) {
-        warnings.push(
-          `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} does not declare Content-Type ${encoding.contentType} from its encoding object`
-        );
-      } else if (!mediaTypeMatchesPattern(encoding.contentType, actual)) {
-        warnings.push(
-          `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} Content-Type ${actual} does not match declared encoding ${encoding.contentType}`
-        );
+  }
+  return warnings;
+}
+function coerceFormValue(value, schema2) {
+  const record = asRecord5(schema2);
+  const type2 = record?.type;
+  const types2 = Array.isArray(type2) ? type2 : [type2];
+  if ((types2.includes("integer") || types2.includes("number")) && /^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/.test(value.trim())) return Number(value);
+  if (types2.includes("boolean") && (value === "true" || value === "false")) return value === "true";
+  return value;
+}
+function collectStaticFieldSchemaWarnings(operation, request, base, rule) {
+  const fieldSchemas = rule.fieldSchemas;
+  if (!fieldSchemas) return [];
+  const entries = requestBodyEntries(request, base);
+  if (!entries) return [];
+  const part = base === "multipart/form-data" ? "multipart" : "urlencoded";
+  const warnings = [];
+  for (const [field, schema2] of Object.entries(fieldSchemas)) {
+    const validate2 = compileSchemaValidator(schema2);
+    if (!validate2) continue;
+    for (const entry of entries.filter((candidate) => String(candidate.key || "") === field)) {
+      if (String(entry.type || "text") === "file") continue;
+      const value = typeof entry.value === "string" ? entry.value : "";
+      if (!value.trim() || isPlaceholderValue(value)) continue;
+      if (!validate2(coerceFormValue(value, schema2))) {
+        warnings.push(`CONTRACT_FORM_FIELD_SCHEMA_MISMATCH: ${operation.id} generated ${part} field ${field} value does not match its schema`);
       }
     }
   }
@@ -51081,7 +51239,10 @@ function collectStaticBodyWarnings(operation, request, contentType) {
   const base = (contentType || "").toLowerCase().split(";")[0]?.trim() ?? "";
   const rule = rules[base];
   if (!rule) return [];
-  const warnings = [...collectStaticEncodingWarnings(operation, request, base, rule)];
+  const warnings = [
+    ...collectStaticEncodingWarnings(operation, request, base, rule),
+    ...collectStaticFieldSchemaWarnings(operation, request, base, rule)
+  ];
   const names = requestBodyFieldNames(request, base);
   if (!names) return warnings;
   const present = new Set(names);

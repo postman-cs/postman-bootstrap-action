@@ -49611,8 +49611,6 @@ var COMPATIBLE_SCHEMA_URIS = /* @__PURE__ */ new Set([
   `${DRAFT_2020_12_SCHEMA_URI}#`
 ]);
 var ASSERTION_KEYS = /* @__PURE__ */ new Set([
-  "$defs",
-  "$id",
   "$ref",
   "$schema",
   "additionalItems",
@@ -49657,6 +49655,10 @@ var ASSERTION_KEYS = /* @__PURE__ */ new Set([
 ]);
 var STRIP_KEYS = /* @__PURE__ */ new Set([
   "title",
+  "$comment",
+  "$defs",
+  "definitions",
+  "$id",
   "description",
   "default",
   "example",
@@ -49667,8 +49669,32 @@ var STRIP_KEYS = /* @__PURE__ */ new Set([
   "xml",
   "externalDocs",
   "discriminator",
-  "format"
+  "contentEncoding",
+  "contentMediaType",
+  "contentSchema"
 ]);
+var ASSERTED_FORMATS = /* @__PURE__ */ new Set([
+  "date-time",
+  "date",
+  "time",
+  "duration",
+  "email",
+  "hostname",
+  "ipv4",
+  "ipv6",
+  "uri",
+  "uri-reference",
+  "uri-template",
+  "uuid",
+  "json-pointer",
+  "relative-json-pointer",
+  "regex"
+]);
+var INT32_MIN = -2147483648;
+var INT32_MAX = 2147483647;
+var MAX_REFERENCED_SCHEMAS = 400;
+var DRAFT_2020_12_ONLY_KEYS = /* @__PURE__ */ new Set(["prefixItems", "dependentRequired", "dependentSchemas", "minContains", "maxContains", "unevaluatedItems", "unevaluatedProperties"]);
+var DRAFT_07_ONLY_KEYS = /* @__PURE__ */ new Set(["dependencies", "additionalItems"]);
 function asRecord3(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
@@ -49686,8 +49712,8 @@ function resolvePointer(root, ref) {
 function unsupported(message) {
   return { unsupported: message };
 }
-function mergeRequiredWithoutWriteOnly(required, writeOnlyProperties) {
-  const values = asArray(required).map((entry) => String(entry)).filter((entry) => !writeOnlyProperties.has(entry));
+function mergeRequiredWithoutStripped(required, strippedProperties) {
+  const values = asArray(required).map((entry) => String(entry)).filter((entry) => !strippedProperties.has(entry));
   return values.length > 0 ? values : void 0;
 }
 function hasUnsupported(child2) {
@@ -49703,11 +49729,31 @@ function rootDialect(root, version, schemaRecord) {
   if (declared.includes("draft-07")) return DRAFT_07_SCHEMA_URI;
   return DRAFT_2020_12_SCHEMA_URI;
 }
-function normalizeSchema(root, schema2, options) {
-  const depth = options.depth ?? 0;
-  if (depth > 50) return unsupported("OpenAPI schema reference depth exceeded 50");
+function registerDef(ctx, ref) {
+  const existing = ctx.defs.get(ref);
+  if (existing) return existing;
+  if (ctx.defs.size >= MAX_REFERENCED_SCHEMAS) {
+    const entry2 = { name: "overflow", unsupported: `OpenAPI schema reference graph exceeded ${MAX_REFERENCED_SCHEMAS} referenced schemas` };
+    return entry2;
+  }
+  const entry = { name: `d${ctx.defs.size}` };
+  ctx.defs.set(ref, entry);
+  const resolved = resolvePointer(ctx.root, ref);
+  if (resolved === void 0) {
+    entry.unsupported = `Unresolved OpenAPI $ref: ${ref}`;
+    return entry;
+  }
+  const normalized = normalizeSchema(ctx, resolved, { depth: 0, rootSchema: false });
+  const bad = hasUnsupported(normalized);
+  if (bad) entry.unsupported = bad;
+  else entry.schema = normalized;
+  return entry;
+}
+function normalizeSchema(ctx, schema2, options) {
+  const depth = options.depth;
+  if (depth > 50) return unsupported("OpenAPI schema nesting depth exceeded 50");
   if (Array.isArray(schema2)) {
-    const normalized2 = schema2.map((entry) => normalizeSchema(root, entry, { ...options, depth: depth + 1, rootSchema: false }));
+    const normalized2 = schema2.map((entry) => normalizeSchema(ctx, entry, { depth: depth + 1, rootSchema: false }));
     const bad = normalized2.map(hasUnsupported).find(Boolean);
     return bad ? unsupported(bad) : normalized2;
   }
@@ -49716,40 +49762,42 @@ function normalizeSchema(root, schema2, options) {
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (ref) {
     if (!ref.startsWith("#/")) return unsupported(`External OpenAPI $ref remained unresolved: ${ref}`);
-    const stack = options.stack ?? [];
-    if (stack.includes(ref)) return unsupported(`Recursive OpenAPI $ref is unsupported: ${ref}`);
-    const resolved = resolvePointer(root, ref);
-    if (resolved === void 0) return unsupported(`Unresolved OpenAPI $ref: ${ref}`);
-    const siblingEntries = Object.entries(record).filter(([key]) => key !== "$ref");
-    const resolvedSchema = normalizeSchema(root, resolved, {
-      ...options,
-      depth: depth + 1,
-      rootSchema: false,
-      stack: [...stack, ref]
-    });
-    const resolvedUnsupported = hasUnsupported(resolvedSchema);
-    if (resolvedUnsupported) return unsupported(resolvedUnsupported);
-    if (options.version === "3.0" || siblingEntries.length === 0) return resolvedSchema;
-    const siblingSchema = normalizeSchema(root, Object.fromEntries(siblingEntries), {
-      ...options,
-      depth: depth + 1,
-      rootSchema: false,
-      stack: [...stack, ref]
-    });
+    const siblingEntries = ctx.version === "3.1" ? Object.entries(record).filter(([key]) => key !== "$ref") : [];
+    const inlineStack = options.inlineStack ?? [];
+    if (options.rootSchema && siblingEntries.length === 0 && !inlineStack.includes(ref)) {
+      const resolved = resolvePointer(ctx.root, ref);
+      if (resolved === void 0) return unsupported(`Unresolved OpenAPI $ref: ${ref}`);
+      const inlined = normalizeSchema(ctx, resolved, { depth, rootSchema: true, inlineStack: [...inlineStack, ref] });
+      const bad = hasUnsupported(inlined);
+      return bad ? unsupported(bad) : inlined;
+    }
+    const entry = registerDef(ctx, ref);
+    if (entry.unsupported) return unsupported(entry.unsupported);
+    const refNode = { $ref: `#/$defs/${entry.name}` };
+    if (siblingEntries.length === 0) {
+      if (options.rootSchema) refNode.$schema = ctx.dialect;
+      return refNode;
+    }
+    const siblingSchema = normalizeSchema(ctx, Object.fromEntries(siblingEntries), { depth: depth + 1, rootSchema: false });
     const siblingUnsupported = hasUnsupported(siblingSchema);
     if (siblingUnsupported) return unsupported(siblingUnsupported);
-    const wrapper = { allOf: [resolvedSchema, siblingSchema] };
-    if (options.rootSchema) wrapper.$schema = options.dialect ?? rootDialect(root, options.version, record);
+    const wrapper = { allOf: [refNode, siblingSchema] };
+    if (options.rootSchema) wrapper.$schema = ctx.dialect;
     return wrapper;
   }
   const sourceSchema = { ...record };
-  const nullable = sourceSchema.nullable === true && options.version === "3.0";
+  const nullable = sourceSchema.nullable === true && ctx.version === "3.0";
   delete sourceSchema.nullable;
-  const writeOnlyProperties = /* @__PURE__ */ new Set();
+  const directionStrippedFlag = ctx.direction === "request" ? "readOnly" : "writeOnly";
+  const strippedProperties = /* @__PURE__ */ new Set();
   const rawProperties = asRecord3(sourceSchema.properties);
   if (rawProperties) {
     for (const [propertyName, propertySchema] of Object.entries(rawProperties)) {
-      if (asRecord3(propertySchema)?.writeOnly === true) writeOnlyProperties.add(propertyName);
+      let flagSource = asRecord3(propertySchema);
+      if (typeof flagSource?.$ref === "string" && flagSource.$ref.startsWith("#/")) {
+        flagSource = asRecord3(resolvePointer(ctx.root, flagSource.$ref)) ?? flagSource;
+      }
+      if (flagSource?.[directionStrippedFlag] === true) strippedProperties.add(propertyName);
     }
   }
   const normalized = {};
@@ -49776,17 +49824,69 @@ function normalizeSchema(root, schema2, options) {
       delete normalized.maximum;
       continue;
     }
+    if (key === "format") {
+      if (typeof value === "string" && ASSERTED_FORMATS.has(value)) normalized.format = value;
+      continue;
+    }
     if (!ASSERTION_KEYS.has(key)) return unsupported(`Unsupported OpenAPI schema keyword: ${key}`);
-    if (key === "items" && Array.isArray(value) && options.version === "3.0") {
+    if (ctx.dialect === DRAFT_07_SCHEMA_URI && DRAFT_2020_12_ONLY_KEYS.has(key)) {
+      return unsupported(`${key} requires the JSON Schema 2020-12 dialect`);
+    }
+    if (ctx.dialect === DRAFT_2020_12_SCHEMA_URI && DRAFT_07_ONLY_KEYS.has(key)) {
+      return unsupported(`${key} is a draft-07 keyword and is unsupported under JSON Schema 2020-12`);
+    }
+    if (key === "items" && Array.isArray(value) && ctx.version === "3.0") {
       return unsupported("Tuple array items are unsupported in OpenAPI 3.0");
+    }
+    if (key === "patternProperties" || key === "dependentSchemas") {
+      const map2 = asRecord3(value);
+      if (!map2) continue;
+      const next = {};
+      for (const [mapKey, mapSchema] of Object.entries(map2)) {
+        const child3 = normalizeSchema(ctx, mapSchema, { depth: depth + 1, rootSchema: false });
+        const bad2 = hasUnsupported(child3);
+        if (bad2) return unsupported(bad2);
+        next[mapKey] = child3;
+      }
+      normalized[key] = next;
+      continue;
+    }
+    if (key === "dependentRequired") {
+      const map2 = asRecord3(value);
+      if (!map2) continue;
+      for (const names of Object.values(map2)) {
+        if (!Array.isArray(names) || names.some((name) => typeof name !== "string")) {
+          return unsupported("dependentRequired requires string array values");
+        }
+      }
+      normalized.dependentRequired = value;
+      continue;
+    }
+    if (key === "dependencies") {
+      const map2 = asRecord3(value);
+      if (!map2) continue;
+      const next = {};
+      for (const [mapKey, dependency] of Object.entries(map2)) {
+        if (Array.isArray(dependency)) {
+          if (dependency.some((name) => typeof name !== "string")) return unsupported("dependencies requires string array or schema values");
+          next[mapKey] = dependency;
+          continue;
+        }
+        const child3 = normalizeSchema(ctx, dependency, { depth: depth + 1, rootSchema: false });
+        const bad2 = hasUnsupported(child3);
+        if (bad2) return unsupported(bad2);
+        next[mapKey] = child3;
+      }
+      normalized.dependencies = next;
+      continue;
     }
     if (key === "properties") {
       const properties = asRecord3(value);
       if (!properties) continue;
       const nextProperties = {};
       for (const [propertyName, propertySchema] of Object.entries(properties)) {
-        if (writeOnlyProperties.has(propertyName)) continue;
-        const child3 = normalizeSchema(root, propertySchema, { ...options, depth: depth + 1, rootSchema: false });
+        if (strippedProperties.has(propertyName)) continue;
+        const child3 = normalizeSchema(ctx, propertySchema, { depth: depth + 1, rootSchema: false });
         const bad2 = hasUnsupported(child3);
         if (bad2) return unsupported(bad2);
         nextProperties[propertyName] = child3;
@@ -49795,16 +49895,46 @@ function normalizeSchema(root, schema2, options) {
       continue;
     }
     if (key === "required") {
-      const required = mergeRequiredWithoutWriteOnly(value, writeOnlyProperties);
+      const required = mergeRequiredWithoutStripped(value, strippedProperties);
       if (required) normalized.required = required;
       continue;
     }
-    const child2 = normalizeSchema(root, value, { ...options, depth: depth + 1, rootSchema: false });
+    const child2 = normalizeSchema(ctx, value, { depth: depth + 1, rootSchema: false });
     const bad = hasUnsupported(child2);
     if (bad) return unsupported(bad);
     normalized[key] = child2;
   }
-  if (options.rootSchema) normalized.$schema = options.dialect ?? rootDialect(root, options.version, record);
+  if (typeof normalized.minimum === "number" && typeof normalized.exclusiveMinimum === "number") {
+    if (normalized.exclusiveMinimum >= normalized.minimum) delete normalized.minimum;
+    else delete normalized.exclusiveMinimum;
+  }
+  if (typeof normalized.maximum === "number" && typeof normalized.exclusiveMaximum === "number") {
+    if (normalized.exclusiveMaximum <= normalized.maximum) delete normalized.maximum;
+    else delete normalized.exclusiveMaximum;
+  }
+  if (sourceSchema.format === "int32") {
+    const type2 = normalized.type;
+    const isInteger2 = type2 === "integer" || Array.isArray(type2) && type2.includes("integer");
+    if (isInteger2) {
+      if (typeof normalized.exclusiveMinimum === "number") {
+        if (normalized.exclusiveMinimum < INT32_MIN) {
+          delete normalized.exclusiveMinimum;
+          normalized.minimum = INT32_MIN;
+        }
+      } else if (typeof normalized.minimum !== "number" || normalized.minimum < INT32_MIN) {
+        normalized.minimum = INT32_MIN;
+      }
+      if (typeof normalized.exclusiveMaximum === "number") {
+        if (normalized.exclusiveMaximum > INT32_MAX) {
+          delete normalized.exclusiveMaximum;
+          normalized.maximum = INT32_MAX;
+        }
+      } else if (typeof normalized.maximum !== "number" || normalized.maximum > INT32_MAX) {
+        normalized.maximum = INT32_MAX;
+      }
+    }
+  }
+  if (options.rootSchema) normalized.$schema = ctx.dialect;
   if (nullable) {
     if (typeof normalized.type === "string") {
       normalized.type = [normalized.type, "null"];
@@ -49816,20 +49946,103 @@ function normalizeSchema(root, schema2, options) {
       const wrappedSchema = { ...normalized };
       delete wrappedSchema.$schema;
       const wrapper = { anyOf: [{ type: "null" }, wrappedSchema] };
-      if (options.rootSchema) wrapper.$schema = options.dialect ?? rootDialect(root, options.version, record);
+      if (options.rootSchema) wrapper.$schema = ctx.dialect;
       return wrapper;
     }
   }
   return normalized;
 }
-function packSchema(root, schema2, version) {
+function isSchemaGraphOverflow(packed) {
+  return typeof packed.unsupported === "string" && packed.unsupported.startsWith("OpenAPI schema reference graph exceeded");
+}
+function packSchema(root, schema2, version, direction = "response") {
   try {
+    if (schema2 === true) return { schema: { $schema: rootDialect(root, version) } };
+    if (schema2 === false) return unsupported("Boolean false JSON Schema rejects every instance and is unsupported");
     const dialect = rootDialect(root, version, asRecord3(schema2) ?? void 0);
-    const normalized = normalizeSchema(root, schema2, { version, rootSchema: true, dialect });
+    const ctx = { root, version, direction, dialect, defs: /* @__PURE__ */ new Map() };
+    const normalized = normalizeSchema(ctx, schema2, { depth: 0, rootSchema: true });
     const message = hasUnsupported(normalized);
-    return message ? unsupported(message) : { schema: normalized };
+    if (message) return unsupported(message);
+    const aliasTargets = /* @__PURE__ */ new Map();
+    for (const entry of ctx.defs.values()) {
+      if (entry.unsupported) return unsupported(entry.unsupported);
+      const entrySchema = asRecord3(entry.schema);
+      const ref = entrySchema && Object.keys(entrySchema).length === 1 && typeof entrySchema.$ref === "string" ? entrySchema.$ref : "";
+      if (ref.startsWith("#/$defs/")) aliasTargets.set(entry.name, ref.slice("#/$defs/".length));
+    }
+    for (const start of aliasTargets.keys()) {
+      const seen = /* @__PURE__ */ new Set();
+      let current = start;
+      while (current !== void 0 && aliasTargets.has(current)) {
+        if (seen.has(current)) return unsupported("Self-referential alias schema is unsupported");
+        seen.add(current);
+        current = aliasTargets.get(current);
+      }
+    }
+    if (ctx.defs.size > 0) {
+      const normalizedRecord = asRecord3(normalized);
+      if (!normalizedRecord) return unsupported("Referenced schemas require an object root schema");
+      normalizedRecord.$defs = Object.fromEntries([...ctx.defs.values()].map((entry) => [entry.name, entry.schema]));
+    }
+    return { schema: normalized };
   } catch (error2) {
     return unsupported(error2 instanceof Error ? error2.message : String(error2));
+  }
+}
+
+// src/lib/spec/schema-validator-code.ts
+var import_schemasafe = __toESM(require_src(), 1);
+function compileSchemaValidator(schema2) {
+  try {
+    const validate2 = (0, import_schemasafe.validator)(schema2, {
+      includeErrors: false,
+      // Real-world specs legally mix enum/const with other keywords; without
+      // this flag schemasafe refuses to compile them (observed in Stripe,
+      // Plaid, and DigitalOcean public specs).
+      allowUnusedKeywords: true,
+      contentValidation: false,
+      formatAssertion: true,
+      isJSON: true,
+      mode: "default",
+      removeAdditional: false,
+      requireSchema: true,
+      requireStringValidation: false,
+      useDefaults: false
+    });
+    return (value) => validate2(value);
+  } catch {
+    return null;
+  }
+}
+function compileSchemaValidatorCode(schema2) {
+  try {
+    const validate2 = (0, import_schemasafe.validator)(schema2, {
+      includeErrors: true,
+      allErrors: true,
+      // Real-world specs legally mix enum/const with other keywords; without
+      // this flag schemasafe refuses to compile them (observed in Stripe,
+      // Plaid, and DigitalOcean public specs).
+      allowUnusedKeywords: true,
+      contentValidation: false,
+      formatAssertion: true,
+      isJSON: true,
+      mode: "default",
+      removeAdditional: false,
+      requireSchema: true,
+      requireStringValidation: false,
+      useDefaults: false
+    });
+    const source = validate2.toModule();
+    if (/\beval\s*\(/.test(source) || /new\s+Function\b/.test(source)) {
+      throw new Error("schemasafe generated forbidden dynamic code");
+    }
+    return source;
+  } catch (error2) {
+    throw new Error(
+      `CONTRACT_SCHEMA_COMPILE_FAILED: ${error2 instanceof Error ? error2.message : String(error2)}`,
+      { cause: error2 }
+    );
   }
 }
 
@@ -49908,7 +50121,7 @@ function collectSecurityApiKeys(root, operation) {
   for (const requirement of requirements.map((entry) => asRecord4(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
       const scheme = resolveInternalRef(root, securitySchemes?.[schemeName]);
-      if (scheme?.type === "apiKey" && typeof scheme.name === "string" && ["query", "header"].includes(String(scheme.in))) {
+      if (scheme?.type === "apiKey" && typeof scheme.name === "string" && ["query", "header", "cookie"].includes(String(scheme.in))) {
         names.add(`${String(scheme.in)}:${scheme.name.toLowerCase()}`);
       }
     }
@@ -49930,11 +50143,129 @@ function collectSecuritySchemeWarnings(root, operation) {
     for (const schemeName of Object.keys(requirement)) {
       const scheme = resolveInternalRef(root, securitySchemes?.[schemeName]);
       warnings.add(
-        `CONTRACT_SECURITY_NOT_VALIDATED: security scheme ${schemeName} (${securitySchemeKind(scheme)}) is not runtime-proven by dynamic contract tests`
+        `CONTRACT_SECURITY_NOT_VALIDATED: security scheme ${schemeName} (${securitySchemeKind(scheme)}) is not runtime-proven beyond credential presence by dynamic contract tests`
       );
     }
   }
   return [...warnings];
+}
+function securityCheckFor(schemeName, scheme) {
+  const kind = securitySchemeKind(scheme);
+  if (scheme?.type === "apiKey" && typeof scheme.name === "string" && ["header", "query", "cookie"].includes(String(scheme.in))) {
+    return { scheme: schemeName, kind, checkable: true, in: String(scheme.in), name: scheme.name };
+  }
+  if (scheme?.type === "http") {
+    const httpScheme = String(scheme.scheme || "").toLowerCase();
+    if (httpScheme === "basic") return { scheme: schemeName, kind, checkable: true, prefix: "Basic " };
+    if (httpScheme === "bearer") return { scheme: schemeName, kind, checkable: true, prefix: "Bearer " };
+    return { scheme: schemeName, kind, checkable: true, in: "header", name: "Authorization" };
+  }
+  if (scheme?.type === "oauth2" || scheme?.type === "openIdConnect") {
+    return { scheme: schemeName, kind, checkable: true, in: "header", name: "Authorization" };
+  }
+  return { scheme: schemeName, kind, checkable: false };
+}
+function collectSecurityRuntimeChecks(root, operation) {
+  const securitySchemes = asRecord4(asRecord4(root.components)?.securitySchemes);
+  const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
+  const alternatives = [];
+  for (const requirement of requirements.map((entry) => asRecord4(entry)).filter(Boolean)) {
+    const schemeNames = Object.keys(requirement);
+    if (schemeNames.length === 0) return void 0;
+    alternatives.push(schemeNames.map((schemeName) => securityCheckFor(schemeName, resolveInternalRef(root, securitySchemes?.[schemeName]))));
+  }
+  if (alternatives.some((alternative) => alternative.length > 0 && alternative.every((check) => !check.checkable))) return void 0;
+  return alternatives.length > 0 ? alternatives : void 0;
+}
+function resolvedParameters(root, pathItem, operation) {
+  return [...asArray2(pathItem.parameters), ...asArray2(operation.parameters)].map((rawParam) => {
+    try {
+      return resolveInternalRef(root, rawParam);
+    } catch {
+      return null;
+    }
+  }).filter((param) => Boolean(param));
+}
+var DEFAULT_PARAM_STYLES = { query: "form", path: "simple", header: "simple", cookie: "form" };
+var IGNORED_HEADER_PARAMS = /* @__PURE__ */ new Set(["accept", "content-type", "authorization"]);
+function isIgnoredParameter(location2, name) {
+  return location2 === "header" && IGNORED_HEADER_PARAMS.has(name.toLowerCase());
+}
+function collectSerializationWarnings(root, pathItem, operation) {
+  const warnings = [];
+  for (const param of resolvedParameters(root, pathItem, operation)) {
+    const location2 = String(param.in || "").toLowerCase();
+    const name = String(param.name || "");
+    const defaultStyle = DEFAULT_PARAM_STYLES[location2];
+    if (!name || !defaultStyle || isIgnoredParameter(location2, name)) continue;
+    const style = typeof param.style === "string" ? param.style : defaultStyle;
+    const defaultExplode = style === "form";
+    const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
+    if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || param.content !== void 0) {
+      warnings.push(`CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter ${location2}:${name} declares non-default style, explode, allowReserved, or content and its serialization is not validated`);
+    }
+  }
+  return warnings;
+}
+var SCALAR_SCHEMA_TYPES = /* @__PURE__ */ new Set(["string", "number", "integer", "boolean", "null"]);
+function packedScalarSchema(packed) {
+  if (packed.unsupported || packed.schema === void 0) return void 0;
+  const record = asRecord4(packed.schema);
+  if (!record) return void 0;
+  const types2 = Array.isArray(record.type) ? record.type : [record.type];
+  if (!types2.every((entry) => typeof entry === "string" && SCALAR_SCHEMA_TYPES.has(entry))) return void 0;
+  return packed.schema;
+}
+function collectParameterChecks(root, pathItem, operation, version, operationId, warnings) {
+  const securityKeys = collectSecurityApiKeys(root, operation);
+  const checks = [];
+  const seen = /* @__PURE__ */ new Set();
+  const orderedParams = [...asArray2(operation.parameters), ...asArray2(pathItem.parameters)].map((rawParam) => {
+    try {
+      return resolveInternalRef(root, rawParam);
+    } catch {
+      return null;
+    }
+  }).filter((param) => Boolean(param));
+  for (const param of orderedParams) {
+    const location2 = String(param.in || "").toLowerCase();
+    if (location2 !== "query" && location2 !== "header") continue;
+    const name = String(param.name || "");
+    if (!name || isIgnoredParameter(location2, name)) continue;
+    const key = `${location2}:${name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (securityKeys.has(key)) continue;
+    if (param.content !== void 0 || param.schema === void 0) continue;
+    const defaultStyle = DEFAULT_PARAM_STYLES[location2];
+    const style = typeof param.style === "string" ? param.style : defaultStyle;
+    const defaultExplode = style === "form";
+    const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
+    if (style !== defaultStyle || explode !== defaultExplode) continue;
+    const packed = packSchema(root, param.schema, version);
+    if (packed.unsupported) {
+      warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location2}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
+      continue;
+    }
+    const schema2 = packedScalarSchema(packed);
+    if (schema2 === void 0) continue;
+    const check = { in: location2, name, required: param.required === true, schema: schema2 };
+    if (location2 === "query" && param.allowEmptyValue === true) check.allowEmptyValue = true;
+    checks.push(check);
+  }
+  return checks.length > 0 ? checks : void 0;
+}
+function collectDeclaredQueryParameters(root, pathItem, operation) {
+  const names = /* @__PURE__ */ new Set();
+  for (const param of resolvedParameters(root, pathItem, operation)) {
+    if (String(param.in || "").toLowerCase() !== "query") continue;
+    const name = String(param.name || "");
+    if (name) names.add(name.toLowerCase());
+  }
+  for (const key of collectSecurityApiKeys(root, operation)) {
+    if (key.startsWith("query:")) names.add(key.slice("query:".length));
+  }
+  return [...names];
 }
 function collectParameters(root, pathItem, operation) {
   const securityKeys = collectSecurityApiKeys(root, operation);
@@ -49945,9 +50276,9 @@ function collectParameters(root, pathItem, operation) {
     const param = resolveInternalRef(root, rawParam);
     if (!param) continue;
     const location2 = String(param.in || "").toLowerCase();
-    if (!["path", "query", "header"].includes(location2)) continue;
+    if (!["path", "query", "header", "cookie"].includes(location2)) continue;
     const name = String(param.name || "");
-    if (!name || param.required !== true) continue;
+    if (!name || param.required !== true || isIgnoredParameter(location2, name)) continue;
     const key = `${location2}:${name.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -49959,36 +50290,226 @@ function collectParameters(root, pathItem, operation) {
   }
   return requirements;
 }
-function collectRequestBody(root, operation) {
+var BODY_FIELD_RULE_TYPES = /* @__PURE__ */ new Set(["application/x-www-form-urlencoded", "multipart/form-data"]);
+function isJsonBaseType(base) {
+  return base === "application/json" || /\+json$/.test(base);
+}
+function mergeObjectSchema(root, rawSchema, depth) {
+  if (depth > 10) return null;
+  let schema2;
+  try {
+    schema2 = resolveInternalRef(root, rawSchema);
+  } catch {
+    return null;
+  }
+  if (!schema2) return null;
+  const merged = {
+    required: asArray2(schema2.required).map((entry) => String(entry)).filter(Boolean),
+    properties: { ...asRecord4(schema2.properties) ?? {} }
+  };
+  for (const member of asArray2(schema2.allOf)) {
+    const child2 = mergeObjectSchema(root, member, depth + 1);
+    if (!child2) continue;
+    merged.required.push(...child2.required);
+    merged.properties = { ...merged.properties, ...child2.properties };
+  }
+  merged.required = [...new Set(merged.required)];
+  return merged;
+}
+function propertyIsReadOnly(root, properties, name) {
+  try {
+    return resolveInternalRef(root, properties[name])?.readOnly === true;
+  } catch {
+    return false;
+  }
+}
+function propertyIsBinary(root, properties, name) {
+  let schema2;
+  try {
+    schema2 = resolveInternalRef(root, properties[name]);
+  } catch {
+    return false;
+  }
+  if (!schema2) return false;
+  if (schema2.format === "binary") return true;
+  return typeof schema2.contentMediaType === "string" && schema2.contentMediaType.toLowerCase().startsWith("application/octet-stream");
+}
+function fieldEncodings(root, base, mediaObject, properties) {
+  const declared = asRecord4(mediaObject?.encoding);
+  const encodings = {};
+  for (const name of Object.keys(properties)) {
+    if (base === "multipart/form-data" && propertyIsBinary(root, properties, name)) {
+      encodings[name] = { ...encodings[name], binary: true };
+    }
+  }
+  if (declared) {
+    for (const [name, rawEncoding] of Object.entries(declared)) {
+      const encoding = asRecord4(rawEncoding);
+      if (!encoding) continue;
+      const entry = { ...encodings[name] };
+      if (typeof encoding.contentType === "string" && encoding.contentType.trim()) {
+        entry.contentType = encoding.contentType.toLowerCase();
+      }
+      if (base === "application/x-www-form-urlencoded") {
+        const style = typeof encoding.style === "string" ? encoding.style : "form";
+        const explode = typeof encoding.explode === "boolean" ? encoding.explode : style === "form";
+        if (style !== "form" || explode !== (style === "form") || encoding.allowReserved === true) {
+          entry.nonDefaultSerialization = true;
+        }
+      }
+      if (Object.keys(entry).length > 0) encodings[name] = entry;
+    }
+  }
+  return Object.keys(encodings).length > 0 ? encodings : void 0;
+}
+function requestBodyFieldRules(root, content) {
+  const rules = {};
+  for (const [contentType, mediaObject] of Object.entries(content)) {
+    const base = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+    if (!isJsonBaseType(base) && !BODY_FIELD_RULE_TYPES.has(base)) continue;
+    const mediaRecord = asRecord4(mediaObject);
+    const merged = mergeObjectSchema(root, mediaRecord?.schema, 0);
+    if (!merged) continue;
+    const readOnly = Object.keys(merged.properties).filter((name) => propertyIsReadOnly(root, merged.properties, name));
+    const required = merged.required.filter((name) => !propertyIsReadOnly(root, merged.properties, name));
+    const encodings = BODY_FIELD_RULE_TYPES.has(base) ? fieldEncodings(root, base, mediaRecord, merged.properties) : void 0;
+    if (required.length > 0 || readOnly.length > 0 || encodings) {
+      const rule = { required, readOnly };
+      if (encodings) rule.encodings = encodings;
+      rules[base] = rule;
+    }
+  }
+  return Object.keys(rules).length > 0 ? rules : void 0;
+}
+function requestBodyJsonSchemas(root, content, version, operationId, warnings) {
+  const schemas = {};
+  const exampleWarnings = /* @__PURE__ */ new Set();
+  for (const [contentType, mediaObject] of Object.entries(content)) {
+    const base = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+    const mediaRecord = asRecord4(mediaObject);
+    const schema2 = mediaRecord?.schema;
+    if (!isJsonBaseType(base)) {
+      if (schema2 !== void 0 && !BODY_FIELD_RULE_TYPES.has(base)) {
+        warnings.push(`CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED: request body schema for ${contentType} on ${operationId} is not validated at runtime`);
+      }
+      continue;
+    }
+    if (schema2 === void 0) continue;
+    const packed = packSchema(root, schema2, version, "request");
+    if (mediaRecord) validateExamples(root, mediaRecord, packed, contentType, operationId, exampleWarnings);
+    if (packed.unsupported) {
+      warnings.push(`CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED: request body schema for ${contentType} on ${operationId} is not validated (${packed.unsupported})`);
+      continue;
+    }
+    if (packed.schema !== void 0) schemas[base] = packed.schema;
+  }
+  warnings.push(...exampleWarnings);
+  return Object.keys(schemas).length > 0 ? schemas : void 0;
+}
+function collectRequestBody(root, operation, version, operationId, warnings) {
   const body = resolveInternalRef(root, operation.requestBody);
-  if (!body || body.required !== true) return void 0;
+  if (!body) return void 0;
   const content = asRecord4(body.content);
+  const fieldRules = content ? requestBodyFieldRules(root, content) : void 0;
+  if (fieldRules) {
+    for (const [base, rule] of Object.entries(fieldRules)) {
+      for (const [field, encoding] of Object.entries(rule.encodings ?? {})) {
+        if (encoding.nonDefaultSerialization) {
+          warnings.push(
+            `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: ${base} request body field ${field} on ${operationId} declares non-default encoding style, explode, or allowReserved and its serialization is not validated`
+          );
+        }
+      }
+    }
+  }
   return {
-    required: true,
-    contentTypes: content ? Object.keys(content) : []
+    required: body.required === true,
+    contentTypes: content ? Object.keys(content) : [],
+    fieldRules,
+    jsonSchemas: content ? requestBodyJsonSchemas(root, content, version, operationId, warnings) : void 0
   };
 }
-function responseContent(root, version, response) {
+function exampleCandidates(root, mediaObject) {
+  const candidates = [];
+  if ("example" in mediaObject) candidates.push({ label: "example", value: mediaObject.example });
+  const examples = asRecord4(mediaObject.examples);
+  if (examples) {
+    for (const [name, rawExample] of Object.entries(examples)) {
+      let example;
+      try {
+        example = resolveInternalRef(root, rawExample);
+      } catch {
+        continue;
+      }
+      if (example && "value" in example) candidates.push({ label: `examples.${name}`, value: example.value });
+    }
+  }
+  return candidates;
+}
+function validateExamples(root, mediaObject, packed, contentType, context, warnings) {
+  if (packed.schema === void 0 || packed.unsupported) return;
+  const candidates = exampleCandidates(root, mediaObject);
+  if (candidates.length === 0) return;
+  const validate2 = compileSchemaValidator(packed.schema);
+  if (!validate2) return;
+  for (const candidate of candidates) {
+    if (!validate2(candidate.value)) {
+      warnings.add(`CONTRACT_EXAMPLE_SCHEMA_MISMATCH: ${candidate.label} for ${contentType} on ${context} does not match its schema`);
+    }
+  }
+}
+function responseContent(root, version, response, context, warnings) {
   const content = asRecord4(response.content);
   if (!content) return {};
   const media = {};
   for (const [contentType, mediaObject] of Object.entries(content)) {
-    const schema2 = asRecord4(mediaObject)?.schema;
-    media[contentType] = schema2 === void 0 ? {} : packSchema(root, schema2, version);
+    const mediaRecord = asRecord4(mediaObject);
+    const schema2 = mediaRecord?.schema;
+    let packed = schema2 === void 0 ? {} : packSchema(root, schema2, version);
+    if (isSchemaGraphOverflow(packed)) {
+      warnings.add(`CONTRACT_SCHEMA_NOT_COMPILED: response schema for ${contentType} on ${context} skipped (${packed.unsupported})`);
+      packed = {};
+    }
+    const base = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+    if (mediaRecord && isJsonBaseType(base)) validateExamples(root, mediaRecord, packed, contentType, context, warnings);
+    media[contentType] = packed;
   }
   return media;
 }
-function responseHeaders(root, version, response) {
+function responseHeaders(root, version, response, context, warnings) {
   const headers = asRecord4(response.headers);
   if (!headers) return [];
-  return Object.entries(headers).map(([name, rawHeader]) => {
+  const entries = [];
+  for (const [name, rawHeader] of Object.entries(headers)) {
+    if (name.toLowerCase() === "content-type") continue;
     const header = resolveInternalRef(root, rawHeader);
-    if (!header) return { name, required: true, unsupported: "Unresolved response header" };
+    if (!header) {
+      entries.push({ name, required: true, unsupported: "Unresolved response header" });
+      continue;
+    }
     const required = header.required === true;
-    if (header.content) return { name, required, unsupported: "OpenAPI response header content is unsupported" };
-    if (!header.schema) return { name, required };
-    return { name, required, ...packSchema(root, header.schema, version) };
-  });
+    if (header.content) {
+      entries.push({ name, required, unsupported: "OpenAPI response header content is unsupported" });
+      continue;
+    }
+    if (!header.schema) {
+      entries.push({ name, required });
+      continue;
+    }
+    const packed = packSchema(root, header.schema, version);
+    if (isSchemaGraphOverflow(packed)) {
+      warnings.add(`CONTRACT_SCHEMA_NOT_COMPILED: response header ${name} schema on ${context} skipped (${packed.unsupported})`);
+      entries.push({ name, required });
+      continue;
+    }
+    if (!packed.unsupported && packed.schema !== void 0 && packedScalarSchema(packed) === void 0) {
+      warnings.add(`CONTRACT_HEADER_SCHEMA_NOT_VALIDATED: response header ${name} on ${context} declares a non-scalar schema and its value is not validated`);
+      entries.push({ name, required });
+      continue;
+    }
+    entries.push({ name, required, ...packed });
+  }
+  return entries;
 }
 function buildContractIndex(root) {
   if (root.swagger === "2.0") throw new Error("CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (found swagger 2.0)");
@@ -50013,11 +50534,23 @@ function buildContractIndex(root) {
           throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path8} must define at least one response`);
         }
         const contractResponses = {};
+        const responseWarnings = /* @__PURE__ */ new Set();
         for (const [status, rawResponse] of Object.entries(responses)) {
           const response = resolveInternalRef(root, rawResponse);
           if (!response) continue;
-          const content = responseContent(root, version, response);
-          const headers = responseHeaders(root, version, response);
+          if (asRecord4(response.links)) {
+            responseWarnings.add(`CONTRACT_LINKS_NOT_VALIDATED: response links are not validated for ${lowerMethod.toUpperCase()} ${path8}`);
+          }
+          const responseContext = `${lowerMethod.toUpperCase()} ${path8} status ${status}`;
+          const content = responseContent(root, version, response, responseContext, responseWarnings);
+          for (const [contentType, media] of Object.entries(content)) {
+            const base = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+            const schemaType = asRecord4(media.schema)?.type;
+            if (!isJsonBaseType(base) && media.schema !== void 0 && !media.unsupported && schemaType !== "string") {
+              responseWarnings.add(`CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED: response schema for ${contentType} on ${responseContext} is not validated at runtime`);
+            }
+          }
+          const headers = responseHeaders(root, version, response, responseContext, responseWarnings);
           contractResponses[normalizeResponseKey(status)] = {
             content,
             hasBody: Object.keys(content).length > 0,
@@ -50029,11 +50562,26 @@ function buildContractIndex(root) {
           ...operationServers(root, pathItem, operation).map((server) => joinPaths(serverPathPrefix(server), path8))
         ].map(normalizePath))];
         const opWarnings = [];
+        opWarnings.push(...responseWarnings);
         opWarnings.push(...collectSecuritySchemeWarnings(root, operation));
+        opWarnings.push(...collectSerializationWarnings(root, pathItem, operation));
+        if (operation.deprecated === true) {
+          opWarnings.push(`CONTRACT_OPERATION_DEPRECATED: ${lowerMethod.toUpperCase()} ${path8} is marked deprecated in the OpenAPI document`);
+        }
         const requiredParameters = collectParameters(root, pathItem, operation);
         for (const parameter of requiredParameters.filter((entry) => entry.securityDerived)) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);
         }
+        for (const parameter of requiredParameters.filter((entry) => entry.in === "cookie" && !entry.securityDerived)) {
+          opWarnings.push(`CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not statically required in generated requests`);
+        }
+        const pathParamWarnings = /* @__PURE__ */ new Set();
+        for (const param of resolvedParameters(root, pathItem, operation)) {
+          if (String(param.in || "").toLowerCase() !== "path") continue;
+          const name = String(param.name || "");
+          if (name) pathParamWarnings.add(`CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter ${name} value is not validated at runtime`);
+        }
+        opWarnings.push(...pathParamWarnings);
         operations.push({
           id: `${lowerMethod.toUpperCase()} ${path8}`,
           method: lowerMethod.toUpperCase(),
@@ -50042,7 +50590,10 @@ function buildContractIndex(root) {
           candidates,
           responses: contractResponses,
           requiredParameters,
-          requestBody: collectRequestBody(root, operation),
+          declaredQueryParameters: collectDeclaredQueryParameters(root, pathItem, operation),
+          parameterChecks: collectParameterChecks(root, pathItem, operation, version, `${lowerMethod.toUpperCase()} ${path8}`, opWarnings),
+          requestBody: collectRequestBody(root, operation, version, `${lowerMethod.toUpperCase()} ${path8}`, opWarnings),
+          security: collectSecurityRuntimeChecks(root, operation),
           warnings: opWarnings
         });
       }
@@ -50061,35 +50612,6 @@ function buildContractIndex(root) {
     }
   }
   return { operations, version, warnings };
-}
-
-// src/lib/spec/schema-validator-code.ts
-var import_schemasafe = __toESM(require_src(), 1);
-function compileSchemaValidatorCode(schema2) {
-  try {
-    const validate2 = (0, import_schemasafe.validator)(schema2, {
-      includeErrors: true,
-      allErrors: true,
-      contentValidation: false,
-      formatAssertion: true,
-      isJSON: true,
-      mode: "default",
-      removeAdditional: false,
-      requireSchema: true,
-      requireStringValidation: false,
-      useDefaults: false
-    });
-    const source = validate2.toModule();
-    if (/\beval\s*\(/.test(source) || /new\s+Function\b/.test(source)) {
-      throw new Error("schemasafe generated forbidden dynamic code");
-    }
-    return source;
-  } catch (error2) {
-    throw new Error(
-      `CONTRACT_SCHEMA_COMPILE_FAILED: ${error2 instanceof Error ? error2.message : String(error2)}`,
-      { cause: error2 }
-    );
-  }
 }
 
 // src/lib/spec/collection-contracts.ts
@@ -50180,29 +50702,51 @@ function matchOperation(index, request) {
 function assignValidator(lines, target, source) {
   lines.push(`${target} = ${source};`);
 }
-function buildValidatorAssignments(operation) {
+function tryCompile(target, schema2, lines, warnings, context) {
+  try {
+    assignValidator(lines, target, compileSchemaValidatorCode(schema2));
+  } catch (error2) {
+    lines.push(`${target} = { skip: true };`);
+    warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: ${context} could not be compiled into a runtime validator (${error2 instanceof Error ? error2.message.slice(0, 160) : String(error2)})`);
+  }
+}
+function buildValidatorAssignments(operation, warnings) {
   const lines = ["var validators = {};"];
+  const parameterChecks = operation.parameterChecks ?? [];
+  if (parameterChecks.length > 0) {
+    lines.push("var paramValidators = {};");
+    for (const check of parameterChecks) {
+      tryCompile(`paramValidators[${JSON.stringify(`${check.in}:${check.name.toLowerCase()}`)}]`, check.schema, lines, warnings, `parameter ${check.in}:${check.name} schema on ${operation.id}`);
+    }
+  }
+  const bodySchemas = Object.entries(operation.requestBody?.jsonSchemas ?? {});
+  if (bodySchemas.length > 0) {
+    lines.push("var requestBodyValidators = {};");
+    for (const [base, schema2] of bodySchemas) {
+      tryCompile(`requestBodyValidators[${JSON.stringify(base)}]`, schema2, lines, warnings, `request body schema for ${base} on ${operation.id}`);
+    }
+  }
   for (const [status, response] of Object.entries(operation.responses)) {
     lines.push(`validators[${JSON.stringify(status)}] = validators[${JSON.stringify(status)}] || {};`);
     for (const [mediaType, media] of Object.entries(response.content)) {
       if (media.schema !== void 0 && !media.unsupported) {
-        assignValidator(lines, `validators[${JSON.stringify(status)}][${JSON.stringify(mediaType)}]`, compileSchemaValidatorCode(media.schema));
+        tryCompile(`validators[${JSON.stringify(status)}][${JSON.stringify(mediaType)}]`, media.schema, lines, warnings, `response schema for ${mediaType} on ${operation.id} status ${status}`);
       }
     }
     for (const header of response.headers) {
       if (header.schema !== void 0 && !header.unsupported) {
         lines.push(`validators[${JSON.stringify(status)}].__headers = validators[${JSON.stringify(status)}].__headers || {};`);
-        assignValidator(lines, `validators[${JSON.stringify(status)}].__headers[${JSON.stringify(header.name.toLowerCase())}]`, compileSchemaValidatorCode(header.schema));
+        tryCompile(`validators[${JSON.stringify(status)}].__headers[${JSON.stringify(header.name.toLowerCase())}]`, header.schema, lines, warnings, `response header ${header.name} schema on ${operation.id} status ${status}`);
       }
     }
   }
   return lines;
 }
-function createContractScript(operation) {
-  const contract = { method: operation.method, path: operation.path, responses: operation.responses };
+function createContractScript(operation, warnings = []) {
+  const contract = { method: operation.method, path: operation.path, responses: operation.responses, security: operation.security, parameters: operation.parameterChecks };
   return [
     `var contract = JSON.parse(${JSON.stringify(JSON.stringify(contract))});`,
-    ...buildValidatorAssignments(operation),
+    ...buildValidatorAssignments(operation, warnings),
     "function selectedResponseContract() {",
     "  var status = String(pm.response.code);",
     "  if (contract.responses[status]) return { key: status, value: contract.responses[status] };",
@@ -50216,6 +50760,15 @@ function createContractScript(operation) {
     'function mediaBase(value) { return String(value || "").toLowerCase().split(";")[0].trim(); }',
     'function mediaParts(value) { var base = mediaBase(value); var parts = base.split("/"); return { raw: base, type: parts[0] || "", subtype: parts[1] || "" }; }',
     'function isJsonSubtype(subtype) { return subtype === "json" || /\\+json$/.test(subtype); }',
+    "function coerceBySchema(value, schema) {",
+    "  var type = schema && schema.type;",
+    "  var types = Array.isArray(type) ? type : [type];",
+    '  if ((types.indexOf("integer") !== -1 || types.indexOf("number") !== -1) && /^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/.test(String(value).trim())) return Number(value);',
+    '  if (types.indexOf("boolean") !== -1 && (value === "true" || value === "false")) return value === "true";',
+    "  return value;",
+    "}",
+    'function requestHeader(name) { var value = ""; pm.request.headers.each(function (header) { if (header && header.disabled !== true && String(header.key).toLowerCase() === String(name).toLowerCase()) value = String(header.value); }); return value; }',
+    "function hasQueryParam(name) { var found = false; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === String(name).toLowerCase()) found = true; }); return found; }",
     "function mediaScore(expected, actual) {",
     "  var e = mediaParts(expected); var a = mediaParts(actual);",
     "  if (!e.raw || !a.raw) return 0;",
@@ -50246,7 +50799,8 @@ function createContractScript(operation) {
     "    if (!actual) return;",
     '    if (header.unsupported) pm.expect.fail("OpenAPI response header unsupported for " + contract.method + " " + contract.path + ": " + header.unsupported);',
     "    var headerValidator = validators[selected.key] && validators[selected.key].__headers && validators[selected.key].__headers[String(header.name).toLowerCase()];",
-    '    if (headerValidator && !headerValidator(actual)) pm.expect.fail("OpenAPI response header validation failed for " + header.name + ": " + JSON.stringify(headerValidator.errors || []));',
+    "    if (headerValidator && headerValidator.skip) return;",
+    '    if (headerValidator && !headerValidator(coerceBySchema(actual, header.schema))) pm.expect.fail("OpenAPI response header validation failed for " + header.name + ": " + JSON.stringify(headerValidator.errors || []));',
     "  });",
     "});",
     "pm.test('Response body matches OpenAPI body contract', function () {",
@@ -50274,11 +50828,75 @@ function createContractScript(operation) {
     '  if (media.media.unsupported) pm.expect.fail("OpenAPI schema unsupported for " + contract.method + " " + contract.path + " status " + pm.response.code + ": " + media.media.unsupported);',
     "  if (!media.media.schema) { return; }",
     "  var validate = validators[selected.key] && validators[selected.key][media.expected];",
+    "  if (validate && validate.skip) return;",
     '  if (!validate) pm.expect.fail("OpenAPI schema validator was not generated for " + media.expected);',
     '  var actual = mediaParts(pm.response.headers.get("Content-Type") || "");',
     "  var value = isJsonSubtype(actual.subtype) ? pm.response.json() : responseText();",
-    '  if (!isJsonSubtype(actual.subtype) && media.media.schema && media.media.schema.type !== "string") pm.expect.fail("Non-JSON response schema validation unsupported for " + contract.method + " " + contract.path);',
+    // Non-JSON object-schema bodies skip schema validation instead of
+    // failing; the index emits CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED so the
+    // skip is visible at instrumentation time.
+    '  if (!isJsonSubtype(actual.subtype) && media.media.schema && media.media.schema.type !== "string") { return; }',
     '  if (!validate(value)) pm.expect.fail("OpenAPI schema validation failed for " + contract.method + " " + contract.path + " status " + pm.response.code + ": " + JSON.stringify(validate.errors || []));',
+    "});",
+    ...operation.security ? [
+      "pm.test('Request carries credentials required by OpenAPI security', function () {",
+      "  function satisfied(check) {",
+      "    if (!check.checkable) return true;",
+      '    if (check.in === "query") return hasQueryParam(check.name);',
+      '    if (check.in === "cookie") { if (pm.cookies && pm.cookies.has && pm.cookies.has(String(check.name))) return true; return requestHeader("Cookie").split(";").some(function (part) { return part.split("=")[0].trim() === String(check.name); }); }',
+      '    if (check.prefix) { return requestHeader("Authorization").toLowerCase().indexOf(check.prefix.toLowerCase()) === 0; }',
+      '    if (check.kind === "oauth2" || check.kind === "openIdConnect") { return Boolean(requestHeader("Authorization")) || hasQueryParam("access_token"); }',
+      "    return Boolean(requestHeader(check.name));",
+      "  }",
+      "  var alternatives = contract.security || [];",
+      "  var ok = alternatives.some(function (alternative) { return alternative.every(function (check) { return satisfied(check); }); });",
+      '  if (!ok) pm.expect.fail("Request did not carry credentials for any OpenAPI security requirement of " + contract.method + " " + contract.path + ": " + alternatives.map(function (alternative) { return alternative.map(function (check) { return check.scheme + " (" + check.kind + ")"; }).join(" + "); }).join(" | "));',
+      "});"
+    ] : [],
+    ...operation.parameterChecks && operation.parameterChecks.length > 0 ? [
+      "pm.test('Request parameters match OpenAPI schemas', function () {",
+      '  function queryValue(name) { var value; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) value = param.value === null || param.value === undefined ? "" : String(param.value); }); return value; }',
+      '  function headerValue(name) { var value; pm.request.headers.each(function (header) { if (header && header.disabled !== true && String(header.key).toLowerCase() === String(name).toLowerCase()) value = header.value === null || header.value === undefined ? "" : String(header.value); }); return value; }',
+      '  function isPlaceholder(value) { var text = String(value).trim(); return /^<[^<>]*>$/.test(text) || text.indexOf("{{") !== -1; }',
+      "  (contract.parameters || []).forEach(function (param) {",
+      '    var key = param.in + ":" + String(param.name).toLowerCase();',
+      "    var validate = paramValidators[key];",
+      "    if (!validate || validate.skip) return;",
+      '    var value = param.in === "query" ? queryValue(String(param.name).toLowerCase()) : headerValue(param.name);',
+      '    if (value === undefined) { if (param.required) pm.expect.fail("Required parameter " + param.in + ":" + param.name + " was not sent for " + contract.method + " " + contract.path); return; }',
+      '    if (value === "" && param.allowEmptyValue) return;',
+      "    if (isPlaceholder(value)) return;",
+      '    if (!validate(coerceBySchema(value, param.schema))) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
+      "  });",
+      "});"
+    ] : [],
+    ...operation.requestBody?.jsonSchemas && Object.keys(operation.requestBody.jsonSchemas).length > 0 ? [
+      "pm.test('Request body matches OpenAPI request schema', function () {",
+      "  var body = pm.request.body;",
+      '  var raw = body && body.mode === "raw" && typeof body.raw === "string" ? body.raw : "";',
+      "  if (!raw.trim()) return;",
+      '  if (/"<[^"<>]*>"/.test(raw) || raw.indexOf("{{") !== -1) return;',
+      '  var validate = requestBodyValidators[mediaBase(requestHeader("Content-Type"))];',
+      "  if (!validate || validate.skip) return;",
+      "  var parsed;",
+      // Unquoted generator placeholders such as {"count": <long>} break
+      // JSON.parse; a parse failure alongside an angle-bracket token is
+      // treated as a placeholder body rather than drift.
+      '  try { parsed = JSON.parse(raw); } catch (error) { if (/<[A-Za-z][A-Za-z0-9_ -]*>/.test(raw)) return; pm.expect.fail("Request body for " + contract.method + " " + contract.path + " is not valid JSON: " + error); return; }',
+      '  if (!validate(parsed)) pm.expect.fail("Request body failed OpenAPI request schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
+      "});"
+    ] : [],
+    "pm.test('Content-Length is consistent with OpenAPI body expectations', function () {",
+    '  var raw = pm.response.headers.get("Content-Length");',
+    "  if (raw === null || raw === undefined) return;",
+    // Combined duplicate Content-Length values ("5, 5") fail the integer
+    // syntax check on purpose: RFC 9110 tolerates identical repeats, but a
+    // contract test surfacing them is strict by design.
+    '  if (!/^[0-9]+$/.test(String(raw).trim())) pm.expect.fail("Content-Length header is not a non-negative integer: " + raw);',
+    '  if (contract.method === "HEAD" || pm.response.code === 304) return;',
+    '  if (pm.response.headers.get("Content-Encoding")) return;',
+    "  var mustBeEmpty = isBodyless() || (selected && Object.keys(selected.value.content || {}).length === 0);",
+    '  if (mustBeEmpty && Number(String(raw).trim()) !== 0) pm.expect.fail("OpenAPI defines no response body for " + contract.method + " " + contract.path + " status " + pm.response.code + " but Content-Length was " + raw);',
     "});"
   ];
 }
@@ -50379,6 +50997,87 @@ function assertStaticRequestShape(operation, request) {
       );
     }
   }
+  return collectStaticBodyWarnings(operation, request, contentType);
+}
+function requestBodyFieldNames(request, base) {
+  const body = asRecord5(request.body);
+  if (!body) return void 0;
+  if (base === "application/json" || /\+json$/.test(base)) {
+    if (body.mode !== "raw" || typeof body.raw !== "string") return void 0;
+    let parsed;
+    try {
+      parsed = JSON.parse(body.raw);
+    } catch {
+      return void 0;
+    }
+    const record = asRecord5(parsed);
+    return record ? Object.keys(record) : void 0;
+  }
+  const mode = base === "application/x-www-form-urlencoded" ? "urlencoded" : base === "multipart/form-data" ? "formdata" : "";
+  if (!mode || !Array.isArray(body[mode])) return void 0;
+  return body[mode].map((entry) => asRecord5(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true).map((entry) => String(entry.key || "")).filter(Boolean);
+}
+function requestBodyEntries(request, base) {
+  const body = asRecord5(request.body);
+  const mode = base === "application/x-www-form-urlencoded" ? "urlencoded" : base === "multipart/form-data" ? "formdata" : "";
+  if (!body || !mode || !Array.isArray(body[mode])) return void 0;
+  return body[mode].map((entry) => asRecord5(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true);
+}
+function mediaTypeMatchesPattern(pattern, actual) {
+  return pattern.split(",").some((candidate) => {
+    const entry = (candidate.split(";")[0] ?? "").trim();
+    if (!entry) return false;
+    if (entry === "*/*" || entry === actual) return true;
+    if (entry.endsWith("/*")) return actual.startsWith(entry.slice(0, -1));
+    return false;
+  });
+}
+function collectStaticEncodingWarnings(operation, request, base, rule) {
+  const encodings = rule.encodings;
+  if (!encodings || base !== "multipart/form-data") return [];
+  const entries = requestBodyEntries(request, base);
+  if (!entries) return [];
+  const warnings = [];
+  for (const [field, encoding] of Object.entries(encodings)) {
+    const entry = entries.find((candidate) => String(candidate.key || "") === field);
+    if (!entry) continue;
+    if (encoding.binary && String(entry.type || "") !== "file") {
+      warnings.push(`CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} should be a file part per its binary schema`);
+    }
+    if (encoding.contentType) {
+      const actual = typeof entry.contentType === "string" ? (entry.contentType.toLowerCase().split(";")[0] ?? "").trim() : "";
+      if (!actual) {
+        warnings.push(
+          `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} does not declare Content-Type ${encoding.contentType} from its encoding object`
+        );
+      } else if (!mediaTypeMatchesPattern(encoding.contentType, actual)) {
+        warnings.push(
+          `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} Content-Type ${actual} does not match declared encoding ${encoding.contentType}`
+        );
+      }
+    }
+  }
+  return warnings;
+}
+function collectStaticBodyWarnings(operation, request, contentType) {
+  const rules = operation.requestBody?.fieldRules;
+  if (!rules) return [];
+  const base = (contentType || "").toLowerCase().split(";")[0]?.trim() ?? "";
+  const rule = rules[base];
+  if (!rule) return [];
+  const warnings = [...collectStaticEncodingWarnings(operation, request, base, rule)];
+  const names = requestBodyFieldNames(request, base);
+  if (!names) return warnings;
+  const present = new Set(names);
+  const missing = rule.required.filter((name) => !present.has(name));
+  if (missing.length > 0) {
+    warnings.push(`CONTRACT_REQUEST_BODY_INCOMPLETE: ${operation.id} generated request body is missing required properties: ${missing.join(", ")}`);
+  }
+  const readOnlySent = rule.readOnly.filter((name) => present.has(name));
+  if (readOnlySent.length > 0) {
+    warnings.push(`CONTRACT_READONLY_PROPERTY_IN_REQUEST: ${operation.id} generated request body includes readOnly properties: ${readOnlySent.join(", ")}`);
+  }
+  return warnings;
 }
 function validateScript(script) {
   const source = script.join("\n");
@@ -50427,9 +51126,12 @@ function instrumentContractCollection(collection, index) {
       if (result.operation) {
         const previous = covered.get(result.operation.id);
         if (previous) throw new Error(`CONTRACT_DUPLICATE_OPERATION_REQUEST: ${result.operation.id} matched more than one generated request (${previous}, ${String(item.name || "<unnamed>")})`);
-        assertStaticRequestShape(result.operation, request);
+        warnings.push(...assertStaticRequestShape(result.operation, request));
+        for (const name of [...requestQueryNames(request)].filter((entry) => !result.operation.declaredQueryParameters.includes(entry))) {
+          warnings.push(`CONTRACT_UNDOCUMENTED_QUERY_PARAM: ${result.operation.id} generated request sends query parameter ${name} that the OpenAPI operation does not declare`);
+        }
         covered.set(result.operation.id, String(item.name || "<unnamed>"));
-        script = createContractScript(result.operation);
+        script = createContractScript(result.operation, warnings);
       } else if (result.ambiguous && result.ambiguous.length > 0) {
         script = createMappingFailureScript(`Ambiguous OpenAPI operation match for request ${result.method} ${result.path}: ${result.ambiguous.map((entry) => entry.id).join(", ")}`);
       } else {

@@ -53,7 +53,7 @@ release tarball is published. The release workflow validates locally, dispatches
 the e2e workflow with this exact tag pinned for `postman-bootstrap-action`,
 waits for the correlated run to succeed, and only then publishes.
 
-The rolling `v0` customer-preview alias validates locally but skips npm publish
+The rolling `v1` customer-preview alias validates locally but skips npm publish
 and the live e2e gate. `E2E_DISPATCH_TOKEN` is release-critical for immutable
 publishing tags; if it is missing, invalid, or the e2e fails/times out, the
 release must stop before public artifacts are created. Record the e2e run URL

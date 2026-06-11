@@ -70,7 +70,7 @@ Postman organizations with multiple sub-teams (squads) require an explicit `work
 **Example (GitHub Actions):**
 
 ```yaml
-- uses: postman-cs/postman-bootstrap-action@v0
+- uses: postman-cs/postman-bootstrap-action@v1
   with:
     project-name: core-payments
     spec-url: https://example.com/openapi.yaml
@@ -136,7 +136,7 @@ For Git-first workflows the spec is usually checked into the same repo that runs
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: postman-cs/postman-bootstrap-action@v0
+- uses: postman-cs/postman-bootstrap-action@v1
   with:
     project-name: core-payments
     spec-path: apis/core-payments/openapi.yaml
@@ -166,7 +166,7 @@ Example:
 - uses: actions/checkout@v5
   with:
     fetch-depth: 0
-- uses: postman-cs/postman-bootstrap-action@v0
+- uses: postman-cs/postman-bootstrap-action@v1
   with:
     project-name: core-payments
     spec-path: apis/core-payments/openapi.yaml
@@ -189,7 +189,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v5
-      - uses: postman-cs/postman-bootstrap-action@v0
+      - uses: postman-cs/postman-bootstrap-action@v1
         with:
           project-name: core-payments
           domain: core-banking
@@ -205,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: postman-cs/postman-bootstrap-action@v0
+      - uses: postman-cs/postman-bootstrap-action@v1
         with:
           project-name: core-payments
           workspace-id: ws-123
@@ -457,7 +457,7 @@ Configure this repository variable for the org-mode workspace creation check:
 Refresh the current collections in place while keeping one canonical spec:
 
 ```yaml
-- uses: postman-cs/postman-bootstrap-action@v0
+- uses: postman-cs/postman-bootstrap-action@v1
   with:
     project-name: core-payments
     spec-url: https://example.com/openapi.yaml
@@ -469,7 +469,7 @@ Refresh the current collections in place while keeping one canonical spec:
 Create a versioned spec and collection set on the checked-out ref:
 
 ```yaml
-- uses: postman-cs/postman-bootstrap-action@v0
+- uses: postman-cs/postman-bootstrap-action@v1
   with:
     project-name: core-payments
     spec-url: https://example.com/openapi.yaml
@@ -555,9 +555,9 @@ npm run build
 
 ## Customer Preview Release Strategy
 
-- Customer Preview channel tags use `v0.x.y`.
-- Consumers can pin immutable tags such as `v0.2.0` for reproducibility.
-- Moving tag `v0` is used only as the rolling customer preview channel.
+- Customer Preview channel tags use `v1.x.y`.
+- Consumers can pin immutable tags such as `v1.0.0` for reproducibility.
+- Moving tag `v1` is used only as the rolling customer preview channel.
 
 ## REST Migration Seam
 

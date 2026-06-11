@@ -12,8 +12,8 @@ jobs:
     name: Bootstrap API Contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: '24'
       - name: Verify GET /me (org-mode key)
@@ -116,7 +116,7 @@ jobs:
     name: Bifrost API Contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Verify Bifrost API key creation
         env:
           ACCESS_TOKEN: ${{ secrets.SMOKE_ORG_ACCESS_TOKEN }}
@@ -141,7 +141,7 @@ jobs:
     name: Session Validation Contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Verify iapub session endpoint
         env:
           ACCESS_TOKEN: ${{ secrets.SMOKE_ORG_ACCESS_TOKEN }}

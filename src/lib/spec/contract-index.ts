@@ -9,6 +9,7 @@ export interface ContractHeader {
   name: string;
   required: boolean;
   schema?: unknown;
+  items?: unknown;
   unsupported?: string;
 }
 
@@ -28,6 +29,7 @@ export interface ContractFieldEncoding {
   contentType?: string;
   binary?: boolean;
   nonDefaultSerialization?: boolean;
+  hasHeaders?: boolean;
 }
 
 export interface ContractBodyFieldRules {
@@ -45,12 +47,14 @@ export interface ContractRequestBodyRequirement {
 }
 
 export interface ContractParameterCheck {
-  in: 'query' | 'header';
+  in: 'query' | 'header' | 'path' | 'cookie';
   name: string;
   required: boolean;
   allowEmptyValue?: boolean;
   content?: boolean;
   schema: unknown;
+  decode?: 'multi' | 'csv' | 'ssv' | 'pipes';
+  items?: unknown;
 }
 
 export interface ContractSecurityCheck {
@@ -286,7 +290,7 @@ function jsonContentParameterMedia(param: JsonRecord): unknown | undefined {
   return schema === undefined ? undefined : schema;
 }
 
-function collectSerializationWarnings(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): string[] {
+function collectSerializationWarnings(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord, decodedKeys: Set<string>): string[] {
   const warnings: string[] = [];
   for (const param of resolvedParameters(root, pathItem, operation)) {
     const location = String(param.in || '').toLowerCase();
@@ -302,6 +306,10 @@ function collectSerializationWarnings(root: JsonRecord, pathItem: JsonRecord, op
     const unvalidatedContent = param.content !== undefined
       && (jsonContentParameterMedia(param) === undefined || (location !== 'query' && location !== 'header'));
     if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || unvalidatedContent) {
+      // A non-default style the runtime check decodes back into items is
+      // validated rather than warned; allowReserved and content keep the
+      // warning because neither is interpreted.
+      if (decodedKeys.has(`${location}:${name.toLowerCase()}`) && param.allowReserved !== true && param.content === undefined) continue;
       warnings.push(`CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter ${location}:${name} declares non-default style, explode, allowReserved, or content and its serialization is not validated`);
     }
   }
@@ -319,11 +327,39 @@ function packedScalarSchema(packed: PackedSchema): unknown | undefined {
   return packed.schema;
 }
 
-// Runtime parameter value checks cover scalar query/header parameters with
-// default serialization only. Non-default style/explode parameters already
-// carry CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED; array/object parameter
-// schemas are skipped because their serialized form is not a single value.
-function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord, version: OpenApiVersion, operationId: string, warnings: string[]): ContractParameterCheck[] | undefined {
+// Arrays of scalars are runtime-decodable: the serialized parameter or
+// header value is split back into items, so the validator sees a real array.
+// Tuple forms, $ref items, and non-scalar items stay undecodable.
+function packedArrayItemsSchema(packed: PackedSchema): unknown | undefined {
+  if (packed.unsupported || packed.schema === undefined) return undefined;
+  const record = asRecord(packed.schema);
+  if (!record) return undefined;
+  const types = Array.isArray(record.type) ? record.type : [record.type];
+  if (types.length !== 1 || types[0] !== 'array') return undefined;
+  if (record.prefixItems !== undefined || Array.isArray(record.items)) return undefined;
+  if (record.items === undefined) return {};
+  const items = asRecord(record.items);
+  if (!items || typeof items.$ref === 'string') return undefined;
+  const itemTypes = Array.isArray(items.type) ? items.type : [items.type];
+  if (!itemTypes.every((entry) => typeof entry === 'string' && SCALAR_SCHEMA_TYPES.has(entry))) return undefined;
+  return items;
+}
+
+const QUERY_ARRAY_DECODES: Record<string, ContractParameterCheck['decode']> = {
+  'form:true': 'multi',
+  'form:false': 'csv',
+  'spaceDelimited:false': 'ssv',
+  'pipeDelimited:false': 'pipes'
+};
+
+// Runtime parameter value checks cover scalar query/header/path/cookie
+// parameters with default serialization, plus array-of-scalar query and
+// header parameters whose declared style the test script can decode:
+// exploded form arrays arrive as repeated query keys, and non-exploded
+// form/spaceDelimited/pipeDelimited arrays are delimiter-joined values.
+// Object schemas and undecodable style combinations are skipped and stay
+// covered by CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED.
+function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord, version: OpenApiVersion, operationId: string, pathTemplate: string, warnings: string[]): ContractParameterCheck[] | undefined {
   const securityKeys = collectSecurityApiKeys(root, operation);
   const checks: ContractParameterCheck[] = [];
   const seen = new Set<string>();
@@ -340,7 +376,7 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
     .filter((param): param is JsonRecord => Boolean(param));
   for (const param of orderedParams) {
     const location = String(param.in || '').toLowerCase();
-    if (location !== 'query' && location !== 'header') continue;
+    if (location !== 'query' && location !== 'header' && location !== 'path' && location !== 'cookie') continue;
     const name = String(param.name || '');
     if (!name || isIgnoredParameter(location, name)) continue;
     const key = `${location}:${name.toLowerCase()}`;
@@ -351,7 +387,7 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
     // carries a literal JSON value; it is parsed and validated at runtime
     // instead of being treated as style serialization.
     const contentMedia = jsonContentParameterMedia(param);
-    if (contentMedia !== undefined) {
+    if (contentMedia !== undefined && (location === 'query' || location === 'header')) {
       // Parameters are request-side: readOnly properties must strip and
       // writeOnly properties must stay, same as request body packing.
       const packed = packSchema(root, contentMedia, version, 'request');
@@ -370,16 +406,39 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
     const style = typeof param.style === 'string' ? param.style : defaultStyle;
     const defaultExplode = style === 'form';
     const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
-    if (style !== defaultStyle || explode !== defaultExplode) continue;
+    const defaultSerialization = style === defaultStyle && explode === defaultExplode;
     const packed = packSchema(root, param.schema, version);
-    warnings.push(...packNoteWarnings(packed, `parameter ${location}:${name} of ${operationId}`));
+    // Pack notes follow validation attempts: default-serialization parameters
+    // always packed before this change, and decoded array parameters emit
+    // their notes where the check is created below.
+    const noteWarnings = packNoteWarnings(packed, `parameter ${location}:${name} of ${operationId}`);
+    if (defaultSerialization) warnings.push(...noteWarnings);
     if (packed.unsupported) {
-      warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
+      // Non-default serialization already carries its own warning, so only
+      // parameters that would otherwise have produced a check surface the
+      // pack failure.
+      if (defaultSerialization) warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
       continue;
     }
-    const schema = packedScalarSchema(packed);
-    if (schema === undefined) continue;
-    const check: ContractParameterCheck = { in: location as 'query' | 'header', name, required: param.required === true, schema };
+    // A path parameter embedded in a compound segment such as /files/{name}.{ext}
+    // cannot be extracted from the sent path, so it keeps its warning instead
+    // of a check that would never run.
+    if (location === 'path' && !pathTemplate.split('/').includes(`{${name}}`)) continue;
+    const scalarSchema = packedScalarSchema(packed);
+    if (scalarSchema !== undefined) {
+      if (!defaultSerialization) continue;
+      const check: ContractParameterCheck = { in: location, name, required: param.required === true, schema: scalarSchema };
+      if (location === 'query' && param.allowEmptyValue === true) check.allowEmptyValue = true;
+      checks.push(check);
+      continue;
+    }
+    if (location !== 'query' && location !== 'header') continue;
+    const items = packedArrayItemsSchema(packed);
+    if (items === undefined) continue;
+    const decode = location === 'query' ? QUERY_ARRAY_DECODES[`${style}:${explode}`] : style === 'simple' && !explode ? 'csv' : undefined;
+    if (!decode) continue;
+    if (!defaultSerialization) warnings.push(...noteWarnings);
+    const check: ContractParameterCheck = { in: location, name, required: param.required === true, schema: packed.schema, decode, items };
     if (location === 'query' && param.allowEmptyValue === true) check.allowEmptyValue = true;
     checks.push(check);
   }
@@ -516,6 +575,12 @@ function fieldEncodings(root: JsonRecord, base: string, mediaObject: JsonRecord 
       if (typeof encoding.contentType === 'string' && encoding.contentType.trim()) {
         entry.contentType = encoding.contentType.toLowerCase();
       }
+      // Per-part headers only apply to multipart bodies, and Postman formdata
+      // entries can only carry a contentType, so declared headers are
+      // unrepresentable in the generated artifact.
+      if (base === 'multipart/form-data' && asRecord(encoding.headers)) {
+        entry.hasHeaders = true;
+      }
       if (base === 'application/x-www-form-urlencoded') {
         const style = typeof encoding.style === 'string' ? encoding.style : 'form';
         const explode = typeof encoding.explode === 'boolean' ? encoding.explode : style === 'form';
@@ -631,6 +696,11 @@ function collectRequestBody(
             `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: ${base} request body field ${field} on ${operationId} declares non-default encoding style, explode, or allowReserved and its serialization is not validated`
           );
         }
+        if (encoding.hasHeaders) {
+          warnings.push(
+            `CONTRACT_ENCODING_HEADERS_NOT_VALIDATED: ${base} request body field ${field} on ${operationId} declares per-part headers that generated formdata entries cannot carry`
+          );
+        }
       }
     }
   }
@@ -727,10 +797,16 @@ function responseHeaders(root: JsonRecord, version: OpenApiVersion, response: Js
       entries.push({ name, required });
       continue;
     }
-    // Non-scalar header schemas would feed a serialized string into an
-    // object/array validator and fail every run, so the value check is
-    // dropped to presence-only with a visible warning.
+    // Array-of-scalar headers serialize as comma-joined simple style, which
+    // the runtime splits back into items before validating. Other non-scalar
+    // header schemas would feed a serialized string into an object validator
+    // and fail every run, so those drop to presence-only with a warning.
     if (!packed.unsupported && packed.schema !== undefined && packedScalarSchema(packed) === undefined) {
+      const items = packedArrayItemsSchema(packed);
+      if (items !== undefined) {
+        entries.push({ name, required, schema: packed.schema, items });
+        continue;
+      }
       warnings.add(`CONTRACT_HEADER_SCHEMA_NOT_VALIDATED: response header ${name} on ${context} declares a non-scalar schema and its value is not validated`);
       entries.push({ name, required });
       continue;
@@ -792,10 +868,14 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           path,
           ...operationServers(root, pathItem, operation).map((server) => joinPaths(serverPathPrefix(server), path))
         ].map(normalizePath))];
+        const operationId = `${lowerMethod.toUpperCase()} ${path}`;
         const opWarnings: string[] = [];
         opWarnings.push(...responseWarnings);
         opWarnings.push(...collectSecuritySchemeWarnings(root, operation));
-        opWarnings.push(...collectSerializationWarnings(root, pathItem, operation));
+        const parameterChecks = collectParameterChecks(root, pathItem, operation, version, operationId, path, opWarnings);
+        const checkedKeys = new Set((parameterChecks ?? []).map((check) => `${check.in}:${check.name.toLowerCase()}`));
+        const decodedKeys = new Set((parameterChecks ?? []).filter((check) => check.decode).map((check) => `${check.in}:${check.name.toLowerCase()}`));
+        opWarnings.push(...collectSerializationWarnings(root, pathItem, operation, decodedKeys));
         if (operation.deprecated === true) {
           opWarnings.push(`CONTRACT_OPERATION_DEPRECATED: ${lowerMethod.toUpperCase()} ${path} is marked deprecated in the OpenAPI document`);
         }
@@ -804,17 +884,23 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);
         }
         for (const parameter of requiredParameters.filter((entry) => entry.in === 'cookie' && !entry.securityDerived)) {
-          opWarnings.push(`CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not statically required in generated requests`);
+          // The fail-until-supplied claim only holds when a runtime check was
+          // actually created; undecodable cookie schemas get the weaker text.
+          opWarnings.push(checkedKeys.has(`cookie:${parameter.name.toLowerCase()}`)
+            ? `CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not included in generated requests; the runtime test fails until the cookie is supplied at send time`
+            : `CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not included in generated requests and its value is not runtime-validated`);
         }
         const pathParamWarnings = new Set<string>();
         for (const param of resolvedParameters(root, pathItem, operation)) {
           if (String(param.in || '').toLowerCase() !== 'path') continue;
           const name = String(param.name || '');
-          if (name) pathParamWarnings.add(`CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter ${name} value is not validated at runtime`);
+          if (name && !checkedKeys.has(`path:${name.toLowerCase()}`)) {
+            pathParamWarnings.add(`CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter ${name} value is not validated at runtime`);
+          }
         }
         opWarnings.push(...pathParamWarnings);
         operations.push({
-          id: `${lowerMethod.toUpperCase()} ${path}`,
+          id: operationId,
           method: lowerMethod.toUpperCase(),
           path,
           pointer: `/paths/${path.replace(/~/g, '~0').replace(/\//g, '~1')}/${lowerMethod}`,
@@ -822,8 +908,8 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           responses: contractResponses,
           requiredParameters,
           declaredQueryParameters: collectDeclaredQueryParameters(root, pathItem, operation),
-          parameterChecks: collectParameterChecks(root, pathItem, operation, version, `${lowerMethod.toUpperCase()} ${path}`, opWarnings),
-          requestBody: collectRequestBody(root, operation, version, `${lowerMethod.toUpperCase()} ${path}`, opWarnings),
+          parameterChecks,
+          requestBody: collectRequestBody(root, operation, version, operationId, opWarnings),
           security: collectSecurityRuntimeChecks(root, operation),
           warnings: opWarnings
         });

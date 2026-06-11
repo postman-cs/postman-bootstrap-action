@@ -230,7 +230,7 @@ Scope:
 - Match generated collection requests by method and canonical server/path candidates only; suffix path matching is not used.
 - Require one generated request for every eligible `paths` operation.
 - Validate response status codes, body presence, `Content-Type`, JSON response schemas (including asserted JSON Schema `format` values such as `uuid`, `date-time`, and `email`), text/string schemas, response header schemas with numeric/boolean coercion, and `Content-Length` consistency.
-- Check at runtime that each request carried credentials matching the operation's OpenAPI security requirements (API key header/query/cookie names, `Basic `/`Bearer ` authorization prefixes, `Authorization` presence or `access_token` query for OAuth2/OpenID Connect).
+- Check at runtime that each request carried credentials matching the operation's OpenAPI security requirements (API key header/query/cookie names, scheme-token authorization prefixes for every registered HTTP scheme including `Basic `, `Bearer `, and `Digest `, `Authorization` presence or `access_token` query for OAuth2/OpenID Connect).
 - Validate concrete request parameter values (default-style scalar query/header parameters) and concrete JSON request bodies against the request-side OpenAPI schemas at runtime; placeholder values such as `<string>` and `{{variables}}` are skipped.
 - Perform static checks for required non-security query/header parameters, required request bodies, and request Content-Type; warn on incomplete or readOnly-bearing generated bodies and undocumented query parameters.
 
@@ -238,7 +238,7 @@ Non-goals and limitations:
 
 - Swagger 2.0, OAS webhooks, callbacks, and arbitrary user-authored collection requests are not fully validated.
 - Runtime security checks prove credential presence and shape only; whether the server accepted the credential for the right reason is not proven, so security schemes are still warned as `CONTRACT_SECURITY_NOT_VALIDATED`. `mutualTLS` and unresolvable schemes are not checkable.
-- Header `content`, unsupported schema dialects, and unsupported keywords fail closed. Non-JSON object schemas, validator-engine compile refusals, and reference graphs past the embed cap skip schema validation with `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED`/`CONTRACT_SCHEMA_NOT_COMPILED` warnings while Content-Type and body-presence checks still run; `discriminator` is stripped as an annotation and the underlying `oneOf`/`anyOf` still validates.
+- Header `content`, unsupported schema dialects, and unsupported keywords fail closed. Non-JSON object schemas, validator-engine compile refusals, and reference graphs past the embed cap skip schema validation with `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED`/`CONTRACT_SCHEMA_NOT_COMPILED` warnings while Content-Type and body-presence checks still run; a `discriminator` beside `oneOf`/`anyOf` of `$ref` members is enforced as a per-branch dispatch on its property, and other discriminator placements warn with `CONTRACT_DISCRIMINATOR_NOT_VALIDATED`.
 - Generated scripts target Newman/Postman runtime support for ES2020-compatible JavaScript and use compiled schemasafe IIFE validators. They do not use `pm.response.to.have.jsonSchema`, `eval`, or `new Function`.
 
 OpenAPI semantics:
@@ -294,7 +294,9 @@ Rollback behavior:
 | `CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED` | A JSON request body schema could not be compiled into a runtime request validator. | Simplify the unsupported request schema construct named in the warning. |
 | `CONTRACT_SCHEMA_NOT_COMPILED` | One schema could not be compiled by the validator engine, so its runtime check is skipped. | Review the named schema construct; other checks for the operation still run. |
 | `CONTRACT_EXAMPLE_SCHEMA_MISMATCH` | A media-type example does not validate against its own schema. | Fix the example or the schema so the spec is self-consistent; generated requests are built from these examples. |
-| `CONTRACT_ENCODING_MISMATCH` | A generated multipart field does not match its OpenAPI encoding object: a declared per-part `contentType` is missing or different, or a binary-typed field was not generated as a file part. | Regenerate the collection or align the encoding object with the intended part layout. |
+| `CONTRACT_ENCODING_MISMATCH` | A generated form-body field does not match its OpenAPI encoding object: a declared multipart per-part `contentType` is missing or different, a binary-typed field was not generated as a file part, or a field declaring a JSON `contentType` carries an unparseable value. | Regenerate the collection or align the encoding object with the intended part layout. |
+| `CONTRACT_FORM_FIELD_SCHEMA_MISMATCH` | A generated urlencoded or multipart text value does not validate against its scalar property schema. | Fix the spec example feeding the generated body, or correct the property schema. |
+| `CONTRACT_DISCRIMINATOR_NOT_VALIDATED` | A `discriminator` has no sibling `oneOf`/`anyOf` of internal `$ref` members (typically allOf-parent inheritance), so its dispatch is not validated. | Restructure to the oneOf-plus-discriminator form, or rely on the still-validated composition keywords. |
 | `CONTRACT_HEADER_SCHEMA_NOT_VALIDATED` | A response header declares a non-scalar schema, so its serialized value is checked for presence only. | Use a scalar header schema or validate the serialized header form with dedicated tests. |
 | `CONTRACT_PATH_PARAM_NOT_VALIDATED` | Path parameter values are not validated at runtime. | Path templates drive operation matching; validate path value semantics with dedicated tests if needed. |
 | `CONTRACT_DUPLICATE_OPERATION_MATCH` | Multiple OpenAPI operations share the same canonical request mapping candidate. | Disambiguate paths, server prefixes, or templated routes. |

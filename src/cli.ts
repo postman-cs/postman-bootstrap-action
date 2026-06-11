@@ -16,6 +16,7 @@ import {
   type ExecLike,
   type PlannedOutputs
 } from './index.js';
+import { runCredentialPreflight } from './lib/postman/credential-identity.js';
 import { createSecretMasker } from './lib/secrets.js';
 
 interface CliConfig {
@@ -346,6 +347,22 @@ export async function runCli(
   assertOutputFileAllowed(config.resultJsonPath);
   assertOutputFileAllowed(config.dotenvPath);
   const dependencies = createCliDependencies(inputs);
+
+  // Proactive credential preflight: resolve and cross-check both identities
+  // once, before any spec fetch or write. The CLI entry must run this exactly
+  // as runAction does, or dist/cli.cjs (what CI and the e2e harness invoke)
+  // would skip the preflight that dist/index.cjs performs.
+  await runCredentialPreflight({
+    apiBaseUrl: inputs.postmanApiBase,
+    iapubBaseUrl: inputs.postmanIapubBase,
+    postmanApiKey: inputs.postmanApiKey,
+    postmanAccessToken: inputs.postmanAccessToken,
+    workspaceTeamId: inputs.workspaceTeamId,
+    explicitTeamId: inputs.teamId || undefined,
+    mode: inputs.credentialPreflight,
+    mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
+    log: dependencies.core
+  });
 
   if ((inputs.domain || inputs.governanceGroup) && !dependencies.internalIntegration) {
     dependencies.core.warning(

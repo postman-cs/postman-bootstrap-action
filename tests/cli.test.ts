@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConsoleReporter, createCliDependencies, parseCliArgs, runCli, toDotenv } from '../src/cli.js';
 import { contractInputNames } from '../src/contracts.js';
 import { resolveInputs } from '../src/index.js';
+import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -564,5 +565,132 @@ describe('createCliDependencies', () => {
     const dependencies = createCliDependencies(inputs);
 
     expect(dependencies.internalIntegration).toBeDefined();
+  });
+});
+
+describe('runCli credential preflight seam', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    __resetIdentityMemo();
+  });
+
+  function stubIdentityFetch(pmakTeam: number, sessionTeam: number): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/me')) {
+        return new Response(
+          JSON.stringify({
+            user: { id: 'u-pmak', fullName: 'PMAK User', teamId: pmakTeam, teamName: 'Alpha' }
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/sessions/current')) {
+        return new Response(
+          JSON.stringify({
+            identity: { team: sessionTeam, domain: 'beta' },
+            data: { user: { id: 'u-sess' } }
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      throw new Error(`unexpected fetch in preflight seam test: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('fails closed before bootstrap when enforce sees a cross-org team mismatch', async () => {
+    const fetchMock = stubIdentityFetch(111, 222);
+    const executeBootstrap = vi.fn();
+
+    await expect(
+      runCli(
+        [
+          '--project-name', 'preflight-demo',
+          '--spec-url', 'https://example.test/openapi.yaml',
+          '--postman-api-key', 'pmak-xyz',
+          '--postman-access-token', 'tok-xyz',
+          '--credential-preflight', 'enforce'
+        ],
+        { env: {}, executeBootstrap }
+      )
+    ).rejects.toThrow(/credential preflight FAILED/);
+
+    expect(executeBootstrap).not.toHaveBeenCalled();
+    const probed = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(probed.some((url) => url.endsWith('/me'))).toBe(true);
+    expect(probed.some((url) => url.includes('/api/sessions/current'))).toBe(true);
+    // The preflight verdict must precede any spec fetch.
+    expect(probed.some((url) => url.includes('example.test'))).toBe(false);
+  });
+
+  it('names both team ids in the enforce mismatch verdict', async () => {
+    stubIdentityFetch(111, 222);
+    let captured = '';
+    try {
+      await runCli(
+        [
+          '--project-name', 'preflight-demo',
+          '--spec-url', 'https://example.test/openapi.yaml',
+          '--postman-api-key', 'pmak-xyz',
+          '--postman-access-token', 'tok-xyz',
+          '--credential-preflight', 'enforce'
+        ],
+        { env: {}, executeBootstrap: vi.fn() }
+      );
+    } catch (error) {
+      captured = error instanceof Error ? error.message : String(error);
+    }
+    expect(captured).toContain('111');
+    expect(captured).toContain('222');
+  });
+
+  it('logs both identity lines and proceeds to bootstrap when teams match under warn', async () => {
+    stubIdentityFetch(333, 333);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const executeBootstrap = vi.fn(async () => createCliOutputs());
+    const dir = await makeTempDir('postman-bootstrap-preflight-ok-');
+
+    await withCwd(dir, async () => {
+      await runCli(
+        [
+          '--project-name', 'preflight-ok',
+          '--spec-url', 'https://example.test/openapi.yaml',
+          '--postman-api-key', 'pmak-ok',
+          '--postman-access-token', 'tok-ok',
+          '--credential-preflight', 'warn'
+        ],
+        { env: {}, executeBootstrap, writeStdout: () => undefined }
+      );
+    });
+
+    expect(executeBootstrap).toHaveBeenCalledTimes(1);
+    const logged = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(logged).toContain('postman: PMAK identity - ');
+    expect(logged).toContain('postman: access-token session identity - ');
+    errorSpy.mockRestore();
+  });
+
+  it('skips the preflight entirely when credential-preflight is off', async () => {
+    const fetchMock = stubIdentityFetch(111, 222);
+    const executeBootstrap = vi.fn(async () => createCliOutputs());
+    const dir = await makeTempDir('postman-bootstrap-preflight-off-');
+
+    await withCwd(dir, async () => {
+      await runCli(
+        [
+          '--project-name', 'preflight-off',
+          '--spec-url', 'https://example.test/openapi.yaml',
+          '--postman-api-key', 'pmak-xyz',
+          '--postman-access-token', 'tok-xyz',
+          '--credential-preflight', 'off'
+        ],
+        { env: {}, executeBootstrap, writeStdout: () => undefined }
+      );
+    });
+
+    expect(executeBootstrap).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

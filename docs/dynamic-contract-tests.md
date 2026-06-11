@@ -187,7 +187,7 @@ Generated scripts are scanned before upload:
 
 ## What dynamic contract tests do not prove
 
-Dynamic contract tests are contract checks, not complete end-to-end product tests. They do not prove:
+Dynamic contract tests are contract checks rather than complete end-to-end product tests. They do not prove:
 
 - The server enforces auth or authorization correctly.
 - API keys, bearer tokens, OAuth flows, or other credentials were accepted for the right reason.

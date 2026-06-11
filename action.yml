@@ -1,5 +1,5 @@
-name: postman-bootstrap-action
-description: Create or reuse a Postman workspace, upload an OpenAPI spec, and generate baseline, smoke, and contract collections.
+name: Postman Workspace Bootstrap
+description: Provision a Postman workspace from an OpenAPI spec and generate baseline, smoke, and contract collections in one step.
 author: Postman
 branding:
   icon: box

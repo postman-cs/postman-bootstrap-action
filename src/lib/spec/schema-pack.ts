@@ -5,6 +5,7 @@ export type OpenApiVersion = '3.0' | '3.1';
 export interface PackedSchema {
   schema?: unknown;
   unsupported?: string;
+  notes?: string[];
 }
 
 const DRAFT_07_SCHEMA_URI = 'http://json-schema.org/draft-07/schema#';
@@ -182,6 +183,7 @@ interface PackContext {
   direction: SchemaDirection;
   dialect: string;
   defs: Map<string, DefEntry>;
+  notes: Set<string>;
 }
 
 // Referenced schemas are packed once into a #/$defs/dN registry instead of
@@ -265,6 +267,49 @@ function normalizeSchema(
   const sourceSchema = { ...record };
   const nullable = sourceSchema.nullable === true && ctx.version === '3.0';
   delete sourceSchema.nullable;
+
+  // A discriminator beside oneOf/anyOf of pure internal $ref members is a
+  // validation shortcut, so each branch gains a const/enum dispatch on the
+  // discriminator property (explicit mapping entries first, schema-name
+  // fallback). Without sibling oneOf/anyOf (allOf-parent inheritance) the
+  // dispatch would point children back at this schema on the same instance,
+  // so it stays stripped and is surfaced through packSchema notes.
+  const discriminator = asRecord(sourceSchema.discriminator);
+  if (discriminator && typeof discriminator.propertyName === 'string' && discriminator.propertyName) {
+    const propertyName = discriminator.propertyName;
+    const branchKey = Array.isArray(sourceSchema.oneOf) ? 'oneOf' : Array.isArray(sourceSchema.anyOf) ? 'anyOf' : '';
+    const members = branchKey ? (sourceSchema[branchKey] as unknown[]) : [];
+    const memberRefs = members.map((member) => {
+      const memberRecord = asRecord(member);
+      const memberRef = memberRecord && Object.keys(memberRecord).length === 1 && typeof memberRecord.$ref === 'string' ? memberRecord.$ref : '';
+      return memberRef.startsWith('#/') ? memberRef : '';
+    });
+    if (branchKey && members.length > 0 && memberRefs.every(Boolean)) {
+      const valuesByRef = new Map<string, string[]>();
+      const refByMappingKey = new Map<string, string>();
+      for (const [value, target] of Object.entries(asRecord(discriminator.mapping) ?? {})) {
+        if (typeof target !== 'string' || !target) continue;
+        const targetRef = target.startsWith('#/') ? target : `#/components/schemas/${target}`;
+        valuesByRef.set(targetRef, [...(valuesByRef.get(targetRef) ?? []), value]);
+        refByMappingKey.set(value, targetRef);
+      }
+      sourceSchema[branchKey] = members.map((member, index) => {
+        const memberRef = memberRefs[index] ?? '';
+        // Implicit schema-name resolution survives alongside explicit mapping
+        // aliases: OAS resolves the property value as a component name unless
+        // that exact value has its own mapping entry, so the tail name stays
+        // accepted unless a mapping entry claims it for a different ref.
+        const tail = (memberRef.split('/').pop() ?? '').replace(/~1/g, '/').replace(/~0/g, '~');
+        const values = [...(valuesByRef.get(memberRef) ?? [])];
+        const tailClaimedElsewhere = refByMappingKey.has(tail) && refByMappingKey.get(tail) !== memberRef;
+        if (tail && !tailClaimedElsewhere && !values.includes(tail)) values.push(tail);
+        const dispatch = values.length === 1 ? { const: values[0] } : { enum: values };
+        return { allOf: [member, { type: 'object', required: [propertyName], properties: { [propertyName]: dispatch } }] };
+      });
+    } else {
+      ctx.notes.add('discriminator');
+    }
+  }
 
   // Response validators drop writeOnly properties (request-only fields);
   // request validators drop readOnly properties (response-only fields). The
@@ -476,7 +521,7 @@ export function packSchema(root: JsonRecord, schema: unknown, version: OpenApiVe
     if (schema === true) return { schema: { $schema: rootDialect(root, version) } };
     if (schema === false) return unsupported('Boolean false JSON Schema rejects every instance and is unsupported');
     const dialect = rootDialect(root, version, asRecord(schema) ?? undefined);
-    const ctx: PackContext = { root, version, direction, dialect, defs: new Map() };
+    const ctx: PackContext = { root, version, direction, dialect, defs: new Map(), notes: new Set() };
     const normalized = normalizeSchema(ctx, schema, { depth: 0, rootSchema: true });
     const message = hasUnsupported(normalized);
     if (message) return unsupported(message);
@@ -505,7 +550,9 @@ export function packSchema(root: JsonRecord, schema: unknown, version: OpenApiVe
       if (!normalizedRecord) return unsupported('Referenced schemas require an object root schema');
       normalizedRecord.$defs = Object.fromEntries([...ctx.defs.values()].map((entry) => [entry.name, entry.schema]));
     }
-    return { schema: normalized };
+    const packed: PackedSchema = { schema: normalized };
+    if (ctx.notes.size > 0) packed.notes = [...ctx.notes].sort();
+    return packed;
   } catch (error) {
     return unsupported(error instanceof Error ? error.message : String(error));
   }

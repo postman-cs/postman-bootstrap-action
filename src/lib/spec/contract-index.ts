@@ -1,4 +1,4 @@
-import { isSchemaGraphOverflow, packSchema, resolvePointer, type OpenApiVersion, type PackedSchema, type SchemaDirection } from './schema-pack.js';
+import { isSchemaGraphOverflow, packSchema, resolvePointer, type OpenApiVersion, type PackedSchema } from './schema-pack.js';
 import { compileSchemaValidator } from './schema-validator-code.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -36,6 +36,7 @@ export interface ContractBodyFieldRules {
   required: string[];
   readOnly: string[];
   encodings?: Record<string, ContractFieldEncoding>;
+  fieldSchemas?: Record<string, unknown>;
 }
 
 export interface ContractRequestBodyRequirement {
@@ -50,6 +51,7 @@ export interface ContractParameterCheck {
   name: string;
   required: boolean;
   allowEmptyValue?: boolean;
+  content?: boolean;
   schema: unknown;
   decode?: 'multi' | 'csv' | 'ssv' | 'pipes';
   items?: unknown;
@@ -221,6 +223,10 @@ function securityCheckFor(schemeName: string, scheme: JsonRecord | null): Contra
     const httpScheme = String(scheme.scheme || '').toLowerCase();
     if (httpScheme === 'basic') return { scheme: schemeName, kind, checkable: true, prefix: 'Basic ' };
     if (httpScheme === 'bearer') return { scheme: schemeName, kind, checkable: true, prefix: 'Bearer ' };
+    // RFC 7235 credentials always open with the auth-scheme token, so any
+    // registered HTTP scheme (Digest, DPoP, Negotiate, ...) is checkable by
+    // prefix; the runtime comparison is case-insensitive.
+    if (httpScheme) return { scheme: schemeName, kind, checkable: true, prefix: `${httpScheme.charAt(0).toUpperCase()}${httpScheme.slice(1)} ` };
     return { scheme: schemeName, kind, checkable: true, in: 'header', name: 'Authorization' };
   }
   if (scheme?.type === 'oauth2' || scheme?.type === 'openIdConnect') {
@@ -270,6 +276,20 @@ function isIgnoredParameter(location: string, name: string): boolean {
   return location === 'header' && IGNORED_HEADER_PARAMS.has(name.toLowerCase());
 }
 
+// A content parameter qualifies for runtime JSON validation when it declares
+// exactly one JSON media type with a schema.
+function jsonContentParameterMedia(param: JsonRecord): unknown | undefined {
+  const content = asRecord(param.content);
+  if (!content) return undefined;
+  const entries = Object.entries(content);
+  if (entries.length !== 1) return undefined;
+  const [contentType, mediaObject] = entries[0]!;
+  const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
+  if (!isJsonBaseType(base)) return undefined;
+  const schema = asRecord(mediaObject)?.schema;
+  return schema === undefined ? undefined : schema;
+}
+
 function collectSerializationWarnings(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord, decodedKeys: Set<string>): string[] {
   const warnings: string[] = [];
   for (const param of resolvedParameters(root, pathItem, operation)) {
@@ -280,7 +300,12 @@ function collectSerializationWarnings(root: JsonRecord, pathItem: JsonRecord, op
     const style = typeof param.style === 'string' ? param.style : defaultStyle;
     const defaultExplode = style === 'form';
     const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
-    if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || param.content !== undefined) {
+    // Content parameters with a single JSON media type are parsed and
+    // validated at runtime, but only in the query/header locations the
+    // runtime check covers; every other content shape or location warns.
+    const unvalidatedContent = param.content !== undefined
+      && (jsonContentParameterMedia(param) === undefined || (location !== 'query' && location !== 'header'));
+    if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || unvalidatedContent) {
       // A non-default style the runtime check decodes back into items is
       // validated rather than warned; allowReserved and content keep the
       // warning because neither is interpreted.
@@ -358,6 +383,24 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
     if (seen.has(key)) continue;
     seen.add(key);
     if (securityKeys.has(key)) continue;
+    // A parameter declared through content with a single JSON media type
+    // carries a literal JSON value; it is parsed and validated at runtime
+    // instead of being treated as style serialization.
+    const contentMedia = jsonContentParameterMedia(param);
+    if (contentMedia !== undefined && (location === 'query' || location === 'header')) {
+      // Parameters are request-side: readOnly properties must strip and
+      // writeOnly properties must stay, same as request body packing.
+      const packed = packSchema(root, contentMedia, version, 'request');
+      warnings.push(...packNoteWarnings(packed, `parameter ${location}:${name} of ${operationId}`));
+      if (packed.unsupported) {
+        warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
+      } else if (packed.schema !== undefined) {
+        const check: ContractParameterCheck = { in: location as 'query' | 'header', name, required: param.required === true, content: true, schema: packed.schema };
+        if (location === 'query' && param.allowEmptyValue === true) check.allowEmptyValue = true;
+        checks.push(check);
+      }
+      continue;
+    }
     if (param.content !== undefined || param.schema === undefined) continue;
     const defaultStyle = DEFAULT_PARAM_STYLES[location]!;
     const style = typeof param.style === 'string' ? param.style : defaultStyle;
@@ -365,6 +408,11 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
     const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
     const defaultSerialization = style === defaultStyle && explode === defaultExplode;
     const packed = packSchema(root, param.schema, version);
+    // Pack notes follow validation attempts: default-serialization parameters
+    // always packed before this change, and decoded array parameters emit
+    // their notes where the check is created below.
+    const noteWarnings = packNoteWarnings(packed, `parameter ${location}:${name} of ${operationId}`);
+    if (defaultSerialization) warnings.push(...noteWarnings);
     if (packed.unsupported) {
       // Non-default serialization already carries its own warning, so only
       // parameters that would otherwise have produced a check surface the
@@ -389,11 +437,22 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
     if (items === undefined) continue;
     const decode = location === 'query' ? QUERY_ARRAY_DECODES[`${style}:${explode}`] : style === 'simple' && !explode ? 'csv' : undefined;
     if (!decode) continue;
+    if (!defaultSerialization) warnings.push(...noteWarnings);
     const check: ContractParameterCheck = { in: location, name, required: param.required === true, schema: packed.schema, decode, items };
     if (location === 'query' && param.allowEmptyValue === true) check.allowEmptyValue = true;
     checks.push(check);
   }
   return checks.length > 0 ? checks : undefined;
+}
+
+// packSchema notes mark constructs it handled by stripping rather than
+// asserting; each becomes a visible warning at the call site.
+function packNoteWarnings(packed: PackedSchema, context: string): string[] {
+  return (packed.notes ?? []).map((note) =>
+    note === 'discriminator'
+      ? `CONTRACT_DISCRIMINATOR_NOT_VALIDATED: discriminator on ${context} has no sibling oneOf/anyOf of internal $ref members and is not validated`
+      : `CONTRACT_SCHEMA_NOT_COMPILED: ${note} on ${context} is not validated`
+  );
 }
 
 function collectDeclaredQueryParameters(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): string[] {
@@ -475,6 +534,11 @@ function propertyIsReadOnly(root: JsonRecord, properties: JsonRecord, name: stri
   }
 }
 
+// 3.0 marks binary multipart fields with format: binary; 3.1 replaces that
+// with contentMediaType and no contentEncoding (contentEncoding means the
+// value is an encoded string carried inline, which stays a text part). JSON
+// and text/* media types are excluded because those are legitimately sent as
+// text parts even when declared through contentMediaType.
 function propertyIsBinary(root: JsonRecord, properties: JsonRecord, name: string): boolean {
   let schema: JsonRecord | null;
   try {
@@ -484,7 +548,10 @@ function propertyIsBinary(root: JsonRecord, properties: JsonRecord, name: string
   }
   if (!schema) return false;
   if (schema.format === 'binary') return true;
-  return typeof schema.contentMediaType === 'string' && schema.contentMediaType.toLowerCase().startsWith('application/octet-stream');
+  if (typeof schema.contentMediaType !== 'string' || typeof schema.contentEncoding === 'string') return false;
+  const media = schema.contentMediaType.toLowerCase().split(';')[0]?.trim() ?? '';
+  if (!media) return false;
+  return media !== 'application/json' && !media.endsWith('+json') && !media.startsWith('text/');
 }
 
 // Encoding Objects describe per-field serialization of form bodies. The wire
@@ -527,7 +594,29 @@ function fieldEncodings(root: JsonRecord, base: string, mediaObject: JsonRecord 
   return Object.keys(encodings).length > 0 ? encodings : undefined;
 }
 
-function requestBodyFieldRules(root: JsonRecord, content: JsonRecord): Record<string, ContractBodyFieldRules> | undefined {
+// Scalar form-field schemas pack per property (request direction) so the
+// generated urlencoded and multipart text values can be statically validated;
+// non-scalar properties are covered by the JSON-encoding value check and the
+// required/readOnly rules.
+function formFieldSchemas(root: JsonRecord, version: OpenApiVersion, properties: JsonRecord, context: string, warnings: string[]): Record<string, unknown> | undefined {
+  const schemas: Record<string, unknown> = {};
+  for (const name of Object.keys(properties)) {
+    const packed = packSchema(root, properties[name], version, 'request');
+    warnings.push(...packNoteWarnings(packed, `field ${name} of ${context}`));
+    if (packed.unsupported) {
+      // The static field check is the only value-level coverage form fields
+      // get, so a pack failure is surfaced rather than silently skipped.
+      warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: field ${name} of ${context} skipped (${packed.unsupported})`);
+      continue;
+    }
+    if (packed.schema === undefined) continue;
+    const schema = packedScalarSchema(packed);
+    if (schema !== undefined) schemas[name] = schema;
+  }
+  return Object.keys(schemas).length > 0 ? schemas : undefined;
+}
+
+function requestBodyFieldRules(root: JsonRecord, content: JsonRecord, version: OpenApiVersion, operationId: string, warnings: string[]): Record<string, ContractBodyFieldRules> | undefined {
   const rules: Record<string, ContractBodyFieldRules> = {};
   for (const [contentType, mediaObject] of Object.entries(content)) {
     const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
@@ -539,10 +628,13 @@ function requestBodyFieldRules(root: JsonRecord, content: JsonRecord): Record<st
     // readOnly properties may be required in responses without being sent in
     // requests, so they are excluded from the request-side required list.
     const required = merged.required.filter((name) => !propertyIsReadOnly(root, merged.properties, name));
-    const encodings = BODY_FIELD_RULE_TYPES.has(base) ? fieldEncodings(root, base, mediaRecord, merged.properties) : undefined;
-    if (required.length > 0 || readOnly.length > 0 || encodings) {
+    const formRules = BODY_FIELD_RULE_TYPES.has(base);
+    const encodings = formRules ? fieldEncodings(root, base, mediaRecord, merged.properties) : undefined;
+    const fieldSchemas = formRules ? formFieldSchemas(root, version, merged.properties, `request body ${contentType} of ${operationId}`, warnings) : undefined;
+    if (required.length > 0 || readOnly.length > 0 || encodings || fieldSchemas) {
       const rule: ContractBodyFieldRules = { required, readOnly };
       if (encodings) rule.encodings = encodings;
+      if (fieldSchemas) rule.fieldSchemas = fieldSchemas;
       rules[base] = rule;
     }
   }
@@ -572,7 +664,8 @@ function requestBodyJsonSchemas(
       continue;
     }
     if (schema === undefined) continue;
-    const packed = packSchema(root, schema, version, 'request' as SchemaDirection);
+    const packed = packSchema(root, schema, version, 'request');
+    warnings.push(...packNoteWarnings(packed, `request body ${contentType} of ${operationId}`));
     if (mediaRecord) validateExamples(root, mediaRecord, packed, contentType, operationId, exampleWarnings);
     if (packed.unsupported) {
       warnings.push(`CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED: request body schema for ${contentType} on ${operationId} is not validated (${packed.unsupported})`);
@@ -594,7 +687,7 @@ function collectRequestBody(
   const body = resolveInternalRef<JsonRecord>(root, operation.requestBody);
   if (!body) return undefined;
   const content = asRecord(body.content);
-  const fieldRules = content ? requestBodyFieldRules(root, content) : undefined;
+  const fieldRules = content ? requestBodyFieldRules(root, content, version, operationId, warnings) : undefined;
   if (fieldRules) {
     for (const [base, rule] of Object.entries(fieldRules)) {
       for (const [field, encoding] of Object.entries(rule.encodings ?? {})) {
@@ -658,6 +751,7 @@ function responseContent(root: JsonRecord, version: OpenApiVersion, response: Js
     const mediaRecord = asRecord(mediaObject);
     const schema = mediaRecord?.schema;
     let packed = schema === undefined ? {} : packSchema(root, schema, version);
+    for (const warning of packNoteWarnings(packed, `response ${contentType} of ${context}`)) warnings.add(warning);
     // A reference graph past the embed cap degrades to a presence-only media
     // check with a warning; an always-failing runtime test would make every
     // run red on very large specs such as Stripe's.
@@ -697,6 +791,7 @@ function responseHeaders(root: JsonRecord, version: OpenApiVersion, response: Js
       continue;
     }
     const packed = packSchema(root, header.schema, version);
+    for (const warning of packNoteWarnings(packed, `response header ${name} of ${context}`)) warnings.add(warning);
     if (isSchemaGraphOverflow(packed)) {
       warnings.add(`CONTRACT_SCHEMA_NOT_COMPILED: response header ${name} schema on ${context} skipped (${packed.unsupported})`);
       entries.push({ name, required });

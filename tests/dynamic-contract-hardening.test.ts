@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONTRACT_SIZE_LIMITS, createContractScript, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
+import { packSchema } from '../src/lib/spec/schema-pack.js';
+import { compileSchemaValidator } from '../src/lib/spec/schema-validator-code.js';
 import { createPinnedLookup, isBlockedAddress, safeFetchText, validateSafeHttpsUrl } from '../src/lib/spec/safe-spec-fetch.js';
 
 const BASE_SPEC = `openapi: 3.1.0
@@ -1166,7 +1168,7 @@ components:
       properties:
         name: { type: string }
 `);
-    expect(index.operations[0]!.requestBody?.fieldRules).toEqual({ 'application/x-www-form-urlencoded': { required: ['name', 'tag'], readOnly: [] } });
+    expect(index.operations[0]!.requestBody?.fieldRules?.['application/x-www-form-urlencoded']).toMatchObject({ required: ['name', 'tag'], readOnly: [] });
     const collection = {
       item: [{
         request: {
@@ -1301,6 +1303,68 @@ paths:
     expect(patternMismatched.filter((entry) => entry.includes('CONTRACT_ENCODING_MISMATCH'))).toEqual([
       `CONTRACT_ENCODING_MISMATCH: POST /docs generated multipart field image Content-Type video/mp4 does not match declared encoding image/*`
     ]);
+
+    const duplicateKeys = instrumentContractCollection(item([
+      { key: 'meta', type: 'text', contentType: 'application/json', value: '{}' },
+      { key: 'meta', type: 'text', value: '{}' },
+      { key: 'file', type: 'file', src: '/tmp/upload.bin' }
+    ]), index).warnings;
+    expect(duplicateKeys).toContain('CONTRACT_ENCODING_MISMATCH: POST /upload generated multipart field meta does not declare Content-Type application/json from its encoding object');
+
+    const binaryIndex = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /blobs:
+    post:
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                raw: { type: string, contentMediaType: image/png }
+                encoded: { type: string, contentMediaType: image/png, contentEncoding: base64 }
+                note: { type: string, contentMediaType: text/plain }
+                doc: { type: string, contentMediaType: application/json }
+      responses:
+        '201': { description: Created }
+`);
+    expect(binaryIndex.operations[0]!.requestBody?.fieldRules?.['multipart/form-data']?.encodings).toEqual({ raw: { binary: true } });
+
+    const jsonValueIndex = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /widgets:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                payload: { type: object }
+            encoding:
+              payload: { contentType: application/json }
+      responses:
+        '200': { description: OK }
+`);
+    const widgetItem = (value: string) => ({
+      item: [{
+        request: {
+          method: 'POST',
+          url: { path: ['widgets'] },
+          header: [{ key: 'Content-Type', value: 'application/x-www-form-urlencoded' }],
+          body: { mode: 'urlencoded', urlencoded: [{ key: 'payload', value }] }
+        }
+      }]
+    });
+    expect(instrumentContractCollection(widgetItem('not json'), jsonValueIndex).warnings).toContain(
+      'CONTRACT_ENCODING_MISMATCH: POST /widgets generated urlencoded field payload declares JSON encoding application/json but its value is not parseable JSON'
+    );
+    expect(instrumentContractCollection(widgetItem('{"a":1}'), jsonValueIndex).warnings.filter((entry) => entry.includes('CONTRACT_ENCODING_MISMATCH'))).toEqual([]);
+    expect(instrumentContractCollection(widgetItem('<object>'), jsonValueIndex).warnings.filter((entry) => entry.includes('CONTRACT_ENCODING_MISMATCH'))).toEqual([]);
   });
 
   it('attaches the JSON Schema dialect when a media schema is a top-level $ref', () => {
@@ -2244,6 +2308,26 @@ components:
     expect(run('anything', 'application/problem+json')).toBe('pass');
   });
 
+  it('fails every dialect-mismatched keyword closed in both directions', () => {
+    const draft202012Samples: Record<string, unknown> = {
+      prefixItems: [{ type: 'string' }],
+      dependentRequired: { a: ['b'] },
+      dependentSchemas: { a: { type: 'object' } },
+      minContains: 1,
+      maxContains: 2,
+      unevaluatedItems: false,
+      unevaluatedProperties: false
+    };
+    for (const [key, value] of Object.entries(draft202012Samples)) {
+      const packed = packSchema({}, { type: 'object', [key]: value }, '3.0');
+      expect(packed.unsupported, key).toContain(`${key} requires the JSON Schema 2020-12 dialect`);
+    }
+    for (const [key, value] of Object.entries({ dependencies: { a: ['b'] }, additionalItems: { type: 'string' } })) {
+      const packed = packSchema({}, { type: 'object', [key]: value }, '3.1');
+      expect(packed.unsupported, key).toContain(`${key} is a draft-07 keyword`);
+    }
+  });
+
   it('degrades reference graphs past the embed cap to presence-only checks with warnings', () => {
     const schemas: Record<string, unknown> = {};
     const properties: Record<string, unknown> = {};
@@ -2414,6 +2498,370 @@ components:
     const terminatingMedia = terminatingAlias.operations[0]!.responses['200']!.content['application/json']!;
     expect(terminatingMedia.unsupported).toBeUndefined();
     expect(terminatingMedia.schema).toBeDefined();
+  });
+
+  it('synthesizes discriminator dispatch for oneOf refs and warns on allOf-parent discriminators', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Pet' }
+  /bases:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Base' }
+components:
+  schemas:
+    Cat:
+      type: object
+      required: [meows]
+      properties: { meows: { type: boolean }, petType: { type: string } }
+    Dog:
+      type: object
+      required: [barks]
+      properties: { barks: { type: boolean }, petType: { type: string } }
+    Pet:
+      oneOf:
+        - $ref: '#/components/schemas/Cat'
+        - $ref: '#/components/schemas/Dog'
+      discriminator:
+        propertyName: petType
+        mapping:
+          cat: '#/components/schemas/Cat'
+          dog: '#/components/schemas/Dog'
+    Base:
+      type: object
+      properties: { kind: { type: string } }
+      discriminator:
+        propertyName: kind
+        mapping:
+          ext: '#/components/schemas/Ext'
+    Ext:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - type: object
+          required: [extra]
+          properties: { extra: { type: string } }
+`);
+    const pets = index.operations.find((operation) => operation.path === '/pets')!;
+    const packed = pets.responses['200']!.content['application/json']!;
+    expect(packed.unsupported).toBeUndefined();
+    const validate = compileSchemaValidator(packed.schema)!;
+    expect(validate({ petType: 'cat', meows: true })).toBe(true);
+    expect(validate({ petType: 'dog', barks: true })).toBe(true);
+    expect(validate({ petType: 'dog', meows: true })).toBe(false);
+    expect(validate({ meows: true })).toBe(false);
+    const bases = index.operations.find((operation) => operation.path === '/bases')!;
+    expect(bases.warnings).toContain('CONTRACT_DISCRIMINATOR_NOT_VALIDATED: discriminator on response application/json of GET /bases status 200 has no sibling oneOf/anyOf of internal $ref members and is not validated');
+    expect(pets.warnings.filter((entry) => entry.includes('DISCRIMINATOR'))).toEqual([]);
+  });
+
+  it('keeps implicit discriminator names beside explicit aliases and rejects names claimed by other refs', () => {
+    const root = {
+      components: {
+        schemas: {
+          Cat: { type: 'object', required: ['meows'], properties: { meows: { type: 'boolean' }, petType: { type: 'string' } } },
+          Dog: { type: 'object', required: ['barks'], properties: { barks: { type: 'boolean' }, petType: { type: 'string' } } },
+          Pet: {
+            oneOf: [{ $ref: '#/components/schemas/Cat' }, { $ref: '#/components/schemas/Dog' }],
+            discriminator: { propertyName: 'petType', mapping: { dog: '#/components/schemas/Dog' } }
+          },
+          Stolen: {
+            oneOf: [{ $ref: '#/components/schemas/Cat' }, { $ref: '#/components/schemas/Dog' }],
+            discriminator: { propertyName: 'petType', mapping: { Dog: '#/components/schemas/Cat' } }
+          }
+        }
+      }
+    };
+    const pet = packSchema(root, { $ref: '#/components/schemas/Pet' }, '3.1');
+    const validate = compileSchemaValidator(pet.schema)!;
+    expect(validate({ petType: 'dog', barks: true })).toBe(true);
+    expect(validate({ petType: 'Dog', barks: true })).toBe(true);
+    expect(validate({ petType: 'Cat', meows: true })).toBe(true);
+    expect(validate({ petType: 'dog', meows: true })).toBe(false);
+    const stolen = packSchema(root, { $ref: '#/components/schemas/Stolen' }, '3.1');
+    const validateStolen = compileSchemaValidator(stolen.schema)!;
+    expect(validateStolen({ petType: 'Dog', meows: true })).toBe(true);
+    expect(validateStolen({ petType: 'Dog', barks: true })).toBe(false);
+  });
+
+  it('accepts nullable form field values, wildcard content keys, cookie content params, and form-field discriminators', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /forms:
+    post:
+      parameters:
+        - name: session
+          in: cookie
+          content:
+            application/json:
+              schema: { type: object }
+        - name: filter
+          in: query
+          allowEmptyValue: true
+          content:
+            application/json:
+              schema: { type: object }
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                count: { type: [integer, 'null'] }
+                pet: { $ref: '#/components/schemas/Pet' }
+      responses:
+        '200': { description: OK }
+  /blob:
+    post:
+      requestBody:
+        required: true
+        content:
+          '*/*':
+            schema: { type: string }
+      responses:
+        '200': { description: OK }
+  /notes:
+    post:
+      requestBody:
+        required: false
+        content:
+          'text/plain; charset=utf-8':
+            schema: { type: string }
+      responses:
+        '200': { description: OK }
+components:
+  schemas:
+    Cat: { type: object, properties: { petType: { type: string } } }
+    Pet:
+      type: object
+      properties: { petType: { type: string } }
+      discriminator: { propertyName: petType }
+`);
+    const forms = index.operations.find((operation) => operation.path === '/forms')!;
+    expect(forms.warnings).toContain(
+      'CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter cookie:session declares non-default style, explode, allowReserved, or content and its serialization is not validated'
+    );
+    expect(forms.warnings.some((entry) => entry.startsWith('CONTRACT_DISCRIMINATOR_NOT_VALIDATED: discriminator on field pet of request body application/x-www-form-urlencoded'))).toBe(true);
+    const filterCheck = forms.parameterChecks?.find((check) => check.name === 'filter');
+    expect(filterCheck).toMatchObject({ content: true, allowEmptyValue: true });
+    const directionIndex = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /search:
+    get:
+      parameters:
+        - name: filter
+          in: query
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, id]
+                properties:
+                  name: { type: string }
+                  id: { type: string, readOnly: true }
+                  secret: { type: string, writeOnly: true, minLength: 3 }
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                odd: { type: string, customKeyword: true }
+      responses:
+        '200': { description: OK }
+`);
+    const direction = directionIndex.operations[0]!;
+    const contentCheck = direction.parameterChecks?.find((check) => check.name === 'filter');
+    const contentValidate = compileSchemaValidator(contentCheck?.schema)!;
+    expect(contentValidate({ name: 'a', secret: 'long-enough' })).toBe(true);
+    expect(contentValidate({ name: 'a' })).toBe(true);
+    expect(contentValidate({ name: 'a', secret: 'x' })).toBe(false);
+    expect(direction.warnings.some((entry) => entry.startsWith('CONTRACT_SCHEMA_NOT_COMPILED: field odd of request body application/x-www-form-urlencoded'))).toBe(true);
+    const collection = {
+      item: [
+        {
+          request: {
+            method: 'POST',
+            url: { path: ['forms'], query: [{ key: 'filter', value: '{}' }] },
+            header: [{ key: 'Content-Type', value: 'application/x-www-form-urlencoded' }, { key: 'Cookie', value: 'session={}' }],
+            body: { mode: 'urlencoded', urlencoded: [{ key: 'count', value: '42' }] }
+          }
+        },
+        {
+          request: {
+            method: 'POST',
+            url: { path: ['blob'] },
+            header: [{ key: 'Content-Type', value: 'application/octet-stream' }],
+            body: { mode: 'raw', raw: 'data' }
+          }
+        },
+        {
+          request: {
+            method: 'POST',
+            url: { path: ['notes'] },
+            header: [{ key: 'Content-Type', value: 'text/plain' }],
+            body: { mode: 'raw', raw: 'hello' }
+          }
+        }
+      ]
+    };
+    const { warnings } = instrumentContractCollection(collection, index);
+    expect(warnings.filter((entry) => entry.includes('FORM_FIELD'))).toEqual([]);
+    expect(warnings.filter((entry) => entry.includes('optional request body'))).toEqual([]);
+  });
+
+  it('warns on optional request body Content-Type mismatches and validates form field scalar values statically', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    post:
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '201': { description: Created }
+  /forms:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                age: { type: integer, maximum: 100 }
+                label: { type: string, minLength: 2 }
+      responses:
+        '200': { description: OK }
+`);
+    const optionalItem = (contentType: string) => ({
+      item: [
+        {
+          request: {
+            method: 'POST',
+            url: { path: ['pets'] },
+            header: [{ key: 'Content-Type', value: contentType }],
+            body: { mode: 'raw', raw: '{}' }
+          }
+        },
+        {
+          request: {
+            method: 'POST',
+            url: { path: ['forms'] },
+            header: [{ key: 'Content-Type', value: 'application/x-www-form-urlencoded' }],
+            body: { mode: 'urlencoded', urlencoded: [{ key: 'age', value: '42' }, { key: 'label', value: 'ok' }] }
+          }
+        }
+      ]
+    });
+    expect(instrumentContractCollection(optionalItem('text/plain'), index).warnings).toContain(
+      'CONTRACT_STATIC_REQUEST_CHECK_FAILED: POST /pets optional request body Content-Type text/plain does not match application/json'
+    );
+    expect(instrumentContractCollection(optionalItem('application/json'), index).warnings.filter((entry) => entry.includes('optional request body'))).toEqual([]);
+
+    const formItem = (urlencoded: unknown[]) => ({
+      item: [{
+        request: {
+          method: 'POST',
+          url: { path: ['forms'] },
+          header: [{ key: 'Content-Type', value: 'application/x-www-form-urlencoded' }],
+          body: { mode: 'urlencoded', urlencoded }
+        }
+      }, {
+        request: { method: 'POST', url: { path: ['pets'] } }
+      }]
+    });
+    const mismatch = 'CONTRACT_FORM_FIELD_SCHEMA_MISMATCH: POST /forms generated urlencoded field age value does not match its schema';
+    expect(instrumentContractCollection(formItem([{ key: 'age', value: 'not-a-number' }]), index).warnings).toContain(mismatch);
+    expect(instrumentContractCollection(formItem([{ key: 'age', value: '101' }]), index).warnings).toContain(mismatch);
+    expect(instrumentContractCollection(formItem([{ key: 'age', value: '42' }, { key: 'label', value: 'x' }]), index).warnings).toContain(
+      'CONTRACT_FORM_FIELD_SCHEMA_MISMATCH: POST /forms generated urlencoded field label value does not match its schema'
+    );
+    expect(instrumentContractCollection(formItem([{ key: 'age', value: '42' }, { key: 'label', value: '<string>' }]), index).warnings.filter((entry) => entry.includes('FORM_FIELD'))).toEqual([]);
+  });
+
+  it('validates JSON content parameters at runtime and checks generic HTTP scheme prefixes', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      security:
+        - digestAuth: []
+      parameters:
+        - name: filter
+          in: query
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kind]
+                properties: { kind: { type: string } }
+        - name: shape
+          in: query
+          content:
+            application/xml:
+              schema: { type: object }
+      responses:
+        '200': { description: OK }
+components:
+  securitySchemes:
+    digestAuth: { type: http, scheme: digest }
+`);
+    const operation = index.operations[0]!;
+    expect(operation.parameterChecks).toEqual([
+      { in: 'query', name: 'filter', required: true, content: true, schema: expect.anything() }
+    ]);
+    expect(operation.warnings.filter((entry) => entry.includes('SERIALIZATION') && entry.includes('filter'))).toEqual([]);
+    expect(operation.warnings).toContain(
+      'CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter query:shape declares non-default style, explode, allowReserved, or content and its serialization is not validated'
+    );
+    expect(operation.security).toEqual([[{ scheme: 'digestAuth', kind: 'http:digest', checkable: true, prefix: 'Digest ' }]]);
+
+    const script = createContractScript(operation).join('\n');
+    const run = (filterValue: string) => {
+      const results: Record<string, string> = {};
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch { results[name] = 'fail'; }
+        },
+        expect: permissive,
+        response: { code: 200, headers: { get: () => null }, text: () => '', json: () => ({}) },
+        request: {
+          headers: { each: (callback: (header: { key: string; value: string }) => void) => [{ key: 'Authorization', value: 'Digest username="u"' }].forEach(callback) },
+          url: { query: { each: (callback: (param: { key: string; value: string }) => void) => [{ key: 'filter', value: filterValue }].forEach(callback) } }
+        }
+      };
+      runInContext(script, createContext({ pm }));
+      return results;
+    };
+    expect(run('{"kind":"cat"}')['Request parameters match OpenAPI schemas']).toBe('pass');
+    expect(run('{"nope":1}')['Request parameters match OpenAPI schemas']).toBe('fail');
+    expect(run('not json')['Request parameters match OpenAPI schemas']).toBe('fail');
+    expect(run('{"kind":"cat"}')['Request carries credentials required by OpenAPI security']).toBe('pass');
   });
 
   it('warns on uncompilable parameter schemas and honors allowEmptyValue at runtime', async () => {

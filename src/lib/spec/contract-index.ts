@@ -1,4 +1,5 @@
-import { packSchema, resolvePointer, type OpenApiVersion, type PackedSchema } from './schema-pack.js';
+import { isSchemaGraphOverflow, packSchema, resolvePointer, type OpenApiVersion, type PackedSchema, type SchemaDirection } from './schema-pack.js';
+import { compileSchemaValidator } from './schema-validator-code.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -18,14 +19,45 @@ export interface ContractResponse {
 }
 
 export interface ContractParameterRequirement {
-  in: 'path' | 'query' | 'header';
+  in: 'path' | 'query' | 'header' | 'cookie';
   name: string;
   securityDerived?: boolean;
+}
+
+export interface ContractFieldEncoding {
+  contentType?: string;
+  binary?: boolean;
+  nonDefaultSerialization?: boolean;
+}
+
+export interface ContractBodyFieldRules {
+  required: string[];
+  readOnly: string[];
+  encodings?: Record<string, ContractFieldEncoding>;
 }
 
 export interface ContractRequestBodyRequirement {
   contentTypes: string[];
   required: boolean;
+  fieldRules?: Record<string, ContractBodyFieldRules>;
+  jsonSchemas?: Record<string, unknown>;
+}
+
+export interface ContractParameterCheck {
+  in: 'query' | 'header';
+  name: string;
+  required: boolean;
+  allowEmptyValue?: boolean;
+  schema: unknown;
+}
+
+export interface ContractSecurityCheck {
+  scheme: string;
+  kind: string;
+  checkable: boolean;
+  in?: 'header' | 'query' | 'cookie';
+  name?: string;
+  prefix?: string;
 }
 
 export interface ContractOperation {
@@ -36,7 +68,10 @@ export interface ContractOperation {
   candidates: string[];
   responses: Record<string, ContractResponse>;
   requiredParameters: ContractParameterRequirement[];
+  declaredQueryParameters: string[];
+  parameterChecks?: ContractParameterCheck[];
   requestBody?: ContractRequestBodyRequirement;
+  security?: ContractSecurityCheck[][];
   warnings: string[];
 }
 
@@ -142,7 +177,7 @@ function collectSecurityApiKeys(root: JsonRecord, operation: JsonRecord): Set<st
   for (const requirement of requirements.map((entry) => asRecord(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement!)) {
       const scheme = resolveInternalRef<JsonRecord>(root, securitySchemes?.[schemeName]);
-      if (scheme?.type === 'apiKey' && typeof scheme.name === 'string' && ['query', 'header'].includes(String(scheme.in))) {
+      if (scheme?.type === 'apiKey' && typeof scheme.name === 'string' && ['query', 'header', 'cookie'].includes(String(scheme.in))) {
         names.add(`${String(scheme.in)}:${scheme.name.toLowerCase()}`);
       }
     }
@@ -166,11 +201,158 @@ function collectSecuritySchemeWarnings(root: JsonRecord, operation: JsonRecord):
     for (const schemeName of Object.keys(requirement!)) {
       const scheme = resolveInternalRef<JsonRecord>(root, securitySchemes?.[schemeName]);
       warnings.add(
-        `CONTRACT_SECURITY_NOT_VALIDATED: security scheme ${schemeName} (${securitySchemeKind(scheme)}) is not runtime-proven by dynamic contract tests`
+        `CONTRACT_SECURITY_NOT_VALIDATED: security scheme ${schemeName} (${securitySchemeKind(scheme)}) is not runtime-proven beyond credential presence by dynamic contract tests`
       );
     }
   }
   return [...warnings];
+}
+
+function securityCheckFor(schemeName: string, scheme: JsonRecord | null): ContractSecurityCheck {
+  const kind = securitySchemeKind(scheme);
+  if (scheme?.type === 'apiKey' && typeof scheme.name === 'string' && ['header', 'query', 'cookie'].includes(String(scheme.in))) {
+    return { scheme: schemeName, kind, checkable: true, in: String(scheme.in) as 'header' | 'query' | 'cookie', name: scheme.name };
+  }
+  if (scheme?.type === 'http') {
+    const httpScheme = String(scheme.scheme || '').toLowerCase();
+    if (httpScheme === 'basic') return { scheme: schemeName, kind, checkable: true, prefix: 'Basic ' };
+    if (httpScheme === 'bearer') return { scheme: schemeName, kind, checkable: true, prefix: 'Bearer ' };
+    return { scheme: schemeName, kind, checkable: true, in: 'header', name: 'Authorization' };
+  }
+  if (scheme?.type === 'oauth2' || scheme?.type === 'openIdConnect') {
+    return { scheme: schemeName, kind, checkable: true, in: 'header', name: 'Authorization' };
+  }
+  return { scheme: schemeName, kind, checkable: false };
+}
+
+function collectSecurityRuntimeChecks(root: JsonRecord, operation: JsonRecord): ContractSecurityCheck[][] | undefined {
+  const securitySchemes = asRecord(asRecord(root.components)?.securitySchemes);
+  const requirements = operation.security === undefined ? asArray(root.security) : asArray(operation.security);
+  const alternatives: ContractSecurityCheck[][] = [];
+  for (const requirement of requirements.map((entry) => asRecord(entry)).filter(Boolean)) {
+    const schemeNames = Object.keys(requirement!);
+    // An empty security requirement object means anonymous access is allowed,
+    // so the credential check cannot be required at runtime.
+    if (schemeNames.length === 0) return undefined;
+    alternatives.push(schemeNames.map((schemeName) => securityCheckFor(schemeName, resolveInternalRef<JsonRecord>(root, securitySchemes?.[schemeName]))));
+  }
+  // An alternative made up entirely of uncheckable schemes always evaluates
+  // satisfied, which makes the whole OR unfalsifiable; emitting a test that
+  // can never fail would imply coverage that does not exist.
+  if (alternatives.some((alternative) => alternative.length > 0 && alternative.every((check) => !check.checkable))) return undefined;
+  return alternatives.length > 0 ? alternatives : undefined;
+}
+
+function resolvedParameters(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): JsonRecord[] {
+  return [...asArray(pathItem.parameters), ...asArray(operation.parameters)]
+    .map((rawParam) => {
+      try {
+        return resolveInternalRef<JsonRecord>(root, rawParam);
+      } catch {
+        return null;
+      }
+    })
+    .filter((param): param is JsonRecord => Boolean(param));
+}
+
+const DEFAULT_PARAM_STYLES: Record<string, string> = { query: 'form', path: 'simple', header: 'simple', cookie: 'form' };
+
+// OAS Parameter Object: header parameters named Accept, Content-Type, or
+// Authorization SHALL be ignored; content negotiation and credentials are
+// described by the media types and security schemes instead.
+const IGNORED_HEADER_PARAMS = new Set(['accept', 'content-type', 'authorization']);
+
+function isIgnoredParameter(location: string, name: string): boolean {
+  return location === 'header' && IGNORED_HEADER_PARAMS.has(name.toLowerCase());
+}
+
+function collectSerializationWarnings(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): string[] {
+  const warnings: string[] = [];
+  for (const param of resolvedParameters(root, pathItem, operation)) {
+    const location = String(param.in || '').toLowerCase();
+    const name = String(param.name || '');
+    const defaultStyle = DEFAULT_PARAM_STYLES[location];
+    if (!name || !defaultStyle || isIgnoredParameter(location, name)) continue;
+    const style = typeof param.style === 'string' ? param.style : defaultStyle;
+    const defaultExplode = style === 'form';
+    const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
+    if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || param.content !== undefined) {
+      warnings.push(`CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter ${location}:${name} declares non-default style, explode, allowReserved, or content and its serialization is not validated`);
+    }
+  }
+  return warnings;
+}
+
+const SCALAR_SCHEMA_TYPES = new Set(['string', 'number', 'integer', 'boolean', 'null']);
+
+function packedScalarSchema(packed: PackedSchema): unknown | undefined {
+  if (packed.unsupported || packed.schema === undefined) return undefined;
+  const record = asRecord(packed.schema);
+  if (!record) return undefined;
+  const types = Array.isArray(record.type) ? record.type : [record.type];
+  if (!types.every((entry) => typeof entry === 'string' && SCALAR_SCHEMA_TYPES.has(entry))) return undefined;
+  return packed.schema;
+}
+
+// Runtime parameter value checks cover scalar query/header parameters with
+// default serialization only. Non-default style/explode parameters already
+// carry CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED; array/object parameter
+// schemas are skipped because their serialized form is not a single value.
+function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord, version: OpenApiVersion, operationId: string, warnings: string[]): ContractParameterCheck[] | undefined {
+  const securityKeys = collectSecurityApiKeys(root, operation);
+  const checks: ContractParameterCheck[] = [];
+  const seen = new Set<string>();
+  // Operation-level parameters override path-item parameters, so they are
+  // resolved first and win the dedupe.
+  const orderedParams = [...asArray(operation.parameters), ...asArray(pathItem.parameters)]
+    .map((rawParam) => {
+      try {
+        return resolveInternalRef<JsonRecord>(root, rawParam);
+      } catch {
+        return null;
+      }
+    })
+    .filter((param): param is JsonRecord => Boolean(param));
+  for (const param of orderedParams) {
+    const location = String(param.in || '').toLowerCase();
+    if (location !== 'query' && location !== 'header') continue;
+    const name = String(param.name || '');
+    if (!name || isIgnoredParameter(location, name)) continue;
+    const key = `${location}:${name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (securityKeys.has(key)) continue;
+    if (param.content !== undefined || param.schema === undefined) continue;
+    const defaultStyle = DEFAULT_PARAM_STYLES[location]!;
+    const style = typeof param.style === 'string' ? param.style : defaultStyle;
+    const defaultExplode = style === 'form';
+    const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
+    if (style !== defaultStyle || explode !== defaultExplode) continue;
+    const packed = packSchema(root, param.schema, version);
+    if (packed.unsupported) {
+      warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
+      continue;
+    }
+    const schema = packedScalarSchema(packed);
+    if (schema === undefined) continue;
+    const check: ContractParameterCheck = { in: location as 'query' | 'header', name, required: param.required === true, schema };
+    if (location === 'query' && param.allowEmptyValue === true) check.allowEmptyValue = true;
+    checks.push(check);
+  }
+  return checks.length > 0 ? checks : undefined;
+}
+
+function collectDeclaredQueryParameters(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): string[] {
+  const names = new Set<string>();
+  for (const param of resolvedParameters(root, pathItem, operation)) {
+    if (String(param.in || '').toLowerCase() !== 'query') continue;
+    const name = String(param.name || '');
+    if (name) names.add(name.toLowerCase());
+  }
+  for (const key of collectSecurityApiKeys(root, operation)) {
+    if (key.startsWith('query:')) names.add(key.slice('query:'.length));
+  }
+  return [...names];
 }
 
 function collectParameters(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): ContractParameterRequirement[] {
@@ -182,14 +364,14 @@ function collectParameters(root: JsonRecord, pathItem: JsonRecord, operation: Js
     const param = resolveInternalRef<JsonRecord>(root, rawParam);
     if (!param) continue;
     const location = String(param.in || '').toLowerCase();
-    if (!['path', 'query', 'header'].includes(location)) continue;
+    if (!['path', 'query', 'header', 'cookie'].includes(location)) continue;
     const name = String(param.name || '');
-    if (!name || param.required !== true) continue;
+    if (!name || param.required !== true || isIgnoredParameter(location, name)) continue;
     const key = `${location}:${name.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
     requirements.push({
-      in: location as 'path' | 'query' | 'header',
+      in: location as 'path' | 'query' | 'header' | 'cookie',
       name,
       securityDerived: securityKeys.has(key)
     });
@@ -197,38 +379,275 @@ function collectParameters(root: JsonRecord, pathItem: JsonRecord, operation: Js
   return requirements;
 }
 
-function collectRequestBody(root: JsonRecord, operation: JsonRecord): ContractRequestBodyRequirement | undefined {
+const BODY_FIELD_RULE_TYPES = new Set(['application/x-www-form-urlencoded', 'multipart/form-data']);
+
+function isJsonBaseType(base: string): boolean {
+  return base === 'application/json' || /\+json$/.test(base);
+}
+
+interface MergedObjectSchema {
+  required: string[];
+  properties: JsonRecord;
+}
+
+function mergeObjectSchema(root: JsonRecord, rawSchema: unknown, depth: number): MergedObjectSchema | null {
+  if (depth > 10) return null;
+  let schema: JsonRecord | null;
+  try {
+    schema = resolveInternalRef<JsonRecord>(root, rawSchema);
+  } catch {
+    return null;
+  }
+  if (!schema) return null;
+  const merged: MergedObjectSchema = {
+    required: asArray(schema.required).map((entry) => String(entry)).filter(Boolean),
+    properties: { ...(asRecord(schema.properties) ?? {}) }
+  };
+  for (const member of asArray(schema.allOf)) {
+    const child = mergeObjectSchema(root, member, depth + 1);
+    if (!child) continue;
+    merged.required.push(...child.required);
+    merged.properties = { ...merged.properties, ...child.properties };
+  }
+  merged.required = [...new Set(merged.required)];
+  return merged;
+}
+
+function propertyIsReadOnly(root: JsonRecord, properties: JsonRecord, name: string): boolean {
+  try {
+    return resolveInternalRef<JsonRecord>(root, properties[name])?.readOnly === true;
+  } catch {
+    return false;
+  }
+}
+
+function propertyIsBinary(root: JsonRecord, properties: JsonRecord, name: string): boolean {
+  let schema: JsonRecord | null;
+  try {
+    schema = resolveInternalRef<JsonRecord>(root, properties[name]);
+  } catch {
+    return false;
+  }
+  if (!schema) return false;
+  if (schema.format === 'binary') return true;
+  return typeof schema.contentMediaType === 'string' && schema.contentMediaType.toLowerCase().startsWith('application/octet-stream');
+}
+
+// Encoding Objects describe per-field serialization of form bodies. The wire
+// form is not reconstructed here, but the generated artifact can be checked
+// against the declaration: explicit per-part contentType, binary fields as
+// file parts, and non-default style/explode/allowReserved surfaced as
+// serialization warnings.
+function fieldEncodings(root: JsonRecord, base: string, mediaObject: JsonRecord | null, properties: JsonRecord): Record<string, ContractFieldEncoding> | undefined {
+  const declared = asRecord(mediaObject?.encoding);
+  const encodings: Record<string, ContractFieldEncoding> = {};
+  for (const name of Object.keys(properties)) {
+    if (base === 'multipart/form-data' && propertyIsBinary(root, properties, name)) {
+      encodings[name] = { ...encodings[name], binary: true };
+    }
+  }
+  if (declared) {
+    for (const [name, rawEncoding] of Object.entries(declared)) {
+      const encoding = asRecord(rawEncoding);
+      if (!encoding) continue;
+      const entry: ContractFieldEncoding = { ...encodings[name] };
+      if (typeof encoding.contentType === 'string' && encoding.contentType.trim()) {
+        entry.contentType = encoding.contentType.toLowerCase();
+      }
+      if (base === 'application/x-www-form-urlencoded') {
+        const style = typeof encoding.style === 'string' ? encoding.style : 'form';
+        const explode = typeof encoding.explode === 'boolean' ? encoding.explode : style === 'form';
+        if (style !== 'form' || explode !== (style === 'form') || encoding.allowReserved === true) {
+          entry.nonDefaultSerialization = true;
+        }
+      }
+      if (Object.keys(entry).length > 0) encodings[name] = entry;
+    }
+  }
+  return Object.keys(encodings).length > 0 ? encodings : undefined;
+}
+
+function requestBodyFieldRules(root: JsonRecord, content: JsonRecord): Record<string, ContractBodyFieldRules> | undefined {
+  const rules: Record<string, ContractBodyFieldRules> = {};
+  for (const [contentType, mediaObject] of Object.entries(content)) {
+    const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
+    if (!isJsonBaseType(base) && !BODY_FIELD_RULE_TYPES.has(base)) continue;
+    const mediaRecord = asRecord(mediaObject);
+    const merged = mergeObjectSchema(root, mediaRecord?.schema, 0);
+    if (!merged) continue;
+    const readOnly = Object.keys(merged.properties).filter((name) => propertyIsReadOnly(root, merged.properties, name));
+    // readOnly properties may be required in responses without being sent in
+    // requests, so they are excluded from the request-side required list.
+    const required = merged.required.filter((name) => !propertyIsReadOnly(root, merged.properties, name));
+    const encodings = BODY_FIELD_RULE_TYPES.has(base) ? fieldEncodings(root, base, mediaRecord, merged.properties) : undefined;
+    if (required.length > 0 || readOnly.length > 0 || encodings) {
+      const rule: ContractBodyFieldRules = { required, readOnly };
+      if (encodings) rule.encodings = encodings;
+      rules[base] = rule;
+    }
+  }
+  return Object.keys(rules).length > 0 ? rules : undefined;
+}
+
+function requestBodyJsonSchemas(
+  root: JsonRecord,
+  content: JsonRecord,
+  version: OpenApiVersion,
+  operationId: string,
+  warnings: string[]
+): Record<string, unknown> | undefined {
+  const schemas: Record<string, unknown> = {};
+  const exampleWarnings = new Set<string>();
+  for (const [contentType, mediaObject] of Object.entries(content)) {
+    const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
+    const mediaRecord = asRecord(mediaObject);
+    const schema = mediaRecord?.schema;
+    if (!isJsonBaseType(base)) {
+      // urlencoded/multipart bodies get static field rules; other non-JSON
+      // request schemas mirror the response-side not-validated warning so the
+      // skip is never silent.
+      if (schema !== undefined && !BODY_FIELD_RULE_TYPES.has(base)) {
+        warnings.push(`CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED: request body schema for ${contentType} on ${operationId} is not validated at runtime`);
+      }
+      continue;
+    }
+    if (schema === undefined) continue;
+    const packed = packSchema(root, schema, version, 'request' as SchemaDirection);
+    if (mediaRecord) validateExamples(root, mediaRecord, packed, contentType, operationId, exampleWarnings);
+    if (packed.unsupported) {
+      warnings.push(`CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED: request body schema for ${contentType} on ${operationId} is not validated (${packed.unsupported})`);
+      continue;
+    }
+    if (packed.schema !== undefined) schemas[base] = packed.schema;
+  }
+  warnings.push(...exampleWarnings);
+  return Object.keys(schemas).length > 0 ? schemas : undefined;
+}
+
+function collectRequestBody(
+  root: JsonRecord,
+  operation: JsonRecord,
+  version: OpenApiVersion,
+  operationId: string,
+  warnings: string[]
+): ContractRequestBodyRequirement | undefined {
   const body = resolveInternalRef<JsonRecord>(root, operation.requestBody);
-  if (!body || body.required !== true) return undefined;
+  if (!body) return undefined;
   const content = asRecord(body.content);
+  const fieldRules = content ? requestBodyFieldRules(root, content) : undefined;
+  if (fieldRules) {
+    for (const [base, rule] of Object.entries(fieldRules)) {
+      for (const [field, encoding] of Object.entries(rule.encodings ?? {})) {
+        if (encoding.nonDefaultSerialization) {
+          warnings.push(
+            `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: ${base} request body field ${field} on ${operationId} declares non-default encoding style, explode, or allowReserved and its serialization is not validated`
+          );
+        }
+      }
+    }
+  }
   return {
-    required: true,
-    contentTypes: content ? Object.keys(content) : []
+    required: body.required === true,
+    contentTypes: content ? Object.keys(content) : [],
+    fieldRules,
+    jsonSchemas: content ? requestBodyJsonSchemas(root, content, version, operationId, warnings) : undefined
   };
 }
 
-function responseContent(root: JsonRecord, version: OpenApiVersion, response: JsonRecord): Record<string, ContractMedia> {
+function exampleCandidates(root: JsonRecord, mediaObject: JsonRecord): Array<{ label: string; value: unknown }> {
+  const candidates: Array<{ label: string; value: unknown }> = [];
+  if ('example' in mediaObject) candidates.push({ label: 'example', value: mediaObject.example });
+  const examples = asRecord(mediaObject.examples);
+  if (examples) {
+    for (const [name, rawExample] of Object.entries(examples)) {
+      let example: JsonRecord | null;
+      try {
+        example = resolveInternalRef<JsonRecord>(root, rawExample);
+      } catch {
+        continue;
+      }
+      if (example && 'value' in example) candidates.push({ label: `examples.${name}`, value: example.value });
+    }
+  }
+  return candidates;
+}
+
+function validateExamples(root: JsonRecord, mediaObject: JsonRecord, packed: PackedSchema, contentType: string, context: string, warnings: Set<string>): void {
+  if (packed.schema === undefined || packed.unsupported) return;
+  const candidates = exampleCandidates(root, mediaObject);
+  if (candidates.length === 0) return;
+  const validate = compileSchemaValidator(packed.schema);
+  if (!validate) return;
+  for (const candidate of candidates) {
+    if (!validate(candidate.value)) {
+      warnings.add(`CONTRACT_EXAMPLE_SCHEMA_MISMATCH: ${candidate.label} for ${contentType} on ${context} does not match its schema`);
+    }
+  }
+}
+
+function responseContent(root: JsonRecord, version: OpenApiVersion, response: JsonRecord, context: string, warnings: Set<string>): Record<string, ContractMedia> {
   const content = asRecord(response.content);
   if (!content) return {};
   const media: Record<string, ContractMedia> = {};
   for (const [contentType, mediaObject] of Object.entries(content)) {
-    const schema = asRecord(mediaObject)?.schema;
-    media[contentType] = schema === undefined ? {} : packSchema(root, schema, version);
+    const mediaRecord = asRecord(mediaObject);
+    const schema = mediaRecord?.schema;
+    let packed = schema === undefined ? {} : packSchema(root, schema, version);
+    // A reference graph past the embed cap degrades to a presence-only media
+    // check with a warning; an always-failing runtime test would make every
+    // run red on very large specs such as Stripe's.
+    if (isSchemaGraphOverflow(packed)) {
+      warnings.add(`CONTRACT_SCHEMA_NOT_COMPILED: response schema for ${contentType} on ${context} skipped (${packed.unsupported})`);
+      packed = {};
+    }
+    // Example self-consistency only applies to JSON media: an Example Object
+    // for XML or text legally holds the serialized string form, which would
+    // spuriously mismatch an object schema.
+    const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
+    if (mediaRecord && isJsonBaseType(base)) validateExamples(root, mediaRecord, packed, contentType, context, warnings);
+    media[contentType] = packed;
   }
   return media;
 }
 
-function responseHeaders(root: JsonRecord, version: OpenApiVersion, response: JsonRecord): ContractHeader[] {
+function responseHeaders(root: JsonRecord, version: OpenApiVersion, response: JsonRecord, context: string, warnings: Set<string>): ContractHeader[] {
   const headers = asRecord(response.headers);
   if (!headers) return [];
-  return Object.entries(headers).map(([name, rawHeader]) => {
+  const entries: ContractHeader[] = [];
+  for (const [name, rawHeader] of Object.entries(headers)) {
+    // OAS: a response header named Content-Type SHALL be ignored.
+    if (name.toLowerCase() === 'content-type') continue;
     const header = resolveInternalRef<JsonRecord>(root, rawHeader);
-    if (!header) return { name, required: true, unsupported: 'Unresolved response header' };
+    if (!header) {
+      entries.push({ name, required: true, unsupported: 'Unresolved response header' });
+      continue;
+    }
     const required = header.required === true;
-    if (header.content) return { name, required, unsupported: 'OpenAPI response header content is unsupported' };
-    if (!header.schema) return { name, required };
-    return { name, required, ...packSchema(root, header.schema, version) };
-  });
+    if (header.content) {
+      entries.push({ name, required, unsupported: 'OpenAPI response header content is unsupported' });
+      continue;
+    }
+    if (!header.schema) {
+      entries.push({ name, required });
+      continue;
+    }
+    const packed = packSchema(root, header.schema, version);
+    if (isSchemaGraphOverflow(packed)) {
+      warnings.add(`CONTRACT_SCHEMA_NOT_COMPILED: response header ${name} schema on ${context} skipped (${packed.unsupported})`);
+      entries.push({ name, required });
+      continue;
+    }
+    // Non-scalar header schemas would feed a serialized string into an
+    // object/array validator and fail every run, so the value check is
+    // dropped to presence-only with a visible warning.
+    if (!packed.unsupported && packed.schema !== undefined && packedScalarSchema(packed) === undefined) {
+      warnings.add(`CONTRACT_HEADER_SCHEMA_NOT_VALIDATED: response header ${name} on ${context} declares a non-scalar schema and its value is not validated`);
+      entries.push({ name, required });
+      continue;
+    }
+    entries.push({ name, required, ...packed });
+  }
+  return entries;
 }
 
 export function buildContractIndex(root: JsonRecord): ContractIndex {
@@ -256,11 +675,23 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path} must define at least one response`);
         }
         const contractResponses: Record<string, ContractResponse> = {};
+        const responseWarnings = new Set<string>();
         for (const [status, rawResponse] of Object.entries(responses)) {
           const response = resolveInternalRef<JsonRecord>(root, rawResponse);
           if (!response) continue;
-          const content = responseContent(root, version, response);
-          const headers = responseHeaders(root, version, response);
+          if (asRecord(response.links)) {
+            responseWarnings.add(`CONTRACT_LINKS_NOT_VALIDATED: response links are not validated for ${lowerMethod.toUpperCase()} ${path}`);
+          }
+          const responseContext = `${lowerMethod.toUpperCase()} ${path} status ${status}`;
+          const content = responseContent(root, version, response, responseContext, responseWarnings);
+          for (const [contentType, media] of Object.entries(content)) {
+            const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
+            const schemaType = asRecord(media.schema)?.type;
+            if (!isJsonBaseType(base) && media.schema !== undefined && !media.unsupported && schemaType !== 'string') {
+              responseWarnings.add(`CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED: response schema for ${contentType} on ${responseContext} is not validated at runtime`);
+            }
+          }
+          const headers = responseHeaders(root, version, response, responseContext, responseWarnings);
           contractResponses[normalizeResponseKey(status)] = {
             content,
             hasBody: Object.keys(content).length > 0,
@@ -272,11 +703,26 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           ...operationServers(root, pathItem, operation).map((server) => joinPaths(serverPathPrefix(server), path))
         ].map(normalizePath))];
         const opWarnings: string[] = [];
+        opWarnings.push(...responseWarnings);
         opWarnings.push(...collectSecuritySchemeWarnings(root, operation));
+        opWarnings.push(...collectSerializationWarnings(root, pathItem, operation));
+        if (operation.deprecated === true) {
+          opWarnings.push(`CONTRACT_OPERATION_DEPRECATED: ${lowerMethod.toUpperCase()} ${path} is marked deprecated in the OpenAPI document`);
+        }
         const requiredParameters = collectParameters(root, pathItem, operation);
         for (const parameter of requiredParameters.filter((entry) => entry.securityDerived)) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);
         }
+        for (const parameter of requiredParameters.filter((entry) => entry.in === 'cookie' && !entry.securityDerived)) {
+          opWarnings.push(`CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not statically required in generated requests`);
+        }
+        const pathParamWarnings = new Set<string>();
+        for (const param of resolvedParameters(root, pathItem, operation)) {
+          if (String(param.in || '').toLowerCase() !== 'path') continue;
+          const name = String(param.name || '');
+          if (name) pathParamWarnings.add(`CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter ${name} value is not validated at runtime`);
+        }
+        opWarnings.push(...pathParamWarnings);
         operations.push({
           id: `${lowerMethod.toUpperCase()} ${path}`,
           method: lowerMethod.toUpperCase(),
@@ -285,7 +731,10 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           candidates,
           responses: contractResponses,
           requiredParameters,
-          requestBody: collectRequestBody(root, operation),
+          declaredQueryParameters: collectDeclaredQueryParameters(root, pathItem, operation),
+          parameterChecks: collectParameterChecks(root, pathItem, operation, version, `${lowerMethod.toUpperCase()} ${path}`, opWarnings),
+          requestBody: collectRequestBody(root, operation, version, `${lowerMethod.toUpperCase()} ${path}`, opWarnings),
+          security: collectSecurityRuntimeChecks(root, operation),
           warnings: opWarnings
         });
       }

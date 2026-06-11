@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CONTRACT_SIZE_LIMITS, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
+import { CONTRACT_SIZE_LIMITS, createContractScript, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
 import { createPinnedLookup, isBlockedAddress, safeFetchText, validateSafeHttpsUrl } from '../src/lib/spec/safe-spec-fetch.js';
@@ -215,6 +215,70 @@ paths:
         '200':
           description: OK
 `;
+
+    it.each([
+      {
+        content: JSON.stringify({
+          openapi: '3.0.3',
+          info: { title: 'Local Spec', version: '1.0.0' },
+          paths: { '/ping': { get: { responses: { '200': { description: 'OK' } } } } }
+        }, null, 2),
+        expectedVersion: '3.0',
+        label: 'OpenAPI 3.0 JSON',
+        path: 'apis/svc/openapi-3-0.json'
+      },
+      {
+        content: `openapi: 3.0.3
+info:
+  title: Local Spec
+  version: 1.0.0
+paths:
+  /ping:
+    get:
+      responses:
+        '200':
+          description: OK
+`,
+        expectedVersion: '3.0',
+        label: 'OpenAPI 3.0 YAML',
+        path: 'apis/svc/openapi-3-0.yaml'
+      },
+      {
+        content: JSON.stringify({
+          openapi: '3.1.0',
+          info: { title: 'Local Spec', version: '1.0.0' },
+          paths: { '/ping': { get: { responses: { '200': { description: 'OK' } } } } }
+        }, null, 2),
+        expectedVersion: '3.1',
+        label: 'OpenAPI 3.1 JSON',
+        path: 'apis/svc/openapi-3-1.json'
+      },
+      {
+        content: `openapi: 3.1.0
+info:
+  title: Local Spec
+  version: 1.0.0
+paths:
+  /ping:
+    get:
+      responses:
+        '200':
+          description: OK
+`,
+        expectedVersion: '3.1',
+        label: 'OpenAPI 3.1 YAML',
+        path: 'apis/svc/openapi-3-1.yaml'
+      }
+    ] as const)('loads $label through the full local contract loader', async ({ content, expectedVersion, path }) => {
+      writeSpec(path, content);
+      const fetchText = vi.fn();
+      const loaded = await loadOpenApiContractSpecFromPath(path, { fetchText });
+
+      expect(fetchText).not.toHaveBeenCalled();
+      expect(loaded.version).toBe(expectedVersion);
+      expect(loaded.contractIndex.version).toBe(expectedVersion);
+      expect(loaded.contractIndex.operations[0]?.path).toBe('/ping');
+    });
 
     it('loads a spec from a local filesystem path', async () => {
       writeSpec('apis/svc/openapi.yaml', baseSpec);
@@ -885,18 +949,1203 @@ components:
 `);
 
     expect(index.operations.find((operation) => operation.id === 'GET /pets')?.warnings).toEqual(expect.arrayContaining([
-      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme headerKey (apiKey:header) is not runtime-proven by dynamic contract tests',
-      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme bearerAuth (http:bearer) is not runtime-proven by dynamic contract tests',
+      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme headerKey (apiKey:header) is not runtime-proven beyond credential presence by dynamic contract tests',
+      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme bearerAuth (http:bearer) is not runtime-proven beyond credential presence by dynamic contract tests',
       'CONTRACT_SECURITY_NOT_VALIDATED: security parameter header:X-API-Key is not statically required in generated requests'
     ]));
     expect(index.operations.find((operation) => operation.id === 'GET /users')?.warnings).toEqual(expect.arrayContaining([
-      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme queryKey (apiKey:query) is not runtime-proven by dynamic contract tests',
-      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme cookieKey (apiKey:cookie) is not runtime-proven by dynamic contract tests',
-      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme basicAuth (http:basic) is not runtime-proven by dynamic contract tests',
-      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme oauthAuth (oauth2) is not runtime-proven by dynamic contract tests',
-      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme oidcAuth (openIdConnect) is not runtime-proven by dynamic contract tests',
-      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme mtlsAuth (mutualTLS) is not runtime-proven by dynamic contract tests'
+      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme queryKey (apiKey:query) is not runtime-proven beyond credential presence by dynamic contract tests',
+      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme cookieKey (apiKey:cookie) is not runtime-proven beyond credential presence by dynamic contract tests',
+      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme basicAuth (http:basic) is not runtime-proven beyond credential presence by dynamic contract tests',
+      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme oauthAuth (oauth2) is not runtime-proven beyond credential presence by dynamic contract tests',
+      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme oidcAuth (openIdConnect) is not runtime-proven beyond credential presence by dynamic contract tests',
+      'CONTRACT_SECURITY_NOT_VALIDATED: security scheme mtlsAuth (mutualTLS) is not runtime-proven beyond credential presence by dynamic contract tests'
     ]));
+  });
+
+  it('asserts supported schema formats, bounds int32 integers, and treats unknown formats and content keywords as annotations', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ref: { type: string, format: uuid }
+                  id: { type: integer, format: int64 }
+                  count: { type: integer, format: int32, maximum: 100 }
+                  size: { type: integer, format: int32 }
+                  blob: { type: string, format: binary, contentEncoding: base64, contentMediaType: application/octet-stream }
+`);
+    const media = index.operations[0]!.responses['200']!.content['application/json']!;
+    expect(media.unsupported).toBeUndefined();
+    const properties = (media.schema as { properties: Record<string, Record<string, unknown>> }).properties;
+    expect(properties.ref!.format).toBe('uuid');
+    expect(properties.id!.format).toBeUndefined();
+    expect(properties.id!.minimum).toBeUndefined();
+    expect(properties.count!.format).toBeUndefined();
+    expect(properties.count!.minimum).toBe(-2147483648);
+    expect(properties.count!.maximum).toBe(100);
+    expect(properties.size!.minimum).toBe(-2147483648);
+    expect(properties.size!.maximum).toBe(2147483647);
+    expect(properties.blob!.format).toBeUndefined();
+    expect(properties.blob!.contentEncoding).toBeUndefined();
+    expect(properties.blob!.contentMediaType).toBeUndefined();
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, index)).not.toThrow();
+  });
+
+  it('embeds runtime security credential checks only for enforceable security requirements', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      security:
+        - headerKey: []
+        - bearerAuth: []
+        - queryKey: []
+          cookieKey: []
+      responses:
+        '200': { description: OK }
+  /open:
+    get:
+      security: []
+      responses:
+        '200': { description: OK }
+  /optional:
+    get:
+      security:
+        - headerKey: []
+        - {}
+      responses:
+        '200': { description: OK }
+  /mtls:
+    get:
+      security:
+        - mtlsAuth: []
+      responses:
+        '200': { description: OK }
+components:
+  securitySchemes:
+    headerKey: { type: apiKey, in: header, name: X-API-Key }
+    queryKey: { type: apiKey, in: query, name: api_key }
+    cookieKey: { type: apiKey, in: cookie, name: sid }
+    bearerAuth: { type: http, scheme: bearer }
+    mtlsAuth: { type: mutualTLS }
+`);
+    const byId = (id: string) => index.operations.find((operation) => operation.id === id)!;
+    expect(byId('GET /pets').security).toEqual([
+      [{ scheme: 'headerKey', kind: 'apiKey:header', checkable: true, in: 'header', name: 'X-API-Key' }],
+      [{ scheme: 'bearerAuth', kind: 'http:bearer', checkable: true, prefix: 'Bearer ' }],
+      [
+        { scheme: 'queryKey', kind: 'apiKey:query', checkable: true, in: 'query', name: 'api_key' },
+        { scheme: 'cookieKey', kind: 'apiKey:cookie', checkable: true, in: 'cookie', name: 'sid' }
+      ]
+    ]);
+    expect(byId('GET /open').security).toBeUndefined();
+    expect(byId('GET /optional').security).toBeUndefined();
+    expect(byId('GET /mtls').security).toBeUndefined();
+
+    const collection = { item: ['pets', 'open', 'optional', 'mtls'].map((path) => ({ name: path, request: { method: 'GET', url: { path: [path] } } })) };
+    const { collection: instrumented } = instrumentContractCollection(collection, index);
+    const scriptFor = (name: string) => {
+      const item = (instrumented.item as Array<Record<string, unknown>>).find((entry) => entry.name === name)!;
+      const event = (item.event as Array<{ script: { exec: string[] } }>)[0]!;
+      return event.script.exec.join('\n');
+    };
+    expect(scriptFor('pets')).toContain('Request carries credentials required by OpenAPI security');
+    expect(scriptFor('mtls')).not.toContain('Request carries credentials required by OpenAPI security');
+    expect(scriptFor('open')).not.toContain('Request carries credentials required by OpenAPI security');
+    expect(scriptFor('optional')).not.toContain('Request carries credentials required by OpenAPI security');
+    expect(scriptFor('pets')).toContain('Content-Length is consistent with OpenAPI body expectations');
+  });
+
+  it('indexes required cookie parameters with warnings, marks deprecated operations, and keeps static checks passing', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      deprecated: true
+      security:
+        - cookieKey: []
+      parameters:
+        - name: session
+          in: cookie
+          required: true
+          schema: { type: string }
+        - name: sid
+          in: cookie
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: OK }
+components:
+  securitySchemes:
+    cookieKey: { type: apiKey, in: cookie, name: sid }
+`);
+    const operation = index.operations[0]!;
+    expect(operation.requiredParameters).toEqual(expect.arrayContaining([
+      { in: 'cookie', name: 'session', securityDerived: false },
+      { in: 'cookie', name: 'sid', securityDerived: true }
+    ]));
+    expect(operation.warnings).toContain('CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter session is not statically required in generated requests');
+    expect(operation.warnings).toContain('CONTRACT_SECURITY_NOT_VALIDATED: security parameter cookie:sid is not statically required in generated requests');
+    expect(operation.warnings).toContain('CONTRACT_OPERATION_DEPRECATED: GET /pets is marked deprecated in the OpenAPI document');
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, index)).not.toThrow();
+  });
+
+  it('statically verifies top-level required properties of parseable generated JSON request bodies', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, tag, audit]
+              properties:
+                name: { type: string }
+                tag: { type: string }
+                audit: { type: string, readOnly: true }
+      responses:
+        '201': { description: Created }
+`);
+    expect(index.operations[0]!.requestBody?.fieldRules).toEqual({ 'application/json': { required: ['name', 'tag'], readOnly: ['audit'] } });
+    const item = (raw: string) => ({ item: [{ request: { method: 'POST', url: { path: ['pets'] }, header: [{ key: 'Content-Type', value: 'application/json' }], body: { mode: 'raw', raw } } }] });
+    expect(instrumentContractCollection(item('{"name":"a"}'), index).warnings).toContain('CONTRACT_REQUEST_BODY_INCOMPLETE: POST /pets generated request body is missing required properties: tag');
+    expect(instrumentContractCollection(item('{"name":"a","tag":"b","audit":"x"}'), index).warnings).toContain('CONTRACT_READONLY_PROPERTY_IN_REQUEST: POST /pets generated request body includes readOnly properties: audit');
+    expect(instrumentContractCollection(item('{"name":"a","tag":"b"}'), index).warnings.filter((entry) => entry.includes('REQUEST_BODY') || entry.includes('READONLY'))).toEqual([]);
+    expect(instrumentContractCollection(item('{"name": {{payload}}'), index).warnings.filter((entry) => entry.includes('REQUEST_BODY'))).toEqual([]);
+  });
+
+  it('merges allOf request schemas, checks form bodies, and warns on undocumented query parameters', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Base'
+                - type: object
+                  required: [tag]
+                  properties:
+                    tag: { type: string }
+      responses:
+        '201': { description: Created }
+components:
+  schemas:
+    Base:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+`);
+    expect(index.operations[0]!.requestBody?.fieldRules).toEqual({ 'application/x-www-form-urlencoded': { required: ['name', 'tag'], readOnly: [] } });
+    const collection = {
+      item: [{
+        request: {
+          method: 'POST',
+          url: { path: ['pets'], query: [{ key: 'verbose', value: '1' }] },
+          header: [{ key: 'Content-Type', value: 'application/x-www-form-urlencoded' }],
+          body: { mode: 'urlencoded', urlencoded: [{ key: 'name', value: 'a' }] }
+        }
+      }]
+    };
+    const { warnings } = instrumentContractCollection(collection, index);
+    expect(warnings).toContain('CONTRACT_REQUEST_BODY_INCOMPLETE: POST /pets generated request body is missing required properties: tag');
+    expect(warnings).toContain('CONTRACT_UNDOCUMENTED_QUERY_PARAM: POST /pets generated request sends query parameter verbose that the OpenAPI operation does not declare');
+  });
+
+  it('checks multipart encoding objects against the generated artifact and warns on non-default urlencoded field serialization', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /upload:
+    post:
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [meta, file]
+              properties:
+                meta: { type: object }
+                file: { type: string, format: binary }
+            encoding:
+              meta: { contentType: application/json }
+      responses:
+        '201': { description: Created }
+`);
+    const upload = index.operations.find((operation) => operation.path === '/upload')!;
+    expect(upload.requestBody?.fieldRules?.['multipart/form-data']?.encodings).toEqual({
+      meta: { contentType: 'application/json' },
+      file: { binary: true }
+    });
+    const urlencodedIndex = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /search:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                tags: { type: array, items: { type: string } }
+            encoding:
+              tags: { style: spaceDelimited }
+              label: { style: form, explode: true }
+      responses:
+        '200': { description: OK }
+`);
+    const search = urlencodedIndex.operations.find((operation) => operation.path === '/search')!;
+    expect(search.warnings).toContain(
+      'CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: application/x-www-form-urlencoded request body field tags on POST /search declares non-default encoding style, explode, or allowReserved and its serialization is not validated'
+    );
+    expect(search.warnings.filter((entry) => entry.includes('field label'))).toEqual([]);
+    const item = (formdata: unknown[]) => ({
+      item: [{
+        request: {
+          method: 'POST',
+          url: { path: ['upload'] },
+          header: [{ key: 'Content-Type', value: 'multipart/form-data' }],
+          body: { mode: 'formdata', formdata }
+        }
+      }]
+    });
+    const mismatched = instrumentContractCollection(item([
+      { key: 'meta', type: 'text', value: '{}' },
+      { key: 'file', type: 'text', value: 'x' }
+    ]), index).warnings;
+    expect(mismatched).toContain('CONTRACT_ENCODING_MISMATCH: POST /upload generated multipart field meta does not declare Content-Type application/json from its encoding object');
+    expect(mismatched).toContain('CONTRACT_ENCODING_MISMATCH: POST /upload generated multipart field file should be a file part per its binary schema');
+    const conforming = instrumentContractCollection(item([
+      { key: 'meta', type: 'text', contentType: 'application/json; charset=utf-8', value: '{}' },
+      { key: 'file', type: 'file', src: '/tmp/upload.bin' }
+    ]), index).warnings;
+    expect(conforming.filter((entry) => entry.includes('CONTRACT_ENCODING_MISMATCH'))).toEqual([]);
+    const wrongType = instrumentContractCollection(item([
+      { key: 'meta', type: 'text', contentType: 'text/plain', value: 'x' },
+      { key: 'file', type: 'file', src: '/tmp/upload.bin' }
+    ]), index).warnings;
+    expect(wrongType).toContain('CONTRACT_ENCODING_MISMATCH: POST /upload generated multipart field meta Content-Type text/plain does not match declared encoding application/json');
+
+    const patternIndex = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /docs:
+    post:
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+                image: { type: string }
+            encoding:
+              note: { contentType: 'text/plain; charset=utf-8' }
+              image: { contentType: 'image/*' }
+      responses:
+        '201': { description: Created }
+`);
+    const patternItem = (formdata: unknown[]) => ({
+      item: [{
+        request: {
+          method: 'POST',
+          url: { path: ['docs'] },
+          header: [{ key: 'Content-Type', value: 'multipart/form-data' }],
+          body: { mode: 'formdata', formdata }
+        }
+      }]
+    });
+    const patternMatched = instrumentContractCollection(patternItem([
+      { key: 'note', type: 'text', contentType: 'text/plain; charset=utf-8', value: 'x' },
+      { key: 'image', type: 'file', contentType: 'image/png', src: '/tmp/a.png' }
+    ]), patternIndex).warnings;
+    expect(patternMatched.filter((entry) => entry.includes('CONTRACT_ENCODING_MISMATCH'))).toEqual([]);
+    const patternMismatched = instrumentContractCollection(patternItem([
+      { key: 'note', type: 'text', contentType: 'text/plain', value: 'x' },
+      { key: 'image', type: 'file', contentType: 'video/mp4', src: '/tmp/a.mp4' }
+    ]), patternIndex).warnings;
+    expect(patternMismatched.filter((entry) => entry.includes('CONTRACT_ENCODING_MISMATCH'))).toEqual([
+      `CONTRACT_ENCODING_MISMATCH: POST /docs generated multipart field image Content-Type video/mp4 does not match declared encoding image/*`
+    ]);
+  });
+
+  it('attaches the JSON Schema dialect when a media schema is a top-level $ref', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string, format: uuid }
+`);
+    const media = index.operations[0]!.responses['200']!.content['application/json']!;
+    expect(media.unsupported).toBeUndefined();
+    expect((media.schema as { $schema: string }).$schema).toBe('https://json-schema.org/draft/2020-12/schema');
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, index)).not.toThrow();
+  });
+
+  it('enforces OR/AND security semantics when generated scripts execute against a sent request', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      security:
+        - headerKey: []
+        - bearerAuth: []
+        - queryKey: []
+          cookieKey: []
+      responses:
+        '200': { description: OK }
+components:
+  securitySchemes:
+    headerKey: { type: apiKey, in: header, name: X-API-Key }
+    queryKey: { type: apiKey, in: query, name: api_key }
+    cookieKey: { type: apiKey, in: cookie, name: sid }
+    bearerAuth: { type: http, scheme: bearer }
+`);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const mixedUncheckable = createContractScript({
+      ...index.operations[0]!,
+      security: [[
+        { scheme: 'mtlsAuth', kind: 'mutualTLS', checkable: false },
+        { scheme: 'headerKey', kind: 'apiKey:header', checkable: true, in: 'header', name: 'X-API-Key' }
+      ]]
+    }).join('\n');
+
+    const run = (script: string, request: { headers: Record<string, string>; query: Array<{ key: string; value: string }> }) => {
+      const failures: string[] = [];
+      const results: Record<string, string> = {};
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const headerEntries = Object.entries(request.headers).map(([key, value]) => ({ key, value }));
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch (error) { results[name] = 'fail'; failures.push(name + ': ' + (error instanceof Error ? error.message : String(error))); }
+        },
+        expect: permissive,
+        response: { code: 200, headers: { get: () => null }, text: () => '', json: () => ({}) },
+        request: {
+          headers: { each: (callback: (header: { key: string; value: string; disabled?: boolean }) => void) => headerEntries.forEach(callback) },
+          url: { query: { each: (callback: (param: { key: string; value: string; disabled?: boolean }) => void) => request.query.forEach(callback) } }
+        }
+      };
+      runInContext(script, createContext({ pm }));
+      return { failures, verdict: results['Request carries credentials required by OpenAPI security'] };
+    };
+
+    expect(run(script, { headers: { 'x-api-key': 'k' }, query: [] }).verdict).toBe('pass');
+    expect(run(script, { headers: { authorization: 'Bearer token-1' }, query: [] }).verdict).toBe('pass');
+    expect(run(script, { headers: { authorization: 'Basic dXNlcg==' }, query: [] }).verdict).toBe('fail');
+    expect(run(script, { headers: {}, query: [] }).verdict).toBe('fail');
+    expect(run(script, { headers: {}, query: [{ key: 'api_key', value: 'k' }] }).verdict).toBe('fail');
+    expect(run(script, { headers: { cookie: 'theme=dark; sid=abc' }, query: [{ key: 'api_key', value: 'k' }] }).verdict).toBe('pass');
+    expect(run(mixedUncheckable, { headers: { 'x-api-key': 'k' }, query: [] }).verdict).toBe('pass');
+    expect(run(mixedUncheckable, { headers: {}, query: [] }).verdict).toBe('fail');
+  });
+
+  it('compiles int32 schemas with exclusive bounds and draft-07 formats through instrumentation', () => {
+    const spec31 = `openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer, format: int32, exclusiveMinimum: 5 }
+                  cap: { type: integer, format: int32, exclusiveMaximum: 100 }
+`;
+    const spec30 = `openapi: 3.0.3
+info: { title: T, version: '1' }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer, format: int32, minimum: 0, exclusiveMinimum: true }
+                  ref: { type: string, format: uuid }
+`;
+    for (const spec of [spec31, spec30]) {
+      const index = indexFrom(spec);
+      const media = index.operations[0]!.responses['200']!.content['application/json']!;
+      expect(media.unsupported).toBeUndefined();
+      expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, index)).not.toThrow();
+    }
+    const packed31 = indexFrom(spec31).operations[0]!.responses['200']!.content['application/json']!.schema as { properties: Record<string, Record<string, unknown>> };
+    expect(packed31.properties.count!.exclusiveMinimum).toBe(5);
+    expect(packed31.properties.count!.minimum).toBeUndefined();
+    expect(packed31.properties.count!.maximum).toBe(2147483647);
+    expect(packed31.properties.cap!.exclusiveMaximum).toBe(100);
+    expect(packed31.properties.cap!.maximum).toBeUndefined();
+    expect(packed31.properties.cap!.minimum).toBe(-2147483648);
+  });
+
+  it('warns on links, non-default parameter serialization, and non-JSON object response schemas', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      parameters:
+        - name: tags
+          in: query
+          style: pipeDelimited
+          schema: { type: array, items: { type: string } }
+        - name: plain
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          links:
+            next: { operationId: getPets }
+          content:
+            application/xml:
+              schema: { type: object }
+            text/csv:
+              schema: { type: string }
+`);
+    const warnings = index.operations[0]!.warnings;
+    expect(warnings).toContain('CONTRACT_LINKS_NOT_VALIDATED: response links are not validated for GET /pets');
+    expect(warnings).toContain('CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter query:tags declares non-default style, explode, allowReserved, or content and its serialization is not validated');
+    expect(warnings.filter((entry) => entry.includes('query:plain'))).toEqual([]);
+    expect(warnings).toContain('CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED: response schema for application/xml on GET /pets status 200 is not validated at runtime');
+    expect(warnings.filter((entry) => entry.includes('text/csv'))).toEqual([]);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    expect(script).not.toContain('Non-JSON response schema validation unsupported');
+  });
+
+  it('validates Content-Length expectations when generated scripts execute', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    delete:
+      responses:
+        '202': { description: Accepted }
+`);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const run = (code: number, headers: Record<string, string>) => {
+      const results: Record<string, string> = {};
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch { results[name] = 'fail'; }
+        },
+        expect: permissive,
+        response: { code, headers: { get: (name: string) => headers[String(name).toLowerCase()] ?? null }, text: () => '', json: () => ({}) },
+        request: { headers: { each: () => undefined }, url: { query: { each: () => undefined } } }
+      };
+      runInContext(script, createContext({ pm }));
+      return results['Content-Length is consistent with OpenAPI body expectations'];
+    };
+    expect(run(202, {})).toBe('pass');
+    expect(run(202, { 'content-length': '0' })).toBe('pass');
+    expect(run(202, { 'content-length': '12' })).toBe('fail');
+    expect(run(202, { 'content-length': 'abc' })).toBe('fail');
+    expect(run(202, { 'content-length': '20', 'content-encoding': 'gzip' })).toBe('pass');
+    expect(run(304, { 'content-length': '12' })).toBe('pass');
+  });
+
+  it('builds runtime parameter checks and request-side body validators with direction-aware packing', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    post:
+      security:
+        - queryKey: []
+      parameters:
+        - name: limit
+          in: query
+          required: true
+          schema: { type: integer, maximum: 50 }
+        - name: X-Trace-Id
+          in: header
+          schema: { type: string, format: uuid }
+        - name: tags
+          in: query
+          schema: { type: array, items: { type: string } }
+        - name: filter
+          in: query
+          style: deepObject
+          schema: { type: string }
+        - name: api_key
+          in: query
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, id]
+              properties:
+                name: { type: string }
+                id: { type: string, readOnly: true }
+                secret: { type: string, writeOnly: true }
+      responses:
+        '201': { description: Created }
+components:
+  securitySchemes:
+    queryKey: { type: apiKey, in: query, name: api_key }
+`);
+    const operation = index.operations[0]!;
+    expect(operation.parameterChecks?.map((check) => `${check.in}:${check.name}`)).toEqual(['query:limit', 'header:X-Trace-Id']);
+    const bodySchema = operation.requestBody?.jsonSchemas?.['application/json'] as { required?: string[]; properties: Record<string, unknown> };
+    expect(bodySchema.required).toEqual(['name']);
+    expect(bodySchema.properties.id).toBeUndefined();
+    expect(bodySchema.properties.secret).toBeDefined();
+  });
+
+  it('warns when a JSON request body schema cannot be compiled into a request validator', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              customKeyword: true
+      responses:
+        '201': { description: Created }
+`);
+    expect(index.operations[0]!.warnings.some((entry) => entry.startsWith('CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED: request body schema for application/json on POST /pets'))).toBe(true);
+  });
+
+  it('validates concrete parameter values and request bodies at runtime while skipping placeholders', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    post:
+      parameters:
+        - name: limit
+          in: query
+          required: true
+          schema: { type: integer, maximum: 50 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                count: { type: integer }
+      responses:
+        '201': { description: Created }
+`);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const run = (query: Array<{ key: string; value: string }>, rawBody: string | null) => {
+      const results: Record<string, string> = {};
+      const messages: string[] = [];
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch (error) { results[name] = 'fail'; messages.push(error instanceof Error ? error.message : String(error)); }
+        },
+        expect: permissive,
+        response: { code: 201, headers: { get: () => null }, text: () => '', json: () => ({}) },
+        request: {
+          headers: { each: (callback: (header: { key: string; value: string }) => void) => callback({ key: 'Content-Type', value: 'application/json' }) },
+          url: { query: { each: (callback: (param: { key: string; value: string }) => void) => query.forEach(callback) } },
+          body: rawBody === null ? undefined : { mode: 'raw', raw: rawBody }
+        }
+      };
+      runInContext(script, createContext({ pm }));
+      return { params: results['Request parameters match OpenAPI schemas'], body: results['Request body matches OpenAPI request schema'], messages };
+    };
+
+    expect(run([{ key: 'limit', value: '10' }], '{"name":"a"}')).toMatchObject({ params: 'pass', body: 'pass' });
+    expect(run([{ key: 'limit', value: '99' }], '{"name":"a"}').params).toBe('fail');
+    expect(run([{ key: 'limit', value: 'abc' }], '{"name":"a"}').params).toBe('fail');
+    expect(run([{ key: 'limit', value: '<integer>' }], '{"name":"a"}').params).toBe('pass');
+    expect(run([], '{"name":"a"}').params).toBe('fail');
+    expect(run([{ key: 'limit', value: '10' }], '{"count":"not-a-number","name":"a"}').body).toBe('fail');
+    expect(run([{ key: 'limit', value: '10' }], '{"name":"<string>"}').body).toBe('pass');
+    expect(run([{ key: 'limit', value: '10' }], '{"name": {{payload}}}').body).toBe('pass');
+    expect(run([{ key: 'limit', value: '10' }], 'not json at all').body).toBe('fail');
+    expect(run([{ key: 'limit', value: '10' }], null).body).toBe('pass');
+  });
+
+  it('dedupes dual numeric bound pairs key-order-immune and clamps exclusive int32 bounds', () => {
+    const dual31 = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  a: { type: integer, minimum: 0, exclusiveMinimum: 5 }
+                  b: { type: integer, minimum: 7, exclusiveMinimum: 5 }
+                  c: { type: integer, maximum: 10, exclusiveMaximum: 8 }
+                  loose: { type: integer, format: int32, exclusiveMinimum: -9999999999, exclusiveMaximum: 9999999999 }
+`);
+    const props = (dual31.operations[0]!.responses['200']!.content['application/json']!.schema as { properties: Record<string, Record<string, unknown>> }).properties;
+    expect(props.a).toMatchObject({ exclusiveMinimum: 5 });
+    expect(props.a!.minimum).toBeUndefined();
+    expect(props.b).toMatchObject({ minimum: 7 });
+    expect(props.b!.exclusiveMinimum).toBeUndefined();
+    expect(props.c).toMatchObject({ exclusiveMaximum: 8 });
+    expect(props.c!.maximum).toBeUndefined();
+    expect(props.loose).toMatchObject({ minimum: -2147483648, maximum: 2147483647 });
+    expect(props.loose!.exclusiveMinimum).toBeUndefined();
+    expect(props.loose!.exclusiveMaximum).toBeUndefined();
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, dual31)).not.toThrow();
+
+    const boolFirst30 = indexFrom([
+      'openapi: 3.0.3',
+      'info: { title: T, version: "1" }',
+      'paths:',
+      '  /pets:',
+      '    get:',
+      '      responses:',
+      "        '200':",
+      '          description: OK',
+      '          content:',
+      '            application/json:',
+      '              schema: { type: integer, exclusiveMinimum: true, minimum: 0 }',
+      ''
+    ].join('\n'));
+    const packed = boolFirst30.operations[0]!.responses['200']!.content['application/json']!.schema as Record<string, unknown>;
+    expect(packed.exclusiveMinimum).toBe(0);
+    expect(packed.minimum).toBeUndefined();
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, boolFirst30)).not.toThrow();
+  });
+
+  it('ignores SHALL-ignore header parameters and Content-Type response headers per the OAS spec', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          schema: { type: string }
+        - name: Content-Type
+          in: header
+          required: true
+          style: deepObject
+          schema: { type: string }
+        - name: Accept
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          headers:
+            Content-Type:
+              required: true
+              schema: { type: string, enum: [application/json] }
+            X-Items:
+              schema: { type: array, items: { type: string } }
+          content:
+            application/json:
+              schema: { type: object }
+`);
+    const operation = index.operations[0]!;
+    expect(operation.requiredParameters).toEqual([]);
+    expect(operation.parameterChecks).toBeUndefined();
+    expect(operation.warnings.filter((entry) => entry.includes('SERIALIZATION'))).toEqual([]);
+    expect(operation.responses['200']!.headers.map((header) => header.name)).toEqual(['X-Items']);
+    expect(operation.responses['200']!.headers[0]!.schema).toBeUndefined();
+    expect(operation.warnings).toContain('CONTRACT_HEADER_SCHEMA_NOT_VALIDATED: response header X-Items on GET /pets status 200 declares a non-scalar schema and its value is not validated');
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, index)).not.toThrow();
+  });
+
+  it('strips $comment, packs boolean schemas, and validates spec examples against their schemas', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              $comment: internal note
+              required: [name]
+              properties:
+                name: { type: string }
+            example: { name: 123 }
+          application/xml:
+            schema: { type: object }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+              examples:
+                good: { value: { id: 11111111-2222-4333-8444-555555555555 } }
+                bad: { value: { id: not-a-uuid } }
+            application/octet-stream:
+              schema: true
+`);
+    const operation = index.operations[0]!;
+    expect(operation.responses['200']!.content['application/json']!.unsupported).toBeUndefined();
+    expect(operation.responses['200']!.content['application/octet-stream']!.unsupported).toBeUndefined();
+    expect(operation.warnings).toContain('CONTRACT_EXAMPLE_SCHEMA_MISMATCH: examples.bad for application/json on POST /pets status 200 does not match its schema');
+    expect(operation.warnings.filter((entry) => entry.includes('examples.good'))).toEqual([]);
+    expect(operation.warnings).toContain('CONTRACT_EXAMPLE_SCHEMA_MISMATCH: example for application/json on POST /pets does not match its schema');
+    expect(operation.warnings).toContain('CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED: request body schema for application/xml on POST /pets is not validated at runtime');
+  });
+
+  it('warns that path parameter values are not validated at runtime', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets/{petId}:
+    get:
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: OK }
+`);
+    expect(index.operations[0]!.warnings).toContain('CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter petId value is not validated at runtime');
+  });
+
+  it('covers pm.cookies credentials, header coercion, empty header values, and unquoted placeholder bodies at runtime', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    post:
+      security:
+        - cookieKey: []
+      parameters:
+        - name: X-Trace-Id
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count: { type: integer }
+      responses:
+        '201':
+          description: Created
+          headers:
+            X-Remaining:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { type: object }
+components:
+  securitySchemes:
+    cookieKey: { type: apiKey, in: cookie, name: sid }
+`);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const run = (options: { cookies?: { has: (name: string) => boolean }; headers?: Record<string, string>; responseHeaders?: Record<string, string>; rawBody?: string }) => {
+      const results: Record<string, string> = {};
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const headerEntries = Object.entries(options.headers ?? {}).map(([key, value]) => ({ key, value }));
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch { results[name] = 'fail'; }
+        },
+        expect: permissive,
+        cookies: options.cookies,
+        response: {
+          code: 201,
+          headers: { get: (name: string) => (options.responseHeaders ?? {})[String(name).toLowerCase()] ?? null },
+          text: () => '{}',
+          json: () => ({})
+        },
+        request: {
+          headers: { each: (callback: (header: { key: string; value: string }) => void) => headerEntries.forEach(callback) },
+          url: { query: { each: () => undefined } },
+          body: options.rawBody === undefined ? undefined : { mode: 'raw', raw: options.rawBody }
+        }
+      };
+      runInContext(script, createContext({ pm }));
+      return results;
+    };
+
+    const base = { headers: { 'x-trace-id': 'abc', 'content-type': 'application/json' } };
+    expect(run({ ...base, cookies: { has: (name) => name === 'sid' } })['Request carries credentials required by OpenAPI security']).toBe('pass');
+    expect(run({ ...base, cookies: { has: () => false } })['Request carries credentials required by OpenAPI security']).toBe('fail');
+    expect(run({ ...base, headers: { ...base.headers, cookie: 'sid=jar' }, cookies: { has: () => false } })['Request carries credentials required by OpenAPI security']).toBe('pass');
+    expect(run({ ...base, responseHeaders: { 'content-type': 'application/json', 'x-remaining': '41' } })['Response headers match OpenAPI']).toBe('pass');
+    expect(run({ ...base, responseHeaders: { 'content-type': 'application/json', 'x-remaining': 'soon' } })['Response headers match OpenAPI']).toBe('fail');
+    expect(run({ headers: { 'x-trace-id': '', 'content-type': 'application/json' } })['Request parameters match OpenAPI schemas']).toBe('pass');
+    expect(run({ headers: { 'content-type': 'application/json' } })['Request parameters match OpenAPI schemas']).toBe('fail');
+    expect(run({ ...base, rawBody: '{"count": <long>}' })['Request body matches OpenAPI request schema']).toBe('pass');
+    expect(run({ ...base, rawBody: 'definitely not json' })['Request body matches OpenAPI request schema']).toBe('fail');
+  });
+
+  it('packs recursive $refs through a $defs registry and degrades uncompilable schemas to skip warnings', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /tree:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Node'
+            application/problem+json:
+              schema:
+                type: [string, 'null']
+                properties:
+                  inner: { type: string }
+components:
+  schemas:
+    Node:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/Node'
+`);
+    const media = index.operations[0]!.responses['200']!.content['application/json']!;
+    expect(media.unsupported).toBeUndefined();
+    const packed = media.schema as { properties: Record<string, unknown>; $defs: Record<string, unknown> };
+    expect(packed.properties.children).toMatchObject({ items: { $ref: '#/$defs/d0' } });
+    expect(packed.$defs.d0).toBeDefined();
+
+    const warnings: string[] = [];
+    const script = createContractScript(index.operations[0]!, warnings).join('\n');
+    expect(warnings.some((entry) => entry.startsWith('CONTRACT_SCHEMA_NOT_COMPILED: response schema for application/problem+json on GET /tree status 200'))).toBe(true);
+    expect(script).toContain('validators["200"]["application/problem+json"] = { skip: true };');
+
+    const run = (body: unknown, contentType: string) => {
+      const results: Record<string, string> = {};
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch { results[name] = 'fail'; }
+        },
+        expect: permissive,
+        response: { code: 200, headers: { get: (name: string) => (String(name).toLowerCase() === 'content-type' ? contentType : null) }, text: () => JSON.stringify(body), json: () => body },
+        request: { headers: { each: () => undefined }, url: { query: { each: () => undefined } } }
+      };
+      runInContext(script, createContext({ pm }));
+      return results['Response body matches OpenAPI schema'];
+    };
+    expect(run({ name: 'root', children: [{ name: 'leaf' }] }, 'application/json')).toBe('pass');
+    expect(run({ name: 'root', children: [{ title: 'broken' }] }, 'application/json')).toBe('fail');
+    expect(run('anything', 'application/problem+json')).toBe('pass');
+  });
+
+  it('degrades reference graphs past the embed cap to presence-only checks with warnings', () => {
+    const schemas: Record<string, unknown> = {};
+    const properties: Record<string, unknown> = {};
+    for (let index = 0; index < 401; index += 1) {
+      schemas[`S${index}`] = { type: 'string' };
+      properties[`p${index}`] = { $ref: `#/components/schemas/S${index}` };
+    }
+    schemas.Big = { type: 'object', properties };
+    const document = {
+      openapi: '3.1.0',
+      info: { title: 'T', version: '1' },
+      paths: {
+        '/big': {
+          get: {
+            responses: {
+              '200': {
+                description: 'OK',
+                headers: { 'X-Big': { schema: { $ref: '#/components/schemas/Big' } } },
+                content: { 'application/json': { schema: { $ref: '#/components/schemas/Big' } } }
+              }
+            }
+          }
+        }
+      },
+      components: { schemas }
+    };
+    const index = buildContractIndex(document as Record<string, unknown>);
+    const operation = index.operations[0]!;
+    const media = operation.responses['200']!.content['application/json']!;
+    expect(media.unsupported).toBeUndefined();
+    expect(media.schema).toBeUndefined();
+    const header = operation.responses['200']!.headers[0]!;
+    expect(header.schema).toBeUndefined();
+    expect(header.unsupported).toBeUndefined();
+    const graphWarnings = operation.warnings.filter((entry) => entry.startsWith('CONTRACT_SCHEMA_NOT_COMPILED') && entry.includes('reference graph exceeded'));
+    expect(graphWarnings.length).toBe(2);
+    const script = createContractScript(operation).join('\n');
+    expect(script).not.toContain('$defs/overflow');
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['big'] } } }] }, index)).not.toThrow();
+  });
+
+  it('packs map-valued keywords, gates dialect-specific keywords, and fails self-referential aliases closed', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /maps:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                patternProperties:
+                  '^x-': { type: string }
+                dependentRequired:
+                  name: [tag]
+                dependentSchemas:
+                  kind:
+                    type: object
+                    required: [variant]
+                properties:
+                  name: { type: string }
+`);
+    const media = index.operations[0]!.responses['200']!.content['application/json']!;
+    expect(media.unsupported).toBeUndefined();
+    const packed = media.schema as Record<string, Record<string, unknown>>;
+    expect(packed.patternProperties!['^x-']).toEqual({ type: 'string' });
+    expect(packed.dependentRequired).toEqual({ name: ['tag'] });
+    expect(packed.dependentSchemas!.kind).toEqual({ type: 'object', required: ['variant'] });
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['maps'] } } }] }, index)).not.toThrow();
+
+    const draft07Gate = indexFrom(`openapi: 3.0.3
+info: { title: T, version: '1' }
+paths:
+  /tuple:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                prefixItems:
+                  - { type: string }
+`);
+    expect(draft07Gate.operations[0]!.responses['200']!.content['application/json']!.unsupported).toContain('prefixItems requires the JSON Schema 2020-12 dialect');
+
+    const dependenciesGate = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /dep:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                dependencies:
+                  name: [tag]
+`);
+    expect(dependenciesGate.operations[0]!.responses['200']!.content['application/json']!.unsupported).toContain('dependencies is a draft-07 keyword');
+
+    const alias = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /alias:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  self: { $ref: '#/components/schemas/A' }
+components:
+  schemas:
+    A: { $ref: '#/components/schemas/A' }
+`);
+    expect(alias.operations[0]!.responses['200']!.content['application/json']!.unsupported).toContain('Self-referential alias schema is unsupported');
+
+    const mutualAlias = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /alias:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  self: { $ref: '#/components/schemas/A' }
+components:
+  schemas:
+    A: { $ref: '#/components/schemas/B' }
+    B: { $ref: '#/components/schemas/A' }
+`);
+    expect(mutualAlias.operations[0]!.responses['200']!.content['application/json']!.unsupported).toContain('Self-referential alias schema is unsupported');
+
+    const terminatingAlias = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /alias:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  self: { $ref: '#/components/schemas/A' }
+components:
+  schemas:
+    A: { $ref: '#/components/schemas/B' }
+    B: { type: string }
+`);
+    const terminatingMedia = terminatingAlias.operations[0]!.responses['200']!.content['application/json']!;
+    expect(terminatingMedia.unsupported).toBeUndefined();
+    expect(terminatingMedia.schema).toBeDefined();
+  });
+
+  it('warns on uncompilable parameter schemas and honors allowEmptyValue at runtime', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: string
+            customKeyword: true
+        - name: tag
+          in: query
+          allowEmptyValue: true
+          schema: { type: string, minLength: 2 }
+      responses:
+        '200': { description: OK }
+`);
+    const operation = index.operations[0]!;
+    expect(operation.warnings.some((entry) => entry.startsWith('CONTRACT_SCHEMA_NOT_COMPILED: parameter query:filter schema on GET /pets skipped'))).toBe(true);
+    expect(operation.parameterChecks?.map((check) => check.name)).toEqual(['tag']);
+    expect(operation.parameterChecks?.[0]?.allowEmptyValue).toBe(true);
+
+    const script = createContractScript(operation).join('\n');
+    const run = (query: Array<{ key: string; value: string }>) => {
+      const results: Record<string, string> = {};
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch { results[name] = 'fail'; }
+        },
+        expect: permissive,
+        response: { code: 200, headers: { get: () => null }, text: () => '', json: () => ({}) },
+        request: { headers: { each: () => undefined }, url: { query: { each: (callback: (param: { key: string; value: string }) => void) => query.forEach(callback) } } }
+      };
+      runInContext(script, createContext({ pm }));
+      return results['Request parameters match OpenAPI schemas'];
+    };
+    expect(run([{ key: 'tag', value: 'ok' }])).toBe('pass');
+    expect(run([{ key: 'tag', value: 'x' }])).toBe('fail');
+    expect(run([{ key: 'tag', value: '' }])).toBe('pass');
   });
 
   it('documents dynamic contract tests and every emitted CONTRACT code in the README', () => {

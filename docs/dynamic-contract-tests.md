@@ -55,7 +55,8 @@ Generated Postman test scripts validate response behavior for the matched OpenAP
   - Checks required response headers.
   - Validates header values against supported OpenAPI header schemas, coercing numeric and boolean header strings to the schema's declared type before validation so `type: integer` rate-limit headers validate correctly.
   - Ignores a response header named `Content-Type`, which the OAS spec says SHALL be ignored; the Content-Type negotiation test covers it instead.
-  - Downgrades non-scalar header schemas to presence-only checks with `CONTRACT_HEADER_SCHEMA_NOT_VALIDATED`, since a serialized header string can never satisfy an object or array validator.
+  - Splits array-of-scalar header values on commas (with whitespace trimmed), coerces each item to the declared item type, and validates the decoded array against the full header schema, including `minItems`/`maxItems`/`uniqueItems`.
+  - Downgrades object-valued and otherwise undecodable header schemas to presence-only checks with `CONTRACT_HEADER_SCHEMA_NOT_VALIDATED`, since their serialized string cannot be decoded reliably.
   - Fails when a response header uses unsupported OpenAPI `content`.
 
 - **Response body presence**
@@ -85,10 +86,12 @@ Generated Postman test scripts validate response behavior for the matched OpenAP
 
 - **Request parameter values**
   - Validates concrete scalar query/header parameter values against their OpenAPI schemas at runtime, coercing numeric and boolean strings to the declared type.
-  - Covers default-serialization parameters only; non-default `style`/`explode`/`allowReserved` parameters carry `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`, and array/object parameter schemas are skipped because their serialized form is not a single value.
-  - Placeholder values such as `<integer>` or `{{variable}}` are skipped; absent required parameters fail; a present-but-empty value is validated as the empty string.
+  - Decodes and validates array-of-scalar query parameters across the decodable styles: exploded `form` arrays are gathered from repeated query keys, and non-exploded `form`, `spaceDelimited`, and `pipeDelimited` arrays are split on their declared delimiter; each item is coerced to the declared item type and the decoded array is validated against the full array schema. Array-of-scalar header parameters with default `simple` serialization are split on commas the same way.
+  - Parameters declaring `allowReserved`, `content`, or a style/explode combination the runtime cannot decode carry `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`; object parameter schemas are skipped because their serialized form is not decodable.
+  - Placeholder values such as `<integer>` or `{{variable}}` are skipped; absent required parameters fail; a present-but-empty scalar value is validated as the empty string, and an empty delimited array value decodes to the empty array, where `minItems` can fail it. Decoded query items are percent-decoded before validation; `allowEmptyValue` skips empty scalar and empty array values alike.
   - Header parameters named `Accept`, `Content-Type`, or `Authorization` are ignored everywhere, as the OAS Parameter Object requires.
-  - Path parameter values are not validated at runtime and carry `CONTRACT_PATH_PARAM_NOT_VALIDATED`; path templates drive operation matching instead.
+  - Scalar path parameter values are validated at runtime: the operation path template is aligned against the trailing segments of the sent request path (server path prefixes sit ahead of them), the matched segment is URL-decoded and coerced, and unresolved `:variable`, `{template}`, or placeholder segments are skipped. Path parameters with non-scalar schemas carry `CONTRACT_PATH_PARAM_NOT_VALIDATED`.
+  - Required cookie parameters are asserted present at runtime through `pm.cookies` with the authored `Cookie` header as fallback, and scalar cookie values are validated against their schemas; because generated requests cannot include cookies, the test fails until the cookie is supplied at send time.
 
 - **Request body schema**
   - Validates concrete, parseable JSON request bodies against a request-side packed schema where `readOnly` properties are stripped and `writeOnly` properties are kept, the mirror of response packing.
@@ -131,13 +134,13 @@ Fail-closed or warning behavior:
 - Schemas the validator engine refuses to compile (structural pedantry on otherwise legal documents) degrade to runtime skips with `CONTRACT_SCHEMA_NOT_COMPILED` warnings instead of failing the bootstrap.
 - Webhooks and callbacks are warned as not covered.
 - Security requirements are warned as not runtime-proven beyond credential presence.
-- Required cookie parameters are warned as not statically required in generated requests.
+- Required cookie parameters are warned as not includable in generated requests; the runtime presence assertion fails until the cookie is supplied at send time.
 - Deprecated operations are warned with `CONTRACT_OPERATION_DEPRECATED`.
 - Response links are warned with `CONTRACT_LINKS_NOT_VALIDATED`.
 - Parameters with non-default `style`, `explode`, `allowReserved`, or `content` serialization are warned with `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`.
 - Query parameters with `allowEmptyValue: true` skip value validation for empty sent values.
-- Parameter schemas that fail to pack are warned with `CONTRACT_SCHEMA_NOT_COMPILED`; array/object parameter schemas are a documented skip.
-- Media-type `encoding` objects are checked statically against the generated artifact. For `multipart/form-data`, a declared per-part `contentType` must appear on the matching generated formdata entry (comma lists and `type/*` wildcards honored), and fields whose schema is binary (`format: binary` or `contentMediaType: application/octet-stream`) must be generated as file parts; violations warn with `CONTRACT_ENCODING_MISMATCH`. For `application/x-www-form-urlencoded`, fields declaring non-default `style`, `explode`, or `allowReserved` warn with `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`. Per-part `headers` and the wire-level multipart framing are owned by the Postman runtime and are not reconstructed.
+- Parameter schemas that fail to pack are warned with `CONTRACT_SCHEMA_NOT_COMPILED`; object parameter schemas and undecodable array forms (tuple schemas, `$ref` or non-scalar items) are a documented skip.
+- Media-type `encoding` objects are checked statically against the generated artifact. For `multipart/form-data`, a declared per-part `contentType` must appear on the matching generated formdata entry (comma lists and `type/*` wildcards honored), and fields whose schema is binary (`format: binary` or `contentMediaType: application/octet-stream`) must be generated as file parts; violations warn with `CONTRACT_ENCODING_MISMATCH`. For `application/x-www-form-urlencoded`, fields declaring non-default `style`, `explode`, or `allowReserved` warn with `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`. Per-part `headers` are unrepresentable on Postman formdata entries and warn with `CONTRACT_ENCODING_HEADERS_NOT_VALIDATED`; the wire-level multipart framing is owned by the Postman runtime and is not reconstructed.
 - Parameter and header `example`/`examples` values and parameter-level `deprecated` are annotations with no assertion.
 - Map-valued keywords (`patternProperties`, `dependentSchemas`, `dependentRequired`, draft-07 `dependencies`) are packed with their keys preserved; dialect-mismatched keywords (such as `prefixItems` under draft-07) fail closed.
 - Non-JSON media types with object schemas skip runtime schema validation and are warned with `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED`; Content-Type and body-presence checks still apply.

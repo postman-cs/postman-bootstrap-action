@@ -1,5 +1,9 @@
 name: postman-bootstrap-action
-description: Public customer preview action contract for Postman workspace, spec, and collection bootstrap.
+description: Create or reuse a Postman workspace, upload an OpenAPI spec, and generate baseline, smoke, and contract collections.
+author: Postman
+branding:
+  icon: box
+  color: orange
 inputs:
 
   workspace-id:

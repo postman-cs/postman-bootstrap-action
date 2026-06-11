@@ -4,6 +4,9 @@ on:
     - cron: '0 8 * * *'   # daily at 8 AM UTC
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   bootstrap-smoke:
     name: Bootstrap API Contract

@@ -1,5 +1,5 @@
-name: Postman Workspace Bootstrap
-description: Provision a Postman workspace from an OpenAPI spec and generate baseline, smoke, and contract collections in one step.
+name: 'Postman Onboarding: Workspace Bootstrap'
+description: Provision a Postman workspace from an OpenAPI spec with generated collections. Part of the Postman API Onboarding suite.
 author: Postman
 branding:
   icon: box

@@ -46649,7 +46649,7 @@ function getIDToken(aud) {
 }
 
 // src/index.ts
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var import_node_fs3 = require("node:fs");
 var import_yaml3 = __toESM(require_dist(), 1);
 
@@ -49613,6 +49613,165 @@ function detectRepoContext(input, env = process.env) {
     repoSlug,
     ref,
     sha
+  };
+}
+
+// src/lib/telemetry.ts
+var import_node_crypto2 = require("node:crypto");
+
+// src/lib/ci-context.ts
+function norm(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function detectCiContext(env = process.env) {
+  if (norm(env.GITHUB_ACTIONS)) {
+    const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
+    const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "github",
+      runId: norm(env.GITHUB_RUN_ID),
+      runAttempt: norm(env.GITHUB_RUN_ATTEMPT),
+      runnerKind
+    };
+  }
+  if (norm(env.GITLAB_CI)) {
+    return {
+      ciProvider: "gitlab",
+      runId: norm(env.CI_PIPELINE_ID),
+      runAttempt: norm(env.CI_PIPELINE_IID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.JENKINS_URL)) {
+    return {
+      ciProvider: "jenkins",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NUMBER),
+      runAttempt: void 0,
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.CIRCLECI)) {
+    return {
+      ciProvider: "circleci",
+      runId: norm(env.CIRCLE_WORKFLOW_ID) ?? norm(env.CIRCLE_BUILD_NUM),
+      runAttempt: void 0,
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.HARNESS_BUILD_ID)) {
+    return {
+      ciProvider: "harness",
+      runId: norm(env.HARNESS_BUILD_ID),
+      runAttempt: void 0,
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.ATC_EXTERNAL_URL) || norm(env.BUILD_ID) && norm(env.BUILD_PIPELINE_NAME)) {
+    return {
+      ciProvider: "concourse",
+      runId: norm(env.BUILD_ID),
+      runAttempt: norm(env.BUILD_NAME),
+      runnerKind: "self-hosted"
+    };
+  }
+  return { ciProvider: "unknown", runnerKind: "unknown" };
+}
+
+// src/lib/telemetry.ts
+var SCHEMA_VERSION = 1;
+var DEFAULT_TIMEOUT_MS = 1500;
+var DEFAULT_ENDPOINT = "https://actions-telemetry.postman.invalid/v1/events";
+function actionVersion() {
+  return "1.2.2" ? "1.2.2" : "unknown";
+}
+function telemetryDisabled(env) {
+  const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
+  if (flag === "off" || flag === "0" || flag === "false" || flag === "no") {
+    return true;
+  }
+  const dnt = String(env.DO_NOT_TRACK ?? "").trim().toLowerCase();
+  if (dnt && dnt !== "0" && dnt !== "false") {
+    return true;
+  }
+  return false;
+}
+function sha2562(value) {
+  return (0, import_node_crypto2.createHash)("sha256").update(value).digest("hex");
+}
+var noticeShown = false;
+function maybeNotice(logger) {
+  if (noticeShown || !logger) {
+    return;
+  }
+  noticeShown = true;
+  logger.info(
+    "note: postman-actions sends anonymous usage data (team id, action, CI provider). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1."
+  );
+}
+function buildTelemetryEvent(action, teamId, outcome, env, now) {
+  const ci = detectCiContext(env);
+  const repo = detectRepoContext({}, env);
+  const repoSource = repo.repoSlug ?? repo.repoUrl;
+  return {
+    schema_version: SCHEMA_VERSION,
+    event: "completion",
+    action,
+    action_version: actionVersion(),
+    team_id: teamId,
+    ci_provider: ci.ciProvider,
+    run_id: ci.runId,
+    run_attempt: ci.runAttempt,
+    runner_kind: ci.runnerKind,
+    repo_id: repoSource ? sha2562(repoSource) : void 0,
+    outcome,
+    ts: now()
+  };
+}
+async function send(event, options) {
+  const env = options.env ?? process.env;
+  const endpoint = options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
+  const transport = options.transport ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  try {
+    await transport(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(event),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function createTelemetryContext(options) {
+  const env = options.env ?? process.env;
+  const now = options.now ?? Date.now;
+  let teamId = "";
+  let emitted = false;
+  return {
+    setTeamId(value) {
+      if (value) {
+        teamId = String(value);
+      }
+    },
+    emitCompletion(outcome) {
+      if (emitted) {
+        return;
+      }
+      emitted = true;
+      try {
+        if (telemetryDisabled(env) || !teamId) {
+          return;
+        }
+        const event = buildTelemetryEvent(options.action, teamId, outcome, env, now);
+        maybeNotice(options.logger);
+        void send(event, options).catch(() => {
+        });
+      } catch {
+      }
+    }
   };
 }
 
@@ -64547,6 +64706,20 @@ function normalizeSpecDocument(raw, warn) {
 `;
 }
 async function runBootstrap(inputs, dependencies) {
+  const telemetry = createTelemetryContext({
+    action: "postman-bootstrap-action",
+    logger: dependencies.core
+  });
+  try {
+    const result = await runBootstrapInner(inputs, dependencies, telemetry);
+    telemetry.emitCompletion("success");
+    return result;
+  } catch (error2) {
+    telemetry.emitCompletion("failure");
+    throw error2;
+  }
+}
+async function runBootstrapInner(inputs, dependencies, telemetry) {
   const outputs = createPlannedOutputs(inputs);
   const requiresReleaseLabel = inputs.collectionSyncMode === "version" || inputs.specSyncMode === "version";
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : void 0;
@@ -64608,7 +64781,7 @@ async function runBootstrap(inputs, dependencies) {
           previousRaw,
           (msg) => dependencies.core.warning(`Previous spec normalization: ${msg}`)
         );
-        previousSpecRollbackHash = (0, import_node_crypto2.createHash)("sha256").update(previousSpecContent).digest("hex");
+        previousSpecRollbackHash = (0, import_node_crypto3.createHash)("sha256").update(previousSpecContent).digest("hex");
         const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
         if (existingSpecType !== incomingSpecType) {
           throw new Error(
@@ -64665,6 +64838,7 @@ async function runBootstrap(inputs, dependencies) {
   if (!teamId) {
     teamId = await dependencies.postman.getAutoDerivedTeamId() || "";
   }
+  telemetry.setTeamId(teamId);
   const repoUrl = inputs.repoUrl || "";
   if (!explicitWorkspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
     const selection = await runGroup(

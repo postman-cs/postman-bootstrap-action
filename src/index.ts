@@ -32,6 +32,7 @@ import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-sele
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker } from './lib/secrets.js';
+import { createTelemetryContext, type TelemetryContext } from './lib/telemetry.js';
 import { instrumentContractCollection } from './lib/spec/collection-contracts.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
@@ -895,6 +896,28 @@ export async function runBootstrap(
   inputs: ResolvedInputs,
   dependencies: BootstrapExecutionDependencies
 ): Promise<PlannedOutputs> {
+  // Fire-and-forget usage telemetry wraps the run so a completion event is
+  // emitted once, after team_id is resolved, covering early failures too.
+  // It can never block, fail, or alter the bootstrap result.
+  const telemetry = createTelemetryContext({
+    action: 'postman-bootstrap-action',
+    logger: dependencies.core
+  });
+  try {
+    const result = await runBootstrapInner(inputs, dependencies, telemetry);
+    telemetry.emitCompletion('success');
+    return result;
+  } catch (error) {
+    telemetry.emitCompletion('failure');
+    throw error;
+  }
+}
+
+async function runBootstrapInner(
+  inputs: ResolvedInputs,
+  dependencies: BootstrapExecutionDependencies,
+  telemetry: TelemetryContext
+): Promise<PlannedOutputs> {
   const outputs = createPlannedOutputs(inputs);
   const requiresReleaseLabel =
     inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
@@ -1027,6 +1050,7 @@ export async function runBootstrap(
   if (!teamId) {
     teamId = await dependencies.postman.getAutoDerivedTeamId() || '';
   }
+  telemetry.setTeamId(teamId);
   const repoUrl = inputs.repoUrl || '';
 
   if (!explicitWorkspaceId && repoUrl && inputs.postmanAccessToken && teamId) {

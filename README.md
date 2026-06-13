@@ -349,6 +349,28 @@ Package and docs:
 - [Postman Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/)
 - Local development: `npm install`, `npm test`, `npm run typecheck`, `npm run build` (produces the committed `dist/` bundles used by `action.yml`); regenerate the Inputs and Outputs tables with `npm run docs:tables`
 
+## Telemetry
+
+This action sends a single anonymous usage event when a run completes, so the
+Postman CS team can measure adoption across CI systems. The event contains: the
+action name and version, your Postman team ID, the detected CI provider
+(GitHub, GitLab, Jenkins, CircleCI, Harness, Concourse, or unknown), the runner
+kind, the run outcome, and a one-way SHA-256 hash of the repository identifier.
+
+It never sends API keys, access tokens, spec content, workspace names, repo
+names in clear, or any personal data. It is fire-and-forget with a hard timeout
+and can never block or fail your pipeline.
+
+Disable it by setting either environment variable in your CI:
+
+```sh
+POSTMAN_ACTIONS_TELEMETRY=off
+# or the cross-tool standard
+DO_NOT_TRACK=1
+```
+
+Telemetry is also skipped automatically when no Postman team ID can be resolved.
+
 ## License
 
 [MIT](LICENSE)

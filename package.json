@@ -17,7 +17,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run typecheck && rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/cli.cjs",
+    "build": "npm run typecheck && rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --define:__ACTION_VERSION__=\\\"$npm_package_version\\\" --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --define:__ACTION_VERSION__=\\\"$npm_package_version\\\" --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --define:__ACTION_VERSION__=\\\"$npm_package_version\\\" --outfile=dist/cli.cjs",
     "check:dist": "npm run build && git diff --exit-code -- dist",
     "docs:tables": "node scripts/render-action-tables.mjs",
     "lint": "eslint .",

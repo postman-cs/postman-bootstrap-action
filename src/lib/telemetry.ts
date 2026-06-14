@@ -26,8 +26,8 @@ const DEFAULT_ENDPOINT = 'https://events.pm-cse.dev/v1/events';
 // Corporate-proxy support: Node's global fetch ignores HTTP(S)_PROXY, which
 // silently blackholes the beacon in proxy-only enterprises (the locked-down
 // cohort this metric exists to count). EnvHttpProxyAgent reads HTTPS_PROXY /
-// HTTP_PROXY / NO_PROXY itself; construct it once at module load and pass it
-// per-request as the dispatcher. This deliberately avoids setGlobalDispatcher so
+// HTTP_PROXY / NO_PROXY itself; construct it lazily on first send (memoized
+// below) and pass it per-request as the dispatcher. This deliberately avoids setGlobalDispatcher so
 // the action's own Postman/Bifrost HTTP clients stay on the default agent. The
 // 1500 ms abort still applies through the proxy.
 let proxyDispatcher: EnvHttpProxyAgent | undefined;

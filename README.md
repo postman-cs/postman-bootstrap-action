@@ -286,7 +286,7 @@ steps:
 The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), generate or reuse baseline, smoke, and contract collections, inject generated tests, apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
 
 - **Phase independence:** bootstrap succeeds on its own even when later pipeline stages (repo sync, Insights) fail, and reruns reuse existing assets. See [Bootstrap Phase Independence](docs/bootstrap-phase-independence.md).
-- **Team identity:** the parent team ID is derived from `postman-api-key` via `/me`; org-mode tenants pass `workspace-team-id` for the sub-team that should own the workspace. See [Team Identity](docs/team-identity.md).
+- **Team identity:** the parent team ID is derived from `postman-api-key`; org-mode tenants pass `workspace-team-id` for the sub-team that should own the workspace. See [Team Identity](docs/team-identity.md).
 - **Git providers:** workspace-to-repository linking supports GitHub and GitLab, cloud and self-hosted. See [Git Provider Support](docs/git-provider-support.md).
 - **Spec handling:** operation summaries are normalized before upload, `spec-url` fetches are SSRF-hardened HTTPS with pinned DNS, and breaking-change comparison runs before any Postman mutation when enabled. See [OpenAPI Spec Handling](docs/spec-handling.md).
 - **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, cloud spec-to-collection syncing, and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
@@ -393,8 +393,14 @@ runner kind, the run outcome, and a one-way SHA-256 hash of the repository
 identifier. The Postman team ID is sent in the clear on a legitimate-interest
 basis to measure product adoption.
 
+The `events.pm-cse.dev` endpoint is operated by the Postman Customer Success
+Engineering team. Postman, Inc. processes these events only to measure
+onboarding adoption in aggregate, retains them only as aggregated counts for
+product-adoption trend analysis, and includes no payload field that identifies
+an individual person.
+
 It never sends API keys, access tokens, spec content, workspace or repository
-names in the clear, or any personal data. It is fire-and-forget with a hard
+names, or any personal data. It is fire-and-forget with a hard
 timeout and can never block or fail your pipeline. Corporate HTTP and HTTPS
 proxies are honored through the standard `HTTPS_PROXY`, `HTTP_PROXY`, and
 `NO_PROXY` environment variables.

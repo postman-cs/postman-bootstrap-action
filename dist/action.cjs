@@ -49878,7 +49878,65 @@ function norm(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length > 0 ? trimmed : void 0;
 }
+function detectEventTrigger(env = process.env) {
+  const ghEvent = norm(env.GITHUB_EVENT_NAME)?.toLowerCase();
+  if (ghEvent) {
+    if (ghEvent === "push")
+      return "push";
+    if (ghEvent === "pull_request" || ghEvent === "pull_request_target")
+      return "pull_request";
+    if (ghEvent === "schedule")
+      return "schedule";
+    if (ghEvent === "workflow_dispatch" || ghEvent === "repository_dispatch")
+      return "manual";
+    return "other";
+  }
+  const glSource = norm(env.CI_PIPELINE_SOURCE)?.toLowerCase();
+  if (glSource) {
+    if (glSource === "push")
+      return "push";
+    if (glSource === "merge_request_event")
+      return "pull_request";
+    if (glSource === "schedule")
+      return "schedule";
+    if (glSource === "web" || glSource === "api" || glSource === "trigger" || glSource === "pipeline") {
+      return "manual";
+    }
+    return "other";
+  }
+  if (norm(env.BITBUCKET_PR_ID))
+    return "pull_request";
+  if (norm(env.CI) || norm(env.BUILD_BUILDID) || norm(env.JENKINS_URL) || norm(env.TEAMCITY_VERSION)) {
+    return "other";
+  }
+  return "unknown";
+}
+function detectRunnerOs(env = process.env) {
+  const runnerOs = norm(env.RUNNER_OS)?.toLowerCase();
+  if (runnerOs === "linux")
+    return "linux";
+  if (runnerOs === "macos")
+    return "macos";
+  if (runnerOs === "windows")
+    return "windows";
+  const platform2 = typeof process !== "undefined" ? process.platform : void 0;
+  if (platform2 === "linux")
+    return "linux";
+  if (platform2 === "darwin")
+    return "macos";
+  if (platform2 === "win32")
+    return "windows";
+  return "unknown";
+}
 function detectCiContext(env = process.env) {
+  const provider = detectCiProviderContext(env);
+  return {
+    ...provider,
+    eventTrigger: detectEventTrigger(env),
+    runnerOs: detectRunnerOs(env)
+  };
+}
+function detectCiProviderContext(env = process.env) {
   if (norm(env.GITHUB_ACTIONS)) {
     const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
     const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
@@ -50016,25 +50074,49 @@ function parseProvider2(explicitProvider, repoUrl, env) {
   }
   return "unknown";
 }
+function classifyRefKind(env = process.env) {
+  const githubRefType = normalize2(env.GITHUB_REF_TYPE)?.toLowerCase();
+  const githubRef = normalize2(env.GITHUB_REF);
+  const azureRef = normalize2(env.BUILD_SOURCEBRANCH);
+  if (githubRefType === "tag" || githubRef?.startsWith("refs/tags/") || normalize2(env.CI_COMMIT_TAG) || normalize2(env.BITBUCKET_TAG) || azureRef?.startsWith("refs/tags/")) {
+    return "tag";
+  }
+  const githubRefName = normalize2(env.GITHUB_REF_NAME);
+  const githubDefault = normalize2(env.GITHUB_DEFAULT_BRANCH);
+  if (githubRefName && githubDefault) {
+    return githubRefName === githubDefault ? "default-branch" : "branch";
+  }
+  const gitlabRef = normalize2(env.CI_COMMIT_REF_NAME);
+  const gitlabDefault = normalize2(env.CI_DEFAULT_BRANCH);
+  if (gitlabRef && gitlabDefault) {
+    return gitlabRef === gitlabDefault ? "default-branch" : "branch";
+  }
+  if (githubRefName || githubRef?.startsWith("refs/heads/") || gitlabRef || normalize2(env.BITBUCKET_BRANCH) || normalize2(env.BUILD_SOURCEBRANCHNAME) || azureRef?.startsWith("refs/heads/")) {
+    return "branch";
+  }
+  return "unknown";
+}
 function detectRepoContext2(input, env = process.env) {
   const repoUrl = normalizeRepoUrl2(input.repoUrl) ?? normalizeRepoUrl2(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl2(env.CI_PROJECT_URL) ?? normalizeRepoUrl2(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl2(env.BUILD_REPOSITORY_URI);
   const repoSlug = normalize2(input.repoSlug) ?? normalize2(env.GITHUB_REPOSITORY) ?? normalize2(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize2(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize2(env.BUILD_REPOSITORY_NAME);
   const ref = normalize2(input.ref) ?? normalize2(env.GITHUB_REF_NAME) ?? normalize2(env.CI_COMMIT_REF_NAME) ?? normalize2(env.BITBUCKET_BRANCH) ?? normalize2(env.BUILD_SOURCEBRANCHNAME);
   const sha = normalize2(input.sha) ?? normalize2(env.GITHUB_SHA) ?? normalize2(env.CI_COMMIT_SHA) ?? normalize2(env.BITBUCKET_COMMIT) ?? normalize2(env.BUILD_SOURCEVERSION);
   const provider = parseProvider2(input.gitProvider, repoUrl, env);
+  const refKind = classifyRefKind(env);
   return {
     provider,
     repoUrl,
     repoSlug,
     ref,
-    sha
+    sha,
+    refKind
   };
 }
 
 // node_modules/@postman-cse/automation-telemetry-core/dist/telemetry.js
 var import_node_crypto2 = require("node:crypto");
 var import_undici2 = __toESM(require_undici(), 1);
-var SCHEMA_VERSION = 2;
+var SCHEMA_VERSION = 3;
 var DEFAULT_TIMEOUT_MS = 1500;
 var DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
 var proxyDispatcher;
@@ -50045,7 +50127,7 @@ function resolveActionVersion(explicit) {
   if (explicit) {
     return explicit;
   }
-  return "1.2.3" ? "1.2.3" : "unknown";
+  return "1.2.4" ? "1.2.4" : "unknown";
 }
 function telemetryDisabled(env) {
   const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
@@ -50074,7 +50156,7 @@ function maybeNotice(logger) {
     return;
   }
   noticeShown = true;
-  logger.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
+  logger.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type, run trigger, runner OS). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
 }
 function buildTelemetryEvent(params) {
   const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
@@ -50096,6 +50178,9 @@ function buildTelemetryEvent(params) {
     repo_id: repoSource ? sha2562(repoSource) : void 0,
     org_id: owner ? sha2562(owner) : void 0,
     account_type: accountType,
+    event_trigger: ci.eventTrigger,
+    runner_os: ci.runnerOs,
+    ref_kind: repo.refKind,
     outcome,
     ts: now()
   };

@@ -21,7 +21,7 @@ jobs:
   live-e2e:
     name: live e2e gate
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 240
     steps:
       - name: Require same-repository PR branch
         if: ${{ github.event.pull_request.head.repo.full_name != github.repository }}

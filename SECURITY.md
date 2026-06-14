@@ -1,21 +1,21 @@
 # Security Policy
 
-## Supported versions
+## Supported Versions
 
-The latest `v1.x.y` release, tracked by the rolling `v1` alias, receives security fixes. Older tags remain published for reproducible workflows and are not modified after release.
+Only the latest `v1.x.y` release (tracked by the rolling `v1` alias) receives security fixes. Older tags remain published for reproducibility and are never retroactively modified.
 
-## Reporting a vulnerability
+## Reporting a Vulnerability
 
-Do not open a public issue for security reports.
+Please do not open a public issue for security reports.
 
-- Preferred: use GitHub private vulnerability reporting on this repository from the Security tab.
-- Alternative: email [security@postman.com](mailto:security@postman.com) and mention `postman-bootstrap-action`.
+- Preferred: use GitHub private vulnerability reporting on this repository (Security tab, "Report a vulnerability").
+- Alternative: email [security@postman.com](mailto:security@postman.com) and mention the repository name.
 
-You should receive an acknowledgement within five business days. Include reproduction steps, the action version tag, and relevant workflow logs with secrets redacted.
+You should receive an acknowledgement within five business days. Please include reproduction steps, the action version tag, and any relevant (redacted) workflow logs.
 
-## Credential handling
+## Scope Notes
 
-- This action accepts Postman API keys and access tokens. The action masks those values in its own logs.
-- Do not echo `POSTMAN_API_KEY`, `POSTMAN_ACCESS_TOKEN`, or generated dotenv output in workflow steps.
-- If a secret is exposed in workflow logs or repository history, rotate it in Postman and update the CI secret immediately.
-- Reports about credentials exposed by a consumer workflow are not vulnerabilities in this action unless the action failed to mask a value it handled.
+- This action handles Postman API keys and access tokens. Both are masked in logs by the action itself; never echo them in your own workflow steps.
+- Do not echo `POSTMAN_API_KEY`, `POSTMAN_ACCESS_TOKEN`, or generated dotenv output in your own workflow steps.
+- Reports about secrets you exposed in your own workflow configuration are out of scope; rotate the credential in Postman immediately.
+- Do not include live PMAKs, access tokens, GitHub tokens, or private workflow logs in vulnerability reports.

@@ -226,12 +226,12 @@ Optional workspace enrichment steps such as governance assignment warn and conti
 
 ## Source map
 
-- `src/index.ts` — bootstrap orchestration, preflight timing, collection lifecycle, rollback, tagging, link/sync.
-- `src/lib/spec/openapi-loader.ts` — OpenAPI fetch, parse, bundle, validate, and contract index creation.
-- `src/lib/spec/safe-spec-fetch.ts` — HTTPS-only SSRF-safe fetching and ref/resource limits.
-- `src/lib/spec/contract-index.ts` — OpenAPI operation indexing, response/header/request requirements, path candidates, warnings.
-- `src/lib/spec/collection-contracts.ts` — request matching, static request checks, generated Postman scripts, coverage checks, size gates.
-- `src/lib/spec/schema-pack.ts` — schema normalization and supported/unsupported schema decisions.
-- `src/lib/spec/schema-validator-code.ts` — standalone schema validator generation.
-- `tests/dynamic-contract-hardening.test.ts` — security and contract hardening coverage.
-- `tests/bootstrap-action.test.ts` — orchestration, rollback, refresh, link/sync, and governance behavior coverage.
+- `src/index.ts`: bootstrap orchestration, preflight timing, collection lifecycle, rollback, tagging, link/sync.
+- `src/lib/spec/openapi-loader.ts`: OpenAPI fetch, parse, bundle, validate, and contract index creation.
+- `src/lib/spec/safe-spec-fetch.ts`: HTTPS-only SSRF-safe fetching and ref/resource limits.
+- `src/lib/spec/contract-index.ts`: OpenAPI operation indexing, response/header/request requirements, path candidates, warnings.
+- `src/lib/spec/collection-contracts.ts`: request matching, static request checks, generated Postman scripts, coverage checks, size gates.
+- `src/lib/spec/schema-pack.ts`: schema normalization and supported/unsupported schema decisions.
+- `src/lib/spec/schema-validator-code.ts`: standalone schema validator generation.
+- `tests/dynamic-contract-hardening.test.ts`: security and contract hardening coverage.
+- `tests/bootstrap-action.test.ts`: orchestration, rollback, refresh, link/sync, and governance behavior coverage.

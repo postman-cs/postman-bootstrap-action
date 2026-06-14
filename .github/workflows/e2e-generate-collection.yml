@@ -50,9 +50,9 @@ jobs:
             spec-fixture: 'petstore-oas31-single-file.json'
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         with:
           node-version: '24'
           cache: npm

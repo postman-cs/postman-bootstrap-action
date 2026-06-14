@@ -437,7 +437,7 @@ describe('credential identity', () => {
     ).toBe(true);
   });
 
-  it('crossCheckIdentities respects mode=enforce (throws on parent-org mismatch), mode=warn (downgrades to note), mode=off (no-op, no probe)', async () => {
+  it('crossCheckIdentities respects mode=enforce (throws on parent-org mismatch) and mode=warn (downgrades to note)', async () => {
     expect(
       crossCheckIdentities({
         pmak: pmakIdentity(),
@@ -454,15 +454,6 @@ describe('credential identity', () => {
         mask: passthroughMask
       }).level
     ).toBe('note');
-    const off = crossCheckIdentities({
-      pmak: pmakIdentity(),
-      session: sessionIdentity(),
-      mode: 'off',
-      mask: passthroughMask
-    });
-    expect(off.level).toBe('ok');
-    expect(off.message).toBe('');
-
     const mismatchFetch = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
       if (url.endsWith('/me')) {
@@ -484,20 +475,40 @@ describe('credential identity', () => {
       })
     ).rejects.toThrow(/credential preflight FAILED.*10490519.*13347347/s);
 
-    __resetIdentityMemo();
-    const offFetch = vi.fn<typeof fetch>(async () => jsonResponse({}));
-    const offCapture = createLogCapture();
+  });
+
+  it('warns when postman-access-token is a user/session token instead of a service-account token', async () => {
+    const capture = createLogCapture();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/me')) {
+        return jsonResponse({ user: { id: 1, teamId: 10490519, teamName: 'jared-demo' } });
+      }
+      return jsonResponse({
+        identity: { team: 10490519, domain: 'jared-demo' },
+        data: { user: { id: 999, fullName: 'Ada Lovelace' } },
+        consumerType: 'user'
+      });
+    });
+
     await runCredentialPreflight({
       apiBaseUrl: API_BASE,
       iapubBaseUrl: IAPUB_BASE,
-      postmanApiKey: 'pmak-case-14-off',
-      postmanAccessToken: 'access-token-case-14-off',
-      mode: 'off',
+      postmanApiKey: 'pmak-user-token',
+      postmanAccessToken: 'access-token-user-token',
+      mode: 'warn',
       mask: passthroughMask,
-      log: offCapture.log,
-      fetchImpl: offFetch
+      log: capture.log,
+      fetchImpl
     });
-    expect(offFetch).not.toHaveBeenCalled();
+
+    expect(
+      capture.warnings.some((entry) =>
+        entry.includes('deprecation warning') &&
+        entry.includes('consumerType user') &&
+        entry.includes('postman-cs/postman-resolve-service-token-action')
+      )
+    ).toBe(true);
   });
 
   it('formatIdentityLine masks token-shaped secret values', () => {

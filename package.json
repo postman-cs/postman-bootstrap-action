@@ -1,7 +1,7 @@
 {
   "name": "@postman-cse/onboarding-bootstrap",
-  "version": "1.2.2",
-  "description": "Public customer preview Postman bootstrap GitHub Action.",
+  "version": "1.2.3",
+  "description": "Bootstrap Postman workspaces, specs, and collections from OpenAPI.",
   "type": "module",
   "main": "dist/index.cjs",
   "bin": {
@@ -39,7 +39,8 @@
     "@actions/io": "^3.0.2",
     "@apidevtools/json-schema-ref-parser": "15.3.5",
     "@exodus/schemasafe": "1.3.0",
-    "@readme/openapi-parser": "^6.1.2"
+    "@readme/openapi-parser": "^6.1.2",
+    "undici": "^6.24.0"
   },
   "overrides": {
     "undici": "^6.24.0",

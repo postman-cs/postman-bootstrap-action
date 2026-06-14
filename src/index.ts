@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 
-import { customerPreviewActionContract } from './contracts.js';
+import { bootstrapActionContract } from './contracts.js';
 import { GitHubApiClient } from './lib/github/github-api-client.js';
 import { HttpError } from './lib/http-error.js';
 import {
@@ -15,8 +15,10 @@ import {
   type OpenApiBreakingChangeCheckRunner
 } from './lib/openapi-changes.js';
 import {
+  parsePostmanRegion,
   parsePostmanStack,
   resolvePostmanEndpointProfile,
+  type PostmanRegion,
   type PostmanStack
 } from './lib/postman/base-urls.js';
 import {
@@ -74,6 +76,7 @@ export interface ResolvedInputs {
   folderStrategy: string;
   nestedFolderHierarchy: boolean;
   requestNameSource: string;
+  postmanRegion: PostmanRegion;
   postmanStack: PostmanStack;
   postmanApiBase: string;
   postmanBifrostBase: string;
@@ -226,11 +229,11 @@ function parseBooleanInput(name: string, value: string | undefined, defaultValue
 function parseCollectionSyncMode(
   value: string | undefined
 ): 'refresh' | 'version' {
-  const v = value?.trim() || customerPreviewActionContract.inputs['collection-sync-mode'].default || 'refresh';
+  const v = value?.trim() || bootstrapActionContract.inputs['collection-sync-mode'].default || 'refresh';
   if (v === 'reuse') {
     return 'refresh';
   }
-  const allowed = customerPreviewActionContract.inputs['collection-sync-mode'].allowedValues ?? [];
+  const allowed = bootstrapActionContract.inputs['collection-sync-mode'].allowedValues ?? [];
   if (allowed.includes(v)) {
     return v as 'refresh' | 'version';
   }
@@ -238,8 +241,8 @@ function parseCollectionSyncMode(
 }
 
 function parseSpecSyncMode(value: string | undefined): 'update' | 'version' {
-  const v = value?.trim() || customerPreviewActionContract.inputs['spec-sync-mode'].default || 'update';
-  const allowed = customerPreviewActionContract.inputs['spec-sync-mode'].allowedValues ?? [];
+  const v = value?.trim() || bootstrapActionContract.inputs['spec-sync-mode'].default || 'update';
+  const allowed = bootstrapActionContract.inputs['spec-sync-mode'].allowedValues ?? [];
   if (allowed.includes(v)) {
     return v as 'update' | 'version';
   }
@@ -250,12 +253,12 @@ function parseBreakingChangeMode(value: string | undefined): BreakingChangeMode 
   return parseEnumInput(
     'breaking-change-mode',
     value,
-    (customerPreviewActionContract.inputs['breaking-change-mode'].default ?? 'off') as BreakingChangeMode
+    (bootstrapActionContract.inputs['breaking-change-mode'].default ?? 'off') as BreakingChangeMode
   );
 }
 
 function parseEnumInput<T extends string>(name: string, value: string | undefined, defaultValue: T): T {
-  const allowed = customerPreviewActionContract.inputs[name].allowedValues ?? [];
+  const allowed = bootstrapActionContract.inputs[name].allowedValues ?? [];
   const v = value?.trim() || defaultValue;
   if (allowed.includes(v)) {
     return v as T;
@@ -274,7 +277,7 @@ function parseWorkspaceTeamId(value: string | undefined): string | undefined {
 }
 
 function parseGovernanceMappingJson(value: string | undefined): string {
-  const mapping = value ?? customerPreviewActionContract.inputs['governance-mapping-json'].default ?? '{}';
+  const mapping = value ?? bootstrapActionContract.inputs['governance-mapping-json'].default ?? '{}';
   try {
     const parsed = JSON.parse(mapping) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -287,7 +290,7 @@ function parseGovernanceMappingJson(value: string | undefined): string {
 }
 
 function resolveOpenapiVersion(value: string | undefined): string {
-  const allowed = customerPreviewActionContract.inputs['openapi-version'].allowedValues ?? [];
+  const allowed = bootstrapActionContract.inputs['openapi-version'].allowedValues ?? [];
   const v = value?.trim() ?? '';
   if (allowed.length > 0 && v && !allowed.includes(v)) {
     throw new Error(
@@ -323,11 +326,11 @@ export function resolveInputs(
 
   const integrationBackend =
     getInput('integration-backend', env) ??
-    customerPreviewActionContract.inputs['integration-backend'].default ??
+    bootstrapActionContract.inputs['integration-backend'].default ??
     'bifrost';
 
   const allowedBackends =
-    customerPreviewActionContract.inputs['integration-backend'].allowedValues ?? [];
+    bootstrapActionContract.inputs['integration-backend'].allowedValues ?? [];
   if (allowedBackends.length > 0 && !allowedBackends.includes(integrationBackend)) {
     throw new Error(
       `Unsupported integration-backend "${integrationBackend}". Supported values: ${allowedBackends.join(', ')}`
@@ -350,8 +353,9 @@ export function resolveInputs(
     }
   }
 
+  const postmanRegion = parsePostmanRegion(getInput('postman-region', env));
   const postmanStack = parsePostmanStack(getInput('postman-stack', env));
-  const endpointProfile = resolvePostmanEndpointProfile(postmanStack);
+  const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion);
 
   return {
     projectName: getInput('project-name', env)
@@ -384,7 +388,7 @@ export function resolveInputs(
     breakingBaselineSpecPath: getInput('breaking-baseline-spec-path', env),
     breakingRulesPath:
       getInput('breaking-rules-path', env) ??
-      customerPreviewActionContract.inputs['breaking-rules-path'].default,
+      bootstrapActionContract.inputs['breaking-rules-path'].default,
     breakingTargetRef: getInput('breaking-target-ref', env),
     breakingSummaryPath: getInput('breaking-summary-path', env),
     breakingLogPath: getInput('breaking-log-path', env),
@@ -394,7 +398,7 @@ export function resolveInputs(
     credentialPreflight: parseEnumInput<PreflightMode>(
       'credential-preflight',
       getInput('credential-preflight', env),
-      (customerPreviewActionContract.inputs['credential-preflight'].default ?? 'warn') as PreflightMode
+      (bootstrapActionContract.inputs['credential-preflight'].default ?? 'warn') as PreflightMode
     ),
     integrationBackend,
     folderStrategy:
@@ -402,6 +406,7 @@ export function resolveInputs(
     nestedFolderHierarchy: parseBooleanInput('nested-folder-hierarchy', getInput('nested-folder-hierarchy', env), false),
     requestNameSource:
       parseEnumInput('request-name-source', getInput('request-name-source', env), 'Fallback'),
+    postmanRegion,
     postmanStack,
     postmanApiBase: endpointProfile.apiBaseUrl,
     postmanBifrostBase: endpointProfile.bifrostBaseUrl,
@@ -455,6 +460,33 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
   };
 }
 
+function warnIfDeprecatedAccessToken(
+  actionCore: Pick<CoreLike, 'warning'>,
+  inputs: Pick<ResolvedInputs, 'postmanAccessToken' | 'postmanApiKey'>
+): void {
+  if (!inputs.postmanAccessToken) {
+    return;
+  }
+  const sessionIdentity = getMemoizedSessionIdentity();
+  const consumerType = sessionIdentity?.consumerType?.trim();
+  if (!consumerType || consumerType.toLowerCase() === 'service_account') {
+    return;
+  }
+  const mask = createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]);
+  actionCore.warning(
+    mask(
+      'postman: deprecation warning - postman-access-token resolved to consumerType ' +
+        consumerType +
+        '. postman-cs/postman-resolve-service-token-action is the primary CI path for service-account access tokens. ' +
+        'The Postman CLI credential store populated by `postman login` is a legacy fallback for migration only.'
+    )
+  );
+}
+
+function isLegacyAccessTokenDeprecationWarning(message: string): boolean {
+  return message.includes('Postman CLI credential store populated by `postman login` is a legacy fallback');
+}
+
 export function readActionInputs(
   actionCore: Pick<CoreLike, 'getInput' | 'setSecret'>
 ): ResolvedInputs {
@@ -487,13 +519,13 @@ export function readActionInputs(
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_SYNC_EXAMPLES:
       optionalInput(actionCore, 'sync-examples') ??
-      customerPreviewActionContract.inputs['sync-examples'].default,
+      bootstrapActionContract.inputs['sync-examples'].default,
     INPUT_COLLECTION_SYNC_MODE:
       optionalInput(actionCore, 'collection-sync-mode') ??
-      customerPreviewActionContract.inputs['collection-sync-mode'].default,
+      bootstrapActionContract.inputs['collection-sync-mode'].default,
     INPUT_SPEC_SYNC_MODE:
       optionalInput(actionCore, 'spec-sync-mode') ??
-      customerPreviewActionContract.inputs['spec-sync-mode'].default,
+      bootstrapActionContract.inputs['spec-sync-mode'].default,
     INPUT_RELEASE_LABEL: optionalInput(actionCore, 'release-label'),
     INPUT_DOMAIN: optionalInput(actionCore, 'domain'),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, 'domain-code'),
@@ -511,38 +543,41 @@ export function readActionInputs(
     INPUT_SPEC_PATH: specPath,
     INPUT_GOVERNANCE_MAPPING_JSON:
       optionalInput(actionCore, 'governance-mapping-json') ??
-      customerPreviewActionContract.inputs['governance-mapping-json'].default,
+      bootstrapActionContract.inputs['governance-mapping-json'].default,
     INPUT_POSTMAN_API_KEY: postmanApiKey,
     INPUT_POSTMAN_ACCESS_TOKEN: postmanAccessToken,
     INPUT_CREDENTIAL_PREFLIGHT:
       optionalInput(actionCore, 'credential-preflight') ??
-      customerPreviewActionContract.inputs['credential-preflight'].default,
+      bootstrapActionContract.inputs['credential-preflight'].default,
+    INPUT_POSTMAN_REGION:
+      optionalInput(actionCore, 'postman-region') ??
+      bootstrapActionContract.inputs['postman-region'].default,
+    INPUT_POSTMAN_STACK:
+      optionalInput(actionCore, 'postman-stack') ??
+      bootstrapActionContract.inputs['postman-stack'].default,
     INPUT_INTEGRATION_BACKEND:
       optionalInput(actionCore, 'integration-backend') ??
-      customerPreviewActionContract.inputs['integration-backend'].default,
+      bootstrapActionContract.inputs['integration-backend'].default,
     INPUT_FOLDER_STRATEGY:
       optionalInput(actionCore, 'folder-strategy') ??
-      customerPreviewActionContract.inputs['folder-strategy'].default,
+      bootstrapActionContract.inputs['folder-strategy'].default,
     INPUT_NESTED_FOLDER_HIERARCHY:
       optionalInput(actionCore, 'nested-folder-hierarchy') ??
-      customerPreviewActionContract.inputs['nested-folder-hierarchy'].default,
+      bootstrapActionContract.inputs['nested-folder-hierarchy'].default,
     INPUT_REQUEST_NAME_SOURCE:
       optionalInput(actionCore, 'request-name-source') ??
-      customerPreviewActionContract.inputs['request-name-source'].default,
+      bootstrapActionContract.inputs['request-name-source'].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? '',
     INPUT_BREAKING_CHANGE_MODE:
       optionalInput(actionCore, 'breaking-change-mode') ??
-      customerPreviewActionContract.inputs['breaking-change-mode'].default,
+      bootstrapActionContract.inputs['breaking-change-mode'].default,
     INPUT_BREAKING_BASELINE_SPEC_PATH: optionalInput(actionCore, 'breaking-baseline-spec-path'),
     INPUT_BREAKING_RULES_PATH:
       optionalInput(actionCore, 'breaking-rules-path') ??
-      customerPreviewActionContract.inputs['breaking-rules-path'].default,
+      bootstrapActionContract.inputs['breaking-rules-path'].default,
     INPUT_BREAKING_TARGET_REF: optionalInput(actionCore, 'breaking-target-ref'),
     INPUT_BREAKING_SUMMARY_PATH: optionalInput(actionCore, 'breaking-summary-path'),
     INPUT_BREAKING_LOG_PATH: optionalInput(actionCore, 'breaking-log-path'),
-    INPUT_POSTMAN_STACK:
-      optionalInput(actionCore, 'postman-stack') ??
-      customerPreviewActionContract.inputs['postman-stack'].default,
     INPUT_GITHUB_TOKEN: githubToken,
     INPUT_GH_FALLBACK_TOKEN: ghFallbackToken
   });
@@ -607,10 +642,11 @@ function validateHttpsInstallUrl(url: string): string {
   return url;
 }
 
-async function ensurePostmanCli(
+export async function ensurePostmanCli(
   dependencies: Pick<BootstrapExecutionDependencies, 'exec' | 'io'>,
   postmanApiKey: string,
-  installUrl: string = 'https://dl-cli.pstmn.io/install/unix.sh'
+  installUrl: string = 'https://dl-cli.pstmn.io/install/unix.sh',
+  postmanRegion = 'us'
 ): Promise<void> {
   const validatedUrl = validateHttpsInstallUrl(installUrl);
   const existing = await dependencies.io.which('postman', false).catch(() => '');
@@ -627,7 +663,14 @@ async function ensurePostmanCli(
     );
   }
 
-  await dependencies.exec.exec('postman', ['login', '--with-api-key', postmanApiKey]);
+  // The Postman CLI defaults to the us region and rejects an explicit `--region us`
+  // ("Invalid region provided"); only `--region eu` is accepted. Pass the flag only
+  // for eu so login works on every CLI version.
+  const loginArgs = ['login', '--with-api-key', postmanApiKey];
+  if (postmanRegion === 'eu') {
+    loginArgs.push('--region', 'eu');
+  }
+  await dependencies.exec.exec('postman', loginArgs);
 }
 
 export async function lintSpecViaCli(
@@ -742,6 +785,37 @@ function createAssetProjectName(
   }
 
   return `${inputs.projectName} ${releaseLabel}`;
+}
+
+const BASELINE_COLLECTION_PREFIX = '';
+const LEGACY_BASELINE_COLLECTION_PREFIX = '[Baseline]';
+const SMOKE_COLLECTION_PREFIX = '[Smoke]';
+const CONTRACT_COLLECTION_PREFIX = '[Contract]';
+
+type GeneratedCollectionPrefix =
+  | typeof BASELINE_COLLECTION_PREFIX
+  | typeof SMOKE_COLLECTION_PREFIX
+  | typeof CONTRACT_COLLECTION_PREFIX;
+
+function describeGeneratedCollection(prefix: GeneratedCollectionPrefix): string {
+  if (prefix === SMOKE_COLLECTION_PREFIX) return 'smoke';
+  if (prefix === CONTRACT_COLLECTION_PREFIX) return 'contract';
+  return 'baseline';
+}
+
+function normalizedResourcePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/\/+$/g, '');
+}
+
+function matchesCollectionDirectory(filePath: string, directoryName: string): boolean {
+  return normalizedResourcePath(filePath).endsWith(`/collections/${directoryName}`);
+}
+
+function matchesBaselineCollectionResource(filePath: string, assetProjectName: string): boolean {
+  return (
+    matchesCollectionDirectory(filePath, assetProjectName) ||
+    matchesCollectionDirectory(filePath, `${LEGACY_BASELINE_COLLECTION_PREFIX} ${assetProjectName}`)
+  );
 }
 
 type CloudResourceMap = Record<string, string>;
@@ -927,11 +1001,15 @@ async function runBootstrapInner(
       'Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata'
     );
   }
+  const collectionAssetProjectName =
+    inputs.collectionSyncMode === 'version'
+      ? createAssetProjectName(inputs, releaseLabel)
+      : inputs.projectName;
   const workspaceName = createWorkspaceName(inputs);
-  const aboutText = `Auto-provisioned by Postman CS customer preview for ${inputs.projectName}`;
+  const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
 
   await runGroup(dependencies.core, 'Install Postman CLI', async () => {
-    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl);
+    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
   });
 
   const resourcesState = readResourcesState();
@@ -1259,7 +1337,7 @@ async function runBootstrapInner(
   if (!baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
-      (filePath) => filePath.includes('[Baseline]')
+      (filePath) => matchesBaselineCollectionResource(filePath, collectionAssetProjectName)
     );
     if (baselineCollectionId) {
       dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
@@ -1416,10 +1494,7 @@ async function runBootstrapInner(
       dependencies.core,
       'Generate Collections from Spec',
       async () => {
-        const assetProjectName =
-          inputs.collectionSyncMode === 'version'
-            ? createAssetProjectName(inputs, releaseLabel)
-            : inputs.projectName;
+        const assetProjectName = collectionAssetProjectName;
         const shouldReuseCollections = inputs.collectionSyncMode !== 'refresh';
         const temporaryCollectionIds = new Set<string>();
         const getCollection = dependencies.postman.getCollection?.bind(dependencies.postman);
@@ -1492,7 +1567,7 @@ async function runBootstrapInner(
           existingId?: string;
           generatedId: string;
           outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id';
-          prefix: '[Baseline]' | '[Smoke]' | '[Contract]';
+          prefix: GeneratedCollectionPrefix;
           snapshot?: Record<string, unknown>;
           updateBody?: Record<string, unknown>;
         };
@@ -1574,19 +1649,19 @@ async function runBootstrapInner(
           }
         };
         const adoptGeneratedCollection = async (plan: RefreshPlan): Promise<void> => {
-          if (plan.prefix === '[Contract]') {
+          if (plan.prefix === CONTRACT_COLLECTION_PREFIX) {
             await updateCollection!(plan.generatedId, plan.updateBody ?? await prepareContractUpdateBody(plan.generatedId));
           }
           outputs[plan.outputKey] = plan.generatedId;
           dependencies.core.info(
-            `No existing ${plan.prefix} collection found; using newly generated collection ${plan.generatedId}`
+            `No existing ${describeGeneratedCollection(plan.prefix)} collection found; using newly generated collection ${plan.generatedId}`
           );
         };
         const commitRefreshPlans = async (plans: RefreshPlan[]): Promise<void> => {
           requireRefreshCollectionHelpers();
 
           for (const plan of plans) {
-            if (plan.prefix === '[Contract]') {
+            if (plan.prefix === CONTRACT_COLLECTION_PREFIX) {
               plan.updateBody = await prepareContractUpdateBody(plan.generatedId);
             } else {
               const generatedCollection = await getCollection!(plan.generatedId);
@@ -1603,7 +1678,7 @@ async function runBootstrapInner(
             } catch (error) {
               if (error instanceof HttpError && error.status === 404) {
                 dependencies.core.warning(
-                  `Existing ${plan.prefix} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
+                  `Existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
                 );
                 plan.existingId = undefined;
                 assertDistinctRefreshPlanOutputs(plans);
@@ -1634,12 +1709,12 @@ async function runBootstrapInner(
                 });
                 outputs[plan.outputKey] = plan.existingId!;
                 dependencies.core.info(
-                  `Refreshed existing ${plan.prefix} collection ${plan.existingId} with temporary collection ${plan.generatedId}`
+                  `Refreshed existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} with temporary collection ${plan.generatedId}`
                 );
               } catch (error) {
                 if (error instanceof HttpError && error.status === 404) {
                   dependencies.core.warning(
-                    `Existing ${plan.prefix} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
+                    `Existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
                   );
                   plan.existingId = undefined;
                   assertDistinctRefreshPlanOutputs(plans);
@@ -1671,7 +1746,7 @@ async function runBootstrapInner(
               outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
                 outputs['spec-id'],
                 assetProjectName,
-                '[Baseline]',
+                BASELINE_COLLECTION_PREFIX,
                 inputs.folderStrategy,
                 inputs.nestedFolderHierarchy,
                 inputs.requestNameSource
@@ -1685,7 +1760,7 @@ async function runBootstrapInner(
               outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
                 outputs['spec-id'],
                 assetProjectName,
-                '[Smoke]',
+                SMOKE_COLLECTION_PREFIX,
                 inputs.folderStrategy,
                 inputs.nestedFolderHierarchy,
                 inputs.requestNameSource
@@ -1699,7 +1774,7 @@ async function runBootstrapInner(
               outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
                 outputs['spec-id'],
                 assetProjectName,
-                '[Contract]',
+                CONTRACT_COLLECTION_PREFIX,
                 inputs.folderStrategy,
                 inputs.nestedFolderHierarchy,
                 inputs.requestNameSource
@@ -1716,9 +1791,9 @@ async function runBootstrapInner(
           }
 
           await commitRefreshPlans([
-            await createRefreshPlan('[Baseline]', baselineCollectionId, 'baseline-collection-id'),
-            await createRefreshPlan('[Smoke]', smokeCollectionId, 'smoke-collection-id'),
-            await createRefreshPlan('[Contract]', contractCollectionId, 'contract-collection-id')
+            await createRefreshPlan(BASELINE_COLLECTION_PREFIX, baselineCollectionId, 'baseline-collection-id'),
+            await createRefreshPlan(SMOKE_COLLECTION_PREFIX, smokeCollectionId, 'smoke-collection-id'),
+            await createRefreshPlan(CONTRACT_COLLECTION_PREFIX, contractCollectionId, 'contract-collection-id')
           ]);
         } catch (error) {
           generationFailure = error;
@@ -1876,8 +1951,16 @@ export async function runAction(
     explicitTeamId: inputs.teamId || undefined,
     mode: inputs.credentialPreflight,
     mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
-    log: actionCore
+    log: {
+      info: (message) => actionCore.info(message),
+      warning: (message) => {
+        if (!isLegacyAccessTokenDeprecationWarning(message)) {
+          actionCore.warning(message);
+        }
+      }
+    }
   });
+  warnIfDeprecatedAccessToken(actionCore, inputs);
 
   // Early org-mode detection for proper adapter configuration
   let orgMode = false;

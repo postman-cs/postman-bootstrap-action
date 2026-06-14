@@ -118,6 +118,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     folderStrategy: 'Paths',
     nestedFolderHierarchy: false,
     requestNameSource: 'Fallback',
+    postmanRegion: 'us',
     postmanStack: 'prod',
     postmanApiBase: 'https://api.getpostman.com',
     postmanBifrostBase: 'https://bifrost-premium-https-v4.gw.postman.com',
@@ -212,7 +213,7 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     generateCollection: vi
       .fn()
       .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-        if (prefix === '[Baseline]') return 'col-baseline-generated';
+        if (prefix === '') return 'col-baseline-generated';
         if (prefix === '[Smoke]') return 'col-smoke-generated';
         return 'col-contract-generated';
       }),
@@ -392,7 +393,7 @@ describe('bootstrap action', () => {
         .fn()
         .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
           order.push(prefix);
-          if (prefix === '[Baseline]') return 'col-baseline';
+          if (prefix === '') return 'col-baseline';
           if (prefix === '[Smoke]') return 'col-smoke';
           return 'col-contract';
         }),
@@ -428,7 +429,11 @@ describe('bootstrap action', () => {
       specFetcher
     });
 
-    expect(execStub.exec).toHaveBeenCalledWith('postman', ['login', '--with-api-key', 'pmak-test']);
+    expect(execStub.exec).toHaveBeenCalledWith('postman', [
+      'login',
+      '--with-api-key',
+      'pmak-test'
+    ]);
     expect(internalIntegration.assignWorkspaceToGovernanceGroup).toHaveBeenCalledWith(
       'ws-123',
       'core-banking',
@@ -440,7 +445,7 @@ describe('bootstrap action', () => {
       'owner@example.com'
     );
     expect(postman.addAdminsToWorkspace).toHaveBeenCalledWith('ws-123', '101,102');
-    expect(order).toEqual(['[Baseline]', '[Smoke]', '[Contract]']);
+    expect(order).toEqual(['', '[Smoke]', '[Contract]']);
     expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledWith(
       'spec-123',
       [
@@ -527,7 +532,7 @@ describe('bootstrap action', () => {
       generateCollection: vi
         .fn()
         .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-          if (prefix === '[Baseline]') return 'col-baseline';
+          if (prefix === '') return 'col-baseline';
           if (prefix === '[Smoke]') return 'col-smoke';
           return 'col-contract';
         }),
@@ -1022,7 +1027,7 @@ paths:
   it('detects stale-refresh fallback ID collisions before durable collection updates', async () => {
     const postman = createRollbackPostman({
       generateCollection: vi.fn().mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-        if (prefix === '[Baseline]') return 'col-smoke-existing';
+        if (prefix === '') return 'col-smoke-existing';
         if (prefix === '[Smoke]') return 'col-smoke-generated';
         return 'col-contract-generated';
       }),
@@ -1057,7 +1062,7 @@ paths:
     let contractExistingReads = 0;
     const postman = createRollbackPostman({
       generateCollection: vi.fn().mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-        if (prefix === '[Baseline]') return 'col-baseline-generated';
+        if (prefix === '') return 'col-baseline-generated';
         if (prefix === '[Smoke]') return 'col-contract-existing';
         return 'col-contract-generated';
       }),
@@ -1622,7 +1627,7 @@ paths:
         id,
         {
           info: {
-            name: ['[Baseline]', '[Smoke]', '[Contract]'][index]
+            name: ['core-payments', '[Smoke] core-payments', '[Contract] core-payments'][index]
           },
           item: [
             {
@@ -1702,7 +1707,7 @@ paths:
       'contract-collection-id': 'col-contract-existing'
     });
     expect(infos).toContain(
-      'Refreshed existing [Smoke] collection col-smoke-existing with temporary collection col-smoke-refresh'
+      'Refreshed existing smoke collection col-smoke-existing with temporary collection col-smoke-refresh'
     );
   });
 
@@ -1772,7 +1777,7 @@ paths:
         id,
         {
           info: {
-            name: ['[Baseline]', '[Smoke]', '[Contract]'][index]
+            name: ['core-payments', '[Smoke] core-payments', '[Contract] core-payments'][index]
           },
           item: [
             {
@@ -1845,7 +1850,7 @@ paths:
     });
     expect(
       warnings.some((warning) =>
-        warning.includes('Existing [Smoke] collection col-smoke-stale was not found during refresh')
+        warning.includes('Existing smoke collection col-smoke-stale was not found during refresh')
       )
     ).toBe(true);
   });
@@ -1857,7 +1862,7 @@ paths:
       generatedIds.map((id, index) => [
         id,
         {
-          info: { name: ['[Baseline]', '[Smoke]', '[Contract]'][index] },
+          info: { name: ['core-payments', '[Smoke] core-payments', '[Contract] core-payments'][index] },
           item: [{ name: 'GET /payments', request: { method: 'GET', url: { path: ['payments'] } } }]
         }
       ])
@@ -1897,7 +1902,7 @@ paths:
       generatedIds.map((id, index) => [
         id,
         {
-          info: { name: ['[Baseline]', '[Smoke]', '[Contract]'][index] },
+          info: { name: ['core-payments', '[Smoke] core-payments', '[Contract] core-payments'][index] },
           item: [{ name: 'GET /payments', request: { method: 'GET', url: { path: ['payments'] } } }]
         }
       ])
@@ -2095,7 +2100,7 @@ paths:
         cloudResources: {
           specs: { '../index.yaml': 'spec-v111' },
           collections: {
-            '../postman/collections/[Baseline] core-payments release-v1.1.1': 'col-baseline-v111',
+            '../postman/collections/core-payments release-v1.1.1': 'col-baseline-v111',
             '../postman/collections/[Smoke] core-payments release-v1.1.1': 'col-smoke-v111',
             '../postman/collections/[Contract] core-payments release-v1.1.1': 'col-contract-v111'
           }
@@ -2264,9 +2269,9 @@ paths:
         cloudResources: {
           specs: { '../index.yaml': 'spec-from-file' },
           collections: {
-            '../postman/collections/[Baseline] core-payments': 'col-baseline-from-file',
-            '../postman/collections/[Smoke] core-payments': 'col-smoke-from-file',
-            '../postman/collections/[Contract] core-payments': 'col-contract-from-file'
+            '../postman/collections/core-payments v1': 'col-baseline-from-file',
+            '../postman/collections/[Smoke] core-payments v1': 'col-smoke-from-file',
+            '../postman/collections/[Contract] core-payments v1': 'col-contract-from-file'
           }
         }
       })
@@ -2313,7 +2318,7 @@ paths:
         generateCollection: vi
           .fn()
           .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-            if (prefix === '[Baseline]') return 'col-baseline';
+            if (prefix === '') return 'col-baseline';
             if (prefix === '[Smoke]') return 'col-smoke';
             return 'col-contract';
           }),
@@ -2541,7 +2546,7 @@ paths:
     expect(result['spec-id']).toBe('spec-123');
   });
 
-  it('version mode reuses current resources.yaml collections on the checked-out ref', async () => {
+  it('version mode reuses legacy baseline resources.yaml collection paths', async () => {
     const { core, infos } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -2552,7 +2557,7 @@ paths:
       generateCollection: vi
         .fn()
         .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-          if (prefix === '[Baseline]') return 'col-baseline-v2';
+          if (prefix === '') return 'col-baseline-v2';
           if (prefix === '[Smoke]') return 'col-smoke-v2';
           return 'col-contract-v2';
         }),
@@ -2571,9 +2576,9 @@ paths:
       workspace: { id: 'ws-current' },
       cloudResources: {
         collections: {
-          '../postman/collections/[Baseline] core-payments': 'col-baseline-current',
-          '../postman/collections/[Smoke] core-payments': 'col-smoke-current',
-          '../postman/collections/[Contract] core-payments': 'col-contract-current'
+          '../postman/collections/[Baseline] core-payments v2.0.0': 'col-baseline-current',
+          '../postman/collections/[Smoke] core-payments v2.0.0': 'col-smoke-current',
+          '../postman/collections/[Contract] core-payments v2.0.0': 'col-contract-current'
         }
       }
     };
@@ -2617,7 +2622,7 @@ paths:
       generateCollection: vi
         .fn()
         .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-          if (prefix === '[Baseline]') return 'col-baseline-v2';
+          if (prefix === '') return 'col-baseline-v2';
           if (prefix === '[Smoke]') return 'col-smoke-v2';
           return 'col-contract-v2';
         }),
@@ -3469,11 +3474,11 @@ describe('runAction credential preflight', () => {
         const name = String(
           (JSON.parse(String(init?.body ?? '{}')) as { name?: string }).name ?? ''
         );
-        const slot = name.includes('[Baseline]')
-          ? 'baseline'
-          : name.includes('[Smoke]')
-            ? 'smoke'
-            : 'contract';
+        const slot = name.includes('[Smoke]')
+          ? 'smoke'
+          : name.includes('[Contract]')
+            ? 'contract'
+            : 'baseline';
         return json({ collection: { id: `col-${slot}` } });
       }
       if (url.startsWith('https://api.getpostman.com/specs?workspaceId=') && method === 'POST') {
@@ -3612,25 +3617,53 @@ describe('runAction credential preflight', () => {
     ).toBe(true);
   });
 
-  it('runAction with credential-preflight=off makes no /me/iapub probe', async () => {
-    vi.stubEnv('POSTMAN_TEAM_ID', '10490519');
+  it('runAction warns when postman-access-token resolves to a non-service-account session token', async () => {
     const events: string[] = [];
-    vi.stubGlobal('fetch', createRunActionFetchRouter({ events }));
-    const { core, outputs } = createRunActionCore(
-      baseInputValues({ 'credential-preflight': 'off' }),
-      events
+    vi.stubGlobal(
+      'fetch',
+      createRunActionFetchRouter({
+        events,
+        sessionBody: {
+          identity: { team: 10490519, domain: 'jared-demo' },
+          data: { user: { id: 2, roles: ['admin'] } },
+          consumerType: 'user'
+        }
+      })
     );
+    const { core, warnings, outputs } = createRunActionCore(baseInputValues(), events);
 
     await runAction(core, createExecStub(), createIoStub());
 
     expect(outputs['workspace-id']).toBe('ws-runaction');
+    const warning = warnings.find((line) =>
+      line.includes('postman-cs/postman-resolve-service-token-action is the primary CI path')
+    );
+    expect(warning).toContain('postman-access-token resolved to consumerType user');
+    expect(warning).toContain('postman-cs/postman-resolve-service-token-action is the primary CI path');
+    expect(warning).toContain('Postman CLI credential store populated by `postman login` is a legacy fallback');
+    expect(warning).not.toContain('browser');
     expect(
-      events.some((entry) => entry.includes('https://api.getpostman.com/me'))
-    ).toBe(false);
-    expect(events.some((entry) => entry.includes('iapub.postman.co'))).toBe(false);
+      warnings.filter((line) =>
+        line.includes('Postman CLI credential store populated by `postman login` is a legacy fallback')
+      )
+    ).toHaveLength(1);
   });
 
-  it('reactive advice still rewrites a Bifrost UNAUTHENTICATED even when credential-preflight=off', async () => {
+  it('runAction rejects credential-preflight=off instead of skipping identity checks', async () => {
+    const events: string[] = [];
+    vi.stubGlobal('fetch', createRunActionFetchRouter({ events }));
+    const { core } = createRunActionCore(
+      baseInputValues({ 'credential-preflight': 'off' }),
+      events
+    );
+
+    await expect(runAction(core, createExecStub(), createIoStub())).rejects.toThrow(
+      /Unsupported credential-preflight/
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it('reactive advice still rewrites a Bifrost UNAUTHENTICATED with default preflight enabled', async () => {
     const events: string[] = [];
     vi.stubGlobal(
       'fetch',
@@ -3644,10 +3677,7 @@ describe('runAction credential preflight', () => {
             : undefined
       })
     );
-    const { core } = createRunActionCore(
-      baseInputValues({ 'credential-preflight': 'off' }),
-      events
-    );
+    const { core } = createRunActionCore(baseInputValues(), events);
 
     let thrown: unknown;
     try {
@@ -3659,6 +3689,6 @@ describe('runAction credential preflight', () => {
     const message = thrown instanceof Error ? thrown.message : String(thrown);
     expect(message).toContain('Bifrost rejected the access token (UNAUTHENTICATED)');
     expect(message).toContain('POST https://api.getpostman.com/service-account-tokens');
-    expect(events.some((entry) => entry.includes('iapub.postman.co'))).toBe(false);
+    expect(events.some((entry) => entry.includes('iapub.postman.co'))).toBe(true);
   });
 });

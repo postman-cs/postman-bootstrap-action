@@ -26,7 +26,7 @@ jobs:
       - name: Require same-repository PR branch
         if: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
-          echo "::error::Live e2e runs released action code with internal sandbox credentials. Push the branch to this repository (not a fork) to run the required merge gate."
+          echo "::error::Live e2e runs released action code with repository-scoped live sandbox credentials. Push the branch to this repository (not a fork) to run the required merge gate."
           exit 1
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5

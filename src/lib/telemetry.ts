@@ -9,6 +9,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { EnvHttpProxyAgent, fetch as undiciFetch, type Dispatcher } from 'undici';
+
 import { detectCiContext } from './ci-context.js';
 import { detectRepoContext } from './repo/context.js';
 
@@ -17,9 +19,18 @@ declare const __ACTION_VERSION__: string | undefined;
 
 const SCHEMA_VERSION = 1;
 const DEFAULT_TIMEOUT_MS = 1500;
-// Placeholder host until a Postman-owned collector subdomain is provisioned.
+// Live collector on the Postman CSE + FDE Cloudflare account.
 // Override with POSTMAN_ACTIONS_TELEMETRY_ENDPOINT.
-const DEFAULT_ENDPOINT = 'https://actions-telemetry.postman.invalid/v1/events';
+const DEFAULT_ENDPOINT = 'https://events.pm-cse.dev/v1/events';
+
+// Corporate-proxy support: Node's global fetch ignores HTTP(S)_PROXY, which
+// silently blackholes the beacon in proxy-only enterprises (the locked-down
+// cohort this metric exists to count). EnvHttpProxyAgent reads HTTPS_PROXY /
+// HTTP_PROXY / NO_PROXY itself; construct it once at module load and pass it
+// per-request as the dispatcher. This deliberately avoids setGlobalDispatcher so
+// the action's own Postman/Bifrost HTTP clients stay on the default agent. The
+// 1500 ms abort still applies through the proxy.
+const proxyDispatcher = new EnvHttpProxyAgent();
 
 export interface TelemetryLogger {
   info(message: string): void;
@@ -30,6 +41,7 @@ export interface TelemetryOptions {
   logger?: TelemetryLogger;
   env?: NodeJS.ProcessEnv;
   transport?: typeof fetch;
+  dispatcher?: Dispatcher;
   endpoint?: string;
   timeoutMs?: number;
   now?: () => number;
@@ -48,7 +60,6 @@ export interface TelemetryEvent {
   team_id: string;
   ci_provider: string;
   run_id?: string;
-  run_attempt?: string;
   runner_kind: string;
   repo_id?: string;
   outcome: 'success' | 'failure';
@@ -113,7 +124,6 @@ export function buildTelemetryEvent(
     team_id: teamId,
     ci_provider: ci.ciProvider,
     run_id: ci.runId,
-    run_attempt: ci.runAttempt,
     runner_kind: ci.runnerKind,
     repo_id: repoSource ? sha256(repoSource) : undefined,
     outcome,
@@ -125,16 +135,26 @@ async function send(event: TelemetryEvent, options: TelemetryOptions): Promise<v
   const env = options.env ?? process.env;
   const endpoint =
     options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
-  const transport = options.transport ?? fetch;
+  // Default to undici's fetch: Node's global fetch ignores the per-request
+  // dispatcher option, so the EnvHttpProxyAgent would be silently bypassed and
+  // proxy-only enterprises would never be counted. Tests inject their own
+  // transport.
+  const transport = options.transport ?? (undiciFetch as unknown as typeof fetch);
+  const dispatcher = options.dispatcher ?? proxyDispatcher;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(event),
+    signal: controller.signal
+  };
+  // undici's fetch reads `dispatcher` off the init; the global RequestInit's
+  // Dispatcher type can skew from the undici package's own across dependency
+  // trees, so attach it without re-asserting that type.
+  (init as { dispatcher?: unknown }).dispatcher = dispatcher;
   try {
-    await transport(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(event),
-      signal: controller.signal
-    });
+    await transport(endpoint, init);
   } finally {
     clearTimeout(timer);
   }

@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+import { ensurePostmanCli } from '../src/index.js';
 
 // Import the internal ensurePostmanCli function by loading the module
 // Since ensurePostmanCli is not exported, we'll test via integration-style approach
@@ -91,17 +93,38 @@ describe('CLI install URL validation', () => {
   });
 });
 
-describe('ensurePostmanCli integration', () => {
-  it('passes validated URL via environment variable', async () => {
-    // Import the actual module - this will fail if ensurePostmanCli is not exported
-    // For now, we'll verify the pattern manually by checking the implementation
-    // In a real scenario, we'd export ensurePostmanCli for testing or use integration tests
+describe('ensurePostmanCli login region', () => {
+  function makeDeps() {
+    const execMock = vi.fn(async () => 0);
+    const deps = {
+      exec: { exec: execMock },
+      io: { which: vi.fn(async () => '/usr/bin/postman') }
+    } as unknown as Parameters<typeof ensurePostmanCli>[0];
+    return { deps, execMock };
+  }
 
-    // Verify that the exec call pattern matches our expectation:
-    // exec('sh', ['-c', 'curl -fsSL "$POSTMAN_CLI_INSTALL_URL" | sh'], { env: { POSTMAN_CLI_INSTALL_URL: url } })
+  function loginArgsFrom(execMock: ReturnType<typeof vi.fn>): unknown[] | undefined {
+    const call = execMock.mock.calls.find(
+      (entry) => entry[0] === 'postman' && Array.isArray(entry[1]) && entry[1][0] === 'login'
+    );
+    return call?.[1] as unknown[] | undefined;
+  }
 
-    // This test is more of a documentation test since we can't easily import the internal function
-    // The actual validation happens in the manual verification step
-    expect(true).toBe(true);
+  it('omits --region for the us default (the Postman CLI rejects --region us)', async () => {
+    const { deps, execMock } = makeDeps();
+    await ensurePostmanCli(deps, 'PMAK-test', undefined, 'us');
+    expect(loginArgsFrom(execMock)).toEqual(['login', '--with-api-key', 'PMAK-test']);
+  });
+
+  it('passes --region eu for the eu region', async () => {
+    const { deps, execMock } = makeDeps();
+    await ensurePostmanCli(deps, 'PMAK-test', undefined, 'eu');
+    expect(loginArgsFrom(execMock)).toEqual([
+      'login',
+      '--with-api-key',
+      'PMAK-test',
+      '--region',
+      'eu'
+    ]);
   });
 });

@@ -109,7 +109,7 @@ inputs:
     description: Postman access token used for governance and workspace mutations
     required: false
   credential-preflight:
-    description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created; off skips the identity probes entirely (the reactive error guidance still applies). Promotion of the default to enforce is planned once the live e2e legs prove both directions."
+    description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created."
     required: false
     default: warn
   integration-backend:
@@ -128,8 +128,12 @@ inputs:
     description: Determines how requests are named in generated collections (Fallback or URL)
     required: false
     default: Fallback
+  postman-region:
+    description: Postman data residency region for public API and Postman CLI calls.
+    required: false
+    default: us
   postman-stack:
-    description: Postman stack profile
+    description: 'Postman stack profile. Leave at the default unless Postman support directs otherwise.'
     required: false
     default: prod
 outputs:

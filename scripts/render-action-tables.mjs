@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const HIDDEN_INPUTS = new Set(['integration-backend', 'postman-stack']);
 
 const INPUTS_START = '<!-- inputs-table:start -->';
 const INPUTS_END = '<!-- inputs-table:end -->';
@@ -22,7 +23,7 @@ function cell(value) {
 
 export function renderInputsTable(actionYamlText) {
   const action = parse(actionYamlText);
-  const rows = Object.entries(action.inputs ?? {}).map(([name, spec]) => {
+  const rows = Object.entries(action.inputs ?? {}).filter(([name]) => !HIDDEN_INPUTS.has(name)).map(([name, spec]) => {
     const required = spec?.required === true ? 'yes' : 'no';
     const fallback = spec?.default === undefined || spec.default === '' ? '' : `\`${cell(spec.default)}\``;
     return `| \`${name}\` | ${cell(spec?.description)} | ${required} | ${fallback} |`;

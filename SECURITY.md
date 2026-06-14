@@ -1,19 +1,21 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-Only the latest `v1.x.y` release (tracked by the rolling `v1` alias) receives security fixes. Older tags remain published for reproducibility and are never retroactively modified.
+The latest `v1.x.y` release, tracked by the rolling `v1` alias, receives security fixes. Older tags remain published for reproducible workflows and are not modified after release.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-Please do not open a public issue for security reports.
+Do not open a public issue for security reports.
 
-- Preferred: use GitHub private vulnerability reporting on this repository (Security tab, "Report a vulnerability").
-- Alternative: email [security@postman.com](mailto:security@postman.com) and mention the repository name.
+- Preferred: use GitHub private vulnerability reporting on this repository from the Security tab.
+- Alternative: email [security@postman.com](mailto:security@postman.com) and mention `postman-bootstrap-action`.
 
-You should receive an acknowledgement within five business days. Please include reproduction steps, the action version tag, and any relevant (redacted) workflow logs.
+You should receive an acknowledgement within five business days. Include reproduction steps, the action version tag, and relevant workflow logs with secrets redacted.
 
-## Scope Notes
+## Credential handling
 
-- This action handles Postman API keys and access tokens. Both are masked in logs by the action itself; never echo them in your own workflow steps.
-- Reports about secrets you exposed in your own workflow configuration are out of scope; rotate the credential in Postman immediately.
+- This action accepts Postman API keys and access tokens. The action masks those values in its own logs.
+- Do not echo `POSTMAN_API_KEY`, `POSTMAN_ACCESS_TOKEN`, or generated dotenv output in workflow steps.
+- If a secret is exposed in workflow logs or repository history, rotate it in Postman and update the CI secret immediately.
+- Reports about credentials exposed by a consumer workflow are not vulnerabilities in this action unless the action failed to mask a value it handled.

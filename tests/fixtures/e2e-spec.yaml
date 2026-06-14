@@ -8,8 +8,8 @@ info:
     ## Service Level Agreement
     This API targets 99.9% uptime with a p99 response time under 500ms.
   contact:
-    name: Postman CSE
-    email: help@postman.com
+    name: Postman
+    email: support@postman.com
 servers:
   - url: https://api.example.com/v1
     description: Production

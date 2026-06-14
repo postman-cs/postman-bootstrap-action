@@ -1,4 +1,5 @@
 export type PostmanStack = 'prod' | 'beta';
+export type PostmanRegion = 'us' | 'eu';
 
 export interface PostmanEndpointProfile {
   apiBaseUrl: string;
@@ -25,6 +26,14 @@ export const POSTMAN_ENDPOINT_PROFILES: Record<PostmanStack, PostmanEndpointProf
   }
 };
 
+export function parsePostmanRegion(value: string | undefined): PostmanRegion {
+  const normalized = String(value || 'us').trim().toLowerCase();
+  if (normalized === 'us' || normalized === 'eu') {
+    return normalized;
+  }
+  throw new Error(`Unsupported postman-region "${value}". Supported values: us, eu`);
+}
+
 export function parsePostmanStack(value: string | undefined): PostmanStack {
   const normalized = String(value || 'prod').trim().toLowerCase();
   if (normalized === 'prod' || normalized === 'beta') {
@@ -33,6 +42,19 @@ export function parsePostmanStack(value: string | undefined): PostmanStack {
   throw new Error(`Unsupported postman-stack "${value}". Supported values: prod, beta`);
 }
 
-export function resolvePostmanEndpointProfile(stack: PostmanStack): PostmanEndpointProfile {
-  return POSTMAN_ENDPOINT_PROFILES[stack];
+export function resolvePostmanEndpointProfile(
+  stack: PostmanStack,
+  region: PostmanRegion = 'us'
+): PostmanEndpointProfile {
+  if (stack === 'beta' && region !== 'us') {
+    throw new Error('postman-region=eu is only supported with postman-stack=prod');
+  }
+  const profile = POSTMAN_ENDPOINT_PROFILES[stack];
+  if (region === 'eu') {
+    return {
+      ...profile,
+      apiBaseUrl: 'https://api.eu.postman.com'
+    };
+  }
+  return profile;
 }

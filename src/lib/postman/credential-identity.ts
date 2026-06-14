@@ -11,7 +11,7 @@ export interface CredentialIdentity {
   consumerType?: string;
 }
 
-export type PreflightMode = 'enforce' | 'warn' | 'off';
+export type PreflightMode = 'enforce' | 'warn';
 
 export interface ResolvePmakIdentityOptions {
   apiBaseUrl: string;
@@ -238,9 +238,6 @@ export function formatIdentityLine(id: CredentialIdentity, mask: SecretMasker): 
 }
 
 export function crossCheckIdentities(args: CrossCheckIdentitiesArgs): CrossCheckResult {
-  if (args.mode === 'off') {
-    return { ok: true, level: 'ok', message: '' };
-  }
   const pmakTeamId = args.pmak?.teamId;
   const sessionTeamId = args.session?.teamId;
 
@@ -297,9 +294,6 @@ export function crossCheckIdentities(args: CrossCheckIdentitiesArgs): CrossCheck
 }
 
 export async function runCredentialPreflight(args: RunCredentialPreflightArgs): Promise<void> {
-  if (args.mode === 'off') {
-    return;
-  }
   const mask = args.mask;
   const apiKey = String(args.postmanApiKey || '').trim();
   const accessToken = String(args.postmanAccessToken || '').trim();
@@ -349,6 +343,14 @@ export async function runCredentialPreflight(args: RunCredentialPreflightArgs): 
   }
   if (session) {
     args.log.info(formatIdentityLine(session, mask));
+    const consumerType = session.consumerType?.trim();
+    if (consumerType && consumerType.toLowerCase() !== 'service_account') {
+      args.log.warning(
+        mask(
+          `postman: deprecation warning - postman-access-token resolved to consumerType ${consumerType}. postman-cs/postman-resolve-service-token-action is the primary CI path for service-account access tokens. The Postman CLI credential store populated by \`postman login\` is a legacy fallback for migration only.`
+        )
+      );
+    }
   } else {
     args.log.warning(
       mask(

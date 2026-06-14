@@ -572,7 +572,7 @@ describe('PostmanAssetsClient', () => {
     expect(body.type).toBe('OPENAPI:3.0');
   });
 
-  it('generateCollection sends folderStrategy and requestNameSource, omits nestedFolderHierarchy when strategy is Paths', async () => {
+  it('generateCollection sends an unprefixed name for empty-prefix collections', async () => {
     const collectionUid = 'col-paths-123';
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({ collection: { uid: collectionUid } })
@@ -583,10 +583,11 @@ describe('PostmanAssetsClient', () => {
       fetchImpl
     });
 
-    await client.generateCollection('spec-123', 'payments', '[Baseline]', 'Paths', true, 'Fallback');
+    await client.generateCollection('spec-123', 'payments', '', 'Paths', true, 'Fallback');
 
     const [, callOptions] = fetchImpl.mock.calls[0];
     const body = JSON.parse((callOptions as RequestInit).body as string);
+    expect(body.name).toBe('payments');
     expect(body.options.folderStrategy).toBe('Paths');
     expect(body.options.requestNameSource).toBe('Fallback');
     expect(body.options).not.toHaveProperty('nestedFolderHierarchy');
@@ -602,7 +603,7 @@ describe('PostmanAssetsClient', () => {
       fetchImpl
     });
 
-    await client.generateCollection('spec-123', 'payments', '[Baseline]', 'Tags', true, 'URL');
+    await client.generateCollection('spec-123', 'payments', '', 'Tags', true, 'URL');
 
     const [, callOptions] = fetchImpl.mock.calls[0];
     const body = JSON.parse((callOptions as RequestInit).body as string);
@@ -640,7 +641,7 @@ describe('PostmanAssetsClient', () => {
       fetchImpl
     });
 
-    const result = client.generateCollection('spec-123', 'payments', '[Baseline]', 'Paths', false, 'Fallback');
+    const result = client.generateCollection('spec-123', 'payments', '', 'Paths', false, 'Fallback');
     await vi.advanceTimersByTimeAsync(5000);
 
     await expect(result).resolves.toBe('col-after-lock');
@@ -700,7 +701,7 @@ describe('PostmanAssetsClient', () => {
     });
 
     await expect(
-      client.generateCollection('spec-123', 'payments', '[Baseline]', 'Paths', false, 'Fallback')
+      client.generateCollection('spec-123', 'payments', '', 'Paths', false, 'Fallback')
     ).rejects.toThrow('500 Server Error');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });

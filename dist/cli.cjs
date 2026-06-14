@@ -7,7 +7,11 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __export = (target, all2) => {
   for (var name in all2)
@@ -79,10 +83,10 @@ var require_tunnel = __commonJS({
       self.sockets = [];
       self.on("free", function onFree(socket, host, port, localAddress) {
         var options2 = toOptions(host, port, localAddress);
-        for (var i = 0, len = self.requests.length; i < len; ++i) {
-          var pending = self.requests[i];
+        for (var i2 = 0, len = self.requests.length; i2 < len; ++i2) {
+          var pending = self.requests[i2];
           if (pending.host === options2.host && pending.port === options2.port) {
-            self.requests.splice(i, 1);
+            self.requests.splice(i2, 1);
             pending.request.onSocket(socket);
             return;
           }
@@ -228,8 +232,8 @@ var require_tunnel = __commonJS({
       return host;
     }
     function mergeOptions(target) {
-      for (var i = 1, len = arguments.length; i < len; ++i) {
-        var overrides = arguments[i];
+      for (var i2 = 1, len = arguments.length; i2 < len; ++i2) {
+        var overrides = arguments[i2];
         if (typeof overrides === "object") {
           var keys = Object.keys(overrides);
           for (var j = 0, keyLen = keys.length; j < keyLen; ++j) {
@@ -801,8 +805,8 @@ var require_constants = __commonJS({
       "X-Requested-With",
       "X-XSS-Protection"
     ];
-    for (let i = 0; i < wellknownHeaderNames.length; ++i) {
-      const key = wellknownHeaderNames[i];
+    for (let i2 = 0; i2 < wellknownHeaderNames.length; ++i2) {
+      const key = wellknownHeaderNames[i2];
       const lowerCasedKey = key.toLowerCase();
       headerNameLowerCasedRecord[key] = headerNameLowerCasedRecord[lowerCasedKey] = lowerCasedKey;
     }
@@ -943,8 +947,8 @@ var require_tree = __commonJS({
       }
     };
     var tree = new TernarySearchTree();
-    for (let i = 0; i < wellknownHeaderNames.length; ++i) {
-      const key = headerNameLowerCasedRecord[wellknownHeaderNames[i]];
+    for (let i2 = 0; i2 < wellknownHeaderNames.length; ++i2) {
+      const key = headerNameLowerCasedRecord[wellknownHeaderNames[i2]];
       tree.insert(key, key);
     }
     module2.exports = {
@@ -1168,17 +1172,17 @@ var require_util = __commonJS({
     }
     function parseHeaders(headers, obj) {
       if (obj === void 0) obj = {};
-      for (let i = 0; i < headers.length; i += 2) {
-        const key = headerNameToString(headers[i]);
+      for (let i2 = 0; i2 < headers.length; i2 += 2) {
+        const key = headerNameToString(headers[i2]);
         let val = obj[key];
         if (val) {
           if (typeof val === "string") {
             val = [val];
             obj[key] = val;
           }
-          val.push(headers[i + 1].toString("utf8"));
+          val.push(headers[i2 + 1].toString("utf8"));
         } else {
-          const headersValue = headers[i + 1];
+          const headersValue = headers[i2 + 1];
           if (typeof headersValue === "string") {
             obj[key] = headersValue;
           } else {
@@ -1347,8 +1351,8 @@ var require_util = __commonJS({
       if (characters.length === 0) {
         return false;
       }
-      for (let i = 0; i < characters.length; ++i) {
-        if (!isTokenCharCode(characters.charCodeAt(i))) {
+      for (let i2 = 0; i2 < characters.length; ++i2) {
+        if (!isTokenCharCode(characters.charCodeAt(i2))) {
           return false;
         }
       }
@@ -1773,8 +1777,8 @@ var require_request = __commonJS({
           if (headers.length % 2 !== 0) {
             throw new InvalidArgumentError("headers array must be even");
           }
-          for (let i = 0; i < headers.length; i += 2) {
-            processHeader(this, headers[i], headers[i + 1]);
+          for (let i2 = 0; i2 < headers.length; i2 += 2) {
+            processHeader(this, headers[i2], headers[i2 + 1]);
           }
         } else if (headers && typeof headers === "object") {
           if (headers[Symbol.iterator]) {
@@ -1786,8 +1790,8 @@ var require_request = __commonJS({
             }
           } else {
             const keys = Object.keys(headers);
-            for (let i = 0; i < keys.length; ++i) {
-              processHeader(this, keys[i], headers[keys[i]]);
+            for (let i2 = 0; i2 < keys.length; ++i2) {
+              processHeader(this, keys[i2], headers[keys[i2]]);
             }
           }
         } else if (headers != null) {
@@ -1915,18 +1919,18 @@ var require_request = __commonJS({
       }
       if (Array.isArray(val)) {
         const arr = [];
-        for (let i = 0; i < val.length; i++) {
-          if (typeof val[i] === "string") {
-            if (!isValidHeaderValue(val[i])) {
+        for (let i2 = 0; i2 < val.length; i2++) {
+          if (typeof val[i2] === "string") {
+            if (!isValidHeaderValue(val[i2])) {
               throw new InvalidArgumentError(`invalid ${key} header`);
             }
-            arr.push(val[i]);
-          } else if (val[i] === null) {
+            arr.push(val[i2]);
+          } else if (val[i2] === null) {
             arr.push("");
-          } else if (typeof val[i] === "object") {
+          } else if (typeof val[i2] === "object") {
             throw new InvalidArgumentError(`invalid ${key} header`);
           } else {
-            arr.push(`${val[i]}`);
+            arr.push(`${val[i2]}`);
           }
         }
         val = arr;
@@ -2073,8 +2077,8 @@ var require_dispatcher_base = __commonJS({
       }
       set interceptors(newInterceptors) {
         if (newInterceptors) {
-          for (let i = newInterceptors.length - 1; i >= 0; i--) {
-            const interceptor = this[kInterceptors][i];
+          for (let i2 = newInterceptors.length - 1; i2 >= 0; i2--) {
+            const interceptor = this[kInterceptors][i2];
             if (typeof interceptor !== "function") {
               throw new InvalidArgumentError("interceptor must be an function");
             }
@@ -2110,8 +2114,8 @@ var require_dispatcher_base = __commonJS({
         const onClosed = () => {
           const callbacks = this[kOnClosed];
           this[kOnClosed] = null;
-          for (let i = 0; i < callbacks.length; i++) {
-            callbacks[i](null, null);
+          for (let i2 = 0; i2 < callbacks.length; i2++) {
+            callbacks[i2](null, null);
           }
         };
         this[kClose]().then(() => this.destroy()).then(() => {
@@ -2153,8 +2157,8 @@ var require_dispatcher_base = __commonJS({
         const onDestroyed = () => {
           const callbacks = this[kOnDestroyed];
           this[kOnDestroyed] = null;
-          for (let i = 0; i < callbacks.length; i++) {
-            callbacks[i](null, null);
+          for (let i2 = 0; i2 < callbacks.length; i2++) {
+            callbacks[i2](null, null);
           }
         };
         this[kDestroy](err).then(() => {
@@ -2167,8 +2171,8 @@ var require_dispatcher_base = __commonJS({
           return this[kDispatch](opts, handler);
         }
         let dispatch = this[kDispatch].bind(this);
-        for (let i = this[kInterceptors].length - 1; i >= 0; i--) {
-          dispatch = this[kInterceptors][i](dispatch);
+        for (let i2 = this[kInterceptors].length - 1; i2 >= 0; i2--) {
+          dispatch = this[kInterceptors][i2](dispatch);
         }
         this[kInterceptedDispatch] = dispatch;
         return dispatch(opts, handler);
@@ -2812,9 +2816,9 @@ var require_constants2 = __commonJS({
       FINISH2[FINISH2["UNSAFE"] = 2] = "UNSAFE";
     })(FINISH = exports2.FINISH || (exports2.FINISH = {}));
     exports2.ALPHA = [];
-    for (let i = "A".charCodeAt(0); i <= "Z".charCodeAt(0); i++) {
-      exports2.ALPHA.push(String.fromCharCode(i));
-      exports2.ALPHA.push(String.fromCharCode(i + 32));
+    for (let i2 = "A".charCodeAt(0); i2 <= "Z".charCodeAt(0); i2++) {
+      exports2.ALPHA.push(String.fromCharCode(i2));
+      exports2.ALPHA.push(String.fromCharCode(i2 + 32));
     }
     exports2.NUM_MAP = {
       0: 0,
@@ -2900,8 +2904,8 @@ var require_constants2 = __commonJS({
       "~"
     ].concat(exports2.ALPHANUM);
     exports2.URL_CHAR = exports2.STRICT_URL_CHAR.concat(["	", "\f"]);
-    for (let i = 128; i <= 255; i++) {
-      exports2.URL_CHAR.push(i);
+    for (let i2 = 128; i2 <= 255; i2++) {
+      exports2.URL_CHAR.push(i2);
     }
     exports2.HEX = exports2.NUM.concat(["a", "b", "c", "d", "e", "f", "A", "B", "C", "D", "E", "F"]);
     exports2.STRICT_TOKEN = [
@@ -2923,9 +2927,9 @@ var require_constants2 = __commonJS({
     ].concat(exports2.ALPHANUM);
     exports2.TOKEN = exports2.STRICT_TOKEN.concat([" "]);
     exports2.HEADER_CHARS = ["	"];
-    for (let i = 32; i <= 255; i++) {
-      if (i !== 127) {
-        exports2.HEADER_CHARS.push(i);
+    for (let i2 = 32; i2 <= 255; i2++) {
+      if (i2 !== 127) {
+        exports2.HEADER_CHARS.push(i2);
       }
     }
     exports2.CONNECTION_TOKEN_CHARS = exports2.HEADER_CHARS.filter((c) => c !== 44);
@@ -3319,15 +3323,15 @@ var require_data_url = __commonJS({
       const length = input.length;
       const output = new Uint8Array(length);
       let j = 0;
-      for (let i = 0; i < length; ++i) {
-        const byte = input[i];
+      for (let i2 = 0; i2 < length; ++i2) {
+        const byte = input[i2];
         if (byte !== 37) {
           output[j++] = byte;
-        } else if (byte === 37 && !(isHexCharByte(input[i + 1]) && isHexCharByte(input[i + 2]))) {
+        } else if (byte === 37 && !(isHexCharByte(input[i2 + 1]) && isHexCharByte(input[i2 + 2]))) {
           output[j++] = 37;
         } else {
-          output[j++] = hexByteToNumber(input[i + 1]) << 4 | hexByteToNumber(input[i + 2]);
-          i += 2;
+          output[j++] = hexByteToNumber(input[i2 + 1]) << 4 | hexByteToNumber(input[i2 + 2]);
+          i2 += 2;
         }
       }
       return length === j ? output : output.subarray(0, j);
@@ -3513,13 +3517,13 @@ var require_data_url = __commonJS({
         return String.fromCharCode.apply(null, input);
       }
       let result = "";
-      let i = 0;
+      let i2 = 0;
       let addition = (2 << 15) - 1;
-      while (i < length) {
-        if (i + addition > length) {
-          addition = length - i;
+      while (i2 < length) {
+        if (i2 + addition > length) {
+          addition = length - i2;
         }
-        result += String.fromCharCode.apply(null, input.subarray(i, i += addition));
+        result += String.fromCharCode.apply(null, input.subarray(i2, i2 += addition));
       }
       return result;
     }
@@ -3792,12 +3796,12 @@ var require_webidl = __commonJS({
         return result;
       };
     };
-    webidl.interfaceConverter = function(i) {
+    webidl.interfaceConverter = function(i2) {
       return (V, prefix, argument, opts) => {
-        if (opts?.strict !== false && !(V instanceof i)) {
+        if (opts?.strict !== false && !(V instanceof i2)) {
           throw webidl.errors.exception({
             header: prefix,
-            message: `Expected ${argument} ("${webidl.util.Stringify(V)}") to be an instance of ${i.name}.`
+            message: `Expected ${argument} ("${webidl.util.Stringify(V)}") to be an instance of ${i2.name}.`
           });
         }
         return V;
@@ -4040,8 +4044,8 @@ var require_util2 = __commonJS({
       return location2;
     }
     function isValidEncodedURL(url) {
-      for (let i = 0; i < url.length; ++i) {
-        const code = url.charCodeAt(i);
+      for (let i2 = 0; i2 < url.length; ++i2) {
+        const code = url.charCodeAt(i2);
         if (code > 126 || // Non-US-ASCII + DEL
         code < 32) {
           return false;
@@ -4066,8 +4070,8 @@ var require_util2 = __commonJS({
       return object instanceof Error || (object?.constructor?.name === "Error" || object?.constructor?.name === "DOMException");
     }
     function isValidReasonPhrase(statusText) {
-      for (let i = 0; i < statusText.length; ++i) {
-        const c = statusText.charCodeAt(i);
+      for (let i2 = 0; i2 < statusText.length; ++i2) {
+        const c = statusText.charCodeAt(i2);
         if (!(c === 9 || // HTAB
         c >= 32 && c <= 126 || // SP / VCHAR
         c >= 128 && c <= 255)) {
@@ -4085,8 +4089,8 @@ var require_util2 = __commonJS({
       const policyHeader = (headersList.get("referrer-policy", true) ?? "").split(",");
       let policy = "";
       if (policyHeader.length > 0) {
-        for (let i = policyHeader.length; i !== 0; i--) {
-          const token = policyHeader[i - 1].trim();
+        for (let i2 = policyHeader.length; i2 !== 0; i2--) {
+          const token = policyHeader[i2 - 1].trim();
           if (referrerPolicyTokens.has(token)) {
             policy = token;
             break;
@@ -4342,8 +4346,8 @@ var require_util2 = __commonJS({
       if (algorithm[3] === "5") {
         return algorithm;
       }
-      for (let i = 1; i < metadataList.length; ++i) {
-        const metadata = metadataList[i];
+      for (let i2 = 1; i2 < metadataList.length; ++i2) {
+        const metadata = metadataList[i2];
         if (metadata.algo[3] === "5") {
           algorithm = "sha512";
           break;
@@ -4360,9 +4364,9 @@ var require_util2 = __commonJS({
         return metadataList;
       }
       let pos = 0;
-      for (let i = 0; i < metadataList.length; ++i) {
-        if (metadataList[i].algo === algorithm) {
-          metadataList[pos++] = metadataList[i];
+      for (let i2 = 0; i2 < metadataList.length; ++i2) {
+        if (metadataList[i2].algo === algorithm) {
+          metadataList[pos++] = metadataList[i2];
         }
       }
       metadataList.length = pos;
@@ -4372,9 +4376,9 @@ var require_util2 = __commonJS({
       if (actualValue.length !== expectedValue.length) {
         return false;
       }
-      for (let i = 0; i < actualValue.length; ++i) {
-        if (actualValue[i] !== expectedValue[i]) {
-          if (actualValue[i] === "+" && expectedValue[i] === "-" || actualValue[i] === "/" && expectedValue[i] === "_") {
+      for (let i2 = 0; i2 < actualValue.length; ++i2) {
+        if (actualValue[i2] !== expectedValue[i2]) {
+          if (actualValue[i2] === "+" && expectedValue[i2] === "-" || actualValue[i2] === "/" && expectedValue[i2] === "_") {
             continue;
           }
           return false;
@@ -5107,8 +5111,8 @@ var require_formdata_parser = __commonJS({
     var dd = Buffer.from("--");
     var ddcrlf = Buffer.from("--\r\n");
     function isAsciiString(chars) {
-      for (let i = 0; i < chars.length; ++i) {
-        if ((chars.charCodeAt(i) & ~127) !== 0) {
+      for (let i2 = 0; i2 < chars.length; ++i2) {
+        if ((chars.charCodeAt(i2) & ~127) !== 0) {
           return false;
         }
       }
@@ -5119,8 +5123,8 @@ var require_formdata_parser = __commonJS({
       if (length < 27 || length > 70) {
         return false;
       }
-      for (let i = 0; i < length; ++i) {
-        const cp2 = boundary.charCodeAt(i);
+      for (let i2 = 0; i2 < length; ++i2) {
+        const cp2 = boundary.charCodeAt(i2);
         if (!(cp2 >= 48 && cp2 <= 57 || cp2 >= 65 && cp2 <= 90 || cp2 >= 97 && cp2 <= 122 || cp2 === 39 || cp2 === 45 || cp2 === 95)) {
           return false;
         }
@@ -5327,8 +5331,8 @@ var require_formdata_parser = __commonJS({
       if (buffer.length < start.length) {
         return false;
       }
-      for (let i = 0; i < start.length; i++) {
-        if (start[i] !== buffer[position.position + i]) {
+      for (let i2 = 0; i2 < start.length; i2++) {
+        if (start[i2] !== buffer[position.position + i2]) {
           return false;
         }
       }
@@ -6238,8 +6242,8 @@ var require_client_h1 = __commonJS({
         if (client2.destroyed) {
           assert(client2[kPending] === 0);
           const requests = client2[kQueue].splice(client2[kRunningIdx]);
-          for (let i = 0; i < requests.length; i++) {
-            const request = requests[i];
+          for (let i2 = 0; i2 < requests.length; i2++) {
+            const request = requests[i2];
             util.errorRequest(client2, request, err);
           }
         } else if (client2[kRunning] > 0 && err.code !== "UND_ERR_INFO") {
@@ -6411,8 +6415,8 @@ upgrade: ${upgrade}\r
           const key = headers[n + 0];
           const val = headers[n + 1];
           if (Array.isArray(val)) {
-            for (let i = 0; i < val.length; i++) {
-              header += `${key}: ${val[i]}\r
+            for (let i2 = 0; i2 < val.length; i2++) {
+              header += `${key}: ${val[i2]}\r
 `;
             }
           } else {
@@ -6805,8 +6809,8 @@ var require_client_h2 = __commonJS({
         if (client2.destroyed) {
           assert(client2[kPending] === 0);
           const requests = client2[kQueue].splice(client2[kRunningIdx]);
-          for (let i = 0; i < requests.length; i++) {
-            const request = requests[i];
+          for (let i2 = 0; i2 < requests.length; i2++) {
+            const request = requests[i2];
             util.errorRequest(client2, request, err);
           }
         }
@@ -6926,11 +6930,11 @@ var require_client_h2 = __commonJS({
         const key = reqHeaders[n + 0];
         const val = reqHeaders[n + 1];
         if (Array.isArray(val)) {
-          for (let i = 0; i < val.length; i++) {
+          for (let i2 = 0; i2 < val.length; i2++) {
             if (headers[key]) {
-              headers[key] += `,${val[i]}`;
+              headers[key] += `,${val[i2]}`;
             } else {
-              headers[key] = val[i];
+              headers[key] = val[i2];
             }
           }
         } else {
@@ -7371,9 +7375,9 @@ var require_redirect_handler = __commonJS({
       if (redirectableStatusCodes.indexOf(statusCode) === -1) {
         return null;
       }
-      for (let i = 0; i < headers.length; i += 2) {
-        if (headers[i].length === 8 && util.headerNameToString(headers[i]) === "location") {
-          return headers[i + 1];
+      for (let i2 = 0; i2 < headers.length; i2 += 2) {
+        if (headers[i2].length === 8 && util.headerNameToString(headers[i2]) === "location") {
+          return headers[i2 + 1];
         }
       }
     }
@@ -7393,9 +7397,9 @@ var require_redirect_handler = __commonJS({
     function cleanRequestHeaders(headers, removeContent, unknownOrigin) {
       const ret = [];
       if (Array.isArray(headers)) {
-        for (let i = 0; i < headers.length; i += 2) {
-          if (!shouldRemoveHeader(headers[i], removeContent, unknownOrigin)) {
-            ret.push(headers[i], headers[i + 1]);
+        for (let i2 = 0; i2 < headers.length; i2 += 2) {
+          if (!shouldRemoveHeader(headers[i2], removeContent, unknownOrigin)) {
+            ret.push(headers[i2], headers[i2 + 1]);
           }
         }
       } else if (headers && typeof headers === "object") {
@@ -7712,8 +7716,8 @@ var require_client = __commonJS({
       async [kDestroy](err) {
         return new Promise((resolve3) => {
           const requests = this[kQueue].splice(this[kPendingIdx]);
-          for (let i = 0; i < requests.length; i++) {
-            const request = requests[i];
+          for (let i2 = 0; i2 < requests.length; i2++) {
+            const request = requests[i2];
             util.errorRequest(this, request, err);
           }
           const callback = () => {
@@ -7738,8 +7742,8 @@ var require_client = __commonJS({
       if (client[kRunning] === 0 && err.code !== "UND_ERR_INFO" && err.code !== "UND_ERR_SOCKET") {
         assert(client[kPendingIdx] === client[kRunningIdx]);
         const requests = client[kQueue].splice(client[kRunningIdx]);
-        for (let i = 0; i < requests.length; i++) {
-          const request = requests[i];
+        for (let i2 = 0; i2 < requests.length; i2++) {
+          const request = requests[i2];
           util.errorRequest(client, request, err);
         }
         assert(client[kSize] === 0);
@@ -8360,8 +8364,8 @@ var require_balanced_pool = __commonJS({
       }
       _updateBalancedPoolStats() {
         let result = 0;
-        for (let i = 0; i < this[kClients].length; i++) {
-          result = getGreatestCommonDivisor(this[kClients][i][kWeight], result);
+        for (let i2 = 0; i2 < this[kClients].length; i2++) {
+          result = getGreatestCommonDivisor(this[kClients][i2][kWeight], result);
         }
         this[kGreatestCommonDivisor] = result;
       }
@@ -8718,8 +8722,8 @@ var require_proxy_agent = __commonJS({
     function buildHeaders(headers) {
       if (Array.isArray(headers)) {
         const headersPair = {};
-        for (let i = 0; i < headers.length; i += 2) {
-          headersPair[headers[i]] = headers[i + 1];
+        for (let i2 = 0; i2 < headers.length; i2 += 2) {
+          headersPair[headers[i2]] = headers[i2 + 1];
         }
         return headersPair;
       }
@@ -8822,8 +8826,8 @@ var require_env_http_proxy_agent = __commonJS({
         if (this.#noProxyValue === "*") {
           return false;
         }
-        for (let i = 0; i < this.#noProxyEntries.length; i++) {
-          const entry = this.#noProxyEntries[i];
+        for (let i2 = 0; i2 < this.#noProxyEntries.length; i2++) {
+          const entry = this.#noProxyEntries[i2];
           if (entry.port && entry.port !== port) {
             continue;
           }
@@ -8843,8 +8847,8 @@ var require_env_http_proxy_agent = __commonJS({
         const noProxyValue = this.#opts.noProxy ?? this.#noProxyEnv;
         const noProxySplit = noProxyValue.split(/[,\s]/);
         const noProxyEntries = [];
-        for (let i = 0; i < noProxySplit.length; i++) {
-          const entry = noProxySplit[i];
+        for (let i2 = 0; i2 < noProxySplit.length; i2++) {
+          const entry = noProxySplit[i2];
           if (!entry) {
             continue;
           }
@@ -9447,8 +9451,8 @@ var require_readable = __commonJS({
       }
       const buffer = new Uint8Array(Buffer.allocUnsafeSlow(length).buffer);
       let offset = 0;
-      for (let i = 0; i < chunks.length; ++i) {
-        const chunk = chunks[i];
+      for (let i2 = 0; i2 < chunks.length; ++i2) {
+        const chunk = chunks[i2];
         buffer.set(chunk, offset);
         offset += chunk.length;
       }
@@ -10455,9 +10459,9 @@ var require_mock_utils = __commonJS({
     }
     function getHeaderByName(headers, key) {
       if (Array.isArray(headers)) {
-        for (let i = 0; i < headers.length; i += 2) {
-          if (headers[i].toLocaleLowerCase() === key.toLocaleLowerCase()) {
-            return headers[i + 1];
+        for (let i2 = 0; i2 < headers.length; i2 += 2) {
+          if (headers[i2].toLocaleLowerCase() === key.toLocaleLowerCase()) {
+            return headers[i2 + 1];
           }
         }
         return void 0;
@@ -10581,8 +10585,8 @@ var require_mock_utils = __commonJS({
     function generateKeyValues(data) {
       const keys = Object.keys(data);
       const result = [];
-      for (let i = 0; i < keys.length; ++i) {
-        const key = keys[i];
+      for (let i2 = 0; i2 < keys.length; ++i2) {
+        const key = keys[i2];
         const value = data[key];
         const name = Buffer.from(`${key}`);
         if (Array.isArray(value)) {
@@ -11709,16 +11713,16 @@ var require_headers = __commonJS({
       return code === 10 || code === 13 || code === 9 || code === 32;
     }
     function headerValueNormalize(potentialValue) {
-      let i = 0;
+      let i2 = 0;
       let j = potentialValue.length;
-      while (j > i && isHTTPWhiteSpaceCharCode(potentialValue.charCodeAt(j - 1))) --j;
-      while (j > i && isHTTPWhiteSpaceCharCode(potentialValue.charCodeAt(i))) ++i;
-      return i === 0 && j === potentialValue.length ? potentialValue : potentialValue.substring(i, j);
+      while (j > i2 && isHTTPWhiteSpaceCharCode(potentialValue.charCodeAt(j - 1))) --j;
+      while (j > i2 && isHTTPWhiteSpaceCharCode(potentialValue.charCodeAt(i2))) ++i2;
+      return i2 === 0 && j === potentialValue.length ? potentialValue : potentialValue.substring(i2, j);
     }
     function fill(headers, object) {
       if (Array.isArray(object)) {
-        for (let i = 0; i < object.length; ++i) {
-          const header = object[i];
+        for (let i2 = 0; i2 < object.length; ++i2) {
+          const header = object[i2];
           if (header.length !== 2) {
             throw webidl.errors.exception({
               header: "Headers constructor",
@@ -11729,8 +11733,8 @@ var require_headers = __commonJS({
         }
       } else if (typeof object === "object" && object !== null) {
         const keys = Object.keys(object);
-        for (let i = 0; i < keys.length; ++i) {
-          appendHeader(headers, keys[i], object[keys[i]]);
+        for (let i2 = 0; i2 < keys.length; ++i2) {
+          appendHeader(headers, keys[i2], object[keys[i2]]);
         }
       } else {
         throw webidl.errors.conversionFailed({
@@ -11892,12 +11896,12 @@ var require_headers = __commonJS({
           const firstValue2 = iterator.next().value;
           array[0] = [firstValue2[0], firstValue2[1].value];
           assert(firstValue2[1].value !== null);
-          for (let i = 1, j = 0, right = 0, left = 0, pivot = 0, x, value; i < size; ++i) {
+          for (let i2 = 1, j = 0, right = 0, left = 0, pivot = 0, x, value; i2 < size; ++i2) {
             value = iterator.next().value;
-            x = array[i] = [value[0], value[1].value];
+            x = array[i2] = [value[0], value[1].value];
             assert(x[1] !== null);
             left = 0;
-            right = i;
+            right = i2;
             while (left < right) {
               pivot = left + (right - left >> 1);
               if (array[pivot][0] <= x[0]) {
@@ -11906,8 +11910,8 @@ var require_headers = __commonJS({
                 right = pivot;
               }
             }
-            if (i !== pivot) {
-              j = i;
+            if (i2 !== pivot) {
+              j = i2;
               while (j > left) {
                 array[j] = array[--j];
               }
@@ -11919,9 +11923,9 @@ var require_headers = __commonJS({
           }
           return array;
         } else {
-          let i = 0;
+          let i2 = 0;
           for (const { 0: name, 1: { value } } of this[kHeadersMap]) {
-            array[i++] = [name, value];
+            array[i2++] = [name, value];
             assert(value !== null);
           }
           return array.sort(compareHeaderName);
@@ -12049,8 +12053,8 @@ var require_headers = __commonJS({
         if (cookies === null || cookies.length === 1) {
           return this.#headersList[kHeadersSortedMap] = names;
         }
-        for (let i = 0; i < names.length; ++i) {
-          const { 0: name, 1: value } = names[i];
+        for (let i2 = 0; i2 < names.length; ++i2) {
+          const { 0: name, 1: value } = names[i2];
           if (name === "set-cookie") {
             for (let j = 0; j < cookies.length; ++j) {
               headers.push([name, cookies[j]]);
@@ -14226,8 +14230,8 @@ var require_fetch = __commonJS({
               }
               let location2 = "";
               const headersList = new HeadersList();
-              for (let i = 0; i < rawHeaders.length; i += 2) {
-                headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i]), rawHeaders[i + 1].toString("latin1"), true);
+              for (let i2 = 0; i2 < rawHeaders.length; i2 += 2) {
+                headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i2]), rawHeaders[i2 + 1].toString("latin1"), true);
               }
               location2 = headersList.get("location", true);
               this.body = new Readable({ read: resume });
@@ -14241,8 +14245,8 @@ var require_fetch = __commonJS({
                   reject(new Error(`too many content-encodings in response: ${codings.length}, maximum allowed is ${maxContentEncodings}`));
                   return true;
                 }
-                for (let i = codings.length - 1; i >= 0; --i) {
-                  const coding = codings[i].trim();
+                for (let i2 = codings.length - 1; i2 >= 0; --i2) {
+                  const coding = codings[i2].trim();
                   if (coding === "x-gzip" || coding === "gzip") {
                     decoders.push(zlib.createGunzip({
                       // Be less strict when decoding compressed responses, since sometimes
@@ -14312,8 +14316,8 @@ var require_fetch = __commonJS({
                 return;
               }
               const headersList = new HeadersList();
-              for (let i = 0; i < rawHeaders.length; i += 2) {
-                headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i]), rawHeaders[i + 1].toString("latin1"), true);
+              for (let i2 = 0; i2 < rawHeaders.length; i2 += 2) {
+                headersList.append(bufferToLowerCasedHeaderName(rawHeaders[i2]), rawHeaders[i2 + 1].toString("latin1"), true);
               }
               resolve3({
                 status,
@@ -15862,8 +15866,8 @@ var require_util6 = __commonJS({
   "node_modules/undici/lib/web/cookies/util.js"(exports2, module2) {
     "use strict";
     function isCTLExcludingHtab(value) {
-      for (let i = 0; i < value.length; ++i) {
-        const code = value.charCodeAt(i);
+      for (let i2 = 0; i2 < value.length; ++i2) {
+        const code = value.charCodeAt(i2);
         if (code >= 0 && code <= 8 || code >= 10 && code <= 31 || code === 127) {
           return true;
         }
@@ -15871,8 +15875,8 @@ var require_util6 = __commonJS({
       return false;
     }
     function validateCookieName(name) {
-      for (let i = 0; i < name.length; ++i) {
-        const code = name.charCodeAt(i);
+      for (let i2 = 0; i2 < name.length; ++i2) {
+        const code = name.charCodeAt(i2);
         if (code < 33 || // exclude CTLs (0-31), SP and HT
         code > 126 || // exclude non-ascii and DEL
         code === 34 || // "
@@ -15898,16 +15902,16 @@ var require_util6 = __commonJS({
     }
     function validateCookieValue(value) {
       let len = value.length;
-      let i = 0;
+      let i2 = 0;
       if (value[0] === '"') {
         if (len === 1 || value[len - 1] !== '"') {
           throw new Error("Invalid cookie value");
         }
         --len;
-        ++i;
+        ++i2;
       }
-      while (i < len) {
-        const code = value.charCodeAt(i++);
+      while (i2 < len) {
+        const code = value.charCodeAt(i2++);
         if (code < 33 || // exclude CTLs (0-31)
         code > 126 || // non-ascii and DEL (127)
         code === 34 || // "
@@ -15919,8 +15923,8 @@ var require_util6 = __commonJS({
       }
     }
     function validateCookiePath(path6) {
-      for (let i = 0; i < path6.length; ++i) {
-        const code = path6.charCodeAt(i);
+      for (let i2 = 0; i2 < path6.length; ++i2) {
+        const code = path6.charCodeAt(i2);
         if (code < 32 || // exclude CTLs (0-31)
         code === 127 || // DEL
         code === 59) {
@@ -15956,7 +15960,7 @@ var require_util6 = __commonJS({
       "Nov",
       "Dec"
     ];
-    var IMFPaddedNumbers = Array(61).fill(0).map((_, i) => i.toString().padStart(2, "0"));
+    var IMFPaddedNumbers = Array(61).fill(0).map((_, i2) => i2.toString().padStart(2, "0"));
     function toIMFDate(date) {
       if (typeof date === "number") {
         date = new Date(date);
@@ -16695,8 +16699,8 @@ var require_util7 = __commonJS({
       if (protocol.length === 0) {
         return false;
       }
-      for (let i = 0; i < protocol.length; ++i) {
-        const code = protocol.charCodeAt(i);
+      for (let i2 = 0; i2 < protocol.length; ++i2) {
+        const code = protocol.charCodeAt(i2);
         if (code < 33 || // CTL, contains SP (0x20) and HT (0x09)
         code > 126 || code === 34 || // "
         code === 40 || // (
@@ -16771,8 +16775,8 @@ var require_util7 = __commonJS({
       if (value.length === 0) {
         return false;
       }
-      for (let i = 0; i < value.length; i++) {
-        const byte = value.charCodeAt(i);
+      for (let i2 = 0; i2 < value.length; i2++) {
+        const byte = value.charCodeAt(i2);
         if (byte < 48 || byte > 57) {
           return false;
         }
@@ -16824,8 +16828,8 @@ var require_frame = __commonJS({
       crypto = {
         // not full compatibility, but minimum.
         randomFillSync: function randomFillSync(buffer2, _offset, _size) {
-          for (let i = 0; i < buffer2.length; ++i) {
-            buffer2[i] = Math.random() * 255 | 0;
+          for (let i2 = 0; i2 < buffer2.length; ++i2) {
+            buffer2[i2] = Math.random() * 255 | 0;
           }
           return buffer2;
         }
@@ -16874,8 +16878,8 @@ var require_frame = __commonJS({
           buffer2.writeUIntBE(bodyLength, 4, 6);
         }
         buffer2[1] |= 128;
-        for (let i = 0; i < bodyLength; ++i) {
-          buffer2[offset + i] = frameData[i] ^ maskKey[i & 3];
+        for (let i2 = 0; i2 < bodyLength; ++i2) {
+          buffer2[offset + i2] = frameData[i2] ^ maskKey[i2 & 3];
         }
         return buffer2;
       }
@@ -17985,8 +17989,8 @@ var require_util8 = __commonJS({
     }
     function isASCIINumber(value) {
       if (value.length === 0) return false;
-      for (let i = 0; i < value.length; i++) {
-        if (value.charCodeAt(i) < 48 || value.charCodeAt(i) > 57) return false;
+      for (let i2 = 0; i2 < value.length; i2++) {
+        if (value.charCodeAt(i2) < 48 || value.charCodeAt(i2) > 57) return false;
       }
       return true;
     }
@@ -18758,15 +18762,15 @@ var require_visit = __commonJS({
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
           path6 = Object.freeze(path6.concat(node));
-          for (let i = 0; i < node.items.length; ++i) {
-            const ci = visit_(i, node.items[i], visitor, path6);
+          for (let i2 = 0; i2 < node.items.length; ++i2) {
+            const ci = visit_(i2, node.items[i2], visitor, path6);
             if (typeof ci === "number")
-              i = ci - 1;
+              i2 = ci - 1;
             else if (ci === BREAK)
               return BREAK;
             else if (ci === REMOVE) {
-              node.items.splice(i, 1);
-              i -= 1;
+              node.items.splice(i2, 1);
+              i2 -= 1;
             }
           }
         } else if (identity.isPair(node)) {
@@ -18806,15 +18810,15 @@ var require_visit = __commonJS({
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
           path6 = Object.freeze(path6.concat(node));
-          for (let i = 0; i < node.items.length; ++i) {
-            const ci = await visitAsync_(i, node.items[i], visitor, path6);
+          for (let i2 = 0; i2 < node.items.length; ++i2) {
+            const ci = await visitAsync_(i2, node.items[i2], visitor, path6);
             if (typeof ci === "number")
-              i = ci - 1;
+              i2 = ci - 1;
             else if (ci === BREAK)
               return BREAK;
             else if (ci === REMOVE) {
-              node.items.splice(i, 1);
-              i -= 1;
+              node.items.splice(i2, 1);
+              i2 -= 1;
             }
           }
         } else if (identity.isPair(node)) {
@@ -19083,8 +19087,8 @@ var require_anchors = __commonJS({
       return anchors;
     }
     function findNewAnchor(prefix, exclude) {
-      for (let i = 1; true; ++i) {
-        const name = `${prefix}${i}`;
+      for (let i2 = 1; true; ++i2) {
+        const name = `${prefix}${i2}`;
         if (!exclude.has(name))
           return name;
       }
@@ -19135,13 +19139,13 @@ var require_applyReviver = __commonJS({
     function applyReviver(reviver, obj, key, val) {
       if (val && typeof val === "object") {
         if (Array.isArray(val)) {
-          for (let i = 0, len = val.length; i < len; ++i) {
-            const v0 = val[i];
-            const v1 = applyReviver(reviver, val, String(i), v0);
+          for (let i2 = 0, len = val.length; i2 < len; ++i2) {
+            const v0 = val[i2];
+            const v1 = applyReviver(reviver, val, String(i2), v0);
             if (v1 === void 0)
-              delete val[i];
+              delete val[i2];
             else if (v1 !== v0)
-              val[i] = v1;
+              val[i2] = v1;
           }
         } else if (val instanceof Map) {
           for (const k of Array.from(val.keys())) {
@@ -19185,7 +19189,7 @@ var require_toJS = __commonJS({
     var identity = require_identity();
     function toJS(value, arg, ctx) {
       if (Array.isArray(value))
-        return value.map((v, i) => toJS(v, String(i), ctx));
+        return value.map((v, i2) => toJS(v, String(i2), ctx));
       if (value && typeof value.toJSON === "function") {
         if (!ctx || !identity.hasAnchor(value))
           return value.toJSON(arg, ctx);
@@ -19479,8 +19483,8 @@ var require_Collection = __commonJS({
     var Node = require_Node();
     function collectionFromPath(schema2, path6, value) {
       let v = value;
-      for (let i = path6.length - 1; i >= 0; --i) {
-        const k = path6[i];
+      for (let i2 = path6.length - 1; i2 >= 0; --i2) {
+        const k = path6[i2];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
           a[k] = v;
@@ -19657,44 +19661,44 @@ var require_foldFlowLines = __commonJS({
       let split = void 0;
       let prev = void 0;
       let overflow = false;
-      let i = -1;
+      let i2 = -1;
       let escStart = -1;
       let escEnd = -1;
       if (mode === FOLD_BLOCK) {
-        i = consumeMoreIndentedLines(text, i, indent.length);
-        if (i !== -1)
-          end = i + endStep;
+        i2 = consumeMoreIndentedLines(text, i2, indent.length);
+        if (i2 !== -1)
+          end = i2 + endStep;
       }
-      for (let ch; ch = text[i += 1]; ) {
+      for (let ch; ch = text[i2 += 1]; ) {
         if (mode === FOLD_QUOTED && ch === "\\") {
-          escStart = i;
-          switch (text[i + 1]) {
+          escStart = i2;
+          switch (text[i2 + 1]) {
             case "x":
-              i += 3;
+              i2 += 3;
               break;
             case "u":
-              i += 5;
+              i2 += 5;
               break;
             case "U":
-              i += 9;
+              i2 += 9;
               break;
             default:
-              i += 1;
+              i2 += 1;
           }
-          escEnd = i;
+          escEnd = i2;
         }
         if (ch === "\n") {
           if (mode === FOLD_BLOCK)
-            i = consumeMoreIndentedLines(text, i, indent.length);
-          end = i + indent.length + endStep;
+            i2 = consumeMoreIndentedLines(text, i2, indent.length);
+          end = i2 + indent.length + endStep;
           split = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-            const next = text[i + 1];
+            const next = text[i2 + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
-              split = i;
+              split = i2;
           }
-          if (i >= end) {
+          if (i2 >= end) {
             if (split) {
               folds.push(split);
               end = split + endStep;
@@ -19702,10 +19706,10 @@ var require_foldFlowLines = __commonJS({
             } else if (mode === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
-                ch = text[i += 1];
+                ch = text[i2 += 1];
                 overflow = true;
               }
-              const j = i > escEnd + 1 ? i - 2 : escStart - 1;
+              const j = i2 > escEnd + 1 ? i2 - 2 : escStart - 1;
               if (escapedFolds[j])
                 return text;
               folds.push(j);
@@ -19726,9 +19730,9 @@ var require_foldFlowLines = __commonJS({
       if (onFold)
         onFold();
       let res = text.slice(0, folds[0]);
-      for (let i2 = 0; i2 < folds.length; ++i2) {
-        const fold = folds[i2];
-        const end2 = folds[i2 + 1] || text.length;
+      for (let i3 = 0; i3 < folds.length; ++i3) {
+        const fold = folds[i3];
+        const end2 = folds[i3 + 1] || text.length;
         if (fold === 0)
           res = `
 ${indent}${text.slice(0, end2)}`;
@@ -19741,19 +19745,19 @@ ${indent}${text.slice(fold + 1, end2)}`;
       }
       return res;
     }
-    function consumeMoreIndentedLines(text, i, indent) {
-      let end = i;
-      let start = i + 1;
+    function consumeMoreIndentedLines(text, i2, indent) {
+      let end = i2;
+      let start = i2 + 1;
       let ch = text[start];
       while (ch === " " || ch === "	") {
-        if (i < start + indent) {
-          ch = text[++i];
+        if (i2 < start + indent) {
+          ch = text[++i2];
         } else {
           do {
-            ch = text[++i];
+            ch = text[++i2];
           } while (ch && ch !== "\n");
-          end = i;
-          start = i + 1;
+          end = i2;
+          start = i2 + 1;
           ch = text[start];
         }
       }
@@ -19785,11 +19789,11 @@ var require_stringifyString = __commonJS({
       const strLen = str2.length;
       if (strLen <= limit)
         return false;
-      for (let i = 0, start = 0; i < strLen; ++i) {
-        if (str2[i] === "\n") {
-          if (i - start > limit)
+      for (let i2 = 0, start = 0; i2 < strLen; ++i2) {
+        if (str2[i2] === "\n") {
+          if (i2 - start > limit)
             return true;
-          start = i + 1;
+          start = i2 + 1;
           if (strLen - start <= limit)
             return false;
         }
@@ -19805,19 +19809,19 @@ var require_stringifyString = __commonJS({
       const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
       let str2 = "";
       let start = 0;
-      for (let i = 0, ch = json2[i]; ch; ch = json2[++i]) {
-        if (ch === " " && json2[i + 1] === "\\" && json2[i + 2] === "n") {
-          str2 += json2.slice(start, i) + "\\ ";
-          i += 1;
-          start = i;
+      for (let i2 = 0, ch = json2[i2]; ch; ch = json2[++i2]) {
+        if (ch === " " && json2[i2 + 1] === "\\" && json2[i2 + 2] === "n") {
+          str2 += json2.slice(start, i2) + "\\ ";
+          i2 += 1;
+          start = i2;
           ch = "\\";
         }
         if (ch === "\\")
-          switch (json2[i + 1]) {
+          switch (json2[i2 + 1]) {
             case "u":
               {
-                str2 += json2.slice(start, i);
-                const code = json2.substr(i + 2, 4);
+                str2 += json2.slice(start, i2);
+                const code = json2.substr(i2 + 2, 4);
                 switch (code) {
                   case "0000":
                     str2 += "\\0";
@@ -19847,30 +19851,30 @@ var require_stringifyString = __commonJS({
                     if (code.substr(0, 2) === "00")
                       str2 += "\\x" + code.substr(2);
                     else
-                      str2 += json2.substr(i, 6);
+                      str2 += json2.substr(i2, 6);
                 }
-                i += 5;
-                start = i + 1;
+                i2 += 5;
+                start = i2 + 1;
               }
               break;
             case "n":
-              if (implicitKey || json2[i + 2] === '"' || json2.length < minMultiLineLength) {
-                i += 1;
+              if (implicitKey || json2[i2 + 2] === '"' || json2.length < minMultiLineLength) {
+                i2 += 1;
               } else {
-                str2 += json2.slice(start, i) + "\n\n";
-                while (json2[i + 2] === "\\" && json2[i + 3] === "n" && json2[i + 4] !== '"') {
+                str2 += json2.slice(start, i2) + "\n\n";
+                while (json2[i2 + 2] === "\\" && json2[i2 + 3] === "n" && json2[i2 + 4] !== '"') {
                   str2 += "\n";
-                  i += 2;
+                  i2 += 2;
                 }
                 str2 += indent;
-                if (json2[i + 2] === " ")
+                if (json2[i2 + 2] === " ")
                   str2 += "\\";
-                i += 1;
-                start = i + 1;
+                i2 += 1;
+                start = i2 + 1;
               }
               break;
             default:
-              i += 1;
+              i2 += 1;
           }
       }
       str2 = start ? str2 + json2.slice(start) : json2;
@@ -20509,8 +20513,8 @@ var require_stringifyCollection = __commonJS({
       const itemCtx = Object.assign({}, ctx, { indent: itemIndent, type: null });
       let chompKeep = false;
       const lines = [];
-      for (let i = 0; i < items.length; ++i) {
-        const item = items[i];
+      for (let i2 = 0; i2 < items.length; ++i2) {
+        const item = items[i2];
         let comment2 = null;
         if (identity.isNode(item)) {
           if (!chompKeep && item.spaceBefore)
@@ -20539,8 +20543,8 @@ var require_stringifyCollection = __commonJS({
         str2 = flowChars.start + flowChars.end;
       } else {
         str2 = lines[0];
-        for (let i = 1; i < lines.length; ++i) {
-          const line = lines[i];
+        for (let i2 = 1; i2 < lines.length; ++i2) {
+          const line = lines[i2];
           str2 += line ? `
 ${indent}${line}` : "\n";
         }
@@ -20564,8 +20568,8 @@ ${indent}${line}` : "\n";
       let reqNewline = false;
       let linesAtValue = 0;
       const lines = [];
-      for (let i = 0; i < items.length; ++i) {
-        const item = items[i];
+      for (let i2 = 0; i2 < items.length; ++i2) {
+        const item = items[i2];
         let comment = null;
         if (identity.isNode(item)) {
           if (item.spaceBefore)
@@ -20596,7 +20600,7 @@ ${indent}${line}` : "\n";
           reqNewline = true;
         let str2 = stringify2.stringify(item, itemCtx, () => comment = null);
         reqNewline || (reqNewline = lines.length > linesAtValue || str2.includes("\n"));
-        if (i < items.length - 1) {
+        if (i2 < items.length - 1) {
           str2 += ",";
         } else if (ctx.options.trailingComma) {
           if (ctx.options.lineWidth > 0) {
@@ -20724,11 +20728,11 @@ var require_YAMLMap = __commonJS({
           else
             prev.value = _pair.value;
         } else if (sortEntries) {
-          const i = this.items.findIndex((item) => sortEntries(_pair, item) < 0);
-          if (i === -1)
+          const i2 = this.items.findIndex((item) => sortEntries(_pair, item) < 0);
+          if (i2 === -1)
             this.items.push(_pair);
           else
-            this.items.splice(i, 0, _pair);
+            this.items.splice(i2, 0, _pair);
         } else {
           this.items.push(_pair);
         }
@@ -20883,9 +20887,9 @@ var require_YAMLSeq = __commonJS({
         const seq2 = [];
         if (ctx?.onCreate)
           ctx.onCreate(seq2);
-        let i = 0;
+        let i2 = 0;
         for (const item of this.items)
-          seq2.push(toJS.toJS(item, String(i++), ctx));
+          seq2.push(toJS.toJS(item, String(i2++), ctx));
         return seq2;
       }
       toString(ctx, onComment, onChompKeep) {
@@ -20903,10 +20907,10 @@ var require_YAMLSeq = __commonJS({
         const { replacer } = ctx;
         const seq2 = new this(schema2);
         if (obj && Symbol.iterator in Object(obj)) {
-          let i = 0;
+          let i2 = 0;
           for (let it of obj) {
             if (typeof replacer === "function") {
-              const key = obj instanceof Set ? it : String(i++);
+              const key = obj instanceof Set ? it : String(i2++);
               it = replacer.call(obj, key, it);
             }
             seq2.items.push(createNode.createNode(it, void 0, ctx));
@@ -21020,12 +21024,12 @@ var require_stringifyNumber = __commonJS({
         return isNaN(num) ? ".nan" : num < 0 ? "-.inf" : ".inf";
       let n = Object.is(value, -0) ? "-0" : JSON.stringify(value);
       if (!format && minFractionDigits && (!tag || tag === "tag:yaml.org,2002:float") && /^-?\d/.test(n) && !n.includes("e")) {
-        let i = n.indexOf(".");
-        if (i < 0) {
-          i = n.length;
+        let i2 = n.indexOf(".");
+        if (i2 < 0) {
+          i2 = n.length;
           n += ".";
         }
-        let d = minFractionDigits - (n.length - i - 1);
+        let d = minFractionDigits - (n.length - i2 - 1);
         while (d-- > 0)
           n += "0";
       }
@@ -21247,8 +21251,8 @@ var require_binary = __commonJS({
         } else if (typeof atob === "function") {
           const str2 = atob(src.replace(/[\n\r]/g, ""));
           const buffer = new Uint8Array(str2.length);
-          for (let i = 0; i < str2.length; ++i)
-            buffer[i] = str2.charCodeAt(i);
+          for (let i2 = 0; i2 < str2.length; ++i2)
+            buffer[i2] = str2.charCodeAt(i2);
           return buffer;
         } else {
           onError("This environment does not support reading binary tags; either Buffer or atob is required");
@@ -21264,8 +21268,8 @@ var require_binary = __commonJS({
           str2 = buf instanceof node_buffer.Buffer ? buf.toString("base64") : node_buffer.Buffer.from(buf.buffer).toString("base64");
         } else if (typeof btoa === "function") {
           let s = "";
-          for (let i = 0; i < buf.length; ++i)
-            s += String.fromCharCode(buf[i]);
+          for (let i2 = 0; i2 < buf.length; ++i2)
+            s += String.fromCharCode(buf[i2]);
           str2 = btoa(s);
         } else {
           throw new Error("This environment does not support writing binary tags; either Buffer or btoa is required");
@@ -21275,8 +21279,8 @@ var require_binary = __commonJS({
           const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
           const n = Math.ceil(str2.length / lineWidth);
           const lines = new Array(n);
-          for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
-            lines[i] = str2.substr(o, lineWidth);
+          for (let i2 = 0, o = 0; i2 < n; ++i2, o += lineWidth) {
+            lines[i2] = str2.substr(o, lineWidth);
           }
           str2 = lines.join(type2 === Scalar.Scalar.BLOCK_LITERAL ? "\n" : " ");
         }
@@ -21297,8 +21301,8 @@ var require_pairs = __commonJS({
     var YAMLSeq = require_YAMLSeq();
     function resolvePairs(seq2, onError) {
       if (identity.isSeq(seq2)) {
-        for (let i = 0; i < seq2.items.length; ++i) {
-          let item = seq2.items[i];
+        for (let i2 = 0; i2 < seq2.items.length; ++i2) {
+          let item = seq2.items[i2];
           if (identity.isPair(item))
             continue;
           else if (identity.isMap(item)) {
@@ -21315,7 +21319,7 @@ ${cn.comment}` : item.comment;
             }
             item = pair;
           }
-          seq2.items[i] = identity.isPair(item) ? item : new Pair.Pair(item);
+          seq2.items[i2] = identity.isPair(item) ? item : new Pair.Pair(item);
         }
       } else
         onError("Expected a sequence for this tag");
@@ -21325,11 +21329,11 @@ ${cn.comment}` : item.comment;
       const { replacer } = ctx;
       const pairs3 = new YAMLSeq.YAMLSeq(schema2);
       pairs3.tag = "tag:yaml.org,2002:pairs";
-      let i = 0;
+      let i2 = 0;
       if (iterable && Symbol.iterator in Object(iterable))
         for (let it of iterable) {
           if (typeof replacer === "function")
-            it = replacer.call(iterable, String(i++), it);
+            it = replacer.call(iterable, String(i2++), it);
           let key, value;
           if (Array.isArray(it)) {
             if (it.length === 2) {
@@ -22842,8 +22846,8 @@ var require_resolve_flow_collection = __commonJS({
       if (ctx.atKey)
         ctx.atKey = false;
       let offset = fc.offset + fc.start.source.length;
-      for (let i = 0; i < fc.items.length; ++i) {
-        const collItem = fc.items[i];
+      for (let i2 = 0; i2 < fc.items.length; ++i2) {
+        const collItem = fc.items[i2];
         const { start, key, sep: sep2, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
@@ -22856,9 +22860,9 @@ var require_resolve_flow_collection = __commonJS({
         });
         if (!props.found) {
           if (!props.anchor && !props.tag && !sep2 && !value) {
-            if (i === 0 && props.comma)
+            if (i2 === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
-            else if (i < fc.items.length - 1)
+            else if (i2 < fc.items.length - 1)
               onError(props.start, "UNEXPECTED_TOKEN", `Unexpected empty item in ${fcName}`);
             if (props.comment) {
               if (coll.comment)
@@ -22877,7 +22881,7 @@ var require_resolve_flow_collection = __commonJS({
               "Implicit keys of flow sequence pairs need to be on a single line"
             );
         }
-        if (i === 0) {
+        if (i2 === 0) {
           if (props.comma)
             onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
         } else {
@@ -23088,10 +23092,10 @@ var require_resolve_block_scalar = __commonJS({
       const type2 = header.mode === ">" ? Scalar.Scalar.BLOCK_FOLDED : Scalar.Scalar.BLOCK_LITERAL;
       const lines = scalar.source ? splitLines(scalar.source) : [];
       let chompStart = lines.length;
-      for (let i = lines.length - 1; i >= 0; --i) {
-        const content = lines[i][1];
+      for (let i2 = lines.length - 1; i2 >= 0; --i2) {
+        const content = lines[i2][1];
         if (content === "" || content === "\r")
-          chompStart = i;
+          chompStart = i2;
         else
           break;
       }
@@ -23105,8 +23109,8 @@ var require_resolve_block_scalar = __commonJS({
       let trimIndent = scalar.indent + header.indent;
       let offset = scalar.offset + header.length;
       let contentStart = 0;
-      for (let i = 0; i < chompStart; ++i) {
-        const [indent, content] = lines[i];
+      for (let i2 = 0; i2 < chompStart; ++i2) {
+        const [indent, content] = lines[i2];
         if (content === "" || content === "\r") {
           if (header.indent === 0 && indent.length > trimIndent)
             trimIndent = indent.length;
@@ -23117,7 +23121,7 @@ var require_resolve_block_scalar = __commonJS({
           }
           if (header.indent === 0)
             trimIndent = indent.length;
-          contentStart = i;
+          contentStart = i2;
           if (trimIndent === 0 && !ctx.atRoot) {
             const message = "Block scalar values in collections must be indented";
             onError(offset, "BAD_INDENT", message);
@@ -23126,17 +23130,17 @@ var require_resolve_block_scalar = __commonJS({
         }
         offset += indent.length + content.length + 1;
       }
-      for (let i = lines.length - 1; i >= chompStart; --i) {
-        if (lines[i][0].length > trimIndent)
-          chompStart = i + 1;
+      for (let i2 = lines.length - 1; i2 >= chompStart; --i2) {
+        if (lines[i2][0].length > trimIndent)
+          chompStart = i2 + 1;
       }
       let value = "";
       let sep2 = "";
       let prevMoreIndented = false;
-      for (let i = 0; i < contentStart; ++i)
-        value += lines[i][0].slice(trimIndent) + "\n";
-      for (let i = contentStart; i < chompStart; ++i) {
-        let [indent, content] = lines[i];
+      for (let i2 = 0; i2 < contentStart; ++i2)
+        value += lines[i2][0].slice(trimIndent) + "\n";
+      for (let i2 = contentStart; i2 < chompStart; ++i2) {
+        let [indent, content] = lines[i2];
         offset += indent.length + content.length + 1;
         const crlf = content[content.length - 1] === "\r";
         if (crlf)
@@ -23173,8 +23177,8 @@ var require_resolve_block_scalar = __commonJS({
         case "-":
           break;
         case "+":
-          for (let i = chompStart; i < lines.length; ++i)
-            value += "\n" + lines[i][0].slice(trimIndent);
+          for (let i2 = chompStart; i2 < lines.length; ++i2)
+            value += "\n" + lines[i2][0].slice(trimIndent);
           if (value[value.length - 1] !== "\n")
             value += "\n";
           break;
@@ -23194,8 +23198,8 @@ var require_resolve_block_scalar = __commonJS({
       let indent = 0;
       let chomp = "";
       let error = -1;
-      for (let i = 1; i < source.length; ++i) {
-        const ch = source[i];
+      for (let i2 = 1; i2 < source.length; ++i2) {
+        const ch = source[i2];
         if (!chomp && (ch === "-" || ch === "+"))
           chomp = ch;
         else {
@@ -23203,7 +23207,7 @@ var require_resolve_block_scalar = __commonJS({
           if (!indent && n)
             indent = n;
           else if (error === -1)
-            error = offset + i;
+            error = offset + i2;
         }
       }
       if (error !== -1)
@@ -23211,8 +23215,8 @@ var require_resolve_block_scalar = __commonJS({
       let hasSpace = false;
       let comment = "";
       let length = source.length;
-      for (let i = 1; i < props.length; ++i) {
-        const token = props[i];
+      for (let i2 = 1; i2 < props.length; ++i2) {
+        const token = props[i2];
         switch (token.type) {
           case "space":
             hasSpace = true;
@@ -23250,8 +23254,8 @@ var require_resolve_block_scalar = __commonJS({
       const m = first.match(/^( *)/);
       const line0 = m?.[1] ? [m[1], first.slice(m[1].length)] : ["", first];
       const lines = [line0];
-      for (let i = 1; i < split.length; i += 2)
-        lines.push([split[i], split[i + 1]]);
+      for (let i2 = 1; i2 < split.length; i2 += 2)
+        lines.push([split[i2], split[i2 + 1]]);
       return lines;
     }
     exports2.resolveBlockScalar = resolveBlockScalar;
@@ -23369,43 +23373,43 @@ var require_resolve_flow_scalar = __commonJS({
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
-      for (let i = 1; i < source.length - 1; ++i) {
-        const ch = source[i];
-        if (ch === "\r" && source[i + 1] === "\n")
+      for (let i2 = 1; i2 < source.length - 1; ++i2) {
+        const ch = source[i2];
+        if (ch === "\r" && source[i2 + 1] === "\n")
           continue;
         if (ch === "\n") {
-          const { fold, offset } = foldNewline(source, i);
+          const { fold, offset } = foldNewline(source, i2);
           res += fold;
-          i = offset;
+          i2 = offset;
         } else if (ch === "\\") {
-          let next = source[++i];
+          let next = source[++i2];
           const cc = escapeCodes[next];
           if (cc)
             res += cc;
           else if (next === "\n") {
-            next = source[i + 1];
+            next = source[i2 + 1];
             while (next === " " || next === "	")
-              next = source[++i + 1];
-          } else if (next === "\r" && source[i + 1] === "\n") {
-            next = source[++i + 1];
+              next = source[++i2 + 1];
+          } else if (next === "\r" && source[i2 + 1] === "\n") {
+            next = source[++i2 + 1];
             while (next === " " || next === "	")
-              next = source[++i + 1];
+              next = source[++i2 + 1];
           } else if (next === "x" || next === "u" || next === "U") {
             const length = next === "x" ? 2 : next === "u" ? 4 : 8;
-            res += parseCharCode(source, i + 1, length, onError);
-            i += length;
+            res += parseCharCode(source, i2 + 1, length, onError);
+            i2 += length;
           } else {
-            const raw = source.substr(i - 1, 2);
-            onError(i - 1, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
+            const raw = source.substr(i2 - 1, 2);
+            onError(i2 - 1, "BAD_DQ_ESCAPE", `Invalid escape sequence ${raw}`);
             res += raw;
           }
         } else if (ch === " " || ch === "	") {
-          const wsStart = i;
-          let next = source[i + 1];
+          const wsStart = i2;
+          let next = source[i2 + 1];
           while (next === " " || next === "	")
-            next = source[++i + 1];
-          if (next !== "\n" && !(next === "\r" && source[i + 2] === "\n"))
-            res += i > wsStart ? source.slice(wsStart, i + 1) : ch;
+            next = source[++i2 + 1];
+          if (next !== "\n" && !(next === "\r" && source[i2 + 2] === "\n"))
+            res += i2 > wsStart ? source.slice(wsStart, i2 + 1) : ch;
         } else {
           res += ch;
         }
@@ -23566,8 +23570,8 @@ var require_util_empty_scalar_position = __commonJS({
     function emptyScalarPosition(offset, before, pos) {
       if (before) {
         pos ?? (pos = before.length);
-        for (let i = pos - 1; i >= 0; --i) {
-          let st = before[i];
+        for (let i2 = pos - 1; i2 >= 0; --i2) {
+          let st = before[i2];
           switch (st.type) {
             case "space":
             case "comment":
@@ -23575,10 +23579,10 @@ var require_util_empty_scalar_position = __commonJS({
               offset -= st.source.length;
               continue;
           }
-          st = before[++i];
+          st = before[++i2];
           while (st?.type === "space") {
             offset += st.source.length;
-            st = before[++i];
+            st = before[++i2];
           }
           break;
         }
@@ -23761,8 +23765,8 @@ var require_composer = __commonJS({
       let comment = "";
       let atComment = false;
       let afterEmptyLine = false;
-      for (let i = 0; i < prelude.length; ++i) {
-        const source = prelude[i];
+      for (let i2 = 0; i2 < prelude.length; ++i2) {
+        const source = prelude[i2];
         switch (source[0]) {
           case "#":
             comment += (comment === "" ? "" : afterEmptyLine ? "\n\n" : "\n") + (source.substring(1) || " ");
@@ -23770,8 +23774,8 @@ var require_composer = __commonJS({
             afterEmptyLine = false;
             break;
           case "%":
-            if (prelude[i + 1]?.[0] !== "#")
-              i += 1;
+            if (prelude[i2 + 1]?.[0] !== "#")
+              i2 += 1;
             atComment = false;
             break;
           default:
@@ -23822,10 +23826,10 @@ ${cb}` : comment;
           }
         }
         if (afterDoc) {
-          for (let i = 0; i < this.errors.length; ++i)
-            doc.errors.push(this.errors[i]);
-          for (let i = 0; i < this.warnings.length; ++i)
-            doc.warnings.push(this.warnings[i]);
+          for (let i2 = 0; i2 < this.errors.length; ++i2)
+            doc.errors.push(this.errors[i2]);
+          for (let i2 = 0; i2 < this.warnings.length; ++i2)
+            doc.warnings.push(this.warnings[i2]);
         } else {
           doc.errors = this.errors;
           doc.warnings = this.warnings;
@@ -24233,15 +24237,15 @@ var require_cst_visit = __commonJS({
       for (const field of ["key", "value"]) {
         const token = item[field];
         if (token && "items" in token) {
-          for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path6.concat([[field, i]])), token.items[i], visitor);
+          for (let i2 = 0; i2 < token.items.length; ++i2) {
+            const ci = _visit(Object.freeze(path6.concat([[field, i2]])), token.items[i2], visitor);
             if (typeof ci === "number")
-              i = ci - 1;
+              i2 = ci - 1;
             else if (ci === BREAK)
               return BREAK;
             else if (ci === REMOVE) {
-              token.items.splice(i, 1);
-              i -= 1;
+              token.items.splice(i2, 1);
+              i2 -= 1;
             }
           }
           if (typeof ctrl === "function" && field === "key")
@@ -24411,14 +24415,14 @@ var require_lexer = __commonJS({
           next = yield* this.parseNext(next);
       }
       atLineEnd() {
-        let i = this.pos;
-        let ch = this.buffer[i];
+        let i2 = this.pos;
+        let ch = this.buffer[i2];
         while (ch === " " || ch === "	")
-          ch = this.buffer[++i];
+          ch = this.buffer[++i2];
         if (!ch || ch === "#" || ch === "\n")
           return true;
         if (ch === "\r")
-          return this.buffer[i + 1] === "\n";
+          return this.buffer[i2 + 1] === "\n";
         return false;
       }
       charAt(n) {
@@ -24713,9 +24717,9 @@ var require_lexer = __commonJS({
       *parseBlockScalarHeader() {
         this.blockScalarIndent = -1;
         this.blockScalarKeep = false;
-        let i = this.pos;
+        let i2 = this.pos;
         while (true) {
-          const ch = this.buffer[++i];
+          const ch = this.buffer[++i2];
           if (ch === "+")
             this.blockScalarKeep = true;
           else if (ch > "0" && ch <= "9")
@@ -24729,17 +24733,17 @@ var require_lexer = __commonJS({
         let nl = this.pos - 1;
         let indent = 0;
         let ch;
-        loop: for (let i2 = this.pos; ch = this.buffer[i2]; ++i2) {
+        loop: for (let i3 = this.pos; ch = this.buffer[i3]; ++i3) {
           switch (ch) {
             case " ":
               indent += 1;
               break;
             case "\n":
-              nl = i2;
+              nl = i3;
               indent = 0;
               break;
             case "\r": {
-              const next = this.buffer[i2 + 1];
+              const next = this.buffer[i3 + 1];
               if (!next && !this.atEnd)
                 return this.setNext("block-scalar");
               if (next === "\n")
@@ -24770,25 +24774,25 @@ var require_lexer = __commonJS({
             nl = this.buffer.length;
           }
         }
-        let i = nl + 1;
-        ch = this.buffer[i];
+        let i2 = nl + 1;
+        ch = this.buffer[i2];
         while (ch === " ")
-          ch = this.buffer[++i];
+          ch = this.buffer[++i2];
         if (ch === "	") {
           while (ch === "	" || ch === " " || ch === "\r" || ch === "\n")
-            ch = this.buffer[++i];
-          nl = i - 1;
+            ch = this.buffer[++i2];
+          nl = i2 - 1;
         } else if (!this.blockScalarKeep) {
           do {
-            let i2 = nl - 1;
-            let ch2 = this.buffer[i2];
+            let i3 = nl - 1;
+            let ch2 = this.buffer[i3];
             if (ch2 === "\r")
-              ch2 = this.buffer[--i2];
-            const lastChar = i2;
+              ch2 = this.buffer[--i3];
+            const lastChar = i3;
             while (ch2 === " ")
-              ch2 = this.buffer[--i2];
-            if (ch2 === "\n" && i2 >= this.pos && i2 + 1 + indent > lastChar)
-              nl = i2;
+              ch2 = this.buffer[--i3];
+            if (ch2 === "\n" && i3 >= this.pos && i3 + 1 + indent > lastChar)
+              nl = i3;
             else
               break;
           } while (true);
@@ -24800,36 +24804,36 @@ var require_lexer = __commonJS({
       *parsePlainScalar() {
         const inFlow = this.flowLevel > 0;
         let end = this.pos - 1;
-        let i = this.pos - 1;
+        let i2 = this.pos - 1;
         let ch;
-        while (ch = this.buffer[++i]) {
+        while (ch = this.buffer[++i2]) {
           if (ch === ":") {
-            const next = this.buffer[i + 1];
+            const next = this.buffer[i2 + 1];
             if (isEmpty2(next) || inFlow && flowIndicatorChars.has(next))
               break;
-            end = i;
+            end = i2;
           } else if (isEmpty2(ch)) {
-            let next = this.buffer[i + 1];
+            let next = this.buffer[i2 + 1];
             if (ch === "\r") {
               if (next === "\n") {
-                i += 1;
+                i2 += 1;
                 ch = "\n";
-                next = this.buffer[i + 1];
+                next = this.buffer[i2 + 1];
               } else
-                end = i;
+                end = i2;
             }
             if (next === "#" || inFlow && flowIndicatorChars.has(next))
               break;
             if (ch === "\n") {
-              const cs = this.continueScalar(i + 1);
+              const cs = this.continueScalar(i2 + 1);
               if (cs === -1)
                 break;
-              i = Math.max(i, cs - 2);
+              i2 = Math.max(i2, cs - 2);
             }
           } else {
             if (inFlow && flowIndicatorChars.has(ch))
               break;
-            end = i;
+            end = i2;
           }
         }
         if (!ch && !this.atEnd)
@@ -24846,8 +24850,8 @@ var require_lexer = __commonJS({
         }
         return 0;
       }
-      *pushToIndex(i, allowEmpty) {
-        const s = this.buffer.slice(this.pos, i);
+      *pushToIndex(i2, allowEmpty) {
+        const s = this.buffer.slice(this.pos, i2);
         if (s) {
           yield s;
           this.pos += s.length;
@@ -24892,23 +24896,23 @@ var require_lexer = __commonJS({
       }
       *pushTag() {
         if (this.charAt(1) === "<") {
-          let i = this.pos + 2;
-          let ch = this.buffer[i];
+          let i2 = this.pos + 2;
+          let ch = this.buffer[i2];
           while (!isEmpty2(ch) && ch !== ">")
-            ch = this.buffer[++i];
-          return yield* this.pushToIndex(ch === ">" ? i + 1 : i, false);
+            ch = this.buffer[++i2];
+          return yield* this.pushToIndex(ch === ">" ? i2 + 1 : i2, false);
         } else {
-          let i = this.pos + 1;
-          let ch = this.buffer[i];
+          let i2 = this.pos + 1;
+          let ch = this.buffer[i2];
           while (ch) {
             if (tagChars.has(ch))
-              ch = this.buffer[++i];
-            else if (ch === "%" && hexDigits.has(this.buffer[i + 1]) && hexDigits.has(this.buffer[i + 2])) {
-              ch = this.buffer[i += 3];
+              ch = this.buffer[++i2];
+            else if (ch === "%" && hexDigits.has(this.buffer[i2 + 1]) && hexDigits.has(this.buffer[i2 + 2])) {
+              ch = this.buffer[i2 += 3];
             } else
               break;
           }
-          return yield* this.pushToIndex(i, false);
+          return yield* this.pushToIndex(i2, false);
         }
       }
       *pushNewline() {
@@ -24921,24 +24925,24 @@ var require_lexer = __commonJS({
           return 0;
       }
       *pushSpaces(allowTabs) {
-        let i = this.pos - 1;
+        let i2 = this.pos - 1;
         let ch;
         do {
-          ch = this.buffer[++i];
+          ch = this.buffer[++i2];
         } while (ch === " " || allowTabs && ch === "	");
-        const n = i - this.pos;
+        const n = i2 - this.pos;
         if (n > 0) {
           yield this.buffer.substr(this.pos, n);
-          this.pos = i;
+          this.pos = i2;
         }
         return n;
       }
       *pushUntil(test) {
-        let i = this.pos;
-        let ch = this.buffer[i];
+        let i2 = this.pos;
+        let ch = this.buffer[i2];
         while (!test(ch))
-          ch = this.buffer[++i];
-        return yield* this.pushToIndex(i, false);
+          ch = this.buffer[++i2];
+        return yield* this.pushToIndex(i2, false);
       }
     };
     exports2.Lexer = Lexer;
@@ -24984,20 +24988,20 @@ var require_parser = __commonJS({
     var cst = require_cst();
     var lexer = require_lexer();
     function includesToken(list, type2) {
-      for (let i = 0; i < list.length; ++i)
-        if (list[i].type === type2)
+      for (let i2 = 0; i2 < list.length; ++i2)
+        if (list[i2].type === type2)
           return true;
       return false;
     }
     function findNonEmptyIndex(list) {
-      for (let i = 0; i < list.length; ++i) {
-        switch (list[i].type) {
+      for (let i2 = 0; i2 < list.length; ++i2) {
+        switch (list[i2].type) {
           case "space":
           case "comment":
           case "newline":
             break;
           default:
-            return i;
+            return i2;
         }
       }
       return -1;
@@ -25032,9 +25036,9 @@ var require_parser = __commonJS({
     function getFirstKeyStartProps(prev) {
       if (prev.length === 0)
         return [];
-      let i = prev.length;
-      loop: while (--i >= 0) {
-        switch (prev[i].type) {
+      let i2 = prev.length;
+      loop: while (--i2 >= 0) {
+        switch (prev[i2].type) {
           case "doc-start":
           case "explicit-key-ind":
           case "map-value-ind":
@@ -25043,16 +25047,16 @@ var require_parser = __commonJS({
             break loop;
         }
       }
-      while (prev[++i]?.type === "space") {
+      while (prev[++i2]?.type === "space") {
       }
-      return prev.splice(i, prev.length);
+      return prev.splice(i2, prev.length);
     }
     function arrayPushArray(target, source) {
       if (source.length < 1e5)
         Array.prototype.push.apply(target, source);
       else
-        for (let i = 0; i < source.length; ++i)
-          target.push(source[i]);
+        for (let i2 = 0; i2 < source.length; ++i2)
+          target.push(source[i2]);
     }
     function fixFlowSeqItems(fc) {
       if (fc.start.type === "flow-seq-start") {
@@ -25438,11 +25442,11 @@ var require_parser = __commonJS({
           let start = [];
           if (atNextItem && it.sep && !it.value) {
             const nl = [];
-            for (let i = 0; i < it.sep.length; ++i) {
-              const st = it.sep[i];
+            for (let i2 = 0; i2 < it.sep.length; ++i2) {
+              const st = it.sep[i2];
               switch (st.type) {
                 case "newline":
-                  nl.push(i);
+                  nl.push(i2);
                   break;
                 case "space":
                   break;
@@ -26149,7 +26153,7 @@ var require_scope_functions = __commonJS({
       if (proto === Array.prototype) {
         if (!Array.isArray(obj) || !Array.isArray(obj2)) return false;
         if (obj.length !== obj2.length) return false;
-        return obj.every((x, i) => deepEqual(x, obj2[i]));
+        return obj.every((x, i2) => deepEqual(x, obj2[i2]));
       } else if (proto === Object.prototype) {
         const [keys, keys2] = [Object.keys(obj), Object.keys(obj2)];
         if (keys.length !== keys2.length) return false;
@@ -26176,14 +26180,14 @@ var require_scope_functions = __commonJS({
         }
         pos++;
       }
-      for (let i = 1; i < objects.length; i++)
-        for (let j = 0; j < i; j++) if (deepEqual(objects[i], objects[j])) return false;
+      for (let i2 = 1; i2 < objects.length; i2++)
+        for (let j = 0; j < i2; j++) if (deepEqual(objects[i2], objects[j])) return false;
       return true;
     };
     var deBase64 = (string) => {
       if (typeof Buffer !== "undefined") return Buffer.from(string, "base64").toString("utf-8");
       const b = atob(string);
-      return new TextDecoder("utf-8").decode(new Uint8Array(b.length).map((_, i) => b.charCodeAt(i)));
+      return new TextDecoder("utf-8").decode(new Uint8Array(b.length).map((_, i2) => b.charCodeAt(i2)));
     };
     var hasOwn = Function.prototype.call.bind(Object.prototype.hasOwnProperty);
     hasOwn[/* @__PURE__ */ Symbol.for("toJayString")] = "Function.prototype.call.bind(Object.prototype.hasOwnProperty)";
@@ -26269,10 +26273,10 @@ var require_javascript = __commonJS({
         });
       };
       const forArray = (obj, start, writeBody) => {
-        const i = genloop();
+        const i2 = genloop();
         const name = buildName(obj);
-        fun.block(format("for (let %s = %s; %s < %s.length; %s++)", i, start, i, name, i), () => {
-          writeBody(propvar(obj, i, unmodifiedPrototypes, true), i);
+        fun.block(format("for (let %s = %s; %s < %s.length; %s++)", i2, start, i2, name, i2), () => {
+          writeBody(propvar(obj, i2, unmodifiedPrototypes, true), i2);
         });
       };
       const patternTest = (pat, key) => {
@@ -26297,7 +26301,7 @@ var require_javascript = __commonJS({
           type2 = types2.get("array")(name);
           if (shouldInline(val)) {
             let k = format("%s.length === %d", name, val.length);
-            for (let i = 0; i < val.length; i++) k = format("%s && %s[%d] === %j", k, name, i, val[i]);
+            for (let i2 = 0; i2 < val.length; i2++) k = format("%s && %s[%d] === %j", k, name, i2, val[i2]);
             return format("%s && %s", type2, k);
           }
         } else {
@@ -26759,9 +26763,9 @@ var require_formats = __commonJS({
       ipv6: (input) => {
         if (input.length > 45 || input.length < 2) return false;
         let s0 = 0, s1 = 0, hex = 0, short = false, letters = false, last = 0, start = true;
-        for (let i = 0; i < input.length; i++) {
-          const c = input.charCodeAt(i);
-          if (i === 1 && last === 58 && c !== 58) return false;
+        for (let i2 = 0; i2 < input.length; i2++) {
+          const c = input.charCodeAt(i2);
+          if (i2 === 1 && last === 58 && c !== 58) return false;
           if (c >= 48 && c <= 57) {
             if (++hex > 4) return false;
           } else if (c === 46) {
@@ -26773,7 +26777,7 @@ var require_formats = __commonJS({
             if (last === 58) {
               if (short) return false;
               short = true;
-            } else if (i === 0) start = false;
+            } else if (i2 === 0) start = false;
             s0++;
             hex = 0;
             letters = false;
@@ -27375,8 +27379,8 @@ var require_compile = __commonJS({
               return null;
             }
             if (ruleValue === false && !extra) return format("%s.length > %s", name, limit);
-            forArray(current, limit, (prop, i) => {
-              if (extra) fun.write("if (%s) continue", extra(i));
+            forArray(current, limit, (prop, i2) => {
+              if (extra) fun.write("if (%s) continue", extra(i2));
               return rule(prop, ruleValue, subPath(rulePath));
             });
             return null;
@@ -27540,10 +27544,10 @@ var require_compile = __commonJS({
             });
           }
           checkContains((run2) => {
-            forArray(current, format("0"), (prop, i) => {
+            forArray(current, format("0"), (prop, i2) => {
               run2(prop, () => {
                 evaluateDelta({ dyn: { item: true } });
-                evaluateDeltaDynamic({ item: i });
+                evaluateDeltaDynamic({ item: i2 });
               });
             });
           });
@@ -27678,10 +27682,10 @@ var require_compile = __commonJS({
           });
           if (getMeta().objectContains) {
             checkContains((run2) => {
-              forObjectKeys(current, (prop, i) => {
+              forObjectKeys(current, (prop, i2) => {
                 run2(prop, () => {
                   evaluateDelta({ dyn: { properties: [true] } });
-                  evaluateDeltaDynamic({ propertiesVars: [i] });
+                  evaluateDeltaDynamic({ propertiesVars: [i2] });
                 });
               });
             });
@@ -27771,7 +27775,7 @@ var require_compile = __commonJS({
               const runDiscriminator = () => {
                 fun.write("switch (%s) {", buildName(prop));
                 let delta;
-                for (const [i, branch] of Object.entries(branches)) {
+                for (const [i2, branch] of Object.entries(branches)) {
                   const { const: myval, enum: myenum, ...e1 } = (branch.properties || {})[pname] || {};
                   let vals = myval !== void 0 ? [myval] : myenum;
                   if (!vals && branch.$ref) {
@@ -27792,7 +27796,7 @@ var require_compile = __commonJS({
                     seen.add(val);
                     fun.write("case %j:", val);
                   }
-                  const subd = rule(current, branch, subPath(ruleName, i), dyn, { constProp: pname });
+                  const subd = rule(current, branch, subPath(ruleName, i2), dyn, { constProp: pname });
                   evaluateDeltaDynamic(subd);
                   delta = delta ? orDelta(delta, subd) : subd;
                   fun.write("break");
@@ -27874,9 +27878,9 @@ var require_compile = __commonJS({
             fun.write("let %s = 0", passes);
             const suberr = suberror();
             let delta;
-            let i = 0;
+            let i2 = 0;
             const entries = Object.entries(oneOf).map(([key, sch]) => {
-              if (!includeErrors && i++ > 1) errorIf(format("%s > 1", passes), { path: ["oneOf"] });
+              if (!includeErrors && i2++ > 1) errorIf(format("%s > 1", passes), { path: ["oneOf"] });
               const entry = subrule(suberr, current, sch, subPath("oneOf", key), dyn);
               fun.if(entry.sub, () => fun.write("%s++", passes));
               delta = delta ? orDelta(delta, entry.delta) : entry.delta;
@@ -27902,7 +27906,7 @@ var require_compile = __commonJS({
             if (isDynamic(stat4).items) {
               if (!opts[optDynamic]) throw new Error("[opt] Dynamic unevaluated tracing not enabled");
               const limit = format("Math.max(%d, ...%s)", stat4.items, dyn.items);
-              const extra = (i) => format("%s.includes(%s)", dyn.item, i);
+              const extra = (i2) => format("%s.includes(%s)", dyn.item, i2);
               additionalItems("unevaluatedItems", limit, getMeta().containsEvaluates ? extra : null);
             } else {
               additionalItems("unevaluatedItems", format("%d", stat4.items));
@@ -28277,7 +28281,7 @@ var require_url = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -28566,8 +28570,8 @@ var require_url = __commonJS({
     }
     function toFileSystemPath2(path6, keepFileProtocol) {
       path6 = decodeURI(path6);
-      for (let i = 0; i < urlDecodePatterns2.length; i += 2) {
-        path6 = path6.replace(urlDecodePatterns2[i], urlDecodePatterns2[i + 1]);
+      for (let i2 = 0; i2 < urlDecodePatterns2.length; i2 += 2) {
+        path6 = path6.replace(urlDecodePatterns2[i2], urlDecodePatterns2[i2 + 1]);
       }
       let isFileUrl = path6.toLowerCase().startsWith("file://");
       if (isFileUrl) {
@@ -28808,7 +28812,7 @@ var require_pointer2 = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -28887,18 +28891,18 @@ var require_pointer2 = __commonJS({
         const tokens = _Pointer.parse(this.path, this.originalPath);
         const found = [];
         this.value = unwrapOrThrow2(obj);
-        for (let i = 0; i < tokens.length; i++) {
+        for (let i2 = 0; i2 < tokens.length; i2++) {
           if (resolveIf$Ref2(this, options, pathFromRoot)) {
-            this.path = _Pointer.join(this.path, tokens.slice(i));
+            this.path = _Pointer.join(this.path, tokens.slice(i2));
           }
-          const token = tokens[i];
-          if (this.value[token] === void 0 || this.value[token] === null && i === tokens.length - 1) {
+          const token = tokens[i2];
+          if (this.value[token] === void 0 || this.value[token] === null && i2 === tokens.length - 1) {
             let didFindSubstringSlashMatch = false;
-            for (let j = tokens.length - 1; j > i; j--) {
-              const joinedToken = tokens.slice(i, j + 1).join("/");
+            for (let j = tokens.length - 1; j > i2; j--) {
+              const joinedToken = tokens.slice(i2, j + 1).join("/");
               if (this.value[joinedToken] !== void 0) {
                 this.value = this.value[joinedToken];
-                i = j;
+                i2 = j;
                 didFindSubstringSlashMatch = true;
                 break;
               }
@@ -28944,9 +28948,9 @@ var require_pointer2 = __commonJS({
           return value;
         }
         this.value = unwrapOrThrow2(obj);
-        for (let i = 0; i < tokens.length - 1; i++) {
+        for (let i2 = 0; i2 < tokens.length - 1; i2++) {
           resolveIf$Ref2(this, options);
-          token = tokens[i];
+          token = tokens[i2];
           if (this.value && this.value[token] !== void 0) {
             this.value = this.value[token];
           } else {
@@ -28976,8 +28980,8 @@ var require_pointer2 = __commonJS({
           return [];
         }
         const split = pointer.split("/");
-        for (let i = 0; i < split.length; i++) {
-          split[i] = safeDecodeURIComponent(split[i].replace(escapedSlash2, "/").replace(escapedTilde2, "~"));
+        for (let i2 = 0; i2 < split.length; i2++) {
+          split[i2] = safeDecodeURIComponent(split[i2].replace(escapedSlash2, "/").replace(escapedTilde2, "~"));
         }
         if (split[0] !== "") {
           throw new errors_js_1.InvalidPointerError(pointer, originalPath === void 0 ? path6 : originalPath);
@@ -28996,8 +29000,8 @@ var require_pointer2 = __commonJS({
           base += "#";
         }
         tokens = Array.isArray(tokens) ? tokens : [tokens];
-        for (let i = 0; i < tokens.length; i++) {
-          const token = tokens[i];
+        for (let i2 = 0; i2 < tokens.length; i2++) {
+          const token = tokens[i2];
           base += "/" + encodeURIComponent(token.replace(tildes2, "~0").replace(slashes2, "~1"));
         }
         return base;
@@ -29088,7 +29092,7 @@ var require_ref = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -29383,7 +29387,7 @@ var require_refs = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -29711,7 +29715,7 @@ var require_parse2 = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -29990,33 +29994,33 @@ var require_snippet = __commonJS({
         }
       }
       if (foundLineNo < 0) foundLineNo = lineStarts.length - 1;
-      var result = "", i, line;
+      var result = "", i2, line;
       var lineNoLength = Math.min(mark.line + options.linesAfter, lineEnds.length).toString().length;
       var maxLineLength = options.maxLength - (options.indent + lineNoLength + 3);
-      for (i = 1; i <= options.linesBefore; i++) {
-        if (foundLineNo - i < 0) break;
+      for (i2 = 1; i2 <= options.linesBefore; i2++) {
+        if (foundLineNo - i2 < 0) break;
         line = getLine2(
           mark.buffer,
-          lineStarts[foundLineNo - i],
-          lineEnds[foundLineNo - i],
-          mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo - i]),
+          lineStarts[foundLineNo - i2],
+          lineEnds[foundLineNo - i2],
+          mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo - i2]),
           maxLineLength
         );
-        result = common2.repeat(" ", options.indent) + padStart2((mark.line - i + 1).toString(), lineNoLength) + " | " + line.str + "\n" + result;
+        result = common2.repeat(" ", options.indent) + padStart2((mark.line - i2 + 1).toString(), lineNoLength) + " | " + line.str + "\n" + result;
       }
       line = getLine2(mark.buffer, lineStarts[foundLineNo], lineEnds[foundLineNo], mark.position, maxLineLength);
       result += common2.repeat(" ", options.indent) + padStart2((mark.line + 1).toString(), lineNoLength) + " | " + line.str + "\n";
       result += common2.repeat("-", options.indent + lineNoLength + 3 + line.pos) + "^\n";
-      for (i = 1; i <= options.linesAfter; i++) {
-        if (foundLineNo + i >= lineEnds.length) break;
+      for (i2 = 1; i2 <= options.linesAfter; i2++) {
+        if (foundLineNo + i2 >= lineEnds.length) break;
         line = getLine2(
           mark.buffer,
-          lineStarts[foundLineNo + i],
-          lineEnds[foundLineNo + i],
-          mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo + i]),
+          lineStarts[foundLineNo + i2],
+          lineEnds[foundLineNo + i2],
+          mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo + i2]),
           maxLineLength
         );
-        result += common2.repeat(" ", options.indent) + padStart2((mark.line + i + 1).toString(), lineNoLength) + " | " + line.str + "\n";
+        result += common2.repeat(" ", options.indent) + padStart2((mark.line + i2 + 1).toString(), lineNoLength) + " | " + line.str + "\n";
       }
       return result.replace(/\n$/, "");
     }
@@ -30913,11 +30917,11 @@ var require_loader = __commonJS({
     }
     var simpleEscapeCheck2 = new Array(256);
     var simpleEscapeMap2 = new Array(256);
-    for (i = 0; i < 256; i++) {
-      simpleEscapeCheck2[i] = simpleEscapeSequence2(i) ? 1 : 0;
-      simpleEscapeMap2[i] = simpleEscapeSequence2(i);
+    for (i2 = 0; i2 < 256; i2++) {
+      simpleEscapeCheck2[i2] = simpleEscapeSequence2(i2) ? 1 : 0;
+      simpleEscapeMap2[i2] = simpleEscapeSequence2(i2);
     }
-    var i;
+    var i2;
     function State2(input, options) {
       this.input = input;
       this.filename = options["filename"] || null;
@@ -32190,7 +32194,7 @@ var require_dumper = __commonJS({
     var STYLE_FOLDED2 = 4;
     var STYLE_DOUBLE2 = 5;
     function chooseScalarStyle2(string, singleLineOnly, indentPerLevel, lineWidth, testAmbiguousType, quotingType, forceQuotes, inblock) {
-      var i;
+      var i2;
       var char = 0;
       var prevChar = null;
       var hasLineBreak = false;
@@ -32199,8 +32203,8 @@ var require_dumper = __commonJS({
       var previousLineBreak = -1;
       var plain = isPlainSafeFirst2(codePointAt2(string, 0)) && isPlainSafeLast2(codePointAt2(string, string.length - 1));
       if (singleLineOnly || forceQuotes) {
-        for (i = 0; i < string.length; char >= 65536 ? i += 2 : i++) {
-          char = codePointAt2(string, i);
+        for (i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
+          char = codePointAt2(string, i2);
           if (!isPrintable2(char)) {
             return STYLE_DOUBLE2;
           }
@@ -32208,14 +32212,14 @@ var require_dumper = __commonJS({
           prevChar = char;
         }
       } else {
-        for (i = 0; i < string.length; char >= 65536 ? i += 2 : i++) {
-          char = codePointAt2(string, i);
+        for (i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
+          char = codePointAt2(string, i2);
           if (char === CHAR_LINE_FEED2) {
             hasLineBreak = true;
             if (shouldTrackWidth) {
               hasFoldableLine = hasFoldableLine || // Foldable line = too long, and not more-indented.
-              i - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ";
-              previousLineBreak = i;
+              i2 - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ";
+              previousLineBreak = i2;
             }
           } else if (!isPrintable2(char)) {
             return STYLE_DOUBLE2;
@@ -32223,7 +32227,7 @@ var require_dumper = __commonJS({
           plain = plain && isPlainSafe2(char, prevChar, inblock);
           prevChar = char;
         }
-        hasFoldableLine = hasFoldableLine || shouldTrackWidth && (i - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ");
+        hasFoldableLine = hasFoldableLine || shouldTrackWidth && (i2 - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ");
       }
       if (!hasLineBreak && !hasFoldableLine) {
         if (plain && !forceQuotes && !testAmbiguousType(string)) {
@@ -32336,12 +32340,12 @@ var require_dumper = __commonJS({
       var result = "";
       var char = 0;
       var escapeSeq;
-      for (var i = 0; i < string.length; char >= 65536 ? i += 2 : i++) {
-        char = codePointAt2(string, i);
+      for (var i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
+        char = codePointAt2(string, i2);
         escapeSeq = ESCAPE_SEQUENCES2[char];
         if (!escapeSeq && isPrintable2(char)) {
-          result += string[i];
-          if (char >= 65536) result += string[i + 1];
+          result += string[i2];
+          if (char >= 65536) result += string[i2 + 1];
         } else {
           result += escapeSeq || encodeHex2(char);
         }
@@ -32835,7 +32839,7 @@ var require_file2 = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -32923,7 +32927,7 @@ var require_http = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -33148,8 +33152,8 @@ var require_options = __commonJS({
     function merge3(target, source) {
       if (isMergeable2(source)) {
         const keys = Object.keys(source).filter((key) => !["__proto__", "constructor", "prototype"].includes(key));
-        for (let i = 0; i < keys.length; i++) {
-          const key = keys[i];
+        for (let i2 = 0; i2 < keys.length; i2++) {
+          const key = keys[i2];
           const sourceSetting = source[key];
           const targetSetting = target[key];
           if (isMergeable2(sourceSetting)) {
@@ -33251,7 +33255,7 @@ var require_resolve_external = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -33356,7 +33360,7 @@ var require_bundle = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -33555,7 +33559,7 @@ var require_dereference = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -33813,7 +33817,7 @@ var require_lib = __commonJS({
         if (mod && mod.__esModule) return mod;
         var result = {};
         if (mod != null) {
-          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+          for (var k = ownKeys(mod), i2 = 0; i2 < k.length; i2++) if (k[i2] !== "default") __createBinding(result, mod, k[i2]);
         }
         __setModuleDefault(result, mod);
         return result;
@@ -34201,7 +34205,7 @@ var require_api2 = __commonJS({
               value += c2;
             } else if (c2 === "u") {
               value += c2;
-              for (let i = 0; i < 4; i++) {
+              for (let i2 = 0; i2 < 4; i2++) {
                 c2 = next();
                 if (isHexDigit(c2)) {
                   value += c2;
@@ -34744,8 +34748,8 @@ var require_toPrimitive = __commonJS({
       if ("object" != _typeof(t) || !t) return t;
       var e = t[Symbol.toPrimitive];
       if (void 0 !== e) {
-        var i = e.call(t, r || "default");
-        if ("object" != _typeof(i)) return i;
+        var i2 = e.call(t, r || "default");
+        if ("object" != _typeof(i2)) return i2;
         throw new TypeError("@@toPrimitive must return a primitive value.");
       }
       return ("string" === r ? String : Number)(t);
@@ -34760,8 +34764,8 @@ var require_toPropertyKey = __commonJS({
     var _typeof = require_typeof()["default"];
     var toPrimitive = require_toPrimitive();
     function toPropertyKey(t) {
-      var i = toPrimitive(t, "string");
-      return "symbol" == _typeof(i) ? i : i + "";
+      var i2 = toPrimitive(t, "string");
+      return "symbol" == _typeof(i2) ? i2 : i2 + "";
     }
     module2.exports = toPropertyKey, module2.exports.__esModule = true, module2.exports["default"] = module2.exports;
   }
@@ -34871,12 +34875,12 @@ var require_iterableToArrayLimit = __commonJS({
     function _iterableToArrayLimit(r, l) {
       var t = null == r ? null : "undefined" != typeof Symbol && r[Symbol.iterator] || r["@@iterator"];
       if (null != t) {
-        var e, n, i, u, a = [], f = true, o = false;
+        var e, n, i2, u, a = [], f = true, o = false;
         try {
-          if (i = (t = t.call(r)).next, 0 === l) {
+          if (i2 = (t = t.call(r)).next, 0 === l) {
             if (Object(t) !== t) return;
             f = false;
-          } else for (; !(f = (e = i.call(t)).done) && (a.push(e.value), a.length !== l); f = true) ;
+          } else for (; !(f = (e = i2.call(t)).done) && (a.push(e.value), a.length !== l); f = true) ;
         } catch (r2) {
           o = true, n = r2;
         } finally {
@@ -35182,10 +35186,10 @@ var require_identifier = __commonJS({
     var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 78, 5, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 266, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 543, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 1418, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
     function isInAstralSet(code, set2) {
       let pos = 65536;
-      for (let i = 0, length = set2.length; i < length; i += 2) {
-        pos += set2[i];
+      for (let i2 = 0, length = set2.length; i2 < length; i2 += 2) {
+        pos += set2[i2];
         if (pos > code) return false;
-        pos += set2[i + 1];
+        pos += set2[i2 + 1];
         if (pos >= code) return true;
       }
       return false;
@@ -35214,10 +35218,10 @@ var require_identifier = __commonJS({
     }
     function isIdentifierName(name) {
       let isFirst = true;
-      for (let i = 0; i < name.length; i++) {
-        let cp2 = name.charCodeAt(i);
-        if ((cp2 & 64512) === 55296 && i + 1 < name.length) {
-          const trail = name.charCodeAt(++i);
+      for (let i2 = 0; i2 < name.length; i2++) {
+        let cp2 = name.charCodeAt(i2);
+        if ((cp2 & 64512) === 55296 && i2 + 1 < name.length) {
+          const trail = name.charCodeAt(++i2);
           if ((trail & 64512) === 56320) {
             cp2 = 65536 + ((cp2 & 1023) << 10) + (trail & 1023);
           }
@@ -35448,17 +35452,17 @@ var require_lib3 = __commonJS({
       const lineDiff = endLine - startLine;
       const markerLines = {};
       if (lineDiff) {
-        for (let i = 0; i <= lineDiff; i++) {
-          const lineNumber = i + startLine;
+        for (let i2 = 0; i2 <= lineDiff; i2++) {
+          const lineNumber = i2 + startLine;
           if (!startColumn) {
             markerLines[lineNumber] = true;
-          } else if (i === 0) {
+          } else if (i2 === 0) {
             const sourceLength = source[lineNumber - 1].length;
             markerLines[lineNumber] = [startColumn, sourceLength - startColumn + 1];
-          } else if (i === lineDiff) {
+          } else if (i2 === lineDiff) {
             markerLines[lineNumber] = [0, endColumn];
           } else {
-            const sourceLength = source[lineNumber - i].length;
+            const sourceLength = source[lineNumber - i2].length;
             markerLines[lineNumber] = [0, sourceLength];
           }
         }
@@ -36081,20 +36085,20 @@ var require_leven = __commonJS({
       let result;
       let temp;
       let temp2;
-      let i = 0;
+      let i2 = 0;
       let j = 0;
-      while (i < leftLength) {
-        charCodeCache[i] = left.charCodeAt(start + i);
-        array[i] = ++i;
+      while (i2 < leftLength) {
+        charCodeCache[i2] = left.charCodeAt(start + i2);
+        array[i2] = ++i2;
       }
       while (j < rightLength) {
         bCharCode = right.charCodeAt(start + j);
         temp = j++;
         result = j;
-        for (i = 0; i < leftLength; i++) {
-          temp2 = bCharCode === charCodeCache[i] ? temp : temp + 1;
-          temp = array[i];
-          result = array[i] = temp > result ? temp2 > result ? result + 1 : temp2 : temp2 > temp ? temp + 1 : temp2;
+        for (i2 = 0; i2 < leftLength; i2++) {
+          temp2 = bCharCode === charCodeCache[i2] ? temp : temp + 1;
+          temp = array[i2];
+          result = array[i2] = temp > result ? temp2 > result ? result + 1 : temp2 : temp2 > temp ? temp + 1 : temp2;
         }
       }
       return result;
@@ -36619,12 +36623,12 @@ var require_helpers = __commonJS({
         var instancePath = typeof ajvError.instancePath !== "undefined" ? ajvError.instancePath : ajvError.dataPath;
         var paths = instancePath === "" ? [""] : instancePath.match(JSON_POINTERS_REGEX);
         if (paths) {
-          paths.reduce(function(obj, path6, i) {
+          paths.reduce(function(obj, path6, i2) {
             obj.children[path6] = obj.children[path6] || {
               children: {},
               errors: []
             };
-            if (i === paths.length - 1) {
+            if (i2 === paths.length - 1) {
               obj.children[path6].errors.push(ajvError);
             }
             return obj.children[path6];
@@ -36798,10 +36802,10 @@ var require_code = __commonJS({
     exports2.nil = new _Code("");
     function _(strs, ...args) {
       const code = [strs[0]];
-      let i = 0;
-      while (i < args.length) {
-        addCodeArg(code, args[i]);
-        code.push(strs[++i]);
+      let i2 = 0;
+      while (i2 < args.length) {
+        addCodeArg(code, args[i2]);
+        code.push(strs[++i2]);
       }
       return new _Code(code);
     }
@@ -36809,11 +36813,11 @@ var require_code = __commonJS({
     var plus = new _Code("+");
     function str2(strs, ...args) {
       const expr = [safeStringify(strs[0])];
-      let i = 0;
-      while (i < args.length) {
+      let i2 = 0;
+      while (i2 < args.length) {
         expr.push(plus);
-        addCodeArg(expr, args[i]);
-        expr.push(plus, safeStringify(strs[++i]));
+        addCodeArg(expr, args[i2]);
+        expr.push(plus, safeStringify(strs[++i2]));
       }
       optimize(expr);
       return new _Code(expr);
@@ -36829,17 +36833,17 @@ var require_code = __commonJS({
     }
     exports2.addCodeArg = addCodeArg;
     function optimize(expr) {
-      let i = 1;
-      while (i < expr.length - 1) {
-        if (expr[i] === plus) {
-          const res = mergeExprItems(expr[i - 1], expr[i + 1]);
+      let i2 = 1;
+      while (i2 < expr.length - 1) {
+        if (expr[i2] === plus) {
+          const res = mergeExprItems(expr[i2 - 1], expr[i2 + 1]);
           if (res !== void 0) {
-            expr.splice(i - 1, 3, res);
+            expr.splice(i2 - 1, 3, res);
             continue;
           }
-          expr[i++] = "+";
+          expr[i2++] = "+";
         }
-        i++;
+        i2++;
       }
     }
     function mergeExprItems(a, b) {
@@ -37219,27 +37223,27 @@ var require_codegen = __commonJS({
       }
       optimizeNodes() {
         const { nodes } = this;
-        let i = nodes.length;
-        while (i--) {
-          const n = nodes[i].optimizeNodes();
+        let i2 = nodes.length;
+        while (i2--) {
+          const n = nodes[i2].optimizeNodes();
           if (Array.isArray(n))
-            nodes.splice(i, 1, ...n);
+            nodes.splice(i2, 1, ...n);
           else if (n)
-            nodes[i] = n;
+            nodes[i2] = n;
           else
-            nodes.splice(i, 1);
+            nodes.splice(i2, 1);
         }
         return nodes.length > 0 ? this : void 0;
       }
       optimizeNames(names, constants3) {
         const { nodes } = this;
-        let i = nodes.length;
-        while (i--) {
-          const n = nodes[i];
+        let i2 = nodes.length;
+        while (i2--) {
+          const n = nodes[i2];
           if (n.optimizeNames(names, constants3))
             continue;
           subtractNames(names, n.names);
-          nodes.splice(i, 1);
+          nodes.splice(i2, 1);
         }
         return nodes.length > 0 ? this : void 0;
       }
@@ -37566,8 +37570,8 @@ var require_codegen = __commonJS({
         const name = this._scope.toName(nameOrPrefix);
         if (this.opts.es5) {
           const arr = iterable instanceof code_1.Name ? iterable : this.var("_arr", iterable);
-          return this.forRange("_i", 0, (0, code_1._)`${arr}.length`, (i) => {
-            this.var(name, (0, code_1._)`${arr}[${i}]`);
+          return this.forRange("_i", 0, (0, code_1._)`${arr}.length`, (i2) => {
+            this.var(name, (0, code_1._)`${arr}[${i2}]`);
             forBody(name);
           });
         }
@@ -38009,8 +38013,8 @@ var require_errors4 = __commonJS({
       if (errsCount === void 0)
         throw new Error("ajv implementation error");
       const err = gen.name("err");
-      gen.forRange("i", errsCount, names_1.default.errors, (i) => {
-        gen.const(err, (0, codegen_1._)`${names_1.default.vErrors}[${i}]`);
+      gen.forRange("i", errsCount, names_1.default.errors, (i2) => {
+        gen.const(err, (0, codegen_1._)`${names_1.default.vErrors}[${i2}]`);
         gen.if((0, codegen_1._)`${err}.instancePath === undefined`, () => gen.assign((0, codegen_1._)`${err}.instancePath`, (0, codegen_1.strConcat)(names_1.default.instancePath, it.errorPath)));
         gen.assign((0, codegen_1._)`${err}.schemaPath`, (0, codegen_1.str)`${it.errSchemaPath}/${keyword}`);
         if (it.opts.verbose) {
@@ -38390,7 +38394,7 @@ var require_defaults = __commonJS({
           assignDefault(it, key, properties[key].default);
         }
       } else if (ty === "array" && Array.isArray(items)) {
-        items.forEach((sch, i) => assignDefault(it, i, sch.default));
+        items.forEach((sch, i2) => assignDefault(it, i2, sch.default));
       }
     }
     exports2.assignDefaults = assignDefaults;
@@ -38508,10 +38512,10 @@ var require_code2 = __commonJS({
       return valid;
       function validateItems(notValid) {
         const len = gen.const("len", (0, codegen_1._)`${data}.length`);
-        gen.forRange("i", 0, len, (i) => {
+        gen.forRange("i", 0, len, (i2) => {
           cxt.subschema({
             keyword,
-            dataProp: i,
+            dataProp: i2,
             dataPropType: util_1.Type.Num
           }, valid);
           gen.if((0, codegen_1.not)(valid), notValid);
@@ -38528,10 +38532,10 @@ var require_code2 = __commonJS({
         return;
       const valid = gen.let("valid", false);
       const schValid = gen.name("_valid");
-      gen.block(() => schema2.forEach((_sch, i) => {
+      gen.block(() => schema2.forEach((_sch, i2) => {
         const schCxt = cxt.subschema({
           keyword,
-          schemaProp: i,
+          schemaProp: i2,
           compositeRule: true
         }, schValid);
         gen.assign(valid, (0, codegen_1._)`${valid} || ${schValid}`);
@@ -38754,12 +38758,12 @@ var require_fast_deep_equal = __commonJS({
       if (a === b) return true;
       if (a && b && typeof a == "object" && typeof b == "object") {
         if (a.constructor !== b.constructor) return false;
-        var length, i, keys;
+        var length, i2, keys;
         if (Array.isArray(a)) {
           length = a.length;
           if (length != b.length) return false;
-          for (i = length; i-- !== 0; )
-            if (!equal(a[i], b[i])) return false;
+          for (i2 = length; i2-- !== 0; )
+            if (!equal(a[i2], b[i2])) return false;
           return true;
         }
         if (a.constructor === RegExp) return a.source === b.source && a.flags === b.flags;
@@ -38768,10 +38772,10 @@ var require_fast_deep_equal = __commonJS({
         keys = Object.keys(a);
         length = keys.length;
         if (length !== Object.keys(b).length) return false;
-        for (i = length; i-- !== 0; )
-          if (!Object.prototype.hasOwnProperty.call(b, keys[i])) return false;
-        for (i = length; i-- !== 0; ) {
-          var key = keys[i];
+        for (i2 = length; i2-- !== 0; )
+          if (!Object.prototype.hasOwnProperty.call(b, keys[i2])) return false;
+        for (i2 = length; i2-- !== 0; ) {
+          var key = keys[i2];
           if (!equal(a[key], b[key])) return false;
         }
         return true;
@@ -38848,8 +38852,8 @@ var require_json_schema_traverse = __commonJS({
           var sch = schema2[key];
           if (Array.isArray(sch)) {
             if (key in traverse.arrayKeywords) {
-              for (var i = 0; i < sch.length; i++)
-                _traverse(opts, pre, post, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema2, i);
+              for (var i2 = 0; i2 < sch.length; i2++)
+                _traverse(opts, pre, post, sch[i2], jsonPtr + "/" + key + "/" + i2, rootSchema, jsonPtr, key, schema2, i2);
             }
           } else if (key in traverse.propsKeywords) {
             if (sch && typeof sch == "object") {
@@ -39821,24 +39825,24 @@ var require_utils4 = __commonJS({
     function stringArrayToHexStripped(input) {
       let acc = "";
       let code = 0;
-      let i = 0;
-      for (i = 0; i < input.length; i++) {
-        code = input[i].charCodeAt(0);
+      let i2 = 0;
+      for (i2 = 0; i2 < input.length; i2++) {
+        code = input[i2].charCodeAt(0);
         if (code === 48) {
           continue;
         }
         if (!(code >= 48 && code <= 57 || code >= 65 && code <= 70 || code >= 97 && code <= 102)) {
           return "";
         }
-        acc += input[i];
+        acc += input[i2];
         break;
       }
-      for (i += 1; i < input.length; i++) {
-        code = input[i].charCodeAt(0);
+      for (i2 += 1; i2 < input.length; i2++) {
+        code = input[i2].charCodeAt(0);
         if (!(code >= 48 && code <= 57 || code >= 65 && code <= 70 || code >= 97 && code <= 102)) {
           return "";
         }
-        acc += input[i];
+        acc += input[i2];
       }
       return acc;
     }
@@ -39868,8 +39872,8 @@ var require_utils4 = __commonJS({
       let endipv6Encountered = false;
       let endIpv6 = false;
       let consume = consumeHextets;
-      for (let i = 0; i < input.length; i++) {
-        const cursor = input[i];
+      for (let i2 = 0; i2 < input.length; i2++) {
+        const cursor = input[i2];
         if (cursor === "[" || cursor === "]") {
           continue;
         }
@@ -39884,7 +39888,7 @@ var require_utils4 = __commonJS({
             output.error = true;
             break;
           }
-          if (i > 0 && input[i - 1] === ":") {
+          if (i2 > 0 && input[i2 - 1] === ":") {
             endipv6Encountered = true;
           }
           address.push(":");
@@ -39930,8 +39934,8 @@ var require_utils4 = __commonJS({
     }
     function findToken(str2, token) {
       let ind = 0;
-      for (let i = 0; i < str2.length; i++) {
-        if (str2[i] === token) ind++;
+      for (let i2 = 0; i2 < str2.length; i2++) {
+        if (str2[i2] === token) ind++;
       }
       return ind;
     }
@@ -40023,9 +40027,9 @@ var require_utils4 = __commonJS({
         return input;
       }
       let output = "";
-      for (let i = 0; i < input.length; i++) {
-        if (input[i] === "%" && i + 2 < input.length) {
-          const hex = input.slice(i + 1, i + 3);
+      for (let i2 = 0; i2 < input.length; i2++) {
+        if (input[i2] === "%" && i2 + 2 < input.length) {
+          const hex = input.slice(i2 + 1, i2 + 3);
           if (isHexPair(hex)) {
             const normalizedHex = hex.toUpperCase();
             const decoded = String.fromCharCode(parseInt(normalizedHex, 16));
@@ -40034,19 +40038,19 @@ var require_utils4 = __commonJS({
             } else {
               output += "%" + normalizedHex;
             }
-            i += 2;
+            i2 += 2;
             continue;
           }
         }
-        output += input[i];
+        output += input[i2];
       }
       return output;
     }
     function normalizePathEncoding(input) {
       let output = "";
-      for (let i = 0; i < input.length; i++) {
-        if (input[i] === "%" && i + 2 < input.length) {
-          const hex = input.slice(i + 1, i + 3);
+      for (let i2 = 0; i2 < input.length; i2++) {
+        if (input[i2] === "%" && i2 + 2 < input.length) {
+          const hex = input.slice(i2 + 1, i2 + 3);
           if (isHexPair(hex)) {
             const normalizedHex = hex.toUpperCase();
             const decoded = String.fromCharCode(parseInt(normalizedHex, 16));
@@ -40055,30 +40059,30 @@ var require_utils4 = __commonJS({
             } else {
               output += "%" + normalizedHex;
             }
-            i += 2;
+            i2 += 2;
             continue;
           }
         }
-        if (isPathCharacter(input[i])) {
-          output += input[i];
+        if (isPathCharacter(input[i2])) {
+          output += input[i2];
         } else {
-          output += escape(input[i]);
+          output += escape(input[i2]);
         }
       }
       return output;
     }
     function escapePreservingEscapes(input) {
       let output = "";
-      for (let i = 0; i < input.length; i++) {
-        if (input[i] === "%" && i + 2 < input.length) {
-          const hex = input.slice(i + 1, i + 3);
+      for (let i2 = 0; i2 < input.length; i2++) {
+        if (input[i2] === "%" && i2 + 2 < input.length) {
+          const hex = input.slice(i2 + 1, i2 + 3);
           if (isHexPair(hex)) {
             output += "%" + hex.toUpperCase();
-            i += 2;
+            i2 += 2;
             continue;
           }
         }
-        output += escape(input[i]);
+        output += escape(input[i2]);
       }
       return output;
     }
@@ -41005,9 +41009,9 @@ var require_core2 = __commonJS({
         delete RULES.keywords[keyword];
         delete RULES.all[keyword];
         for (const group of RULES.rules) {
-          const i = group.rules.findIndex((rule) => rule.keyword === keyword);
-          if (i >= 0)
-            group.rules.splice(i, 1);
+          const i2 = group.rules.findIndex((rule) => rule.keyword === keyword);
+          if (i2 >= 0)
+            group.rules.splice(i2, 1);
         }
         return this;
       }
@@ -41215,9 +41219,9 @@ var require_core2 = __commonJS({
       (_a = definition.implements) === null || _a === void 0 ? void 0 : _a.forEach((kwd) => this.addKeyword(kwd));
     }
     function addBeforeRule(ruleGroup, rule, before) {
-      const i = ruleGroup.rules.findIndex((_rule) => _rule.keyword === before);
-      if (i >= 0) {
-        ruleGroup.rules.splice(i, 0, rule);
+      const i2 = ruleGroup.rules.findIndex((_rule) => _rule.keyword === before);
+      if (i2 >= 0) {
+        ruleGroup.rules.splice(i2, 0, rule);
       } else {
         ruleGroup.rules.push(rule);
         this.logger.warn(`rule ${before} is not defined`);
@@ -41737,8 +41741,8 @@ var require_uniqueItems = __commonJS({
     var util_1 = require_util9();
     var equal_1 = require_equal();
     var error = {
-      message: ({ params: { i, j } }) => (0, codegen_1.str)`must NOT have duplicate items (items ## ${j} and ${i} are identical)`,
-      params: ({ params: { i, j } }) => (0, codegen_1._)`{i: ${i}, j: ${j}}`
+      message: ({ params: { i: i2, j } }) => (0, codegen_1.str)`must NOT have duplicate items (items ## ${j} and ${i2} are identical)`,
+      params: ({ params: { i: i2, j } }) => (0, codegen_1._)`{i: ${i2}, j: ${j}}`
     };
     var def = {
       keyword: "uniqueItems",
@@ -41755,21 +41759,21 @@ var require_uniqueItems = __commonJS({
         cxt.block$data(valid, validateUniqueItems, (0, codegen_1._)`${schemaCode} === false`);
         cxt.ok(valid);
         function validateUniqueItems() {
-          const i = gen.let("i", (0, codegen_1._)`${data}.length`);
+          const i2 = gen.let("i", (0, codegen_1._)`${data}.length`);
           const j = gen.let("j");
-          cxt.setParams({ i, j });
+          cxt.setParams({ i: i2, j });
           gen.assign(valid, true);
-          gen.if((0, codegen_1._)`${i} > 1`, () => (canOptimize() ? loopN : loopN2)(i, j));
+          gen.if((0, codegen_1._)`${i2} > 1`, () => (canOptimize() ? loopN : loopN2)(i2, j));
         }
         function canOptimize() {
           return itemTypes.length > 0 && !itemTypes.some((t) => t === "object" || t === "array");
         }
-        function loopN(i, j) {
+        function loopN(i2, j) {
           const item = gen.name("item");
           const wrongType = (0, dataType_1.checkDataTypes)(itemTypes, item, it.opts.strictNumbers, dataType_1.DataType.Wrong);
           const indices = gen.const("indices", (0, codegen_1._)`{}`);
-          gen.for((0, codegen_1._)`;${i}--;`, () => {
-            gen.let(item, (0, codegen_1._)`${data}[${i}]`);
+          gen.for((0, codegen_1._)`;${i2}--;`, () => {
+            gen.let(item, (0, codegen_1._)`${data}[${i2}]`);
             gen.if(wrongType, (0, codegen_1._)`continue`);
             if (itemTypes.length > 1)
               gen.if((0, codegen_1._)`typeof ${item} == "string"`, (0, codegen_1._)`${item} += "_"`);
@@ -41777,13 +41781,13 @@ var require_uniqueItems = __commonJS({
               gen.assign(j, (0, codegen_1._)`${indices}[${item}]`);
               cxt.error();
               gen.assign(valid, false).break();
-            }).code((0, codegen_1._)`${indices}[${item}] = ${i}`);
+            }).code((0, codegen_1._)`${indices}[${item}] = ${i2}`);
           });
         }
-        function loopN2(i, j) {
+        function loopN2(i2, j) {
           const eql = (0, util_1.useFunc)(gen, equal_1.default);
           const outer = gen.name("outer");
-          gen.label(outer).for((0, codegen_1._)`;${i}--;`, () => gen.for((0, codegen_1._)`${j} = ${i}; ${j}--;`, () => gen.if((0, codegen_1._)`${eql}(${data}[${i}], ${data}[${j}])`, () => {
+          gen.label(outer).for((0, codegen_1._)`;${i2}--;`, () => gen.for((0, codegen_1._)`${j} = ${i2}; ${j}--;`, () => gen.if((0, codegen_1._)`${eql}(${data}[${i2}], ${data}[${j}])`, () => {
             cxt.error();
             gen.assign(valid, false).break(outer);
           })));
@@ -41855,16 +41859,16 @@ var require_enum2 = __commonJS({
           if (!Array.isArray(schema2))
             throw new Error("ajv implementation error");
           const vSchema = gen.const("vSchema", schemaCode);
-          valid = (0, codegen_1.or)(...schema2.map((_x, i) => equalCode(vSchema, i)));
+          valid = (0, codegen_1.or)(...schema2.map((_x, i2) => equalCode(vSchema, i2)));
         }
         cxt.pass(valid);
         function loopEnum() {
           gen.assign(valid, false);
           gen.forOf("v", schemaCode, (v) => gen.if((0, codegen_1._)`${getEql()}(${data}, ${v})`, () => gen.assign(valid, true).break()));
         }
-        function equalCode(vSchema, i) {
-          const sch = schema2[i];
-          return typeof sch === "object" && sch !== null ? (0, codegen_1._)`${getEql()}(${data}, ${vSchema}[${i}])` : (0, codegen_1._)`${data} === ${sch}`;
+        function equalCode(vSchema, i2) {
+          const sch = schema2[i2];
+          return typeof sch === "object" && sch !== null ? (0, codegen_1._)`${getEql()}(${data}, ${vSchema}[${i2}])` : (0, codegen_1._)`${data} === ${sch}`;
         }
       }
     };
@@ -41953,8 +41957,8 @@ var require_additionalItems = __commonJS({
         cxt.ok(valid);
       }
       function validateItems(valid) {
-        gen.forRange("i", items.length, len, (i) => {
-          cxt.subschema({ keyword, dataProp: i, dataPropType: util_1.Type.Num }, valid);
+        gen.forRange("i", items.length, len, (i2) => {
+          cxt.subschema({ keyword, dataProp: i2, dataPropType: util_1.Type.Num }, valid);
           if (!it.allErrors)
             gen.if((0, codegen_1.not)(valid), () => gen.break());
         });
@@ -41997,13 +42001,13 @@ var require_items = __commonJS({
       }
       const valid = gen.name("valid");
       const len = gen.const("len", (0, codegen_1._)`${data}.length`);
-      schArr.forEach((sch, i) => {
+      schArr.forEach((sch, i2) => {
         if ((0, util_1.alwaysValidSchema)(it, sch))
           return;
-        gen.if((0, codegen_1._)`${len} > ${i}`, () => cxt.subschema({
+        gen.if((0, codegen_1._)`${len} > ${i2}`, () => cxt.subschema({
           keyword,
-          schemaProp: i,
-          dataProp: i
+          schemaProp: i2,
+          dataProp: i2
         }, valid));
         cxt.ok(valid);
       });
@@ -42140,10 +42144,10 @@ var require_contains = __commonJS({
           validateItems(schValid, () => gen.if(schValid, () => checkLimits(count)));
         }
         function validateItems(_valid, block) {
-          gen.forRange("i", 0, len, (i) => {
+          gen.forRange("i", 0, len, (i2) => {
             cxt.subschema({
               keyword: "contains",
-              dataProp: i,
+              dataProp: i2,
               dataPropType: util_1.Type.Num,
               compositeRule: true
             }, _valid);
@@ -42621,23 +42625,23 @@ var require_oneOf = __commonJS({
         gen.block(validateOneOf);
         cxt.result(valid, () => cxt.reset(), () => cxt.error(true));
         function validateOneOf() {
-          schArr.forEach((sch, i) => {
+          schArr.forEach((sch, i2) => {
             let schCxt;
             if ((0, util_1.alwaysValidSchema)(it, sch)) {
               gen.var(schValid, true);
             } else {
               schCxt = cxt.subschema({
                 keyword: "oneOf",
-                schemaProp: i,
+                schemaProp: i2,
                 compositeRule: true
               }, schValid);
             }
-            if (i > 0) {
-              gen.if((0, codegen_1._)`${schValid} && ${valid}`).assign(valid, false).assign(passing, (0, codegen_1._)`[${passing}, ${i}]`).else();
+            if (i2 > 0) {
+              gen.if((0, codegen_1._)`${schValid} && ${valid}`).assign(valid, false).assign(passing, (0, codegen_1._)`[${passing}, ${i2}]`).else();
             }
             gen.if(schValid, () => {
               gen.assign(valid, true);
-              gen.assign(passing, i);
+              gen.assign(passing, i2);
               if (schCxt)
                 cxt.mergeEvaluated(schCxt, codegen_1.Name);
             });
@@ -42663,10 +42667,10 @@ var require_allOf = __commonJS({
         if (!Array.isArray(schema2))
           throw new Error("ajv implementation error");
         const valid = gen.name("valid");
-        schema2.forEach((sch, i) => {
+        schema2.forEach((sch, i2) => {
           if ((0, util_1.alwaysValidSchema)(it, sch))
             return;
-          const schCxt = cxt.subschema({ keyword: "allOf", schemaProp: i }, valid);
+          const schCxt = cxt.subschema({ keyword: "allOf", schemaProp: i2 }, valid);
           cxt.ok(valid);
           cxt.mergeEvaluated(schCxt);
         });
@@ -43005,8 +43009,8 @@ var require_discriminator = __commonJS({
           const oneOfMapping = {};
           const topRequired = hasRequired(parentSchema);
           let tagRequired = true;
-          for (let i = 0; i < oneOf.length; i++) {
-            let sch = oneOf[i];
+          for (let i2 = 0; i2 < oneOf.length; i2++) {
+            let sch = oneOf[i2];
             if ((sch === null || sch === void 0 ? void 0 : sch.$ref) && !(0, util_1.schemaHasRulesButRef)(sch, it.self.RULES)) {
               const ref = sch.$ref;
               sch = compile_1.resolveRef.call(it.self, it.schemaEnv.root, it.baseId, ref);
@@ -43020,7 +43024,7 @@ var require_discriminator = __commonJS({
               throw new Error(`discriminator: oneOf subschemas (or referenced schemas) must have "properties/${tagName}"`);
             }
             tagRequired = tagRequired && (topRequired || hasRequired(sch));
-            addMappings(propSch, i);
+            addMappings(propSch, i2);
           }
           if (!tagRequired)
             throw new Error(`discriminator: "${tagName}" must be required`);
@@ -43028,22 +43032,22 @@ var require_discriminator = __commonJS({
           function hasRequired({ required }) {
             return Array.isArray(required) && required.includes(tagName);
           }
-          function addMappings(sch, i) {
+          function addMappings(sch, i2) {
             if (sch.const) {
-              addMapping(sch.const, i);
+              addMapping(sch.const, i2);
             } else if (sch.enum) {
               for (const tagValue of sch.enum) {
-                addMapping(tagValue, i);
+                addMapping(tagValue, i2);
               }
             } else {
               throw new Error(`discriminator: "properties/${tagName}" must have "const" or "enum"`);
             }
           }
-          function addMapping(tagValue, i) {
+          function addMapping(tagValue, i2) {
             if (typeof tagValue != "string" || tagValue in oneOfMapping) {
               throw new Error(`discriminator: "${tagName}" values must be unique strings`);
             }
-            oneOfMapping[tagValue] = i;
+            oneOfMapping[tagValue] = i2;
           }
         }
       }
@@ -43663,8 +43667,8 @@ var require_unevaluatedItems = __commonJS({
         }
         it.items = true;
         function validateItems(valid, from) {
-          gen.forRange("i", from, len, (i) => {
-            cxt.subschema({ keyword: "unevaluatedItems", dataProp: i, dataPropType: util_1.Type.Num }, valid);
+          gen.forRange("i", from, len, (i2) => {
+            cxt.subschema({ keyword: "unevaluatedItems", dataProp: i2, dataPropType: util_1.Type.Num }, valid);
             if (!it.allErrors)
               gen.if((0, codegen_1.not)(valid), () => gen.break());
           });
@@ -50260,8 +50264,8 @@ function fromFileSystemPath(path6) {
 function toFileSystemPath(path6, keepFileProtocol) {
   path6 = path6.replace(/%(?![0-9A-Fa-f]{2})/g, "%25");
   path6 = decodeURI(path6);
-  for (let i = 0; i < urlDecodePatterns.length; i += 2) {
-    path6 = path6.replace(urlDecodePatterns[i], urlDecodePatterns[i + 1]);
+  for (let i2 = 0; i2 < urlDecodePatterns.length; i2 += 2) {
+    path6 = path6.replace(urlDecodePatterns[i2], urlDecodePatterns[i2 + 1]);
   }
   let isFileUrl = path6.toLowerCase().startsWith("file://");
   if (isFileUrl) {
@@ -50545,22 +50549,22 @@ var Pointer = class _Pointer {
     if (this.$ref.dynamicIdScope && !isAliasedResource(this.$ref)) {
       this.scopeBase = getSchemaBasePath(this.scopeBase, this.value);
     }
-    for (let i = 0; i < tokens.length; i++) {
+    for (let i2 = 0; i2 < tokens.length; i2++) {
       const wasCircular = this.circular;
       const isExtendedRef = ref_default.isExtended$Ref(this.value);
       if (resolveIf$Ref(this, options, pathFromRoot)) {
-        this.path = _Pointer.join(this.path, tokens.slice(i));
+        this.path = _Pointer.join(this.path, tokens.slice(i2));
       } else if (!wasCircular && this.circular && isExtendedRef) {
         this.circular = false;
       }
-      const token = tokens[i];
-      if (this.value[token] === void 0 || this.value[token] === null && i === tokens.length - 1) {
+      const token = tokens[i2];
+      if (this.value[token] === void 0 || this.value[token] === null && i2 === tokens.length - 1) {
         let didFindSubstringSlashMatch = false;
-        for (let j = tokens.length - 1; j > i; j--) {
-          const joinedToken = tokens.slice(i, j + 1).join("/");
+        for (let j = tokens.length - 1; j > i2; j--) {
+          const joinedToken = tokens.slice(i2, j + 1).join("/");
           if (this.value[joinedToken] !== void 0) {
             this.value = this.value[joinedToken];
-            i = j;
+            i2 = j;
             didFindSubstringSlashMatch = true;
             break;
           }
@@ -50613,9 +50617,9 @@ var Pointer = class _Pointer {
     if (this.$ref.dynamicIdScope && !isAliasedResource(this.$ref)) {
       this.scopeBase = getSchemaBasePath(this.scopeBase, this.value);
     }
-    for (let i = 0; i < tokens.length - 1; i++) {
+    for (let i2 = 0; i2 < tokens.length - 1; i2++) {
       resolveIf$Ref(this, options);
-      token = tokens[i];
+      token = tokens[i2];
       if (this.value && this.value[token] !== void 0) {
         this.value = this.value[token];
       } else {
@@ -50648,8 +50652,8 @@ var Pointer = class _Pointer {
       return [];
     }
     const split = pointer.split("/");
-    for (let i = 0; i < split.length; i++) {
-      split[i] = split[i].replace(escapedSlash, "/").replace(escapedTilde, "~");
+    for (let i2 = 0; i2 < split.length; i2++) {
+      split[i2] = split[i2].replace(escapedSlash, "/").replace(escapedTilde, "~");
     }
     if (split[0] !== "") {
       throw new InvalidPointerError(pointer, originalPath === void 0 ? path6 : originalPath);
@@ -50668,8 +50672,8 @@ var Pointer = class _Pointer {
       base += "#";
     }
     tokens = Array.isArray(tokens) ? tokens : [tokens];
-    for (let i = 0; i < tokens.length; i++) {
-      const token = tokens[i];
+    for (let i2 = 0; i2 < tokens.length; i2++) {
+      const token = tokens[i2];
       base += "/" + token.replace(tildes, "~0").replace(slashes, "~1");
     }
     return base;
@@ -51555,33 +51559,33 @@ function makeSnippet(mark, options) {
     }
   }
   if (foundLineNo < 0) foundLineNo = lineStarts.length - 1;
-  var result = "", i, line;
+  var result = "", i2, line;
   var lineNoLength = Math.min(mark.line + options.linesAfter, lineEnds.length).toString().length;
   var maxLineLength = options.maxLength - (options.indent + lineNoLength + 3);
-  for (i = 1; i <= options.linesBefore; i++) {
-    if (foundLineNo - i < 0) break;
+  for (i2 = 1; i2 <= options.linesBefore; i2++) {
+    if (foundLineNo - i2 < 0) break;
     line = getLine(
       mark.buffer,
-      lineStarts[foundLineNo - i],
-      lineEnds[foundLineNo - i],
-      mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo - i]),
+      lineStarts[foundLineNo - i2],
+      lineEnds[foundLineNo - i2],
+      mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo - i2]),
       maxLineLength
     );
-    result = common.repeat(" ", options.indent) + padStart((mark.line - i + 1).toString(), lineNoLength) + " | " + line.str + "\n" + result;
+    result = common.repeat(" ", options.indent) + padStart((mark.line - i2 + 1).toString(), lineNoLength) + " | " + line.str + "\n" + result;
   }
   line = getLine(mark.buffer, lineStarts[foundLineNo], lineEnds[foundLineNo], mark.position, maxLineLength);
   result += common.repeat(" ", options.indent) + padStart((mark.line + 1).toString(), lineNoLength) + " | " + line.str + "\n";
   result += common.repeat("-", options.indent + lineNoLength + 3 + line.pos) + "^\n";
-  for (i = 1; i <= options.linesAfter; i++) {
-    if (foundLineNo + i >= lineEnds.length) break;
+  for (i2 = 1; i2 <= options.linesAfter; i2++) {
+    if (foundLineNo + i2 >= lineEnds.length) break;
     line = getLine(
       mark.buffer,
-      lineStarts[foundLineNo + i],
-      lineEnds[foundLineNo + i],
-      mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo + i]),
+      lineStarts[foundLineNo + i2],
+      lineEnds[foundLineNo + i2],
+      mark.position - (lineStarts[foundLineNo] - lineStarts[foundLineNo + i2]),
       maxLineLength
     );
-    result += common.repeat(" ", options.indent) + padStart((mark.line + i + 1).toString(), lineNoLength) + " | " + line.str + "\n";
+    result += common.repeat(" ", options.indent) + padStart((mark.line + i2 + 1).toString(), lineNoLength) + " | " + line.str + "\n";
   }
   return result.replace(/\n$/, "");
 }
@@ -53586,7 +53590,7 @@ var STYLE_LITERAL = 3;
 var STYLE_FOLDED = 4;
 var STYLE_DOUBLE = 5;
 function chooseScalarStyle(string, singleLineOnly, indentPerLevel, lineWidth, testAmbiguousType, quotingType, forceQuotes, inblock) {
-  var i;
+  var i2;
   var char = 0;
   var prevChar = null;
   var hasLineBreak = false;
@@ -53595,8 +53599,8 @@ function chooseScalarStyle(string, singleLineOnly, indentPerLevel, lineWidth, te
   var previousLineBreak = -1;
   var plain = isPlainSafeFirst(codePointAt(string, 0)) && isPlainSafeLast(codePointAt(string, string.length - 1));
   if (singleLineOnly || forceQuotes) {
-    for (i = 0; i < string.length; char >= 65536 ? i += 2 : i++) {
-      char = codePointAt(string, i);
+    for (i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
+      char = codePointAt(string, i2);
       if (!isPrintable(char)) {
         return STYLE_DOUBLE;
       }
@@ -53604,14 +53608,14 @@ function chooseScalarStyle(string, singleLineOnly, indentPerLevel, lineWidth, te
       prevChar = char;
     }
   } else {
-    for (i = 0; i < string.length; char >= 65536 ? i += 2 : i++) {
-      char = codePointAt(string, i);
+    for (i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
+      char = codePointAt(string, i2);
       if (char === CHAR_LINE_FEED) {
         hasLineBreak = true;
         if (shouldTrackWidth) {
           hasFoldableLine = hasFoldableLine || // Foldable line = too long, and not more-indented.
-          i - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ";
-          previousLineBreak = i;
+          i2 - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ";
+          previousLineBreak = i2;
         }
       } else if (!isPrintable(char)) {
         return STYLE_DOUBLE;
@@ -53619,7 +53623,7 @@ function chooseScalarStyle(string, singleLineOnly, indentPerLevel, lineWidth, te
       plain = plain && isPlainSafe(char, prevChar, inblock);
       prevChar = char;
     }
-    hasFoldableLine = hasFoldableLine || shouldTrackWidth && (i - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ");
+    hasFoldableLine = hasFoldableLine || shouldTrackWidth && (i2 - previousLineBreak - 1 > lineWidth && string[previousLineBreak + 1] !== " ");
   }
   if (!hasLineBreak && !hasFoldableLine) {
     if (plain && !forceQuotes && !testAmbiguousType(string)) {
@@ -53732,12 +53736,12 @@ function escapeString(string) {
   var result = "";
   var char = 0;
   var escapeSeq;
-  for (var i = 0; i < string.length; char >= 65536 ? i += 2 : i++) {
-    char = codePointAt(string, i);
+  for (var i2 = 0; i2 < string.length; char >= 65536 ? i2 += 2 : i2++) {
+    char = codePointAt(string, i2);
     escapeSeq = ESCAPE_SEQUENCES[char];
     if (!escapeSeq && isPrintable(char)) {
-      result += string[i];
-      if (char >= 65536) result += string[i + 1];
+      result += string[i2];
+      if (char >= 65536) result += string[i2 + 1];
     } else {
       result += escapeSeq || encodeHex(char);
     }
@@ -54419,8 +54423,8 @@ var getNewOptions = (options) => {
 function merge2(target, source) {
   if (isMergeable(source)) {
     const keys = Object.keys(source).filter((key) => !["__proto__", "constructor", "prototype"].includes(key));
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
+    for (let i2 = 0; i2 < keys.length; i2++) {
+      const key = keys[i2];
       const sourceSetting = source[key];
       const targetSetting = target[key];
       if (isMergeable(sourceSetting)) {
@@ -61812,9 +61816,9 @@ var OpenAPISpecificationValidator = class extends SpecificationValidator {
    *
    */
   checkForDuplicates(params, schemaId) {
-    for (let i = 0; i < params.length - 1; i++) {
-      const outer = params[i];
-      for (let j = i + 1; j < params.length; j++) {
+    for (let i2 = 0; i2 < params.length - 1; i2++) {
+      const outer = params[i2];
+      for (let j = i2 + 1; j < params.length; j++) {
         const inner = params[j];
         if ("$ref" in outer || "$ref" in inner) {
           continue;
@@ -61941,10 +61945,10 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
    */
   validatePathParameters(params, pathId, operationId) {
     const placeholders = pathId.match(pathParameterTemplateRegExp) || [];
-    for (let i = 0; i < placeholders.length; i++) {
-      for (let j = i + 1; j < placeholders.length; j++) {
-        if (placeholders[i] === placeholders[j]) {
-          this.reportError(`\`${operationId}\` has multiple path placeholders named \`${placeholders[i]}\`.`);
+    for (let i2 = 0; i2 < placeholders.length; i2++) {
+      for (let j = i2 + 1; j < placeholders.length; j++) {
+        if (placeholders[i2] === placeholders[j]) {
+          this.reportError(`\`${operationId}\` has multiple path placeholders named \`${placeholders[i2]}\`.`);
         }
       }
     }
@@ -62138,9 +62142,9 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
    *
    */
   checkForDuplicates(params, schemaId) {
-    for (let i = 0; i < params.length - 1; i++) {
-      const outer = params[i];
-      for (let j = i + 1; j < params.length; j++) {
+    for (let i2 = 0; i2 < params.length - 1; i2++) {
+      const outer = params[i2];
+      for (let j = i2 + 1; j < params.length; j++) {
         const inner = params[j];
         if (outer.name === inner.name && outer.in === inner.in) {
           const error = `Found multiple \`${outer.in}\` parameters named \`${outer.name}\` in \`${schemaId}\`.`;

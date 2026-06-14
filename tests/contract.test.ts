@@ -12,7 +12,7 @@ import { createPlannedOutputs, readActionInputs, resolveInputs } from '../src/in
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const publicSyntheticSpecUrl =
-  'https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml';
+  'https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml';
 const actionManifest = parse(
   readFileSync(resolve(repoRoot, 'action.yml'), 'utf8')
 ) as {
@@ -62,12 +62,12 @@ describe('bootstrap action contract', () => {
     expect(packageManifest.scripts.build).toContain('--outfile=dist/action.cjs');
   });
 
-  it('defaults integration-backend to bifrost in the contract, manifest, and runtime', () => {
+  it('keeps integration-backend internal: contract and runtime resolve to bifrost while the manifest omits a visible default', () => {
     expect(bootstrapActionContract.inputs['integration-backend'].default).toBe('bifrost');
     expect(bootstrapActionContract.inputs['integration-backend'].allowedValues).toEqual([
       'bifrost'
     ]);
-    expect(actionManifest.inputs['integration-backend'].default).toBe('bifrost');
+    expect(actionManifest.inputs['integration-backend'].default).toBeUndefined();
     expect(resolveInputs({}).integrationBackend).toBe('bifrost');
   });
 

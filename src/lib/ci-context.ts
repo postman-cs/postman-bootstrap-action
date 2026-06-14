@@ -1,6 +1,6 @@
 // CI-system detection for telemetry. Framework-agnostic: reads only env, never
-// shells out, no @actions/core. Covers the eleven providers these actions
-// actually run on (GitHub, GitLab, CircleCI, Buildkite, Azure Pipelines, AWS
+// shells out, no @actions/core. Covers 11 named providers plus 'other'/'unknown'
+// fallbacks; the named set is (GitHub, GitLab, CircleCI, Buildkite, Azure Pipelines, AWS
 // CodeBuild, Bitbucket Pipelines, TeamCity, Harness, Jenkins, Concourse); a run
 // in any other CI lands in 'other', and a run outside CI lands in 'unknown'.
 // runner_kind is reported only where a contractual hosted/self-hosted env flag

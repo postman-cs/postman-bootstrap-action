@@ -113,9 +113,8 @@ inputs:
     required: false
     default: warn
   integration-backend:
-    description: Integration backend for downstream workspace connectivity
+    description: Advanced/internal. Integration backend for managed workspace connectivity; leave unset to use the default.
     required: false
-    default: bifrost
   folder-strategy:
     description: Folder organization strategy for generated collections (Paths or Tags)
     required: false

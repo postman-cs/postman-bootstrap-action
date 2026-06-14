@@ -43,7 +43,7 @@ jobs:
       - uses: postman-cs/postman-bootstrap-action@v1
         with:
           project-name: core-payments
-          spec-url: https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml
+          spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
           postman-region: us
           postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
           postman-access-token: ${{ steps.postman_token.outputs.token }}
@@ -80,7 +80,7 @@ Pass `workspace-id`, `spec-id`, and existing collection IDs to rerun without cre
     baseline-collection-id: col-baseline
     smoke-collection-id: col-smoke
     contract-collection-id: col-contract
-    spec-url: https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml
+    spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
     postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
 ```
 
@@ -92,7 +92,7 @@ Create a release-scoped spec and collection set instead of refreshing the canoni
 - uses: postman-cs/postman-bootstrap-action@v1
   with:
     project-name: core-payments
-    spec-url: https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml
+    spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
     collection-sync-mode: version
     spec-sync-mode: version
     release-label: v1.1.1
@@ -135,7 +135,7 @@ Set the repository custom property `postman-governance-group`, then provide toke
 - uses: postman-cs/postman-bootstrap-action@v1
   with:
     project-name: core-payments
-    spec-url: https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml
+    spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
     postman-region: us
     github-token: ${{ github.token }}
     postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
@@ -152,7 +152,7 @@ Postman organizations with multiple sub-teams require an explicit `workspace-tea
 - uses: postman-cs/postman-bootstrap-action@v1
   with:
     project-name: core-payments
-    spec-url: https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml
+    spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
     workspace-team-id: ${{ vars.POSTMAN_WORKSPACE_TEAM_ID }}
     postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
 ```
@@ -228,7 +228,7 @@ npm install -g @postman-cse/onboarding-bootstrap
 
 postman-bootstrap \
   --project-name core-payments \
-  --spec-url https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml \
+  --spec-url https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml \
   --postman-api-key "$POSTMAN_API_KEY" \
   --postman-access-token "$POSTMAN_ACCESS_TOKEN" \
   --result-json bootstrap-result.json \
@@ -244,7 +244,7 @@ bootstrap:
   image: node:24
   script:
     - npm install -g @postman-cse/onboarding-bootstrap
-    - postman-bootstrap --project-name core-payments --spec-url "https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
+    - postman-bootstrap --project-name core-payments --spec-url "https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
   artifacts:
     paths:
       - bootstrap-result.json
@@ -260,7 +260,7 @@ pipelines:
         image: node:24
         script:
           - npm install -g @postman-cse/onboarding-bootstrap
-          - postman-bootstrap --project-name core-payments --spec-url "https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
+          - postman-bootstrap --project-name core-payments --spec-url "https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
         artifacts:
           - bootstrap-result.json
           - bootstrap.env
@@ -275,7 +275,7 @@ steps:
       versionSpec: '24.x'
   - script: |
       npm install -g @postman-cse/onboarding-bootstrap
-      postman-bootstrap --project-name core-payments --spec-url "https://gist.githubusercontent.com/jaredboynton/a839de57db2c3c90b8f75906c56b00ee/raw/openapi.yaml" --postman-api-key "$(POSTMAN_API_KEY)" --postman-access-token "$(POSTMAN_ACCESS_TOKEN)" --result-json bootstrap-result.json --dotenv-path bootstrap.env
+      postman-bootstrap --project-name core-payments --spec-url "https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml" --postman-api-key "$(POSTMAN_API_KEY)" --postman-access-token "$(POSTMAN_ACCESS_TOKEN)" --result-json bootstrap-result.json --dotenv-path bootstrap.env
     displayName: Bootstrap Postman assets
   - publish: bootstrap-result.json
   - publish: bootstrap.env

@@ -34,7 +34,7 @@ import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-sele
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker } from './lib/secrets.js';
-import { createTelemetryContext, type TelemetryContext } from './lib/telemetry.js';
+import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
 import { instrumentContractCollection } from './lib/spec/collection-contracts.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
@@ -979,9 +979,11 @@ export async function runBootstrap(
   });
   try {
     const result = await runBootstrapInner(inputs, dependencies, telemetry);
+    telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion('success');
     return result;
   } catch (error) {
+    telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion('failure');
     throw error;
   }

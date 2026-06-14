@@ -26866,10 +26866,10 @@ var require_tracing = __commonJS({
     "use strict";
     var merge2 = (a, b) => [.../* @__PURE__ */ new Set([...a, ...b])].sort();
     var intersect = (a, b) => a.filter((x) => b.includes(x));
-    var wrapArgs = (f) => (...args) => f(...args.map(normalize2));
-    var wrapFull = (f) => (...args) => normalize2(f(...args.map(normalize2)));
+    var wrapArgs = (f) => (...args) => f(...args.map(normalize3));
+    var wrapFull = (f) => (...args) => normalize3(f(...args.map(normalize3)));
     var typeIsNot = (type, t) => type && !type.includes(t);
-    var normalize2 = ({ type = null, dyn: d = {}, ...A }) => ({
+    var normalize3 = ({ type = null, dyn: d = {}, ...A }) => ({
       type: type ? [...type].sort() : type,
       items: typeIsNot(type, "array") ? Infinity : A.items || 0,
       properties: typeIsNot(type, "object") ? [true] : [...A.properties || []].sort(),
@@ -26884,7 +26884,7 @@ var require_tracing = __commonJS({
       },
       unknown: A.unknown && !(typeIsNot(type, "object") && typeIsNot(type, "array")) || false
     });
-    var initTracing = () => normalize2({});
+    var initTracing = () => normalize3({});
     var andDelta = wrapFull((A, B) => ({
       type: A.type && B.type ? intersect(A.type, B.type) : A.type || B.type || null,
       items: Math.max(A.items, B.items),
@@ -39186,8 +39186,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize2) {
-      if (normalize2 !== false)
+    function getFullPath(resolver, id = "", normalize3) {
+      if (normalize3 !== false)
         id = normalizeId(id);
       const p = resolver.parse(id);
       return _getFullPath(resolver, p);
@@ -40583,7 +40583,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils4();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize2(uri, options) {
+    function normalize3(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         normalizeString(uri, options);
@@ -40850,7 +40850,7 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize: normalize2,
+      normalize: normalize3,
       resolve: resolve4,
       resolveComponent,
       equal,
@@ -49873,11 +49873,7 @@ function detectRepoContext(input, env = process.env) {
   };
 }
 
-// src/lib/telemetry.ts
-var import_node_crypto2 = require("node:crypto");
-var import_undici2 = __toESM(require_undici(), 1);
-
-// src/lib/ci-context.ts
+// node_modules/@postman-cse/automation-telemetry-core/dist/ci-context.js
 function norm(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length > 0 ? trimmed : void 0;
@@ -49970,15 +49966,85 @@ function detectCiContext(env = process.env) {
   return { ciProvider: "unknown", runnerKind: "unknown" };
 }
 
-// src/lib/telemetry.ts
-var SCHEMA_VERSION = 1;
+// node_modules/@postman-cse/automation-telemetry-core/dist/repo-context.js
+function normalize2(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function normalizeRepoUrl2(url) {
+  const raw = normalize2(url);
+  if (!raw) {
+    return void 0;
+  }
+  const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    const host = sshMatch[1];
+    const path8 = sshMatch[2];
+    return `https://${host}/${path8}`;
+  }
+  return raw.replace(/\.git$/, "");
+}
+function parseProvider2(explicitProvider, repoUrl, env) {
+  const explicit = normalize2(explicitProvider)?.toLowerCase();
+  if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
+    return explicit;
+  }
+  const url = (repoUrl ?? "").toLowerCase();
+  if (url.includes("github")) {
+    return "github";
+  }
+  if (url.includes("gitlab")) {
+    return "gitlab";
+  }
+  if (url.includes("bitbucket")) {
+    return "bitbucket";
+  }
+  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
+    return "azure-devops";
+  }
+  if (normalize2(env.GITHUB_REPOSITORY)) {
+    return "github";
+  }
+  if (normalize2(env.CI_PROJECT_PATH) || normalize2(env.GITLAB_CI)) {
+    return "gitlab";
+  }
+  if (normalize2(env.BITBUCKET_REPO_SLUG)) {
+    return "bitbucket";
+  }
+  if (normalize2(env.BUILD_REPOSITORY_URI)) {
+    return "azure-devops";
+  }
+  return "unknown";
+}
+function detectRepoContext2(input, env = process.env) {
+  const repoUrl = normalizeRepoUrl2(input.repoUrl) ?? normalizeRepoUrl2(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl2(env.CI_PROJECT_URL) ?? normalizeRepoUrl2(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl2(env.BUILD_REPOSITORY_URI);
+  const repoSlug = normalize2(input.repoSlug) ?? normalize2(env.GITHUB_REPOSITORY) ?? normalize2(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize2(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize2(env.BUILD_REPOSITORY_NAME);
+  const ref = normalize2(input.ref) ?? normalize2(env.GITHUB_REF_NAME) ?? normalize2(env.CI_COMMIT_REF_NAME) ?? normalize2(env.BITBUCKET_BRANCH) ?? normalize2(env.BUILD_SOURCEBRANCHNAME);
+  const sha = normalize2(input.sha) ?? normalize2(env.GITHUB_SHA) ?? normalize2(env.CI_COMMIT_SHA) ?? normalize2(env.BITBUCKET_COMMIT) ?? normalize2(env.BUILD_SOURCEVERSION);
+  const provider = parseProvider2(input.gitProvider, repoUrl, env);
+  return {
+    provider,
+    repoUrl,
+    repoSlug,
+    ref,
+    sha
+  };
+}
+
+// node_modules/@postman-cse/automation-telemetry-core/dist/telemetry.js
+var import_node_crypto2 = require("node:crypto");
+var import_undici2 = __toESM(require_undici(), 1);
+var SCHEMA_VERSION = 2;
 var DEFAULT_TIMEOUT_MS = 1500;
 var DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
 var proxyDispatcher;
 function getProxyDispatcher() {
   return proxyDispatcher ??= new import_undici2.EnvHttpProxyAgent();
 }
-function actionVersion() {
+function resolveActionVersion(explicit) {
+  if (explicit) {
+    return explicit;
+  }
   return "1.2.3" ? "1.2.3" : "unknown";
 }
 function telemetryDisabled(env) {
@@ -49995,30 +50061,41 @@ function telemetryDisabled(env) {
 function sha2562(value) {
   return (0, import_node_crypto2.createHash)("sha256").update(value).digest("hex");
 }
+function accountTypeFromConsumer(consumerType) {
+  const t = (consumerType ?? "").trim().toLowerCase();
+  if (!t) {
+    return "unknown";
+  }
+  return t === "service_account" ? "service" : "user";
+}
 var noticeShown = false;
 function maybeNotice(logger) {
   if (noticeShown || !logger) {
     return;
   }
   noticeShown = true;
-  logger.info(
-    "note: postman-actions sends anonymous usage data (team id, action, CI provider). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1."
-  );
+  logger.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
 }
-function buildTelemetryEvent(action, teamId, outcome, env, now) {
+function buildTelemetryEvent(params) {
+  const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
   const ci = detectCiContext(env);
-  const repo = detectRepoContext({}, env);
-  const repoSource = repo.repoSlug ?? repo.repoUrl;
+  const repo = detectRepoContext2({}, env);
+  const repoSlug = repo.repoSlug;
+  const repoSource = repoSlug ?? repo.repoUrl;
+  const owner = repoSlug && repoSlug.includes("/") ? repoSlug.split("/")[0] : void 0;
   return {
     schema_version: SCHEMA_VERSION,
     event: "completion",
     action,
-    action_version: actionVersion(),
+    action_version: actionVersion || "unknown",
     team_id: teamId,
     ci_provider: ci.ciProvider,
+    git_provider: repo.provider,
     run_id: ci.runId,
     runner_kind: ci.runnerKind,
     repo_id: repoSource ? sha2562(repoSource) : void 0,
+    org_id: owner ? sha2562(owner) : void 0,
+    account_type: accountType,
     outcome,
     ts: now()
   };
@@ -50047,13 +50124,18 @@ async function send(event, options) {
 function createTelemetryContext(options) {
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now;
+  const actionVersion = resolveActionVersion(options.actionVersion);
   let teamId = "";
+  let accountType = "unknown";
   let emitted = false;
   return {
     setTeamId(value) {
       if (value) {
         teamId = String(value);
       }
+    },
+    setAccountType(consumerType) {
+      accountType = accountTypeFromConsumer(consumerType);
     },
     emitCompletion(outcome) {
       if (emitted) {
@@ -50064,7 +50146,15 @@ function createTelemetryContext(options) {
         if (telemetryDisabled(env) || !teamId) {
           return;
         }
-        const event = buildTelemetryEvent(options.action, teamId, outcome, env, now);
+        const event = buildTelemetryEvent({
+          action: options.action,
+          actionVersion,
+          teamId,
+          accountType,
+          outcome,
+          env,
+          now
+        });
         maybeNotice(options.logger);
         void send(event, options).catch(() => {
         });
@@ -64883,9 +64973,11 @@ async function runBootstrap(inputs, dependencies) {
   });
   try {
     const result = await runBootstrapInner(inputs, dependencies, telemetry);
+    telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion("success");
     return result;
   } catch (error2) {
+    telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion("failure");
     throw error2;
   }

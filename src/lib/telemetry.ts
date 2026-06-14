@@ -30,7 +30,13 @@ const DEFAULT_ENDPOINT = 'https://events.pm-cse.dev/v1/events';
 // per-request as the dispatcher. This deliberately avoids setGlobalDispatcher so
 // the action's own Postman/Bifrost HTTP clients stay on the default agent. The
 // 1500 ms abort still applies through the proxy.
-const proxyDispatcher = new EnvHttpProxyAgent();
+let proxyDispatcher: EnvHttpProxyAgent | undefined;
+function getProxyDispatcher(): EnvHttpProxyAgent {
+  // Lazy so importing this module never triggers undici's experimental EHPA
+  // warning on the opt-out path; send() runs only when telemetry is enabled
+  // with a resolved team id.
+  return (proxyDispatcher ??= new EnvHttpProxyAgent());
+}
 
 export interface TelemetryLogger {
   info(message: string): void;
@@ -140,9 +146,10 @@ async function send(event: TelemetryEvent, options: TelemetryOptions): Promise<v
   // proxy-only enterprises would never be counted. Tests inject their own
   // transport.
   const transport = options.transport ?? (undiciFetch as unknown as typeof fetch);
-  const dispatcher = options.dispatcher ?? proxyDispatcher;
+  const dispatcher = options.dispatcher ?? getProxyDispatcher();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  timer.unref?.();
   const init: RequestInit = {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

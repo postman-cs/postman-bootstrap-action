@@ -389,7 +389,7 @@ Package and docs:
 This action sends a single anonymous usage event when a run completes, so the
 Postman team can measure adoption across CI systems. The event contains the
 action name and version, your Postman team ID, the detected CI provider and
-runner kind, the run outcome, and a one-way SHA-256 hash of the repository
+runner kind, the run outcome, the CI run identifier, an event timestamp, and a one-way SHA-256 hash of the repository
 identifier. The Postman team ID is sent in the clear on a legitimate-interest
 basis to measure product adoption.
 

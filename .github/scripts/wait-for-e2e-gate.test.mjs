@@ -6,7 +6,10 @@ import {
   findRunByCorrelation,
   isSuccessfulConclusion,
   isTerminalStatus,
-  normalizeRunDetails
+  jitter,
+  normalizeRunDetails,
+  parseRetryAfterMs,
+  transientBackoffMs
 } from './wait-for-e2e-gate.mjs';
 
 test('buildCorrelationId creates a stable run-scoped identifier', () => {
@@ -75,4 +78,25 @@ test('classifies terminal status and successful conclusions', () => {
   assert.equal(isSuccessfulConclusion('success'), true);
   assert.equal(isSuccessfulConclusion('failure'), false);
   assert.equal(isSuccessfulConclusion(null), false);
+});
+
+test('parseRetryAfterMs reads integer seconds and rejects junk', () => {
+  assert.equal(parseRetryAfterMs('30'), 30000);
+  assert.equal(parseRetryAfterMs('0'), 0);
+  assert.equal(parseRetryAfterMs(null), null);
+  assert.equal(parseRetryAfterMs('not-a-date'), null);
+});
+
+test('transientBackoffMs honors Retry-After, else exponential, both capped', () => {
+  assert.equal(transientBackoffMs(1, 5000, 15000, 120000), 5000);
+  assert.equal(transientBackoffMs(1, null, 15000, 120000), 15000);
+  assert.equal(transientBackoffMs(3, null, 15000, 120000), 60000);
+  assert.equal(transientBackoffMs(99, null, 15000, 120000), 120000);
+  assert.equal(transientBackoffMs(1, 999000, 15000, 120000), 120000);
+});
+
+test('jitter spreads within +/-20% deterministically with a supplied rand', () => {
+  assert.equal(jitter(1000, 0), 800);
+  assert.equal(jitter(1000, 1), 1200);
+  assert.equal(jitter(1000, 0.5), 1000);
 });

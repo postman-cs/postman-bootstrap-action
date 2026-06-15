@@ -6,6 +6,8 @@ const DEFAULT_E2E_WORKFLOW = 'e2e.yml';
 const DEFAULT_E2E_REF = 'main';
 const DEFAULT_TIMEOUT_SECONDS = 1800;
 const DEFAULT_POLL_SECONDS = 10;
+const TRANSIENT_BACKOFF_BASE_SECONDS = 15;
+const TRANSIENT_BACKOFF_CAP_SECONDS = 120;
 const GITHUB_API_VERSION = '2026-03-10';
 
 export function buildCorrelationId({ repository, runId, runAttempt, refName }) {
@@ -18,6 +20,31 @@ export function isTerminalStatus(status) {
 
 export function isSuccessfulConclusion(conclusion) {
   return conclusion === 'success';
+}
+
+// Pure. Transient GitHub failures (rate-limit 403/429, 5xx, network blips) must
+// not fail a release gate mid-wait; the caller backs off and retries until its
+// own deadline. Honor a server Retry-After when present, else exponential+cap.
+export function parseRetryAfterMs(headerValue) {
+  if (!headerValue) return null;
+  const seconds = Number.parseInt(headerValue, 10);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const when = Date.parse(headerValue);
+  if (Number.isFinite(when)) return Math.max(0, when - Date.now());
+  return null;
+}
+
+export function transientBackoffMs(attempt, retryAfterMs, baseMs = TRANSIENT_BACKOFF_BASE_SECONDS * 1000, capMs = TRANSIENT_BACKOFF_CAP_SECONDS * 1000) {
+  if (Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+    return Math.min(retryAfterMs, capMs);
+  }
+  const exp = baseMs * Math.pow(2, Math.max(0, attempt - 1));
+  return Math.min(exp, capMs);
+}
+
+// Pure. +/-20% spread so a fleet of gate waiters does not poll in lockstep.
+export function jitter(ms, rand = Math.random()) {
+  return Math.round(ms * (0.8 + rand * 0.4));
 }
 
 export function normalizeRunDetails(payload) {
@@ -76,23 +103,66 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function githubRequest({ token, method = 'GET', url, body, okStatuses = [200] }) {
-  const response = await fetch(url, {
-    method,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'X-GitHub-Api-Version': GITHUB_API_VERSION
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
+class TransientHttpError extends Error {
+  constructor(message, retryAfterMs) {
+    super(message);
+    this.retryAfterMs = retryAfterMs;
+    this.transient = true;
+  }
+}
+
+async function githubRequest({ token, method = 'GET', url, body, okStatuses = [200], retryTransient = false }) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': GITHUB_API_VERSION
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+  } catch (networkError) {
+    if (retryTransient) {
+      throw new TransientHttpError(`network error: ${networkError instanceof Error ? networkError.message : String(networkError)}`, null);
+    }
+    throw networkError;
+  }
 
   const text = await response.text();
   if (!okStatuses.includes(response.status)) {
+    if (retryTransient && (response.status === 403 || response.status === 429 || response.status >= 500)) {
+      throw new TransientHttpError(
+        `${method} ${url} failed with HTTP ${response.status}: ${text.slice(0, 200)}`,
+        parseRetryAfterMs(response.headers.get('retry-after'))
+      );
+    }
     throw new Error(`${method} ${url} failed with HTTP ${response.status}: ${text}`);
   }
   return text ? JSON.parse(text) : null;
+}
+
+// GET poller that survives transient GitHub failures over a long wait: retries
+// with backoff until the caller's deadline rather than failing the gate. Only
+// for idempotent reads -- the dispatch POST stays single-shot so a retry can
+// never spawn a second e2e run.
+async function pollGet({ token, url, deadlineMs }) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await githubRequest({ token, url, retryTransient: true });
+    } catch (error) {
+      if (!error || error.transient !== true || Date.now() >= deadlineMs) {
+        throw error;
+      }
+      attempt += 1;
+      const backoff = jitter(transientBackoffMs(attempt, error.retryAfterMs));
+      console.log(`::warning::e2e gate poll failed (${error.message}); retrying in ${Math.round(backoff / 1000)}s (attempt ${attempt}).`);
+      await sleep(backoff);
+    }
+  }
 }
 
 function workflowRunsUrl({ repository, workflow }) {
@@ -124,13 +194,13 @@ async function waitForMatchingRun({ token, repository, workflow, correlationId, 
   const runsUrl = workflowRunsUrl({ repository, workflow });
 
   while (Date.now() < deadlineMs) {
-    const payload = await githubRequest({ token, url: runsUrl });
+    const payload = await pollGet({ token, url: runsUrl, deadlineMs });
     const run = findRunByCorrelation(payload.workflow_runs ?? [], correlationId, createdAfterIso);
     if (run) {
       return run;
     }
     console.log(`Waiting for e2e run registration (correlation=${correlationId})...`);
-    await sleep(pollMs);
+    await sleep(jitter(pollMs));
   }
 
   throw new Error(`Timed out waiting for e2e workflow run registration (correlation=${correlationId})`);
@@ -139,7 +209,7 @@ async function waitForMatchingRun({ token, repository, workflow, correlationId, 
 async function waitForTerminalRun({ token, run, deadlineMs, pollMs }) {
   let current = run;
   while (Date.now() < deadlineMs) {
-    current = await githubRequest({ token, url: current.url });
+    current = await pollGet({ token, url: current.url, deadlineMs });
     console.log(`e2e run ${current.html_url}: status=${current.status} conclusion=${current.conclusion ?? 'pending'}`);
 
     if (isTerminalStatus(current.status)) {
@@ -149,7 +219,7 @@ async function waitForTerminalRun({ token, run, deadlineMs, pollMs }) {
       throw new Error(`e2e run concluded ${current.conclusion}: ${current.html_url}`);
     }
 
-    await sleep(pollMs);
+    await sleep(jitter(pollMs));
   }
 
   throw new Error(`Timed out waiting for e2e workflow run to complete: ${current.html_url}`);

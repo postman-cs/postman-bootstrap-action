@@ -16,4 +16,6 @@ You should receive an acknowledgement within five business days. Please include 
 ## Scope Notes
 
 - This action handles Postman API keys and access tokens. Both are masked in logs by the action itself; never echo them in your own workflow steps.
+- Do not echo `POSTMAN_API_KEY`, `POSTMAN_ACCESS_TOKEN`, or generated dotenv output in your own workflow steps.
 - Reports about secrets you exposed in your own workflow configuration are out of scope; rotate the credential in Postman immediately.
+- Do not include live PMAKs, access tokens, GitHub tokens, or private workflow logs in vulnerability reports.

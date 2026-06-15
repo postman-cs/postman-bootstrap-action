@@ -672,25 +672,25 @@ describe('runCli credential preflight seam', () => {
     errorSpy.mockRestore();
   });
 
-  it('skips the preflight entirely when credential-preflight is off', async () => {
-    const fetchMock = stubIdentityFetch(111, 222);
+  it('rejects credential-preflight=off instead of skipping identity checks', async () => {
     const executeBootstrap = vi.fn(async () => createCliOutputs());
     const dir = await makeTempDir('postman-bootstrap-preflight-off-');
 
-    await withCwd(dir, async () => {
-      await runCli(
-        [
-          '--project-name', 'preflight-off',
-          '--spec-url', 'https://example.test/openapi.yaml',
-          '--postman-api-key', 'pmak-xyz',
-          '--postman-access-token', 'tok-xyz',
-          '--credential-preflight', 'off'
-        ],
-        { env: {}, executeBootstrap, writeStdout: () => undefined }
-      );
-    });
+    await expect(
+      withCwd(dir, async () => {
+        await runCli(
+          [
+            '--project-name', 'preflight-off',
+            '--spec-url', 'https://example.test/openapi.yaml',
+            '--postman-api-key', 'pmak-xyz',
+            '--postman-access-token', 'tok-xyz',
+            '--credential-preflight', 'off'
+          ],
+          { env: {}, executeBootstrap, writeStdout: () => undefined }
+        );
+      })
+    ).rejects.toThrow(/Unsupported credential-preflight/);
 
-    expect(executeBootstrap).toHaveBeenCalledTimes(1);
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(executeBootstrap).not.toHaveBeenCalled();
   });
 });

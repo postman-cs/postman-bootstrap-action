@@ -110,6 +110,7 @@ const cliInputNames = [
   'breaking-target-ref',
   'breaking-summary-path',
   'breaking-log-path',
+  'postman-region',
   'postman-stack'
 ] as const;
 

@@ -4,16 +4,19 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import {
-  customerPreviewActionContract,
+  bootstrapActionContract,
   contractInputNames,
   contractOutputNames
 } from '../src/contracts.js';
 import { createPlannedOutputs, readActionInputs, resolveInputs } from '../src/index.js';
 
 const repoRoot = resolve(import.meta.dirname, '..');
+const publicSyntheticSpecUrl =
+  'https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml';
 const actionManifest = parse(
   readFileSync(resolve(repoRoot, 'action.yml'), 'utf8')
 ) as {
+  description: string;
   inputs: Record<string, { required?: boolean; default?: string }>;
   outputs: Record<string, unknown>;
   runs: { using: string; main: string };
@@ -21,11 +24,19 @@ const actionManifest = parse(
 const packageManifest = JSON.parse(
   readFileSync(resolve(repoRoot, 'package.json'), 'utf8')
 ) as {
+  description: string;
   main: string;
   scripts: { build: string };
 };
+const contractSmokeWorkflowText = readFileSync(
+  resolve(repoRoot, '.github/workflows/contract-smoke.yml'),
+  'utf8'
+);
+const contractSmokeWorkflow = parse(contractSmokeWorkflowText) as {
+  jobs: Record<string, { if?: string; steps?: Array<{ id?: string; run?: string }> }>;
+};
 
-describe('customer preview action contract', () => {
+describe('bootstrap action contract', () => {
   it('uses kebab-case input and output names', () => {
     const kebabCasePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -51,26 +62,26 @@ describe('customer preview action contract', () => {
     expect(packageManifest.scripts.build).toContain('--outfile=dist/action.cjs');
   });
 
-  it('defaults integration-backend to bifrost in the contract, manifest, and runtime', () => {
-    expect(customerPreviewActionContract.inputs['integration-backend'].default).toBe('bifrost');
-    expect(customerPreviewActionContract.inputs['integration-backend'].allowedValues).toEqual([
+  it('keeps integration-backend internal: contract and runtime resolve to bifrost while the manifest omits a visible default', () => {
+    expect(bootstrapActionContract.inputs['integration-backend'].default).toBe('bifrost');
+    expect(bootstrapActionContract.inputs['integration-backend'].allowedValues).toEqual([
       'bifrost'
     ]);
-    expect(actionManifest.inputs['integration-backend'].default).toBe('bifrost');
+    expect(actionManifest.inputs['integration-backend'].default).toBeUndefined();
     expect(resolveInputs({}).integrationBackend).toBe('bifrost');
   });
 
   it('defaults lifecycle controls in contract, manifest, and runtime', () => {
-    expect(customerPreviewActionContract.inputs['sync-examples'].default).toBe('true');
-    expect(customerPreviewActionContract.inputs['sync-examples'].allowedValues).toEqual([
+    expect(bootstrapActionContract.inputs['sync-examples'].default).toBe('true');
+    expect(bootstrapActionContract.inputs['sync-examples'].allowedValues).toEqual([
       'true',
       'false'
     ]);
     expect(actionManifest.inputs['sync-examples'].default).toBe('true');
     expect(resolveInputs({}).syncExamples).toBe(true);
 
-    expect(customerPreviewActionContract.inputs['collection-sync-mode'].default).toBe('refresh');
-    expect(customerPreviewActionContract.inputs['collection-sync-mode'].allowedValues).toEqual([
+    expect(bootstrapActionContract.inputs['collection-sync-mode'].default).toBe('refresh');
+    expect(bootstrapActionContract.inputs['collection-sync-mode'].allowedValues).toEqual([
       'refresh',
       'version'
     ]);
@@ -78,8 +89,8 @@ describe('customer preview action contract', () => {
     expect(resolveInputs({}).collectionSyncMode).toBe('refresh');
     expect(resolveInputs({ INPUT_COLLECTION_SYNC_MODE: 'reuse' }).collectionSyncMode).toBe('refresh');
 
-    expect(customerPreviewActionContract.inputs['spec-sync-mode'].default).toBe('update');
-    expect(customerPreviewActionContract.inputs['spec-sync-mode'].allowedValues).toEqual([
+    expect(bootstrapActionContract.inputs['spec-sync-mode'].default).toBe('update');
+    expect(bootstrapActionContract.inputs['spec-sync-mode'].allowedValues).toEqual([
       'update',
       'version'
     ]);
@@ -107,17 +118,17 @@ describe('customer preview action contract', () => {
   });
 
   it('defaults collection generation options in contract, manifest, and runtime', () => {
-    expect(customerPreviewActionContract.inputs['folder-strategy'].default).toBe('Paths');
-    expect(customerPreviewActionContract.inputs['folder-strategy'].allowedValues).toEqual(['Paths', 'Tags']);
+    expect(bootstrapActionContract.inputs['folder-strategy'].default).toBe('Paths');
+    expect(bootstrapActionContract.inputs['folder-strategy'].allowedValues).toEqual(['Paths', 'Tags']);
     expect(actionManifest.inputs['folder-strategy'].default).toBe('Paths');
     expect(resolveInputs({}).folderStrategy).toBe('Paths');
 
-    expect(customerPreviewActionContract.inputs['nested-folder-hierarchy'].default).toBe('false');
+    expect(bootstrapActionContract.inputs['nested-folder-hierarchy'].default).toBe('false');
     expect(actionManifest.inputs['nested-folder-hierarchy'].default).toBe('false');
     expect(resolveInputs({}).nestedFolderHierarchy).toBe(false);
 
-    expect(customerPreviewActionContract.inputs['request-name-source'].default).toBe('Fallback');
-    expect(customerPreviewActionContract.inputs['request-name-source'].allowedValues).toEqual(['Fallback', 'URL']);
+    expect(bootstrapActionContract.inputs['request-name-source'].default).toBe('Fallback');
+    expect(bootstrapActionContract.inputs['request-name-source'].allowedValues).toEqual(['Fallback', 'URL']);
     expect(actionManifest.inputs['request-name-source'].default).toBe('Fallback');
     expect(resolveInputs({}).requestNameSource).toBe('Fallback');
   });
@@ -131,12 +142,16 @@ describe('customer preview action contract', () => {
       .toThrow(/Unsupported request-name-source/);
   });
 
-  it('selects Postman endpoint profiles from the hidden postman-stack input', () => {
-    expect(customerPreviewActionContract.inputs['postman-stack'].default).toBe('prod');
-    expect(customerPreviewActionContract.inputs['postman-stack'].allowedValues).toEqual(['prod', 'beta']);
+  it('selects Postman endpoint profiles from postman-stack and postman-region inputs', () => {
+    expect(bootstrapActionContract.inputs['postman-stack'].default).toBe('prod');
+    expect(bootstrapActionContract.inputs['postman-stack'].allowedValues).toEqual(['prod', 'beta']);
+    expect(bootstrapActionContract.inputs['postman-region'].default).toBe('us');
+    expect(bootstrapActionContract.inputs['postman-region'].allowedValues).toEqual(['us', 'eu']);
     expect(actionManifest.inputs['postman-stack'].default).toBe('prod');
+    expect(actionManifest.inputs['postman-region'].default).toBe('us');
 
     const prod = resolveInputs({});
+    expect(prod.postmanRegion).toBe('us');
     expect(prod.postmanStack).toBe('prod');
     expect(prod.postmanApiBase).toBe('https://api.getpostman.com');
     expect(prod.postmanBifrostBase).toBe('https://bifrost-premium-https-v4.gw.postman.com');
@@ -162,6 +177,14 @@ describe('customer preview action contract', () => {
     expect(betaWithLegacyOverrides.postmanGatewayBase).toBe(beta.postmanGatewayBase);
     expect(betaWithLegacyOverrides.postmanCliInstallUrl).toBe(beta.postmanCliInstallUrl);
 
+    const eu = resolveInputs({ INPUT_POSTMAN_REGION: 'eu' });
+    expect(eu.postmanRegion).toBe('eu');
+    expect(eu.postmanApiBase).toBe('https://api.eu.postman.com');
+
+    expect(() => resolveInputs({ INPUT_POSTMAN_REGION: 'ap' }))
+      .toThrow(/Unsupported postman-region/);
+    expect(() => resolveInputs({ INPUT_POSTMAN_REGION: 'eu', INPUT_POSTMAN_STACK: 'beta' }))
+      .toThrow(/postman-region=eu/);
     expect(() => resolveInputs({ INPUT_POSTMAN_STACK: 'stage' }))
       .toThrow(/Unsupported postman-stack/);
   });
@@ -212,16 +235,16 @@ describe('customer preview action contract', () => {
   });
 
   it('defaults openapi-version to empty string in contract, manifest, and runtime (auto-detect)', () => {
-    expect(customerPreviewActionContract.inputs['openapi-version'].default).toBe('');
-    expect(customerPreviewActionContract.inputs['openapi-version'].allowedValues).toEqual(['3.0', '3.1']);
+    expect(bootstrapActionContract.inputs['openapi-version'].default).toBe('');
+    expect(bootstrapActionContract.inputs['openapi-version'].allowedValues).toEqual(['3.0', '3.1']);
     expect(actionManifest.inputs['openapi-version'].default).toBe('');
     // Empty string signals auto-detect from spec content at runtime.
     expect(resolveInputs({}).openapiVersion).toBe('');
   });
 
   it('defaults breaking-change controls in contract, manifest, and runtime', () => {
-    expect(customerPreviewActionContract.inputs['breaking-change-mode'].default).toBe('off');
-    expect(customerPreviewActionContract.inputs['breaking-change-mode'].allowedValues).toEqual([
+    expect(bootstrapActionContract.inputs['breaking-change-mode'].default).toBe('off');
+    expect(bootstrapActionContract.inputs['breaking-change-mode'].allowedValues).toEqual([
       'off',
       'pr-native',
       'baseline-only',
@@ -230,7 +253,7 @@ describe('customer preview action contract', () => {
     expect(actionManifest.inputs['breaking-change-mode'].default).toBe('off');
     expect(resolveInputs({}).breakingChangeMode).toBe('off');
 
-    expect(customerPreviewActionContract.inputs['breaking-rules-path'].default).toBe('changes-rules.yaml');
+    expect(bootstrapActionContract.inputs['breaking-rules-path'].default).toBe('changes-rules.yaml');
     expect(actionManifest.inputs['breaking-rules-path'].default).toBe('changes-rules.yaml');
     expect(resolveInputs({}).breakingRulesPath).toBe('changes-rules.yaml');
 
@@ -261,7 +284,7 @@ describe('customer preview action contract', () => {
       getInput: (name: string) => {
         const map: Record<string, string> = {
           'project-name': 'my-api',
-          'spec-url': 'https://example.com/openapi.yaml',
+          'spec-url': publicSyntheticSpecUrl,
           'postman-api-key': 'pmak-test',
           'openapi-version': '3.1',
           'breaking-change-mode': 'previous-spec',
@@ -285,22 +308,27 @@ describe('customer preview action contract', () => {
     expect(inputs.breakingLogPath).toBe('tmp/check.log');
   });
 
-  it('readActionInputs explicitly wires postman-stack from core.getInput', () => {
+  it('readActionInputs explicitly wires postman-stack and postman-region once from core.getInput', () => {
+    const calls: string[] = [];
     const coreStub = {
       getInput: (name: string) => {
+        calls.push(name);
         const map: Record<string, string> = {
           'project-name': 'my-api',
-          'spec-url': 'https://example.com/openapi.yaml',
+          'spec-url': publicSyntheticSpecUrl,
           'postman-api-key': 'pmak-test',
-          'postman-stack': 'beta'
+          'postman-region': 'eu'
         };
         return map[name] ?? '';
       },
       setSecret: () => {}
     };
     const inputs = readActionInputs(coreStub);
-    expect(inputs.postmanStack).toBe('beta');
-    expect(inputs.postmanApiBase).toBe('https://api.getpostman-beta.com');
+    expect(inputs.postmanRegion).toBe('eu');
+    expect(inputs.postmanStack).toBe('prod');
+    expect(inputs.postmanApiBase).toBe('https://api.eu.postman.com');
+    expect(calls.filter((name) => name === 'postman-region')).toHaveLength(1);
+    expect(calls.filter((name) => name === 'postman-stack')).toHaveLength(1);
   });
 
   it('readActionInputs ignores removed legacy team inputs', () => {
@@ -308,7 +336,7 @@ describe('customer preview action contract', () => {
       getInput: (name: string) => {
         const map: Record<string, string> = {
           'project-name': 'my-api',
-          'spec-url': 'https://example.com/openapi.yaml',
+          'spec-url': publicSyntheticSpecUrl,
           'postman-api-key': 'pmak-test',
           'postman-team-id': 'legacy-team'
         };
@@ -320,24 +348,59 @@ describe('customer preview action contract', () => {
     expect(readActionInputs(coreStub).teamId).toBe('');
   });
 
-  it('documents the retained bootstrap steps and removed internal-only behavior', () => {
-    expect(customerPreviewActionContract.retainedBehavior).toContain('spec linting by UID');
-    expect(customerPreviewActionContract.retainedBehavior).toContain('workspace creation');
-    expect(customerPreviewActionContract.retainedBehavior).toContain(
+  it('documents the retained bootstrap steps and removed non-bootstrap behavior', () => {
+    expect(bootstrapActionContract.retainedBehavior).toContain('spec linting by UID');
+    expect(bootstrapActionContract.retainedBehavior).toContain('workspace creation');
+    expect(bootstrapActionContract.retainedBehavior).toContain(
       'governance group assignment'
     );
-    expect(customerPreviewActionContract.removedBehavior).toContain('step mode');
-    expect(customerPreviewActionContract.removedBehavior).toContain(
+    expect(bootstrapActionContract.removedBehavior).toContain('step mode');
+    expect(bootstrapActionContract.removedBehavior).toContain(
       'aws, docker, and infra workflow concerns'
     );
   });
 
-  it('builds placeholder outputs that match the public customer preview output surface', () => {
+  it('uses marketplace-ready wording in public contract and package metadata', () => {
+    const publicText = [
+      actionManifest.description,
+      packageManifest.description,
+      bootstrapActionContract.description,
+      ...bootstrapActionContract.retainedBehavior,
+      ...bootstrapActionContract.removedBehavior
+    ].join('\n');
+    expect(publicText).not.toMatch(/\bpreview\b/i);
+    expect(publicText).not.toMatch(/\binternal(?:-only)?\b/i);
+    expect(publicText).not.toMatch(/\bruntime(?:-coupled| deployment)?\b/i);
+    expect(publicText).not.toMatch(/\bregistry-backed\b/i);
+    expect(bootstrapActionContract.description).toBe(
+      'Contract for bootstrapping Postman assets from an OpenAPI spec.'
+    );
+  });
+
+  it('lets scheduled contract smoke skip missing secrets but makes manual dispatch fail preflight', () => {
+    const preflight = contractSmokeWorkflow.jobs.preflight;
+    const credentialsStep = preflight.steps?.find((step) => step.id === 'credentials');
+    expect(credentialsStep?.run).toContain('GITHUB_EVENT_NAME');
+    expect(credentialsStep?.run).toContain('[ "$GITHUB_EVENT_NAME" = "schedule" ]');
+    expect(credentialsStep?.run).toContain('::error::');
+    expect(credentialsStep?.run).toContain('exit 1');
+    expect(contractSmokeWorkflow.jobs['bootstrap-smoke'].if).toBe(
+      '$' + "{{ needs.preflight.outputs.bootstrap_api == 'true' }}"
+    );
+    expect(contractSmokeWorkflow.jobs['bifrost-smoke'].if).toBe(
+      '$' + "{{ needs.preflight.outputs.bifrost == 'true' }}"
+    );
+    expect(contractSmokeWorkflow.jobs['session-smoke'].if).toBe(
+      '$' + "{{ needs.preflight.outputs.session == 'true' }}"
+    );
+  });
+
+  it('builds placeholder outputs that match the public bootstrap output surface', () => {
     const outputs = createPlannedOutputs(
       resolveInputs({
         INPUT_PROJECT_NAME: 'core-payments',
         INPUT_DOMAIN_CODE: 'AF',
-        INPUT_SPEC_URL: 'https://example.com/openapi.yaml',
+        INPUT_SPEC_URL: publicSyntheticSpecUrl,
         INPUT_POSTMAN_API_KEY: 'pmak-test'
       })
     );
@@ -379,12 +442,11 @@ describe('customer preview action contract', () => {
     expect('credential-preflight').toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
     expect(contractInputNames).toContain('credential-preflight');
 
-    expect(customerPreviewActionContract.inputs['credential-preflight'].required).toBe(false);
-    expect(customerPreviewActionContract.inputs['credential-preflight'].default).toBe('warn');
-    expect(customerPreviewActionContract.inputs['credential-preflight'].allowedValues).toEqual([
+    expect(bootstrapActionContract.inputs['credential-preflight'].required).toBe(false);
+    expect(bootstrapActionContract.inputs['credential-preflight'].default).toBe('warn');
+    expect(bootstrapActionContract.inputs['credential-preflight'].allowedValues).toEqual([
       'enforce',
-      'warn',
-      'off'
+      'warn'
     ]);
 
     expect(actionManifest.inputs['credential-preflight'].required).toBe(false);
@@ -394,7 +456,9 @@ describe('customer preview action contract', () => {
     expect(resolveInputs({ INPUT_CREDENTIAL_PREFLIGHT: 'enforce' }).credentialPreflight).toBe(
       'enforce'
     );
-    expect(resolveInputs({ INPUT_CREDENTIAL_PREFLIGHT: 'off' }).credentialPreflight).toBe('off');
+    expect(() => resolveInputs({ INPUT_CREDENTIAL_PREFLIGHT: 'off' })).toThrow(
+      /Unsupported credential-preflight/
+    );
     expect(() => resolveInputs({ INPUT_CREDENTIAL_PREFLIGHT: 'loud' })).toThrow(
       /Unsupported credential-preflight/
     );
@@ -405,7 +469,7 @@ describe('customer preview action contract', () => {
       getInput: (name: string) => {
         const map: Record<string, string> = {
           'project-name': 'my-api',
-          'spec-url': 'https://example.com/openapi.yaml',
+          'spec-url': publicSyntheticSpecUrl,
           'postman-api-key': 'pmak-test',
           'credential-preflight': 'enforce'
         };

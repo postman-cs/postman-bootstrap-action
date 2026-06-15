@@ -9,7 +9,7 @@ export interface ActionOutputContract {
   description: string;
 }
 
-export interface CustomerPreviewActionContract {
+export interface ActionContract {
   name: string;
   description: string;
   inputs: Record<string, ActionInputContract>;
@@ -18,9 +18,9 @@ export interface CustomerPreviewActionContract {
   removedBehavior: string[];
 }
 
-export const customerPreviewActionContract: CustomerPreviewActionContract = {
+export const bootstrapActionContract: ActionContract = {
   name: 'postman-bootstrap-action',
-  description: 'Public customer preview contract for bootstrapping Postman assets from a registry-backed spec.',
+  description: 'Contract for bootstrapping Postman assets from an OpenAPI spec.',
   inputs: {
 
     'workspace-id': {
@@ -163,10 +163,10 @@ export const customerPreviewActionContract: CustomerPreviewActionContract = {
     },
     'credential-preflight': {
       description:
-        'Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created; off skips the identity probes entirely (the reactive error guidance still applies). Promotion of the default to enforce is planned once the live e2e legs prove both directions.',
+        'Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created.',
       required: false,
       default: 'warn',
-      allowedValues: ['enforce', 'warn', 'off']
+      allowedValues: ['enforce', 'warn']
     },
     'integration-backend': {
       description: 'Integration backend for downstream workspace connectivity.',
@@ -191,8 +191,14 @@ export const customerPreviewActionContract: CustomerPreviewActionContract = {
       default: 'Fallback',
       allowedValues: ['Fallback', 'URL']
     },
+    'postman-region': {
+      description: 'Postman data residency region for public API and Postman CLI calls.',
+      required: false,
+      default: 'us',
+      allowedValues: ['us', 'eu']
+    },
     'postman-stack': {
-      description: 'Postman stack profile.',
+      description: 'Postman stack profile. One of: prod or beta. beta is supported only with postman-region=us.',
       required: false,
       default: 'prod',
       allowedValues: ['prod', 'beta']
@@ -250,12 +256,12 @@ export const customerPreviewActionContract: CustomerPreviewActionContract = {
   removedBehavior: [
     'snake_case input and output names',
     'step mode',
-    'hardcoded runtime deployment assumptions',
+    'hardcoded deployment assumptions',
     'aws, docker, and infra workflow concerns',
-    'runtime-coupled workflow tuning knobs',
+    'deployment-coupled workflow tuning knobs',
     'legacy placeholder inputs such as team-id'
   ]
 };
 
-export const contractInputNames = Object.keys(customerPreviewActionContract.inputs);
-export const contractOutputNames = Object.keys(customerPreviewActionContract.outputs);
+export const contractInputNames = Object.keys(bootstrapActionContract.inputs);
+export const contractOutputNames = Object.keys(bootstrapActionContract.outputs);

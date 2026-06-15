@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       e2e_failure_injection:
-        description: 'Internal release-gate test hook. Use pre_live_fail to prove publish is blocked before live e2e work.'
+        description: 'Release-gate test hook for maintainers. Use pre_live_fail to prove publish is blocked before live e2e work.'
         required: false
         type: string
 
@@ -64,7 +64,7 @@ jobs:
           if [ "$TAG_VERSION" = "$MAJOR" ]; then
             echo "npm_publish=false" >> "$GITHUB_OUTPUT"
             echo "gate_required=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Tag v$TAG_VERSION is the rolling customer preview alias for package version $PKG_VERSION; skipping npm publish and live e2e gate."
+            echo "::notice::Tag v$TAG_VERSION is the rolling v1 alias for package version $PKG_VERSION; skipping npm publish and live e2e gate."
             exit 0
           fi
           if [ "${#PUBLISH_TAGS[@]}" -eq 2 ]; then

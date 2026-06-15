@@ -1,56 +1,76 @@
 # Obtaining Credentials
 
-## Obtaining `postman-api-key`
+Bootstrap needs a [Postman API key](https://learning.postman.com/docs/reference/postman-api/authentication/) for standard Postman API calls. Governance assignment, cloud spec-to-collection sync, and canonical workspace validation also need a Postman access token. The primary path is to mint that token in CI with [`postman-cs/postman-resolve-service-token-action`](https://github.com/postman-cs/postman-resolve-service-token-action). Use Postman's [service accounts documentation](https://learning.postman.com/docs/administration/service-accounts/) to create the automation identity and assign it to the right team or workspace.
 
-The `postman-api-key` is a Postman API key (PMAK) used for all standard Postman API operations: creating workspaces, uploading specs, generating collections, exporting artifacts, and managing environments.
+## Credential matrix
 
-**To generate one:**
+| Credential | Required | Used for | Recommended source |
+| --- | --- | --- | --- |
+| `postman-api-key` / `POSTMAN_API_KEY` | yes | Workspace creation, spec upload, collection generation, linting, and most Postman API operations | Service-account PMAK stored as a CI secret |
+| `postman-access-token` / `POSTMAN_ACCESS_TOKEN` | no, recommended | Governance group assignment, cloud spec-to-collection sync, and canonical workspace validation on reruns | `postman-resolve-service-token-action` output `token` |
+| `workspace-team-id` | only for org-mode workspace creation | Selects the sub-team that owns the created workspace | Repository variable such as `POSTMAN_WORKSPACE_TEAM_ID` |
+| `github-token` | only for repository custom property lookup | Reads `postman-governance-group` from GitHub repository properties | `${{ github.token }}` |
+
+`credential-preflight` accepts only `warn` and `enforce`. Use `enforce` when both `postman-api-key` and `postman-access-token` are present and you want mismatched parent orgs to fail before workspace creation.
+
+## Primary path: service-account token minting
+
+Create a [Postman service account](https://learning.postman.com/docs/administration/service-accounts/) PMAK and store it as `POSTMAN_API_KEY`. Use that same PMAK to mint the access token immediately before bootstrap:
+
+```yaml
+- id: postman_token
+  uses: postman-cs/postman-resolve-service-token-action@v1
+  with:
+    postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
+    postman-region: us
+
+- uses: postman-cs/postman-bootstrap-action@v1
+  with:
+    project-name: core-payments
+    spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
+    postman-region: us
+    postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
+    postman-access-token: ${{ steps.postman_token.outputs.token }}
+    credential-preflight: enforce
+```
+
+For [EU data residency](https://learning.postman.com/docs/administration/enterprise/about-eu-data-residency/) teams, set `postman-region: eu` on both the service-token step and the bootstrap step. The service-token action also emits `team-id`, but bootstrap only needs `workspace-team-id` when your Postman org requires an explicit sub-team for workspace creation.
+
+## Creating `POSTMAN_API_KEY`
 
 1. Open the Postman desktop app or web UI.
-2. Go to **Settings** (gear icon) > **Account Settings** > **API Keys**.
-3. Click **Generate API Key**, give it a label, and copy the key (starts with `PMAK-`).
-4. Set it as a GitHub secret:
+2. Go to **Settings** > **Account Settings** > **API Keys**.
+3. Generate an API key for the service account that should own onboarding automation.
+4. Store it as a CI secret:
 
-   ```bash
-   gh secret set POSTMAN_API_KEY --repo <owner>/<repo>
-   ```
+```bash
+gh secret set POSTMAN_API_KEY --repo <owner>/<repo>
+```
 
-> **Note:** The PMAK is a long-lived key tied to your Postman account. It does not require periodic renewal like the `postman-access-token`.
+The PMAK is long-lived. Rotate it according to your organization's secret policy and update the CI secret when rotated.
 
-## Obtaining `postman-access-token` (Customer Preview)
+Postman's [managing API keys](https://learning.postman.com/docs/administration/managing-your-team/managing-api-keys/) guide covers expiration, revocation, and exposed-key handling.
 
-> **Customer Preview limitation:** The `postman-access-token` input requires a manually-extracted session token. There is currently no public API to exchange a Postman API key (PMAK) for an access token programmatically. This manual step will be eliminated before GA.
+## Legacy fallback: Postman CLI credential store
 
-The `postman-access-token` is a Postman session token required for workspace enrichment operations that the standard PMAK API key cannot perform, including governance group assignment, cloud spec-to-collection syncing, and canonical workspace validation during reruns. Without it, those steps degrade to warning-based behavior and name-based workspace fallback during provisioning.
+Use this only when you cannot use the service-token action yet. Do not copy tokens from browser storage, cookies, or developer tools.
 
-**To obtain and configure the token:**
-
-1. **Log in via the Postman CLI** (requires a browser):
+1. Log in with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-auth/) interactive flow:
 
    ```bash
    postman login
    ```
 
-   This opens a browser window for Postman's PKCE OAuth flow. Complete the sign-in.
-
-2. **Extract the access token** from the CLI credential store:
+2. Extract the access token from the CLI credential store:
 
    ```bash
-   cat ~/.postman/postmanrc | jq -r '.login._profiles[].accessToken'
+   jq -r '.login._profiles[].accessToken' ~/.postman/postmanrc
    ```
 
-3. **Set it as a GitHub secret** on your repository or organization:
+3. Store it as a GitHub secret:
 
    ```bash
-   # Repository-level secret
    gh secret set POSTMAN_ACCESS_TOKEN --repo <owner>/<repo>
-
-   # Organization-level secret (recommended for multi-repo use)
-   gh secret set POSTMAN_ACCESS_TOKEN --org <org> --visibility selected --repos <repo1>,<repo2>
    ```
 
-   Paste the token value when prompted.
-
-> **Important:** This token is session-scoped and will expire. When it does, operations that depend on it (governance and canonical workspace validation) degrade with warnings and fallback behavior. You will need to repeat the login and secret update process. There is no automated refresh mechanism.
-
-> **Note:** `postman login --with-api-key` stores a PMAK. These APIs require the session token, so you must use the interactive browser login.
+The CLI login token is session-scoped and expires. When it expires, governance and canonical workspace validation degrade to warning-based behavior unless the workflow mints a fresh service-account token. `postman login --with-api-key` stores a PMAK, not the session access token these APIs need.

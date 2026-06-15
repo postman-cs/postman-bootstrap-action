@@ -6,7 +6,11 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 var __export = (target, all2) => {
   for (var name in all2)
@@ -8746,7 +8750,7 @@ var require_env_http_proxy_agent = __commonJS({
       "https:": 443
     };
     var experimentalWarned = false;
-    var EnvHttpProxyAgent = class extends DispatcherBase {
+    var EnvHttpProxyAgent2 = class extends DispatcherBase {
       #noProxyValue = null;
       #noProxyEntries = null;
       #opts = null;
@@ -8865,7 +8869,7 @@ var require_env_http_proxy_agent = __commonJS({
         return process.env.no_proxy ?? process.env.NO_PROXY ?? "";
       }
     };
-    module2.exports = EnvHttpProxyAgent;
+    module2.exports = EnvHttpProxyAgent2;
   }
 });
 
@@ -18538,7 +18542,7 @@ var require_undici = __commonJS({
     var BalancedPool = require_balanced_pool();
     var Agent3 = require_agent();
     var ProxyAgent2 = require_proxy_agent();
-    var EnvHttpProxyAgent = require_env_http_proxy_agent();
+    var EnvHttpProxyAgent2 = require_env_http_proxy_agent();
     var RetryAgent = require_retry_agent();
     var errors = require_errors();
     var util = require_util();
@@ -18561,7 +18565,7 @@ var require_undici = __commonJS({
     module2.exports.BalancedPool = BalancedPool;
     module2.exports.Agent = Agent3;
     module2.exports.ProxyAgent = ProxyAgent2;
-    module2.exports.EnvHttpProxyAgent = EnvHttpProxyAgent;
+    module2.exports.EnvHttpProxyAgent = EnvHttpProxyAgent2;
     module2.exports.RetryAgent = RetryAgent;
     module2.exports.RetryHandler = RetryHandler;
     module2.exports.DecoratorHandler = DecoratorHandler;
@@ -26862,10 +26866,10 @@ var require_tracing = __commonJS({
     "use strict";
     var merge2 = (a, b) => [.../* @__PURE__ */ new Set([...a, ...b])].sort();
     var intersect = (a, b) => a.filter((x) => b.includes(x));
-    var wrapArgs = (f) => (...args) => f(...args.map(normalize2));
-    var wrapFull = (f) => (...args) => normalize2(f(...args.map(normalize2)));
+    var wrapArgs = (f) => (...args) => f(...args.map(normalize3));
+    var wrapFull = (f) => (...args) => normalize3(f(...args.map(normalize3)));
     var typeIsNot = (type, t) => type && !type.includes(t);
-    var normalize2 = ({ type = null, dyn: d = {}, ...A }) => ({
+    var normalize3 = ({ type = null, dyn: d = {}, ...A }) => ({
       type: type ? [...type].sort() : type,
       items: typeIsNot(type, "array") ? Infinity : A.items || 0,
       properties: typeIsNot(type, "object") ? [true] : [...A.properties || []].sort(),
@@ -26880,7 +26884,7 @@ var require_tracing = __commonJS({
       },
       unknown: A.unknown && !(typeIsNot(type, "object") && typeIsNot(type, "array")) || false
     });
-    var initTracing = () => normalize2({});
+    var initTracing = () => normalize3({});
     var andDelta = wrapFull((A, B) => ({
       type: A.type && B.type ? intersect(A.type, B.type) : A.type || B.type || null,
       items: Math.max(A.items, B.items),
@@ -39182,8 +39186,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize2) {
-      if (normalize2 !== false)
+    function getFullPath(resolver, id = "", normalize3) {
+      if (normalize3 !== false)
         id = normalizeId(id);
       const p = resolver.parse(id);
       return _getFullPath(resolver, p);
@@ -40579,7 +40583,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils4();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize2(uri, options) {
+    function normalize3(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         normalizeString(uri, options);
@@ -40846,7 +40850,7 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize: normalize2,
+      normalize: normalize3,
       resolve: resolve4,
       resolveComponent,
       equal,
@@ -46876,14 +46880,14 @@ function getIDToken(aud) {
 }
 
 // src/index.ts
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var import_node_fs3 = require("node:fs");
 var import_yaml3 = __toESM(require_dist(), 1);
 
 // src/contracts.ts
-var customerPreviewActionContract = {
+var bootstrapActionContract = {
   name: "postman-bootstrap-action",
-  description: "Public customer preview contract for bootstrapping Postman assets from a registry-backed spec.",
+  description: "Contract for bootstrapping Postman assets from an OpenAPI spec.",
   inputs: {
     "workspace-id": {
       description: "Existing Postman workspace ID.",
@@ -47020,10 +47024,10 @@ var customerPreviewActionContract = {
       required: false
     },
     "credential-preflight": {
-      description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created; off skips the identity probes entirely (the reactive error guidance still applies). Promotion of the default to enforce is planned once the live e2e legs prove both directions.",
+      description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created.",
       required: false,
       default: "warn",
-      allowedValues: ["enforce", "warn", "off"]
+      allowedValues: ["enforce", "warn"]
     },
     "integration-backend": {
       description: "Integration backend for downstream workspace connectivity.",
@@ -47048,8 +47052,14 @@ var customerPreviewActionContract = {
       default: "Fallback",
       allowedValues: ["Fallback", "URL"]
     },
+    "postman-region": {
+      description: "Postman data residency region for public API and Postman CLI calls.",
+      required: false,
+      default: "us",
+      allowedValues: ["us", "eu"]
+    },
     "postman-stack": {
-      description: "Postman stack profile.",
+      description: "Postman stack profile. One of: prod or beta. beta is supported only with postman-region=us.",
       required: false,
       default: "prod",
       allowedValues: ["prod", "beta"]
@@ -47107,14 +47117,14 @@ var customerPreviewActionContract = {
   removedBehavior: [
     "snake_case input and output names",
     "step mode",
-    "hardcoded runtime deployment assumptions",
+    "hardcoded deployment assumptions",
     "aws, docker, and infra workflow concerns",
-    "runtime-coupled workflow tuning knobs",
+    "deployment-coupled workflow tuning knobs",
     "legacy placeholder inputs such as team-id"
   ]
 };
-var contractInputNames = Object.keys(customerPreviewActionContract.inputs);
-var contractOutputNames = Object.keys(customerPreviewActionContract.outputs);
+var contractInputNames = Object.keys(bootstrapActionContract.inputs);
+var contractOutputNames = Object.keys(bootstrapActionContract.outputs);
 
 // src/lib/secrets.ts
 var REDACTED = "[REDACTED]";
@@ -48059,6 +48069,13 @@ var POSTMAN_ENDPOINT_PROFILES = {
     iapubBaseUrl: "https://iapub.postman.co"
   }
 };
+function parsePostmanRegion(value) {
+  const normalized = String(value || "us").trim().toLowerCase();
+  if (normalized === "us" || normalized === "eu") {
+    return normalized;
+  }
+  throw new Error(`Unsupported postman-region "${value}". Supported values: us, eu`);
+}
 function parsePostmanStack(value) {
   const normalized = String(value || "prod").trim().toLowerCase();
   if (normalized === "prod" || normalized === "beta") {
@@ -48066,8 +48083,18 @@ function parsePostmanStack(value) {
   }
   throw new Error(`Unsupported postman-stack "${value}". Supported values: prod, beta`);
 }
-function resolvePostmanEndpointProfile(stack) {
-  return POSTMAN_ENDPOINT_PROFILES[stack];
+function resolvePostmanEndpointProfile(stack, region = "us") {
+  if (stack === "beta" && region !== "us") {
+    throw new Error("postman-region=eu is only supported with postman-stack=prod");
+  }
+  const profile = POSTMAN_ENDPOINT_PROFILES[stack];
+  if (region === "eu") {
+    return {
+      ...profile,
+      apiBaseUrl: "https://api.eu.postman.com"
+    };
+  }
+  return profile;
 }
 
 // src/lib/postman/credential-identity.ts
@@ -48203,9 +48230,6 @@ function formatIdentityLine(id, mask) {
   );
 }
 function crossCheckIdentities(args) {
-  if (args.mode === "off") {
-    return { ok: true, level: "ok", message: "" };
-  }
   const pmakTeamId = args.pmak?.teamId;
   const sessionTeamId = args.session?.teamId;
   if (pmakTeamId && sessionTeamId && pmakTeamId !== sessionTeamId) {
@@ -48244,9 +48268,6 @@ function crossCheckIdentities(args) {
   };
 }
 async function runCredentialPreflight(args) {
-  if (args.mode === "off") {
-    return;
-  }
   const mask = args.mask;
   const apiKey = String(args.postmanApiKey || "").trim();
   const accessToken = String(args.postmanAccessToken || "").trim();
@@ -48293,6 +48314,14 @@ async function runCredentialPreflight(args) {
   }
   if (session) {
     args.log.info(formatIdentityLine(session, mask));
+    const consumerType = session.consumerType?.trim();
+    if (consumerType && consumerType.toLowerCase() !== "service_account") {
+      args.log.warning(
+        mask(
+          `postman: deprecation warning - postman-access-token resolved to consumerType ${consumerType}. postman-cs/postman-resolve-service-token-action is the primary CI path for service-account access tokens. The Postman CLI credential store populated by \`postman login\` is a legacy fallback for migration only.`
+        )
+      );
+    }
   } else {
     args.log.warning(
       mask(
@@ -48777,8 +48806,9 @@ var PostmanAssetsClient = class {
     }
   }
   async generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) {
+    const name = [prefix.trim(), projectName.trim()].filter(Boolean).join(" ");
     const payload = {
-      name: `${prefix} ${projectName}`,
+      name,
       options: {
         requestNameSource,
         folderStrategy,
@@ -49840,6 +49870,382 @@ function detectRepoContext(input, env = process.env) {
     repoSlug,
     ref,
     sha
+  };
+}
+
+// node_modules/@postman-cse/automation-telemetry-core/dist/ci-context.js
+function norm(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function detectEventTrigger(env = process.env) {
+  const ghEvent = norm(env.GITHUB_EVENT_NAME)?.toLowerCase();
+  if (ghEvent) {
+    if (ghEvent === "push")
+      return "push";
+    if (ghEvent === "pull_request" || ghEvent === "pull_request_target")
+      return "pull_request";
+    if (ghEvent === "schedule")
+      return "schedule";
+    if (ghEvent === "workflow_dispatch" || ghEvent === "repository_dispatch")
+      return "manual";
+    return "other";
+  }
+  const glSource = norm(env.CI_PIPELINE_SOURCE)?.toLowerCase();
+  if (glSource) {
+    if (glSource === "push")
+      return "push";
+    if (glSource === "merge_request_event")
+      return "pull_request";
+    if (glSource === "schedule")
+      return "schedule";
+    if (glSource === "web" || glSource === "api" || glSource === "trigger" || glSource === "pipeline") {
+      return "manual";
+    }
+    return "other";
+  }
+  if (norm(env.BITBUCKET_PR_ID))
+    return "pull_request";
+  if (norm(env.CI) || norm(env.BUILD_BUILDID) || norm(env.JENKINS_URL) || norm(env.TEAMCITY_VERSION)) {
+    return "other";
+  }
+  return "unknown";
+}
+function detectRunnerOs(env = process.env) {
+  const runnerOs = norm(env.RUNNER_OS)?.toLowerCase();
+  if (runnerOs === "linux")
+    return "linux";
+  if (runnerOs === "macos")
+    return "macos";
+  if (runnerOs === "windows")
+    return "windows";
+  const platform2 = typeof process !== "undefined" ? process.platform : void 0;
+  if (platform2 === "linux")
+    return "linux";
+  if (platform2 === "darwin")
+    return "macos";
+  if (platform2 === "win32")
+    return "windows";
+  return "unknown";
+}
+function detectCiContext(env = process.env) {
+  const provider = detectCiProviderContext(env);
+  return {
+    ...provider,
+    eventTrigger: detectEventTrigger(env),
+    runnerOs: detectRunnerOs(env)
+  };
+}
+function detectCiProviderContext(env = process.env) {
+  if (norm(env.GITHUB_ACTIONS)) {
+    const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
+    const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "github",
+      runId: norm(env.GITHUB_RUN_ID),
+      runnerKind
+    };
+  }
+  if (norm(env.GITLAB_CI)) {
+    return {
+      ciProvider: "gitlab",
+      runId: norm(env.CI_PIPELINE_ID) ?? norm(env.CI_PIPELINE_IID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.CIRCLECI)) {
+    return {
+      ciProvider: "circleci",
+      runId: norm(env.CIRCLE_WORKFLOW_ID) ?? norm(env.CIRCLE_BUILD_NUM),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.BUILDKITE)) {
+    const computeType = norm(env.BUILDKITE_COMPUTE_TYPE);
+    const runnerKind = computeType === "hosted" ? "hosted" : computeType === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "buildkite",
+      runId: norm(env.BUILDKITE_BUILD_ID) ?? norm(env.BUILDKITE_BUILD_NUMBER),
+      runnerKind
+    };
+  }
+  if (norm(env.TF_BUILD)) {
+    return {
+      ciProvider: "azure",
+      runId: norm(env.BUILD_BUILDID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.CODEBUILD_BUILD_ID)) {
+    return {
+      ciProvider: "codebuild",
+      runId: norm(env.CODEBUILD_BUILD_ID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.BITBUCKET_BUILD_NUMBER)) {
+    return {
+      ciProvider: "bitbucket",
+      runId: norm(env.BITBUCKET_BUILD_NUMBER),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.TEAMCITY_VERSION)) {
+    return {
+      ciProvider: "teamcity",
+      runId: norm(env.BUILD_NUMBER),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.HARNESS_BUILD_ID)) {
+    return {
+      ciProvider: "harness",
+      runId: norm(env.HARNESS_EXECUTION_ID) ?? norm(env.HARNESS_BUILD_ID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.JENKINS_URL)) {
+    return {
+      ciProvider: "jenkins",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NUMBER) ?? norm(env.BUILD_TAG),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.ATC_EXTERNAL_URL) || norm(env.BUILD_ID) && norm(env.BUILD_PIPELINE_NAME)) {
+    return {
+      ciProvider: "concourse",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NAME),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.CI)) {
+    return { ciProvider: "other", runnerKind: "unknown" };
+  }
+  return { ciProvider: "unknown", runnerKind: "unknown" };
+}
+
+// node_modules/@postman-cse/automation-telemetry-core/dist/repo-context.js
+function normalize2(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function normalizeRepoUrl2(url) {
+  const raw = normalize2(url);
+  if (!raw) {
+    return void 0;
+  }
+  const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    const host = sshMatch[1];
+    const path8 = sshMatch[2];
+    return `https://${host}/${path8}`;
+  }
+  return raw.replace(/\.git$/, "");
+}
+function parseProvider2(explicitProvider, repoUrl, env) {
+  const explicit = normalize2(explicitProvider)?.toLowerCase();
+  if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
+    return explicit;
+  }
+  const url = (repoUrl ?? "").toLowerCase();
+  if (url.includes("github")) {
+    return "github";
+  }
+  if (url.includes("gitlab")) {
+    return "gitlab";
+  }
+  if (url.includes("bitbucket")) {
+    return "bitbucket";
+  }
+  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
+    return "azure-devops";
+  }
+  if (normalize2(env.GITHUB_REPOSITORY)) {
+    return "github";
+  }
+  if (normalize2(env.CI_PROJECT_PATH) || normalize2(env.GITLAB_CI)) {
+    return "gitlab";
+  }
+  if (normalize2(env.BITBUCKET_REPO_SLUG)) {
+    return "bitbucket";
+  }
+  if (normalize2(env.BUILD_REPOSITORY_URI)) {
+    return "azure-devops";
+  }
+  return "unknown";
+}
+function classifyRefKind(env = process.env) {
+  const githubRefType = normalize2(env.GITHUB_REF_TYPE)?.toLowerCase();
+  const githubRef = normalize2(env.GITHUB_REF);
+  const azureRef = normalize2(env.BUILD_SOURCEBRANCH);
+  if (githubRefType === "tag" || githubRef?.startsWith("refs/tags/") || normalize2(env.CI_COMMIT_TAG) || normalize2(env.BITBUCKET_TAG) || azureRef?.startsWith("refs/tags/")) {
+    return "tag";
+  }
+  const githubRefName = normalize2(env.GITHUB_REF_NAME);
+  const githubDefault = normalize2(env.GITHUB_DEFAULT_BRANCH);
+  if (githubRefName && githubDefault) {
+    return githubRefName === githubDefault ? "default-branch" : "branch";
+  }
+  const gitlabRef = normalize2(env.CI_COMMIT_REF_NAME);
+  const gitlabDefault = normalize2(env.CI_DEFAULT_BRANCH);
+  if (gitlabRef && gitlabDefault) {
+    return gitlabRef === gitlabDefault ? "default-branch" : "branch";
+  }
+  if (githubRefName || githubRef?.startsWith("refs/heads/") || gitlabRef || normalize2(env.BITBUCKET_BRANCH) || normalize2(env.BUILD_SOURCEBRANCHNAME) || azureRef?.startsWith("refs/heads/")) {
+    return "branch";
+  }
+  return "unknown";
+}
+function detectRepoContext2(input, env = process.env) {
+  const repoUrl = normalizeRepoUrl2(input.repoUrl) ?? normalizeRepoUrl2(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl2(env.CI_PROJECT_URL) ?? normalizeRepoUrl2(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl2(env.BUILD_REPOSITORY_URI);
+  const repoSlug = normalize2(input.repoSlug) ?? normalize2(env.GITHUB_REPOSITORY) ?? normalize2(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize2(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize2(env.BUILD_REPOSITORY_NAME);
+  const ref = normalize2(input.ref) ?? normalize2(env.GITHUB_REF_NAME) ?? normalize2(env.CI_COMMIT_REF_NAME) ?? normalize2(env.BITBUCKET_BRANCH) ?? normalize2(env.BUILD_SOURCEBRANCHNAME);
+  const sha = normalize2(input.sha) ?? normalize2(env.GITHUB_SHA) ?? normalize2(env.CI_COMMIT_SHA) ?? normalize2(env.BITBUCKET_COMMIT) ?? normalize2(env.BUILD_SOURCEVERSION);
+  const provider = parseProvider2(input.gitProvider, repoUrl, env);
+  const refKind = classifyRefKind(env);
+  return {
+    provider,
+    repoUrl,
+    repoSlug,
+    ref,
+    sha,
+    refKind
+  };
+}
+
+// node_modules/@postman-cse/automation-telemetry-core/dist/telemetry.js
+var import_node_crypto2 = require("node:crypto");
+var import_undici2 = __toESM(require_undici(), 1);
+var SCHEMA_VERSION = 3;
+var DEFAULT_TIMEOUT_MS = 1500;
+var DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
+var proxyDispatcher;
+function getProxyDispatcher() {
+  return proxyDispatcher ??= new import_undici2.EnvHttpProxyAgent();
+}
+function resolveActionVersion(explicit) {
+  if (explicit) {
+    return explicit;
+  }
+  return "1.2.4" ? "1.2.4" : "unknown";
+}
+function telemetryDisabled(env) {
+  const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
+  if (flag === "off" || flag === "0" || flag === "false" || flag === "no") {
+    return true;
+  }
+  const dnt = String(env.DO_NOT_TRACK ?? "").trim().toLowerCase();
+  if (dnt && dnt !== "0" && dnt !== "false") {
+    return true;
+  }
+  return false;
+}
+function sha2562(value) {
+  return (0, import_node_crypto2.createHash)("sha256").update(value).digest("hex");
+}
+function accountTypeFromConsumer(consumerType) {
+  const t = (consumerType ?? "").trim().toLowerCase();
+  if (!t) {
+    return "unknown";
+  }
+  return t === "service_account" ? "service" : "user";
+}
+var noticeShown = false;
+function maybeNotice(logger) {
+  if (noticeShown || !logger) {
+    return;
+  }
+  noticeShown = true;
+  logger.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type, run trigger, runner OS). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
+}
+function buildTelemetryEvent(params) {
+  const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
+  const ci = detectCiContext(env);
+  const repo = detectRepoContext2({}, env);
+  const repoSlug = repo.repoSlug;
+  const repoSource = repoSlug ?? repo.repoUrl;
+  const owner = repoSlug && repoSlug.includes("/") ? repoSlug.split("/")[0] : void 0;
+  return {
+    schema_version: SCHEMA_VERSION,
+    event: "completion",
+    action,
+    action_version: actionVersion || "unknown",
+    team_id: teamId,
+    ci_provider: ci.ciProvider,
+    git_provider: repo.provider,
+    run_id: ci.runId,
+    runner_kind: ci.runnerKind,
+    repo_id: repoSource ? sha2562(repoSource) : void 0,
+    org_id: owner ? sha2562(owner) : void 0,
+    account_type: accountType,
+    event_trigger: ci.eventTrigger,
+    runner_os: ci.runnerOs,
+    ref_kind: repo.refKind,
+    outcome,
+    ts: now()
+  };
+}
+async function send(event, options) {
+  const env = options.env ?? process.env;
+  const endpoint = options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
+  const transport = options.transport ?? import_undici2.fetch;
+  const dispatcher = options.dispatcher ?? getProxyDispatcher();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  timer.unref?.();
+  const init = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(event),
+    signal: controller.signal
+  };
+  init.dispatcher = dispatcher;
+  try {
+    await transport(endpoint, init);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function createTelemetryContext(options) {
+  const env = options.env ?? process.env;
+  const now = options.now ?? Date.now;
+  const actionVersion = resolveActionVersion(options.actionVersion);
+  let teamId = "";
+  let accountType = "unknown";
+  let emitted = false;
+  return {
+    setTeamId(value) {
+      if (value) {
+        teamId = String(value);
+      }
+    },
+    setAccountType(consumerType) {
+      accountType = accountTypeFromConsumer(consumerType);
+    },
+    emitCompletion(outcome) {
+      if (emitted) {
+        return;
+      }
+      emitted = true;
+      try {
+        if (telemetryDisabled(env) || !teamId) {
+          return;
+        }
+        const event = buildTelemetryEvent({
+          action: options.action,
+          actionVersion,
+          teamId,
+          accountType,
+          outcome,
+          env,
+          now
+        });
+        maybeNotice(options.logger);
+        void send(event, options).catch(() => {
+        });
+      } catch {
+      }
+    }
   };
 }
 
@@ -64081,19 +64487,19 @@ function parseBooleanInput(name, value, defaultValue) {
   throw new Error(`${name} must be a boolean value: true or false`);
 }
 function parseCollectionSyncMode(value) {
-  const v = value?.trim() || customerPreviewActionContract.inputs["collection-sync-mode"].default || "refresh";
+  const v = value?.trim() || bootstrapActionContract.inputs["collection-sync-mode"].default || "refresh";
   if (v === "reuse") {
     return "refresh";
   }
-  const allowed = customerPreviewActionContract.inputs["collection-sync-mode"].allowedValues ?? [];
+  const allowed = bootstrapActionContract.inputs["collection-sync-mode"].allowedValues ?? [];
   if (allowed.includes(v)) {
     return v;
   }
   throw new Error(`Unsupported collection-sync-mode "${v}". Supported values: ${allowed.join(", ")}`);
 }
 function parseSpecSyncMode(value) {
-  const v = value?.trim() || customerPreviewActionContract.inputs["spec-sync-mode"].default || "update";
-  const allowed = customerPreviewActionContract.inputs["spec-sync-mode"].allowedValues ?? [];
+  const v = value?.trim() || bootstrapActionContract.inputs["spec-sync-mode"].default || "update";
+  const allowed = bootstrapActionContract.inputs["spec-sync-mode"].allowedValues ?? [];
   if (allowed.includes(v)) {
     return v;
   }
@@ -64103,11 +64509,11 @@ function parseBreakingChangeMode(value) {
   return parseEnumInput(
     "breaking-change-mode",
     value,
-    customerPreviewActionContract.inputs["breaking-change-mode"].default ?? "off"
+    bootstrapActionContract.inputs["breaking-change-mode"].default ?? "off"
   );
 }
 function parseEnumInput(name, value, defaultValue) {
-  const allowed = customerPreviewActionContract.inputs[name].allowedValues ?? [];
+  const allowed = bootstrapActionContract.inputs[name].allowedValues ?? [];
   const v = value?.trim() || defaultValue;
   if (allowed.includes(v)) {
     return v;
@@ -64124,7 +64530,7 @@ function parseWorkspaceTeamId(value) {
   return value;
 }
 function parseGovernanceMappingJson(value) {
-  const mapping = value ?? customerPreviewActionContract.inputs["governance-mapping-json"].default ?? "{}";
+  const mapping = value ?? bootstrapActionContract.inputs["governance-mapping-json"].default ?? "{}";
   try {
     const parsed = JSON.parse(mapping);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -64136,7 +64542,7 @@ function parseGovernanceMappingJson(value) {
   }
 }
 function resolveOpenapiVersion(value) {
-  const allowed = customerPreviewActionContract.inputs["openapi-version"].allowedValues ?? [];
+  const allowed = bootstrapActionContract.inputs["openapi-version"].allowedValues ?? [];
   const v = value?.trim() ?? "";
   if (allowed.length > 0 && v && !allowed.includes(v)) {
     throw new Error(
@@ -64164,8 +64570,8 @@ function resolveInputs(env = process.env) {
     },
     env
   );
-  const integrationBackend = getInput2("integration-backend", env) ?? customerPreviewActionContract.inputs["integration-backend"].default ?? "bifrost";
-  const allowedBackends = customerPreviewActionContract.inputs["integration-backend"].allowedValues ?? [];
+  const integrationBackend = getInput2("integration-backend", env) ?? bootstrapActionContract.inputs["integration-backend"].default ?? "bifrost";
+  const allowedBackends = bootstrapActionContract.inputs["integration-backend"].allowedValues ?? [];
   if (allowedBackends.length > 0 && !allowedBackends.includes(integrationBackend)) {
     throw new Error(
       `Unsupported integration-backend "${integrationBackend}". Supported values: ${allowedBackends.join(", ")}`
@@ -64186,8 +64592,9 @@ function resolveInputs(env = process.env) {
       throw new Error(`spec-url must be a valid HTTPS URL, got: ${sanitizeUrlForLog(specUrl)}`, { cause: error2 });
     }
   }
+  const postmanRegion = parsePostmanRegion(getInput2("postman-region", env));
   const postmanStack = parsePostmanStack(getInput2("postman-stack", env));
-  const endpointProfile = resolvePostmanEndpointProfile(postmanStack);
+  const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion);
   return {
     projectName: getInput2("project-name", env) ?? env.GITHUB_REPOSITORY?.split("/").pop() ?? env.CI_PROJECT_NAME ?? "",
     workspaceId: getInput2("workspace-id", env),
@@ -64213,7 +64620,7 @@ function resolveInputs(env = process.env) {
     openapiVersion: resolveOpenapiVersion(getInput2("openapi-version", env)),
     breakingChangeMode: parseBreakingChangeMode(getInput2("breaking-change-mode", env)),
     breakingBaselineSpecPath: getInput2("breaking-baseline-spec-path", env),
-    breakingRulesPath: getInput2("breaking-rules-path", env) ?? customerPreviewActionContract.inputs["breaking-rules-path"].default,
+    breakingRulesPath: getInput2("breaking-rules-path", env) ?? bootstrapActionContract.inputs["breaking-rules-path"].default,
     breakingTargetRef: getInput2("breaking-target-ref", env),
     breakingSummaryPath: getInput2("breaking-summary-path", env),
     breakingLogPath: getInput2("breaking-log-path", env),
@@ -64223,12 +64630,13 @@ function resolveInputs(env = process.env) {
     credentialPreflight: parseEnumInput(
       "credential-preflight",
       getInput2("credential-preflight", env),
-      customerPreviewActionContract.inputs["credential-preflight"].default ?? "warn"
+      bootstrapActionContract.inputs["credential-preflight"].default ?? "warn"
     ),
     integrationBackend,
     folderStrategy: parseEnumInput("folder-strategy", getInput2("folder-strategy", env), "Paths"),
     nestedFolderHierarchy: parseBooleanInput("nested-folder-hierarchy", getInput2("nested-folder-hierarchy", env), false),
     requestNameSource: parseEnumInput("request-name-source", getInput2("request-name-source", env), "Fallback"),
+    postmanRegion,
     postmanStack,
     postmanApiBase: endpointProfile.apiBaseUrl,
     postmanBifrostBase: endpointProfile.bifrostBaseUrl,
@@ -64277,6 +64685,25 @@ function createPlannedOutputs(inputs) {
     })
   };
 }
+function warnIfDeprecatedAccessToken(actionCore, inputs) {
+  if (!inputs.postmanAccessToken) {
+    return;
+  }
+  const sessionIdentity = getMemoizedSessionIdentity();
+  const consumerType = sessionIdentity?.consumerType?.trim();
+  if (!consumerType || consumerType.toLowerCase() === "service_account") {
+    return;
+  }
+  const mask = createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]);
+  actionCore.warning(
+    mask(
+      "postman: deprecation warning - postman-access-token resolved to consumerType " + consumerType + ". postman-cs/postman-resolve-service-token-action is the primary CI path for service-account access tokens. The Postman CLI credential store populated by `postman login` is a legacy fallback for migration only."
+    )
+  );
+}
+function isLegacyAccessTokenDeprecationWarning(message) {
+  return message.includes("Postman CLI credential store populated by `postman login` is a legacy fallback");
+}
 function readActionInputs(actionCore) {
   const projectName = requireInput(actionCore, "project-name");
   const specUrl = optionalInput(actionCore, "spec-url") ?? "";
@@ -64303,9 +64730,9 @@ function readActionInputs(actionCore) {
     INPUT_BASELINE_COLLECTION_ID: optionalInput(actionCore, "baseline-collection-id"),
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, "smoke-collection-id"),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, "contract-collection-id"),
-    INPUT_SYNC_EXAMPLES: optionalInput(actionCore, "sync-examples") ?? customerPreviewActionContract.inputs["sync-examples"].default,
-    INPUT_COLLECTION_SYNC_MODE: optionalInput(actionCore, "collection-sync-mode") ?? customerPreviewActionContract.inputs["collection-sync-mode"].default,
-    INPUT_SPEC_SYNC_MODE: optionalInput(actionCore, "spec-sync-mode") ?? customerPreviewActionContract.inputs["spec-sync-mode"].default,
+    INPUT_SYNC_EXAMPLES: optionalInput(actionCore, "sync-examples") ?? bootstrapActionContract.inputs["sync-examples"].default,
+    INPUT_COLLECTION_SYNC_MODE: optionalInput(actionCore, "collection-sync-mode") ?? bootstrapActionContract.inputs["collection-sync-mode"].default,
+    INPUT_SPEC_SYNC_MODE: optionalInput(actionCore, "spec-sync-mode") ?? bootstrapActionContract.inputs["spec-sync-mode"].default,
     INPUT_RELEASE_LABEL: optionalInput(actionCore, "release-label"),
     INPUT_DOMAIN: optionalInput(actionCore, "domain"),
     INPUT_DOMAIN_CODE: optionalInput(actionCore, "domain-code"),
@@ -64320,22 +64747,23 @@ function readActionInputs(actionCore) {
     INPUT_REPO_URL: optionalInput(actionCore, "repo-url"),
     INPUT_SPEC_URL: specUrl,
     INPUT_SPEC_PATH: specPath,
-    INPUT_GOVERNANCE_MAPPING_JSON: optionalInput(actionCore, "governance-mapping-json") ?? customerPreviewActionContract.inputs["governance-mapping-json"].default,
+    INPUT_GOVERNANCE_MAPPING_JSON: optionalInput(actionCore, "governance-mapping-json") ?? bootstrapActionContract.inputs["governance-mapping-json"].default,
     INPUT_POSTMAN_API_KEY: postmanApiKey,
     INPUT_POSTMAN_ACCESS_TOKEN: postmanAccessToken,
-    INPUT_CREDENTIAL_PREFLIGHT: optionalInput(actionCore, "credential-preflight") ?? customerPreviewActionContract.inputs["credential-preflight"].default,
-    INPUT_INTEGRATION_BACKEND: optionalInput(actionCore, "integration-backend") ?? customerPreviewActionContract.inputs["integration-backend"].default,
-    INPUT_FOLDER_STRATEGY: optionalInput(actionCore, "folder-strategy") ?? customerPreviewActionContract.inputs["folder-strategy"].default,
-    INPUT_NESTED_FOLDER_HIERARCHY: optionalInput(actionCore, "nested-folder-hierarchy") ?? customerPreviewActionContract.inputs["nested-folder-hierarchy"].default,
-    INPUT_REQUEST_NAME_SOURCE: optionalInput(actionCore, "request-name-source") ?? customerPreviewActionContract.inputs["request-name-source"].default,
+    INPUT_CREDENTIAL_PREFLIGHT: optionalInput(actionCore, "credential-preflight") ?? bootstrapActionContract.inputs["credential-preflight"].default,
+    INPUT_POSTMAN_REGION: optionalInput(actionCore, "postman-region") ?? bootstrapActionContract.inputs["postman-region"].default,
+    INPUT_POSTMAN_STACK: optionalInput(actionCore, "postman-stack") ?? bootstrapActionContract.inputs["postman-stack"].default,
+    INPUT_INTEGRATION_BACKEND: optionalInput(actionCore, "integration-backend") ?? bootstrapActionContract.inputs["integration-backend"].default,
+    INPUT_FOLDER_STRATEGY: optionalInput(actionCore, "folder-strategy") ?? bootstrapActionContract.inputs["folder-strategy"].default,
+    INPUT_NESTED_FOLDER_HIERARCHY: optionalInput(actionCore, "nested-folder-hierarchy") ?? bootstrapActionContract.inputs["nested-folder-hierarchy"].default,
+    INPUT_REQUEST_NAME_SOURCE: optionalInput(actionCore, "request-name-source") ?? bootstrapActionContract.inputs["request-name-source"].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, "openapi-version") ?? "",
-    INPUT_BREAKING_CHANGE_MODE: optionalInput(actionCore, "breaking-change-mode") ?? customerPreviewActionContract.inputs["breaking-change-mode"].default,
+    INPUT_BREAKING_CHANGE_MODE: optionalInput(actionCore, "breaking-change-mode") ?? bootstrapActionContract.inputs["breaking-change-mode"].default,
     INPUT_BREAKING_BASELINE_SPEC_PATH: optionalInput(actionCore, "breaking-baseline-spec-path"),
-    INPUT_BREAKING_RULES_PATH: optionalInput(actionCore, "breaking-rules-path") ?? customerPreviewActionContract.inputs["breaking-rules-path"].default,
+    INPUT_BREAKING_RULES_PATH: optionalInput(actionCore, "breaking-rules-path") ?? bootstrapActionContract.inputs["breaking-rules-path"].default,
     INPUT_BREAKING_TARGET_REF: optionalInput(actionCore, "breaking-target-ref"),
     INPUT_BREAKING_SUMMARY_PATH: optionalInput(actionCore, "breaking-summary-path"),
     INPUT_BREAKING_LOG_PATH: optionalInput(actionCore, "breaking-log-path"),
-    INPUT_POSTMAN_STACK: optionalInput(actionCore, "postman-stack") ?? customerPreviewActionContract.inputs["postman-stack"].default,
     INPUT_GITHUB_TOKEN: githubToken,
     INPUT_GH_FALLBACK_TOKEN: ghFallbackToken
   });
@@ -64382,7 +64810,7 @@ function validateHttpsInstallUrl(url) {
   }
   return url;
 }
-async function ensurePostmanCli(dependencies, postmanApiKey, installUrl = "https://dl-cli.pstmn.io/install/unix.sh") {
+async function ensurePostmanCli(dependencies, postmanApiKey, installUrl = "https://dl-cli.pstmn.io/install/unix.sh", postmanRegion = "us") {
   const validatedUrl = validateHttpsInstallUrl(installUrl);
   const existing = await dependencies.io.which("postman", false).catch(() => "");
   if (!existing) {
@@ -64397,7 +64825,11 @@ async function ensurePostmanCli(dependencies, postmanApiKey, installUrl = "https
       }
     );
   }
-  await dependencies.exec.exec("postman", ["login", "--with-api-key", postmanApiKey]);
+  const loginArgs = ["login", "--with-api-key", postmanApiKey];
+  if (postmanRegion === "eu") {
+    loginArgs.push("--region", "eu");
+  }
+  await dependencies.exec.exec("postman", loginArgs);
 }
 async function lintSpecViaCli(dependencies, workspaceId, specId) {
   const result = await dependencies.exec.getExecOutput(
@@ -64478,6 +64910,24 @@ function createAssetProjectName(inputs, releaseLabel) {
     return inputs.projectName;
   }
   return `${inputs.projectName} ${releaseLabel}`;
+}
+var BASELINE_COLLECTION_PREFIX = "";
+var LEGACY_BASELINE_COLLECTION_PREFIX = "[Baseline]";
+var SMOKE_COLLECTION_PREFIX = "[Smoke]";
+var CONTRACT_COLLECTION_PREFIX = "[Contract]";
+function describeGeneratedCollection(prefix) {
+  if (prefix === SMOKE_COLLECTION_PREFIX) return "smoke";
+  if (prefix === CONTRACT_COLLECTION_PREFIX) return "contract";
+  return "baseline";
+}
+function normalizedResourcePath(filePath) {
+  return filePath.replace(/\\/g, "/").replace(/\/+$/g, "");
+}
+function matchesCollectionDirectory(filePath, directoryName) {
+  return normalizedResourcePath(filePath).endsWith(`/collections/${directoryName}`);
+}
+function matchesBaselineCollectionResource(filePath, assetProjectName) {
+  return matchesCollectionDirectory(filePath, assetProjectName) || matchesCollectionDirectory(filePath, `${LEGACY_BASELINE_COLLECTION_PREFIX} ${assetProjectName}`);
 }
 function readResourcesState() {
   try {
@@ -64602,6 +65052,22 @@ function normalizeSpecDocument(raw, warn) {
 `;
 }
 async function runBootstrap(inputs, dependencies) {
+  const telemetry = createTelemetryContext({
+    action: "postman-bootstrap-action",
+    logger: dependencies.core
+  });
+  try {
+    const result = await runBootstrapInner(inputs, dependencies, telemetry);
+    telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
+    telemetry.emitCompletion("success");
+    return result;
+  } catch (error2) {
+    telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
+    telemetry.emitCompletion("failure");
+    throw error2;
+  }
+}
+async function runBootstrapInner(inputs, dependencies, telemetry) {
   const outputs = createPlannedOutputs(inputs);
   const requiresReleaseLabel = inputs.collectionSyncMode === "version" || inputs.specSyncMode === "version";
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : void 0;
@@ -64610,10 +65076,11 @@ async function runBootstrap(inputs, dependencies) {
       "Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata"
     );
   }
+  const collectionAssetProjectName = inputs.collectionSyncMode === "version" ? createAssetProjectName(inputs, releaseLabel) : inputs.projectName;
   const workspaceName = createWorkspaceName(inputs);
-  const aboutText = `Auto-provisioned by Postman CS customer preview for ${inputs.projectName}`;
+  const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
   await runGroup(dependencies.core, "Install Postman CLI", async () => {
-    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl);
+    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
   });
   const resourcesState = readResourcesState();
   let specId = inputs.specId;
@@ -64663,7 +65130,7 @@ async function runBootstrap(inputs, dependencies) {
           previousRaw,
           (msg) => dependencies.core.warning(`Previous spec normalization: ${msg}`)
         );
-        previousSpecRollbackHash = (0, import_node_crypto2.createHash)("sha256").update(previousSpecContent).digest("hex");
+        previousSpecRollbackHash = (0, import_node_crypto3.createHash)("sha256").update(previousSpecContent).digest("hex");
         const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
         if (existingSpecType !== incomingSpecType) {
           throw new Error(
@@ -64720,6 +65187,7 @@ async function runBootstrap(inputs, dependencies) {
   if (!teamId) {
     teamId = await dependencies.postman.getAutoDerivedTeamId() || "";
   }
+  telemetry.setTeamId(teamId);
   const repoUrl = inputs.repoUrl || "";
   if (!explicitWorkspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
     const selection = await runGroup(
@@ -64895,7 +65363,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
   if (!baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
-      (filePath) => filePath.includes("[Baseline]")
+      (filePath) => matchesBaselineCollectionResource(filePath, collectionAssetProjectName)
     );
     if (baselineCollectionId) {
       dependencies.core.info("Resolved baseline-collection-id from .postman/resources.yaml");
@@ -65033,7 +65501,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
         dependencies.core,
         "Generate Collections from Spec",
         async () => {
-          const assetProjectName = inputs.collectionSyncMode === "version" ? createAssetProjectName(inputs, releaseLabel) : inputs.projectName;
+          const assetProjectName = collectionAssetProjectName;
           const shouldReuseCollections = inputs.collectionSyncMode !== "refresh";
           const temporaryCollectionIds = /* @__PURE__ */ new Set();
           const getCollection = dependencies.postman.getCollection?.bind(dependencies.postman);
@@ -65168,18 +65636,18 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
             }
           };
           const adoptGeneratedCollection = async (plan) => {
-            if (plan.prefix === "[Contract]") {
+            if (plan.prefix === CONTRACT_COLLECTION_PREFIX) {
               await updateCollection(plan.generatedId, plan.updateBody ?? await prepareContractUpdateBody(plan.generatedId));
             }
             outputs[plan.outputKey] = plan.generatedId;
             dependencies.core.info(
-              `No existing ${plan.prefix} collection found; using newly generated collection ${plan.generatedId}`
+              `No existing ${describeGeneratedCollection(plan.prefix)} collection found; using newly generated collection ${plan.generatedId}`
             );
           };
           const commitRefreshPlans = async (plans) => {
             requireRefreshCollectionHelpers();
             for (const plan of plans) {
-              if (plan.prefix === "[Contract]") {
+              if (plan.prefix === CONTRACT_COLLECTION_PREFIX) {
                 plan.updateBody = await prepareContractUpdateBody(plan.generatedId);
               } else {
                 const generatedCollection = await getCollection(plan.generatedId);
@@ -65195,7 +65663,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
               } catch (error2) {
                 if (error2 instanceof HttpError && error2.status === 404) {
                   dependencies.core.warning(
-                    `Existing ${plan.prefix} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
+                    `Existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
                   );
                   plan.existingId = void 0;
                   assertDistinctRefreshPlanOutputs(plans);
@@ -65223,12 +65691,12 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
                   });
                   outputs[plan.outputKey] = plan.existingId;
                   dependencies.core.info(
-                    `Refreshed existing ${plan.prefix} collection ${plan.existingId} with temporary collection ${plan.generatedId}`
+                    `Refreshed existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} with temporary collection ${plan.generatedId}`
                   );
                 } catch (error2) {
                   if (error2 instanceof HttpError && error2.status === 404) {
                     dependencies.core.warning(
-                      `Existing ${plan.prefix} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
+                      `Existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
                     );
                     plan.existingId = void 0;
                     assertDistinctRefreshPlanOutputs(plans);
@@ -65258,7 +65726,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
                 outputs["baseline-collection-id"] = await dependencies.postman.generateCollection(
                   outputs["spec-id"],
                   assetProjectName,
-                  "[Baseline]",
+                  BASELINE_COLLECTION_PREFIX,
                   inputs.folderStrategy,
                   inputs.nestedFolderHierarchy,
                   inputs.requestNameSource
@@ -65272,7 +65740,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
                 outputs["smoke-collection-id"] = await dependencies.postman.generateCollection(
                   outputs["spec-id"],
                   assetProjectName,
-                  "[Smoke]",
+                  SMOKE_COLLECTION_PREFIX,
                   inputs.folderStrategy,
                   inputs.nestedFolderHierarchy,
                   inputs.requestNameSource
@@ -65286,7 +65754,7 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
                 outputs["contract-collection-id"] = await dependencies.postman.generateCollection(
                   outputs["spec-id"],
                   assetProjectName,
-                  "[Contract]",
+                  CONTRACT_COLLECTION_PREFIX,
                   inputs.folderStrategy,
                   inputs.nestedFolderHierarchy,
                   inputs.requestNameSource
@@ -65302,9 +65770,9 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
               return;
             }
             await commitRefreshPlans([
-              await createRefreshPlan("[Baseline]", baselineCollectionId, "baseline-collection-id"),
-              await createRefreshPlan("[Smoke]", smokeCollectionId, "smoke-collection-id"),
-              await createRefreshPlan("[Contract]", contractCollectionId, "contract-collection-id")
+              await createRefreshPlan(BASELINE_COLLECTION_PREFIX, baselineCollectionId, "baseline-collection-id"),
+              await createRefreshPlan(SMOKE_COLLECTION_PREFIX, smokeCollectionId, "smoke-collection-id"),
+              await createRefreshPlan(CONTRACT_COLLECTION_PREFIX, contractCollectionId, "contract-collection-id")
             ]);
           } catch (error2) {
             generationFailure = error2;
@@ -65444,8 +65912,16 @@ async function runAction(actionCore = core_exports, actionExec = exec_exports, a
     explicitTeamId: inputs.teamId || void 0,
     mode: inputs.credentialPreflight,
     mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
-    log: actionCore
+    log: {
+      info: (message) => actionCore.info(message),
+      warning: (message) => {
+        if (!isLegacyAccessTokenDeprecationWarning(message)) {
+          actionCore.warning(message);
+        }
+      }
+    }
   });
+  warnIfDeprecatedAccessToken(actionCore, inputs);
   let orgMode = false;
   if (inputs.postmanAccessToken && inputs.teamId) {
     try {

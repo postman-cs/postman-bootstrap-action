@@ -498,8 +498,9 @@ export class PostmanAssetsClient {
     nestedFolderHierarchy: boolean,
     requestNameSource: string
   ): Promise<string> {
+    const name = [prefix.trim(), projectName.trim()].filter(Boolean).join(' ');
     const payload = {
-      name: `${prefix} ${projectName}`,
+      name,
       options: {
         requestNameSource,
         folderStrategy,

@@ -1,7 +1,7 @@
 {
   "name": "@postman-cse/onboarding-bootstrap",
-  "version": "1.2.2",
-  "description": "Public customer preview Postman bootstrap GitHub Action.",
+  "version": "1.2.4",
+  "description": "Bootstrap Postman workspaces, specs, and collections from OpenAPI.",
   "type": "module",
   "main": "dist/index.cjs",
   "bin": {
@@ -17,7 +17,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "build": "npm run typecheck && rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --outfile=dist/cli.cjs",
+    "build": "npm run typecheck && rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --define:__ACTION_VERSION__=\\\"$npm_package_version\\\" --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --define:__ACTION_VERSION__=\\\"$npm_package_version\\\" --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --define:__ACTION_VERSION__=\\\"$npm_package_version\\\" --outfile=dist/cli.cjs",
     "check:dist": "npm run build && git diff --exit-code -- dist",
     "docs:tables": "node scripts/render-action-tables.mjs",
     "lint": "eslint .",
@@ -39,7 +39,9 @@
     "@actions/io": "^3.0.2",
     "@apidevtools/json-schema-ref-parser": "15.3.6",
     "@exodus/schemasafe": "1.3.0",
-    "@readme/openapi-parser": "^6.1.2"
+    "@postman-cse/automation-telemetry-core": "^0.2.0",
+    "@readme/openapi-parser": "^6.1.2",
+    "undici": "^6.24.0"
   },
   "overrides": {
     "undici": "^6.24.0",

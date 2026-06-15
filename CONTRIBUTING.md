@@ -41,7 +41,7 @@ approval or merge. The PR workflow dispatches `postman-cs/postman-actions-e2e`
 with the PR head SHA pinned for `postman-bootstrap-action`, waits for the
 correlated run to succeed, and reports that result as the `Live E2E` check.
 
-Because the suite runs action code with internal sandbox credentials, the PR
+Because the suite runs action code with repository-scoped live sandbox credentials, the PR
 branch must live in this repository. Fork-based PRs cannot receive those secrets;
 push the branch to this repo to run the required merge gate.
 
@@ -53,7 +53,7 @@ release tarball is published. The release workflow validates locally, dispatches
 the e2e workflow with this exact tag pinned for `postman-bootstrap-action`,
 waits for the correlated run to succeed, and only then publishes.
 
-The rolling `v1` customer-preview alias validates locally but skips npm publish
+The rolling `v1` alias validates locally but skips npm publish
 and the live e2e gate. `E2E_DISPATCH_TOKEN` is release-critical for immutable
 publishing tags; if it is missing, invalid, or the e2e fails/times out, the
 release must stop before public artifacts are created. Record the e2e run URL

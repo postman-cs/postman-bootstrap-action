@@ -13,7 +13,7 @@ function namedStep(name: string): string {
 
 function npmRegistrySetupStep(): string {
   return releaseWorkflow
-    .match(/ {6}- uses: actions\/setup-node@v5\n(?: {8}[^\n]+\n| {10}[^\n]+\n)*/g)
+    .match(/ {6}- uses: actions\/setup-node@v\d+\n(?: {8}[^\n]+\n| {10}[^\n]+\n)*/g)
     ?.find((step) => step.includes("registry-url: 'https://registry.npmjs.org'")) ?? '';
 }
 

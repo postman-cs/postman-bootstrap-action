@@ -1,63 +1,57 @@
-# Lifecycle Modes and Operational Reference
+# Lifecycle Modes and Operations
 
-## Collection sync
+## Refresh canonical assets
 
-- `reuse`: legacy alias for `refresh`; existing collection IDs are reused when available and updated from the resolved spec.
-- `refresh`: baseline, smoke, and contract collections are regenerated from the resolved spec and become the current/default collection pointers.
-- `version`: a release-scoped collection set is created or reused from the checked-out ref's state when available.
+Default bootstrap behavior keeps one current workspace, spec, and generated collection set for the service.
 
-## Spec sync
+- `collection-sync-mode: refresh` regenerates baseline, smoke, and contract collections from the resolved spec and makes them the current collection pointers.
+- `spec-sync-mode: update` updates the current Spec Hub spec from `spec-url` or `spec-path`.
+- Legacy `collection-sync-mode: reuse` is accepted as an alias for `refresh`.
 
-- `update`: canonical behavior. The current spec in Spec Hub is updated from `spec-url`.
-- `version`: the action reuses the checked-out ref's `.postman/resources.yaml` spec mapping when present. If no mapping exists on the current ref, it creates a new release-scoped spec.
+Use this mode for main-branch automation where the Postman workspace should track the latest service contract.
 
-## Release label derivation
+## Create versioned release assets
 
-When versioned sync is requested and `release-label` is omitted, the action derives one using:
+Use versioned mode when each release needs its own spec and collection set:
 
-1. explicit `release-label`
-2. Git tag name
-3. branch name or ref metadata
+```yaml
+collection-sync-mode: version
+spec-sync-mode: version
+release-label: v1.1.1
+```
 
-If versioned sync is requested and no usable label can be derived, the run fails.
+When `release-label` is omitted, the action derives one from the git tag, then from branch or ref metadata. If versioned sync is requested and no usable label can be derived, the run fails.
 
 ## Ref-native state
 
 Current Postman asset state lives in `.postman/resources.yaml`.
 
 - `update`, `refresh`, and legacy `reuse` modes resolve current-state mappings from the checked-out ref.
-- `version` mode reuses only the checked-out ref's mappings; release history lives in git history and tags rather than in a separate manifest file or repository variables.
+- `version` mode reuses only the checked-out ref's mappings.
+- Release history lives in git history and tags rather than a separate manifest file or repository variable.
+
+Commit `.postman/resources.yaml` when you want later runs to reuse the same workspace, spec, and collection IDs automatically.
 
 ## Cloud spec-to-collection syncing
 
 After collections exist, bootstrap links them to the cloud specification and triggers a spec-side collection sync when `postman-access-token` is available.
 
-- `sync-examples: true` (default) enables example syncing in that relation setup.
+- `sync-examples: true` enables example syncing in that relation setup.
 - `sync-examples: false` keeps the relation but disables example syncing.
-- If `postman-access-token` is missing, bootstrap warns and skips the cloud link/sync step.
+- If `postman-access-token` is missing or expired, bootstrap warns and skips the cloud link/sync step.
 
-## Contract smoke monitoring
+Use `credential-preflight: enforce` to fail before workspace creation when the PMAK and access token resolve to different parent orgs. Use `warn` to log the mismatch and continue.
 
-This repo includes `.github/workflows/contract-smoke.yml`, a scheduled live contract check for the upstream Postman APIs used by bootstrap.
+## Region
 
-Configure these repository secrets before enabling the workflow:
+`postman-region` defaults to `us`. Set `postman-region: eu` for EU data residency tenants.
 
-- `SMOKE_ORG_API_KEY`
-- `SMOKE_ORG_ACCESS_TOKEN`
-- `SMOKE_NON_ORG_API_KEY`
+Set the same region on the service-token step and bootstrap step so the PMAK, access token, and workspace calls resolve against the same Postman environment.
 
-Configure this repository variable for the org-mode workspace creation check:
+## Release policy
 
-- `SMOKE_WORKSPACE_TEAM_ID=132319`
+Consumers can pin immutable tags such as `v1.0.0` for reproducibility or use the moving `v1` alias for the latest compatible release. See [Release Policy](../RELEASE_POLICY.md).
 
-`132319` is the currently derived CSE sub-team ID under org `13347347`. The smoke job uses that value to verify `POST /workspaces` still accepts the explicit `teamId` payload required for org-mode tenants.
+## Backend selection
 
-## Customer Preview release strategy
-
-- Customer Preview channel tags use `v1.x.y`.
-- Consumers can pin immutable tags such as `v1.0.0` for reproducibility.
-- Moving tag `v1` is used only as the rolling customer preview channel.
-
-## REST migration seam
-
-Public inputs and outputs are backend-neutral. `integration-backend` currently supports `bifrost`, and backend-specific metadata stays internal so a future REST backend can replace the implementation without changing caller workflow syntax.
+Public inputs and outputs are backend-neutral; backend-specific details are not part of the caller workflow syntax.

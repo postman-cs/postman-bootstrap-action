@@ -43,6 +43,10 @@ export const bootstrapActionContract: ActionContract = {
       description: 'Existing contract collection ID.',
       required: false
     },
+    'additional-collections-dir': {
+      description: 'Workspace-relative directory containing curated Postman collection JSON/YAML files to create or update in the workspace.',
+      required: false
+    },
     'sync-examples': {
       description: 'Whether linked spec/collection relations should enable example syncing.',
       required: false,

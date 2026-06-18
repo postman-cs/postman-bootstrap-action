@@ -300,6 +300,42 @@ describe('PostmanAssetsClient', () => {
     await expect(client.getSpecContent('spec-123')).resolves.toBeUndefined();
   });
 
+  it('creates collections in a workspace and returns the created UID', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ collection: { uid: 'col-created' } })
+    );
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+    const collection = {
+      info: { name: 'Curated' },
+      item: []
+    };
+
+    await expect(client.createCollection('ws-123', collection)).resolves.toBe('col-created');
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://api.getpostman.com/collections?workspace=ws-123',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ collection })
+      })
+    );
+  });
+
+  it('fails collection create responses without a UID', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ collection: {} })
+    );
+    const client = new PostmanAssetsClient({
+      apiKey: 'pmak-test',
+      fetchImpl
+    });
+
+    await expect(client.createCollection('ws-123', { info: { name: 'Curated' } }))
+      .rejects.toThrow(/Collection create did not return a UID/);
+  });
+
   it('deletes collections successfully', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(null, { status: 204 })

@@ -29,6 +29,29 @@ function asArray(value: unknown): unknown[] {
 }
 
 /**
+ * Coerce a v2.1.0 `script.exec` (a string array, one entry per source line)
+ * into the single string the EC v3 item schema enforces. A string passes
+ * through unchanged; anything else collapses to an empty string.
+ */
+function execToString(exec: unknown): string {
+  if (Array.isArray(exec)) return exec.map((line) => String(line ?? '')).join('\n');
+  if (typeof exec === 'string') return exec;
+  return '';
+}
+
+/**
+ * Normalize one `extensions.events` entry to the EC v3 shape: a `script.exec`
+ * string. Entries without a script object pass through untouched.
+ */
+function normalizeEcEvent(raw: unknown): unknown {
+  const event = asRecord(raw);
+  if (!event) return raw;
+  const script = asRecord(event.script);
+  if (!script) return raw;
+  return { ...event, script: { ...script, exec: execToString(script.exec) } };
+}
+
+/**
  * Retry only on transient failures: bifrost/collection-service 429 + 5xx and
  * undici network errors (surfaced as TypeError). 4xx (auth, validation) are
  * permanent and rethrow immediately.
@@ -334,15 +357,19 @@ export class PostmanExtensibleCollectionClient {
         if (!script) return null;
         const v2Listen = typeof event.listen === 'string' ? event.listen : '';
         const listen = EC_EVENT_LISTEN_BY_V2[v2Listen] ?? v2Listen;
-        return { listen, script };
+        // v2.1.0 scripts carry `exec` as a string array (one entry per line);
+        // the EC item schema enforces `script.exec` as a single string, so the
+        // verbatim array 400s with SCHEMA_ENFORCED. Join to the EC shape here.
+        return { listen, script: { ...script, exec: execToString(script.exec) } };
       })
       .filter((entry): entry is JsonRecord => entry !== null);
+    const existing = asArray(extensions.events).map(normalizeEcEvent);
     if (mapped.length === 0) {
-      return extensions;
+      return existing.length > 0 ? { ...extensions, events: existing } : extensions;
     }
     return {
       ...extensions,
-      events: [...asArray(extensions.events), ...mapped]
+      events: [...existing, ...mapped]
     };
   }
 

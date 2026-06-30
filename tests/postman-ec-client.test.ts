@@ -238,12 +238,33 @@ describe('PostmanExtensibleCollectionClient', () => {
     });
 
     const sent = JSON.parse((fetchImpl.mock.calls[0]?.[1] as RequestInit).body as string);
+    // EC v3 enforces script.exec as a single string; the v2.1.0 array is joined.
     expect(sent.body.extensions).toEqual({
       schema: { source: 'file' },
       events: [
-        { listen: 'afterResponse', script: { type: 'text/javascript', exec: ['pm.test("ok", () => {});'] } }
+        { listen: 'afterResponse', script: { type: 'text/javascript', exec: 'pm.test("ok", () => {});' } }
       ]
     });
+  });
+
+  it('joins a multi-line v2.1.0 script.exec array into a single EC v3 string', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 'item-multiline' } }));
+    const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl });
+
+    await client.createItem('ec-1', {
+      type: 'grpc-request',
+      title: 'M3',
+      event: [
+        { listen: 'test', script: { exec: ['line1', 'line2', 'line3'] } }
+      ]
+    });
+
+    const sent = JSON.parse((fetchImpl.mock.calls[0]?.[1] as RequestInit).body as string);
+    expect(sent.body.extensions.events).toEqual([
+      { listen: 'afterResponse', script: { exec: 'line1\nline2\nline3' } }
+    ]);
   });
 
   it('maps prerequest -> beforeRequest and preserves existing extensions.events', async () => {
@@ -260,9 +281,11 @@ describe('PostmanExtensibleCollectionClient', () => {
     });
 
     const sent = JSON.parse((fetchImpl.mock.calls[0]?.[1] as RequestInit).body as string);
+    // Both pre-existing and newly-mapped events are normalized to the EC v3
+    // single-string exec shape.
     expect(sent.body.extensions.events).toEqual([
-      { listen: 'afterResponse', script: { exec: ['existing'] } },
-      { listen: 'beforeRequest', script: { exec: ['pre'] } }
+      { listen: 'afterResponse', script: { exec: 'existing' } },
+      { listen: 'beforeRequest', script: { exec: 'pre' } }
     ]);
   });
 

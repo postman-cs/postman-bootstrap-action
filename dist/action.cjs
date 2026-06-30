@@ -78636,6 +78636,18 @@ function asRecord3(value) {
 function asArray(value) {
   return Array.isArray(value) ? value : [];
 }
+function execToString(exec2) {
+  if (Array.isArray(exec2)) return exec2.map((line) => String(line ?? "")).join("\n");
+  if (typeof exec2 === "string") return exec2;
+  return "";
+}
+function normalizeEcEvent(raw) {
+  const event = asRecord3(raw);
+  if (!event) return raw;
+  const script = asRecord3(event.script);
+  if (!script) return raw;
+  return { ...event, script: { ...script, exec: execToString(script.exec) } };
+}
 function isRetryableEcError(error2) {
   if (error2 instanceof HttpError) {
     return error2.status === 429 || error2.status >= 500;
@@ -78846,14 +78858,15 @@ var PostmanExtensibleCollectionClient = class {
       if (!script) return null;
       const v2Listen = typeof event.listen === "string" ? event.listen : "";
       const listen = EC_EVENT_LISTEN_BY_V2[v2Listen] ?? v2Listen;
-      return { listen, script };
+      return { listen, script: { ...script, exec: execToString(script.exec) } };
     }).filter((entry) => entry !== null);
+    const existing = asArray(extensions.events).map(normalizeEcEvent);
     if (mapped.length === 0) {
-      return extensions;
+      return existing.length > 0 ? { ...extensions, events: existing } : extensions;
     }
     return {
       ...extensions,
-      events: [...asArray(extensions.events), ...mapped]
+      events: [...existing, ...mapped]
     };
   }
   async getExtensibleCollection(collectionId) {

@@ -2424,6 +2424,17 @@ export function createRoutingPostmanClient(options: {
         () => gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
         () => pmak.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource)
       ),
+    updateSpec: (specId, specContent, workspaceId) =>
+      prefer(
+        'spec update',
+        () => gateway.updateSpec(specId, specContent, workspaceId),
+        () => pmak.updateSpec(specId, specContent, workspaceId)
+      ),
+    // Gateway content read via ?fields=content; PMAK fallback. The gateway path
+    // returns undefined (not throw) when unresolved, so prefer() only falls back
+    // on a thrown gateway error, not on an empty-but-successful read.
+    getSpecContent: (specId) =>
+      prefer('spec content read', () => gateway.getSpecContent(specId), () => pmak.getSpecContent(specId)),
     // gateway create is authoritative + self-cleaning on flip failure (deletes the
     // half-made workspace before throwing), so a PMAK fallback after a gateway
     // error never double-creates a workspace.
@@ -2462,10 +2473,8 @@ export function createRoutingPostmanClient(options: {
     // PMAK-only routes (no verified gateway equivalent): delegate straight through.
     addAdminsToWorkspace: bind('addAdminsToWorkspace'),
     getAutoDerivedTeamId: bind('getAutoDerivedTeamId'),
-    getSpecContent: bind('getSpecContent'),
     getTeams: bind('getTeams'),
     inviteRequesterToWorkspace: bind('inviteRequesterToWorkspace'),
-    updateSpec: bind('updateSpec'),
     createCollection: bind('createCollection'),
     deleteCollection: bind('deleteCollection'),
     getCollection: bind('getCollection'),

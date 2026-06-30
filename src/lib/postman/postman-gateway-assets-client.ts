@@ -115,6 +115,72 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
+   * Update a spec's root file content through the gateway (no PMAK):
+   *   1. `GET /specifications/:id/files` → find the `type:'ROOT'` file's uuid id.
+   *   2. `PATCH /specifications/:id/files/:fileId` with the RFC6902 JSON-Patch
+   *      `[{op:'replace', path:'/content', value:specContent}]` → `200`.
+   * The v2 `{content}` body and a path-as-fileId both 400 (live-proven); the
+   * fileId must be the uuid from the files list, and the body must be the
+   * JSON-Patch. `workspaceId` is accepted for signature parity (unused — the spec
+   * id already scopes the file). Persistence is confirmed via the public files
+   * read (the gateway GET-by-id returns metadata only, no content).
+   */
+  async updateSpec(specId: string, specContent: string, _workspaceId?: string): Promise<void> {
+    void _workspaceId;
+    const fileId = await this.resolveRootFileId(specId);
+    if (!fileId) {
+      throw new Error(`updateSpec: could not resolve a root file id for specification ${specId}`);
+    }
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'patch',
+      path: `/specifications/${specId}/files/${fileId}`,
+      body: [{ op: 'replace', path: '/content', value: specContent }]
+    });
+  }
+
+  /**
+   * Read a spec's root file content through the gateway (no PMAK). Mirrors the
+   * reference `SpecificationService.fetchFile` content read: the content is
+   * served only when requested via the `fields` query param
+   * (`GET /specifications/:id/files/:fileId?fields=content` → `{ content, id }`);
+   * a bare GET-by-id returns metadata only. Returns undefined when the file or
+   * content cannot be resolved (mirrors the PMAK client's tolerant contract).
+   */
+  async getSpecContent(specId: string): Promise<string | undefined> {
+    try {
+      const fileId = await this.resolveRootFileId(specId);
+      if (!fileId) return undefined;
+      const file = await this.gateway.requestJson<JsonRecord>({
+        service: 'specification',
+        method: 'get',
+        path: `/specifications/${specId}/files/${fileId}`,
+        query: { fields: 'content' }
+      });
+      const content = asRecord(file?.data)?.content ?? file?.content;
+      return typeof content === 'string' ? content : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Resolve a specification's ROOT file uuid via the files list. */
+  private async resolveRootFileId(specId: string): Promise<string> {
+    const files = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'get',
+      path: `/specifications/${specId}/files`
+    });
+    const list = Array.isArray(files?.data)
+      ? (files!.data as JsonRecord[])
+      : Array.isArray(asRecord(files?.data)?.files)
+        ? (asRecord(files!.data)!.files as JsonRecord[])
+        : [];
+    const root = list.find((f) => String(f.type ?? '') === 'ROOT') ?? list[0];
+    return String(root?.id ?? '').trim();
+  }
+
+  /**
    * Generate a collection from a spec and return its uid. Mirrors the PMAK
    * semantics: 423-locked retry on the create, then poll the async task to
    * completion and resolve the generated collection uid from the spec's

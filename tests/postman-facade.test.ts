@@ -37,6 +37,8 @@ function makePmak(overrides: Partial<Record<keyof PostmanAssetsClient, unknown>>
 function makeGateway(overrides: Partial<Record<keyof PostmanGatewayAssetsClient, unknown>> = {}): PostmanGatewayAssetsClient {
   const base = {
     uploadSpec: vi.fn(async () => 'gw-spec'),
+    updateSpec: vi.fn(async () => undefined),
+    getSpecContent: vi.fn(async () => 'gw-content'),
     generateCollection: vi.fn(async () => 'gw-col'),
     getWorkspaceVisibility: vi.fn(async () => 'team'),
     getWorkspaceGitRepoUrl: vi.fn(async () => 'https://github.com/acme/gw'),
@@ -69,6 +71,13 @@ describe('createRoutingPostmanClient', () => {
     expect(gateway.uploadSpec).toHaveBeenCalledWith('ws', 'p', 'spec', '3.1');
     expect(pmak.uploadSpec).not.toHaveBeenCalled();
     expect(pmak.generateCollection).not.toHaveBeenCalled();
+
+    // spec update + content read are gateway-primary too (no PMAK touch)
+    await facade.updateSpec('s', 'new spec', 'ws');
+    expect(gateway.updateSpec).toHaveBeenCalledWith('s', 'new spec', 'ws');
+    expect(pmak.updateSpec).not.toHaveBeenCalled();
+    expect(await facade.getSpecContent('s')).toBe('gw-content');
+    expect(pmak.getSpecContent).not.toHaveBeenCalled();
   });
 
   it('falls back to PMAK (with a warning) when a gateway route throws and a key exists', async () => {

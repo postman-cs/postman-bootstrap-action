@@ -40,6 +40,8 @@ import * as path from 'node:path';
 
 import { PostmanAssetsClient } from '../src/lib/postman/postman-assets-client.js';
 import { PostmanExtensibleCollectionClient } from '../src/lib/postman/postman-ec-client.js';
+import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
+import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
 import { buildProtocolCollection, type ProtocolSpecType } from '../src/lib/protocols/dispatch.js';
 
 // Resolve fixtures from PROTOCOL_FIXTURES_DIR when set (the bundled runner sets
@@ -281,6 +283,60 @@ async function runLeg(options: LegOptions): Promise<number> {
   return failures;
 }
 
+/**
+ * Expired-token re-mint proof (access-token migration Phase 6).
+ *
+ * Drives the production refresh path live: an AccessTokenGatewayClient holding a
+ * deliberately invalid (stale) access token plus a valid service-account PMAK.
+ * The first gateway send 401s, the client single-flight re-mints through the
+ * PMAK, swaps in the fresh token, and retries once -> 200. Asserts the re-mint
+ * actually fired (onToken), the live token changed, and the retried read
+ * returned data. No assets are created, so there is nothing to tear down.
+ */
+async function runExpiredTokenSim(apiKey: string): Promise<number> {
+  console.log('\n========== [leg:expired-token-sim] ==========');
+  let minted = '';
+  const provider = new AccessTokenProvider({
+    accessToken: 'expired.invalid.access-token',
+    apiKey,
+    onToken: (token) => {
+      minted = token;
+    }
+  });
+  const gateway = new AccessTokenGatewayClient({ tokenProvider: provider });
+
+  const stale = provider.current();
+  let failures = 0;
+  try {
+    // A workspace list is a read-only gateway route verified by the Phase 1
+    // probe; with a stale token it forces the 401 -> re-mint -> retry path.
+    const body = await gateway.requestJson<{ data?: unknown[] }>({
+      service: 'workspaces',
+      method: 'get',
+      path: '/workspaces'
+    });
+    const live = provider.current();
+    const reminted = Boolean(minted) && live !== stale;
+    console.log(`  [sim] re-mint fired=${reminted}, token-changed=${live !== stale}`);
+    if (!reminted) {
+      failures += 1;
+      console.error('  [FAIL] expected a re-mint (onToken + changed token) but none occurred');
+    }
+    if (!body || !Array.isArray(body.data)) {
+      failures += 1;
+      console.error('  [FAIL] retried gateway read did not return a workspace list');
+    } else {
+      console.log(`  [ok] retried read after re-mint returned ${body.data.length} workspace(s)`);
+    }
+  } catch (error) {
+    failures += 1;
+    console.error(`  [FAIL] expired-token re-mint path threw: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  console.log(`[leg:expired-token-sim] ${failures} failure(s).`);
+  return failures;
+}
+
 async function main(): Promise<void> {
   const nonOrgKey =
     process.env.POSTMAN_API_KEY || process.env.POSTMAN_E2E_API_KEY_NON_ORG_MODE || '';
@@ -290,6 +346,8 @@ async function main(): Promise<void> {
   }
 
   let failures = await runLeg({ label: 'non-org', apiKey: nonOrgKey, orgMode: false });
+
+  failures += await runExpiredTokenSim(nonOrgKey);
 
   // Org-mode leg (S4): opt-in on both the org key and an explicit sub-team id.
   const orgKey = process.env.POSTMAN_E2E_API_KEY_ORG_MODE || '';

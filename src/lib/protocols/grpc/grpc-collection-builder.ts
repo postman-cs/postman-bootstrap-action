@@ -126,12 +126,13 @@ function buildItem(operation: GrpcOperation, options: GrpcCollectionOptions): Js
       metadata: [],
       settings: buildSettings(url, options.settings)
     },
-    extensions: {
-      schema: {
-        source: 'file',
-        ...(options.schemaLocation ? { location: options.schemaLocation } : {})
-      }
-    }
+    // EC `extensions.schema` requires a `location` string when `source:'file'`
+    // (verified against @postman/runtime.models GRPCRequest). Emit the schema
+    // provenance only when a location is known; otherwise omit it rather than
+    // ship a half `{source:'file'}` the EC item schema rejects.
+    extensions: options.schemaLocation
+      ? { schema: { source: 'file', location: options.schemaLocation } }
+      : {}
   };
 }
 

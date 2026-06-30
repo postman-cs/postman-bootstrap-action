@@ -1,3 +1,5 @@
+import { itemsByType } from '@postman/runtime.models/extensible';
+
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { HttpError } from '../http-error.js';
 import { retry } from '../retry.js';
@@ -78,6 +80,12 @@ export interface PostmanExtensibleCollectionClientOptions {
   orgMode?: boolean;
   fetchImpl?: typeof fetch;
   secretMasker?: SecretMasker;
+  /**
+   * Sink for pre-create EC-item schema drift messages (defaults to
+   * `console.warn`, i.e. stderr). The action wires `core.warning` so drift
+   * surfaces in the run log without failing the create.
+   */
+  validationReporter?: (message: string) => void;
 }
 
 export interface CreateExtensibleCollectionInput {
@@ -124,6 +132,7 @@ export class PostmanExtensibleCollectionClient {
   private orgMode: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly secretMasker: SecretMasker;
+  private readonly validationReporter: (message: string) => void;
 
   constructor(options: PostmanExtensibleCollectionClientOptions) {
     this.accessToken = String(options.accessToken || '').trim();
@@ -142,6 +151,8 @@ export class PostmanExtensibleCollectionClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.secretMasker =
       options.secretMasker ?? createSecretMasker([this.accessToken]);
+    this.validationReporter =
+      options.validationReporter ?? ((message: string) => console.warn(message));
   }
 
   /**
@@ -330,12 +341,19 @@ export class PostmanExtensibleCollectionClient {
     }
     const type = item.type;
     const title = item.title ?? item.name;
+    const extensions = this.mergeEventExtensions(item, asRecord(item.extensions) ?? {});
+    const payload = asRecord(item.payload) ?? {};
+    // Validate the logical item against the official EC v3 item schema before
+    // the gateway create, so a malformed node (e.g. a `grpc-request` missing
+    // `extensions.schema.location`) fails fast with the exact offending path
+    // instead of an opaque gateway 400.
+    this.reportEcItemShapeIssues(type, { type, title, payload, extensions });
     const body: JsonRecord = {
       type,
       title,
       position: { parent: parentId || collectionId },
-      payload: asRecord(item.payload) ?? {},
-      extensions: this.mergeEventExtensions(item, asRecord(item.extensions) ?? {})
+      payload,
+      extensions
     };
     const response = await this.proxyJson(
       'POST',
@@ -382,6 +400,33 @@ export class PostmanExtensibleCollectionClient {
       ...extensions,
       events: [...existing, ...mapped]
     };
+  }
+
+  /**
+   * Validate a logical EC item (`{ type, title, payload, extensions }`) against
+   * the official `@postman/runtime.models` extensible item schema for its type
+   * and surface any schema drift (e.g. a `grpc-request` missing
+   * `extensions.schema.location`) through the validation reporter before the
+   * gateway create. Reported rather than thrown: a forward-incompatible-but-
+   * valid shape (a field the pinned models don't yet model) must not block a
+   * create, and the gateway remains the authority that rejects a truly bad body.
+   * Unknown item types pass through unvalidated (forward-compat).
+   */
+  private reportEcItemShapeIssues(type: unknown, logicalItem: JsonRecord): void {
+    if (typeof type !== 'string') return;
+    const registry = itemsByType as Record<
+      string,
+      { validate?: (value: unknown) => { issues?: unknown } } | undefined
+    >;
+    const model = registry[type];
+    if (!model?.validate) return;
+    const issues = model.validate(logicalItem)?.issues;
+    if (issues) {
+      this.validationReporter(
+        `EC_ITEM_SCHEMA_DRIFT: ${type} item does not match the EC v3 schema before create: ` +
+          this.secretMasker(JSON.stringify(issues))
+      );
+    }
   }
 
   async getExtensibleCollection(collectionId: string): Promise<JsonRecord | null> {

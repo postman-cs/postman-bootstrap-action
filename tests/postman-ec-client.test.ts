@@ -275,6 +275,32 @@ describe('PostmanExtensibleCollectionClient', () => {
     expect(message).not.toContain('secret-tok');
   });
 
+  it('reports EC v3 schema drift before create via the validationReporter (no throw)', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 'item-drift' } }));
+    const reported: string[] = [];
+    const client = new PostmanExtensibleCollectionClient({
+      accessToken: 'tok',
+      fetchImpl,
+      validationReporter: (m) => reported.push(m)
+    });
+
+    // `extensions.schema:{source:'file'}` without a `location` string is the
+    // exact drift the gRPC builder used to emit; the official EC v3 GRPCRequest
+    // schema requires `location`. The create still proceeds (gateway is the
+    // authority); the drift is surfaced, not thrown.
+    await client.createItem('ec-1', {
+      type: 'grpc-request',
+      title: 'Drift',
+      payload: { url: 'grpc://h:443', methodPath: 'a/B', message: { content: '{}' }, metadata: [], settings: {} },
+      extensions: { schema: { source: 'file' } }
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(reported.some((m) => m.includes('EC_ITEM_SCHEMA_DRIFT') && m.includes('location'))).toBe(true);
+  });
+
   it('maps a v2.1.0 item.event test script into extensions.events (afterResponse)', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

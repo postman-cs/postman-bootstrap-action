@@ -2551,7 +2551,8 @@ export function createBootstrapDependencies(
         bifrostBaseUrl: inputs.postmanBifrostBase,
         orgMode,
         secretMasker,
-        teamId: inputs.teamId || ''
+        teamId: inputs.teamId || '',
+        validationReporter: (message) => factories.core.warning(message)
       })
       : undefined;
   const github =

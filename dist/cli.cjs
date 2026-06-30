@@ -95909,7 +95909,9 @@ function validateCliInputs(inputs) {
   if (inputs.specUrl && inputs.specPath) {
     throw new Error("Provide either spec-url or spec-path, not both.");
   }
-  requireCliInput("postman-api-key", inputs.postmanApiKey);
+  if (!inputs.postmanApiKey && !inputs.postmanAccessToken) {
+    throw new Error("One of postman-api-key or postman-access-token is required.");
+  }
 }
 async function runCli(argv = process.argv.slice(2), runtime = {}) {
   const env = runtime.env ?? process.env;

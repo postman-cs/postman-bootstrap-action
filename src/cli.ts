@@ -336,7 +336,14 @@ function validateCliInputs(inputs: ResolvedInputs): void {
   if (inputs.specUrl && inputs.specPath) {
     throw new Error('Provide either spec-url or spec-path, not both.');
   }
-  requireCliInput('postman-api-key', inputs.postmanApiKey);
+  // postman-api-key is optional: a run may be access-token-primary (the gateway
+  // client handles asset ops, and the PMAK-only spec lint skips with a warning).
+  // Require only that at least one credential is present, mirroring index.ts so
+  // both entries agree -- a hard PMAK requirement here would reject a valid
+  // access-token-only run before bootstrap starts.
+  if (!inputs.postmanApiKey && !inputs.postmanAccessToken) {
+    throw new Error('One of postman-api-key or postman-access-token is required.');
+  }
 }
 
 export async function runCli(

@@ -25,16 +25,27 @@
  *   [202] POST specification /specifications/<specId>/collections/<fullUid>/sync  -> {data:{taskId}}
  *          poll tasks?entityType=collection&type=collection-sync -> completed;
  *          GET /specifications/<specId>/collections -> state flips to 'in-sync'  (regenerate lives for OAS)
+ *   [200] PATCH collection /v3/collections/<bareModelId>/items/<itemId> field coverage (per-item reshape):
+ *          /url (replace)        -> 200  (v3 IR: url is a string)
+ *          /headers (replace)    -> 200  (v3 IR: [{key,value}])
+ *          /body (add)           -> 200  (v3 IR shape {type:'json'|'text', content} -- NOT v2 {mode,raw})
+ *          /auth (add)           -> 200  (v3 IR shape {type, credentials:[{key,value}]} -- NOT v2 {type,oauth2:[...]})
+ *          /scripts (add)        -> 200  (v3 IR afterResponse array [{type:'afterResponse',code,language}]) -- RUNNABLE test shape
+ *          /events (add)         -> 200 but SILENTLY DROPPED (never executes; see diag-test-injection-exec.ts)
+ *          -> the v2-style body/auth shapes 400 SCHEMA_ENFORCED; v3 IR shapes 200.
+ *   [201] POST collection /v3/collections/<bareModelId>/items/  with body{type,content}+auth{type,credentials} -> 201
+ *          (GET-by-id confirms body lands; auth type lands, credentials read back empty -- verify at runtime)
  *
  *   Contrast (the shapes the "no route" claim probed):
  *   [404] GET  /v3/collections/<fullUid>/items        (no trailing slash + full uid)
  *   [400] PUT  collection /collections/<fullUid>/tags (wrong service -> invalidPathError)
  *
- * injectTests gotcha: OpenAPI-spec-gen collections are v2-HTTP exposed through
- * the v3 cloud surface, so they keep the v2 `events` test-event shape
- * (`[{listen:'test',script:{exec:[...],type:'text/javascript'}}]`), NOT the EC
- * `scripts.test` shape. Patching `/scripts/test` -> REJECTED_PATCH; `/scripts`
- * replace -> SCHEMA_ENFORCED; `/events` add -> 200.
+ * injectTests gotcha (corrected by executable proof -- diag-test-injection-exec.ts):
+ * the RUNNABLE shape is `/scripts` add with a v3 afterResponse ARRAY
+ * (`[{type:'afterResponse',code,language}]`). `/scripts/test` -> REJECTED_PATCH;
+ * `/scripts` replace `{test:{exec}}` -> SCHEMA_ENFORCED; `/events` add -> 200 but
+ * SILENTLY DROPPED (never executes under `postman collection run`). The `/scripts`
+ * afterResponse array persists to the v2 `item.event` and runs (CLI-proven).
  *
  * Drive against the disposable non-org sandbox:
  *   set -a && source ../.env && set +a
@@ -285,6 +296,51 @@ async function main(): Promise<void> {
       await gw(client, 'spec linked collections list', {
         service: 'specification', method: 'get', path: `/specifications/${specId}/collections`
       });
+    }
+
+    console.log('\n== route 6: v3 item PATCH field coverage (url/body/auth/headers) + CREATE with body/auth ==');
+    // smoke-flow reshapes url/body/auth/scripts per request. The "only /scripts,/headers land" claim
+    // is the crux. Probe each field on the spec-generated http-request item.
+    if (itemId) {
+      const patchField = async (field: string, body: unknown) =>
+        gw(client, `v3 item PATCH /${field}`, {
+          service: 'collection', method: 'patch', path: `/v3/collections/${modelId}/items/${itemId}`,
+          headers: { 'X-Entity-Type': itemKind },
+          body
+        });
+      await patchField('url (replace)', [{ op: 'replace', path: '/url', value: '{{baseUrl}}/ping?reshaped=1' }]);
+      await patchField('headers (replace)', [{ op: 'replace', path: '/headers', value: [{ key: 'X-Probe', value: 'reshaped' }] }]);
+      await patchField('body (add raw)', [{ op: 'add', path: '/body', value: { type: 'json', content: '{"reshaped":true}' } }]);
+      await patchField('auth (add oauth2)', [{ op: 'add', path: '/auth', value: { type: 'oauth2', credentials: [{ key: 'grantType', value: 'client_credentials' }, { key: 'tokenUrl', value: 'https://example.com/token' }, { key: 'clientAuthentication', value: 'body' }] } }]);
+      // Final item GET to see which fields landed.
+      const finalItem = await client.requestJson<JsonRecord>({
+        service: 'collection', method: 'get', path: `/v3/collections/${modelId}/items/${itemId}`,
+        headers: { 'X-Entity-Type': itemKind }
+      });
+      console.log(`  [item after field patches] ${JSON.stringify(finalItem?.data ?? finalItem).slice(0, 1400)}`);
+
+      // CREATE with body + auth (v3 IR shapes: body {type,content}, auth {type,credentials}).
+      const createdFull = await gw(client, 'v3 item CREATE with body+auth (v3 shapes)', {
+        service: 'collection', method: 'post', path: `/v3/collections/${modelId}/items/`,
+        body: {
+          $kind: 'http-request',
+          name: 'Probe Created With Body+Auth',
+          method: 'POST',
+          url: '{{baseUrl}}/probe-full',
+          headers: [{ key: 'Content-Type', value: 'application/json' }],
+          body: { type: 'json', content: '{"created":true}' },
+          auth: { type: 'oauth2', credentials: [{ key: 'grantType', value: 'client_credentials' }, { key: 'tokenUrl', value: 'https://example.com/token' }, { key: 'clientAuthentication', value: 'body' }] },
+          position: { parent: { id: modelId, $kind: 'collection' } }
+        }
+      });
+      const fullId = String(((createdFull?.data as JsonRecord | undefined)?.id) ?? '').trim();
+      if (fullId) {
+        const got = await client.requestJson<JsonRecord>({
+          service: 'collection', method: 'get', path: `/v3/collections/${modelId}/items/${fullId}`,
+          headers: { 'X-Entity-Type': 'http-request' }
+        });
+        console.log(`  [created-with-body-auth GET] ${JSON.stringify(got?.data ?? got).slice(0, 1400)}`);
+      }
     }
   } finally {
     console.log('\n[teardown] deleting created workspaces...');

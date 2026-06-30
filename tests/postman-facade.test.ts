@@ -81,15 +81,15 @@ describe('createRoutingPostmanClient', () => {
     expect(pmak.getSpecContent).not.toHaveBeenCalled();
   });
 
-  it('falls back to PMAK (with a warning) when a gateway route throws and a key exists', async () => {
+  it('gateway-only: a gateway route error rethrows and never touches PMAK, even with a key present', async () => {
     const pmak = makePmak();
     const gateway = makeGateway({ uploadSpec: vi.fn(async () => { throw new Error('gateway 400'); }) });
     const log = makeLog();
     const facade = createRoutingPostmanClient({ gateway, pmak, hasPmak: true, log });
 
-    expect(await facade.uploadSpec('ws', 'p', 'spec', '3.0')).toBe('pmak-spec');
-    expect(pmak.uploadSpec).toHaveBeenCalled();
-    expect(log.warning).toHaveBeenCalledWith(expect.stringContaining('falling back to the API key'));
+    await expect(facade.uploadSpec('ws', 'p', 'spec', '3.0')).rejects.toThrow('gateway 400');
+    expect(pmak.uploadSpec).not.toHaveBeenCalled();
+    expect(log.warning).not.toHaveBeenCalledWith(expect.stringContaining('falling back to the API key'));
   });
 
   it('access-token-only (no key) rethrows the gateway error instead of masking it', async () => {
@@ -101,13 +101,13 @@ describe('createRoutingPostmanClient', () => {
     expect(pmak.generateCollection).not.toHaveBeenCalled();
   });
 
-  it('getWorkspaceVisibility falls back to PMAK when the gateway read returns null', async () => {
+  it('getWorkspaceVisibility is gateway-only: returns the gateway result and never reads PMAK', async () => {
     const pmak = makePmak();
     const gateway = makeGateway({ getWorkspaceVisibility: vi.fn(async () => null) });
     const facade = createRoutingPostmanClient({ gateway, pmak, hasPmak: true, log: makeLog() });
 
-    expect(await facade.getWorkspaceVisibility('ws')).toBe('team');
-    expect(pmak.getWorkspaceVisibility).toHaveBeenCalled();
+    expect(await facade.getWorkspaceVisibility('ws')).toBeNull();
+    expect(pmak.getWorkspaceVisibility).not.toHaveBeenCalled();
   });
 
   it('injectTests and tagCollection are gateway-only (never fall back to PMAK)', async () => {

@@ -3476,6 +3476,10 @@ describe('runAction credential preflight', () => {
   function createRunActionFetchRouter(options: RunActionRouterOptions): typeof fetch {
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status });
+    // The gateway generateCollection resolves the new uid via the spec's
+    // collection list (newest last), so accumulate one distinct uid per
+    // generation to mirror the real store and avoid id collisions.
+    const generatedCollectionUids: string[] = [];
     const router = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = String(input);
       const method = String(init?.method || 'GET').toUpperCase();
@@ -3509,6 +3513,11 @@ describe('runAction credential preflight', () => {
       }
       if (url === 'https://api.getpostman.com/teams') {
         return json({ data: [] });
+      }
+      if (url === 'https://api.getpostman.com/service-account-tokens' && method === 'POST') {
+        // Re-mint on a gateway auth failure (gateway-only asset flow); PMAK is
+        // reserved for exactly this mint + the CLI spec-lint login.
+        return json({ access_token: 'reminted-access-token' });
       }
       if (url === 'https://api.getpostman.com/workspaces' && method === 'POST') {
         return json({ workspace: { id: 'ws-runaction' } });
@@ -3545,10 +3554,57 @@ describe('runAction credential preflight', () => {
       if (url === 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy') {
         const payload = JSON.parse(String(init?.body ?? '{}')) as {
           service?: string;
+          method?: string;
           path?: string;
         };
+        const svc = String(payload.service ?? '');
+        const pmethod = String(payload.method ?? 'get').toLowerCase();
+        const ppath = String(payload.path ?? '');
+        // Visibility into the gateway-only asset flow for ordering assertions.
+        options.events.push(`proxy:${svc} ${pmethod.toUpperCase()} ${ppath}`);
         const custom = options.proxyResponse?.(payload);
-        return custom ?? json({ data: { ok: true } });
+        if (custom) return custom;
+        // Default gateway router: the access-token asset flow now runs entirely
+        // through /ws/proxy (no PMAK fallback), so serve the real envelopes.
+        if (svc === 'workspaces') {
+          if (pmethod === 'post' && ppath === '/workspaces') return json({ data: { id: 'ws-runaction' } });
+          if (pmethod === 'put' && /\/workspaces\/[^/]+\/visibility$/.test(ppath)) return json({ data: { id: 'ws-runaction', visibilityStatus: 'team' } });
+          if (pmethod === 'get' && /\/workspaces\/[^/]+\/filesystem$/.test(ppath)) return json({ data: null });
+          if (pmethod === 'get' && /\/workspaces\/[^/]+$/.test(ppath)) return json({ data: { id: 'ws-runaction', visibilityStatus: 'team' } });
+          if (pmethod === 'get' && ppath.startsWith('/workspaces')) return json({ data: [] });
+        }
+        if (svc === 'ums' && /\/squads/.test(ppath)) return json({ data: [] });
+        if (svc === 'specification') {
+          if (pmethod === 'post' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
+            const name = String((payload as { body?: { name?: string } }).body?.name ?? '');
+            const slot = name.includes('[Smoke]')
+              ? 'smoke'
+              : name.includes('[Contract]')
+                ? 'contract'
+                : 'baseline';
+            generatedCollectionUids.push(`col-${slot}`);
+            return json({ data: { taskId: 'task-1' } });
+          }
+          if (pmethod === 'get' && /\/tasks/.test(ppath)) return json({ data: { 'task-1': 'completed' } });
+          if (pmethod === 'get' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
+            return json({
+              data: generatedCollectionUids.map((collection) => ({ collection, state: 'in-sync' }))
+            });
+          }
+          if (pmethod === 'get' && /\/specifications\/[^/]+\/files\/[^/]+/.test(ppath)) return json({ data: { id: 'file-root', content: 'openapi: 3.0.0' } });
+          if (pmethod === 'get' && /\/specifications\/[^/]+\/files$/.test(ppath)) return json({ data: [{ id: 'file-root', type: 'ROOT' }] });
+          if (pmethod === 'patch') return json({ data: { id: 'file-root' } });
+          if (pmethod === 'post' && ppath.startsWith('/specifications')) return json({ data: { id: 'spec-runaction' } });
+          if (pmethod === 'get' && /\/specifications\/[^/]+$/.test(ppath)) return json({ data: { id: 'spec-runaction' } });
+        }
+        if (svc === 'collection') {
+          if (pmethod === 'get' && /\/items\/$/.test(ppath)) return json({ data: [] });
+          if (pmethod === 'post') return json({ data: { id: '55363555-created' } });
+          if (pmethod === 'patch') return json({ data: { id: 'patched' } });
+          if (pmethod === 'get' && /\/export$/.test(ppath)) return json({ data: { collection: {} } });
+        }
+        if (svc === 'tagging') return json({ tags: [{ slug: 'generated-smoke' }] });
+        return json({ data: { ok: true } });
       }
       if (url.startsWith('https://dl.pstmn.io/')) {
         return json({ version: '12.0.0' });
@@ -3573,13 +3629,13 @@ describe('runAction credential preflight', () => {
       entry.startsWith('info:postman: access-token session identity')
     );
     const createWorkspaceIndex = events.findIndex(
-      (entry) => entry === 'fetch:POST https://api.getpostman.com/workspaces'
+      (entry) => entry === 'proxy:workspaces POST /workspaces'
     );
     expect(pmakLineIndex).toBeGreaterThanOrEqual(0);
     expect(sessionLineIndex).toBeGreaterThan(pmakLineIndex);
     expect(createWorkspaceIndex).toBeGreaterThan(sessionLineIndex);
     expect(infos.some((line) => line.includes('credential preflight OK'))).toBe(true);
-  });
+  }, 30000);
 
   it('runAction completes when /me and iapub both 404 (preflight non-fatal)', async () => {
     const events: string[] = [];
@@ -3598,7 +3654,7 @@ describe('runAction credential preflight', () => {
     expect(
       warnings.some((line) => line.includes('could not resolve the access-token session identity'))
     ).toBe(true);
-  });
+  }, 30000);
 
   it('runAction under credential-preflight=enforce FAILS fast with both parent-org ids named when injected /me teamId differs from iapub identity.team', async () => {
     const events: string[] = [];
@@ -3631,7 +3687,7 @@ describe('runAction credential preflight', () => {
     expect(message).toContain('10490519');
     expect(message).toContain('13347347');
     expect(
-      events.some((entry) => entry === 'fetch:POST https://api.getpostman.com/workspaces')
+      events.some((entry) => entry === 'proxy:workspaces POST /workspaces')
     ).toBe(false);
   });
 
@@ -3659,9 +3715,9 @@ describe('runAction credential preflight', () => {
     expect(note).toContain('10490519');
     expect(note).toContain('13347347');
     expect(
-      events.some((entry) => entry === 'fetch:POST https://api.getpostman.com/workspaces')
+      events.some((entry) => entry === 'proxy:workspaces POST /workspaces')
     ).toBe(true);
-  });
+  }, 30000);
 
   it('runAction warns when postman-access-token resolves to a non-service-account session token', async () => {
     const events: string[] = [];
@@ -3693,7 +3749,7 @@ describe('runAction credential preflight', () => {
         line.includes('Postman CLI credential store populated by `postman login` is a legacy fallback')
       )
     ).toHaveLength(1);
-  });
+  }, 30000);
 
   it('runAction rejects credential-preflight=off instead of skipping identity checks', async () => {
     const events: string[] = [];

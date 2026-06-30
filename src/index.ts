@@ -1024,6 +1024,28 @@ export async function runBootstrap(
   } catch (error) {
     telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion('failure');
+    // Asset ops run gateway-only. The gateway client already re-mints the token
+    // once and retries on an auth failure; this catch only sees the error that
+    // survived that automatic retry (PMAK rejected, wrong parent org, or no
+    // PMAK to re-mint from). Rewrite it with actionable re-mint/role guidance
+    // (no-op for non-HttpError or unrecognized bodies). Adapter-advised errors
+    // are already plain Errors, so they pass through untouched.
+    if (error instanceof HttpError) {
+      const session = getMemoizedSessionIdentity();
+      const advised = adviseFromHttpError(error, {
+        operation: 'Postman gateway operation',
+        hasAccessToken: Boolean(inputs.postmanAccessToken),
+        sessionTeamId: session?.teamId,
+        sessionRoles: session?.roles,
+        sessionConsumerType: session?.consumerType,
+        workspaceTeamId: inputs.workspaceTeamId,
+        explicitTeamId: inputs.teamId || undefined,
+        mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+      });
+      if (advised) {
+        throw advised;
+      }
+    }
     throw error;
   }
 }
@@ -2384,13 +2406,14 @@ export async function runAction(
 }
 
 /**
- * Build the routing `postman` facade. When an access token is present the
- * gateway-assets client is preferred for the routes it implements
- * (spec lifecycle + workspace reads); every other operation, and any gateway
- * failure when a PMAK is available, falls through to the PMAK client. A
- * PMAK-only run (no gateway) is identical to the pre-migration behaviour, and an
- * access-token-only run (no PMAK) surfaces the gateway error rather than masking
- * it. Mirrors the no-regression failure matrix in the migration plan.
+ * Build the routing `postman` facade. When an access token is present, every
+ * migrated asset op routes through the access-token gateway and NEVER falls back
+ * to PMAK — a gateway error surfaces rather than masking it (the short-TTL
+ * service-account token is re-minted by the token provider on a 401, so failures
+ * are real). PMAK is used only for the routes with no verified gateway equivalent
+ * (workspace membership + the v2 collection-generation transient), and for
+ * minting/re-minting the token + the CLI spec-lint login. A PMAK-only run (no
+ * access token, no gateway) keeps the pre-migration behaviour.
  */
 export function createRoutingPostmanClient(options: {
   gateway?: PostmanGatewayAssetsClient;
@@ -2398,7 +2421,7 @@ export function createRoutingPostmanClient(options: {
   hasPmak: boolean;
   log: Pick<CoreLike, 'info' | 'warning'>;
 }): BootstrapExecutionDependencies['postman'] {
-  const { gateway, pmak, hasPmak, log } = options;
+  const { gateway, pmak } = options;
   const bind = <K extends keyof PostmanAssetsClient>(name: K): PostmanAssetsClient[K] =>
     (pmak[name] as { bind(thisArg: unknown): PostmanAssetsClient[K] }).bind(pmak);
 
@@ -2412,72 +2435,26 @@ export function createRoutingPostmanClient(options: {
     });
   }
 
-  // Prefer the gateway for a throwing route; on failure fall back to PMAK when a
-  // key is available, otherwise rethrow (access-token-only runs see the error).
-  const prefer = async <T>(label: string, gatewayFn: () => Promise<T>, pmakFn: () => Promise<T>): Promise<T> => {
-    try {
-      return await gatewayFn();
-    } catch (error) {
-      if (!hasPmak) {
-        throw error;
-      }
-      log.warning(`postman: gateway ${label} failed; falling back to the API key. ${secretSafeMessage(error)}`);
-      return pmakFn();
-    }
-  };
-
   return {
-    // gateway-primary (verified live), PMAK fallback
+    // Gateway-only (verified live 200): every migrated asset op routes through the
+    // access-token gateway and NEVER falls back to PMAK, even on a gateway error.
+    // PMAK is reserved for minting/re-minting the access token + the CLI spec-lint
+    // login. The short-TTL service-account token is re-minted transparently by the
+    // token provider on a 401, so a gateway failure here is a real error to surface,
+    // not a reason to reach for the API key.
     uploadSpec: (workspaceId, projectName, specContent, openapiVersion) =>
-      prefer(
-        'spec upload',
-        () => gateway.uploadSpec(workspaceId, projectName, specContent, openapiVersion ?? '3.0'),
-        () => pmak.uploadSpec(workspaceId, projectName, specContent, openapiVersion)
-      ),
+      gateway.uploadSpec(workspaceId, projectName, specContent, openapiVersion ?? '3.0'),
     generateCollection: (specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) =>
-      prefer(
-        'collection generation',
-        () => gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
-        () => pmak.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource)
-      ),
+      gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
     updateSpec: (specId, specContent, workspaceId) =>
-      prefer(
-        'spec update',
-        () => gateway.updateSpec(specId, specContent, workspaceId),
-        () => pmak.updateSpec(specId, specContent, workspaceId)
-      ),
-    // Gateway content read via ?fields=content; PMAK fallback. The gateway path
-    // returns undefined (not throw) when unresolved, so prefer() only falls back
-    // on a thrown gateway error, not on an empty-but-successful read.
-    getSpecContent: (specId) =>
-      prefer('spec content read', () => gateway.getSpecContent(specId), () => pmak.getSpecContent(specId)),
-    // gateway create is authoritative + self-cleaning on flip failure (deletes the
-    // half-made workspace before throwing), so a PMAK fallback after a gateway
-    // error never double-creates a workspace.
+      gateway.updateSpec(specId, specContent, workspaceId),
+    getSpecContent: (specId) => gateway.getSpecContent(specId),
     createWorkspace: (name, about, targetTeamId) =>
-      prefer(
-        'workspace create',
-        () => gateway.createWorkspace(name, about, targetTeamId),
-        () => pmak.createWorkspace(name, about, targetTeamId)
-      ),
-    // best-effort gateway reads: fall back to PMAK when the gateway cannot read.
-    getWorkspaceVisibility: async (workspaceId) => {
-      const viaGateway = await gateway.getWorkspaceVisibility(workspaceId);
-      if (viaGateway != null) return viaGateway;
-      return hasPmak ? pmak.getWorkspaceVisibility(workspaceId) : viaGateway;
-    },
-    getWorkspaceGitRepoUrl: async (workspaceId, teamId, accessToken) => {
-      try {
-        const viaGateway = await gateway.getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken);
-        if (viaGateway != null) return viaGateway;
-      } catch (error) {
-        if (!hasPmak) throw error;
-        log.warning(`postman: gateway workspace repo lookup failed; falling back to the API key. ${secretSafeMessage(error)}`);
-      }
-      return hasPmak ? pmak.getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken) : null;
-    },
-    findWorkspacesByName: (name) =>
-      prefer('workspace lookup', () => gateway.findWorkspacesByName(name), () => pmak.findWorkspacesByName(name)),
+      gateway.createWorkspace(name, about, targetTeamId),
+    getWorkspaceVisibility: (workspaceId) => gateway.getWorkspaceVisibility(workspaceId),
+    getWorkspaceGitRepoUrl: (workspaceId, teamId, accessToken) =>
+      gateway.getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken),
+    findWorkspacesByName: (name) => gateway.findWorkspacesByName(name),
     configureTeamContext: (teamId, orgMode) => gateway.configureTeamContext(teamId, orgMode),
 
     // gateway-only (no PMAK fallback): asset mutation over the v3 collection-items
@@ -2497,10 +2474,6 @@ export function createRoutingPostmanClient(options: {
     getCollection: bind('getCollection'),
     updateCollection: bind('updateCollection')
   };
-}
-
-function secretSafeMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export function createBootstrapDependencies(

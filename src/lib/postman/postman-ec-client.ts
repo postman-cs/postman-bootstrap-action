@@ -2,6 +2,7 @@ import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { HttpError } from '../http-error.js';
 import { retry } from '../retry.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
+import type { AccessTokenProvider } from './token-provider.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -42,6 +43,12 @@ function isRetryableEcError(error: unknown): boolean {
 export interface PostmanExtensibleCollectionClientOptions {
   /** Bifrost/governance access token. Required: the EC v3 API is access-token only. */
   accessToken: string;
+  /**
+   * Optional live-token accessor. When present, every request reads the token
+   * through `tokenProvider.current()` so a mid-run re-mint propagates; the
+   * `accessToken` field remains the back-compat seed and validation source.
+   */
+  tokenProvider?: AccessTokenProvider;
   /** Bifrost gateway base URL hosting the /ws/proxy collection-service route. */
   bifrostBaseUrl?: string;
   teamId?: string;
@@ -77,6 +84,7 @@ export interface CreateExtensibleCollectionInput {
  */
 export class PostmanExtensibleCollectionClient {
   private readonly accessToken: string;
+  private readonly tokenProvider?: AccessTokenProvider;
   private readonly bifrostBaseUrl: string;
   private teamId: string;
   private orgMode: boolean;
@@ -85,7 +93,8 @@ export class PostmanExtensibleCollectionClient {
 
   constructor(options: PostmanExtensibleCollectionClientOptions) {
     this.accessToken = String(options.accessToken || '').trim();
-    if (!this.accessToken) {
+    this.tokenProvider = options.tokenProvider;
+    if (!this.currentToken()) {
       throw new Error(
         'EC_REQUIRES_ACCESS_TOKEN: creating a gRPC (extensible) collection requires postman-access-token; ' +
           'provide it (resolve-service-token mints one) or pre-create the collection.'
@@ -112,10 +121,15 @@ export class PostmanExtensibleCollectionClient {
     this.orgMode = orgMode;
   }
 
+  /** Live access token: the provider's current value when wired, else the seed. */
+  private currentToken(): string {
+    return this.tokenProvider ? this.tokenProvider.current() : this.accessToken;
+  }
+
   private requestHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'x-access-token': this.accessToken
+      'x-access-token': this.currentToken()
     };
     if (this.teamId && this.orgMode) {
       headers['x-entity-team-id'] = this.teamId;
@@ -167,7 +181,7 @@ export class PostmanExtensibleCollectionClient {
       throw await HttpError.fromResponse(response, {
         method,
         requestHeaders: this.requestHeaders(),
-        secretValues: [this.accessToken],
+        secretValues: [this.currentToken()],
         url: `${this.bifrostBaseUrl}/ws/proxy (${operation}: ${method} ${path})`
       });
     }
@@ -214,7 +228,7 @@ export class PostmanExtensibleCollectionClient {
       statusText: 'Inner Error',
       requestHeaders: this.requestHeaders(),
       responseBody: this.secretMasker(JSON.stringify(envelope)),
-      secretValues: [this.accessToken]
+      secretValues: [this.currentToken()]
     });
   }
 

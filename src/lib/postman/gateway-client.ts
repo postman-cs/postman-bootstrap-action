@@ -23,6 +23,11 @@ export interface AccessTokenGatewayClientOptions {
   orgMode?: boolean;
   fetchImpl?: typeof fetch;
   secretMasker?: SecretMasker;
+  /** Max transient (5xx / network) retries per request (default 3). */
+  maxRetries?: number;
+  /** Base backoff in ms; attempt n waits baseDelayMs * 2^(n-1) (default 400). */
+  retryBaseDelayMs?: number;
+  sleepImpl?: (ms: number) => Promise<void>;
 }
 
 function isExpiredAuthError(status: number, body: string): boolean {
@@ -31,6 +36,25 @@ function isExpiredAuthError(status: number, body: string): boolean {
     body.includes('UNAUTHENTICATED') ||
     body.includes('authenticationError')
   );
+}
+
+/**
+ * Transient downstream failures the gateway surfaces intermittently (Bifrost
+ * proxy read timeouts, gateway 5xx). Retried with backoff. `ESOCKETTIMEDOUT`
+ * is the recurring one — a downstream read timeout, not a request the server
+ * durably accepted, so retrying is safe for the onboarding ops (all guarded by
+ * reuse-or-create idempotency + run-scoped teardown).
+ */
+function isTransientGatewayError(status: number, body: string): boolean {
+  if (status === 502 || status === 503 || status === 504) return true;
+  if (status >= 500 && (body.includes('ESOCKETTIMEDOUT') || body.includes('ETIMEDOUT') || body.includes('ECONNRESET') || body.includes('serverError') || body.includes('downstream'))) {
+    return true;
+  }
+  return false;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -51,6 +75,9 @@ export class AccessTokenGatewayClient {
   private orgMode: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly secretMasker: SecretMasker;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly sleepImpl: (ms: number) => Promise<void>;
 
   constructor(options: AccessTokenGatewayClientOptions) {
     this.tokenProvider = options.tokenProvider;
@@ -62,6 +89,9 @@ export class AccessTokenGatewayClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.secretMasker =
       options.secretMasker ?? createSecretMasker([this.tokenProvider.current()]);
+    this.maxRetries = options.maxRetries ?? 3;
+    this.retryBaseDelayMs = options.retryBaseDelayMs ?? 400;
+    this.sleepImpl = options.sleepImpl ?? defaultSleep;
   }
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
@@ -96,25 +126,40 @@ export class AccessTokenGatewayClient {
     });
   }
 
-  /** Send a gateway request, refreshing the token once on an auth failure. */
+  /**
+   * Send a gateway request, refreshing the token once on an auth failure and
+   * retrying transient downstream failures (5xx / Bifrost read timeouts) with
+   * exponential backoff. The auth-refresh-once path is independent of the
+   * transient-retry budget.
+   */
   async request(request: GatewayRequest): Promise<Response> {
-    let response = await this.send(request);
-    if (response.ok) {
-      return response;
-    }
-
-    const body = await response.text().catch(() => '');
-    if (isExpiredAuthError(response.status, body) && this.tokenProvider.canRefresh()) {
-      await this.tokenProvider.refresh();
-      response = await this.send(request);
+    let attempt = 0;
+    for (;;) {
+      let response = await this.send(request);
       if (response.ok) {
         return response;
       }
-      const retryBody = await response.text().catch(() => '');
-      throw this.toHttpError(request, response, retryBody);
-    }
 
-    throw this.toHttpError(request, response, body);
+      const body = await response.text().catch(() => '');
+      if (isExpiredAuthError(response.status, body) && this.tokenProvider.canRefresh()) {
+        await this.tokenProvider.refresh();
+        response = await this.send(request);
+        if (response.ok) {
+          return response;
+        }
+        const retryBody = await response.text().catch(() => '');
+        throw this.toHttpError(request, response, retryBody);
+      }
+
+      if (isTransientGatewayError(response.status, body) && attempt < this.maxRetries) {
+        const delay = this.retryBaseDelayMs * 2 ** attempt;
+        attempt += 1;
+        await this.sleepImpl(delay);
+        continue;
+      }
+
+      throw this.toHttpError(request, response, body);
+    }
   }
 
   /** Send a gateway request and parse the JSON body, or null when empty. */

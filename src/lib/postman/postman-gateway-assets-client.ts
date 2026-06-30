@@ -460,11 +460,12 @@ export class PostmanGatewayAssetsClient {
 
     // Idempotent: skip if a prior run already created the secrets resolver.
     if (items.some((i) => String(i.name ?? '') === '00 - Resolve Secrets')) return;
-    // Create shape (live-proven): `method`/`url` top-level, the rest of the request
-    // internals (`headers`/`body`/`auth`) nested under `payload`. A flat top-level
-    // `auth` is rejected (500), and `/body`,`/auth`,`/payload` PATCHes are rejected
-    // (400) — so request internals must go in on create, not via a follow-up patch.
-    // The server assigns the id and echoes `{ id, createdAt }` only.
+    // Create shape (live-proven): the v3 IR item carries `method`/`url`/`headers`/
+    // `body`/`auth` at the ROOT (sibling fields), NOT under a `payload` wrapper — a
+    // payload wrapper is silently dropped (body/auth never persist; live-proven via
+    // probe-item-auth-roundtrip.ts). `body` is the v3 IR `{type,content}` shape and
+    // `auth` is `{type,credentials:[{key,value}]}`. The server assigns the id and
+    // echoes `{ id, createdAt }` only.
     const created = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
       method: 'post',
@@ -475,21 +476,19 @@ export class PostmanGatewayAssetsClient {
         name: '00 - Resolve Secrets',
         method: 'POST',
         url: 'https://secretsmanager.{{AWS_REGION}}.amazonaws.com',
-        payload: {
-          headers: [
-            { key: 'X-Amz-Target', value: 'secretsmanager.GetSecretValue' },
-            { key: 'Content-Type', value: 'application/x-amz-json-1.1' }
-          ],
-          body: { mode: 'raw', raw: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-          auth: {
-            type: 'awsv4',
-            awsv4: [
-              { key: 'accessKey', value: '{{AWS_ACCESS_KEY_ID}}' },
-              { key: 'secretKey', value: '{{AWS_SECRET_ACCESS_KEY}}' },
-              { key: 'region', value: '{{AWS_REGION}}' },
-              { key: 'service', value: 'secretsmanager' }
-            ]
-          }
+        headers: [
+          { key: 'X-Amz-Target', value: 'secretsmanager.GetSecretValue' },
+          { key: 'Content-Type', value: 'application/x-amz-json-1.1' }
+        ],
+        body: { type: 'json', content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
+        auth: {
+          type: 'awsv4',
+          credentials: [
+            { key: 'accessKey', value: '{{AWS_ACCESS_KEY_ID}}' },
+            { key: 'secretKey', value: '{{AWS_SECRET_ACCESS_KEY}}' },
+            { key: 'region', value: '{{AWS_REGION}}' },
+            { key: 'service', value: 'secretsmanager' }
+          ]
         },
         position: { parent: { id: cid, $kind: 'collection' } }
       }

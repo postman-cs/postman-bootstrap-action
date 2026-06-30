@@ -159,4 +159,56 @@ describe('AccessTokenGatewayClient', () => {
     expect(message).toContain('500');
     expect(message).not.toContain('tok-fresh-secret');
   });
+
+  it('retries a transient downstream timeout with backoff, then succeeds', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response('{"error":{"name":"serverError","details":"ESOCKETTIMEDOUT","source":"downstream"}}', { status: 500 })
+      )
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const provider = new AccessTokenProvider({ accessToken: 'tok' });
+    const sleep = vi.fn(async () => undefined);
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: provider,
+      fetchImpl,
+      retryBaseDelayMs: 10,
+      sleepImpl: sleep
+    });
+
+    const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x/items/' });
+
+    expect(result).toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(10);
+  });
+
+  it('exhausts the transient retry budget and raises a redacted error', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response('{"error":{"message":"ESOCKETTIMEDOUT"}}', { status: 504 }));
+    const provider = new AccessTokenProvider({ accessToken: 'tok' });
+    const sleep = vi.fn(async () => undefined);
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: provider,
+      fetchImpl,
+      maxRetries: 2,
+      retryBaseDelayMs: 5,
+      sleepImpl: sleep
+    });
+
+    let captured: unknown;
+    try {
+      await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x/items/' });
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(captured).toBeInstanceOf(Error);
+    // initial attempt + 2 retries
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenNthCalledWith(1, 5);
+    expect(sleep).toHaveBeenNthCalledWith(2, 10);
+  });
 });

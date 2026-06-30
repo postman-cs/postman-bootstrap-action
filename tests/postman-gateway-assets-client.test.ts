@@ -237,12 +237,24 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(patch[0]).toMatchObject({ op: 'add', path: '/scripts' });
       expect(patch[0].value[0]).toMatchObject({ type: 'afterResponse', language: 'text/javascript' });
       expect(patch[0].value[0].code).toContain('pm.test');
-      // 3) resolve-secrets created with payload-wrapped headers/body/auth, then scripted
+      // 3) resolve-secrets created with ROOT-level v3 IR headers/body/auth, then scripted
       const create = calls.find((c) => c.method === 'post');
       expect(create?.path).toBe('/v3/collections/model-9/items/');
-      const createBody = create?.body as { name: string; payload: { auth: { type: string } } };
+      const createBody = create?.body as {
+        name: string;
+        payload?: unknown;
+        headers: Array<{ key: string }>;
+        body: { type: string; content: string };
+        auth: { type: string; credentials: Array<{ key: string; value: string }> };
+      };
       expect(createBody.name).toBe('00 - Resolve Secrets');
-      expect(createBody.payload.auth.type).toBe('awsv4');
+      // No payload wrapper — request internals live at the item root (a payload
+      // wrapper is silently dropped by the gateway v3 store).
+      expect(createBody.payload).toBeUndefined();
+      expect(createBody.headers.map((h) => h.key)).toContain('X-Amz-Target');
+      expect(createBody.body).toMatchObject({ type: 'json' });
+      expect(createBody.auth.type).toBe('awsv4');
+      expect(createBody.auth.credentials.map((c) => c.key)).toEqual(['accessKey', 'secretKey', 'region', 'service']);
       const secretsPatch = calls.find((c) => c.method === 'patch' && /\/items\/55363555-secrets$/.test(c.path));
       expect((secretsPatch?.body as Array<{ path: string }>)[0].path).toBe('/scripts');
     });

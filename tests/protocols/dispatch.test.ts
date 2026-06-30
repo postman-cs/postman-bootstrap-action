@@ -15,26 +15,32 @@ function read(rel: string): string {
 }
 
 describe('protocol dispatch format discriminant', () => {
-  it('graphql builds a v2.1.0 collection runnable in CI', () => {
+  it('graphql builds a v3-ec collection runnable in CI', () => {
     const result = buildProtocolCollection('graphql', read('graphql/telecom.graphql'), {
       name: 'T',
       endpointUrl: '{{baseUrl}}/graphql'
     });
     expect(result.type).toBe('graphql');
-    expect(result.format).toBe('v2.1.0');
+    expect(result.format).toBe('v3-ec');
     expect(result.runnableInCi).toBe(true);
     expect(result.operationCount).toBeGreaterThan(0);
+    // Native EC tree: typed root, children nesting (not the v2 `item`).
+    expect(result.collection.type).toBe('collection');
+    expect(Array.isArray(result.collection.children)).toBe(true);
+    expect('item' in result.collection).toBe(false);
   });
 
-  it('soap builds a v2.1.0 collection runnable in CI', () => {
+  it('soap builds a v3-ec collection runnable in CI', () => {
     const result = buildProtocolCollection('soap', read('soap/stockquote.wsdl'), {
       name: 'T',
       endpointUrl: '{{baseUrl}}/soap'
     });
     expect(result.type).toBe('soap');
-    expect(result.format).toBe('v2.1.0');
+    expect(result.format).toBe('v3-ec');
     expect(result.runnableInCi).toBe(true);
     expect(result.operationCount).toBeGreaterThan(0);
+    expect(result.collection.type).toBe('collection');
+    expect(Array.isArray(result.collection.children)).toBe(true);
   });
 
   it.skipIf(!HAS_PROTOBUF)('grpc builds a v3-ec collection gated from CI execution', () => {
@@ -87,7 +93,7 @@ describe('protocol dispatch format discriminant', () => {
     expect(leaves).toBe(result.operationCount);
   });
 
-  it('runnableInCi tracks the wire format: HTTP protocols true, gRPC false', () => {
+  it('all protocols emit v3-ec; runnableInCi is true for HTTP protocols, false for gRPC', () => {
     const graphql = buildProtocolCollection('graphql', read('graphql/telecom.graphql'), {
       name: 'T',
       endpointUrl: '{{baseUrl}}/graphql'
@@ -96,9 +102,9 @@ describe('protocol dispatch format discriminant', () => {
       name: 'T',
       endpointUrl: '{{baseUrl}}/soap'
     });
-    expect(graphql.format).toBe('v2.1.0');
+    expect(graphql.format).toBe('v3-ec');
     expect(graphql.runnableInCi).toBe(true);
-    expect(soap.format).toBe('v2.1.0');
+    expect(soap.format).toBe('v3-ec');
     expect(soap.runnableInCi).toBe(true);
   });
 

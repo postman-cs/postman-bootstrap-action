@@ -177,6 +177,59 @@ describe('PostmanExtensibleCollectionClient', () => {
     });
   });
 
+  it('populateFromTree consumes a runtime.models transform tree (children nesting, strips id/children)', async () => {
+    const ids = ['folder-A', 'leaf-1'];
+    let i = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      jsonResponse({ data: { id: ids[i++] } })
+    );
+    const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl });
+
+    // Canonical Extensible tree: children nesting, logical ids, events already
+    // under extensions.events (the @postman/runtime.models transform shape).
+    const tree = {
+      type: 'collection',
+      title: 'C',
+      children: [
+        {
+          type: 'folder',
+          id: 'folder.logical',
+          title: 'ServiceA',
+          children: [
+            {
+              type: 'http-request',
+              id: 'req.logical',
+              title: 'GET ping',
+              payload: { url: '{{baseUrl}}/ping', method: 'GET' },
+              extensions: { events: [{ listen: 'afterResponse', script: { exec: 'pm.test();' } }] }
+            }
+          ]
+        }
+      ]
+    };
+
+    const leafCount = await client.populateFromTree('ec-1', tree);
+
+    expect(leafCount).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const folderBody = JSON.parse((fetchImpl.mock.calls[0]?.[1] as RequestInit).body as string).body;
+    expect(folderBody).toMatchObject({ type: 'folder', title: 'ServiceA', position: { parent: 'ec-1' } });
+    // Logical id + children nesting stripped from the create body.
+    expect(folderBody.id).toBeUndefined();
+    expect(folderBody.children).toBeUndefined();
+    const leafBody = JSON.parse((fetchImpl.mock.calls[1]?.[1] as RequestInit).body as string).body;
+    expect(leafBody).toMatchObject({
+      type: 'http-request',
+      title: 'GET ping',
+      position: { parent: 'folder-A' }
+    });
+    expect(leafBody.id).toBeUndefined();
+    // Pre-set extensions.events pass through (createItem normalizes, exec stays string).
+    expect(leafBody.extensions.events).toEqual([
+      { listen: 'afterResponse', script: { exec: 'pm.test();' } }
+    ]);
+  });
+
   it('reads back and deletes a collection via the EC proxy', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -323,6 +376,47 @@ describe('PostmanExtensibleCollectionClient', () => {
 
     const items = await client.listExtensibleCollectionItems('ec-1');
     expect(items).toEqual([{ id: 'x', type: 'folder' }]);
+  });
+
+  it('fetches a single item with extensions.events via the per-item GET endpoint', async () => {
+    const item = {
+      id: 'item-1',
+      type: 'http-request',
+      title: 'GET ping',
+      extensions: { events: [{ listen: 'afterResponse', script: { exec: 'pm.test();' } }] }
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse({ data: item }));
+    const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl });
+
+    const result = await client.getExtensibleCollectionItem('ec-1', 'item-1');
+
+    expect(result).toEqual(item);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      GATEWAY,
+      expect.objectContaining({
+        body: JSON.stringify({
+          service: 'collection',
+          method: 'get',
+          path: '/collections/ec-1/items/item-1'
+        })
+      })
+    );
+  });
+
+  it('getExtensibleCollectionItem tolerates a bare (unwrapped) item body', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ id: 'item-2', type: 'folder' }));
+    const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl });
+
+    const result = await client.getExtensibleCollectionItem('ec-1', 'item-2');
+    expect(result).toEqual({ id: 'item-2', type: 'folder' });
+  });
+
+  it('getExtensibleCollectionItem throws on missing collectionId or itemId', async () => {
+    const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl: vi.fn() });
+    await expect(client.getExtensibleCollectionItem('', 'item-1')).rejects.toThrow(/EC_ITEM_GET_INVALID_ARGUMENT/);
+    await expect(client.getExtensibleCollectionItem('ec-1', '')).rejects.toThrow(/EC_ITEM_GET_INVALID_ARGUMENT/);
   });
 
   it('surfaces an inner /ws/proxy envelope error on an HTTP 200 response', async () => {

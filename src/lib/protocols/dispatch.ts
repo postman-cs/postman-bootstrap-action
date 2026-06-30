@@ -14,6 +14,7 @@ import {
   instrumentSoapCollection,
   parseWsdl
 } from './soap/index.js';
+import { convertV2CollectionToEc } from './v2-to-ec.js';
 import type { SpecType } from '../spec/detect-spec-type.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -52,10 +53,13 @@ export interface ProtocolCollectionResult {
  * protocol so the orchestrator can create + tag + persist the collection the
  * same way it does for the OAS contract collection.
  *
- * GraphQL and SOAP produce v2.1.0 HTTP collections that run in the Postman CLI /
- * Newman HTTP path with no feature flag. gRPC produces a v3/EC collection whose
- * `grpc-request` execution is gated by the `grpc_protocol_execution_allowed`
- * account feature flag (upstream Postman CLI limitation).
+ * All protocols produce v3/Extensible Collections. GraphQL and SOAP build a
+ * v2.1.0 HTTP tree and run it through the official `@postman/runtime.models`
+ * transform (`convertV2CollectionToEc`) so the emitted collection is native EC
+ * with `http-request` leaves that run in the Postman CLI / Newman HTTP path with
+ * no feature flag. gRPC builds EC natively; its `grpc-request` execution is gated
+ * by the `grpc_protocol_execution_allowed` account feature flag (upstream Postman
+ * CLI limitation).
  */
 export function buildProtocolCollection(
   type: ProtocolSpecType,
@@ -72,8 +76,8 @@ export function buildProtocolCollection(
       const { collection: instrumented, warnings } = instrumentGraphQLCollection(collection, index);
       return {
         type,
-        collection: instrumented,
-        format: 'v2.1.0',
+        collection: convertV2CollectionToEc(instrumented),
+        format: 'v3-ec',
         runnableInCi: true,
         warnings,
         operationCount: index.operations.length
@@ -89,8 +93,8 @@ export function buildProtocolCollection(
       const operationCount = index.services.reduce((sum, service) => sum + service.operations.length, 0);
       return {
         type,
-        collection: instrumented,
-        format: 'v2.1.0',
+        collection: convertV2CollectionToEc(instrumented),
+        format: 'v3-ec',
         runnableInCi: true,
         warnings,
         operationCount

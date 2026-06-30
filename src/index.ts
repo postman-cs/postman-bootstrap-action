@@ -1339,9 +1339,10 @@ async function runProtocolBootstrap(
         : 'gRPC execution requires the grpc_protocol_execution_allowed account feature flag in Postman CLI.')
   );
 
-  // v2.1.0 collections (graphql/soap) are created via the public collections
-  // API; v3/Extensible Collections (grpc) use the gateway EC API, which the
-  // public v2.1.0 endpoint rejects.
+  // All protocols emit v3/Extensible Collections, created through the gateway EC
+  // API (the public v2.1.0 collections endpoint rejects EC payloads). The
+  // non-EC branch is retained as a defensive fallback should a builder ever
+  // return a v2.1.0 tree.
   const contractCollectionId =
     built.format === 'v3-ec'
       ? await createExtensibleContractCollection(workspaceId || '', built, inputs, dependencies)
@@ -1381,9 +1382,10 @@ async function runProtocolBootstrap(
 }
 
 /**
- * Create a gRPC (v3/Extensible) contract collection through the gateway EC API.
- * The collection is created empty, then each service folder and grpc-request
- * item is materialized under it. Requires the EC client (access-token only).
+ * Create a v3/Extensible contract collection through the gateway EC API. Used by
+ * every protocol: graphql/soap (transformed from v2 via runtime.models) and gRPC
+ * (built EC-native). The collection is created empty, then each folder and
+ * request item is materialized under it. Requires the EC client (access-token only).
  *
  * Idempotent refresh: an EC contract collection resolved from
  * `contract-collection-id` or `.postman/resources.yaml` is deleted and rebuilt
@@ -1400,18 +1402,32 @@ async function createExtensibleContractCollection(
 ): Promise<string> {
   if (!dependencies.ecClient) {
     throw new Error(
-      'EC_REQUIRES_ACCESS_TOKEN: creating a gRPC (extensible) contract collection requires postman-access-token; ' +
-        'provide postman-access-token (resolve-service-token mints one) to enable the gRPC contract path.'
+      'EC_REQUIRES_ACCESS_TOKEN: creating an extensible (v3) contract collection requires postman-access-token; ' +
+        'provide postman-access-token (resolve-service-token mints one) to enable the contract path.'
     );
   }
   const ecClient = dependencies.ecClient;
+  // Two EC tree shapes feed this path: the runtime.models transform output
+  // (graphql/soap) is typed at the root (`title`, `payload`, `extensions`); the
+  // native gRPC builder uses a v2-style `info.name` envelope. Resolve from both.
   const collectionInfo =
     built.collection.info && typeof built.collection.info === 'object'
       ? (built.collection.info as Record<string, unknown>)
       : undefined;
   const collectionName =
+    (typeof built.collection.title === 'string' && built.collection.title.trim()) ||
     (typeof collectionInfo?.name === 'string' && collectionInfo.name.trim()) ||
     `${inputs.projectName} Contract`;
+  // Forward the transform's collection-level payload (lifted `variables`, e.g.
+  // baseUrl) and extensions (documentation); absent on the gRPC tree (no-op).
+  const collectionPayload =
+    built.collection.payload && typeof built.collection.payload === 'object'
+      ? (built.collection.payload as Record<string, unknown>)
+      : undefined;
+  const collectionExtensions =
+    built.collection.extensions && typeof built.collection.extensions === 'object'
+      ? (built.collection.extensions as Record<string, unknown>)
+      : undefined;
 
   // State chain: explicit input -> checked-out resources.yaml. An EC contract
   // collection already on record is refreshed (delete-and-recreate).
@@ -1423,26 +1439,29 @@ async function createExtensibleContractCollection(
     );
   }
 
+  const label = built.type.toUpperCase();
   return runGroup(
     dependencies.core,
-    'Create gRPC Contract Collection',
+    'Create Contract Collection (EC)',
     async () => {
       if (existingId) {
         try {
           await ecClient.deleteExtensibleCollection(existingId);
           dependencies.core.info(
-            `Refreshing gRPC contract collection: deleted existing ${existingId} before rebuild.`
+            `Refreshing ${label} EC contract collection: deleted existing ${existingId} before rebuild.`
           );
         } catch (error) {
           dependencies.core.warning(
-            `Could not delete existing gRPC contract collection ${existingId} for refresh ` +
+            `Could not delete existing ${label} EC contract collection ${existingId} for refresh ` +
               `(${error instanceof Error ? error.message : String(error)}); creating a new one.`
           );
         }
       }
 
       const collectionId = await ecClient.createExtensibleCollection(workspaceId, {
-        name: collectionName
+        name: collectionName,
+        ...(collectionPayload ? { payload: collectionPayload } : {}),
+        ...(collectionExtensions ? { extensions: collectionExtensions } : {})
       });
       let leafCount: number;
       try {
@@ -1452,11 +1471,11 @@ async function createExtensibleContractCollection(
         try {
           await ecClient.deleteExtensibleCollection(collectionId);
           dependencies.core.warning(
-            `Populating gRPC contract collection ${collectionId} failed; deleted the partial collection.`
+            `Populating ${label} EC contract collection ${collectionId} failed; deleted the partial collection.`
           );
         } catch (cleanupError) {
           dependencies.core.warning(
-            `Populating gRPC contract collection ${collectionId} failed and cleanup also failed ` +
+            `Populating ${label} EC contract collection ${collectionId} failed and cleanup also failed ` +
               `(${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}); ` +
               `delete collection ${collectionId} manually.`
           );
@@ -1464,7 +1483,7 @@ async function createExtensibleContractCollection(
         throw error;
       }
       dependencies.core.info(
-        `Created gRPC extensible collection ${collectionId} with ${leafCount} request item(s).`
+        `Created ${label} extensible collection ${collectionId} with ${leafCount} request item(s).`
       );
       return collectionId;
     }

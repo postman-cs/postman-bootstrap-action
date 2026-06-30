@@ -83,6 +83,17 @@ export interface PostmanExtensibleCollectionClientOptions {
 export interface CreateExtensibleCollectionInput {
   name: string;
   description?: string;
+  /**
+   * Collection-level payload (e.g. `{ variables: [...] }`). The runtime.models
+   * transform lifts a v2.1.0 collection's `variable` array to `payload.variables`;
+   * forwarding it here keeps `{{baseUrl}}`-style request references resolvable.
+   */
+  payload?: JsonRecord;
+  /**
+   * Collection-level extensions (e.g. `{ documentation: { content } }`). When
+   * provided it supersedes the `description`-derived documentation default.
+   */
+  extensions?: JsonRecord;
 }
 
 /**
@@ -279,13 +290,13 @@ export class PostmanExtensibleCollectionClient {
     if (!name) {
       throw new Error('EC_CREATE_INVALID_ARGUMENT: collection name is required');
     }
-    const extensions: JsonRecord = {
+    const extensions: JsonRecord = input.extensions ?? {
       documentation: { content: input.description ?? '' }
     };
     const body: JsonRecord = {
       workspace: workspaceId,
       title: name,
-      payload: {},
+      payload: input.payload ?? {},
       extensions
     };
     const response = await this.proxyJson(
@@ -423,19 +434,55 @@ export class PostmanExtensibleCollectionClient {
   }
 
   /**
-   * Walk a built v3/EC collection tree (`collection.item` = service folders,
-   * each folder `item` = `grpc-request` leaves) and materialize it in the cloud:
-   * create each folder, then its leaf requests beneath that folder. Returns the
-   * count of leaf request items created. Folders/leaves carry their `event`
-   * (test) scripts, which the EC item create persists.
+   * Fetch a single EC item via `GET /collections/:id/items/:itemId`
+   * (collection-service `getItem`). Unlike {@link listExtensibleCollectionItems}
+   * — whose `getItemList` projection omits `extensions` — the per-item GET
+   * returns the full `ItemGet` record including `extensions.events`, so it is
+   * the route a readback must use to assert persisted test scripts. Returns the
+   * unwrapped item record (the response nests it under `data`), or null when the
+   * server returns an empty body.
+   */
+  async getExtensibleCollectionItem(
+    collectionId: string,
+    itemId: string
+  ): Promise<JsonRecord | null> {
+    if (!collectionId) {
+      throw new Error('EC_ITEM_GET_INVALID_ARGUMENT: collectionId is required');
+    }
+    if (!itemId) {
+      throw new Error('EC_ITEM_GET_INVALID_ARGUMENT: itemId is required');
+    }
+    const response = await this.proxyJson(
+      'GET',
+      `/collections/${collectionId}/items/${itemId}`,
+      undefined,
+      'getExtensibleCollectionItem'
+    );
+    return asRecord(response?.data) ?? asRecord(response);
+  }
+
+  /**
+   * Walk a built EC collection tree and materialize it in the cloud: create each
+   * folder, then its leaf requests beneath that folder. Returns the count of leaf
+   * request items created. Folders/leaves carry their test scripts, which the EC
+   * item create persists.
+   *
+   * Accepts both tree shapes the action produces:
+   *   - native builder trees (gRPC): children nest under `item`, tests under a
+   *     v2-style `event` array (folded to `extensions.events` by createItem);
+   *   - `@postman/runtime.models` transform output (graphql/soap/OAS): children
+   *     nest under `children`, tests already under `extensions.events`, and each
+   *     node carries a logical `id` the cloud must reassign.
    */
   async populateFromTree(collectionId: string, tree: JsonRecord): Promise<number> {
     let leafCount = 0;
+    const childrenOf = (node: JsonRecord): unknown[] =>
+      node.children !== undefined ? asArray(node.children) : asArray(node.item);
     const createChildren = async (nodes: unknown[], parentId?: string): Promise<void> => {
       for (const raw of nodes) {
         const node = asRecord(raw);
         if (!node) continue;
-        const children = asArray(node.item);
+        const children = childrenOf(node);
         const type = typeof node.type === 'string' ? node.type : '';
         const isFolder = type === 'folder';
         // Type-authoritative: only a `folder` may carry children. A `*-request`
@@ -449,7 +496,10 @@ export class PostmanExtensibleCollectionClient {
           );
         }
         const nodeBody: JsonRecord = { ...node };
+        // Strip nesting + any logical id; the cloud assigns the item id on create.
         delete nodeBody.item;
+        delete nodeBody.children;
+        delete nodeBody.id;
         const createdId = await this.createItem(collectionId, nodeBody, parentId);
         if (isFolder) {
           await createChildren(children, createdId);
@@ -458,7 +508,7 @@ export class PostmanExtensibleCollectionClient {
         }
       }
     };
-    await createChildren(asArray(tree.item));
+    await createChildren(childrenOf(tree));
     return leafCount;
   }
 

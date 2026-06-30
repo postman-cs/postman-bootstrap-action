@@ -207,6 +207,75 @@ export class PostmanGatewayAssetsClient {
     return '';
   }
 
+  /**
+   * Create a team-visible workspace through the gateway workspaces service.
+   *
+   * The gateway rejects a direct team/public create ("role not configured"); the
+   * verified path (live probe, 2026-06-30) is create at PERSONAL visibility then
+   * flip to TEAM via the /visibility subpath, which assigns the default role
+   * server-side. `about`/`targetTeamId` are accepted for signature parity with the
+   * PMAK client but are not part of the gateway create body.
+   *
+   * Authoritative + self-cleaning: if the create succeeds but the flip cannot be
+   * verified, the just-created workspace is deleted before throwing, so the
+   * facade's PMAK fallback never double-creates and no personal-visibility
+   * workspace is leaked. A failure of the create step itself throws before any
+   * workspace exists, so fallback is safe.
+   */
+  async createWorkspace(name: string, _about: string, _targetTeamId?: number): Promise<{ id: string }> {
+    void _about;
+    void _targetTeamId;
+    const created = await this.gateway.requestJson<JsonRecord>({
+      service: 'workspaces',
+      method: 'post',
+      path: '/workspaces',
+      body: { name, visibilityStatus: 'personal' }
+    });
+    const workspaceId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
+    if (!workspaceId) {
+      throw new Error('Workspace create did not return an id');
+    }
+
+    try {
+      await this.setWorkspaceVisibility(workspaceId, 'team');
+      const visibility = await this.getWorkspaceVisibility(workspaceId);
+      if (visibility !== 'team') {
+        throw new Error(
+          `Workspace ${workspaceId} was created but could not be promoted to team visibility (got '${visibility ?? 'unknown'}').`
+        );
+      }
+    } catch (error) {
+      await this.deleteWorkspace(workspaceId).catch(() => undefined);
+      throw error;
+    }
+
+    return { id: workspaceId };
+  }
+
+  /**
+   * Flip a workspace's visibility through the gateway. Verified shape: PUT
+   * /workspaces/:id/visibility with a bare { visibilityStatus } body (the gateway
+   * rejects PUT /workspaces/:id outright). The default role is assigned
+   * server-side when promoting to team visibility.
+   */
+  async setWorkspaceVisibility(workspaceId: string, visibility: string): Promise<void> {
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'workspaces',
+      method: 'put',
+      path: `/workspaces/${workspaceId}/visibility`,
+      body: { visibilityStatus: visibility }
+    });
+  }
+
+  /** Delete a workspace through the gateway (used for create-failure cleanup). */
+  private async deleteWorkspace(workspaceId: string): Promise<void> {
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'workspaces',
+      method: 'delete',
+      path: `/workspaces/${workspaceId}`
+    });
+  }
+
   /** Visibility of a workspace as the access token sees it, or null when unreadable. */
   async getWorkspaceVisibility(workspaceId: string): Promise<string | null> {
     try {

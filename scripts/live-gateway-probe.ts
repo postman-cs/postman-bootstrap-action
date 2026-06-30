@@ -27,12 +27,22 @@
  *       POST /specifications/:id/collections -> 202 {data:{taskId}},
  *       GET /tasks?entityId=&entityType=specification&type=collection-generation -> {data:{<taskId>:status}},
  *       GET /specifications/:id/collections -> {data:[{collection:<uid>,state}]}
+ *   MIGRATE (gateway, re-probed 2026-06-30 with reference-app shapes — verified 200):
+ *     workspaces POST /workspaces { name, visibilityStatus:'personal' } -> 200 { data:{ id } }
+ *       (team/public create needs a team-configured role payload the gateway calls
+ *       "not configured"; the working path is create PERSONAL then flip visibility),
+ *     workspaces PUT /workspaces/:id/visibility { visibilityStatus:'team' } -> 200, and a
+ *       follow-up GET confirms visibilityStatus:'team' (default role assigned server-side),
+ *     sync POST /environment/import?workspace=:ws { id:<uuid>, name, values:[{key,value,enabled,type}] } -> 200,
+ *       sync POST /list/environment?workspace=:ws -> 200 { data:[...] }  (LIST is POST, not GET),
+ *       sync GET /environment/:uid/sync?since_id=0 -> 200 { entities:[{ data }] }.
  *   STAY PMAK (gateway rejected; facade falls back, flagged):
- *     workspaces POST /workspaces (roles), PUT /workspaces/:id (path not allowed),
  *     specification PATCH /specifications/:id/files/:fileId (payload shape),
  *     collection /v3/collections/:uid/items + /collections/:uid + /collections/:uid/tags
  *       (404/invalidPath — spec-generated uids are not served by the gateway collection svc),
- *     so injectTests / tagCollection / collection CRUD remain PMAK.
+ *     so injectTests / tagCollection / collection CRUD remain PMAK,
+ *     ums GET /api/v1/external-identity returns EMPTY for a service-account token, so
+ *     getMe/getTeams stay PMAK (team scope comes from the iapub session identity, not ums).
  */
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
@@ -96,15 +106,27 @@ async function main(): Promise<void> {
     // PMAK create uses {workspace:{name,about,type}}; the gateway rejected that
     // ("must have name + visibilityStatus, no additional properties"). Probe the
     // flat app-internal shape candidates.
+    // Reference create requires a roles payload for team/public workspaces
+    // (buildCreateWorkspacePayload -> computeUpdateRolesValue -> { team: { [teamId]: [role] } }).
+    // Probe role-value candidates plus a personal-visibility control (no roles needed).
+    const probeTeamId = process.env.POSTMAN_E2E_TEAM_ID || '10490519';
     for (const [label, body] of [
-      ['flat {name,visibilityStatus:team}', { name: `${workspaceName}-a`, visibilityStatus: 'team' }],
-      ['flat {name,about,visibilityStatus:team}', { name: `${workspaceName}-b`, about: 'probe', visibilityStatus: 'team' }],
-      ['flat {name,type:team,visibilityStatus:team}', { name: `${workspaceName}-c`, type: 'team', visibilityStatus: 'team' }]
+      ['team roles ["viewer"]', { name: `${workspaceName}-a`, visibilityStatus: 'team', roles: { team: { [probeTeamId]: ['viewer'] } } }],
+      ['team roles ["Viewer"]', { name: `${workspaceName}-b`, visibilityStatus: 'team', roles: { team: { [probeTeamId]: ['Viewer'] } } }],
+      ['team roles [2]', { name: `${workspaceName}-c`, visibilityStatus: 'team', roles: { team: { [probeTeamId]: [2] } } }],
+      ['personal (no roles)', { name: `${workspaceName}-d`, visibilityStatus: 'personal' }]
     ] as Array<[string, JsonRecord]>) {
       const r = await gw(client, `create workspace ${label}`, {
         service: 'workspaces', method: 'post', path: '/workspaces', body
       });
-      const id = String((r?.workspace as JsonRecord | undefined)?.id ?? r?.id ?? '').trim();
+      // Reference IWorkspaceBaseResponse puts the new id at data.id; the original
+      // probe only read workspace.id/id and so missed a successful gateway create.
+      const id = String(
+        (r?.data as JsonRecord | undefined)?.id ??
+          (r?.workspace as JsonRecord | undefined)?.id ??
+          r?.id ??
+          ''
+      ).trim();
       if (id) {
         createdWorkspaces.add(id);
         if (!workspaceId) {
@@ -134,11 +156,33 @@ async function main(): Promise<void> {
     console.log('\n== workspaces service: read/update ==');
     await gw(client, 'get workspace', { service: 'workspaces', method: 'get', path: `/workspaces/${workspaceId}` });
     await gw(client, 'list workspaces', { service: 'workspaces', method: 'get', path: '/workspaces' });
-    await gw(client, 'workspace visibility PUT (flat)', {
+    // Reference WorkspaceService.updateVisibility uses the /visibility subpath with
+    // a bare { visibilityStatus } body; the original probe PUT /workspaces/:id and
+    // got "path not allowed".
+    await gw(client, 'workspace visibility PUT (/visibility subpath)', {
       service: 'workspaces',
       method: 'put',
-      path: `/workspaces/${workspaceId}`,
-      body: { name: workspaceName, visibilityStatus: 'team' }
+      path: `/workspaces/${workspaceId}/visibility`,
+      body: { visibilityStatus: 'team' }
+    });
+    // Confirm the personal->team flip actually stuck (two-step create path candidate).
+    const afterVis = await gw(client, 'workspace GET after visibility flip', {
+      service: 'workspaces',
+      method: 'get',
+      path: `/workspaces/${workspaceId}`
+    });
+    console.log(`  [visibility after flip] ${String((afterVis?.data as JsonRecord | undefined)?.visibilityStatus ?? '?')}`);
+    // Discover the team's configured workspace roles so a direct team-create can
+    // send a valid role id (the probe's 'viewer'/2 guesses were "not configured").
+    await gw(client, 'team workspace roles config', {
+      service: 'workspaces',
+      method: 'get',
+      path: `/workspaces-roles?teamId=${probeTeamId}`
+    });
+    await gw(client, 'roles (generic)', {
+      service: 'workspaces',
+      method: 'get',
+      path: `/roles`
     });
     await gw(client, 'workspace filesystem (git repo url)', {
       service: 'workspaces',
@@ -275,6 +319,71 @@ async function main(): Promise<void> {
       await gw(client, 'collection tag PUT (collection svc)', {
         service: 'collection', method: 'put', path: `/collections/${collectionId}/tags`,
         body: { tags: [{ slug: 'gateway-probe' }] }
+      });
+    }
+
+    // --- Corrected routes derived from the reference app (postman-app) ---
+    // The original probe used the wrong service/path/parse for these and wrongly
+    // flagged them PMAK-only. Reference sources:
+    //   workspaces POST /workspaces -> { data:{ id } }   (id is at data.id)
+    //   workspaces PUT /workspaces/:id/visibility { visibilityStatus }
+    //   sync POST /environment/import?workspace=, GET /list/environment?workspace=,
+    //     GET /environment/:uid/sync   (env service name is 'sync', not 'environment')
+    //   ums GET /api/v1/external-identity -> { team_details, user_details }
+    //   collection GET /collections/:id (model id, not the 45-char public uid)
+    console.log('\n== sync service: environments (reference service:sync) ==');
+    let envUid = '';
+    {
+      // Reference: import body needs a client-generated id (crypto.randomUUID());
+      // list is POST (not GET); get-one is GET /environment/:uid/sync?since_id=0.
+      const created = await gw(client, 'env import (sync, with id)', {
+        service: 'sync',
+        method: 'post',
+        path: `/environment/import?workspace=${workspaceId}`,
+        body: {
+          id: crypto.randomUUID(),
+          name: `${workspaceName}-env`,
+          values: [{ key: 'baseUrl', value: 'https://example.com', enabled: true, type: 'default' }]
+        }
+      });
+      const d = ((created?.data as JsonRecord | undefined) ?? created ?? {}) as JsonRecord;
+      envUid = String(d.uid ?? d.id ?? '').trim();
+      console.log(`  [env uid] ${envUid}`);
+      await gw(client, 'env list (sync, POST)', {
+        service: 'sync',
+        method: 'post',
+        path: `/list/environment?workspace=${workspaceId}`
+      });
+      if (envUid) {
+        await gw(client, 'env get (sync, since_id)', {
+          service: 'sync',
+          method: 'get',
+          path: `/environment/${envUid}/sync?since_id=0`
+        });
+      }
+    }
+
+    console.log('\n== ums service: external identity (getMe/getTeams equivalent) ==');
+    await gw(client, 'ums external-identity', {
+      service: 'ums',
+      method: 'get',
+      path: '/api/v1/external-identity'
+    });
+
+    console.log('\n== collection service: read by id (full uid vs model id) ==');
+    if (collectionId) {
+      const modelId = collectionId.includes('-')
+        ? collectionId.slice(collectionId.indexOf('-') + 1)
+        : collectionId;
+      await gw(client, 'collection get (full uid)', {
+        service: 'collection',
+        method: 'get',
+        path: `/collections/${collectionId}`
+      });
+      await gw(client, 'collection get (model id)', {
+        service: 'collection',
+        method: 'get',
+        path: `/collections/${modelId}`
       });
     }
   } finally {

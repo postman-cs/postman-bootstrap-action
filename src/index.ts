@@ -2405,6 +2405,15 @@ export function createRoutingPostmanClient(options: {
         () => gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
         () => pmak.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource)
       ),
+    // gateway create is authoritative + self-cleaning on flip failure (deletes the
+    // half-made workspace before throwing), so a PMAK fallback after a gateway
+    // error never double-creates a workspace.
+    createWorkspace: (name, about, targetTeamId) =>
+      prefer(
+        'workspace create',
+        () => gateway.createWorkspace(name, about, targetTeamId),
+        () => pmak.createWorkspace(name, about, targetTeamId)
+      ),
     // best-effort gateway reads: fall back to PMAK when the gateway cannot read.
     getWorkspaceVisibility: async (workspaceId) => {
       const viaGateway = await gateway.getWorkspaceVisibility(workspaceId);
@@ -2427,7 +2436,6 @@ export function createRoutingPostmanClient(options: {
 
     // PMAK-only routes (no verified gateway equivalent): delegate straight through.
     addAdminsToWorkspace: bind('addAdminsToWorkspace'),
-    createWorkspace: bind('createWorkspace'),
     getAutoDerivedTeamId: bind('getAutoDerivedTeamId'),
     getSpecContent: bind('getSpecContent'),
     getTeams: bind('getTeams'),

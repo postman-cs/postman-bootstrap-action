@@ -75897,8 +75897,8 @@ var bootstrapActionContract = {
       required: false
     },
     "postman-api-key": {
-      description: "Postman API key used for bootstrap operations.",
-      required: true
+      description: "Postman API key for bootstrap operations and the Postman CLI spec lint. Optional: with a postman-access-token, asset operations run access-token-primary; when the key is absent the CLI spec lint is skipped (governance errors are not enforced).",
+      required: false
     },
     "postman-access-token": {
       description: "Postman access token used for governance and workspace mutations.",
@@ -75972,7 +75972,7 @@ var bootstrapActionContract = {
       description: "JSON summary of generated collections."
     },
     "lint-summary-json": {
-      description: "JSON summary of lint errors and warnings."
+      description: 'JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }.'
     },
     "breaking-change-status": {
       description: "OpenAPI breaking-change check status."
@@ -95912,11 +95912,14 @@ function readActionInputs(actionCore) {
   if (specUrl && specPath) {
     throw new Error("Provide either spec-url or spec-path, not both.");
   }
-  const postmanApiKey = requireInput(actionCore, "postman-api-key");
+  const postmanApiKey = optionalInput(actionCore, "postman-api-key") ?? "";
   const postmanAccessToken = optionalInput(actionCore, "postman-access-token");
+  if (!postmanApiKey && !postmanAccessToken) {
+    throw new Error("One of postman-api-key or postman-access-token is required.");
+  }
   const githubToken = optionalInput(actionCore, "github-token") || process.env.GITHUB_TOKEN;
   const ghFallbackToken = optionalInput(actionCore, "gh-fallback-token") || process.env.GH_FALLBACK_TOKEN;
-  actionCore.setSecret(postmanApiKey);
+  if (postmanApiKey) actionCore.setSecret(postmanApiKey);
   if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
   if (githubToken) actionCore.setSecret(githubToken);
   if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
@@ -96593,9 +96596,14 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const collectionAssetProjectName = inputs.collectionSyncMode === "version" ? createAssetProjectName(inputs, releaseLabel) : inputs.projectName;
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
-  await runGroup(dependencies.core, "Install Postman CLI", async () => {
-    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
-  });
+  const lintEnabled = Boolean(inputs.postmanApiKey);
+  if (lintEnabled) {
+    await runGroup(dependencies.core, "Install Postman CLI", async () => {
+      await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
+    });
+  } else {
+    dependencies.core.info("Skipping Postman CLI install: no postman-api-key (spec lint is skipped).");
+  }
   const resourcesState = readResourcesState();
   let specId = inputs.specId;
   if (!specId) {
@@ -96854,31 +96862,39 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
         }
       )
     );
-    const lintSummary = await runRollbackStage(
-      "Lint Spec via Postman CLI",
-      async () => runGroup(
-        dependencies.core,
+    if (lintEnabled) {
+      const lintSummary = await runRollbackStage(
         "Lint Spec via Postman CLI",
-        async () => lintSpecViaCli(dependencies, workspaceId || "", outputs["spec-id"])
-      )
-    );
-    outputs["lint-summary-json"] = JSON.stringify({
-      errors: lintSummary.errors,
-      total: lintSummary.violations.length,
-      violations: lintSummary.violations,
-      warnings: lintSummary.warnings
-    });
-    if (lintSummary.errors > 0) {
-      lintSummary.violations.filter((entry) => entry.severity === "ERROR").forEach((entry) => {
-        dependencies.core.error(`  ${entry.path || "<unknown>"}: ${entry.issue || "Unknown lint error"}`);
-      });
-      throw new Error(`Spec lint found ${lintSummary.errors} errors`);
-    }
-    lintSummary.violations.filter((entry) => entry.severity === "WARNING").forEach((entry) => {
-      dependencies.core.warning(
-        `  ${entry.path || "<unknown>"}: ${entry.issue || "Unknown lint warning"}`
+        async () => runGroup(
+          dependencies.core,
+          "Lint Spec via Postman CLI",
+          async () => lintSpecViaCli(dependencies, workspaceId || "", outputs["spec-id"])
+        )
       );
-    });
+      outputs["lint-summary-json"] = JSON.stringify({
+        errors: lintSummary.errors,
+        total: lintSummary.violations.length,
+        violations: lintSummary.violations,
+        warnings: lintSummary.warnings
+      });
+      if (lintSummary.errors > 0) {
+        lintSummary.violations.filter((entry) => entry.severity === "ERROR").forEach((entry) => {
+          dependencies.core.error(`  ${entry.path || "<unknown>"}: ${entry.issue || "Unknown lint error"}`);
+        });
+        throw new Error(`Spec lint found ${lintSummary.errors} errors`);
+      }
+      lintSummary.violations.filter((entry) => entry.severity === "WARNING").forEach((entry) => {
+        dependencies.core.warning(
+          `  ${entry.path || "<unknown>"}: ${entry.issue || "Unknown lint warning"}`
+        );
+      });
+    } else {
+      outputs["lint-summary-json"] = JSON.stringify({
+        status: "skipped",
+        reason: "no postman-api-key"
+      });
+      dependencies.core.warning("lint skipped: governance errors not enforced (no postman-api-key)");
+    }
     await runRollbackStage(
       "Generate Collections from Spec",
       async () => runGroup(

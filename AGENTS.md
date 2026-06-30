@@ -36,7 +36,7 @@ npm run check:dist   # build + git diff --exit-code (CI integrity)
 - **Workspace selection**: Checks input `workspace-id` -> repo variable `POSTMAN_WORKSPACE_ID` -> creates new. Canonical workspace validation uses access-token via Bifrost.
 - **Spec normalization**: Before upload, fixes missing/long `summary` fields in OpenAPI operations to prevent downstream collection generation failures.
 - **Collection generation**: Calls `POST /specs/{id}/generations/collection` to create baseline/smoke/contract collections. Injects generated tests and applies tags.
-- **Lint**: Installs Postman CLI, runs `postman spec lint` against uploaded spec UID, parses JSON output for errors/warnings.
+- **Lint**: PMAK-only. With a `postman-api-key`, installs the Postman CLI, runs `postman spec lint` against the uploaded spec UID, and hard-fails on lint errors. When `postman-api-key` is absent (access-token-only runs), the CLI install and lint are skipped, `lint-summary-json` is `{ status: "skipped", reason: "no postman-api-key" }`, a warning is emitted, and the run does not hard-fail.
 - **Team ID**: Auto-derived from `GET /me` using the API key. `POSTMAN_TEAM_ID` env var overrides.
 - **Repo variables**: Persists `POSTMAN_WORKSPACE_ID`, `POSTMAN_SPEC_UID`, collection UIDs, lint counts as GitHub repo variables for rerun idempotency.
 

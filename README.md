@@ -194,7 +194,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `governance-mapping-json` | Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property. | no | `{}` |
 | `github-token` | GitHub token used to read the postman-governance-group repository custom property | no |  |
 | `gh-fallback-token` | Fallback GitHub token used to read repository custom properties when github-token cannot | no |  |
-| `postman-api-key` | Postman API key used for bootstrap operations | yes |  |
+| `postman-api-key` | Postman API key for bootstrap operations and the Postman CLI spec lint. Optional; with a postman-access-token, asset operations run access-token-primary, and when the key is absent the CLI spec lint is skipped (governance errors are not enforced). | no |  |
 | `postman-access-token` | Postman access token used for governance and workspace mutations | no |  |
 | `credential-preflight` | Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created. | no | `warn` |
 | `folder-strategy` | Folder organization strategy for generated collections (Paths or Tags) | no | `Paths` |
@@ -216,7 +216,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `smoke-collection-id` | Smoke collection ID | n/a | n/a |
 | `contract-collection-id` | Contract collection ID | n/a | n/a |
 | `collections-json` | JSON summary of generated collections | n/a | n/a |
-| `lint-summary-json` | JSON summary of lint errors and warnings | n/a | n/a |
+| `lint-summary-json` | JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }. | n/a | n/a |
 | `breaking-change-status` | OpenAPI breaking-change check status | n/a | n/a |
 | `breaking-change-summary-json` | JSON summary of the OpenAPI breaking-change check | n/a | n/a |
 <!-- outputs-table:end -->

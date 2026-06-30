@@ -2704,6 +2704,51 @@ paths:
     expect(lintSummary.errors).toBe(0);
   });
 
+  it('skips the CLI lint and warns when postman-api-key is absent (access-token-only)', async () => {
+    const { core, warnings } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-id'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+    };
+
+    const result = await runBootstrap(
+      createInputs({ postmanApiKey: '', postmanAccessToken: 'pat-only' }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      }
+    );
+
+    expect(result['workspace-id']).toBe('ws-123');
+    expect(JSON.parse(result['lint-summary-json'])).toEqual({
+      status: 'skipped',
+      reason: 'no postman-api-key'
+    });
+    expect(warnings.some((w) => w.includes('lint skipped'))).toBe(true);
+    // No PMAK -> the Postman CLI is never installed or invoked for lint.
+    expect(ioStub.which).not.toHaveBeenCalled();
+    expect(execStub.getExecOutput).not.toHaveBeenCalled();
+  });
+
   it('auto-detects openapi 3.1 from spec content when openapiVersion input is empty', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();

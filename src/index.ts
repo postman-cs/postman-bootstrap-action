@@ -534,12 +534,17 @@ export function readActionInputs(
   if (specUrl && specPath) {
     throw new Error('Provide either spec-url or spec-path, not both.');
   }
-  const postmanApiKey = requireInput(actionCore, 'postman-api-key');
+  // postman-api-key is optional: a run may be access-token-primary. At least one
+  // of postman-api-key / postman-access-token must be present to do any work.
+  const postmanApiKey = optionalInput(actionCore, 'postman-api-key') ?? '';
   const postmanAccessToken = optionalInput(actionCore, 'postman-access-token');
+  if (!postmanApiKey && !postmanAccessToken) {
+    throw new Error('One of postman-api-key or postman-access-token is required.');
+  }
   const githubToken = optionalInput(actionCore, 'github-token') || process.env.GITHUB_TOKEN;
   const ghFallbackToken = optionalInput(actionCore, 'gh-fallback-token') || process.env.GH_FALLBACK_TOKEN;
 
-  actionCore.setSecret(postmanApiKey);
+  if (postmanApiKey) actionCore.setSecret(postmanApiKey);
   if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
   if (githubToken) actionCore.setSecret(githubToken);
   if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
@@ -1487,9 +1492,16 @@ async function runBootstrapInner(
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
 
-  await runGroup(dependencies.core, 'Install Postman CLI', async () => {
-    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
-  });
+  // The Postman CLI authenticates with the PMAK and only powers the spec lint.
+  // Without a postman-api-key the lint is skipped, so the CLI install is too.
+  const lintEnabled = Boolean(inputs.postmanApiKey);
+  if (lintEnabled) {
+    await runGroup(dependencies.core, 'Install Postman CLI', async () => {
+      await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
+    });
+  } else {
+    dependencies.core.info('Skipping Postman CLI install: no postman-api-key (spec lint is skipped).');
+  }
 
   const resourcesState = readResourcesState();
 
@@ -1785,37 +1797,48 @@ async function runBootstrapInner(
     )
   );
 
-  const lintSummary = await runRollbackStage(
-    'Lint Spec via Postman CLI',
-    async () => runGroup(
-      dependencies.core,
+  if (lintEnabled) {
+    const lintSummary = await runRollbackStage(
       'Lint Spec via Postman CLI',
-      async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
-    )
-  );
-  outputs['lint-summary-json'] = JSON.stringify({
-    errors: lintSummary.errors,
-    total: lintSummary.violations.length,
-    violations: lintSummary.violations,
-    warnings: lintSummary.warnings
-  });
-
-  if (lintSummary.errors > 0) {
-    lintSummary.violations
-      .filter((entry) => entry.severity === 'ERROR')
-      .forEach((entry) => {
-        dependencies.core.error(`  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint error'}`);
-      });
-    throw new Error(`Spec lint found ${lintSummary.errors} errors`);
-  }
-
-  lintSummary.violations
-    .filter((entry) => entry.severity === 'WARNING')
-    .forEach((entry) => {
-      dependencies.core.warning(
-        `  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint warning'}`
-      );
+      async () => runGroup(
+        dependencies.core,
+        'Lint Spec via Postman CLI',
+        async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
+      )
+    );
+    outputs['lint-summary-json'] = JSON.stringify({
+      errors: lintSummary.errors,
+      total: lintSummary.violations.length,
+      violations: lintSummary.violations,
+      warnings: lintSummary.warnings
     });
+
+    if (lintSummary.errors > 0) {
+      lintSummary.violations
+        .filter((entry) => entry.severity === 'ERROR')
+        .forEach((entry) => {
+          dependencies.core.error(`  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint error'}`);
+        });
+      throw new Error(`Spec lint found ${lintSummary.errors} errors`);
+    }
+
+    lintSummary.violations
+      .filter((entry) => entry.severity === 'WARNING')
+      .forEach((entry) => {
+        dependencies.core.warning(
+          `  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint warning'}`
+        );
+      });
+  } else {
+    // Access-token-only run: no PMAK to authenticate the Postman CLI, so the
+    // governance lint is skipped rather than hard-failing. Mirror the existing
+    // skipped-output shape and warn that governance errors are not enforced.
+    outputs['lint-summary-json'] = JSON.stringify({
+      status: 'skipped',
+      reason: 'no postman-api-key'
+    });
+    dependencies.core.warning('lint skipped: governance errors not enforced (no postman-api-key)');
+  }
 
   await runRollbackStage(
     'Generate Collections from Spec',

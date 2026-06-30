@@ -167,8 +167,9 @@ export const bootstrapActionContract: ActionContract = {
       required: false
     },
     'postman-api-key': {
-      description: 'Postman API key used for bootstrap operations.',
-      required: true
+      description:
+        'Postman API key for bootstrap operations and the Postman CLI spec lint. Optional: with a postman-access-token, asset operations run access-token-primary; when the key is absent the CLI spec lint is skipped (governance errors are not enforced).',
+      required: false
     },
     'postman-access-token': {
       description: 'Postman access token used for governance and workspace mutations.',
@@ -243,7 +244,8 @@ export const bootstrapActionContract: ActionContract = {
       description: 'JSON summary of generated collections.'
     },
     'lint-summary-json': {
-      description: 'JSON summary of lint errors and warnings.'
+      description:
+        'JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }.'
     },
     'breaking-change-status': {
       description: 'OpenAPI breaking-change check status.'

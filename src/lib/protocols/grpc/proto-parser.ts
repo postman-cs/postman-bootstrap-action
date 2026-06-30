@@ -14,11 +14,12 @@
 
 type JsonRecord = Record<string, unknown>;
 
-// Statically imported so esbuild bundles protobufjs into the published `dist/`
-// (the action ships only the bundle, not node_modules). Tests and the runtime
-// fork `@postman/protobufjs` can still be injected via the `custom` parameter
-// of `loadProtoModule` / the `deps.protobuf` parameter of `parseProtoSchema`.
-import * as protobufjs from 'protobufjs';
+// Statically imported so esbuild bundles the parser into the published `dist/`
+// (the action ships only the bundle, not node_modules). Uses the Postman fork
+// `@postman/protobufjs`, which aligns descriptor parsing with Postman's gRPC
+// stack (same 7.5.x reflection surface). Tests can still inject a double via the
+// `custom` parameter of `loadProtoModule` / `deps.protobuf` of `parseProtoSchema`.
+import * as protobufjs from '@postman/protobufjs';
 
 // Mirrors the protobufjs reflection surface we depend on, kept minimal so the
 // parser stays decoupled from the concrete dependency version and so the same
@@ -309,8 +310,12 @@ function operationFrom(service: ProtoReflectionObject, method: ProtoMethod): Grp
 // statically-bundled canonical `protobufjs` is used.
 export function loadProtoModule(custom?: ProtoParseModule): ProtoParseModule {
   if (custom) return custom;
-  const mod = protobufjs as unknown as ProtoParseModule;
-  if (mod && typeof mod.parse === 'function') return mod;
+  // CJS (the esbuild dist bundle) exposes `parse` on the namespace; ESM interop
+  // (tsx, the live harness) hoists the CJS module under `.default`. Accept both
+  // so the same loader works in the bundle and under a TS runner.
+  const ns = protobufjs as unknown as ProtoParseModule & { default?: ProtoParseModule };
+  if (typeof ns.parse === 'function') return ns;
+  if (ns.default && typeof ns.default.parse === 'function') return ns.default;
   throw new Error('PROTO_PARSER_UNAVAILABLE: protobufjs could not be loaded; add the dependency to run gRPC contract generation');
 }
 

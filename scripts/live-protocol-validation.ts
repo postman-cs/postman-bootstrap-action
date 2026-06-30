@@ -1,19 +1,20 @@
 /**
  * Live, end-to-end validation of the multi-protocol contract path against a real
- * Postman sandbox team. For each non-OpenAPI protocol it:
+ * Postman sandbox team. Every non-OpenAPI protocol now produces a v3/Extensible
+ * Collection, so for each it:
  *   1. builds + instruments a collection from the bundled fixture (the exact
- *      production dispatch path),
- *   2. creates it in a freshly provisioned throwaway workspace:
- *        - v2.1.0 (graphql/soap) via PostmanAssetsClient.createCollection
- *          (public collections API),
- *        - v3/EC (grpc) via PostmanExtensibleCollectionClient through the gateway
- *          (the only path that accepts grpc-request items),
- *   3. reads the collection back and asserts items + test events survived. For
- *      gRPC the readback is the flat EC item list
- *      (`GET /collections/:id/items/`): it asserts (a) the grpc-request leaf
- *      count equals the built operation count, (b) every leaf is a
- *      `grpc-request`, and (c) each leaf carries `extensions.events` with the
- *      mapped test script,
+ *      production dispatch path): graphql/soap via the runtime.models v2->EC
+ *      transform, gRPC built EC-natively,
+ *   2. creates it in a freshly provisioned throwaway workspace via
+ *      PostmanExtensibleCollectionClient through the gateway (the EC API; the
+ *      public v2.1.0 collections endpoint rejects EC payloads),
+ *   3. reads it back and asserts (a) the leaf count equals the built operation
+ *      count, (b) every leaf is the expected protocol type (`http-request` for
+ *      graphql/soap, `grpc-request` for gRPC) via the flat item list, and (c)
+ *      every leaf the builder instrumented with tests still carries
+ *      `extensions.events` -- verified with a PER-ITEM GET
+ *      (`GET /collections/:id/items/:itemId`), because the flat list projection
+ *      omits `extensions`,
  *   4. tears down every asset it created (collections, then the workspace).
  *
  * It is a manual proof harness, not part of the unit suite. Drive it with a
@@ -93,6 +94,35 @@ function ecItemHasEvents(item: JsonRecord): boolean {
   return Array.isArray(ext?.events) && ext.events.length > 0;
 }
 
+/**
+ * Count leaves in a built EC tree (children-nested) that carry
+ * `extensions.events`. The runtime.models transform (graphql/soap) and the
+ * native gRPC builder both produce `children`; the v2 `item` fallback keeps the
+ * walker correct for either shape.
+ */
+function ecBuiltEventLeafCount(node: unknown): number {
+  const record = asRecord(node);
+  if (!record) return 0;
+  const children = Array.isArray(record.children)
+    ? record.children
+    : Array.isArray(record.item)
+      ? record.item
+      : [];
+  if (children.length === 0) {
+    // graphql/soap (transform) carry events under extensions.events; the native
+    // gRPC builder carries them in a v2-style `event` array (folded to
+    // extensions.events by the EC client at create). Count either as instrumented.
+    const hasV2Event = Array.isArray(record.event) && record.event.length > 0;
+    return ecItemHasEvents(record) || hasV2Event ? 1 : 0;
+  }
+  return children.reduce((sum: number, child) => sum + ecBuiltEventLeafCount(child), 0);
+}
+
+/** Expected EC leaf item type per protocol. */
+function expectedLeafType(type: ProtocolSpecType): string {
+  return type === 'grpc' ? 'grpc-request' : 'http-request';
+}
+
 interface LegOptions {
   label: string;
   apiKey: string;
@@ -159,11 +189,20 @@ async function runLeg(options: LegOptions): Promise<number> {
   try {
     for (const testCase of CASES) {
       const content = readFileSync(path.join(fixtures, testCase.fixture), 'utf8');
-      const built = buildProtocolCollection(testCase.type, content, {
-        name: `Live ${testCase.type}`,
-        endpointUrl: testCase.endpointUrl,
-        schemaLocation: testCase.fixture
-      });
+      let built;
+      try {
+        built = buildProtocolCollection(testCase.type, content, {
+          name: `Live ${testCase.type}`,
+          endpointUrl: testCase.endpointUrl,
+          schemaLocation: testCase.fixture
+        });
+      } catch (error) {
+        // One protocol's build failure is a recorded failure, not a crash that
+        // aborts the remaining legs (and the expired-token sim that follows).
+        failures += 1;
+        console.error(`\n[${testCase.type}] [FAIL] build failed: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
 
       const localItems = leafItemCount(built.collection);
       const localEvents = eventCount(built.collection);
@@ -175,9 +214,11 @@ async function runLeg(options: LegOptions): Promise<number> {
 
       if (built.format === 'v3-ec') {
         if (!ecClient) {
-          console.log('  [skip] No POSTMAN_ACCESS_TOKEN set; skipping gRPC EC create leg.');
+          console.log(`  [skip] No POSTMAN_ACCESS_TOKEN set; skipping ${testCase.type} EC create leg.`);
           continue;
         }
+        const wantType = expectedLeafType(testCase.type);
+        const builtEventLeaves = ecBuiltEventLeafCount(built.collection);
         try {
           const collectionId = await ecClient.createExtensibleCollection(workspace.id, {
             name: `Live ${testCase.type} Contract`
@@ -186,40 +227,52 @@ async function runLeg(options: LegOptions): Promise<number> {
           const leaves = await ecClient.populateFromTree(collectionId, built.collection);
           console.log(`  [ok] Gateway accepted EC collection ${collectionId} with ${leaves} item(s)`);
 
-          // Real readback: the flat EC item list, not a count of what we built.
+          // Real readback: the flat EC item list for counts/types...
           const remoteItems = await ecClient.listExtensibleCollectionItems(collectionId);
           const leavesList = remoteItems.filter((item) => item.type !== 'folder');
-          const grpcLeaves = leavesList.filter((item) => item.type === 'grpc-request');
-          const leavesWithEvents = grpcLeaves.filter(ecItemHasEvents);
+          const typedLeaves = leavesList.filter((item) => item.type === wantType);
+
+          // ...then a PER-ITEM GET for events: the list projection omits
+          // `extensions`, so events can only be asserted via GET
+          // /collections/:id/items/:itemId (the load-bearing readback fix).
+          let leavesWithEvents = 0;
+          for (const leaf of typedLeaves) {
+            const id = typeof leaf.id === 'string' ? leaf.id : '';
+            if (!id) continue;
+            const full = await ecClient.getExtensibleCollectionItem(collectionId, id);
+            if (full && ecItemHasEvents(full)) leavesWithEvents += 1;
+          }
           console.log(
-            `  [readback] EC item list: ${remoteItems.length} item(s), ${grpcLeaves.length} grpc-request ` +
-              `leaf(s), ${leavesWithEvents.length} carrying extensions.events`
+            `  [readback] EC item list: ${remoteItems.length} item(s), ${typedLeaves.length} ${wantType} ` +
+              `leaf(s); per-item GET found ${leavesWithEvents} carrying extensions.events ` +
+              `(built ${builtEventLeaves})`
           );
 
-          // (a) grpc-request leaf count == built operation count.
-          if (grpcLeaves.length !== built.operationCount) {
+          // (a) leaf count == built operation count.
+          if (typedLeaves.length !== built.operationCount) {
             failures += 1;
             console.error(
-              `  [FAIL] grpc leaf count != built ops: remote=${grpcLeaves.length} built=${built.operationCount}`
+              `  [FAIL] ${wantType} leaf count != built ops: remote=${typedLeaves.length} built=${built.operationCount}`
             );
           }
-          // (b) every leaf is a grpc-request (no foreign leaf types).
-          if (grpcLeaves.length !== leavesList.length) {
+          // (b) every leaf is the expected protocol type (no foreign leaf types).
+          if (typedLeaves.length !== leavesList.length) {
             failures += 1;
             console.error(
-              `  [FAIL] non-grpc leaf present: leaves=${leavesList.length} grpc=${grpcLeaves.length}`
+              `  [FAIL] foreign leaf type present: leaves=${leavesList.length} ${wantType}=${typedLeaves.length}`
             );
           }
-          // (c) each grpc leaf carries the mapped test event.
-          if (leavesWithEvents.length !== grpcLeaves.length) {
+          // (c) every leaf the builder instrumented with events still has them
+          //     after the round-trip (per-item GET).
+          if (leavesWithEvents < builtEventLeaves) {
             failures += 1;
             console.error(
-              `  [FAIL] grpc leaves missing extensions.events: ${grpcLeaves.length - leavesWithEvents.length} of ${grpcLeaves.length}`
+              `  [FAIL] events dropped on round-trip: remote-with-events=${leavesWithEvents} built-with-events=${builtEventLeaves}`
             );
           }
-          if (leaves < localItems) {
+          if (leaves < built.operationCount) {
             failures += 1;
-            console.error(`  [FAIL] populated fewer items than built: built=${localItems} created=${leaves}`);
+            console.error(`  [FAIL] populated fewer items than built: built=${built.operationCount} created=${leaves}`);
           }
         } catch (error) {
           failures += 1;

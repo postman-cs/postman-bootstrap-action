@@ -20,6 +20,11 @@
  *   [201] POST collection /v3/collections/<bareModelId>/items/
  *          body {$kind:'http-request', name, method, url, position:{parent:{id:<bareModelId>,$kind:'collection'}}}
  *          -> {data:{id, createdAt, createdBy}}   (server assigns id; re-list + GET-by-id confirm)
+ *   [200] PUT  specification /specifications/<specId>/collections  body [{collectionId:<fullUid>}]
+ *          -> {data:{updated:[{collectionId, state:'out-of-sync'}]}}   (link relationship recorded)
+ *   [202] POST specification /specifications/<specId>/collections/<fullUid>/sync  -> {data:{taskId}}
+ *          poll tasks?entityType=collection&type=collection-sync -> completed;
+ *          GET /specifications/<specId>/collections -> state flips to 'in-sync'  (regenerate lives for OAS)
  *
  *   Contrast (the shapes the "no route" claim probed):
  *   [404] GET  /v3/collections/<fullUid>/items        (no trailing slash + full uid)
@@ -246,6 +251,39 @@ async function main(): Promise<void> {
       await gw(client, 'v3 created item GET (confirm)', {
         service: 'collection', method: 'get', path: `/v3/collections/${modelId}/items/${newItemId}`,
         headers: { 'X-Entity-Type': 'http-request' }
+      });
+    }
+
+    console.log('\n== corrected route 5: spec->collection SYNC / regenerate (linked-spec relationship) ==');
+    // Refutes "the cloud Spec Hub 'linked spec / regenerate' relationship dies for the OAS path."
+    // OAS-generated collections are v2 HTTP (isV2HttpInV3Workbench), canSyncCollection:true, and the
+    // linked-spec relationship is alive. The spec service link + sync routes (SpecificationService.ts:284,306)
+    // take ids as-is (no bare/uid transform). Probe the regenerate (sync) route on the generated collection.
+    if (specId && collectionUid) {
+      const linkPut = await gw(client, 'spec PUT link collections (idempotent)', {
+        service: 'specification', method: 'put', path: `/specifications/${specId}/collections`,
+        body: [{ collectionId: collectionUid }]
+      });
+      console.log(`  [link PUT] ${snippet(linkPut)}`);
+      const sync = await gw(client, 'spec->collection sync (regenerate)', {
+        service: 'specification', method: 'post', path: `/specifications/${specId}/collections/${collectionUid}/sync`
+      });
+      const syncTaskId = String(((sync?.data as JsonRecord | undefined)?.taskId) ?? '').trim();
+      console.log(`  [sync taskId] ${syncTaskId}`);
+      for (let i = 0; i < 20 && syncTaskId; i += 1) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const t = await client.requestJson<JsonRecord>({
+          service: 'specification', method: 'get', path: '/tasks',
+          query: { entityId: collectionUid, entityType: 'collection', type: 'collection-sync' }
+        });
+        const data = (t?.data as JsonRecord | undefined) ?? {};
+        const status = String(data[syncTaskId] ?? '');
+        if (i === 0 || (status && status !== 'in-progress')) console.log(`  [sync task] ${snippet(data)}`);
+        if (status && status !== 'in-progress') break;
+      }
+      // Re-list the spec's linked collections to confirm the relationship is recorded.
+      await gw(client, 'spec linked collections list', {
+        service: 'specification', method: 'get', path: `/specifications/${specId}/collections`
       });
     }
   } finally {

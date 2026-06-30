@@ -35,20 +35,24 @@ npm run check:dist   # build + git diff --exit-code (CI integrity)
 
 - **Workspace selection**: Checks input `workspace-id` -> repo variable `POSTMAN_WORKSPACE_ID` -> creates new. Canonical workspace validation uses access-token via Bifrost.
 - **Spec normalization**: Before upload, fixes missing/long `summary` fields in OpenAPI operations to prevent downstream collection generation failures.
-- **Collection generation**: Calls `POST /specs/{id}/generations/collection` to create baseline/smoke/contract collections. Injects generated tests and applies tags.
-- **Lint**: PMAK-only. With a `postman-api-key`, installs the Postman CLI, runs `postman spec lint` against the uploaded spec UID, and hard-fails on lint errors. When `postman-api-key` is absent (access-token-only runs), the CLI install and lint are skipped, `lint-summary-json` is `{ status: "skipped", reason: "no postman-api-key" }`, a warning is emitted, and the run does not hard-fail.
-- **Team ID**: Auto-derived from `GET /me` using the API key. `POSTMAN_TEAM_ID` env var overrides.
+- **Collection generation**: Generates baseline/smoke/contract collections from the spec through the access-token gateway (`specification` service `POST /specifications/{id}/collections` + task poll). Injects generated tests (per-item `PATCH /v3/collections/{cid}/items/{itemId}` `/scripts` afterResponse) and applies tags (`tagging` service `PUT /v1/tags/collections/{id}`).
+- **Lint**: PMAK-only. With a `postman-api-key`, installs the Postman CLI, runs `postman spec lint` against the uploaded spec UID, and hard-fails on lint errors. When `postman-api-key` is absent (access-token-only runs), the CLI install and lint are skipped, `lint-summary-json` is `{ status: "skipped", reason: "no postman-api-key" }`, a warning is emitted, and the run does not hard-fail. The CLI has no access-token login, so this is the one asset-adjacent PMAK use.
+- **Team ID**: Resolved from the access-token session identity (`GET https://iapub.postman.co/api/sessions/current`); org-mode sub-team (squad) detection uses the gateway `ums` service. `POSTMAN_TEAM_ID` env var overrides.
 - **Repo variables**: Persists `POSTMAN_WORKSPACE_ID`, `POSTMAN_SPEC_UID`, collection UIDs, lint counts as GitHub repo variables for rerun idempotency.
 
-## Postman API Endpoints Used
+## Postman Routes Used
 
-- `POST /workspaces`, `GET /workspaces` -- workspace CRUD
-- `POST /specs`, `PATCH /specs/{id}/files/{path}` -- spec upload/update
-- `POST /specs/{id}/generations/collection` -- collection generation
-- `GET /collections/{id}`, `PUT /collections/{id}` -- collection update/test injection
-- `PUT /collections/{id}/tags` -- collection tagging
-- `GET /me` -- team ID derivation
-- Bifrost: governance assignment, workspace-to-repo linking
+All asset operations run through the access-token gateway (Bifrost `POST /ws/proxy` envelope, `x-access-token`); see `docs/REST-to-gateway.md` for verified wire shapes. The PMAK is used only to mint/re-mint the access token and for the Postman CLI `spec lint` login.
+
+- `workspaces` service: `POST /workspaces` (personal) + `PUT /workspaces/{id}/visibility` (team) + `GET /workspaces` -- workspace create/visibility/lookup
+- `specification` service: `POST /specifications` + `PATCH /specifications/{id}/files/{fileId}` (JSON-patch `/content`) -- spec upload/update; `POST /specifications/{id}/collections` + task poll -- collection generation
+- `collection` service: `GET /v3/collections/{cid}/items/` (list) + `PATCH /v3/collections/{cid}/items/{itemId}` (test injection) + `POST /v3/collections/{cid}/items/` (create) -- bare model id
+- `tagging` service: `PUT /v1/tags/collections/{id}` -- collection tagging
+- iapub REST `GET /api/sessions/current` -- session identity / team scope; `ums` service squads -- org-mode detection
+- `POST /service-account-tokens` (PMAK) -- mint/re-mint the access token
+- Bifrost internal-integration adapter: governance assignment, workspace-to-repo linking
+
+Residual PMAK public-REST ops with no gateway equivalent (`api.getpostman.com`, `X-Api-Key`): `POST/GET/PUT/DELETE /collections/{uid}` for the multi-protocol GraphQL/SOAP v2.1.0 collections and the dynamic-contract refresh read/write; `PATCH /workspaces/{id}/roles` for the requester invite and workspace admins.
 
 ## Gotchas
 

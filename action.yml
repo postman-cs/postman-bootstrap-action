@@ -56,8 +56,8 @@ inputs:
     required: false
   workspace-team-id:
     description: >-
-      Numeric sub-team ID for org-mode workspace creation. Required when the
-      API key belongs to an org with multiple sub-teams. Run the action without
+      Numeric sub-team ID for org-mode workspace creation. Required when your
+      Postman team is an org with multiple sub-teams. Run the action without
       this input to see available sub-teams listed in the error output.
     required: false
   spec-url:
@@ -111,10 +111,10 @@ inputs:
     description: Fallback GitHub token used to read repository custom properties when github-token cannot
     required: false
   postman-api-key:
-    description: Postman API key for bootstrap operations and the Postman CLI spec lint. Optional; with a postman-access-token, asset operations run access-token-primary, and when the key is absent the CLI spec lint is skipped (governance errors are not enforced).
+    description: Postman service-account API key (PMAK). With a postman-access-token present, the PMAK is used ONLY to mint/re-mint the access token and to log in the Postman CLI for `spec lint` — never for an asset operation. When the key is absent, the CLI spec lint is skipped (governance errors are not enforced). Optional.
     required: false
   postman-access-token:
-    description: Postman access token used for governance and workspace mutations
+    description: Postman service-account access token (x-access-token). Primary credential — every asset operation (workspace create/visibility, spec upload/update, collection generation/read/mutation, test injection, tagging, team-scope) runs through the access-token gateway. Mint it with postman-resolve-service-token-action. Optional only for legacy PMAK-only runs; supply it for the gateway path.
     required: false
   credential-preflight:
     description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created."

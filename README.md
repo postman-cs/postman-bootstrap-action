@@ -50,7 +50,7 @@ jobs:
           credential-preflight: enforce
 ```
 
-Provide either `spec-url` (public HTTPS) or `spec-path` (a file in the checked-out repo) for the [Spec Hub import](https://learning.postman.com/docs/design-apis/specifications/import-a-specification/) path. Use a [Postman service account](https://learning.postman.com/docs/administration/service-accounts/) PMAK for `postman-api-key`; the service-token action is the primary way to mint the `postman-access-token` used for governance, cloud sync, and canonical workspace validation. See [Obtaining Credentials](docs/credentials.md) for the credential matrix and legacy fallback.
+Provide either `spec-url` (public HTTPS) or `spec-path` (a file in the checked-out repo) for the [Spec Hub import](https://learning.postman.com/docs/design-apis/specifications/import-a-specification/) path. Mint the `postman-access-token` with the [service-token action](https://github.com/postman-cs/postman-resolve-service-token-action): it is the primary credential and carries every Postman asset operation (workspace, spec, collection generation and mutation, tagging, team scope) over the access-token gateway. A [Postman service account](https://learning.postman.com/docs/administration/service-accounts/) PMAK for `postman-api-key` is optional — it mints and re-mints that access token and logs the Postman CLI in for `spec lint`. See [Obtaining Credentials](docs/credentials.md) for the credential matrix and legacy fallback.
 
 ## Common scenarios
 
@@ -179,7 +179,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `governance-group` | Postman governance workspace group name. Overrides the postman-governance-group repository custom property and domain mapping. | no |  |
 | `requester-email` | Requester email for audit context | no |  |
 | `workspace-admin-user-ids` | Comma-separated workspace admin user ids | no |  |
-| `workspace-team-id` | Numeric sub-team ID for org-mode workspace creation. Required when the API key belongs to an org with multiple sub-teams. Run the action without this input to see available sub-teams listed in the error output. | no |  |
+| `workspace-team-id` | Numeric sub-team ID for org-mode workspace creation. Required when your Postman team is an org with multiple sub-teams. Run the action without this input to see available sub-teams listed in the error output. | no |  |
 | `spec-url` | HTTPS URL to the OpenAPI document to bootstrap. Provide either spec-url or spec-path. | no |  |
 | `spec-path` | Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path. | no |  |
 | `protocol` | API spec protocol. auto (default) detects from content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly. | no | `auto` |
@@ -194,8 +194,8 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `governance-mapping-json` | Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property. | no | `{}` |
 | `github-token` | GitHub token used to read the postman-governance-group repository custom property | no |  |
 | `gh-fallback-token` | Fallback GitHub token used to read repository custom properties when github-token cannot | no |  |
-| `postman-api-key` | Postman API key for bootstrap operations and the Postman CLI spec lint. Optional; with a postman-access-token, asset operations run access-token-primary, and when the key is absent the CLI spec lint is skipped (governance errors are not enforced). | no |  |
-| `postman-access-token` | Postman access token used for governance and workspace mutations | no |  |
+| `postman-api-key` | Postman service-account API key (PMAK). With a postman-access-token present, the PMAK is used ONLY to mint/re-mint the access token and to log in the Postman CLI for `spec lint` — never for an asset operation. When the key is absent, the CLI spec lint is skipped (governance errors are not enforced). Optional. | no |  |
+| `postman-access-token` | Postman service-account access token (x-access-token). Primary credential — every asset operation (workspace create/visibility, spec upload/update, collection generation/read/mutation, test injection, tagging, team-scope) runs through the access-token gateway. Mint it with postman-resolve-service-token-action. Optional only for legacy PMAK-only runs; supply it for the gateway path. | no |  |
 | `credential-preflight` | Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created. | no | `warn` |
 | `folder-strategy` | Folder organization strategy for generated collections (Paths or Tags) | no | `Paths` |
 | `nested-folder-hierarchy` | When folder-strategy is Tags, enables nested folder hierarchy | no | `false` |
@@ -288,11 +288,11 @@ steps:
 The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), generate or reuse baseline, smoke, and contract collections, inject generated tests, apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
 
 - **Phase independence:** bootstrap succeeds on its own even when later pipeline stages (repo sync, Insights) fail, and reruns reuse existing assets. See [Bootstrap Phase Independence](docs/bootstrap-phase-independence.md).
-- **Team identity:** the parent team ID is derived from `postman-api-key`; org-mode tenants pass `workspace-team-id` for the sub-team that should own the workspace. See [Team Identity](docs/team-identity.md).
+- **Team identity:** the team ID is resolved from the access-token session identity; org-mode tenants pass `workspace-team-id` for the sub-team that should own the workspace. See [Team Identity](docs/team-identity.md).
 - **Git providers:** workspace-to-repository linking supports GitHub and GitLab, cloud and self-hosted. See [Git Provider Support](docs/git-provider-support.md).
 - **Spec handling:** operation summaries are normalized before upload, `spec-url` fetches are SSRF-hardened HTTPS with pinned DNS, and breaking-change comparison runs before any Postman mutation when enabled. See [OpenAPI Spec Handling](docs/spec-handling.md).
 - **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, cloud spec-to-collection syncing, and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
-- **Credentials:** `postman-api-key` handles standard Postman API operations; the optional `postman-access-token` unlocks governance assignment, cloud link/sync, and canonical workspace validation. See [Obtaining Credentials](docs/credentials.md).
+- **Credentials:** `postman-access-token` is the primary credential and carries every asset operation over the gateway; the optional `postman-api-key` powers access-token minting and the Postman CLI `spec lint` login. See [Obtaining Credentials](docs/credentials.md).
 - **Protocol write split:** GraphQL and SOAP build v2.1.0 collections created through the public collections API with `postman-api-key`. gRPC builds a v3/Extensible Collection (the only schema with the `grpc-request` item type) and is created through the gateway EC API, which is access-token only — so gRPC **hard-requires** `postman-access-token` and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when it is absent (`resolve-service-token` mints one). Creating the gRPC collection and running it in CI are separate gates: execution additionally needs the `grpc_protocol_execution_allowed` account feature flag in Postman CLI. See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
 
 ## Dynamic contract tests

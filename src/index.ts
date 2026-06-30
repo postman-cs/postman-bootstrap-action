@@ -173,7 +173,6 @@ export interface BootstrapExecutionDependencies {
     | 'createWorkspace'
     | 'findWorkspacesByName'
     | 'generateCollection'
-    | 'getAutoDerivedTeamId'
     | 'getSpecContent'
     | 'getTeams'
     | 'getWorkspaceGitRepoUrl'
@@ -1055,7 +1054,13 @@ async function provisionWorkspace(
 
   let teamId = inputs.teamId || '';
   if (!teamId) {
-    teamId = await dependencies.postman.getAutoDerivedTeamId() || '';
+    // Team scope comes from the access token's session (iapub
+    // /api/sessions/current), resolved + memoized by the credential preflight
+    // both entrypoints run before this. It is the same team
+    // resolve-service-token derives. PMAK is reserved for minting the access
+    // token and the Postman CLI login, so it is never used to derive team scope
+    // (no GET /me here).
+    teamId = getMemoizedSessionIdentity()?.teamId || '';
   }
   telemetry.setTeamId(teamId);
   const repoUrl = inputs.repoUrl || '';
@@ -2333,17 +2338,28 @@ export async function runAction(
   });
   warnIfDeprecatedAccessToken(actionCore, inputs);
 
-  // Early org-mode detection for proper adapter configuration
+  // Early org-mode detection for proper adapter configuration. Enumerates squads
+  // over the access-token gateway `ums` service (org id from the preflight's
+  // memoized session); a non-org account returns no squads. PMAK is never used
+  // for this (reserved for token mint + CLI login).
   let orgMode = false;
-  if (inputs.postmanAccessToken && inputs.teamId) {
+  if (inputs.postmanAccessToken) {
     try {
-      const tempPostman = new PostmanAssetsClient({
+      const probeProvider = new AccessTokenProvider({
+        accessToken: inputs.postmanAccessToken,
         apiKey: inputs.postmanApiKey,
-        baseUrl: inputs.postmanApiBase,
-        bifrostBaseUrl: inputs.postmanBifrostBase,
-        secretMasker: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+        apiBaseUrl: inputs.postmanApiBase
       });
-      const teams = await tempPostman.getTeams();
+      const probeGateway = new PostmanGatewayAssetsClient({
+        gateway: new AccessTokenGatewayClient({
+          tokenProvider: probeProvider,
+          bifrostBaseUrl: inputs.postmanBifrostBase,
+          teamId: inputs.teamId || '',
+          orgMode: false,
+          secretMasker: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+        })
+      });
+      const teams = await probeGateway.getTeams();
       orgMode = teams.some(t => t.organizationId != null);
     } catch {
       // Org-mode detection failure is not fatal; default to false
@@ -2469,11 +2485,12 @@ export function createRoutingPostmanClient(options: {
     // these never fall back to the API key even when one is present.
     injectTests: (collectionId, type) => gateway.injectTests(collectionId, type),
     tagCollection: (collectionId, tags) => gateway.tagCollection(collectionId, tags),
+    // Sub-team (squad) enumeration over the gateway `ums` service. Access-token
+    // only — never PMAK — so org-mode detection no longer needs a PMAK GET /teams.
+    getTeams: () => gateway.getTeams(),
 
     // PMAK-only routes (no verified gateway equivalent): delegate straight through.
     addAdminsToWorkspace: bind('addAdminsToWorkspace'),
-    getAutoDerivedTeamId: bind('getAutoDerivedTeamId'),
-    getTeams: bind('getTeams'),
     inviteRequesterToWorkspace: bind('inviteRequesterToWorkspace'),
     createCollection: bind('createCollection'),
     deleteCollection: bind('deleteCollection'),

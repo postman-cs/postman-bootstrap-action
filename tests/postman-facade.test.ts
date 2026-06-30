@@ -45,6 +45,7 @@ function makeGateway(overrides: Partial<Record<keyof PostmanGatewayAssetsClient,
     findWorkspacesByName: vi.fn(async () => [{ id: 'g', name: 'n' }]),
     injectTests: vi.fn(async () => undefined),
     tagCollection: vi.fn(async () => undefined),
+    getTeams: vi.fn(async () => [{ id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347 }]),
     configureTeamContext: vi.fn(),
     ...overrides
   };
@@ -123,13 +124,15 @@ describe('createRoutingPostmanClient', () => {
     expect(pmak.tagCollection).not.toHaveBeenCalled();
   });
 
-  it('getTeams stays on the PMAK client (no verified gateway equivalent)', async () => {
+  it('getTeams routes to the gateway ums squads enumeration (never PMAK)', async () => {
     const pmak = makePmak();
     const gateway = makeGateway();
     const facade = createRoutingPostmanClient({ gateway, pmak, hasPmak: true, log: makeLog() });
 
-    await facade.getTeams();
-    expect(pmak.getTeams).toHaveBeenCalled();
+    const teams = await facade.getTeams();
+    expect(gateway.getTeams).toHaveBeenCalled();
+    expect(pmak.getTeams).not.toHaveBeenCalled();
+    expect(teams).toEqual([{ id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347 }]);
   });
 
   it('configureTeamContext is delegated to the gateway client', () => {

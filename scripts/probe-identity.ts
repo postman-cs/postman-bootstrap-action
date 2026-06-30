@@ -19,8 +19,11 @@
  *           session.data.user.{name,roles}.  getMe / team-scope / identity FULLY access-token-resolvable
  *           (already implemented in src/lib/postman/credential-identity.ts:152-219).
  *   [500] GET /api/users/teams  (direct REST AND gateway envelope iapub)  -> UnexpectedError for SA token.
- *        PMAK GET /teams -> 200 in org-mode (returns squad list), 400 "Team feature not available" non-org.
- *        => getTeams (org-mode sub-team/squad enumeration) stays PMAK; iapub /api/users/teams 500s for SA.
+ *        This is the WRONG service for squad enumeration. The correct route is
+ *        `ums GET /api/teams/<orgTeamId>/squads` (gateway envelope) -> 200, full squad list
+ *        (live-proven in scripts/probe-teams-ums.ts). So getTeams is ALSO access-token-resolvable;
+ *        no PMAK identity call remains. This probe keeps the iapub /api/users/teams contrast
+ *        only to document why it's the wrong route.
  *   [400] gateway envelope iapub GET /api/sessions/current -> invalidPathError (iapub routes are direct
  *        REST to iapub.postman.co, NOT the /ws/proxy envelope).
  */

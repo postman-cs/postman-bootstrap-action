@@ -1,4 +1,5 @@
 import { HttpError } from '../http-error.js';
+import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { AccessTokenGatewayClient } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './postman-assets-client.js';
 
@@ -47,13 +48,10 @@ export interface PostmanGatewayAssetsClientOptions {
  * Access-token-primary asset client over {@link AccessTokenGatewayClient}.
  *
  * Implements only the routes proven against the live gateway (scripts/live-gateway-probe.ts):
- * the OpenAPI spec lifecycle (create, get, generate-collection + task poll) and
- * workspace reads (visibility, list/find, git repo url). All of these answer the
- * Postman app `{meta, data}` envelope through the proxy. Operations the gateway
- * rejects (workspace create/visibility-PUT, spec file update, collection CRUD /
- * tagging / injectTests for spec-generated collection uids) are intentionally
- * absent so the routing facade falls back to the PMAK {@link PostmanAssetsClient}
- * for them, per the migration's no-regression contract.
+ * the OpenAPI spec lifecycle (create, get, generate-collection + task poll),
+ * workspace reads (visibility, list/find, git repo url), and sub-team (squad)
+ * enumeration over the `ums` service. All of these answer the Postman app
+ * `{meta, data}` envelope through the proxy.
  *
  * Method signatures mirror PostmanAssetsClient so the facade can prefer this
  * client per method and fall back to PMAK transparently.
@@ -73,6 +71,42 @@ export class PostmanGatewayAssetsClient {
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
     this.gateway.configureTeamContext(teamId, orgMode);
+  }
+
+  /**
+   * Enumerate the account's sub-teams (squads) over the access-token gateway,
+   * replacing the PMAK `GET /teams`. The org id is the session's team
+   * (`/api/sessions/current`, memoized by the credential preflight); the squad
+   * list comes from `ums GET /api/teams/:orgTeamId/squads?settings=true&userRoles=true`
+   * → `{ data:[{ id, name, handle, organizationId, … }] }`. Each squad carries
+   * `organizationId`, so the caller's `teams.some(t => t.organizationId != null)`
+   * org-mode test works unchanged. Non-org accounts get `400 "Squad feature is not
+   * available"` (live-proven, team 10490519) → resolved as `[]` (not org-mode).
+   * PMAK is never consulted (reserved for token mint + CLI login).
+   */
+  async getTeams(): Promise<Array<{ id: number; name: string; handle: string; organizationId?: number }>> {
+    const orgTeamId = getMemoizedSessionIdentity()?.teamId;
+    if (!orgTeamId) return [];
+    try {
+      const res = await this.gateway.requestJson<JsonRecord>({
+        service: 'ums',
+        method: 'get',
+        path: `/api/teams/${orgTeamId}/squads?settings=true&userRoles=true`
+      });
+      const list = Array.isArray(res?.data) ? (res.data as JsonRecord[]) : [];
+      return list
+        .filter((s) => s?.id != null && s?.name != null)
+        .map((s) => ({
+          id: Number(s.id),
+          name: String(s.name),
+          handle: String(s.handle ?? ''),
+          ...(s.organizationId != null ? { organizationId: Number(s.organizationId) } : {})
+        }));
+    } catch {
+      // 400 "Squad feature is not available" (non-org) or any read failure: no
+      // squads to report, so the account is treated as non-org.
+      return [];
+    }
   }
 
   /**

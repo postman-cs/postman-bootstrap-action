@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
+import { __resetIdentityMemo, resolveSessionIdentity } from '../src/lib/postman/credential-identity.js';
 
 interface Envelope {
   service: string;
@@ -273,6 +274,50 @@ describe('PostmanGatewayAssetsClient', () => {
       // the existing resolver leaf is NOT re-scripted as a normal leaf
       expect(calls.filter((c) => c.method === 'patch')).toHaveLength(1);
       expect(calls.find((c) => c.method === 'patch')?.path).toBe('/v3/collections/model-9/items/55363555-leaf-1');
+    });
+  });
+
+  describe('getTeams', () => {
+    // Seed getMemoizedSessionIdentity (the org id source) via resolveSessionIdentity,
+    // mirroring the credential preflight that runs before getTeams in production.
+    async function seedSession(team: number): Promise<void> {
+      __resetIdentityMemo();
+      await resolveSessionIdentity({
+        iapubBaseUrl: 'https://iapub.example',
+        accessToken: `tok-${team}`,
+        fetchImpl: vi.fn<typeof fetch>(async () =>
+          jsonResponse({ session: { consumerType: 'service_account', identity: { user: 1, team, domain: 'd' } } })
+        )
+      });
+    }
+
+    it('enumerates squads via ums GET /api/teams/:orgId/squads (org-mode → organizationId set)', async () => {
+      await seedSession(13347347);
+      const { client, calls } = makeClient(() =>
+        jsonResponse({ data: [{ id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347, extra: 'x' }] })
+      );
+      const teams = await client.getTeams();
+      expect(calls[0]).toMatchObject({
+        service: 'ums',
+        method: 'get',
+        path: '/api/teams/13347347/squads?settings=true&userRoles=true'
+      });
+      expect(teams).toEqual([{ id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347 }]);
+    });
+
+    it('returns [] for a non-org account (ums 400 "Squad feature is not available")', async () => {
+      await seedSession(10490519);
+      const { client } = makeClient(() =>
+        jsonResponse({ error: { name: 'BadRequest', message: 'Squad feature is not available for your team.' } }, { status: 400 })
+      );
+      expect(await client.getTeams()).toEqual([]);
+    });
+
+    it('returns [] when no session identity is memoized (no PMAK /me, no org id)', async () => {
+      __resetIdentityMemo();
+      const { client, calls } = makeClient(() => jsonResponse({ data: [] }));
+      expect(await client.getTeams()).toEqual([]);
+      expect(calls).toHaveLength(0);
     });
   });
 });

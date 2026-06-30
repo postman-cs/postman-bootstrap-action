@@ -103,6 +103,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     workspaceAdminUserIds: '101,102',
     repoUrl: 'https://github.com/postman-cs/bootstrap-action-test',
     specUrl: 'https://example.test/openapi.yaml',
+    protocol: 'auto',
     openapiVersion: '',
     breakingChangeMode: 'off',
     breakingBaselineSpecPath: undefined,

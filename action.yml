@@ -66,6 +66,14 @@ inputs:
   spec-path:
     description: Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path.
     required: false
+  protocol:
+    description: API spec protocol. auto (default) detects from content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly.
+    required: false
+    default: auto
+  protocol-endpoint-url:
+    description: Endpoint URL/authority used by generated non-OpenAPI requests (e.g. {{baseUrl}}/graphql, grpc://host:port). Supports Postman variable interpolation. Ignored for openapi.
+    required: false
+    default: ''
   openapi-version:
     description: OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.
     required: false

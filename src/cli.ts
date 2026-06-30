@@ -77,6 +77,8 @@ const cliInputNames = [
   'project-name',
   'spec-url',
   'spec-path',
+  'protocol',
+  'protocol-endpoint-url',
   'postman-api-key',
   'postman-access-token',
   'credential-preflight',

@@ -847,6 +847,25 @@ export class PostmanAssetsClient {
     return response?.collection;
   }
 
+  /**
+   * Create a collection in a workspace from a fully-formed collection object
+   * (v2.1.0 or v3/EC). Used by the multi-protocol path, which builds and
+   * instruments collections locally rather than generating them from Spec Hub.
+   * Returns the new collection UID.
+   */
+  async createCollection(workspaceId: string, collection: unknown): Promise<string> {
+    const response = await this.request(`/collections?workspace=${workspaceId}`, {
+      method: 'POST',
+      body: JSON.stringify({ collection })
+    });
+    const created = asRecord(response?.collection);
+    const uid = String(created?.uid ?? created?.id ?? '').trim();
+    if (!uid) {
+      throw new Error('Collection creation did not return a UID');
+    }
+    return uid;
+  }
+
   async updateCollection(collectionUid: string, collection: unknown): Promise<void> {
     await this.request(`/collections/${collectionUid}`, {
       method: 'PUT',

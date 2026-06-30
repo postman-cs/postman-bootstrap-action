@@ -1,0 +1,74 @@
+// Telecom-flavored gRPC contract fixture for postman-actions onboarding e2e.
+// Exercises every stream kind (unary, server, client, bidi), enums, repeated,
+// map, nested messages, 64-bit ints, and a proto3 explicit optional field so
+// the parser/builder/instrumenter golden output covers the full surface.
+syntax = "proto3";
+
+package telecom.network.v1;
+
+// SignalQuality is an enum to verify enum-name membership assertions.
+enum SignalQuality {
+  SIGNAL_QUALITY_UNSPECIFIED = 0;
+  SIGNAL_QUALITY_POOR = 1;
+  SIGNAL_QUALITY_FAIR = 2;
+  SIGNAL_QUALITY_GOOD = 3;
+  SIGNAL_QUALITY_EXCELLENT = 4;
+}
+
+message GeoPoint {
+  double latitude = 1;
+  double longitude = 2;
+}
+
+message Tower {
+  string tower_id = 1;
+  GeoPoint location = 2;
+  SignalQuality quality = 3;
+  // repeated scalar -> array assertion.
+  repeated string supported_bands = 4;
+  // 64-bit int -> JSON string assertion.
+  int64 subscriber_count = 5;
+  // proto3 explicit optional -> presence NOT asserted.
+  optional string operator_label = 6;
+  // map -> object assertion.
+  map<string, string> attributes = 7;
+}
+
+message GetTowerRequest {
+  string tower_id = 1;
+}
+
+message ListTowersRequest {
+  GeoPoint center = 1;
+  double radius_km = 2;
+}
+
+message UplinkSample {
+  string tower_id = 1;
+  double signal_dbm = 2;
+}
+
+message UplinkSummary {
+  int64 sample_count = 1;
+  double average_dbm = 2;
+}
+
+message DiagnosticPing {
+  string tower_id = 1;
+}
+
+message DiagnosticPong {
+  string tower_id = 1;
+  bool reachable = 2;
+}
+
+service TowerService {
+  // unary
+  rpc GetTower(GetTowerRequest) returns (Tower);
+  // server streaming
+  rpc ListTowers(ListTowersRequest) returns (stream Tower);
+  // client streaming
+  rpc RecordUplink(stream UplinkSample) returns (UplinkSummary);
+  // bidirectional streaming
+  rpc Diagnose(stream DiagnosticPing) returns (stream DiagnosticPong);
+}

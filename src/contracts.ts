@@ -104,6 +104,19 @@ export const bootstrapActionContract: ActionContract = {
       description: 'Local filesystem path to the OpenAPI document (read from the workspace). Provide either spec-url or spec-path.',
       required: false
     },
+    'protocol': {
+      description:
+        'API spec protocol. auto (default) detects from the spec content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly.',
+      required: false,
+      default: 'auto',
+      allowedValues: ['auto', 'openapi', 'graphql', 'grpc', 'soap']
+    },
+    'protocol-endpoint-url': {
+      description:
+        'Endpoint URL/authority used by generated non-OpenAPI requests (e.g. {{baseUrl}}/graphql, grpc://host:port). Supports Postman variable interpolation. Ignored for openapi.',
+      required: false,
+      default: ''
+    },
     'openapi-version': {
       description: 'OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.',
       required: false,

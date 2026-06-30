@@ -1,0 +1,83 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`instrumentSoapCollection > golden snapshot: generated assertions for the stockquote service 1`] = `
+{
+  "golden": [
+    {
+      "code": "var soap = JSON.parse("{\\"name\\":\\"GetStockPrice\\",\\"soapVersion\\":\\"1.1\\",\\"expectedResponseElement\\":\\"GetStockPriceResponse\\",\\"hasOutput\\":true}");
+var bodyText = (pm.response.text && pm.response.text()) || "";
+function header(name) { return (pm.response.headers.get(name) || ""); }
+function matchTag(local) { return new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?" + local + "(?=[\\\\s/>])"); }
+
+pm.test('SOAP transport returned HTTP 200', function () {
+  pm.response.to.have.status(200);
+});
+
+pm.test('SOAP response Content-Type is XML', function () {
+  var ct = header("Content-Type").toLowerCase();
+  pm.expect(ct, "expected an XML SOAP content-type, got: " + ct).to.match(/(?:text\\/xml|application\\/soap\\+xml|application\\/xml|\\+xml)/);
+});
+
+pm.test('SOAP Envelope element is present', function () {
+  pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));
+});
+
+pm.test('SOAP Body element is present', function () {
+  pm.expect(bodyText, "SOAP envelope has no Body element").to.match(matchTag("Body"));
+});
+
+pm.test('Response is not a SOAP Fault', function () {
+  var hasFault = matchTag("Fault").test(bodyText);
+  if (hasFault) {
+    var detail = (bodyText.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:faultstring|Reason|Text)[^>]*>([\\s\\S]*?)<\\//) || [])[1] || "";
+    pm.expect.fail("SOAP Fault returned for operation " + soap.name + (detail ? (": " + detail.trim()) : ""));
+  }
+});
+
+pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {
+  if (matchTag("Fault").test(bodyText)) return;
+  pm.expect(bodyText, "expected SOAP response element <" + soap.expectedResponseElement + "> not found").to.match(new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?GetStockPriceResponse(?=[\\\\s/>])"));
+});",
+      "name": "GetStockPrice",
+    },
+    {
+      "code": "var soap = JSON.parse("{\\"name\\":\\"ListSymbols\\",\\"soapVersion\\":\\"1.1\\",\\"expectedResponseElement\\":\\"ListSymbolsResponse\\",\\"hasOutput\\":true}");
+var bodyText = (pm.response.text && pm.response.text()) || "";
+function header(name) { return (pm.response.headers.get(name) || ""); }
+function matchTag(local) { return new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?" + local + "(?=[\\\\s/>])"); }
+
+pm.test('SOAP transport returned HTTP 200', function () {
+  pm.response.to.have.status(200);
+});
+
+pm.test('SOAP response Content-Type is XML', function () {
+  var ct = header("Content-Type").toLowerCase();
+  pm.expect(ct, "expected an XML SOAP content-type, got: " + ct).to.match(/(?:text\\/xml|application\\/soap\\+xml|application\\/xml|\\+xml)/);
+});
+
+pm.test('SOAP Envelope element is present', function () {
+  pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));
+});
+
+pm.test('SOAP Body element is present', function () {
+  pm.expect(bodyText, "SOAP envelope has no Body element").to.match(matchTag("Body"));
+});
+
+pm.test('Response is not a SOAP Fault', function () {
+  var hasFault = matchTag("Fault").test(bodyText);
+  if (hasFault) {
+    var detail = (bodyText.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:faultstring|Reason|Text)[^>]*>([\\s\\S]*?)<\\//) || [])[1] || "";
+    pm.expect.fail("SOAP Fault returned for operation " + soap.name + (detail ? (": " + detail.trim()) : ""));
+  }
+});
+
+pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {
+  if (matchTag("Fault").test(bodyText)) return;
+  pm.expect(bodyText, "expected SOAP response element <" + soap.expectedResponseElement + "> not found").to.match(new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?ListSymbolsResponse(?=[\\\\s/>])"));
+});",
+      "name": "ListSymbols",
+    },
+  ],
+  "warnings": [],
+}
+`;

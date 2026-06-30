@@ -182,6 +182,8 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `workspace-team-id` | Numeric sub-team ID for org-mode workspace creation. Required when the API key belongs to an org with multiple sub-teams. Run the action without this input to see available sub-teams listed in the error output. | no |  |
 | `spec-url` | HTTPS URL to the OpenAPI document to bootstrap. Provide either spec-url or spec-path. | no |  |
 | `spec-path` | Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path. | no |  |
+| `protocol` | API spec protocol. auto (default) detects from content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly. | no | `auto` |
+| `protocol-endpoint-url` | Endpoint URL/authority used by generated non-OpenAPI requests (e.g. {{baseUrl}}/graphql, grpc://host:port). Supports Postman variable interpolation. Ignored for openapi. | no |  |
 | `openapi-version` | OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content. | no |  |
 | `breaking-change-mode` | OpenAPI breaking-change comparison mode (off, pr-native, baseline-only, or previous-spec) | no | `off` |
 | `breaking-baseline-spec-path` | Workspace-relative baseline OpenAPI spec path used by baseline-only mode and pr-native fallback | no |  |
@@ -291,6 +293,7 @@ The action handles the bootstrap slice of the Postman onboarding workflow: creat
 - **Spec handling:** operation summaries are normalized before upload, `spec-url` fetches are SSRF-hardened HTTPS with pinned DNS, and breaking-change comparison runs before any Postman mutation when enabled. See [OpenAPI Spec Handling](docs/spec-handling.md).
 - **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, cloud spec-to-collection syncing, and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
 - **Credentials:** `postman-api-key` handles standard Postman API operations; the optional `postman-access-token` unlocks governance assignment, cloud link/sync, and canonical workspace validation. See [Obtaining Credentials](docs/credentials.md).
+- **Protocol write split:** GraphQL and SOAP build v2.1.0 collections created through the public collections API with `postman-api-key`. gRPC builds a v3/Extensible Collection (the only schema with the `grpc-request` item type) and is created through the gateway EC API, which is access-token only — so gRPC **hard-requires** `postman-access-token` and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when it is absent (`resolve-service-token` mints one). Creating the gRPC collection and running it in CI are separate gates: execution additionally needs the `grpc_protocol_execution_allowed` account feature flag in Postman CLI. See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
 
 ## Dynamic contract tests
 

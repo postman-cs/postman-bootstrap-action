@@ -3,6 +3,7 @@ import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { parse, stringify } from 'yaml';
 
 import { bootstrapActionContract } from './contracts.js';
@@ -29,7 +30,9 @@ import {
 import { adviseFromHttpError } from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
+import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
+import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
@@ -38,6 +41,8 @@ import { createTelemetryContext, type TelemetryContext } from '@postman-cse/auto
 import { instrumentContractCollection } from './lib/spec/collection-contracts.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
+import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
+import { buildProtocolCollection, type ProtocolCollectionResult } from './lib/protocols/dispatch.js';
 
 export interface ResolvedInputs {
   projectName: string;
@@ -61,6 +66,8 @@ export interface ResolvedInputs {
   repoSlug?: string;
   specUrl: string;
   specPath?: string;
+  protocol: 'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap';
+  protocolEndpointUrl?: string;
   openapiVersion: string;
   breakingChangeMode: BreakingChangeMode;
   breakingBaselineSpecPath?: string;
@@ -174,7 +181,16 @@ export interface BootstrapExecutionDependencies {
     | 'uploadSpec'
     | 'updateSpec'
   > &
-    Partial<Pick<PostmanAssetsClient, 'deleteCollection' | 'getCollection' | 'updateCollection'>>;
+    Partial<Pick<PostmanAssetsClient, 'createCollection' | 'deleteCollection' | 'getCollection' | 'updateCollection'>>;
+  ecClient?: Pick<
+    PostmanExtensibleCollectionClient,
+    | 'createExtensibleCollection'
+    | 'populateFromTree'
+    | 'getExtensibleCollection'
+    | 'deleteExtensibleCollection'
+    | 'listExtensibleCollectionItems'
+    | 'configureTeamContext'
+  >;
   openApiChanges?: OpenApiBreakingChangeCheckRunner;
   specFetcher: typeof fetch;
 }
@@ -383,6 +399,12 @@ export function resolveInputs(
     repoSlug: repoContext.repoSlug || '',
     specUrl,
     specPath,
+    protocol: parseEnumInput<'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap'>(
+      'protocol',
+      getInput('protocol', env),
+      'auto'
+    ),
+    protocolEndpointUrl: getInput('protocol-endpoint-url', env),
     openapiVersion: resolveOpenapiVersion(getInput('openapi-version', env)),
     breakingChangeMode: parseBreakingChangeMode(getInput('breaking-change-mode', env)),
     breakingBaselineSpecPath: getInput('breaking-baseline-spec-path', env),
@@ -989,6 +1011,442 @@ export async function runBootstrap(
   }
 }
 
+/**
+ * Resolve, reuse, or create the Postman workspace (with org-mode sub-team
+ * handling and visibility checks), assign governance, invite the requester, and
+ * add admins. Shared by the OpenAPI and multi-protocol paths so both provision
+ * the workspace identically. Returns the resolved workspace id.
+ */
+async function provisionWorkspace(
+  inputs: ResolvedInputs,
+  dependencies: BootstrapExecutionDependencies,
+  telemetry: TelemetryContext,
+  outputs: PlannedOutputs,
+  resourcesState: PostmanResourcesState | null,
+  workspaceName: string,
+  aboutText: string
+): Promise<string | undefined> {
+  let explicitWorkspaceId = inputs.workspaceId;
+  if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
+    explicitWorkspaceId = resourcesState.workspace.id;
+    dependencies.core.info('Resolved workspace-id from .postman/resources.yaml');
+  }
+
+  const repoWorkspaceId = explicitWorkspaceId;
+  let workspaceId = explicitWorkspaceId;
+
+  let teamId = inputs.teamId || '';
+  if (!teamId) {
+    teamId = await dependencies.postman.getAutoDerivedTeamId() || '';
+  }
+  telemetry.setTeamId(teamId);
+  const repoUrl = inputs.repoUrl || '';
+
+  if (!explicitWorkspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
+    const selection = await runGroup(
+      dependencies.core,
+      'Resolve Canonical Workspace',
+      async () => resolveCanonicalWorkspaceSelection({
+        postman: dependencies.postman,
+        workspaceName,
+        repoWorkspaceId,
+        repoUrl,
+        teamId,
+        accessToken: inputs.postmanAccessToken!,
+        warn: (msg) => dependencies.core.warning(msg),
+      })
+    );
+
+    if (selection.type === 'existing') {
+      workspaceId = selection.workspaceId;
+      if (selection.warning) {
+        dependencies.core.warning(selection.warning);
+      }
+      dependencies.core.info(`Using canonical workspace (${selection.source}): ${workspaceId}`);
+    } else if (selection.type === 'manual_review') {
+      throw new Error(`Workspace selection requires manual review: ${selection.reason}`);
+    } else {
+      workspaceId = undefined;
+    }
+  } else if (workspaceId) {
+    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
+  }
+
+  // Parse workspace-team-id from already-resolved inputs
+  let workspaceTeamId: number | undefined;
+  // Org-mode for EC (gRPC) gateway writes, derived from the resolved team scope
+  // independently of POSTMAN_TEAM_ID: an explicit workspace-team-id or a detected
+  // org-mode account both require the x-entity-team-id sub-team header.
+  let ecOrgMode = false;
+  if (inputs.workspaceTeamId) {
+    workspaceTeamId = parseInt(inputs.workspaceTeamId, 10);
+    if (Number.isNaN(workspaceTeamId)) {
+      throw new Error(`workspace-team-id must be a numeric sub-team ID, got: ${inputs.workspaceTeamId}`);
+    }
+    ecOrgMode = true;
+  }
+
+  // Org-mode detection: only check if we need to create a workspace (not reuse existing)
+  if (!workspaceId && !workspaceTeamId) {
+    try {
+      const teams = await dependencies.postman.getTeams();
+      if (teams.length > 1 && teams.every(t => t.organizationId == null)) {
+        dependencies.core.warning(
+          'GET /teams returned multiple teams but none include organizationId. ' +
+          'Org-mode detection may be degraded due to an upstream API change. ' +
+          'If workspace creation fails, set workspace-team-id explicitly.'
+        );
+      }
+      // Org-mode is a property of the account, not of the key's scope. Any team
+      // carrying a non-null organizationId means the parent account is org-mode,
+      // even if the PMAK is scoped to a single sub-team (typical for service
+      // accounts). POST /workspaces at the org level rejects these keys too.
+      const isOrgMode = teams.some(t => t.organizationId != null);
+      if (isOrgMode) {
+        ecOrgMode = true;
+      }
+
+      if (isOrgMode) {
+        if (teams.length === 1) {
+          // Unambiguous: only one sub-team the key can operate in.
+          workspaceTeamId = teams[0].id;
+          dependencies.core.info(
+            `Org-mode account detected. Using sub-team ${teams[0].id} (${teams[0].name}) for workspace creation.`
+          );
+        } else {
+          const teamList = teams
+            .map(t => `  ${t.id}  ${t.name}`)
+            .join('\n');
+          throw new Error(
+            `Org-mode account detected. Workspace creation requires a specific sub-team ID.\n\n` +
+            `Available sub-teams:\n${teamList}\n\n` +
+            `To fix this, set the workspace-team-id input in your workflow:\n` +
+            `  workspace-team-id: '<id>'\n\n` +
+            `Or for reuse across runs, create a repository variable and reference it:\n` +
+            `  workspace-team-id: \${{ vars.POSTMAN_WORKSPACE_TEAM_ID }}\n\n` +
+            `For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID=<id>.`
+          );
+        }
+      } else if (teams.length > 1) {
+        dependencies.core.warning(
+          `API key has access to ${teams.length} teams but org-mode could not be confirmed. ` +
+          `Proceeding without teamId. If workspace creation fails, set workspace-team-id explicitly.`
+        );
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('Org-mode account detected')) {
+        throw err;
+      }
+      dependencies.core.warning(
+        `Could not check for org-mode sub-teams: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  if (!workspaceId) {
+    const workspace = await runGroup(
+      dependencies.core,
+      'Create Postman Workspace',
+      async () => dependencies.postman.createWorkspace(workspaceName, aboutText, workspaceTeamId)
+    );
+    workspaceId = workspace.id;
+  } else {
+    // Reused workspaces skip createWorkspace's visibility enforcement, so a
+    // personal-visibility workspace minted by an earlier org-mode run without
+    // workspace-team-id would silently stay invisible to teammates and the
+    // API Catalog run after run. Surface that loudly.
+    const visibility = await dependencies.postman.getWorkspaceVisibility(workspaceId);
+    if (visibility && visibility !== 'team') {
+      dependencies.core.warning(
+        `Workspace ${workspaceId} has visibility '${visibility}', so it does not appear in the API Catalog ` +
+          'and teammates or other API keys cannot see it. This usually means an org-mode run created it ' +
+          'without workspace-team-id. Recreate it with workspace-team-id set (delete the workspace and ' +
+          'clear the POSTMAN_WORKSPACE_ID repository variable), or share it to the team from Workspace Settings.'
+      );
+    }
+  }
+
+  outputs['workspace-id'] = workspaceId || '';
+  outputs['workspace-url'] = `https://go.postman.co/workspace/${workspaceId}`;
+  outputs['workspace-name'] = workspaceName;
+
+  // Re-scope the EC (gRPC) gateway client to the workspace-owning sub-team. The
+  // client is constructed before team resolution with the parent-org teamId; on
+  // org-mode accounts the gateway requires the sub-team x-entity-team-id, so feed
+  // it the resolved sub-team (workspaceTeamId) and the independently-derived
+  // org-mode flag here, before any EC collection write.
+  if (dependencies.ecClient?.configureTeamContext) {
+    const ecTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
+    dependencies.ecClient.configureTeamContext(ecTeamId, ecOrgMode);
+  }
+
+  const governanceGroupName = await resolveGovernanceGroupName(inputs, dependencies);
+  const shouldAssignGovernance = Boolean(inputs.domain || governanceGroupName);
+
+  if (shouldAssignGovernance && dependencies.internalIntegration) {
+    await runGroup(
+      dependencies.core,
+      'Assign Workspace to Governance Group',
+      async () => {
+        try {
+          await dependencies.internalIntegration?.assignWorkspaceToGovernanceGroup(
+            workspaceId || '',
+            inputs.domain || '',
+            inputs.governanceMappingJson,
+            governanceGroupName
+          );
+        } catch (error) {
+          const session = getMemoizedSessionIdentity();
+          const advised =
+            error instanceof HttpError
+              ? adviseFromHttpError(error, {
+                  operation: 'governance assignment',
+                  hasAccessToken: Boolean(inputs.postmanAccessToken),
+                  sessionTeamId: session?.teamId,
+                  sessionRoles: session?.roles,
+                  sessionConsumerType: session?.consumerType,
+                  workspaceTeamId: inputs.workspaceTeamId,
+                  explicitTeamId: inputs.teamId || undefined,
+                  mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+                })
+              : undefined;
+          const reported = advised ?? error;
+          dependencies.core.warning(
+            `Failed to assign governance group: ${reported instanceof Error ? reported.message : String(reported)
+            }`
+          );
+        }
+      }
+    );
+  }
+
+  if (inputs.requesterEmail) {
+    await runGroup(
+      dependencies.core,
+      'Invite Requester to Workspace',
+      async () => {
+        try {
+          await dependencies.postman.inviteRequesterToWorkspace(
+            workspaceId || '',
+            inputs.requesterEmail || ''
+          );
+        } catch (error) {
+          dependencies.core.warning(
+            `Failed to invite requester: ${error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+    );
+  }
+
+  const adminIds = inputs.workspaceAdminUserIds || '';
+  if (adminIds) {
+    await runGroup(
+      dependencies.core,
+      'Add Team Admins to Workspace',
+      async () => {
+        try {
+          await dependencies.postman.addAdminsToWorkspace(workspaceId || '', adminIds);
+        } catch (error) {
+          dependencies.core.warning(
+            `Failed to add team admins: ${error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+    );
+  }
+
+  return workspaceId;
+}
+
+/**
+ * Multi-protocol contract path for non-OpenAPI specs (graphql/grpc/soap). Parses
+ * the spec, builds and instruments a Postman collection locally, creates it in
+ * the provisioned workspace, tags it, and records it as the contract collection.
+ * Reuses the same workspace provisioning as the OpenAPI path; it does not touch
+ * Spec Hub, breaking-change checks, or collection generation.
+ */
+async function runProtocolBootstrap(
+  specType: Exclude<SpecType, 'openapi'>,
+  rawSpecContent: string,
+  inputs: ResolvedInputs,
+  dependencies: BootstrapExecutionDependencies,
+  outputs: PlannedOutputs,
+  telemetry: TelemetryContext
+): Promise<PlannedOutputs> {
+  const workspaceName = createWorkspaceName(inputs);
+  const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
+  const resourcesState = readResourcesState();
+
+  const workspaceId = await provisionWorkspace(
+    inputs,
+    dependencies,
+    telemetry,
+    outputs,
+    resourcesState,
+    workspaceName,
+    aboutText
+  );
+
+  if (!dependencies.postman.createCollection) {
+    throw new Error('Multi-protocol contract generation requires createCollection support from the Postman client');
+  }
+
+  const built = await runGroup(
+    dependencies.core,
+    `Build ${specType.toUpperCase()} Contract Collection`,
+    async () =>
+      buildProtocolCollection(specType, rawSpecContent, {
+        name: inputs.projectName,
+        endpointUrl: inputs.protocolEndpointUrl,
+        schemaLocation: inputs.specPath || inputs.specUrl
+      })
+  );
+
+  for (const warning of built.warnings) {
+    dependencies.core.warning(warning);
+  }
+  dependencies.core.info(
+    `Generated ${built.operationCount} ${specType} contract item(s) (${built.format}). ` +
+      (built.runnableInCi
+        ? 'Runs in Postman CLI / Newman.'
+        : 'gRPC execution requires the grpc_protocol_execution_allowed account feature flag in Postman CLI.')
+  );
+
+  // v2.1.0 collections (graphql/soap) are created via the public collections
+  // API; v3/Extensible Collections (grpc) use the gateway EC API, which the
+  // public v2.1.0 endpoint rejects.
+  const contractCollectionId =
+    built.format === 'v3-ec'
+      ? await createExtensibleContractCollection(workspaceId || '', built, inputs, dependencies)
+      : await runGroup(
+          dependencies.core,
+          'Create Contract Collection',
+          async () => dependencies.postman.createCollection!(workspaceId || '', built.collection)
+        );
+
+  outputs['contract-collection-id'] = contractCollectionId;
+  outputs['collections-json'] = JSON.stringify({
+    baseline: '',
+    smoke: '',
+    contract: contractCollectionId
+  });
+
+  if (built.format !== 'v3-ec') {
+    await runGroup(
+      dependencies.core,
+      'Tag Contract Collection',
+      async () => {
+        try {
+          await dependencies.postman.tagCollection(contractCollectionId, ['generated-contract']);
+        } catch (error) {
+          dependencies.core.warning(
+            `Failed to tag contract collection ${contractCollectionId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    );
+  }
+
+  for (const [name, value] of Object.entries(outputs)) {
+    dependencies.core.setOutput(name, value);
+  }
+  return outputs;
+}
+
+/**
+ * Create a gRPC (v3/Extensible) contract collection through the gateway EC API.
+ * The collection is created empty, then each service folder and grpc-request
+ * item is materialized under it. Requires the EC client (access-token only).
+ *
+ * Idempotent refresh: an EC contract collection resolved from
+ * `contract-collection-id` or `.postman/resources.yaml` is deleted and rebuilt
+ * (the EC API has no in-place tree replace, so a clean rebuild is the honest
+ * refresh). Atomic: if populating the freshly created collection fails, the
+ * half-built collection is deleted before rethrowing so no orphaned, partially
+ * populated collection is left behind.
+ */
+async function createExtensibleContractCollection(
+  workspaceId: string,
+  built: ProtocolCollectionResult,
+  inputs: ResolvedInputs,
+  dependencies: BootstrapExecutionDependencies
+): Promise<string> {
+  if (!dependencies.ecClient) {
+    throw new Error(
+      'EC_REQUIRES_ACCESS_TOKEN: creating a gRPC (extensible) contract collection requires postman-access-token; ' +
+        'provide postman-access-token (resolve-service-token mints one) to enable the gRPC contract path.'
+    );
+  }
+  const ecClient = dependencies.ecClient;
+  const collectionInfo =
+    built.collection.info && typeof built.collection.info === 'object'
+      ? (built.collection.info as Record<string, unknown>)
+      : undefined;
+  const collectionName =
+    (typeof collectionInfo?.name === 'string' && collectionInfo.name.trim()) ||
+    `${inputs.projectName} Contract`;
+
+  // State chain: explicit input -> checked-out resources.yaml. An EC contract
+  // collection already on record is refreshed (delete-and-recreate).
+  let existingId = inputs.contractCollectionId?.trim() || undefined;
+  if (!existingId) {
+    existingId = findCloudResourceId(
+      readResourcesState()?.cloudResources?.collections,
+      (filePath) => filePath.includes(CONTRACT_COLLECTION_PREFIX)
+    );
+  }
+
+  return runGroup(
+    dependencies.core,
+    'Create gRPC Contract Collection',
+    async () => {
+      if (existingId) {
+        try {
+          await ecClient.deleteExtensibleCollection(existingId);
+          dependencies.core.info(
+            `Refreshing gRPC contract collection: deleted existing ${existingId} before rebuild.`
+          );
+        } catch (error) {
+          dependencies.core.warning(
+            `Could not delete existing gRPC contract collection ${existingId} for refresh ` +
+              `(${error instanceof Error ? error.message : String(error)}); creating a new one.`
+          );
+        }
+      }
+
+      const collectionId = await ecClient.createExtensibleCollection(workspaceId, {
+        name: collectionName
+      });
+      let leafCount: number;
+      try {
+        leafCount = await ecClient.populateFromTree(collectionId, built.collection);
+      } catch (error) {
+        // Atomic: never leave a half-populated collection behind.
+        try {
+          await ecClient.deleteExtensibleCollection(collectionId);
+          dependencies.core.warning(
+            `Populating gRPC contract collection ${collectionId} failed; deleted the partial collection.`
+          );
+        } catch (cleanupError) {
+          dependencies.core.warning(
+            `Populating gRPC contract collection ${collectionId} failed and cleanup also failed ` +
+              `(${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}); ` +
+              `delete collection ${collectionId} manually.`
+          );
+        }
+        throw error;
+      }
+      dependencies.core.info(
+        `Created gRPC extensible collection ${collectionId} with ${leafCount} request item(s).`
+      );
+      return collectionId;
+    }
+  );
+}
+
 async function runBootstrapInner(
   inputs: ResolvedInputs,
   dependencies: BootstrapExecutionDependencies,
@@ -1029,14 +1487,68 @@ async function runBootstrapInner(
   let detectedOpenapiVersion: '3.0' | '3.1' = '3.0';
   let contractIndex: ContractIndex | undefined;
   let sourceSpecContent = '';
+
+  // Detect the spec protocol before any OpenAPI-specific work. Only `openapi`
+  // flows through Spec Hub; graphql/grpc/soap are handled by the protocol path.
+  // The URL read goes through the same SSRF-guarded fetch the OpenAPI loader
+  // uses (so private-host/redirect protections still fire); a custom injected
+  // fetcher (tests) is delegated to verbatim.
+  const rawSpecContent = await runGroup(
+    dependencies.core,
+    'Read API Spec',
+    async () => {
+      if (inputs.specPath) {
+        const workspaceRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+        return readFileSync(path.resolve(workspaceRoot, inputs.specPath), 'utf8');
+      }
+      if (dependencies.specFetcher === fetch) {
+        return safeFetchText(inputs.specUrl, { depth: 0 });
+      }
+      return fetchSpecDocument(inputs.specUrl, dependencies.specFetcher);
+    }
+  );
+  const specSourceName = inputs.specPath || inputs.specUrl;
+  const resolvedSpecType: SpecType =
+    inputs.protocol && inputs.protocol !== 'auto'
+      ? inputs.protocol
+      : detectSpecType(rawSpecContent, specSourceName);
+  if (resolvedSpecType !== 'openapi') {
+    dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
+    return runProtocolBootstrap(
+      resolvedSpecType,
+      rawSpecContent,
+      inputs,
+      dependencies,
+      outputs,
+      telemetry
+    );
+  }
+
   const specContent = await runGroup(
     dependencies.core,
     'Preflight OpenAPI Contract',
     async () => {
+      // Reuse the already-fetched root bytes for the root resource so the spec
+      // is read exactly once; external $refs still flow through the real fetcher
+      // (or the SSRF-guarded default, preserving the loader's fetch options).
+      // The loader normalizes the root URL (drops the hash) before calling
+      // fetchText, so match on the same normalized form.
+      const normalizeRef = (value: string): string => {
+        try {
+          const u = new URL(value);
+          u.hash = '';
+          return u.toString();
+        } catch {
+          return value;
+        }
+      };
+      const rootKey = inputs.specPath ? undefined : normalizeRef(inputs.specUrl);
       const loaderOptions = {
-        fetchText: dependencies.specFetcher === fetch
-          ? undefined
-          : async (url: string) => fetchSpecDocument(url, dependencies.specFetcher)
+        fetchText: async (url: string, fetchOptions: Parameters<typeof safeFetchText>[1]) => {
+          if (rootKey && normalizeRef(url) === rootKey) return rawSpecContent;
+          if (dependencies.specFetcher === fetch) return safeFetchText(url, fetchOptions);
+          return fetchSpecDocument(url, dependencies.specFetcher);
+        }
       };
       const loaded = inputs.specPath
         ? await loadOpenApiContractSpecFromPath(inputs.specPath, loaderOptions)
@@ -1117,219 +1629,15 @@ async function runBootstrapInner(
     );
   }
 
-  let explicitWorkspaceId = inputs.workspaceId;
-  if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
-    explicitWorkspaceId = resourcesState.workspace.id;
-    dependencies.core.info('Resolved workspace-id from .postman/resources.yaml');
-  }
-
-  const repoWorkspaceId = explicitWorkspaceId;
-  let workspaceId = explicitWorkspaceId;
-
-  let teamId = inputs.teamId || '';
-  if (!teamId) {
-    teamId = await dependencies.postman.getAutoDerivedTeamId() || '';
-  }
-  telemetry.setTeamId(teamId);
-  const repoUrl = inputs.repoUrl || '';
-
-  if (!explicitWorkspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
-    const selection = await runGroup(
-      dependencies.core,
-      'Resolve Canonical Workspace',
-      async () => resolveCanonicalWorkspaceSelection({
-        postman: dependencies.postman,
-        workspaceName,
-        repoWorkspaceId,
-        repoUrl,
-        teamId,
-        accessToken: inputs.postmanAccessToken!,
-        warn: (msg) => dependencies.core.warning(msg),
-      })
-    );
-
-    if (selection.type === 'existing') {
-      workspaceId = selection.workspaceId;
-      if (selection.warning) {
-        dependencies.core.warning(selection.warning);
-      }
-      dependencies.core.info(`Using canonical workspace (${selection.source}): ${workspaceId}`);
-    } else if (selection.type === 'manual_review') {
-      throw new Error(`Workspace selection requires manual review: ${selection.reason}`);
-    } else {
-      workspaceId = undefined;
-    }
-  } else if (workspaceId) {
-    dependencies.core.info(`Using existing workspace: ${workspaceId}`);
-  }
-
-  // Parse workspace-team-id from already-resolved inputs
-  let workspaceTeamId: number | undefined;
-  if (inputs.workspaceTeamId) {
-    workspaceTeamId = parseInt(inputs.workspaceTeamId, 10);
-    if (Number.isNaN(workspaceTeamId)) {
-      throw new Error(`workspace-team-id must be a numeric sub-team ID, got: ${inputs.workspaceTeamId}`);
-    }
-  }
-
-  // Org-mode detection: only check if we need to create a workspace (not reuse existing)
-  if (!workspaceId && !workspaceTeamId) {
-    try {
-      const teams = await dependencies.postman.getTeams();
-      if (teams.length > 1 && teams.every(t => t.organizationId == null)) {
-        dependencies.core.warning(
-          'GET /teams returned multiple teams but none include organizationId. ' +
-          'Org-mode detection may be degraded due to an upstream API change. ' +
-          'If workspace creation fails, set workspace-team-id explicitly.'
-        );
-      }
-      // Org-mode is a property of the account, not of the key's scope. Any team
-      // carrying a non-null organizationId means the parent account is org-mode,
-      // even if the PMAK is scoped to a single sub-team (typical for service
-      // accounts). POST /workspaces at the org level rejects these keys too.
-      const isOrgMode = teams.some(t => t.organizationId != null);
-
-      if (isOrgMode) {
-        if (teams.length === 1) {
-          // Unambiguous: only one sub-team the key can operate in.
-          workspaceTeamId = teams[0].id;
-          dependencies.core.info(
-            `Org-mode account detected. Using sub-team ${teams[0].id} (${teams[0].name}) for workspace creation.`
-          );
-        } else {
-          const teamList = teams
-            .map(t => `  ${t.id}  ${t.name}`)
-            .join('\n');
-          throw new Error(
-            `Org-mode account detected. Workspace creation requires a specific sub-team ID.\n\n` +
-            `Available sub-teams:\n${teamList}\n\n` +
-            `To fix this, set the workspace-team-id input in your workflow:\n` +
-            `  workspace-team-id: '<id>'\n\n` +
-            `Or for reuse across runs, create a repository variable and reference it:\n` +
-            `  workspace-team-id: \${{ vars.POSTMAN_WORKSPACE_TEAM_ID }}\n\n` +
-            `For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID=<id>.`
-          );
-        }
-      } else if (teams.length > 1) {
-        dependencies.core.warning(
-          `API key has access to ${teams.length} teams but org-mode could not be confirmed. ` +
-          `Proceeding without teamId. If workspace creation fails, set workspace-team-id explicitly.`
-        );
-      }
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('Org-mode account detected')) {
-        throw err;
-      }
-      dependencies.core.warning(
-        `Could not check for org-mode sub-teams: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  }
-
-  if (!workspaceId) {
-    const workspace = await runGroup(
-      dependencies.core,
-      'Create Postman Workspace',
-      async () => dependencies.postman.createWorkspace(workspaceName, aboutText, workspaceTeamId)
-    );
-    workspaceId = workspace.id;
-  } else {
-    // Reused workspaces skip createWorkspace's visibility enforcement, so a
-    // personal-visibility workspace minted by an earlier org-mode run without
-    // workspace-team-id would silently stay invisible to teammates and the
-    // API Catalog run after run. Surface that loudly.
-    const visibility = await dependencies.postman.getWorkspaceVisibility(workspaceId);
-    if (visibility && visibility !== 'team') {
-      dependencies.core.warning(
-        `Workspace ${workspaceId} has visibility '${visibility}', so it does not appear in the API Catalog ` +
-          'and teammates or other API keys cannot see it. This usually means an org-mode run created it ' +
-          'without workspace-team-id. Recreate it with workspace-team-id set (delete the workspace and ' +
-          'clear the POSTMAN_WORKSPACE_ID repository variable), or share it to the team from Workspace Settings.'
-      );
-    }
-  }
-
-  outputs['workspace-id'] = workspaceId || '';
-  outputs['workspace-url'] = `https://go.postman.co/workspace/${workspaceId}`;
-  outputs['workspace-name'] = workspaceName;
-
-  const governanceGroupName = await resolveGovernanceGroupName(inputs, dependencies);
-  const shouldAssignGovernance = Boolean(inputs.domain || governanceGroupName);
-
-  if (shouldAssignGovernance && dependencies.internalIntegration) {
-    await runGroup(
-      dependencies.core,
-      'Assign Workspace to Governance Group',
-      async () => {
-        try {
-          await dependencies.internalIntegration?.assignWorkspaceToGovernanceGroup(
-            workspaceId || '',
-            inputs.domain || '',
-            inputs.governanceMappingJson,
-            governanceGroupName
-          );
-        } catch (error) {
-          const session = getMemoizedSessionIdentity();
-          const advised =
-            error instanceof HttpError
-              ? adviseFromHttpError(error, {
-                  operation: 'governance assignment',
-                  hasAccessToken: Boolean(inputs.postmanAccessToken),
-                  sessionTeamId: session?.teamId,
-                  sessionRoles: session?.roles,
-                  sessionConsumerType: session?.consumerType,
-                  workspaceTeamId: inputs.workspaceTeamId,
-                  explicitTeamId: inputs.teamId || undefined,
-                  mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
-                })
-              : undefined;
-          const reported = advised ?? error;
-          dependencies.core.warning(
-            `Failed to assign governance group: ${reported instanceof Error ? reported.message : String(reported)
-            }`
-          );
-        }
-      }
-    );
-  }
-
-  if (inputs.requesterEmail) {
-    await runGroup(
-      dependencies.core,
-      'Invite Requester to Workspace',
-      async () => {
-        try {
-          await dependencies.postman.inviteRequesterToWorkspace(
-            workspaceId || '',
-            inputs.requesterEmail || ''
-          );
-        } catch (error) {
-          dependencies.core.warning(
-            `Failed to invite requester: ${error instanceof Error ? error.message : String(error)
-            }`
-          );
-        }
-      }
-    );
-  }
-
-  const adminIds = inputs.workspaceAdminUserIds || '';
-  if (adminIds) {
-    await runGroup(
-      dependencies.core,
-      'Add Team Admins to Workspace',
-      async () => {
-        try {
-          await dependencies.postman.addAdminsToWorkspace(workspaceId || '', adminIds);
-        } catch (error) {
-          dependencies.core.warning(
-            `Failed to add team admins: ${error instanceof Error ? error.message : String(error)
-            }`
-          );
-        }
-      }
-    );
-  }
+  const workspaceId = await provisionWorkspace(
+    inputs,
+    dependencies,
+    telemetry,
+    outputs,
+    resourcesState,
+    workspaceName,
+    aboutText
+  );
 
   let baselineCollectionId = inputs.baselineCollectionId;
   let smokeCollectionId = inputs.smokeCollectionId;
@@ -2024,6 +2332,19 @@ export function createBootstrapDependencies(
         teamId: inputs.teamId || ''
       })
       : undefined;
+  // gRPC contract collections use the v3/Extensible Collection schema, which the
+  // public v2.1.0 collections API rejects; they are created through the gateway
+  // EC API instead, which is access-token only.
+  const ecClient =
+    inputs.postmanAccessToken
+      ? new PostmanExtensibleCollectionClient({
+        accessToken: inputs.postmanAccessToken,
+        bifrostBaseUrl: inputs.postmanBifrostBase,
+        orgMode,
+        secretMasker,
+        teamId: inputs.teamId || ''
+      })
+      : undefined;
   const github =
     (inputs.githubToken || inputs.ghFallbackToken) && inputs.repoSlug
       ? new GitHubApiClient({
@@ -2036,6 +2357,7 @@ export function createBootstrapDependencies(
 
   return {
     core: factories.core,
+    ecClient,
     exec: factories.exec,
     github,
     io: factories.io,

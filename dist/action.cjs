@@ -94149,7 +94149,9 @@ function detectSpecType(content, fileName) {
   if (/^\s*syntax\s*=\s*["']proto[23]["']/m.test(text) || /\bservice\s+\w+\s*\{[\s\S]*\brpc\b/.test(text)) {
     return "grpc";
   }
-  if (/^\s*(?:"""[\s\S]*?"""\s*)?(?:extend\s+)?(?:type|schema|interface|enum|union|scalar|input|directive)\b/m.test(text)) {
+  if (/^\s*(?:"""[\s\S]*?"""\s*)?(?:extend\s+)?(?:(?:type|interface|enum|union|scalar|input)\s+[A-Za-z_]|schema\s*\{|directive\s+@)/m.test(
+    text
+  )) {
     return "graphql";
   }
   return "openapi";

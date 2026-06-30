@@ -60,8 +60,17 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
     return 'grpc';
   }
 
-  // GraphQL SDL: a type-system definition (type/schema/interface/enum/union/scalar/input).
-  if (/^\s*(?:"""[\s\S]*?"""\s*)?(?:extend\s+)?(?:type|schema|interface|enum|union|scalar|input|directive)\b/m.test(text)) {
+  // GraphQL SDL: a type-system definition. Match the DEFINITION syntax, not the
+  // bare keyword: SDL writes `type Name`, `enum Name`, `schema {`, `directive @x`
+  // -- keyword followed by an identifier, a brace, or `@`. A bare `\b` boundary
+  // would also fire on a YAML mapping key (`type:`, `enum:`), which every OpenAPI
+  // YAML spec has in abundance, misclassifying it as GraphQL. Requiring the
+  // post-keyword name/brace/at keeps SDL matches while ignoring YAML keys.
+  if (
+    /^\s*(?:"""[\s\S]*?"""\s*)?(?:extend\s+)?(?:(?:type|interface|enum|union|scalar|input)\s+[A-Za-z_]|schema\s*\{|directive\s+@)/m.test(
+      text
+    )
+  ) {
     return 'graphql';
   }
 

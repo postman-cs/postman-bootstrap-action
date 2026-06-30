@@ -41,6 +41,8 @@ function makeGateway(overrides: Partial<Record<keyof PostmanGatewayAssetsClient,
     getWorkspaceVisibility: vi.fn(async () => 'team'),
     getWorkspaceGitRepoUrl: vi.fn(async () => 'https://github.com/acme/gw'),
     findWorkspacesByName: vi.fn(async () => [{ id: 'g', name: 'n' }]),
+    injectTests: vi.fn(async () => undefined),
+    tagCollection: vi.fn(async () => undefined),
     configureTeamContext: vi.fn(),
     ...overrides
   };
@@ -98,16 +100,26 @@ describe('createRoutingPostmanClient', () => {
     expect(pmak.getWorkspaceVisibility).toHaveBeenCalled();
   });
 
-  it('PMAK-only routes (injectTests, tagCollection, getTeams) always use the PMAK client even with a gateway', async () => {
+  it('injectTests and tagCollection are gateway-only (never fall back to PMAK)', async () => {
     const pmak = makePmak();
     const gateway = makeGateway();
     const facade = createRoutingPostmanClient({ gateway, pmak, hasPmak: true, log: makeLog() });
 
     await facade.injectTests('uid', 'smoke');
     await facade.tagCollection('uid', ['x']);
+    expect(gateway.injectTests).toHaveBeenCalledWith('uid', 'smoke');
+    expect(gateway.tagCollection).toHaveBeenCalledWith('uid', ['x']);
+    // PMAK reserved for token minting: asset mutation never touches it.
+    expect(pmak.injectTests).not.toHaveBeenCalled();
+    expect(pmak.tagCollection).not.toHaveBeenCalled();
+  });
+
+  it('getTeams stays on the PMAK client (no verified gateway equivalent)', async () => {
+    const pmak = makePmak();
+    const gateway = makeGateway();
+    const facade = createRoutingPostmanClient({ gateway, pmak, hasPmak: true, log: makeLog() });
+
     await facade.getTeams();
-    expect(pmak.injectTests).toHaveBeenCalled();
-    expect(pmak.tagCollection).toHaveBeenCalled();
     expect(pmak.getTeams).toHaveBeenCalled();
   });
 

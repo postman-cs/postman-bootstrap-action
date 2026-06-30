@@ -189,4 +189,78 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(await client.getWorkspaceGitRepoUrl('ws-1')).toBeNull();
     });
   });
+
+  describe('tagCollection', () => {
+    it('PUTs to the tagging service with the full uid and slug-only tag bodies', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({ tags: [{ slug: 'generated-smoke' }] }));
+      await client.tagCollection('55363555-abc', ['Generated Smoke', 'generated-smoke']);
+      expect(calls[0]).toMatchObject({
+        service: 'tagging',
+        method: 'put',
+        path: '/v1/tags/collections/55363555-abc'
+      });
+      // slugs are normalized; no `type` field is sent (server assigns it).
+      expect(calls[0].body).toEqual({ tags: [{ slug: 'generated-smoke' }, { slug: 'generated-smoke' }] });
+    });
+
+    it('throws when no valid slug survives normalization', async () => {
+      const { client } = makeClient(() => jsonResponse({}));
+      await expect(client.tagCollection('uid', ['!!!'])).rejects.toThrow(/No valid tag slugs/);
+    });
+  });
+
+  describe('injectTests', () => {
+    it('patches /scripts (canonical v3 shape) on each http-request leaf and creates the secrets resolver', async () => {
+      const items = [
+        { id: '55363555-leaf-1', $kind: 'http-request', name: 'Ping' },
+        { id: '55363555-ex-1', $kind: 'http-example', name: 'OK' },
+        { id: '55363555-leaf-2', $kind: 'http-request', name: 'Pong' }
+      ];
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get') return jsonResponse({ data: items });
+        if (env.method === 'post') return jsonResponse({ data: { id: '55363555-secrets' } });
+        return jsonResponse({ data: { id: 'patched' } });
+      });
+
+      await client.injectTests('55363555-model-9', 'smoke');
+
+      // 1) list on the bare model id with trailing slash
+      expect(calls[0]).toMatchObject({
+        service: 'collection',
+        method: 'get',
+        path: '/v3/collections/model-9/items/'
+      });
+      // 2) one /scripts PATCH per http-request leaf (full uid, afterResponse shape)
+      const leafPatches = calls.filter((c) => c.method === 'patch' && /\/items\/55363555-leaf-/.test(c.path));
+      expect(leafPatches).toHaveLength(2);
+      const patch = leafPatches[0].body as Array<{ op: string; path: string; value: Array<{ type: string; code: string; language: string }> }>;
+      expect(patch[0]).toMatchObject({ op: 'add', path: '/scripts' });
+      expect(patch[0].value[0]).toMatchObject({ type: 'afterResponse', language: 'text/javascript' });
+      expect(patch[0].value[0].code).toContain('pm.test');
+      // 3) resolve-secrets created with payload-wrapped headers/body/auth, then scripted
+      const create = calls.find((c) => c.method === 'post');
+      expect(create?.path).toBe('/v3/collections/model-9/items/');
+      const createBody = create?.body as { name: string; payload: { auth: { type: string } } };
+      expect(createBody.name).toBe('00 - Resolve Secrets');
+      expect(createBody.payload.auth.type).toBe('awsv4');
+      const secretsPatch = calls.find((c) => c.method === 'patch' && /\/items\/55363555-secrets$/.test(c.path));
+      expect((secretsPatch?.body as Array<{ path: string }>)[0].path).toBe('/scripts');
+    });
+
+    it('is idempotent: skips the create when a secrets resolver already exists', async () => {
+      const items = [
+        { id: '55363555-leaf-1', $kind: 'http-request', name: 'Ping' },
+        { id: '55363555-secrets', $kind: 'http-request', name: '00 - Resolve Secrets' }
+      ];
+      const { client, calls } = makeClient((env) =>
+        env.method === 'get' ? jsonResponse({ data: items }) : jsonResponse({ data: { id: 'p' } })
+      );
+      await client.injectTests('55363555-model-9', 'smoke');
+      // no create when the resolver is already present
+      expect(calls.some((c) => c.method === 'post')).toBe(false);
+      // the existing resolver leaf is NOT re-scripted as a normal leaf
+      expect(calls.filter((c) => c.method === 'patch')).toHaveLength(1);
+      expect(calls.find((c) => c.method === 'patch')?.path).toBe('/v3/collections/model-9/items/55363555-leaf-1');
+    });
+  });
 });

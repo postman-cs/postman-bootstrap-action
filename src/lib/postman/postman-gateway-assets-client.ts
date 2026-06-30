@@ -350,4 +350,175 @@ export class PostmanGatewayAssetsClient {
       throw error;
     }
   }
+
+  // --- collection v3 mutation + tagging (live-proven 2026-06-30; see docs/REST-to-gateway.md) ---
+  //
+  // These retire bootstrap's last asset-op PMAK dependencies. The gateway keys
+  // the v3 collection-items surface on the BARE model id (strip the `<owner>-`
+  // prefix) with a trailing slash; the tagging service is distinct from the
+  // collection service and takes the FULL uid.
+
+  /** `<owner>-<uuid>` public uid -> bare `<uuid>` model id (the v3 items surface keys on it). */
+  private bareModelId(uid: string): string {
+    const u = String(uid ?? '').trim();
+    return u.includes('-') ? u.slice(u.indexOf('-') + 1) : u;
+  }
+
+  /**
+   * Apply tag slugs via the dedicated `tagging` service:
+   * `PUT /v1/tags/collections/:uid` (full uid), body `{ tags:[{ slug }] }` — the
+   * server assigns `type:'default'` (sending `type` is rejected by its schema).
+   * Slug normalization mirrors the PMAK client.
+   */
+  async tagCollection(collectionUid: string, tags: string[]): Promise<void> {
+    const normalized = tags
+      .map((entry) =>
+        String(entry || '')
+          .toLowerCase()
+          .trim()
+          .replace(/[^a-z0-9-]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+      )
+      .filter((entry) => /^[a-z][a-z0-9-]*[a-z0-9]$/.test(entry));
+    if (normalized.length === 0) {
+      throw new Error(`No valid tag slugs to apply for collection ${collectionUid}`);
+    }
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'tagging',
+      method: 'put',
+      path: `/v1/tags/collections/${collectionUid}`,
+      body: { tags: normalized.map((slug) => ({ slug })) }
+    });
+  }
+
+  /**
+   * Inject smoke-test assertions into every leaf request of a spec-generated
+   * collection, over the v3 collection-items surface (no PMAK):
+   *   1. `GET /v3/collections/:cid/items/` (bare model id, trailing slash) — flat list.
+   *   2. for each `http-request` leaf, `PATCH /v3/collections/:cid/items/:itemId`
+   *      (full uid for `:itemId`, `X-Entity-Type: http-request` header) with a
+   *      JSON-Patch that sets `/scripts` to the canonical v3 shape
+   *      (`[{type:'afterResponse', code, language}]`). The v3 surface persists test
+   *      scripts under `scripts`, NOT `events`: a `/events` patch returns 200 but is
+   *      silently dropped, and a `/scripts/test` or `{test:{exec}}` shape is rejected
+   *      (REJECTED_PATCH / SCHEMA_ENFORCED). `listen:'test'` → `type:'afterResponse'`
+   *      and the `exec` array is `\n`-joined into `code`
+   *      (mirrors `schema-normalize.ts:convertECEventsToV3Scripts`).
+   *   3. prepend a `00 - Resolve Secrets` item (idempotent) via
+   *      `POST /v3/collections/:cid/items/` with `position.parent` = the collection.
+   */
+  async injectTests(collectionUid: string, type: 'smoke'): Promise<void> {
+    void type;
+    const cid = this.bareModelId(collectionUid);
+    const listed = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'get',
+      path: `/v3/collections/${cid}/items/`
+    });
+    const items = Array.isArray(listed?.data) ? (listed!.data as JsonRecord[]) : [];
+
+    const smokeTests = [
+      '// [Smoke] Auto-generated test assertions',
+      '',
+      "pm.test('Status code is successful (2xx)', function () {",
+      '    pm.response.to.be.success;',
+      '});',
+      '',
+      "pm.test('Response time is acceptable', function () {",
+      "    var threshold = parseInt(pm.environment.get('RESPONSE_TIME_THRESHOLD') || '2000', 10);",
+      '    pm.expect(pm.response.responseTime).to.be.below(threshold);',
+      '});',
+      '',
+      "pm.test('Response body is not empty', function () {",
+      '    if (pm.response.code !== 204) {',
+      '        var body = pm.response.text();',
+      '        pm.expect(body.length).to.be.above(0);',
+      '    }',
+      '});'
+    ];
+
+    // Canonical v3 item scripts: a single `afterResponse` (test) script with the
+    // exec lines joined into `code`.
+    const toV3Scripts = (exec: string[]): JsonRecord[] => [
+      { type: 'afterResponse', code: exec.join('\n'), language: 'text/javascript' }
+    ];
+
+    for (const item of items) {
+      if (String(item.$kind ?? '') !== 'http-request') continue;
+      if (String(item.name ?? '') === '00 - Resolve Secrets') continue;
+      const itemId = String(item.id ?? '').trim();
+      if (!itemId) continue;
+      // `add` on `/scripts` sets the test script; reruns overwrite it (no dupes).
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'patch',
+        path: `/v3/collections/${cid}/items/${itemId}`,
+        headers: { 'X-Entity-Type': 'http-request' },
+        body: [{ op: 'add', path: '/scripts', value: toV3Scripts(smokeTests) }]
+      });
+    }
+
+    // Idempotent: skip if a prior run already created the secrets resolver.
+    if (items.some((i) => String(i.name ?? '') === '00 - Resolve Secrets')) return;
+    // Create shape (live-proven): `method`/`url` top-level, the rest of the request
+    // internals (`headers`/`body`/`auth`) nested under `payload`. A flat top-level
+    // `auth` is rejected (500), and `/body`,`/auth`,`/payload` PATCHes are rejected
+    // (400) — so request internals must go in on create, not via a follow-up patch.
+    // The server assigns the id and echoes `{ id, createdAt }` only.
+    const created = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'post',
+      path: `/v3/collections/${cid}/items/`,
+      headers: { 'X-Entity-Type': 'http-request' },
+      body: {
+        $kind: 'http-request',
+        name: '00 - Resolve Secrets',
+        method: 'POST',
+        url: 'https://secretsmanager.{{AWS_REGION}}.amazonaws.com',
+        payload: {
+          headers: [
+            { key: 'X-Amz-Target', value: 'secretsmanager.GetSecretValue' },
+            { key: 'Content-Type', value: 'application/x-amz-json-1.1' }
+          ],
+          body: { mode: 'raw', raw: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
+          auth: {
+            type: 'awsv4',
+            awsv4: [
+              { key: 'accessKey', value: '{{AWS_ACCESS_KEY_ID}}' },
+              { key: 'secretKey', value: '{{AWS_SECRET_ACCESS_KEY}}' },
+              { key: 'region', value: '{{AWS_REGION}}' },
+              { key: 'service', value: 'secretsmanager' }
+            ]
+          }
+        },
+        position: { parent: { id: cid, $kind: 'collection' } }
+      }
+    });
+    // List + create echo item ids as full uids, and `:itemId` PATCH wants the full
+    // uid (bare model id only for `:cid`) — use the created id verbatim, do NOT bare it.
+    const newItemId = String(asRecord(created?.data)?.id ?? '').trim();
+    if (!newItemId) return;
+    // Attach the secrets-resolution test script (CI-skipped) as a canonical v3
+    // afterResponse script — same `/scripts` shape as the leaf assertions.
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'patch',
+      path: `/v3/collections/${cid}/items/${newItemId}`,
+      headers: { 'X-Entity-Type': 'http-request' },
+      body: [
+        {
+          op: 'add',
+          path: '/scripts',
+          value: toV3Scripts([
+            'if (pm.environment.get("CI") === "true") { return; }',
+            'const body = pm.response.json();',
+            'if (body.SecretString) {',
+            '  const secrets = JSON.parse(body.SecretString);',
+            '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
+            '}'
+          ])
+        }
+      ]
+    });
+  }
 }

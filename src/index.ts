@@ -2453,14 +2453,18 @@ export function createRoutingPostmanClient(options: {
       prefer('workspace lookup', () => gateway.findWorkspacesByName(name), () => pmak.findWorkspacesByName(name)),
     configureTeamContext: (teamId, orgMode) => gateway.configureTeamContext(teamId, orgMode),
 
+    // gateway-only (no PMAK fallback): asset mutation over the v3 collection-items
+    // + tagging surfaces (live-proven). PMAK is reserved for token minting, so
+    // these never fall back to the API key even when one is present.
+    injectTests: (collectionId, type) => gateway.injectTests(collectionId, type),
+    tagCollection: (collectionId, tags) => gateway.tagCollection(collectionId, tags),
+
     // PMAK-only routes (no verified gateway equivalent): delegate straight through.
     addAdminsToWorkspace: bind('addAdminsToWorkspace'),
     getAutoDerivedTeamId: bind('getAutoDerivedTeamId'),
     getSpecContent: bind('getSpecContent'),
     getTeams: bind('getTeams'),
-    injectTests: bind('injectTests'),
     inviteRequesterToWorkspace: bind('inviteRequesterToWorkspace'),
-    tagCollection: bind('tagCollection'),
     updateSpec: bind('updateSpec'),
     createCollection: bind('createCollection'),
     deleteCollection: bind('deleteCollection'),

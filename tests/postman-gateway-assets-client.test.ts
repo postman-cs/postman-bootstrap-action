@@ -4,8 +4,6 @@ import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
 
-const GATEWAY = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
-
 interface Envelope {
   service: string;
   method: string;

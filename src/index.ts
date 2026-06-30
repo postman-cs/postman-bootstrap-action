@@ -33,10 +33,13 @@ import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
+import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
+import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
+import { AccessTokenProvider } from './lib/postman/token-provider.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
-import { createSecretMasker } from './lib/secrets.js';
+import { createSecretMasker, createMutableSecretMasker } from './lib/secrets.js';
 import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
 import { instrumentContractCollection } from './lib/spec/collection-contracts.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
@@ -181,7 +184,11 @@ export interface BootstrapExecutionDependencies {
     | 'uploadSpec'
     | 'updateSpec'
   > &
-    Partial<Pick<PostmanAssetsClient, 'createCollection' | 'deleteCollection' | 'getCollection' | 'updateCollection'>>;
+    Partial<Pick<PostmanAssetsClient, 'createCollection' | 'deleteCollection' | 'getCollection' | 'updateCollection'>> &
+    // The routing facade may carry an access-token gateway client whose team
+    // context is re-scoped after team resolution (org-mode sub-team). Absent on
+    // a plain PMAK client.
+    { configureTeamContext?(teamId: string, orgMode: boolean): void };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,
     | 'createExtensibleCollection'
@@ -202,6 +209,12 @@ export interface BootstrapDependencyFactories {
   exec: ExecLike;
   io: IOLike;
   specFetcher?: typeof fetch;
+  /**
+   * Registers a re-minted access token with the Actions log scrubber. Wired from
+   * `actionCore.setSecret` in runAction so refreshed tokens are masked in logs;
+   * defaults to a no-op for the CLI path (which has no GitHub log scrubber).
+   */
+  setSecret?: (secret: string) => void;
 }
 
 function normalizeInputValue(value: string | undefined): string | undefined {
@@ -1178,6 +1191,12 @@ async function provisionWorkspace(
   if (dependencies.ecClient?.configureTeamContext) {
     const ecTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
     dependencies.ecClient.configureTeamContext(ecTeamId, ecOrgMode);
+  }
+  // Re-scope the access-token gateway asset client to the same sub-team so an
+  // org-mode spec create/generate carries the correct x-entity-team-id.
+  if (dependencies.postman.configureTeamContext) {
+    const gatewayTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
+    dependencies.postman.configureTeamContext(gatewayTeamId, ecOrgMode);
   }
 
   const governanceGroupName = await resolveGovernanceGroupName(inputs, dependencies);
@@ -2293,7 +2312,8 @@ export async function runAction(
     core: actionCore,
     exec: actionExec,
     io: actionIo,
-    specFetcher: fetch
+    specFetcher: fetch,
+    setSecret: (secret: string) => actionCore.setSecret(secret)
   }, orgMode);
 
   if ((inputs.domain || inputs.governanceGroup) && !dependencies.internalIntegration) {
@@ -2305,25 +2325,163 @@ export async function runAction(
   return runBootstrap(inputs, dependencies);
 }
 
+/**
+ * Build the routing `postman` facade. When an access token is present the
+ * gateway-assets client is preferred for the routes it implements
+ * (spec lifecycle + workspace reads); every other operation, and any gateway
+ * failure when a PMAK is available, falls through to the PMAK client. A
+ * PMAK-only run (no gateway) is identical to the pre-migration behaviour, and an
+ * access-token-only run (no PMAK) surfaces the gateway error rather than masking
+ * it. Mirrors the no-regression failure matrix in the migration plan.
+ */
+export function createRoutingPostmanClient(options: {
+  gateway?: PostmanGatewayAssetsClient;
+  pmak: PostmanAssetsClient;
+  hasPmak: boolean;
+  log: Pick<CoreLike, 'info' | 'warning'>;
+}): BootstrapExecutionDependencies['postman'] {
+  const { gateway, pmak, hasPmak, log } = options;
+  const bind = <K extends keyof PostmanAssetsClient>(name: K): PostmanAssetsClient[K] =>
+    (pmak[name] as { bind(thisArg: unknown): PostmanAssetsClient[K] }).bind(pmak);
+
+  if (!gateway) {
+    // Pure PMAK path: hand back the real client (plus a no-op team-context hook).
+    return Object.assign(pmak, {
+      configureTeamContext: (_teamId: string, _orgMode: boolean): void => {
+        void _teamId;
+        void _orgMode;
+      }
+    });
+  }
+
+  // Prefer the gateway for a throwing route; on failure fall back to PMAK when a
+  // key is available, otherwise rethrow (access-token-only runs see the error).
+  const prefer = async <T>(label: string, gatewayFn: () => Promise<T>, pmakFn: () => Promise<T>): Promise<T> => {
+    try {
+      return await gatewayFn();
+    } catch (error) {
+      if (!hasPmak) {
+        throw error;
+      }
+      log.warning(`postman: gateway ${label} failed; falling back to the API key. ${secretSafeMessage(error)}`);
+      return pmakFn();
+    }
+  };
+
+  return {
+    // gateway-primary (verified live), PMAK fallback
+    uploadSpec: (workspaceId, projectName, specContent, openapiVersion) =>
+      prefer(
+        'spec upload',
+        () => gateway.uploadSpec(workspaceId, projectName, specContent, openapiVersion ?? '3.0'),
+        () => pmak.uploadSpec(workspaceId, projectName, specContent, openapiVersion)
+      ),
+    generateCollection: (specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) =>
+      prefer(
+        'collection generation',
+        () => gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
+        () => pmak.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource)
+      ),
+    // best-effort gateway reads: fall back to PMAK when the gateway cannot read.
+    getWorkspaceVisibility: async (workspaceId) => {
+      const viaGateway = await gateway.getWorkspaceVisibility(workspaceId);
+      if (viaGateway != null) return viaGateway;
+      return hasPmak ? pmak.getWorkspaceVisibility(workspaceId) : viaGateway;
+    },
+    getWorkspaceGitRepoUrl: async (workspaceId, teamId, accessToken) => {
+      try {
+        const viaGateway = await gateway.getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken);
+        if (viaGateway != null) return viaGateway;
+      } catch (error) {
+        if (!hasPmak) throw error;
+        log.warning(`postman: gateway workspace repo lookup failed; falling back to the API key. ${secretSafeMessage(error)}`);
+      }
+      return hasPmak ? pmak.getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken) : null;
+    },
+    findWorkspacesByName: (name) =>
+      prefer('workspace lookup', () => gateway.findWorkspacesByName(name), () => pmak.findWorkspacesByName(name)),
+    configureTeamContext: (teamId, orgMode) => gateway.configureTeamContext(teamId, orgMode),
+
+    // PMAK-only routes (no verified gateway equivalent): delegate straight through.
+    addAdminsToWorkspace: bind('addAdminsToWorkspace'),
+    createWorkspace: bind('createWorkspace'),
+    getAutoDerivedTeamId: bind('getAutoDerivedTeamId'),
+    getSpecContent: bind('getSpecContent'),
+    getTeams: bind('getTeams'),
+    injectTests: bind('injectTests'),
+    inviteRequesterToWorkspace: bind('inviteRequesterToWorkspace'),
+    tagCollection: bind('tagCollection'),
+    updateSpec: bind('updateSpec'),
+    createCollection: bind('createCollection'),
+    deleteCollection: bind('deleteCollection'),
+    getCollection: bind('getCollection'),
+    updateCollection: bind('updateCollection')
+  };
+}
+
+function secretSafeMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function createBootstrapDependencies(
   inputs: ResolvedInputs,
   factories: BootstrapDependencyFactories,
   orgMode = false
 ): BootstrapExecutionDependencies {
-  const secretMasker = createSecretMasker([
+  // Mutable masker: a mid-run access-token re-mint adds the new token here so the
+  // same masker instance already threaded into every client keeps redacting it.
+  const mutableMasker = createMutableSecretMasker([
     inputs.postmanApiKey,
     inputs.postmanAccessToken
   ]);
-  const postman = new PostmanAssetsClient({
+  const secretMasker = mutableMasker.mask;
+
+  // Single source of the live access token. onToken registers each re-mint with
+  // the Actions log scrubber (when wired) and the mutable masker.
+  const tokenProvider = new AccessTokenProvider({
+    accessToken: inputs.postmanAccessToken,
+    apiKey: inputs.postmanApiKey,
+    apiBaseUrl: inputs.postmanApiBase,
+    onToken: (token) => {
+      factories.setSecret?.(token);
+      mutableMasker.add(token);
+    }
+  });
+
+  const pmak = new PostmanAssetsClient({
     apiKey: inputs.postmanApiKey,
     baseUrl: inputs.postmanApiBase,
     bifrostBaseUrl: inputs.postmanBifrostBase,
     secretMasker
   });
+
+  // Access-token-primary asset path. Present only when an access token exists;
+  // the routing facade prefers it per method and falls back to PMAK otherwise.
+  const gatewayClient = inputs.postmanAccessToken
+    ? new AccessTokenGatewayClient({
+        tokenProvider,
+        bifrostBaseUrl: inputs.postmanBifrostBase,
+        teamId: inputs.teamId || '',
+        orgMode,
+        secretMasker
+      })
+    : undefined;
+  const gatewayAssets = gatewayClient
+    ? new PostmanGatewayAssetsClient({ gateway: gatewayClient })
+    : undefined;
+
+  const postman = createRoutingPostmanClient({
+    gateway: gatewayAssets,
+    pmak,
+    hasPmak: Boolean(inputs.postmanApiKey),
+    log: factories.core
+  });
+
   const internalIntegration =
     inputs.postmanAccessToken
       ? createInternalIntegrationAdapter({
         accessToken: inputs.postmanAccessToken,
+        tokenProvider,
         backend: inputs.integrationBackend,
         bifrostBaseUrl: inputs.postmanBifrostBase,
         gatewayBaseUrl: inputs.postmanGatewayBase,
@@ -2339,6 +2497,7 @@ export function createBootstrapDependencies(
     inputs.postmanAccessToken
       ? new PostmanExtensibleCollectionClient({
         accessToken: inputs.postmanAccessToken,
+        tokenProvider,
         bifrostBaseUrl: inputs.postmanBifrostBase,
         orgMode,
         secretMasker,

@@ -138,25 +138,7 @@ export class PostmanGatewayAssetsClient {
       }
     };
 
-    let taskId = '';
-    for (let lockedAttempt = 0; ; lockedAttempt += 1) {
-      try {
-        const created = await this.gateway.requestJson<JsonRecord>({
-          service: 'specification',
-          method: 'post',
-          path: `/specifications/${specId}/collections`,
-          body
-        });
-        taskId = String(asRecord(created?.data)?.taskId ?? '').trim();
-        break;
-      } catch (error) {
-        const locked = error instanceof HttpError && error.status === 423;
-        if (!locked || lockedAttempt >= PostmanGatewayAssetsClient.GENERATION_LOCKED_MAX_RETRIES) {
-          throw error;
-        }
-        await this.sleep(5000 * Math.pow(2, lockedAttempt));
-      }
-    }
+    const taskId = await this.postGenerationWithLockRetry(specId, body);
 
     if (taskId) {
       for (let attempt = 0; attempt < PostmanGatewayAssetsClient.GENERATION_POLL_ATTEMPTS; attempt += 1) {
@@ -185,6 +167,27 @@ export class PostmanGatewayAssetsClient {
       throw new Error(`Collection generation did not yield a collection uid for ${prefix}`);
     }
     return uid;
+  }
+
+  /** POST the generation request, retrying a 423-locked spec; returns the task id. */
+  private async postGenerationWithLockRetry(specId: string, body: unknown): Promise<string> {
+    for (let lockedAttempt = 0; ; lockedAttempt += 1) {
+      try {
+        const created = await this.gateway.requestJson<JsonRecord>({
+          service: 'specification',
+          method: 'post',
+          path: `/specifications/${specId}/collections`,
+          body
+        });
+        return String(asRecord(created?.data)?.taskId ?? '').trim();
+      } catch (error) {
+        const locked = error instanceof HttpError && error.status === 423;
+        if (!locked || lockedAttempt >= PostmanGatewayAssetsClient.GENERATION_LOCKED_MAX_RETRIES) {
+          throw error;
+        }
+        await this.sleep(5000 * Math.pow(2, lockedAttempt));
+      }
+    }
   }
 
   /** Most-recent generated collection uid for a spec, via the spec's collection list. */

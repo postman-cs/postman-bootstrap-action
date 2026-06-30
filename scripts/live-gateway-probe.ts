@@ -174,10 +174,13 @@ async function main(): Promise<void> {
       path: `/specifications?containerType=workspace&containerId=${workspaceId}`,
       body: { name: 'Gateway Probe API', type: 'OPENAPI:3.0', files: [{ path: 'index.yaml', content: specContent, type: 'ROOT' }] }
     });
-    specId = String(
+    const gatewaySpecId = String(
       (specCreate?.data as JsonRecord | undefined)?.id ?? specCreate?.id ?? ''
     ).trim();
-    if (specId) console.log(`[setup] gateway-created spec ${specId}`);
+    if (gatewaySpecId) {
+      specId = gatewaySpecId;
+      console.log(`[setup] gateway-created spec ${specId}`);
+    }
     // PMAK fallback so downstream spec/collection routes still get probed.
     if (!specId) {
       const r = await fetch(`${API}/specs?workspaceId=${workspaceId}`, {

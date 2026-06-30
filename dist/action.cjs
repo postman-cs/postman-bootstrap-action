@@ -76044,6 +76044,18 @@ function redactSecrets(input, secretValues, replacement = REDACTED) {
 function createSecretMasker(secretValues, replacement = REDACTED) {
   return (input) => redactSecrets(input, secretValues, replacement);
 }
+function createMutableSecretMasker(initialSecretValues = [], replacement = REDACTED) {
+  const secrets = normalizeSecretValues(initialSecretValues);
+  return {
+    mask: (input) => redactSecrets(input, secrets, replacement),
+    add(value) {
+      const normalized = String(value ?? "").trim();
+      if (normalized && !secrets.includes(normalized)) {
+        secrets.push(normalized);
+      }
+    }
+  };
+}
 function headerEntries(headers) {
   if (headers instanceof Headers) {
     return Array.from(headers.entries());
@@ -77998,6 +78010,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
   static MINIMUM_POSTMAN_APP_VERSION = "12.0.0";
   static POSTMAN_APP_VERSION_URL = `https://dl.pstmn.io/update/status?currentVersion=${_BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION}&platform=osx_arm64`;
   accessToken;
+  tokenProvider;
   appVersionPromise;
   bifrostBaseUrl;
   fetchImpl;
@@ -78007,6 +78020,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
   teamId;
   constructor(options) {
     this.accessToken = String(options.accessToken || "").trim();
+    this.tokenProvider = options.tokenProvider;
     this.bifrostBaseUrl = String(
       options.bifrostBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.bifrostBaseUrl
     ).replace(/\/+$/, "");
@@ -78022,11 +78036,15 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
     this.teamId = String(teamId || "").trim();
     this.orgMode = orgMode;
   }
+  /** Live access token: the provider's current value when wired, else the seed. */
+  currentToken() {
+    return this.tokenProvider ? this.tokenProvider.current() : this.accessToken;
+  }
   adviceContext(operation) {
     const session = getMemoizedSessionIdentity();
     return {
       operation,
-      hasAccessToken: Boolean(this.accessToken),
+      hasAccessToken: Boolean(this.currentToken()),
       sessionTeamId: session?.teamId,
       sessionRoles: session?.roles,
       sessionConsumerType: session?.consumerType,
@@ -78038,7 +78056,7 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers = {
       "Content-Type": "application/json",
-      "x-access-token": this.accessToken
+      "x-access-token": this.currentToken()
     };
     if (options.appVersion) {
       headers["x-app-version"] = options.appVersion;
@@ -78104,11 +78122,11 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
         method: "GET",
         requestHeaders: {
           "Content-Type": "application/json",
-          "x-access-token": this.accessToken,
+          "x-access-token": this.currentToken(),
           "x-app-version": appVersion,
           ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
         },
-        secretValues: [this.accessToken],
+        secretValues: [this.currentToken()],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
       const advised = adviseFromHttpError(httpErr, this.adviceContext("governance assignment"));
@@ -78142,11 +78160,11 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
         method: "PATCH",
         requestHeaders: {
           "Content-Type": "application/json",
-          "x-access-token": this.accessToken,
+          "x-access-token": this.currentToken(),
           "x-app-version": appVersion,
           ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
         },
-        secretValues: [this.accessToken],
+        secretValues: [this.currentToken()],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
       const advised = adviseFromHttpError(httpErr, this.adviceContext("governance assignment"));
@@ -78188,10 +78206,10 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
-        "x-access-token": this.accessToken,
+        "x-access-token": this.currentToken(),
         ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
       },
-      secretValues: [this.accessToken],
+      secretValues: [this.currentToken()],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
     const advised = adviseFromHttpError(httpErr, this.adviceContext("workspace repository linking"));
@@ -78217,10 +78235,10 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
-        "x-access-token": this.accessToken,
+        "x-access-token": this.currentToken(),
         ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
       },
-      secretValues: [this.accessToken],
+      secretValues: [this.currentToken()],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
     const advised = adviseFromHttpError(
@@ -78242,10 +78260,10 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
       method: "POST",
       requestHeaders: {
         "Content-Type": "application/json",
-        "x-access-token": this.accessToken,
+        "x-access-token": this.currentToken(),
         ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
       },
-      secretValues: [this.accessToken],
+      secretValues: [this.currentToken()],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
     const advised = adviseFromHttpError(httpErr, this.adviceContext("collection sync"));
@@ -78626,6 +78644,7 @@ function isRetryableEcError(error2) {
 }
 var PostmanExtensibleCollectionClient = class {
   accessToken;
+  tokenProvider;
   bifrostBaseUrl;
   teamId;
   orgMode;
@@ -78633,7 +78652,8 @@ var PostmanExtensibleCollectionClient = class {
   secretMasker;
   constructor(options) {
     this.accessToken = String(options.accessToken || "").trim();
-    if (!this.accessToken) {
+    this.tokenProvider = options.tokenProvider;
+    if (!this.currentToken()) {
       throw new Error(
         "EC_REQUIRES_ACCESS_TOKEN: creating a gRPC (extensible) collection requires postman-access-token; provide it (resolve-service-token mints one) or pre-create the collection."
       );
@@ -78656,10 +78676,14 @@ var PostmanExtensibleCollectionClient = class {
     this.teamId = String(teamId || "").trim();
     this.orgMode = orgMode;
   }
+  /** Live access token: the provider's current value when wired, else the seed. */
+  currentToken() {
+    return this.tokenProvider ? this.tokenProvider.current() : this.accessToken;
+  }
   requestHeaders() {
     const headers = {
       "Content-Type": "application/json",
-      "x-access-token": this.accessToken
+      "x-access-token": this.currentToken()
     };
     if (this.teamId && this.orgMode) {
       headers["x-entity-team-id"] = this.teamId;
@@ -78692,7 +78716,7 @@ var PostmanExtensibleCollectionClient = class {
       throw await HttpError.fromResponse(response, {
         method,
         requestHeaders: this.requestHeaders(),
-        secretValues: [this.accessToken],
+        secretValues: [this.currentToken()],
         url: `${this.bifrostBaseUrl}/ws/proxy (${operation}: ${method} ${path9})`
       });
     }
@@ -78728,7 +78752,7 @@ var PostmanExtensibleCollectionClient = class {
       statusText: "Inner Error",
       requestHeaders: this.requestHeaders(),
       responseBody: this.secretMasker(JSON.stringify(envelope)),
-      secretValues: [this.accessToken]
+      secretValues: [this.currentToken()]
     });
   }
   innerStatus(envelope) {
@@ -78915,6 +78939,429 @@ var PostmanExtensibleCollectionClient = class {
     const data = asRecord3(response?.data) ?? response;
     const id = data ? data.id ?? data.uid : void 0;
     return typeof id === "string" ? id.trim() : "";
+  }
+};
+
+// src/lib/postman/postman-gateway-assets-client.ts
+function asRecord4(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value;
+}
+function extractGitRepoUrl2(value) {
+  if (!value) return null;
+  if (typeof value === "string") {
+    const normalized = normalizeGitRepoUrl(value);
+    return /^https:\/\/[^/]+\/[^/]+\/[^/]+$/.test(normalized) ? normalized : null;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const repoUrl = extractGitRepoUrl2(entry);
+      if (repoUrl) return repoUrl;
+    }
+    return null;
+  }
+  const record = asRecord4(value);
+  if (!record) return null;
+  for (const key of ["repo", "repository", "repoUrl", "repo_url", "remoteUrl", "remote_url", "origin"]) {
+    const repoUrl = extractGitRepoUrl2(record[key]);
+    if (repoUrl) return repoUrl;
+  }
+  for (const nested of Object.values(record)) {
+    const repoUrl = extractGitRepoUrl2(nested);
+    if (repoUrl) return repoUrl;
+  }
+  return null;
+}
+var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
+  static GENERATION_LOCKED_MAX_RETRIES = 5;
+  static GENERATION_POLL_ATTEMPTS = 45;
+  static GENERATION_POLL_DELAY_MS = 2e3;
+  gateway;
+  sleep;
+  constructor(options) {
+    this.gateway = options.gateway;
+    this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve5) => setTimeout(resolve5, delayMs)));
+  }
+  configureTeamContext(teamId, orgMode) {
+    this.gateway.configureTeamContext(teamId, orgMode);
+  }
+  /**
+   * Create an OpenAPI spec in Spec Hub via the gateway specification service.
+   * Verified shape: POST /specifications?containerType=workspace&containerId=:ws
+   * with a file-level `type: 'ROOT'` (the gateway rejects the create otherwise).
+   * Returns the new spec id; preflights a GET so callers can immediately generate.
+   */
+  async uploadSpec(workspaceId, projectName, specContent, openapiVersion = "3.0") {
+    if (openapiVersion !== "3.0" && openapiVersion !== "3.1") {
+      throw new Error(`uploadSpec: unsupported openapiVersion "${openapiVersion}". Expected '3.0' or '3.1'.`);
+    }
+    const specType = openapiVersion === "3.1" ? "OPENAPI:3.1" : "OPENAPI:3.0";
+    const created = await this.gateway.requestJson({
+      service: "specification",
+      method: "post",
+      path: `/specifications?containerType=workspace&containerId=${workspaceId}`,
+      body: {
+        name: projectName,
+        type: specType,
+        files: [{ path: "index.yaml", content: specContent, type: "ROOT" }]
+      }
+    });
+    const specId = String(asRecord4(created?.data)?.id ?? created?.id ?? "").trim();
+    if (!specId) {
+      throw new Error("Spec upload did not return an ID");
+    }
+    await this.gateway.requestJson({
+      service: "specification",
+      method: "get",
+      path: `/specifications/${specId}`
+    });
+    return specId;
+  }
+  /**
+   * Generate a collection from a spec and return its uid. Mirrors the PMAK
+   * semantics: 423-locked retry on the create, then poll the async task to
+   * completion and resolve the generated collection uid from the spec's
+   * collection list (`data[].collection`).
+   */
+  async generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) {
+    const name = [prefix.trim(), projectName.trim()].filter(Boolean).join(" ");
+    const body = {
+      name,
+      options: {
+        requestNameSource,
+        folderStrategy,
+        ...folderStrategy === "Tags" ? { nestedFolderHierarchy } : {}
+      }
+    };
+    const taskId = await this.postGenerationWithLockRetry(specId, body);
+    if (taskId) {
+      for (let attempt = 0; attempt < _PostmanGatewayAssetsClient.GENERATION_POLL_ATTEMPTS; attempt += 1) {
+        await this.sleep(_PostmanGatewayAssetsClient.GENERATION_POLL_DELAY_MS);
+        const task = await this.gateway.requestJson({
+          service: "specification",
+          method: "get",
+          path: "/tasks",
+          query: { entityId: specId, entityType: "specification", type: "collection-generation" }
+        });
+        const status = String(asRecord4(task?.data)?.[taskId] ?? "").toLowerCase();
+        if (status === "failed" || status === "error") {
+          throw new Error(`Collection generation task failed for ${prefix}`);
+        }
+        if (status && status !== "in-progress" && status !== "pending" && status !== "queued") {
+          break;
+        }
+        if (attempt === _PostmanGatewayAssetsClient.GENERATION_POLL_ATTEMPTS - 1) {
+          throw new Error(`Collection generation timed out for ${prefix}`);
+        }
+      }
+    }
+    const uid = await this.resolveGeneratedCollectionUid(specId);
+    if (!uid) {
+      throw new Error(`Collection generation did not yield a collection uid for ${prefix}`);
+    }
+    return uid;
+  }
+  /** POST the generation request, retrying a 423-locked spec; returns the task id. */
+  async postGenerationWithLockRetry(specId, body) {
+    for (let lockedAttempt = 0; ; lockedAttempt += 1) {
+      try {
+        const created = await this.gateway.requestJson({
+          service: "specification",
+          method: "post",
+          path: `/specifications/${specId}/collections`,
+          body
+        });
+        return String(asRecord4(created?.data)?.taskId ?? "").trim();
+      } catch (error2) {
+        const locked = error2 instanceof HttpError && error2.status === 423;
+        if (!locked || lockedAttempt >= _PostmanGatewayAssetsClient.GENERATION_LOCKED_MAX_RETRIES) {
+          throw error2;
+        }
+        await this.sleep(5e3 * Math.pow(2, lockedAttempt));
+      }
+    }
+  }
+  /** Most-recent generated collection uid for a spec, via the spec's collection list. */
+  async resolveGeneratedCollectionUid(specId) {
+    const list = await this.gateway.requestJson({
+      service: "specification",
+      method: "get",
+      path: `/specifications/${specId}/collections`
+    });
+    const entries = Array.isArray(asRecord4(list)?.data) ? asRecord4(list).data : [];
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = asRecord4(entries[i]);
+      const uid = String(entry?.collection ?? entry?.collectionId ?? entry?.id ?? entry?.uid ?? "").trim();
+      if (uid) return uid;
+    }
+    return "";
+  }
+  /** Visibility of a workspace as the access token sees it, or null when unreadable. */
+  async getWorkspaceVisibility(workspaceId) {
+    try {
+      const response = await this.gateway.requestJson({
+        service: "workspaces",
+        method: "get",
+        path: `/workspaces/${workspaceId}`
+      });
+      const data = asRecord4(response?.data) ?? asRecord4(response?.workspace) ?? asRecord4(response);
+      const visibility = data?.visibility ?? data?.visibilityStatus;
+      return typeof visibility === "string" ? visibility : null;
+    } catch {
+      return null;
+    }
+  }
+  async findWorkspacesByName(name) {
+    const all2 = [];
+    const seenCursors = /* @__PURE__ */ new Set();
+    let cursor;
+    do {
+      const response = await this.gateway.requestJson({
+        service: "workspaces",
+        method: "get",
+        path: "/workspaces",
+        ...cursor ? { query: { cursor } } : {}
+      });
+      const data = asRecord4(response);
+      const page = Array.isArray(data?.data) ? data.data : Array.isArray(data?.workspaces) ? data.workspaces : [];
+      for (const entry of page) {
+        const record = asRecord4(entry);
+        if (record?.id && record?.name) all2.push(record);
+      }
+      const meta = asRecord4(data?.meta);
+      const next = String(meta?.nextCursor ?? data?.nextCursor ?? "").trim();
+      cursor = next && !seenCursors.has(next) ? next : void 0;
+      if (cursor) seenCursors.add(cursor);
+    } while (cursor);
+    return all2.filter((w) => String(w.name) === name).map((w) => ({ id: String(w.id), name: String(w.name) })).sort((a, b) => a.id.localeCompare(b.id));
+  }
+  /**
+   * Git repo URL linked to a workspace via the Bifrost filesystem route. The
+   * teamId/accessToken parameters are accepted for signature parity with the PMAK
+   * client (the gateway client carries auth + team context internally).
+   */
+  async getWorkspaceGitRepoUrl(workspaceId, _teamId, _accessToken) {
+    void _teamId;
+    void _accessToken;
+    try {
+      const response = await this.gateway.requestJson({
+        service: "workspaces",
+        method: "get",
+        path: `/workspaces/${workspaceId}/filesystem`
+      });
+      const data = asRecord4(response)?.data ?? response;
+      return extractGitRepoUrl2(data);
+    } catch (error2) {
+      if (error2 instanceof HttpError && error2.status === 404) return null;
+      throw error2;
+    }
+  }
+};
+
+// src/lib/postman/gateway-client.ts
+function isExpiredAuthError(status, body) {
+  return status === 401 || body.includes("UNAUTHENTICATED") || body.includes("authenticationError");
+}
+var AccessTokenGatewayClient = class {
+  tokenProvider;
+  bifrostBaseUrl;
+  teamId;
+  orgMode;
+  fetchImpl;
+  secretMasker;
+  constructor(options) {
+    this.tokenProvider = options.tokenProvider;
+    this.bifrostBaseUrl = String(
+      options.bifrostBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.bifrostBaseUrl
+    ).replace(/\/+$/, "");
+    this.teamId = String(options.teamId || "").trim();
+    this.orgMode = options.orgMode ?? false;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.secretMasker = options.secretMasker ?? createSecretMasker([this.tokenProvider.current()]);
+  }
+  configureTeamContext(teamId, orgMode) {
+    this.teamId = String(teamId || "").trim();
+    this.orgMode = orgMode;
+  }
+  buildHeaders(extra) {
+    const headers = {
+      "Content-Type": "application/json",
+      "x-access-token": this.tokenProvider.current(),
+      ...extra || {}
+    };
+    if (this.teamId && this.orgMode) {
+      headers["x-entity-team-id"] = this.teamId;
+    }
+    return headers;
+  }
+  async send(request) {
+    const url = `${this.bifrostBaseUrl}/ws/proxy`;
+    return this.fetchImpl(url, {
+      method: "POST",
+      headers: this.buildHeaders(request.headers),
+      body: JSON.stringify({
+        service: request.service,
+        method: request.method,
+        path: request.path,
+        ...request.query !== void 0 ? { query: request.query } : {},
+        ...request.body !== void 0 ? { body: request.body } : {}
+      })
+    });
+  }
+  /** Send a gateway request, refreshing the token once on an auth failure. */
+  async request(request) {
+    let response = await this.send(request);
+    if (response.ok) {
+      return response;
+    }
+    const body = await response.text().catch(() => "");
+    if (isExpiredAuthError(response.status, body) && this.tokenProvider.canRefresh()) {
+      await this.tokenProvider.refresh();
+      response = await this.send(request);
+      if (response.ok) {
+        return response;
+      }
+      const retryBody = await response.text().catch(() => "");
+      throw this.toHttpError(request, response, retryBody);
+    }
+    throw this.toHttpError(request, response, body);
+  }
+  /** Send a gateway request and parse the JSON body, or null when empty. */
+  async requestJson(request) {
+    const response = await this.request(request);
+    const text = await response.text().catch(() => "");
+    if (!text.trim()) {
+      return null;
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+  toHttpError(request, response, body) {
+    return new HttpError({
+      method: request.method.toUpperCase(),
+      url: `${this.bifrostBaseUrl}/ws/proxy (${request.service}: ${request.method} ${request.path})`,
+      status: response.status,
+      statusText: response.statusText,
+      requestHeaders: this.buildHeaders(request.headers),
+      responseBody: this.secretMasker(body),
+      secretValues: [this.tokenProvider.current()]
+    });
+  }
+};
+
+// src/lib/postman/token-provider.ts
+var MintError = class extends Error {
+  permanent;
+  constructor(message, permanent) {
+    super(message);
+    this.name = "MintError";
+    this.permanent = permanent;
+  }
+};
+function extractAccessToken(payload) {
+  if (!payload || typeof payload !== "object") return void 0;
+  const record = payload;
+  const direct = record.access_token;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const session = record.session;
+  if (session && typeof session === "object") {
+    const token = session.token;
+    if (typeof token === "string" && token.trim()) return token.trim();
+  }
+  return void 0;
+}
+var AccessTokenProvider = class {
+  token;
+  apiKey;
+  apiBaseUrl;
+  fetchImpl;
+  maxAttempts;
+  onToken;
+  sleep;
+  inflight;
+  constructor(options) {
+    this.token = String(options.accessToken || "").trim();
+    this.apiKey = String(options.apiKey || "").trim();
+    this.apiBaseUrl = String(
+      options.apiBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.apiBaseUrl
+    ).replace(/\/+$/, "");
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.maxAttempts = Math.max(1, options.maxAttempts ?? 2);
+    this.onToken = options.onToken;
+    this.sleep = options.sleep;
+  }
+  current() {
+    return this.token;
+  }
+  /** True when a PMAK is present, so an expired token can be re-minted. */
+  canRefresh() {
+    return Boolean(this.apiKey);
+  }
+  refresh() {
+    this.inflight ??= this.mintWithRetry().finally(() => {
+      this.inflight = void 0;
+    });
+    return this.inflight;
+  }
+  async mintWithRetry() {
+    if (!this.apiKey) {
+      throw new Error(
+        "postman: the access token expired and cannot be refreshed because no postman-api-key is present. Service-account access tokens expire after about 1 to 1.5 hours. Re-mint a fresh token (postman-resolve-service-token-action) and re-run."
+      );
+    }
+    const token = await retry(() => this.mintOnce(), {
+      maxAttempts: this.maxAttempts,
+      delayMs: 1e3,
+      backoffMultiplier: 2,
+      ...this.sleep ? { sleep: this.sleep } : {},
+      shouldRetry: (error2) => !(error2 instanceof MintError && error2.permanent)
+    });
+    this.token = token;
+    this.onToken?.(token);
+    return token;
+  }
+  async mintOnce() {
+    const response = await this.fetchImpl(`${this.apiBaseUrl}/service-account-tokens`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": this.apiKey
+      },
+      body: JSON.stringify({ apiKey: this.apiKey })
+    });
+    const body = await response.text().catch(() => "");
+    if (!response.ok) {
+      const status = response.status;
+      if (status === 401 || status === 403) {
+        throw new MintError(
+          `postman: re-mint failed because the postman-api-key was rejected (PMAK rejected, HTTP ${status}); confirm it is a valid, enabled service-account PMAK for the intended team.`,
+          true
+        );
+      }
+      if (status === 400 && body.toLowerCase().includes("service accounts not enabled")) {
+        throw new MintError(
+          "postman: re-mint failed because service accounts are not enabled for this team; enable them in Team Settings or use a team where they are.",
+          true
+        );
+      }
+      throw new MintError(`postman: re-mint failed (service-account-tokens HTTP ${status}).`, false);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      parsed = void 0;
+    }
+    const token = extractAccessToken(parsed);
+    if (!token) {
+      throw new MintError("postman: re-mint succeeded but no access token was returned.", false);
+    }
+    return token;
   }
 };
 
@@ -79538,7 +79985,7 @@ var INT32_MAX = 2147483647;
 var MAX_REFERENCED_SCHEMAS = 400;
 var DRAFT_2020_12_ONLY_KEYS = /* @__PURE__ */ new Set(["prefixItems", "dependentRequired", "dependentSchemas", "minContains", "maxContains", "unevaluatedItems", "unevaluatedProperties"]);
 var DRAFT_07_ONLY_KEYS = /* @__PURE__ */ new Set(["dependencies", "additionalItems"]);
-function asRecord4(value) {
+function asRecord5(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -79550,7 +79997,7 @@ function decodePointerSegment(segment) {
 }
 function resolvePointer(root, ref) {
   if (!ref.startsWith("#/")) return void 0;
-  return ref.slice(2).split("/").map(decodePointerSegment).reduce((node, segment) => asRecord4(node)?.[segment], root);
+  return ref.slice(2).split("/").map(decodePointerSegment).reduce((node, segment) => asRecord5(node)?.[segment], root);
 }
 function unsupported(message) {
   return { unsupported: message };
@@ -79560,7 +80007,7 @@ function mergeRequiredWithoutStripped(required, strippedProperties) {
   return values.length > 0 ? values : void 0;
 }
 function hasUnsupported(child3) {
-  return asRecord4(child3)?.unsupported;
+  return asRecord5(child3)?.unsupported;
 }
 function rootDialect(root, version, schemaRecord) {
   if (version === "3.0") return DRAFT_07_SCHEMA_URI;
@@ -79600,7 +80047,7 @@ function normalizeSchema(ctx, schema, options) {
     const bad = normalized2.map(hasUnsupported).find(Boolean);
     return bad ? unsupported(bad) : normalized2;
   }
-  const record = asRecord4(schema);
+  const record = asRecord5(schema);
   if (!record) return schema;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (ref) {
@@ -79631,20 +80078,20 @@ function normalizeSchema(ctx, schema, options) {
   const sourceSchema = { ...record };
   const nullable = sourceSchema.nullable === true && ctx.version === "3.0";
   delete sourceSchema.nullable;
-  const discriminator = asRecord4(sourceSchema.discriminator);
+  const discriminator = asRecord5(sourceSchema.discriminator);
   if (discriminator && typeof discriminator.propertyName === "string" && discriminator.propertyName) {
     const propertyName = discriminator.propertyName;
     const branchKey = Array.isArray(sourceSchema.oneOf) ? "oneOf" : Array.isArray(sourceSchema.anyOf) ? "anyOf" : "";
     const members = branchKey ? sourceSchema[branchKey] : [];
     const memberRefs = members.map((member) => {
-      const memberRecord = asRecord4(member);
+      const memberRecord = asRecord5(member);
       const memberRef = memberRecord && Object.keys(memberRecord).length === 1 && typeof memberRecord.$ref === "string" ? memberRecord.$ref : "";
       return memberRef.startsWith("#/") ? memberRef : "";
     });
     if (branchKey && members.length > 0 && memberRefs.every(Boolean)) {
       const valuesByRef = /* @__PURE__ */ new Map();
       const refByMappingKey = /* @__PURE__ */ new Map();
-      for (const [value, target] of Object.entries(asRecord4(discriminator.mapping) ?? {})) {
+      for (const [value, target] of Object.entries(asRecord5(discriminator.mapping) ?? {})) {
         if (typeof target !== "string" || !target) continue;
         const targetRef = target.startsWith("#/") ? target : `#/components/schemas/${target}`;
         valuesByRef.set(targetRef, [...valuesByRef.get(targetRef) ?? [], value]);
@@ -79665,12 +80112,12 @@ function normalizeSchema(ctx, schema, options) {
   }
   const directionStrippedFlag = ctx.direction === "request" ? "readOnly" : "writeOnly";
   const strippedProperties = /* @__PURE__ */ new Set();
-  const rawProperties = asRecord4(sourceSchema.properties);
+  const rawProperties = asRecord5(sourceSchema.properties);
   if (rawProperties) {
     for (const [propertyName, propertySchema] of Object.entries(rawProperties)) {
-      let flagSource = asRecord4(propertySchema);
+      let flagSource = asRecord5(propertySchema);
       if (typeof flagSource?.$ref === "string" && flagSource.$ref.startsWith("#/")) {
-        flagSource = asRecord4(resolvePointer(ctx.root, flagSource.$ref)) ?? flagSource;
+        flagSource = asRecord5(resolvePointer(ctx.root, flagSource.$ref)) ?? flagSource;
       }
       if (flagSource?.[directionStrippedFlag] === true) strippedProperties.add(propertyName);
     }
@@ -79714,7 +80161,7 @@ function normalizeSchema(ctx, schema, options) {
       return unsupported("Tuple array items are unsupported in OpenAPI 3.0");
     }
     if (key === "patternProperties" || key === "dependentSchemas") {
-      const map = asRecord4(value);
+      const map = asRecord5(value);
       if (!map) continue;
       const next = {};
       for (const [mapKey, mapSchema] of Object.entries(map)) {
@@ -79727,7 +80174,7 @@ function normalizeSchema(ctx, schema, options) {
       continue;
     }
     if (key === "dependentRequired") {
-      const map = asRecord4(value);
+      const map = asRecord5(value);
       if (!map) continue;
       for (const names of Object.values(map)) {
         if (!Array.isArray(names) || names.some((name) => typeof name !== "string")) {
@@ -79738,7 +80185,7 @@ function normalizeSchema(ctx, schema, options) {
       continue;
     }
     if (key === "dependencies") {
-      const map = asRecord4(value);
+      const map = asRecord5(value);
       if (!map) continue;
       const next = {};
       for (const [mapKey, dependency] of Object.entries(map)) {
@@ -79756,7 +80203,7 @@ function normalizeSchema(ctx, schema, options) {
       continue;
     }
     if (key === "properties") {
-      const properties = asRecord4(value);
+      const properties = asRecord5(value);
       if (!properties) continue;
       const nextProperties = {};
       for (const [propertyName, propertySchema] of Object.entries(properties)) {
@@ -79834,7 +80281,7 @@ function packSchema(root, schema, version, direction = "response") {
   try {
     if (schema === true) return { schema: { $schema: rootDialect(root, version) } };
     if (schema === false) return unsupported("Boolean false JSON Schema rejects every instance and is unsupported");
-    const dialect = rootDialect(root, version, asRecord4(schema) ?? void 0);
+    const dialect = rootDialect(root, version, asRecord5(schema) ?? void 0);
     const ctx = { root, version, direction, dialect, defs: /* @__PURE__ */ new Map(), notes: /* @__PURE__ */ new Set() };
     const normalized = normalizeSchema(ctx, schema, { depth: 0, rootSchema: true });
     const message = hasUnsupported(normalized);
@@ -79842,7 +80289,7 @@ function packSchema(root, schema, version, direction = "response") {
     const aliasTargets = /* @__PURE__ */ new Map();
     for (const entry of ctx.defs.values()) {
       if (entry.unsupported) return unsupported(entry.unsupported);
-      const entrySchema = asRecord4(entry.schema);
+      const entrySchema = asRecord5(entry.schema);
       const ref = entrySchema && Object.keys(entrySchema).length === 1 && typeof entrySchema.$ref === "string" ? entrySchema.$ref : "";
       if (ref.startsWith("#/$defs/")) aliasTargets.set(entry.name, ref.slice("#/$defs/".length));
     }
@@ -79856,7 +80303,7 @@ function packSchema(root, schema, version, direction = "response") {
       }
     }
     if (ctx.defs.size > 0) {
-      const normalizedRecord = asRecord4(normalized);
+      const normalizedRecord = asRecord5(normalized);
       if (!normalizedRecord) return unsupported("Referenced schemas require an object root schema");
       normalizedRecord.$defs = Object.fromEntries([...ctx.defs.values()].map((entry) => [entry.name, entry.schema]));
     }
@@ -79925,7 +80372,7 @@ function compileSchemaValidatorCode(schema) {
 
 // src/lib/spec/contract-index.ts
 var HTTP_METHODS = /* @__PURE__ */ new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
-function asRecord5(value) {
+function asRecord6(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -79942,12 +80389,12 @@ function detectOpenApiVersion(root) {
   return match[1] === "1" ? "3.1" : "3.0";
 }
 function resolveInternalRef(root, value) {
-  const record = asRecord5(value);
+  const record = asRecord6(value);
   if (!record) return null;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (!ref) return record;
   if (!ref.startsWith("#/")) throw new Error(`CONTRACT_UNRESOLVED_REF: External ref remained after bundling: ${ref}`);
-  const resolved = asRecord5(resolvePointer(root, ref));
+  const resolved = asRecord6(resolvePointer(root, ref));
   if (!resolved) throw new Error(`CONTRACT_UNRESOLVED_REF: Unresolved OpenAPI $ref: ${ref}`);
   return resolved;
 }
@@ -79967,11 +80414,11 @@ function normalizePath(path9) {
   return trimmed.split("/").map((segment, index) => index === 0 ? "" : safeDecodeSegment(segment)).join("/") || "/";
 }
 function pathItemServers(pathItem) {
-  return asArray3(pathItem.servers).map((entry) => asRecord5(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
+  return asArray3(pathItem.servers).map((entry) => asRecord6(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
 }
 function operationServers(root, pathItem, operation) {
   const rawServers = asArray3(operation.servers).length > 0 ? asArray3(operation.servers) : pathItemServers(pathItem).length > 0 ? asArray3(pathItem.servers) : asArray3(root.servers);
-  const values = rawServers.map((entry) => asRecord5(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
+  const values = rawServers.map((entry) => asRecord6(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
   return values.length > 0 ? values : [""];
 }
 function serverPathPrefix(url) {
@@ -79992,10 +80439,10 @@ function normalizeResponseKey(status) {
   return /^[1-5]xx$/i.test(raw) ? raw.toUpperCase() : raw;
 }
 function collectSecurityApiKeys(root, operation) {
-  const securitySchemes = asRecord5(asRecord5(root.components)?.securitySchemes);
+  const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray3(root.security) : asArray3(operation.security);
   const names = /* @__PURE__ */ new Set();
-  for (const requirement of requirements.map((entry) => asRecord5(entry)).filter(Boolean)) {
+  for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
       const scheme = resolveInternalRef(root, securitySchemes?.[schemeName]);
       if (scheme?.type === "apiKey" && typeof scheme.name === "string" && ["query", "header", "cookie"].includes(String(scheme.in))) {
@@ -80013,10 +80460,10 @@ function securitySchemeKind(scheme) {
   return type;
 }
 function collectSecuritySchemeWarnings(root, operation) {
-  const securitySchemes = asRecord5(asRecord5(root.components)?.securitySchemes);
+  const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray3(root.security) : asArray3(operation.security);
   const warnings = /* @__PURE__ */ new Set();
-  for (const requirement of requirements.map((entry) => asRecord5(entry)).filter(Boolean)) {
+  for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
       const scheme = resolveInternalRef(root, securitySchemes?.[schemeName]);
       warnings.add(
@@ -80044,10 +80491,10 @@ function securityCheckFor(schemeName, scheme) {
   return { scheme: schemeName, kind, checkable: false };
 }
 function collectSecurityRuntimeChecks(root, operation) {
-  const securitySchemes = asRecord5(asRecord5(root.components)?.securitySchemes);
+  const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray3(root.security) : asArray3(operation.security);
   const alternatives = [];
-  for (const requirement of requirements.map((entry) => asRecord5(entry)).filter(Boolean)) {
+  for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     const schemeNames = Object.keys(requirement);
     if (schemeNames.length === 0) return void 0;
     alternatives.push(schemeNames.map((schemeName) => securityCheckFor(schemeName, resolveInternalRef(root, securitySchemes?.[schemeName]))));
@@ -80070,14 +80517,14 @@ function isIgnoredParameter(location2, name) {
   return location2 === "header" && IGNORED_HEADER_PARAMS.has(name.toLowerCase());
 }
 function jsonContentParameterMedia(param) {
-  const content = asRecord5(param.content);
+  const content = asRecord6(param.content);
   if (!content) return void 0;
   const entries = Object.entries(content);
   if (entries.length !== 1) return void 0;
   const [contentType2, mediaObject] = entries[0];
   const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
   if (!isJsonBaseType(base)) return void 0;
-  const schema = asRecord5(mediaObject)?.schema;
+  const schema = asRecord6(mediaObject)?.schema;
   return schema === void 0 ? void 0 : schema;
 }
 function collectSerializationWarnings(root, pathItem, operation, decodedKeys) {
@@ -80101,7 +80548,7 @@ function collectSerializationWarnings(root, pathItem, operation, decodedKeys) {
 var SCALAR_SCHEMA_TYPES = /* @__PURE__ */ new Set(["string", "number", "integer", "boolean", "null"]);
 function packedScalarSchema(packed) {
   if (packed.unsupported || packed.schema === void 0) return void 0;
-  const record = asRecord5(packed.schema);
+  const record = asRecord6(packed.schema);
   if (!record) return void 0;
   const types2 = Array.isArray(record.type) ? record.type : [record.type];
   if (!types2.every((entry) => typeof entry === "string" && SCALAR_SCHEMA_TYPES.has(entry))) return void 0;
@@ -80109,13 +80556,13 @@ function packedScalarSchema(packed) {
 }
 function packedArrayItemsSchema(packed) {
   if (packed.unsupported || packed.schema === void 0) return void 0;
-  const record = asRecord5(packed.schema);
+  const record = asRecord6(packed.schema);
   if (!record) return void 0;
   const types2 = Array.isArray(record.type) ? record.type : [record.type];
   if (types2.length !== 1 || types2[0] !== "array") return void 0;
   if (record.prefixItems !== void 0 || Array.isArray(record.items)) return void 0;
   if (record.items === void 0) return {};
-  const items = asRecord5(record.items);
+  const items = asRecord6(record.items);
   if (!items || typeof items.$ref === "string") return void 0;
   const itemTypes = Array.isArray(items.type) ? items.type : [items.type];
   if (!itemTypes.every((entry) => typeof entry === "string" && SCALAR_SCHEMA_TYPES.has(entry))) return void 0;
@@ -80249,7 +80696,7 @@ function mergeObjectSchema(root, rawSchema, depth) {
   if (!schema) return null;
   const merged = {
     required: asArray3(schema.required).map((entry) => String(entry)).filter(Boolean),
-    properties: { ...asRecord5(schema.properties) ?? {} }
+    properties: { ...asRecord6(schema.properties) ?? {} }
   };
   for (const member of asArray3(schema.allOf)) {
     const child3 = mergeObjectSchema(root, member, depth + 1);
@@ -80282,7 +80729,7 @@ function propertyIsBinary(root, properties, name) {
   return media !== "application/json" && !media.endsWith("+json") && !media.startsWith("text/");
 }
 function fieldEncodings(root, base, mediaObject, properties) {
-  const declared = asRecord5(mediaObject?.encoding);
+  const declared = asRecord6(mediaObject?.encoding);
   const encodings = {};
   for (const name of Object.keys(properties)) {
     if (base === "multipart/form-data" && propertyIsBinary(root, properties, name)) {
@@ -80291,13 +80738,13 @@ function fieldEncodings(root, base, mediaObject, properties) {
   }
   if (declared) {
     for (const [name, rawEncoding] of Object.entries(declared)) {
-      const encoding = asRecord5(rawEncoding);
+      const encoding = asRecord6(rawEncoding);
       if (!encoding) continue;
       const entry = { ...encodings[name] };
       if (typeof encoding.contentType === "string" && encoding.contentType.trim()) {
         entry.contentType = encoding.contentType.toLowerCase();
       }
-      if (base === "multipart/form-data" && asRecord5(encoding.headers)) {
+      if (base === "multipart/form-data" && asRecord6(encoding.headers)) {
         entry.hasHeaders = true;
       }
       if (base === "application/x-www-form-urlencoded") {
@@ -80332,7 +80779,7 @@ function requestBodyFieldRules(root, content, version, operationId, warnings) {
   for (const [contentType2, mediaObject] of Object.entries(content)) {
     const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
     if (!isJsonBaseType(base) && !BODY_FIELD_RULE_TYPES.has(base)) continue;
-    const mediaRecord = asRecord5(mediaObject);
+    const mediaRecord = asRecord6(mediaObject);
     const merged = mergeObjectSchema(root, mediaRecord?.schema, 0);
     if (!merged) continue;
     const readOnly = Object.keys(merged.properties).filter((name) => propertyIsReadOnly(root, merged.properties, name));
@@ -80354,7 +80801,7 @@ function requestBodyJsonSchemas(root, content, version, operationId, warnings) {
   const exampleWarnings = /* @__PURE__ */ new Set();
   for (const [contentType2, mediaObject] of Object.entries(content)) {
     const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
-    const mediaRecord = asRecord5(mediaObject);
+    const mediaRecord = asRecord6(mediaObject);
     const schema = mediaRecord?.schema;
     if (!isJsonBaseType(base)) {
       if (schema !== void 0 && !BODY_FIELD_RULE_TYPES.has(base)) {
@@ -80378,7 +80825,7 @@ function requestBodyJsonSchemas(root, content, version, operationId, warnings) {
 function collectRequestBody(root, operation, version, operationId, warnings) {
   const body = resolveInternalRef(root, operation.requestBody);
   if (!body) return void 0;
-  const content = asRecord5(body.content);
+  const content = asRecord6(body.content);
   const fieldRules = content ? requestBodyFieldRules(root, content, version, operationId, warnings) : void 0;
   if (fieldRules) {
     for (const [base, rule] of Object.entries(fieldRules)) {
@@ -80406,7 +80853,7 @@ function collectRequestBody(root, operation, version, operationId, warnings) {
 function exampleCandidates(root, mediaObject) {
   const candidates = [];
   if ("example" in mediaObject) candidates.push({ label: "example", value: mediaObject.example });
-  const examples = asRecord5(mediaObject.examples);
+  const examples = asRecord6(mediaObject.examples);
   if (examples) {
     for (const [name, rawExample] of Object.entries(examples)) {
       let example;
@@ -80433,11 +80880,11 @@ function validateExamples(root, mediaObject, packed, contentType2, context, warn
   }
 }
 function responseContent(root, version, response, context, warnings) {
-  const content = asRecord5(response.content);
+  const content = asRecord6(response.content);
   if (!content) return {};
   const media = {};
   for (const [contentType2, mediaObject] of Object.entries(content)) {
-    const mediaRecord = asRecord5(mediaObject);
+    const mediaRecord = asRecord6(mediaObject);
     const schema = mediaRecord?.schema;
     let packed = schema === void 0 ? {} : packSchema(root, schema, version);
     for (const warning2 of packNoteWarnings(packed, `response ${contentType2} of ${context}`)) warnings.add(warning2);
@@ -80452,7 +80899,7 @@ function responseContent(root, version, response, context, warnings) {
   return media;
 }
 function responseHeaders(root, version, response, context, warnings) {
-  const headers = asRecord5(response.headers);
+  const headers = asRecord6(response.headers);
   if (!headers) return [];
   const entries = [];
   for (const [name, rawHeader] of Object.entries(headers)) {
@@ -80496,10 +80943,10 @@ function buildContractIndex(root) {
   if (root.swagger === "2.0") throw new Error("CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (found swagger 2.0)");
   if (!("openapi" in root)) throw new Error("CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (missing openapi)");
   const version = detectOpenApiVersion(root);
-  const paths = asRecord5(root.paths);
+  const paths = asRecord6(root.paths);
   const operations = [];
   const warnings = [];
-  if (asRecord5(root.webhooks)) warnings.push("CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests");
+  if (asRecord6(root.webhooks)) warnings.push("CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests");
   if (paths) {
     for (const [path9, rawPathItem] of Object.entries(paths)) {
       const pathItem = resolveInternalRef(root, rawPathItem);
@@ -80510,7 +80957,7 @@ function buildContractIndex(root) {
         const operation = resolveInternalRef(root, rawOperation);
         if (!operation) continue;
         if (operation.callbacks) warnings.push(`CONTRACT_CALLBACKS_NOT_VALIDATED: callbacks are not validated for ${lowerMethod.toUpperCase()} ${path9}`);
-        const responses = asRecord5(operation.responses);
+        const responses = asRecord6(operation.responses);
         if (!responses || Object.keys(responses).length === 0) {
           throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path9} must define at least one response`);
         }
@@ -80519,14 +80966,14 @@ function buildContractIndex(root) {
         for (const [status, rawResponse] of Object.entries(responses)) {
           const response = resolveInternalRef(root, rawResponse);
           if (!response) continue;
-          if (asRecord5(response.links)) {
+          if (asRecord6(response.links)) {
             responseWarnings.add(`CONTRACT_LINKS_NOT_VALIDATED: response links are not validated for ${lowerMethod.toUpperCase()} ${path9}`);
           }
           const responseContext = `${lowerMethod.toUpperCase()} ${path9} status ${status}`;
           const content = responseContent(root, version, response, responseContext, responseWarnings);
           for (const [contentType2, media] of Object.entries(content)) {
             const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
-            const schemaType = asRecord5(media.schema)?.type;
+            const schemaType = asRecord6(media.schema)?.type;
             if (!isJsonBaseType(base) && media.schema !== void 0 && !media.unsupported && schemaType !== "string") {
               responseWarnings.add(`CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED: response schema for ${contentType2} on ${responseContext} is not validated at runtime`);
             }
@@ -80607,7 +81054,7 @@ var CONTRACT_SIZE_LIMITS = {
   maxTestScriptBytes: 9e5,
   maxCollectionUpdateBytes: 4e6
 };
-function asRecord6(value) {
+function asRecord7(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -80616,7 +81063,7 @@ function asArray4(value) {
 }
 function stringifyPathSegment(segment) {
   if (typeof segment === "string") return segment;
-  const record = asRecord6(segment);
+  const record = asRecord7(segment);
   if (!record) return String(segment ?? "");
   for (const key of ["value", "key", "name"]) {
     if (typeof record[key] === "string" && record[key]) return String(record[key]);
@@ -80634,10 +81081,10 @@ function pathFromRaw(raw) {
   }
 }
 function requestPath(request) {
-  const record = asRecord6(request);
+  const record = asRecord7(request);
   const url = record?.url ?? request;
   if (typeof url === "string") return pathFromRaw(url);
-  const urlRecord = asRecord6(url);
+  const urlRecord = asRecord7(url);
   if (!urlRecord) return "/";
   if (Array.isArray(urlRecord.path)) return normalizePath(`/${urlRecord.path.map(stringifyPathSegment).filter(Boolean).join("/")}`);
   if (typeof urlRecord.path === "string") return normalizePath(urlRecord.path);
@@ -80669,7 +81116,7 @@ function matchCandidate(candidate, request) {
   return { matched: true, staticCount, templateCount };
 }
 function matchOperation(index, request) {
-  const record = asRecord6(request);
+  const record = asRecord7(request);
   const method = String(record?.method || "").toUpperCase();
   const path9 = requestPath(request);
   const candidates = index.operations.filter((operation) => operation.method === method).flatMap((operation) => operation.candidates.map((candidate) => ({ operation, score: matchCandidate(candidate, path9), serverFull: candidate !== normalizePath(operation.path) }))).filter((entry) => entry.score.matched).map((entry) => ({ operation: entry.operation, score: [entry.score.staticCount, entry.serverFull ? 2 : 1, -entry.score.templateCount] })).sort((a, b) => {
@@ -80966,17 +81413,17 @@ function createSecretsResolverItem() {
 }
 function isResolverItem(item) {
   if (item.name !== "00 - Resolve Secrets") return false;
-  const request = asRecord6(item.request);
+  const request = asRecord7(item.request);
   if (String(request?.method || "").toUpperCase() !== "POST") return false;
-  const headers = asArray4(request?.header).map((entry) => asRecord6(entry));
+  const headers = asArray4(request?.header).map((entry) => asRecord7(entry));
   const target = headers.find((entry) => entry?.key === "X-Amz-Target");
   return String(target?.value || "") === "secretsmanager.GetSecretValue" && !requestPath(request).includes("secretsmanager");
 }
 function requestQueryNames(request) {
-  const url = asRecord6(request.url);
+  const url = asRecord7(request.url);
   const names = /* @__PURE__ */ new Set();
   if (Array.isArray(url?.query)) {
-    for (const entry of url.query.map((item) => asRecord6(item)).filter(Boolean)) {
+    for (const entry of url.query.map((item) => asRecord7(item)).filter(Boolean)) {
       if (entry.disabled !== true && typeof entry.key === "string") names.add(entry.key.toLowerCase());
     }
   }
@@ -80991,17 +81438,17 @@ function requestQueryNames(request) {
 }
 function requestHeaderNames(request) {
   const names = /* @__PURE__ */ new Set();
-  for (const entry of asArray4(request.header).map((item) => asRecord6(item)).filter(Boolean)) {
+  for (const entry of asArray4(request.header).map((item) => asRecord7(item)).filter(Boolean)) {
     if (entry.disabled !== true && typeof entry.key === "string") names.add(entry.key.toLowerCase());
   }
   return names;
 }
 function requestHeaderValue(request, name) {
-  const match = asArray4(request.header).map((item) => asRecord6(item)).filter(Boolean).find((entry) => String(entry.key || "").toLowerCase() === name.toLowerCase() && entry.disabled !== true);
+  const match = asArray4(request.header).map((item) => asRecord7(item)).filter(Boolean).find((entry) => String(entry.key || "").toLowerCase() === name.toLowerCase() && entry.disabled !== true);
   return typeof match?.value === "string" ? match.value : void 0;
 }
 function hasRequestBody(request) {
-  const body = asRecord6(request.body);
+  const body = asRecord7(request.body);
   if (!body) return false;
   if (typeof body.raw === "string" && body.raw.trim()) return true;
   return ["urlencoded", "formdata", "graphql"].some((key) => Array.isArray(body[key]) ? body[key].length > 0 : Boolean(body[key]));
@@ -81047,7 +81494,7 @@ function assertStaticRequestShape(operation, request) {
   return warnings;
 }
 function requestBodyFieldNames(request, base) {
-  const body = asRecord6(request.body);
+  const body = asRecord7(request.body);
   if (!body) return void 0;
   if (base === "application/json" || /\+json$/.test(base)) {
     if (body.mode !== "raw" || typeof body.raw !== "string") return void 0;
@@ -81057,18 +81504,18 @@ function requestBodyFieldNames(request, base) {
     } catch {
       return void 0;
     }
-    const record = asRecord6(parsed);
+    const record = asRecord7(parsed);
     return record ? Object.keys(record) : void 0;
   }
   const mode = base === "application/x-www-form-urlencoded" ? "urlencoded" : base === "multipart/form-data" ? "formdata" : "";
   if (!mode || !Array.isArray(body[mode])) return void 0;
-  return body[mode].map((entry) => asRecord6(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true).map((entry) => String(entry.key || "")).filter(Boolean);
+  return body[mode].map((entry) => asRecord7(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true).map((entry) => String(entry.key || "")).filter(Boolean);
 }
 function requestBodyEntries(request, base) {
-  const body = asRecord6(request.body);
+  const body = asRecord7(request.body);
   const mode = base === "application/x-www-form-urlencoded" ? "urlencoded" : base === "multipart/form-data" ? "formdata" : "";
   if (!body || !mode || !Array.isArray(body[mode])) return void 0;
-  return body[mode].map((entry) => asRecord6(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true);
+  return body[mode].map((entry) => asRecord7(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true);
 }
 function mediaTypeMatchesPattern(pattern, actual) {
   return pattern.split(",").some((candidate) => {
@@ -81130,7 +81577,7 @@ function collectStaticEncodingWarnings(operation, request, base, rule) {
   return warnings;
 }
 function coerceFormValue(value, schema) {
-  const record = asRecord6(schema);
+  const record = asRecord7(schema);
   const type = record?.type;
   const types2 = Array.isArray(type) ? type : [type];
   if ((types2.includes("integer") || types2.includes("number")) && /^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/.test(value.trim())) return Number(value);
@@ -81198,21 +81645,21 @@ function validateScript(script) {
   return void 0;
 }
 function scriptExecLines(script) {
-  const record = asRecord6(script);
+  const record = asRecord7(script);
   if (!record) return [];
   if (Array.isArray(record.exec)) return record.exec.map((line) => String(line));
   if (typeof record.exec === "string") return [record.exec];
   return [];
 }
 function scanExecutableScripts(node, warnings) {
-  for (const event of asArray4(node.event).map((entry) => asRecord6(entry)).filter(Boolean)) {
+  for (const event of asArray4(node.event).map((entry) => asRecord7(entry)).filter(Boolean)) {
     const lines = scriptExecLines(event.script);
     if (lines.length === 0) continue;
     const warning2 = validateScript(lines);
     if (warning2) warnings.push(warning2);
   }
   for (const child3 of asArray4(node.item)) {
-    const childRecord = asRecord6(child3);
+    const childRecord = asRecord7(child3);
     if (childRecord) scanExecutableScripts(childRecord, warnings);
   }
 }
@@ -81222,7 +81669,7 @@ function instrumentContractCollection(collection, index) {
   const inject = (item) => {
     if (isResolverItem(item)) return;
     if (item.request) {
-      const request = asRecord6(item.request) ?? {};
+      const request = asRecord7(item.request) ?? {};
       const result = matchOperation(index, request);
       let script;
       if (result.operation) {
@@ -81239,15 +81686,15 @@ function instrumentContractCollection(collection, index) {
       } else {
         script = createMappingFailureScript(`No OpenAPI operation matched request ${result.method} ${result.path}`);
       }
-      const events2 = asArray4(item.event).filter((entry) => asRecord6(entry)?.listen !== "test");
+      const events2 = asArray4(item.event).filter((entry) => asRecord7(entry)?.listen !== "test");
       item.event = [...events2, { listen: "test", script: { type: "text/javascript", exec: script } }];
     }
     for (const child3 of asArray4(item.item)) {
-      const childRecord = asRecord6(child3);
+      const childRecord = asRecord7(child3);
       if (childRecord) inject(childRecord);
     }
   };
-  const items = asArray4(collection.item).map((entry) => asRecord6(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isResolverItem(entry));
+  const items = asArray4(collection.item).map((entry) => asRecord7(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isResolverItem(entry));
   collection.item = items;
   for (const item of items) inject(item);
   const missing = index.operations.filter((operation) => !covered.has(operation.id));
@@ -93439,7 +93886,7 @@ function compileErrors(result) {
 
 // src/lib/spec/openapi-loader.ts
 var import_yaml2 = __toESM(require_dist(), 1);
-function asRecord7(value) {
+function asRecord8(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -93454,7 +93901,7 @@ function parseOpenApiDocument(content) {
       throw new Error("CONTRACT_SPEC_PARSE_FAILED: Spec content is not valid JSON or YAML");
     }
   }
-  const doc = asRecord7(parsed);
+  const doc = asRecord8(parsed);
   if (!doc) throw new Error("CONTRACT_SPEC_PARSE_FAILED: Spec content must be a JSON or YAML object");
   return doc;
 }
@@ -93482,7 +93929,7 @@ function collectExternalRefs(node, baseUrl, refs) {
     node.forEach((entry) => collectExternalRefs(entry, baseUrl, refs));
     return;
   }
-  const record = asRecord7(node);
+  const record = asRecord8(node);
   if (!record) return;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (ref && !ref.startsWith("#")) {
@@ -93702,7 +94149,7 @@ function looksLikeIntrospection(record) {
 
 // src/lib/protocols/graphql/parser.ts
 var import_graphql = __toESM(require_graphql2(), 1);
-function asRecord8(value) {
+function asRecord9(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -93794,14 +94241,14 @@ function collectRootOperations(rootType, kind, schema, shapes) {
   });
 }
 function looksLikeIntrospection2(value) {
-  const record = asRecord8(value);
+  const record = asRecord9(value);
   if (!record) return false;
-  if (asRecord8(record.__schema)) return true;
-  const data = asRecord8(record.data);
-  return Boolean(data && asRecord8(data.__schema));
+  if (asRecord9(record.__schema)) return true;
+  const data = asRecord9(record.data);
+  return Boolean(data && asRecord9(data.__schema));
 }
 function buildSchemaFromIntrospection(value) {
-  const introspection = asRecord8(value.__schema) ? value : asRecord8(value.data);
+  const introspection = asRecord9(value.__schema) ? value : asRecord9(value.data);
   return (0, import_graphql.buildClientSchema)(introspection);
 }
 function parseGraphQLSchema(content, opts = {}) {
@@ -93818,7 +94265,7 @@ function parseGraphQLSchema(content, opts = {}) {
   }
   try {
     if (parsedJson !== void 0 && looksLikeIntrospection2(parsedJson)) {
-      schema = buildSchemaFromIntrospection(asRecord8(parsedJson));
+      schema = buildSchemaFromIntrospection(asRecord9(parsedJson));
     } else if (parsedJson !== void 0) {
       throw new Error("JSON content is not a GraphQL introspection document (missing __schema)");
     } else {
@@ -93945,7 +94392,7 @@ function buildGraphQLCollection(index, opts = {}) {
 }
 
 // src/lib/protocols/graphql/instrumenter.ts
-function asRecord9(value) {
+function asRecord10(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -94089,16 +94536,16 @@ function buildVariableScript(operation) {
   ];
 }
 function isGraphQLHttpRequest(item) {
-  const request = asRecord9(item.request);
+  const request = asRecord10(item.request);
   if (!request) return false;
-  const body = asRecord9(request.body);
+  const body = asRecord10(request.body);
   return body?.mode === "graphql";
 }
 function injectItem(item, index, covered, warnings) {
   const children2 = asArray5(item.item);
   if (children2.length > 0) {
     for (const child3 of children2) {
-      const childRecord = asRecord9(child3);
+      const childRecord = asRecord10(child3);
       if (childRecord) injectItem(childRecord, index, covered, warnings);
     }
     return;
@@ -94116,7 +94563,7 @@ function injectItem(item, index, covered, warnings) {
       ...buildOperationScript(operation, index, warnings),
       ...buildVariableScript(operation)
     ];
-    const events2 = asArray5(item.event).filter((entry) => asRecord9(entry)?.listen !== "test");
+    const events2 = asArray5(item.event).filter((entry) => asRecord10(entry)?.listen !== "test");
     item.event = [
       ...events2,
       { listen: "test", script: { type: "text/javascript", exec: exec2 } }
@@ -94127,7 +94574,7 @@ function instrumentGraphQLCollection(collection, index) {
   const warnings = [...index.warnings];
   const covered = /* @__PURE__ */ new Set();
   for (const child3 of asArray5(collection.item)) {
-    const childRecord = asRecord9(child3);
+    const childRecord = asRecord10(child3);
     if (childRecord) injectItem(childRecord, index, covered, warnings);
   }
   const missing = index.operations.filter((operation) => !covered.has(operation.id));
@@ -94141,7 +94588,7 @@ function instrumentGraphQLCollection(collection, index) {
 
 // src/lib/protocols/grpc/proto-parser.ts
 var protobufjs = __toESM(require_protobufjs(), 1);
-function asRecord10(value) {
+function asRecord11(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -94313,7 +94760,7 @@ function parseProtoSchema(content, deps) {
   }
   const enumIndex = {};
   for (const enumObj of enums) {
-    const values = Object.keys(asRecord10(enumObj.values) ?? {}).sort();
+    const values = Object.keys(asRecord11(enumObj.values) ?? {}).sort();
     enumIndex[stripLeadingDot(enumObj.fullName)] = values;
   }
   const operations = [];
@@ -94439,7 +94886,7 @@ var GRPC_INSTRUMENT_LIMITS = {
   maxTestScriptBytes: 9e5,
   maxCollectionUpdateBytes: 4e6
 };
-function asRecord11(value) {
+function asRecord12(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -94580,7 +95027,7 @@ function createMappingFailureScript2(message) {
   ];
 }
 function methodPathOf(item) {
-  const payload = asRecord11(item.payload);
+  const payload = asRecord12(item.payload);
   const value = payload?.methodPath;
   return typeof value === "string" ? value : "";
 }
@@ -94606,16 +95053,16 @@ function instrumentGrpcCollection(collection, index) {
       } else {
         script = createMappingFailureScript2(`No proto service method matched grpc-request methodPath ${methodPath2 || "<empty>"}`);
       }
-      const events2 = asArray7(item.event).filter((entry) => asRecord11(entry)?.listen !== "test");
+      const events2 = asArray7(item.event).filter((entry) => asRecord12(entry)?.listen !== "test");
       item.event = [...events2, { listen: "test", script: { type: "text/javascript", exec: script } }];
     }
     for (const child3 of asArray7(item.item)) {
-      const childRecord = asRecord11(child3);
+      const childRecord = asRecord12(child3);
       if (childRecord) inject(childRecord);
     }
   };
   for (const entry of asArray7(collection.item)) {
-    const item = asRecord11(entry);
+    const item = asRecord12(entry);
     if (item) inject(item);
   }
   const missing = index.operations.filter((operation) => !covered.has(operation.methodPath));
@@ -94631,7 +95078,7 @@ function instrumentGrpcCollection(collection, index) {
 
 // src/lib/protocols/soap/parser.ts
 var import_fast_xml_parser = __toESM(require_fxp(), 1);
-function asRecord12(value) {
+function asRecord13(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -94678,7 +95125,7 @@ function children(record, local) {
     if (key.startsWith("@_") || key === "#text") continue;
     if (localName(key) !== local) continue;
     for (const entry of asArray8(record[key])) {
-      const rec = asRecord12(entry);
+      const rec = asRecord13(entry);
       if (rec) out.push(rec);
     }
   }
@@ -94745,7 +95192,7 @@ function parseSoapBindings11(definitions) {
       for (const key of Object.keys(operation)) {
         if (localName(key) !== "operation") continue;
         for (const marker of asArray8(operation[key])) {
-          const rec = asRecord12(marker);
+          const rec = asRecord13(marker);
           const action = attr(rec, "soapAction");
           if (action) soapAction = action;
         }
@@ -94802,8 +95249,8 @@ function parseServices11(definitions, messages, bindings, warnings) {
     return children(portType, "operation").map((operation) => {
       const name = attr(operation, "name");
       const opWarnings = [];
-      const inputRef = localName(attr(asRecord12(child2(operation, "input")), "message"));
-      const outputRef = localName(attr(asRecord12(child2(operation, "output")), "message"));
+      const inputRef = localName(attr(asRecord13(child2(operation, "input")), "message"));
+      const outputRef = localName(attr(asRecord13(child2(operation, "output")), "message"));
       const input = inputRef ? messages.get(inputRef) : void 0;
       const output = outputRef ? messages.get(outputRef) : void 0;
       if (inputRef && !input) opWarnings.push(`SOAP_MESSAGE_UNRESOLVED: input message ${inputRef} for operation ${name} not found`);
@@ -94832,7 +95279,7 @@ function parseServices11(definitions, messages, bindings, warnings) {
     const seenPortTypes = /* @__PURE__ */ new Set();
     for (const port of ports) {
       const bindingName = localName(attr(port, "binding"));
-      const address = asRecord12(child2(port, "address"));
+      const address = asRecord13(child2(port, "address"));
       const location2 = attr(address, "location");
       if (location2 && !endpoint) endpoint = location2;
       const portTypeName = bindingToPortType.get(bindingName);
@@ -94862,7 +95309,7 @@ function parseServices20(description, warnings) {
   const buildOperations = (iface) => children(iface, "operation").map((operation) => {
     const name = attr(operation, "name");
     const opWarnings = [];
-    const out = asRecord12(child2(operation, "output"));
+    const out = asRecord13(child2(operation, "output"));
     const outElement = localName(attr(out, "element"));
     if (!out) opWarnings.push(`SOAP_OPERATION_ONE_WAY: operation ${name} declares no output; response assertions limited to transport`);
     return {
@@ -94902,13 +95349,13 @@ function parseWsdl(content) {
   const parser = createParser();
   let root;
   try {
-    root = asRecord12(parser.parse(text));
+    root = asRecord13(parser.parse(text));
   } catch (error2) {
     throw new Error(`SOAP_WSDL_PARSE_ERROR: ${error2.message}`, { cause: error2 });
   }
   if (!root) throw new Error("SOAP_WSDL_PARSE_ERROR: document did not parse to an element");
-  const definitions = asRecord12(child2(root, "definitions"));
-  const description = asRecord12(child2(root, "description"));
+  const definitions = asRecord13(child2(root, "definitions"));
+  const description = asRecord13(child2(root, "description"));
   if (!definitions && !description) {
     throw new Error("SOAP_WSDL_ROOT_INVALID: expected a WSDL <definitions> (1.1) or <description> (2.0) root element");
   }
@@ -95027,7 +95474,7 @@ function buildSoapCollection(index, options = {}) {
 }
 
 // src/lib/protocols/soap/instrumenter.ts
-function asRecord13(value) {
+function asRecord14(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -95094,12 +95541,12 @@ function forEachHttpRequest(node, visit) {
   const children2 = asArray9(node.item);
   if (children2.length > 0) {
     for (const child3 of children2) {
-      const record = asRecord13(child3);
+      const record = asRecord14(child3);
       if (record) forEachHttpRequest(record, visit);
     }
     return;
   }
-  if (asRecord13(node.request)) visit(node);
+  if (asRecord14(node.request)) visit(node);
 }
 function instrumentSoapCollection(collection, index) {
   const warnings = [...index.warnings];
@@ -95118,7 +95565,7 @@ function instrumentSoapCollection(collection, index) {
       return;
     }
     const exec2 = createSoapScript(operation, warnings).split("\n");
-    const existing = asArray9(item.event).map((entry) => asRecord13(entry)).filter((entry) => Boolean(entry) && entry.listen !== "test");
+    const existing = asArray9(item.event).map((entry) => asRecord14(entry)).filter((entry) => Boolean(entry) && entry.listen !== "test");
     item.event = [
       ...existing,
       { listen: "test", script: { type: "text/javascript", exec: exec2 } }
@@ -95921,6 +96368,10 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
   if (dependencies.ecClient?.configureTeamContext) {
     const ecTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
     dependencies.ecClient.configureTeamContext(ecTeamId, ecOrgMode);
+  }
+  if (dependencies.postman.configureTeamContext) {
+    const gatewayTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
+    dependencies.postman.configureTeamContext(gatewayTeamId, ecOrgMode);
   }
   const governanceGroupName = await resolveGovernanceGroupName(inputs, dependencies);
   const shouldAssignGovernance = Boolean(inputs.domain || governanceGroupName);
@@ -96855,7 +97306,8 @@ async function runAction(actionCore = core_exports, actionExec = exec_exports, a
     core: actionCore,
     exec: actionExec,
     io: actionIo,
-    specFetcher: fetch
+    specFetcher: fetch,
+    setSecret: (secret) => actionCore.setSecret(secret)
   }, orgMode);
   if ((inputs.domain || inputs.governanceGroup) && !dependencies.internalIntegration) {
     actionCore.warning(
@@ -96864,19 +97316,115 @@ async function runAction(actionCore = core_exports, actionExec = exec_exports, a
   }
   return runBootstrap(inputs, dependencies);
 }
+function createRoutingPostmanClient(options) {
+  const { gateway, pmak, hasPmak, log } = options;
+  const bind = (name) => pmak[name].bind(pmak);
+  if (!gateway) {
+    return Object.assign(pmak, {
+      configureTeamContext: (_teamId, _orgMode) => {
+        void _teamId;
+        void _orgMode;
+      }
+    });
+  }
+  const prefer = async (label, gatewayFn, pmakFn) => {
+    try {
+      return await gatewayFn();
+    } catch (error2) {
+      if (!hasPmak) {
+        throw error2;
+      }
+      log.warning(`postman: gateway ${label} failed; falling back to the API key. ${secretSafeMessage(error2)}`);
+      return pmakFn();
+    }
+  };
+  return {
+    // gateway-primary (verified live), PMAK fallback
+    uploadSpec: (workspaceId, projectName, specContent, openapiVersion) => prefer(
+      "spec upload",
+      () => gateway.uploadSpec(workspaceId, projectName, specContent, openapiVersion ?? "3.0"),
+      () => pmak.uploadSpec(workspaceId, projectName, specContent, openapiVersion)
+    ),
+    generateCollection: (specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) => prefer(
+      "collection generation",
+      () => gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
+      () => pmak.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource)
+    ),
+    // best-effort gateway reads: fall back to PMAK when the gateway cannot read.
+    getWorkspaceVisibility: async (workspaceId) => {
+      const viaGateway = await gateway.getWorkspaceVisibility(workspaceId);
+      if (viaGateway != null) return viaGateway;
+      return hasPmak ? pmak.getWorkspaceVisibility(workspaceId) : viaGateway;
+    },
+    getWorkspaceGitRepoUrl: async (workspaceId, teamId, accessToken) => {
+      try {
+        const viaGateway = await gateway.getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken);
+        if (viaGateway != null) return viaGateway;
+      } catch (error2) {
+        if (!hasPmak) throw error2;
+        log.warning(`postman: gateway workspace repo lookup failed; falling back to the API key. ${secretSafeMessage(error2)}`);
+      }
+      return hasPmak ? pmak.getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken) : null;
+    },
+    findWorkspacesByName: (name) => prefer("workspace lookup", () => gateway.findWorkspacesByName(name), () => pmak.findWorkspacesByName(name)),
+    configureTeamContext: (teamId, orgMode) => gateway.configureTeamContext(teamId, orgMode),
+    // PMAK-only routes (no verified gateway equivalent): delegate straight through.
+    addAdminsToWorkspace: bind("addAdminsToWorkspace"),
+    createWorkspace: bind("createWorkspace"),
+    getAutoDerivedTeamId: bind("getAutoDerivedTeamId"),
+    getSpecContent: bind("getSpecContent"),
+    getTeams: bind("getTeams"),
+    injectTests: bind("injectTests"),
+    inviteRequesterToWorkspace: bind("inviteRequesterToWorkspace"),
+    tagCollection: bind("tagCollection"),
+    updateSpec: bind("updateSpec"),
+    createCollection: bind("createCollection"),
+    deleteCollection: bind("deleteCollection"),
+    getCollection: bind("getCollection"),
+    updateCollection: bind("updateCollection")
+  };
+}
+function secretSafeMessage(error2) {
+  return error2 instanceof Error ? error2.message : String(error2);
+}
 function createBootstrapDependencies(inputs, factories, orgMode = false) {
-  const secretMasker = createSecretMasker([
+  const mutableMasker = createMutableSecretMasker([
     inputs.postmanApiKey,
     inputs.postmanAccessToken
   ]);
-  const postman = new PostmanAssetsClient({
+  const secretMasker = mutableMasker.mask;
+  const tokenProvider = new AccessTokenProvider({
+    accessToken: inputs.postmanAccessToken,
+    apiKey: inputs.postmanApiKey,
+    apiBaseUrl: inputs.postmanApiBase,
+    onToken: (token) => {
+      factories.setSecret?.(token);
+      mutableMasker.add(token);
+    }
+  });
+  const pmak = new PostmanAssetsClient({
     apiKey: inputs.postmanApiKey,
     baseUrl: inputs.postmanApiBase,
     bifrostBaseUrl: inputs.postmanBifrostBase,
     secretMasker
   });
+  const gatewayClient = inputs.postmanAccessToken ? new AccessTokenGatewayClient({
+    tokenProvider,
+    bifrostBaseUrl: inputs.postmanBifrostBase,
+    teamId: inputs.teamId || "",
+    orgMode,
+    secretMasker
+  }) : void 0;
+  const gatewayAssets = gatewayClient ? new PostmanGatewayAssetsClient({ gateway: gatewayClient }) : void 0;
+  const postman = createRoutingPostmanClient({
+    gateway: gatewayAssets,
+    pmak,
+    hasPmak: Boolean(inputs.postmanApiKey),
+    log: factories.core
+  });
   const internalIntegration = inputs.postmanAccessToken ? createInternalIntegrationAdapter({
     accessToken: inputs.postmanAccessToken,
+    tokenProvider,
     backend: inputs.integrationBackend,
     bifrostBaseUrl: inputs.postmanBifrostBase,
     gatewayBaseUrl: inputs.postmanGatewayBase,
@@ -96886,6 +97434,7 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
   }) : void 0;
   const ecClient = inputs.postmanAccessToken ? new PostmanExtensibleCollectionClient({
     accessToken: inputs.postmanAccessToken,
+    tokenProvider,
     bifrostBaseUrl: inputs.postmanBifrostBase,
     orgMode,
     secretMasker,

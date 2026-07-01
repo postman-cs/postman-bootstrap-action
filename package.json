@@ -37,7 +37,7 @@
     "@actions/core": "^3.0.1",
     "@actions/exec": "^3.0.0",
     "@actions/io": "^3.0.2",
-    "@apidevtools/json-schema-ref-parser": "15.3.6",
+    "@apidevtools/json-schema-ref-parser": "15.4.0",
     "@exodus/schemasafe": "1.3.0",
     "@postman-cse/automation-telemetry-core": "^0.2.0",
     "@postman/asyncapi-parser": "^3.5.0",

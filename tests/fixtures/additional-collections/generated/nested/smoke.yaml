@@ -1,0 +1,55 @@
+info:
+  name: E2E Test API generated smoke artifact
+  description: Derived from tests/fixtures/e2e-spec.yaml for additional-collections-dir E2E coverage.
+  schema: https://schema.getpostman.com/json/collection/v2.1.0/collection.json
+item:
+  - name: Pets smoke
+    item:
+      - name: List all pets smoke
+        request:
+          method: GET
+          url: https://api.example.com/v1/pets
+        event:
+          - listen: test
+            script:
+              type: text/javascript
+              exec:
+                - pm.test("response is successful", () => {
+                - "  pm.expect(pm.response.code).to.be.oneOf([200]);"
+                - "});"
+      - name: Create a pet smoke
+        request:
+          method: POST
+          header:
+            - key: Content-Type
+              value: application/json
+          body:
+            mode: raw
+            raw: |-
+              {
+                "name": "Ada",
+                "tag": "dog"
+              }
+          url: https://api.example.com/v1/pets
+        event:
+          - listen: test
+            script:
+              type: text/javascript
+              exec:
+                - pm.test("pet was created", () => {
+                - "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);"
+                - "});"
+  - name: Owners smoke
+    item:
+      - name: List all owners smoke
+        request:
+          method: GET
+          url: https://api.example.com/v1/owners
+        event:
+          - listen: test
+            script:
+              type: text/javascript
+              exec:
+                - pm.test("response is successful", () => {
+                - "  pm.expect(pm.response.code).to.be.oneOf([200]);"
+                - "});"

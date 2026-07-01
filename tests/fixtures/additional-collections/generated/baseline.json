@@ -1,0 +1,71 @@
+{
+  "info": {
+    "name": "E2E Test API generated baseline artifact",
+    "description": "Derived from tests/fixtures/e2e-spec.yaml for additional-collections-dir E2E coverage.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Pets",
+      "item": [
+        {
+          "name": "List all pets",
+          "request": {
+            "method": "GET",
+            "url": "https://api.example.com/v1/pets"
+          }
+        },
+        {
+          "name": "Create a pet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ada\",\n  \"tag\": \"dog\"\n}"
+            },
+            "url": "https://api.example.com/v1/pets"
+          }
+        },
+        {
+          "name": "Get a pet by ID",
+          "request": {
+            "method": "GET",
+            "url": "https://api.example.com/v1/pets/pet-123"
+          }
+        },
+        {
+          "name": "Delete a pet",
+          "request": {
+            "method": "DELETE",
+            "url": "https://api.example.com/v1/pets/pet-123"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Owners",
+      "item": [
+        {
+          "name": "List all owners",
+          "request": {
+            "method": "GET",
+            "url": "https://api.example.com/v1/owners"
+          }
+        },
+        {
+          "name": "Get an owner by ID",
+          "request": {
+            "method": "GET",
+            "url": "https://api.example.com/v1/owners/owner-123"
+          }
+        }
+      ]
+    }
+  ]
+}

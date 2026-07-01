@@ -322,6 +322,8 @@ Dynamic contract failures and warnings use `CONTRACT_` error codes. Remediation 
 | `CONTRACT_UNSUPPORTED_SCHEMA_DIALECT` | A schema declared an unsupported JSON Schema dialect. | Use draft-07 or 2020-12-compatible schemas. |
 | `CONTRACT_SCHEMA_COMPILE_FAILED` | schemasafe could not compile a response/header schema. | Simplify or correct the unsupported schema. |
 | `CONTRACT_STATIC_REQUEST_CHECK_FAILED` | Generated request missed a required non-security parameter or body. | Adjust generation options or the spec so generated requests include required shape. |
+| `CONTRACT_STATIC_REQUEST_CHECK_SKIPPED` | A static request-shape check could not be evaluated over the v3 collection surface (the request could not be reconstructed from the item IR). | Non-fatal; the runtime contract script still validates the response. Regenerate the collection if it persists. |
+| `CONTRACT_COLLECTION_FORMAT_UNSUPPORTED` | A protocol collection builder returned a non-v3 format; only v3/Extensible Collections are created (access-token EC API). | File a bug; the builder must emit v3-ec. No v2 collection is ever created. |
 | `CONTRACT_SECURITY_NOT_VALIDATED` | Security requirements were detected but dynamic tests cannot prove auth at runtime. | Run dedicated auth tests and review generated requests for required credentials. |
 | `CONTRACT_WEBHOOKS_NOT_VALIDATED` | OpenAPI webhooks were present but are not included in dynamic contract coverage. | Validate webhook behavior separately or model required behavior under `paths`. |
 | `CONTRACT_CALLBACKS_NOT_VALIDATED` | Operation callbacks were present but are not included in dynamic contract coverage. | Validate callback behavior separately or add dedicated tests. |

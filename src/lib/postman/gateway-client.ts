@@ -133,6 +133,11 @@ export class AccessTokenGatewayClient {
    * transient-retry budget.
    */
   async request(request: GatewayRequest): Promise<Response> {
+    // A PMAK-only run starts with no access token; mint one up front so the
+    // gateway is the sole asset path (the PMAK is only ever the mint credential).
+    if (!this.tokenProvider.current() && this.tokenProvider.canRefresh()) {
+      await this.tokenProvider.refresh();
+    }
     let attempt = 0;
     for (;;) {
       let response = await this.send(request);

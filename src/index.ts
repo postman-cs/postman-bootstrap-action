@@ -31,7 +31,6 @@ import { adviseFromHttpError } from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
-import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
 import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
 import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
@@ -41,7 +40,6 @@ import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker, createMutableSecretMasker } from './lib/secrets.js';
 import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
-import { instrumentContractCollection } from './lib/spec/collection-contracts.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
@@ -168,7 +166,7 @@ export interface BootstrapExecutionDependencies {
   >;
   github?: Pick<GitHubApiClient, 'getRepositoryCustomProperty'>;
   postman: Pick<
-    PostmanAssetsClient,
+    PostmanGatewayAssetsClient,
     | 'addAdminsToWorkspace'
     | 'createWorkspace'
     | 'findWorkspacesByName'
@@ -177,17 +175,16 @@ export interface BootstrapExecutionDependencies {
     | 'getTeams'
     | 'getWorkspaceGitRepoUrl'
     | 'getWorkspaceVisibility'
-    | 'injectTests'
     | 'inviteRequesterToWorkspace'
-    | 'tagCollection'
     | 'uploadSpec'
     | 'updateSpec'
-  > &
-    Partial<Pick<PostmanAssetsClient, 'createCollection' | 'deleteCollection' | 'getCollection' | 'updateCollection'>> &
-    // The routing facade may carry an access-token gateway client whose team
-    // context is re-scoped after team resolution (org-mode sub-team). Absent on
-    // a plain PMAK client.
-    { configureTeamContext?(teamId: string, orgMode: boolean): void };
+  > & {
+    configureTeamContext?(teamId: string, orgMode: boolean): void;
+    injectTests(collectionId: string, type: 'smoke'): Promise<void>;
+    tagCollection(collectionId: string, tags: string[]): Promise<void>;
+    deleteCollection?(collectionUid: string): Promise<void>;
+    injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
+  };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,
     | 'createExtensibleCollection'
@@ -897,41 +894,6 @@ function findCloudResourceId(
   return match?.[1];
 }
 
-function sanitizeCollectionForUpdate(
-  value: unknown,
-  options: { dropResponses?: boolean } = {}
-): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeCollectionForUpdate(entry, options));
-  }
-
-  if (!value || typeof value !== 'object') {
-    return value;
-  }
-
-  const record = { ...(value as Record<string, unknown>) };
-  delete record.id;
-  delete record.uid;
-  delete record._postman_id;
-  if (options.dropResponses !== false) {
-    delete record.response;
-  }
-
-  if (record.request && typeof record.request === 'object' && record.request !== null) {
-    const request = { ...(record.request as Record<string, unknown>) };
-    delete request.id;
-    delete request.uid;
-    delete request._postman_id;
-    record.request = request;
-  }
-
-  for (const [key, entry] of Object.entries(record)) {
-    record[key] = sanitizeCollectionForUpdate(entry, options);
-  }
-
-  return record;
-}
-
 const SPEC_SUMMARY_MAX_LEN = 200;
 const SPEC_HTTP_METHODS = new Set([
   'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'
@@ -1341,10 +1303,6 @@ async function runProtocolBootstrap(
     aboutText
   );
 
-  if (!dependencies.postman.createCollection) {
-    throw new Error('Multi-protocol contract generation requires createCollection support from the Postman client');
-  }
-
   const built = await runGroup(
     dependencies.core,
     `Build ${specType.toUpperCase()} Contract Collection`,
@@ -1366,18 +1324,22 @@ async function runProtocolBootstrap(
         : 'gRPC execution requires the grpc_protocol_execution_allowed account feature flag in Postman CLI.')
   );
 
-  // All protocols emit v3/Extensible Collections, created through the gateway EC
-  // API (the public v2.1.0 collections endpoint rejects EC payloads). The
-  // non-EC branch is retained as a defensive fallback should a builder ever
-  // return a v2.1.0 tree.
-  const contractCollectionId =
-    built.format === 'v3-ec'
-      ? await createExtensibleContractCollection(workspaceId || '', built, inputs, dependencies)
-      : await runGroup(
-          dependencies.core,
-          'Create Contract Collection',
-          async () => dependencies.postman.createCollection!(workspaceId || '', built.collection)
-        );
+  // Every protocol builder emits a v3/Extensible Collection (graphql/soap are
+  // transformed from v2 via runtime.models; gRPC is EC-native), so the contract
+  // collection is always created through the access-token gateway EC API. The
+  // public v2.1.0 collections endpoint (PMAK) has been retired — a builder that
+  // returned v2.1.0 would fail loudly here rather than silently reach for PMAK.
+  if (built.format !== 'v3-ec') {
+    throw new Error(
+      `CONTRACT_COLLECTION_FORMAT_UNSUPPORTED: protocol builder returned ${built.format}; only v3-ec collections are created (access-token EC API)`
+    );
+  }
+  const contractCollectionId = await createExtensibleContractCollection(
+    workspaceId || '',
+    built,
+    inputs,
+    dependencies
+  );
 
   outputs['contract-collection-id'] = contractCollectionId;
   outputs['collections-json'] = JSON.stringify({
@@ -1893,311 +1855,77 @@ async function runBootstrapInner(
       'Generate Collections from Spec',
       async () => {
         const assetProjectName = collectionAssetProjectName;
-        const shouldReuseCollections = inputs.collectionSyncMode !== 'refresh';
-        const temporaryCollectionIds = new Set<string>();
-        const getCollection = dependencies.postman.getCollection?.bind(dependencies.postman);
-        const updateCollection = dependencies.postman.updateCollection?.bind(dependencies.postman);
-        const deleteCollection = dependencies.postman.deleteCollection?.bind(dependencies.postman);
-        const cleanupTemporaryCollections = async (failure: unknown): Promise<void> => {
-          if (temporaryCollectionIds.size === 0) return;
-          if (failure) {
-            dependencies.core.warning(
-              `Refresh failed after temporary collection generation; attempting cleanup for temporary collections: ${Array.from(temporaryCollectionIds).join(', ')}`
-            );
-          }
-          for (const tempCollectionId of temporaryCollectionIds) {
-            try {
-              if (!deleteCollection) {
-                dependencies.core.warning(
-                  `Temporary collection ${tempCollectionId} was not deleted because deleteCollection is unavailable`
-                );
-                continue;
-              }
-              await deleteCollection(tempCollectionId);
-              dependencies.core.info(`Deleted temporary generated collection ${tempCollectionId}`);
-            } catch (error) {
-              dependencies.core.warning(
-                `Failed to delete temporary collection ${tempCollectionId}: ${error instanceof Error ? error.message : String(error)}`
-              );
-            }
-          }
-          temporaryCollectionIds.clear();
-        };
-        const requireContractCollectionHelpers = () => {
-          if (!getCollection || !updateCollection) {
-            throw new Error(
-              'Dynamic contract tests require getCollection and updateCollection support from the Postman client'
-            );
-          }
-          if (!contractIndex) {
-            throw new Error('CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight');
-          }
-        };
-        const instrumentAndUpdateContractCollection = async (
-          targetCollectionId: string,
-          sourceCollectionId: string = targetCollectionId
-        ): Promise<string> => {
-          requireContractCollectionHelpers();
-          const sourceCollection = await getCollection!(sourceCollectionId);
-          const planned = instrumentContractCollection(
-            sanitizeCollectionForUpdate(sourceCollection) as Record<string, unknown>,
-            contractIndex!
-          );
-          for (const warning of planned.warnings) {
-            dependencies.core.warning(warning);
-          }
-          try {
-            await updateCollection!(targetCollectionId, planned.collection);
-            return targetCollectionId;
-          } catch (error) {
-            if (targetCollectionId !== sourceCollectionId && error instanceof HttpError && error.status === 404) {
-              dependencies.core.warning(
-                `Existing [Contract] collection ${targetCollectionId} was not found during refresh; using newly generated collection ${sourceCollectionId}`
-              );
-              await updateCollection!(sourceCollectionId, planned.collection);
-              return sourceCollectionId;
-            }
-            throw error;
-          }
-        };
+        const specId = outputs['spec-id'];
 
-        type RefreshPlan = {
-          existingId?: string;
-          generatedId: string;
-          outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id';
-          prefix: GeneratedCollectionPrefix;
-          snapshot?: Record<string, unknown>;
-          updateBody?: Record<string, unknown>;
-        };
-        const requireRefreshCollectionHelpers = () => {
-          if (!getCollection || !updateCollection) {
-            throw new Error(
-              'Refresh-in-place requires getCollection and updateCollection support from the Postman client'
-            );
-          }
-        };
-        const refreshPlanSlot = (
-          outputKey: RefreshPlan['outputKey']
-        ): 'baseline' | 'contract' | 'smoke' => {
-          if (outputKey === 'baseline-collection-id') return 'baseline';
-          if (outputKey === 'contract-collection-id') return 'contract';
-          return 'smoke';
-        };
-        const assertDistinctRefreshPlanOutputs = (plans: RefreshPlan[]): void => {
-          const ids: Record<'baseline' | 'contract' | 'smoke', string | undefined> = {
-            baseline: undefined,
-            contract: undefined,
-            smoke: undefined
-          };
-          for (const plan of plans) {
-            ids[refreshPlanSlot(plan.outputKey)] = plan.existingId ?? plan.generatedId;
-          }
-          assertDistinctCollectionIds(ids);
-        };
-        const createRefreshPlan = async (
-          prefix: RefreshPlan['prefix'],
+        // Regenerate each spec-linked collection in place from the current spec
+        // via the access-token `specification` sync route (preserving the
+        // collection UID so persisted repo-var references stay valid), or generate
+        // a fresh one. Both are access-token gateway routes — PMAK is never used
+        // and no v2 collection is read or written.
+        const ensureCollection = async (
+          prefix: GeneratedCollectionPrefix,
           existingId: string | undefined,
-          outputKey: RefreshPlan['outputKey']
-        ): Promise<RefreshPlan> => {
-          const generatedId = await dependencies.postman.generateCollection(
-            outputs['spec-id'],
+          outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id'
+        ): Promise<void> => {
+          if (existingId) {
+            if (inputs.collectionSyncMode === 'refresh' && dependencies.internalIntegration) {
+              try {
+                await dependencies.internalIntegration.syncCollection(specId, existingId);
+                outputs[outputKey] = existingId;
+                dependencies.core.info(
+                  `Refreshed existing ${describeGeneratedCollection(prefix)} collection ${existingId} from the current spec`
+                );
+                return;
+              } catch (error) {
+                dependencies.core.warning(
+                  `Could not regenerate existing ${describeGeneratedCollection(prefix)} collection ${existingId} from spec ` +
+                    `(${error instanceof Error ? error.message : String(error)}); generating a fresh collection`
+                );
+              }
+            } else {
+              outputs[outputKey] = existingId;
+              dependencies.core.info(
+                `Using existing ${describeGeneratedCollection(prefix)} collection: ${existingId}`
+              );
+              return;
+            }
+          }
+          outputs[outputKey] = await dependencies.postman.generateCollection(
+            specId,
             assetProjectName,
             prefix,
             inputs.folderStrategy,
             inputs.nestedFolderHierarchy,
             inputs.requestNameSource
           );
-          temporaryCollectionIds.add(generatedId);
-          return {
-            existingId,
-            generatedId,
-            outputKey,
-            prefix
-          };
-        };
-        const prepareContractUpdateBody = async (sourceCollectionId: string): Promise<Record<string, unknown>> => {
-          requireContractCollectionHelpers();
-          const sourceCollection = await getCollection!(sourceCollectionId);
-          const planned = instrumentContractCollection(
-            sanitizeCollectionForUpdate(sourceCollection) as Record<string, unknown>,
-            contractIndex!
-          );
-          for (const warning of planned.warnings) {
-            dependencies.core.warning(warning);
-          }
-          return planned.collection;
-        };
-        const restoreUpdatedCollections = async (
-          updatedCollections: Array<{ collectionId: string; snapshot: Record<string, unknown> }>
-        ): Promise<void> => {
-          for (const updated of [...updatedCollections].reverse()) {
-            try {
-              await updateCollection!(
-                updated.collectionId,
-                sanitizeCollectionForUpdate(updated.snapshot, { dropResponses: false })
-              );
-              dependencies.core.warning(
-                `Restored previous collection content for ${updated.collectionId} after refresh failure`
-              );
-            } catch (error) {
-              dependencies.core.warning(
-                `Failed to restore previous collection content for ${updated.collectionId}: ${error instanceof Error ? error.message : String(error)}`
-              );
-            }
-          }
-        };
-        const adoptGeneratedCollection = async (plan: RefreshPlan): Promise<void> => {
-          if (plan.prefix === CONTRACT_COLLECTION_PREFIX) {
-            await updateCollection!(plan.generatedId, plan.updateBody ?? await prepareContractUpdateBody(plan.generatedId));
-          }
-          outputs[plan.outputKey] = plan.generatedId;
           dependencies.core.info(
-            `No existing ${describeGeneratedCollection(plan.prefix)} collection found; using newly generated collection ${plan.generatedId}`
+            `Generated ${describeGeneratedCollection(prefix)} collection: ${outputs[outputKey]}`
           );
         };
-        const commitRefreshPlans = async (plans: RefreshPlan[]): Promise<void> => {
-          requireRefreshCollectionHelpers();
 
-          for (const plan of plans) {
-            if (plan.prefix === CONTRACT_COLLECTION_PREFIX) {
-              plan.updateBody = await prepareContractUpdateBody(plan.generatedId);
-            } else {
-              const generatedCollection = await getCollection!(plan.generatedId);
-              plan.updateBody = sanitizeCollectionForUpdate(generatedCollection) as Record<string, unknown>;
-            }
-          }
+        await ensureCollection(BASELINE_COLLECTION_PREFIX, baselineCollectionId, 'baseline-collection-id');
+        await ensureCollection(SMOKE_COLLECTION_PREFIX, smokeCollectionId, 'smoke-collection-id');
+        await ensureCollection(CONTRACT_COLLECTION_PREFIX, contractCollectionId, 'contract-collection-id');
 
-          for (const plan of plans.filter((entry) => entry.existingId)) {
-            try {
-              plan.snapshot = sanitizeCollectionForUpdate(
-                await getCollection!(plan.existingId!),
-                { dropResponses: false }
-              ) as Record<string, unknown>;
-            } catch (error) {
-              if (error instanceof HttpError && error.status === 404) {
-                dependencies.core.warning(
-                  `Existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
-                );
-                plan.existingId = undefined;
-                assertDistinctRefreshPlanOutputs(plans);
-                await adoptGeneratedCollection(plan);
-                continue;
-              }
-              throw error;
-            }
-          }
-
-          assertDistinctRefreshPlanOutputs(plans);
-
-          for (const plan of plans.filter((entry) => !entry.existingId && !outputs[entry.outputKey])) {
-            await adoptGeneratedCollection(plan);
-          }
-
-          const updatedCollections: Array<{ collectionId: string; snapshot: Record<string, unknown> }> = [];
-          try {
-            for (const plan of plans.filter((entry) => entry.existingId)) {
-              try {
-                await updateCollection!(
-                  plan.existingId!,
-                  plan.updateBody!
-                );
-                updatedCollections.push({
-                  collectionId: plan.existingId!,
-                  snapshot: plan.snapshot!
-                });
-                outputs[plan.outputKey] = plan.existingId!;
-                dependencies.core.info(
-                  `Refreshed existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} with temporary collection ${plan.generatedId}`
-                );
-              } catch (error) {
-                if (error instanceof HttpError && error.status === 404) {
-                  dependencies.core.warning(
-                    `Existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
-                  );
-                  plan.existingId = undefined;
-                  assertDistinctRefreshPlanOutputs(plans);
-                  await adoptGeneratedCollection(plan);
-                  continue;
-                }
-                throw error;
-              }
-            }
-            for (const plan of plans) {
-              if (outputs[plan.outputKey] === plan.generatedId) {
-                temporaryCollectionIds.delete(plan.generatedId);
-              }
-            }
-          } catch (error) {
-            await restoreUpdatedCollections(updatedCollections);
-            throw error;
-          }
-        };
-
-        let generationFailure: unknown;
-        try {
-          if (shouldReuseCollections) {
-            outputs['baseline-collection-id'] = baselineCollectionId || '';
-            outputs['smoke-collection-id'] = smokeCollectionId || '';
-            outputs['contract-collection-id'] = contractCollectionId || '';
-
-            if (!outputs['baseline-collection-id']) {
-              outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
-                outputs['spec-id'],
-                assetProjectName,
-                BASELINE_COLLECTION_PREFIX,
-                inputs.folderStrategy,
-                inputs.nestedFolderHierarchy,
-                inputs.requestNameSource
-              );
-            } else {
-              dependencies.core.info(
-                `Using existing baseline collection: ${outputs['baseline-collection-id']}`
-              );
-            }
-            if (!outputs['smoke-collection-id']) {
-              outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
-                outputs['spec-id'],
-                assetProjectName,
-                SMOKE_COLLECTION_PREFIX,
-                inputs.folderStrategy,
-                inputs.nestedFolderHierarchy,
-                inputs.requestNameSource
-              );
-            } else {
-              dependencies.core.info(
-                `Using existing smoke collection: ${outputs['smoke-collection-id']}`
-              );
-            }
-            if (!outputs['contract-collection-id']) {
-              outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
-                outputs['spec-id'],
-                assetProjectName,
-                CONTRACT_COLLECTION_PREFIX,
-                inputs.folderStrategy,
-                inputs.nestedFolderHierarchy,
-                inputs.requestNameSource
-              );
-            } else {
-              dependencies.core.info(
-                `Using existing contract collection: ${outputs['contract-collection-id']}`
-              );
-            }
-            outputs['contract-collection-id'] = await instrumentAndUpdateContractCollection(
-              outputs['contract-collection-id']
-            );
-            return;
-          }
-
-          await commitRefreshPlans([
-            await createRefreshPlan(BASELINE_COLLECTION_PREFIX, baselineCollectionId, 'baseline-collection-id'),
-            await createRefreshPlan(SMOKE_COLLECTION_PREFIX, smokeCollectionId, 'smoke-collection-id'),
-            await createRefreshPlan(CONTRACT_COLLECTION_PREFIX, contractCollectionId, 'contract-collection-id')
-          ]);
-        } catch (error) {
-          generationFailure = error;
-          throw error;
-        } finally {
-          await cleanupTemporaryCollections(generationFailure);
+        // Contract test injection is v3-native over the access-token gateway:
+        // list the generated collection's items, then PATCH each `http-request`
+        // leaf's `/scripts` with the deterministic contract afterResponse script
+        // and prepend the secrets resolver. This retires the PMAK collection read
+        // + v2.1.0 collection PUT the dynamic-contract refresh used to perform.
+        if (!dependencies.postman.injectContractTests) {
+          throw new Error(
+            'Dynamic contract tests require injectContractTests support from the access-token gateway client'
+          );
+        }
+        if (!contractIndex) {
+          throw new Error('CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight');
+        }
+        const contractWarnings = await dependencies.postman.injectContractTests(
+          outputs['contract-collection-id'],
+          contractIndex
+        );
+        for (const warning of contractWarnings) {
+          dependencies.core.warning(warning);
         }
       }
     )
@@ -2406,33 +2134,53 @@ export async function runAction(
 }
 
 /**
- * Build the routing `postman` facade. When an access token is present, every
- * migrated asset op routes through the access-token gateway and NEVER falls back
- * to PMAK — a gateway error surfaces rather than masking it (the short-TTL
- * service-account token is re-minted by the token provider on a 401, so failures
- * are real). PMAK is used only for the routes with no verified gateway equivalent
- * (workspace membership + the v2 collection-generation transient), and for
- * minting/re-minting the token + the CLI spec-lint login. A PMAK-only run (no
- * access token, no gateway) keeps the pre-migration behaviour.
+ * Build the routing `postman` facade. Every asset op routes through the
+ * access-token gateway and NEVER touches PMAK — a gateway error surfaces rather
+ * than masking it (the short-TTL service-account token is re-minted by the token
+ * provider on a 401, so failures are real). PMAK is used only for minting/re-minting
+ * the access token + the CLI spec-lint login; it is never an asset route. The
+ * gateway is always constructed (from an access token, or minted from the PMAK),
+ * so the no-gateway branch is unreachable in practice and rejects every asset op
+ * rather than falling back to any PMAK route.
  */
 export function createRoutingPostmanClient(options: {
   gateway?: PostmanGatewayAssetsClient;
-  pmak: PostmanAssetsClient;
-  hasPmak: boolean;
-  log: Pick<CoreLike, 'info' | 'warning'>;
 }): BootstrapExecutionDependencies['postman'] {
-  const { gateway, pmak } = options;
-  const bind = <K extends keyof PostmanAssetsClient>(name: K): PostmanAssetsClient[K] =>
-    (pmak[name] as { bind(thisArg: unknown): PostmanAssetsClient[K] }).bind(pmak);
+  const { gateway } = options;
+
+  const requireAccessToken = (operation: string) => async (): Promise<never> => {
+    throw new Error(
+      `${operation} requires an access token: PMAK asset routes are retired. ` +
+        'Mint a service-account token with postman-resolve-service-token-action.'
+    );
+  };
 
   if (!gateway) {
-    // Pure PMAK path: hand back the real client (plus a no-op team-context hook).
-    return Object.assign(pmak, {
+    // No access token and no PMAK to mint one from: every asset op is
+    // access-token-only, so reject rather than fall back to any PMAK route.
+    // Unreachable in practice — resolveInputs requires a credential and the
+    // gateway is minted from the PMAK when no access token is supplied.
+    return {
       configureTeamContext: (_teamId: string, _orgMode: boolean): void => {
         void _teamId;
         void _orgMode;
-      }
-    });
+      },
+      uploadSpec: requireAccessToken('uploadSpec'),
+      updateSpec: requireAccessToken('updateSpec'),
+      getSpecContent: requireAccessToken('getSpecContent'),
+      generateCollection: requireAccessToken('generateCollection'),
+      createWorkspace: requireAccessToken('createWorkspace'),
+      getWorkspaceVisibility: requireAccessToken('getWorkspaceVisibility'),
+      getWorkspaceGitRepoUrl: requireAccessToken('getWorkspaceGitRepoUrl'),
+      findWorkspacesByName: requireAccessToken('findWorkspacesByName'),
+      getTeams: requireAccessToken('getTeams'),
+      addAdminsToWorkspace: requireAccessToken('addAdminsToWorkspace'),
+      inviteRequesterToWorkspace: requireAccessToken('inviteRequesterToWorkspace'),
+      injectTests: requireAccessToken('injectTests'),
+      tagCollection: requireAccessToken('tagCollection'),
+      deleteCollection: requireAccessToken('deleteCollection'),
+      injectContractTests: requireAccessToken('injectContractTests')
+    };
   }
 
   return {
@@ -2466,13 +2214,19 @@ export function createRoutingPostmanClient(options: {
     // only — never PMAK — so org-mode detection no longer needs a PMAK GET /teams.
     getTeams: () => gateway.getTeams(),
 
-    // PMAK-only routes (no verified gateway equivalent): delegate straight through.
-    addAdminsToWorkspace: bind('addAdminsToWorkspace'),
-    inviteRequesterToWorkspace: bind('inviteRequesterToWorkspace'),
-    createCollection: bind('createCollection'),
-    deleteCollection: bind('deleteCollection'),
-    getCollection: bind('getCollection'),
-    updateCollection: bind('updateCollection')
+    // gateway-only (no PMAK fallback): workspace roles + member resolution and the
+    // v3 collection delete are live-proven (probe-workspace-roles-gateway.ts,
+    // probe-god-members.ts, probe-collection-v3-crud.ts, 2026-06-30). Role values
+    // are the string enum names the gateway requires (numeric ids are rejected).
+    addAdminsToWorkspace: (workspaceId, adminIds) => gateway.addAdminsToWorkspace(workspaceId, adminIds),
+    inviteRequesterToWorkspace: (workspaceId, email) => gateway.inviteRequesterToWorkspace(workspaceId, email),
+    deleteCollection: (collectionUid) => gateway.deleteCollection(collectionUid),
+
+    // gateway-only (no PMAK fallback): v3-native contract test injection over the
+    // collection-items `/scripts` surface. Replaces the retired PMAK collection
+    // read + v2.1.0 collection PUT the dynamic-contract refresh used to perform,
+    // so no asset op ever reaches for the API key.
+    injectContractTests: (collectionUid, index) => gateway.injectContractTests(collectionUid, index)
   };
 }
 
@@ -2501,16 +2255,11 @@ export function createBootstrapDependencies(
     }
   });
 
-  const pmak = new PostmanAssetsClient({
-    apiKey: inputs.postmanApiKey,
-    baseUrl: inputs.postmanApiBase,
-    bifrostBaseUrl: inputs.postmanBifrostBase,
-    secretMasker
-  });
-
-  // Access-token-primary asset path. Present only when an access token exists;
-  // the routing facade prefers it per method and falls back to PMAK otherwise.
-  const gatewayClient = inputs.postmanAccessToken
+  // Access-token asset path — the sole asset path. Built whenever any credential
+  // exists: from an access token directly, or minted from the PMAK on first use by
+  // the token provider. The PMAK is only ever the mint credential, never an asset
+  // route. resolveInputs guarantees one of the two, so this is always present.
+  const gatewayClient = (inputs.postmanAccessToken || inputs.postmanApiKey)
     ? new AccessTokenGatewayClient({
         tokenProvider,
         bifrostBaseUrl: inputs.postmanBifrostBase,
@@ -2523,12 +2272,7 @@ export function createBootstrapDependencies(
     ? new PostmanGatewayAssetsClient({ gateway: gatewayClient })
     : undefined;
 
-  const postman = createRoutingPostmanClient({
-    gateway: gatewayAssets,
-    pmak,
-    hasPmak: Boolean(inputs.postmanApiKey),
-    log: factories.core
-  });
+  const postman = createRoutingPostmanClient({ gateway: gatewayAssets });
 
   const internalIntegration =
     inputs.postmanAccessToken

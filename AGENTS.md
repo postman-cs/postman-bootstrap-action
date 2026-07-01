@@ -44,7 +44,7 @@ npm run check:dist   # build + git diff --exit-code (CI integrity)
 
 All asset operations run through the access-token gateway (Bifrost `POST /ws/proxy` envelope, `x-access-token`); see `docs/REST-to-gateway.md` for verified wire shapes. The PMAK is used only to mint/re-mint the access token and for the Postman CLI `spec lint` login.
 
-- `workspaces` service: `POST /workspaces` (personal) + `PUT /workspaces/{id}/visibility` (team) + `GET /workspaces` -- workspace create/visibility/lookup
+- `workspaces` service: `POST /workspaces` (personal) + `PUT /workspaces/{id}/visibility` (team) + `GET /workspaces` -- workspace create/visibility/lookup; `PATCH /workspaces/{id}/roles` (string role names) -- workspace admins + requester invite (email->id resolved via `god` `GET /api/organizations/{teamId}/members`)
 - `specification` service: `POST /specifications` + `PATCH /specifications/{id}/files/{fileId}` (JSON-patch `/content`) -- spec upload/update; `POST /specifications/{id}/collections` + task poll -- collection generation
 - `collection` service: `GET /v3/collections/{cid}/items/` (list) + `PATCH /v3/collections/{cid}/items/{itemId}` (test injection) + `POST /v3/collections/{cid}/items/` (create) -- bare model id
 - `tagging` service: `PUT /v1/tags/collections/{id}` -- collection tagging
@@ -52,10 +52,9 @@ All asset operations run through the access-token gateway (Bifrost `POST /ws/pro
 - `POST /service-account-tokens` (PMAK) -- mint/re-mint the access token
 - Bifrost internal-integration adapter: governance assignment, workspace-to-repo linking
 
-Residual PMAK public-REST ops with no gateway equivalent (`api.getpostman.com`, `X-Api-Key`): `POST/GET/PUT/DELETE /collections/{uid}` for the multi-protocol GraphQL/SOAP v2.1.0 collections and the dynamic-contract refresh read/write; `PATCH /workspaces/{id}/roles` for the requester invite and workspace admins.
+Residual PMAK / `X-Api-Key` uses -- none are asset ops: `POST /service-account-tokens` to mint/re-mint the access token; the Postman CLI `spec lint` login (`postman login --with-api-key` -- the CLI has no access-token login); and a read-only `GET /me` identity preflight diagnostic. Every Postman asset op (workspace, spec, collection generate/mutate/tag, roles, contract-test injection) runs on the access-token gateway; the contract collection is refreshed in place via the gateway spec `sync`/`link` routes + `injectContractTests` (v3 `/scripts`), never a v2.x collection read/PUT. No PMAK collection CRUD and no v2.x collections remain. Enforced by `tests/no-pmak-asset-or-newman.test.ts` + `tests/no-collection-v2.test.ts`.
 
 ## Gotchas
 
-- `postman-assets-client.ts` has a DEPRECATED URL normalization alias -- do not extend it
 - Spec upload re-serializes JSON/YAML; original bytes are preserved only when no normalization is needed
 - `@actions/core` is used directly for GitHub Actions; CLI mode uses `ConsoleReporter` (logs to stderr, JSON to stdout)

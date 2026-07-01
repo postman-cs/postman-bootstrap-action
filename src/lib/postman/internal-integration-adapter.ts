@@ -1,5 +1,5 @@
 import { HttpError } from '../http-error.js';
-import { normalizeGitRepoUrl } from './postman-assets-client.js';
+import { normalizeGitRepoUrl } from './git-url.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';

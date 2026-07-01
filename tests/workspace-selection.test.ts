@@ -4,7 +4,7 @@ import {
   chooseCanonicalWorkspace,
   resolveCanonicalWorkspaceSelection
 } from '../src/lib/postman/workspace-selection.js';
-import { normalizeGitRepoUrl } from '../src/lib/postman/postman-assets-client.js';
+import { normalizeGitRepoUrl } from '../src/lib/postman/git-url.js';
 
 describe('normalizeGitRepoUrl', () => {
   it('returns empty string for empty input', () => {

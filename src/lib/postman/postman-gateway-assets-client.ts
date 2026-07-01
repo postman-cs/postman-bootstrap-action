@@ -1,7 +1,9 @@
 import { HttpError } from '../http-error.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { AccessTokenGatewayClient } from './gateway-client.js';
-import { normalizeGitRepoUrl } from './postman-assets-client.js';
+import { normalizeGitRepoUrl } from './git-url.js';
+import { planContractItemScripts } from '../spec/collection-contracts.js';
+import type { ContractIndex } from '../spec/contract-index.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -53,7 +55,7 @@ export interface PostmanGatewayAssetsClientOptions {
  * enumeration over the `ums` service. All of these answer the Postman app
  * `{meta, data}` envelope through the proxy.
  *
- * Method signatures mirror PostmanAssetsClient so the facade can prefer this
+ * Method signatures mirror the retired PMAK assets client surface so the facade can prefer this
  * client per method and fall back to PMAK transparently.
  */
 export class PostmanGatewayAssetsClient {
@@ -619,5 +621,222 @@ export class PostmanGatewayAssetsClient {
         }
       ]
     });
+  }
+
+  // --- workspace roles + member resolution (live-proven 2026-06-30) ---
+  //
+  // Retires bootstrap's last PMAK `PATCH /workspaces/:id/roles` + `GET /users`.
+  // The gateway `workspaces` service takes a BARE JSON array body (no `{roles}`
+  // wrapper, no `path` field) keyed by entity type with STRING role-enum names,
+  // NOT numeric ids: numeric `[3]` -> 400 "some roles are not configured",
+  // `{roles:[...]}` -> 400 "body must be array" (probe-workspace-roles-gateway.ts).
+  // Role map (reference WorkspaceRoles.js:307-309): admin == 'WORKSPACE_EDITOR',
+  // editor == 'WORKSPACE_EDITOR_V9'.
+
+  /** PATCH a bare role-op array onto a workspace via the gateway. */
+  private async patchWorkspaceRoles(workspaceId: string, ops: JsonRecord[]): Promise<void> {
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'workspaces',
+      method: 'patch',
+      path: `/workspaces/${workspaceId}/roles`,
+      body: ops
+    });
+  }
+
+  /**
+   * Team member roster over the gateway `god` service:
+   * `GET /api/organizations/:teamId/members?populate=membership` ->
+   * `{ data:[{ id, email, name, username, roles, membership }] }`. This is the
+   * access-token equivalent of the PMAK `GET /users` (the reference app resolves
+   * email->id client-side against this roster; there is no `?email=` lookup).
+   * `teamId` defaults to the memoized session team. A service account is not in
+   * its own roster (SAs have no Postman User) — expected; the caller resolves the
+   * human requester's email, not the SA's.
+   */
+  private async getTeamMembers(teamId?: string): Promise<JsonRecord[]> {
+    const orgTeamId = teamId || getMemoizedSessionIdentity()?.teamId;
+    if (!orgTeamId) return [];
+    const res = await this.gateway.requestJson<JsonRecord>({
+      service: 'god',
+      method: 'get',
+      path: `/api/organizations/${orgTeamId}/members`,
+      query: { populate: 'membership' }
+    });
+    const list = Array.isArray(res?.data) ? (res.data as JsonRecord[]) : [];
+    return list;
+  }
+
+  /**
+   * Add workspace admins through the gateway (mirrors the PMAK method). One `add`
+   * op carrying every admin id under `value.user` (the validator caps op entries
+   * at 2 but allows many user-id keys per op). Role is the admin enum name.
+   */
+  async addAdminsToWorkspace(workspaceId: string, adminIds: string): Promise<void> {
+    const ids = String(adminIds || '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    if (ids.length === 0) return;
+    const user: JsonRecord = {};
+    for (const id of ids) {
+      user[id] = ['WORKSPACE_EDITOR'];
+    }
+    await this.patchWorkspaceRoles(workspaceId, [{ op: 'add', value: { user } }]);
+  }
+
+  /**
+   * Grant the requester editor access to the workspace through the gateway
+   * (mirrors the PMAK method). Resolves the email against the team roster (the
+   * access-token equivalent of the PMAK `GET /users` match), then PATCHes the
+   * editor role. No-op when the email is not a team member — the same outcome as
+   * the PMAK path's `if (!user?.id) return` early exit.
+   */
+  async inviteRequesterToWorkspace(workspaceId: string, email: string): Promise<void> {
+    const target = String(email || '').trim().toLowerCase();
+    if (!target) return;
+    const members = await this.getTeamMembers();
+    const match = members.find((m) => String(m.email ?? '').trim().toLowerCase() === target);
+    const userId = match?.id;
+    if (userId == null) return;
+    await this.patchWorkspaceRoles(workspaceId, [
+      { op: 'add', value: { user: { [String(userId)]: ['WORKSPACE_EDITOR_V9'] } } }
+    ]);
+  }
+
+  /**
+   * Delete a collection through the gateway v3 surface (mirrors the PMAK method).
+   * `:id` is the BARE model id. Tolerates both 404 and 500: a delete of an
+   * already-gone collection returns 500 GENERIC_ERROR (not 404) on this surface
+   * (probe-collection-v3-crud.ts), so both are treated as success.
+   */
+  /**
+   * Inject the deterministic OpenAPI contract assertions into every generated
+   * request of a spec-generated collection, entirely over the v3 collection
+   * surface (no PMAK, no v2.1.0 read/PUT):
+   *   1. `GET /v3/collections/:cid/items/` — flat item list (ids as full uids).
+   *   2. `GET /v3/collections/:cid/items/:itemId` (`X-Entity-Type: http-request`)
+   *      — the full v3 IR record (method/url/headers/body) the matcher needs.
+   *   3. `planContractItemScripts` matches each request to its OpenAPI operation
+   *      and builds the `afterResponse` test exec (the same assertions the retired
+   *      v2 `item.event` path produced), enforcing coverage + duplicate checks.
+   *   4. `PATCH /v3/collections/:cid/items/:itemId` `/scripts` with the afterResponse
+   *      script, then prepend the idempotent `00 - Resolve Secrets` item.
+   * Returns the non-fatal instrumentation warnings for the caller to surface.
+   */
+  async injectContractTests(collectionUid: string, index: ContractIndex): Promise<string[]> {
+    const cid = this.bareModelId(collectionUid);
+    const listed = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'get',
+      path: `/v3/collections/${cid}/items/`
+    });
+    const items = Array.isArray(listed?.data) ? (listed!.data as JsonRecord[]) : [];
+
+    const httpItems: Array<{ itemId: string; item: JsonRecord }> = [];
+    for (const listItem of items) {
+      if (String(listItem.$kind ?? '') !== 'http-request') continue;
+      if (String(listItem.name ?? '') === '00 - Resolve Secrets') continue;
+      const itemId = String(listItem.id ?? '').trim();
+      if (!itemId) continue;
+      // Per-item GET returns the full v3 IR item (method/url/headers/body); the
+      // list projection is not guaranteed to carry the request shape the matcher
+      // needs, so read each leaf directly. The id is the full uid the PATCH wants.
+      const full = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'get',
+        path: `/v3/collections/${cid}/items/${itemId}`,
+        headers: { 'X-Entity-Type': 'http-request' }
+      });
+      httpItems.push({ itemId, item: asRecord(full?.data) ?? listItem });
+    }
+
+    const plan = planContractItemScripts(httpItems, index);
+
+    // Canonical v3 item scripts: a single `afterResponse` (test) script with the
+    // exec lines joined into `code`. `add` on `/scripts` overwrites on rerun.
+    const toV3Scripts = (exec: string[]): JsonRecord[] => [
+      { type: 'afterResponse', code: exec.join('\n'), language: 'text/javascript' }
+    ];
+    for (const script of plan.scripts) {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'patch',
+        path: `/v3/collections/${cid}/items/${script.itemId}`,
+        headers: { 'X-Entity-Type': 'http-request' },
+        body: [{ op: 'add', path: '/scripts', value: toV3Scripts(script.exec) }]
+      });
+    }
+
+    // Idempotent: skip if a prior run already created the secrets resolver.
+    if (!items.some((i) => String(i.name ?? '') === '00 - Resolve Secrets')) {
+      const created = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'post',
+        path: `/v3/collections/${cid}/items/`,
+        headers: { 'X-Entity-Type': 'http-request' },
+        body: {
+          $kind: 'http-request',
+          name: '00 - Resolve Secrets',
+          method: 'POST',
+          url: 'https://secretsmanager.{{AWS_REGION}}.amazonaws.com',
+          headers: [
+            { key: 'X-Amz-Target', value: 'secretsmanager.GetSecretValue' },
+            { key: 'Content-Type', value: 'application/x-amz-json-1.1' }
+          ],
+          body: { type: 'json', content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
+          auth: {
+            type: 'awsv4',
+            credentials: [
+              { key: 'accessKey', value: '{{AWS_ACCESS_KEY_ID}}' },
+              { key: 'secretKey', value: '{{AWS_SECRET_ACCESS_KEY}}' },
+              { key: 'region', value: '{{AWS_REGION}}' },
+              { key: 'service', value: 'secretsmanager' }
+            ]
+          },
+          position: { parent: { id: cid, $kind: 'collection' } }
+        }
+      });
+      const newItemId = String(asRecord(created?.data)?.id ?? '').trim();
+      if (newItemId) {
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${cid}/items/${newItemId}`,
+          headers: { 'X-Entity-Type': 'http-request' },
+          body: [
+            {
+              op: 'add',
+              path: '/scripts',
+              value: toV3Scripts([
+                'if (pm.environment.get("CI") === "true") { return; }',
+                'const body = pm.response.json();',
+                'if (body.SecretString) {',
+                '  const secrets = JSON.parse(body.SecretString);',
+                '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
+                '}'
+              ])
+            }
+          ]
+        });
+      }
+    }
+
+    return plan.warnings;
+  }
+
+  async deleteCollection(collectionUid: string): Promise<void> {
+    const cid = this.bareModelId(collectionUid);
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'delete',
+        path: `/v3/collections/${cid}`
+      });
+    } catch (error) {
+      if (error instanceof HttpError && (error.status === 404 || error.status === 500)) {
+        return;
+      }
+      throw error;
+    }
   }
 }

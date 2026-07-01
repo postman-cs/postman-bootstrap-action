@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HttpError } from '../src/lib/http-error.js';
 import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 import {
   lintSpecViaCli,
@@ -166,15 +165,6 @@ function createGeneratedContractCollection() {
   };
 }
 
-function collectionNotFound(uid: string): HttpError {
-  return new HttpError({
-    method: 'PUT',
-    status: 404,
-    statusText: 'Not Found',
-    url: `https://api.getpostman.com/collections/${uid}`
-  });
-}
-
 function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
   const existingGetCollection = postman.getCollection as ((uid: string) => Promise<unknown>) | undefined;
   const existingGenerateCollection = postman.generateCollection as ((...args: unknown[]) => Promise<string>) | undefined;
@@ -224,6 +214,7 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+    injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
     tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -402,6 +393,7 @@ describe('bootstrap action', () => {
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -541,6 +533,7 @@ describe('bootstrap action', () => {
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -615,6 +608,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn(),
@@ -662,6 +656,7 @@ paths:
       getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn(),
@@ -746,40 +741,13 @@ paths:
     },
     {
       expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
-        expect(postman.updateCollection).not.toHaveBeenCalled();
         expect(postman.injectTests).not.toHaveBeenCalled();
         expect(postman.tagCollection).not.toHaveBeenCalled();
       },
       failure: 'CONTRACT_OPERATION_COVERAGE_FAILED',
       name: 'contract instrumentation coverage',
       overrides: {
-        getCollection: vi.fn().mockResolvedValue({
-          info: { name: '[Contract] core-payments' },
-          item: []
-        })
-      }
-    },
-    {
-      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
-        expect(postman.updateCollection).not.toHaveBeenCalled();
-        expect(postman.injectTests).not.toHaveBeenCalled();
-        expect(postman.tagCollection).not.toHaveBeenCalled();
-      },
-      failure: 'contract fetch failed',
-      name: 'contract collection fetch',
-      overrides: {
-        getCollection: vi.fn().mockRejectedValue(new Error('contract fetch failed'))
-      }
-    },
-    {
-      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
-        expect(postman.injectTests).not.toHaveBeenCalled();
-        expect(postman.tagCollection).not.toHaveBeenCalled();
-      },
-      failure: 'contract update failed',
-      name: 'contract collection update',
-      overrides: {
-        updateCollection: vi.fn().mockRejectedValue(new Error('contract update failed'))
+        injectContractTests: vi.fn().mockRejectedValue(new Error('CONTRACT_OPERATION_COVERAGE_FAILED'))
       }
     },
     {
@@ -789,6 +757,7 @@ paths:
       failure: 'inject failed',
       name: 'inject tests',
       overrides: {
+        injectContractTests: vi.fn().mockResolvedValue([]),
         injectTests: vi.fn().mockRejectedValue(new Error('inject failed'))
       }
     },
@@ -834,31 +803,10 @@ paths:
       },
       name: 'cloud sync',
       overrides: {}
-    },
-    {
-      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
-        expect(postman.injectTests).not.toHaveBeenCalled();
-        expect(postman.tagCollection).not.toHaveBeenCalled();
-      },
-      failure: 'baseline refresh update failed',
-      inputs: {
-        baselineCollectionId: 'col-baseline-existing',
-        contractCollectionId: 'col-contract-existing',
-        smokeCollectionId: 'col-smoke-existing'
-      },
-      name: 'non-404 refresh update',
-      overrides: {
-        updateCollection: vi.fn().mockImplementation(async (uid: string) => {
-          if (uid === 'col-baseline-existing') {
-            throw new Error('baseline refresh update failed');
-          }
-          return undefined;
-        })
-      }
     }
   ])(
     'restores previous spec content and stops downstream work after $name failure',
-    async ({ expectedSkippedCalls, failure, inputs, integrationOverrides, overrides }) => {
+    async ({ expectedSkippedCalls, failure, integrationOverrides, overrides }) => {
       const { core, outputs, warnings } = createCoreStub();
       const postman = createRollbackPostman(overrides);
       const internalIntegration = integrationOverrides
@@ -868,7 +816,6 @@ paths:
       await expect(
         runExistingSpecBootstrap(postman, {
           core,
-          inputs,
           internalIntegration
         })
       ).rejects.toThrow(failure);
@@ -895,212 +842,6 @@ paths:
       ).toBe(true);
     }
   );
-
-  it('does not update durable refresh collections when contract instrumentation fails', async () => {
-    const postman = createRollbackPostman({
-      getCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-contract-generated') {
-          return { info: { name: '[Contract] core-payments' }, item: [] };
-        }
-        return createGeneratedContractCollection();
-      }),
-      updateCollection: vi.fn().mockResolvedValue(undefined)
-    });
-
-    await expect(
-      runExistingSpecBootstrap(postman, {
-        inputs: {
-          baselineCollectionId: 'col-baseline-existing',
-          contractCollectionId: 'col-contract-existing',
-          smokeCollectionId: 'col-smoke-existing'
-        }
-      })
-    ).rejects.toThrow('CONTRACT_OPERATION_COVERAGE_FAILED');
-
-    expect(postman.updateCollection).not.toHaveBeenCalled();
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-baseline-generated');
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-smoke-generated');
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-contract-generated');
-  });
-
-  it('restores already-updated durable refresh collections when a later refresh update fails', async () => {
-    const oldBaseline = { info: { name: 'old baseline' }, item: [{ name: 'old baseline item' }] };
-    const newBaseline = { info: { name: 'new baseline' }, item: [{ name: 'new baseline item' }] };
-    const oldSmoke = { info: { name: 'old smoke' }, item: [{ name: 'old smoke item' }] };
-    const newSmoke = { info: { name: 'new smoke' }, item: [{ name: 'new smoke item' }] };
-    const postman = createRollbackPostman({
-      getCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-baseline-generated') return newBaseline;
-        if (uid === 'col-smoke-generated') return newSmoke;
-        if (uid === 'col-baseline-existing') return oldBaseline;
-        if (uid === 'col-smoke-existing') return oldSmoke;
-        return createGeneratedContractCollection();
-      }),
-      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-smoke-existing') {
-          throw new Error('smoke refresh failed');
-        }
-        return undefined;
-      })
-    });
-
-    await expect(
-      runExistingSpecBootstrap(postman, {
-        inputs: {
-          baselineCollectionId: 'col-baseline-existing',
-          contractCollectionId: 'col-contract-existing',
-          smokeCollectionId: 'col-smoke-existing'
-        }
-      })
-    ).rejects.toThrow('smoke refresh failed');
-
-    const baselineUpdates = vi.mocked(postman.updateCollection).mock.calls
-      .filter(([uid]) => uid === 'col-baseline-existing');
-    expect(baselineUpdates).toHaveLength(2);
-    expect(baselineUpdates[0]?.[1]).toMatchObject(newBaseline);
-    expect(baselineUpdates[1]?.[1]).toMatchObject(oldBaseline);
-    expect(postman.updateCollection).not.toHaveBeenCalledWith(
-      'col-contract-existing',
-      expect.anything()
-    );
-  });
-
-  it('preserves saved response examples when restoring durable refresh collections', async () => {
-    const oldBaseline = {
-      info: { name: 'old baseline' },
-      item: [
-        {
-          name: 'old baseline item',
-          request: { method: 'GET', url: { path: ['payments'] } },
-          response: [{ name: 'saved example', code: 200, body: '{"ok":true}' }]
-        }
-      ]
-    };
-    const newBaseline = {
-      info: { name: 'new baseline' },
-      item: [
-        {
-          name: 'new baseline item',
-          request: { method: 'GET', url: { path: ['payments'] } },
-          response: [{ name: 'generated example', code: 200, body: '{}' }]
-        }
-      ]
-    };
-    const oldSmoke = { info: { name: 'old smoke' }, item: [{ name: 'old smoke item' }] };
-    const newSmoke = { info: { name: 'new smoke' }, item: [{ name: 'new smoke item' }] };
-    const postman = createRollbackPostman({
-      getCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-baseline-generated') return newBaseline;
-        if (uid === 'col-smoke-generated') return newSmoke;
-        if (uid === 'col-baseline-existing') return oldBaseline;
-        if (uid === 'col-smoke-existing') return oldSmoke;
-        return createGeneratedContractCollection();
-      }),
-      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-smoke-existing') {
-          throw new Error('smoke refresh failed');
-        }
-        return undefined;
-      })
-    });
-
-    await expect(
-      runExistingSpecBootstrap(postman, {
-        inputs: {
-          baselineCollectionId: 'col-baseline-existing',
-          contractCollectionId: 'col-contract-existing',
-          smokeCollectionId: 'col-smoke-existing'
-        }
-      })
-    ).rejects.toThrow('smoke refresh failed');
-
-    const baselineUpdates = vi.mocked(postman.updateCollection).mock.calls
-      .filter(([uid]) => uid === 'col-baseline-existing');
-    expect(baselineUpdates).toHaveLength(2);
-    expect(baselineUpdates[0]?.[1]).toMatchObject({
-      item: [expect.not.objectContaining({ response: expect.anything() })]
-    });
-    expect(baselineUpdates[1]?.[1]).toMatchObject({
-      item: [expect.objectContaining({ response: oldBaseline.item[0].response })]
-    });
-  });
-
-  it('detects stale-refresh fallback ID collisions before durable collection updates', async () => {
-    const postman = createRollbackPostman({
-      generateCollection: vi.fn().mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-        if (prefix === '') return 'col-smoke-existing';
-        if (prefix === '[Smoke]') return 'col-smoke-generated';
-        return 'col-contract-generated';
-      }),
-      getCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-baseline-existing') {
-          throw collectionNotFound(uid);
-        }
-        return createGeneratedContractCollection();
-      }),
-      updateCollection: vi.fn().mockResolvedValue(undefined)
-    });
-
-    await expect(
-      runExistingSpecBootstrap(postman, {
-        inputs: {
-          baselineCollectionId: 'col-baseline-existing',
-          contractCollectionId: 'col-contract-existing',
-          smokeCollectionId: 'col-smoke-existing'
-        }
-      })
-    ).rejects.toThrow('CONTRACT_COLLECTION_ID_COLLISION');
-
-    expect(postman.updateCollection).not.toHaveBeenCalled();
-  });
-
-  it('restores durable refresh updates before failing a late fallback ID collision', async () => {
-    const oldBaseline = { info: { name: 'old baseline' }, item: [{ name: 'old baseline item' }] };
-    const newBaseline = { info: { name: 'new baseline' }, item: [{ name: 'new baseline item' }] };
-    const oldSmoke = { info: { name: 'old smoke' }, item: [{ name: 'old smoke item' }] };
-    const newSmoke = { info: { name: 'new smoke' }, item: [{ name: 'new smoke item' }] };
-    const oldContract = createGeneratedContractCollection();
-    let contractExistingReads = 0;
-    const postman = createRollbackPostman({
-      generateCollection: vi.fn().mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-        if (prefix === '') return 'col-baseline-generated';
-        if (prefix === '[Smoke]') return 'col-contract-existing';
-        return 'col-contract-generated';
-      }),
-      getCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-baseline-generated') return newBaseline;
-        if (uid === 'col-smoke-existing') return oldSmoke;
-        if (uid === 'col-baseline-existing') return oldBaseline;
-        if (uid === 'col-contract-existing') {
-          contractExistingReads += 1;
-          return contractExistingReads === 1 ? newSmoke : oldContract;
-        }
-        return createGeneratedContractCollection();
-      }),
-      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-smoke-existing') {
-          throw collectionNotFound(uid);
-        }
-        return undefined;
-      })
-    });
-
-    await expect(
-      runExistingSpecBootstrap(postman, {
-        inputs: {
-          baselineCollectionId: 'col-baseline-existing',
-          contractCollectionId: 'col-contract-existing',
-          smokeCollectionId: 'col-smoke-existing'
-        }
-      })
-    ).rejects.toThrow('CONTRACT_COLLECTION_ID_COLLISION');
-
-    const baselineUpdates = vi.mocked(postman.updateCollection).mock.calls
-      .filter(([uid]) => uid === 'col-baseline-existing');
-    expect(baselineUpdates).toHaveLength(2);
-    expect(baselineUpdates[0]?.[1]).toMatchObject(newBaseline);
-    expect(baselineUpdates[1]?.[1]).toMatchObject(oldBaseline);
-  });
 
   it('restores previous content and preserves the incoming update failure reason when updateSpec fails', async () => {
     const { core, outputs } = createCoreStub();
@@ -1162,6 +903,7 @@ paths:
     try {
       const { core, outputs, warnings } = createCoreStub();
       const postman = createRollbackPostman({
+        injectContractTests: vi.fn().mockResolvedValue([]),
         injectTests: vi.fn().mockRejectedValue(new Error('inject retry trigger')),
         updateSpec: vi
           .fn()
@@ -1239,6 +981,7 @@ paths:
       getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn(),
@@ -1276,6 +1019,7 @@ paths:
       getSpecContent: vi.fn(),
       getWorkspaceGitRepoUrl: vi.fn(),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn(),
       tagCollection: vi.fn(),
@@ -1331,6 +1075,7 @@ paths:
       getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn(),
@@ -1375,6 +1120,7 @@ paths:
       getSpecContent: vi.fn().mockResolvedValue(undefined),
       getWorkspaceGitRepoUrl: vi.fn(),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn(),
       tagCollection: vi.fn(),
@@ -1424,6 +1170,7 @@ paths:
 `),
       getWorkspaceGitRepoUrl: vi.fn(),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn(),
       inviteRequesterToWorkspace: vi.fn(),
       tagCollection: vi.fn(),
@@ -1463,6 +1210,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('personal'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -1514,6 +1262,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -1580,6 +1329,7 @@ paths:
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
       getCollection: vi.fn().mockResolvedValue(createGeneratedContractCollection()),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -1618,265 +1368,14 @@ paths:
     expect(infoLog).not.toContain('#frag');
   });
 
-  it('refresh mode regenerates collections even when ids already exist', async () => {
-    const { core, infos } = createCoreStub();
-    const execStub = createExecStub();
-    const ioStub = createIoStub();
-    const generatedIds = ['col-baseline-refresh', 'col-smoke-refresh', 'col-contract-refresh'];
-    const fetchedCollections = new Map(
-      generatedIds.map((id, index) => [
-        id,
-        {
-          info: {
-            name: ['core-payments', '[Smoke] core-payments', '[Contract] core-payments'][index]
-          },
-          item: [
-            {
-              name: 'Generated request',
-              request: {
-                method: 'GET',
-                url: 'https://example.test'
-              }
-            }
-          ]
-        }
-      ])
-    );
-    const postman = {
-      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-      createWorkspace: vi.fn(),
-      deleteCollection: vi.fn().mockResolvedValue(undefined),
-      findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi
-        .fn()
-        .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
-      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
-      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-      getTeams: vi.fn().mockResolvedValue([]),
-      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-      injectTests: vi.fn().mockResolvedValue(undefined),
-      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-      tagCollection: vi.fn().mockResolvedValue(undefined),
-      uploadSpec: vi.fn(),
-      updateCollection: vi.fn().mockResolvedValue(undefined),
-      updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
-    };
-    const result = await runBootstrap(
-      createInputs({
-        workspaceId: 'ws-existing',
-        specId: 'spec-existing',
-        baselineCollectionId: 'col-baseline-existing',
-        smokeCollectionId: 'col-smoke-existing',
-    contractCollectionId: 'col-contract-existing',
-    collectionSyncMode: 'refresh',
-  }),
-      {
-        core,
-        exec: execStub,
-        io: ioStub,
-        postman: withContractHelpers(postman),
-        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response(VALID_SPEC_31, { status: 200 })
-        )
-      }
-    );
-
-    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
-    expect(postman.updateCollection).toHaveBeenNthCalledWith(
-      1,
-      'col-baseline-existing',
-      expect.any(Object)
-    );
-    expect(postman.updateCollection).toHaveBeenNthCalledWith(
-      2,
-      'col-smoke-existing',
-      expect.any(Object)
-    );
-    expect(postman.updateCollection).toHaveBeenNthCalledWith(
-      3,
-      'col-contract-existing',
-      expect.any(Object)
-    );
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-baseline-refresh');
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-smoke-refresh');
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-contract-refresh');
-    expect(result).toMatchObject({
-      'baseline-collection-id': 'col-baseline-existing',
-      'smoke-collection-id': 'col-smoke-existing',
-      'contract-collection-id': 'col-contract-existing'
-    });
-    expect(infos).toContain(
-      'Refreshed existing smoke collection col-smoke-existing with temporary collection col-smoke-refresh'
-    );
-  });
-
-  it('refresh mode promotes generated collections when no tracked ids exist', async () => {
-    const { core, warnings } = createCoreStub();
-    const execStub = createExecStub();
-    const ioStub = createIoStub();
-    const generatedIds = ['col-baseline-new', 'col-smoke-new', 'col-contract-new'];
-    const postman = {
-      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-      createWorkspace: vi.fn(),
-      deleteCollection: vi.fn().mockResolvedValue(undefined),
-      findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi
-        .fn()
-        .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
-      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-      getTeams: vi.fn().mockResolvedValue([]),
-      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-      injectTests: vi.fn().mockResolvedValue(undefined),
-      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-      tagCollection: vi.fn().mockResolvedValue(undefined),
-      uploadSpec: vi.fn(),
-      updateCollection: vi.fn().mockResolvedValue(undefined),
-      updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
-    };
-
-    const result = await runBootstrap(
-      createInputs({
-        workspaceId: 'ws-existing',
-        specId: 'spec-existing',
-        collectionSyncMode: 'refresh'
-      }),
-      {
-        core,
-        exec: execStub,
-        io: ioStub,
-        postman: withContractHelpers(postman),
-        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response(VALID_SPEC_31, { status: 200 })
-        )
-      }
-    );
-
-    expect(postman.updateCollection).toHaveBeenCalledTimes(1);
-    expect(postman.updateCollection).toHaveBeenCalledWith('col-contract-new', expect.any(Object));
-    expect(postman.deleteCollection).not.toHaveBeenCalled();
-    expect(
-      warnings.some((warning) => warning.includes('deleteCollection is unavailable'))
-    ).toBe(false);
-    expect(result).toMatchObject({
-      'baseline-collection-id': 'col-baseline-new',
-      'smoke-collection-id': 'col-smoke-new',
-      'contract-collection-id': 'col-contract-new'
-    });
-  });
-
-  it('refresh mode falls back to newly generated collections when tracked targets are stale', async () => {
-    const { core, warnings } = createCoreStub();
-    const execStub = createExecStub();
-    const ioStub = createIoStub();
-    const generatedIds = ['col-baseline-fresh', 'col-smoke-fresh', 'col-contract-fresh'];
-    const fetchedCollections = new Map(
-      generatedIds.map((id, index) => [
-        id,
-        {
-          info: {
-            name: ['core-payments', '[Smoke] core-payments', '[Contract] core-payments'][index]
-          },
-          item: [
-            {
-              name: 'Generated request',
-              request: {
-                method: 'GET',
-                url: 'https://example.test'
-              }
-            }
-          ]
-        }
-      ])
-    );
-    const postman = {
-      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-      createWorkspace: vi.fn(),
-      deleteCollection: vi.fn().mockResolvedValue(undefined),
-      findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi
-        .fn()
-        .mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
-      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
-      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-      getTeams: vi.fn().mockResolvedValue([]),
-      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-      injectTests: vi.fn().mockResolvedValue(undefined),
-      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-      tagCollection: vi.fn().mockResolvedValue(undefined),
-      uploadSpec: vi.fn(),
-      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (!uid.includes('stale')) return undefined;
-        throw new HttpError({
-          method: 'PUT',
-          url: 'https://api.getpostman.com/collections/stale',
-          status: 404,
-          statusText: 'Not Found',
-          responseBody: '{"error":{"message":"missing"}}'
-        });
-      }),
-      updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
-    };
-
-    const result = await runBootstrap(
-      createInputs({
-        workspaceId: 'ws-existing',
-        specId: 'spec-existing',
-        baselineCollectionId: 'col-baseline-stale',
-        smokeCollectionId: 'col-smoke-stale',
-        contractCollectionId: 'col-contract-stale',
-        collectionSyncMode: 'refresh'
-      }),
-      {
-        core,
-        exec: execStub,
-        io: ioStub,
-        postman: withContractHelpers(postman),
-        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response(VALID_SPEC_31, { status: 200 })
-        )
-      }
-    );
-
-    expect(postman.deleteCollection).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      'baseline-collection-id': 'col-baseline-fresh',
-      'smoke-collection-id': 'col-smoke-fresh',
-      'contract-collection-id': 'col-contract-fresh'
-    });
-    expect(
-      warnings.some((warning) =>
-        warning.includes('Existing smoke collection col-smoke-stale was not found during refresh')
-      )
-    ).toBe(true);
-  });
-
-  it('warns without failing when temporary collection cleanup fails after a successful refresh', async () => {
-    const { core, warnings } = createCoreStub();
-    const generatedIds = ['col-baseline-temp', 'col-smoke-temp', 'col-contract-temp'];
-    const fetchedCollections = new Map(
-      generatedIds.map((id, index) => [
-        id,
-        {
-          info: { name: ['core-payments', '[Smoke] core-payments', '[Contract] core-payments'][index] },
-          item: [{ name: 'GET /payments', request: { method: 'GET', url: { path: ['payments'] } } }]
-        }
-      ])
-    );
-    const postman = createRollbackPostman({
-      deleteCollection: vi.fn().mockRejectedValue(new Error('cleanup denied')),
-      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
-      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
-      updateCollection: vi.fn().mockResolvedValue(undefined)
-    });
+  it('refresh mode regenerates collections in place when ids already exist', async () => {
+    const { core } = createCoreStub();
+    const postman = createRollbackPostman();
+    const internalIntegration = createRollbackIntegration();
 
     const result = await runExistingSpecBootstrap(postman, {
       core,
+      internalIntegration,
       inputs: {
         baselineCollectionId: 'col-baseline-existing',
         smokeCollectionId: 'col-smoke-existing',
@@ -1885,142 +1384,102 @@ paths:
       }
     });
 
+    // Regenerate-in-place via the spec sync route preserves each collection UID;
+    // no fresh collection is generated and nothing is deleted (no v2 read/PUT).
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(postman.deleteCollection).not.toHaveBeenCalled();
+    expect(internalIntegration.syncCollection).toHaveBeenCalledWith('spec-existing', 'col-baseline-existing');
+    expect(internalIntegration.syncCollection).toHaveBeenCalledWith('spec-existing', 'col-smoke-existing');
+    expect(internalIntegration.syncCollection).toHaveBeenCalledWith('spec-existing', 'col-contract-existing');
+    expect(postman.injectContractTests).toHaveBeenCalledWith('col-contract-existing', expect.anything());
     expect(result).toMatchObject({
       'baseline-collection-id': 'col-baseline-existing',
       'smoke-collection-id': 'col-smoke-existing',
       'contract-collection-id': 'col-contract-existing'
     });
-    expect(postman.deleteCollection).toHaveBeenCalledTimes(3);
-    expect(
-      warnings.filter((warning) => warning.includes('Failed to delete temporary collection'))
-    ).toHaveLength(3);
   });
 
-  it('attempts cleanup and records residual temporary collections when refresh fails after partial updates', async () => {
-    const { core, warnings } = createCoreStub();
-    const generatedIds = ['col-baseline-temp', 'col-smoke-temp', 'col-contract-temp'];
-    const fetchedCollections = new Map(
-      generatedIds.map((id, index) => [
-        id,
-        {
-          info: { name: ['core-payments', '[Smoke] core-payments', '[Contract] core-payments'][index] },
-          item: [{ name: 'GET /payments', request: { method: 'GET', url: { path: ['payments'] } } }]
-        }
-      ])
-    );
+  it('refresh mode generates fresh collections when no tracked ids exist', async () => {
+    const { core } = createCoreStub();
+    const generatedIds = ['col-baseline-new', 'col-smoke-new', 'col-contract-new'];
     const postman = createRollbackPostman({
-      deleteCollection: vi.fn().mockResolvedValue(undefined),
-      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
-      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
-      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-contract-existing') {
-          throw new Error('contract refresh update failed');
+      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback')
+    });
+    const internalIntegration = createRollbackIntegration();
+
+    const result = await runExistingSpecBootstrap(postman, {
+      core,
+      internalIntegration,
+      inputs: { collectionSyncMode: 'refresh' }
+    });
+
+    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
+    expect(postman.deleteCollection).not.toHaveBeenCalled();
+    expect(postman.injectContractTests).toHaveBeenCalledWith('col-contract-new', expect.anything());
+    expect(result).toMatchObject({
+      'baseline-collection-id': 'col-baseline-new',
+      'smoke-collection-id': 'col-smoke-new',
+      'contract-collection-id': 'col-contract-new'
+    });
+  });
+
+  it('refresh mode falls back to newly generated collections when sync of tracked targets fails', async () => {
+    const { core, warnings } = createCoreStub();
+    const generatedIds = ['col-baseline-fresh', 'col-smoke-fresh', 'col-contract-fresh'];
+    const postman = createRollbackPostman({
+      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback')
+    });
+    const internalIntegration = createRollbackIntegration({
+      syncCollection: vi.fn().mockImplementation(async (_specId: string, collectionId: string) => {
+        if (collectionId.includes('stale')) {
+          throw new Error('collection not linked to spec');
         }
         return undefined;
       })
     });
 
-    await expect(
-      runExistingSpecBootstrap(postman, {
-        core,
-        inputs: {
-          baselineCollectionId: 'col-baseline-existing',
-          smokeCollectionId: 'col-smoke-existing',
-          contractCollectionId: 'col-contract-existing',
-          collectionSyncMode: 'refresh'
-        }
-      })
-    ).rejects.toThrow('contract refresh update failed');
+    const result = await runExistingSpecBootstrap(postman, {
+      core,
+      internalIntegration,
+      inputs: {
+        baselineCollectionId: 'col-baseline-stale',
+        smokeCollectionId: 'col-smoke-stale',
+        contractCollectionId: 'col-contract-stale',
+        collectionSyncMode: 'refresh'
+      }
+    });
 
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-baseline-temp');
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-smoke-temp');
-    expect(postman.deleteCollection).toHaveBeenCalledWith('col-contract-temp');
+    // A sync failure on a stale/unlinked collection degrades to a fresh generate
+    // (no hard failure, no v2 restore); the fresh ids win.
+    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
+    expect(postman.deleteCollection).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      'baseline-collection-id': 'col-baseline-fresh',
+      'smoke-collection-id': 'col-smoke-fresh',
+      'contract-collection-id': 'col-contract-fresh'
+    });
     expect(
       warnings.some((warning) =>
-        warning.includes('Refresh failed after temporary collection generation')
-        && warning.includes('col-contract-temp')
+        warning.includes('Could not regenerate existing') && warning.includes('col-smoke-stale')
       )
     ).toBe(true);
   });
 
-  it('rejects collection ID collisions after refresh fallback before tagging or linking', async () => {
+  it('rejects collection ID collisions after refresh before tagging or linking', async () => {
     const { core } = createCoreStub();
-    const execStub = createExecStub();
-    const ioStub = createIoStub();
-    const generatedIds = ['col-shared', 'col-smoke-temp', 'col-contract-temp'];
-    const fetchedCollections = new Map(
-      generatedIds.map((id) => [
-        id,
-        {
-          info: { name: id },
-          item: [
-            {
-              name: 'Generated request',
-              request: {
-                method: 'GET',
-                url: { path: ['payments'] }
-              }
-            }
-          ]
-        }
-      ])
-    );
-    const postman = {
-      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-      createWorkspace: vi.fn(),
-      deleteCollection: vi.fn().mockResolvedValue(undefined),
-      findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback'),
-      getCollection: vi.fn().mockImplementation(async (uid: string) => fetchedCollections.get(uid)),
-      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-      getTeams: vi.fn().mockResolvedValue([]),
-      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-      injectTests: vi.fn(),
-      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-      tagCollection: vi.fn(),
-      uploadSpec: vi.fn(),
-      updateCollection: vi.fn().mockImplementation(async (uid: string) => {
-        if (uid === 'col-baseline-stale') {
-          throw new HttpError({
-            method: 'PUT',
-            url: 'https://api.getpostman.com/collections/col-baseline-stale',
-            status: 404,
-            statusText: 'Not Found',
-            responseBody: '{"error":{"message":"missing"}}'
-          });
-        }
-        return undefined;
-      }),
-      updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
-    };
-    const internalIntegration = {
-      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
-      configureTeamContext: vi.fn(),
-      linkCollectionsToSpecification: vi.fn(),
-      syncCollection: vi.fn()
-    };
+    const postman = createRollbackPostman({
+      generateCollection: vi.fn().mockResolvedValue('col-shared')
+    });
+    const internalIntegration = createRollbackIntegration();
 
-    await expect(runBootstrap(createInputs({
-      workspaceId: 'ws-existing',
-      specId: 'spec-existing',
-      baselineCollectionId: 'col-baseline-stale',
-      smokeCollectionId: 'col-shared',
-      contractCollectionId: 'col-contract-existing',
-      collectionSyncMode: 'refresh'
-    }), {
-      core,
-      exec: execStub,
-      io: ioStub,
-      internalIntegration,
-      postman: withContractHelpers(postman),
-      specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-        new Response(VALID_SPEC_31, { status: 200 })
-      )
-    })).rejects.toThrow('CONTRACT_COLLECTION_ID_COLLISION');
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        core,
+        internalIntegration,
+        inputs: { collectionSyncMode: 'refresh' }
+      })
+    ).rejects.toThrow('CONTRACT_COLLECTION_ID_COLLISION');
 
-    expect(postman.injectTests).not.toHaveBeenCalled();
     expect(postman.tagCollection).not.toHaveBeenCalled();
     expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
     expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
@@ -2086,6 +1545,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2158,6 +1618,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2202,6 +1663,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2255,6 +1717,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2327,6 +1790,7 @@ paths:
         getTeams: vi.fn().mockResolvedValue([]),
         getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue('https://github.com/postman-cs/different-repo'),
         getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+        injectContractTests: vi.fn().mockResolvedValue([]),
         injectTests: vi.fn().mockResolvedValue(undefined),
         inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
         tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2368,6 +1832,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2411,6 +1876,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2471,6 +1937,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2522,6 +1989,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2566,6 +2034,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2631,6 +2100,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2679,6 +2149,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2717,6 +2188,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2765,6 +2237,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2812,6 +2285,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -2960,6 +2434,7 @@ paths:
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3034,6 +2509,7 @@ describe('lintSpecViaCli', () => {
       ]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3071,6 +2547,7 @@ describe('lintSpecViaCli', () => {
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3114,6 +2591,7 @@ describe('lintSpecViaCli', () => {
       ]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3152,6 +2630,7 @@ describe('lintSpecViaCli', () => {
       getTeams: vi.fn().mockRejectedValue(new Error('Network error')),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3188,6 +2667,7 @@ describe('lintSpecViaCli', () => {
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3230,6 +2710,7 @@ describe('lintSpecViaCli', () => {
       ]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3276,6 +2757,7 @@ describe('lintSpecViaCli', () => {
       ]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3318,6 +2800,7 @@ describe('lintSpecViaCli', () => {
       ]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3363,6 +2846,7 @@ describe('lintSpecViaCli', () => {
       ]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
       injectTests: vi.fn().mockResolvedValue(undefined),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
@@ -3598,7 +3082,23 @@ describe('runAction credential preflight', () => {
           if (pmethod === 'get' && /\/specifications\/[^/]+$/.test(ppath)) return json({ data: { id: 'spec-runaction' } });
         }
         if (svc === 'collection') {
-          if (pmethod === 'get' && /\/items\/$/.test(ppath)) return json({ data: [] });
+          // Per-item GET returns the full v3 IR record the contract matcher reads;
+          // the list GET returns one leaf covering the spec's single GET /payments
+          // operation so injectContractTests' coverage check is satisfied.
+          if (pmethod === 'get' && /\/items\/[^/]+$/.test(ppath)) {
+            return json({
+              data: {
+                $kind: 'http-request',
+                id: 'item-1',
+                name: 'GET /payments',
+                method: 'GET',
+                url: 'https://example.test/payments'
+              }
+            });
+          }
+          if (pmethod === 'get' && /\/items\/$/.test(ppath)) {
+            return json({ data: [{ $kind: 'http-request', id: 'item-1', name: 'GET /payments' }] });
+          }
           if (pmethod === 'post') return json({ data: { id: '55363555-created' } });
           if (pmethod === 'patch') return json({ data: { id: 'patched' } });
           if (pmethod === 'get' && /\/export$/.test(ppath)) return json({ data: { collection: {} } });

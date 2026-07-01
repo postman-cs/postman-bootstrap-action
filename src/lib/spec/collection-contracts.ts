@@ -764,6 +764,133 @@ export function instrumentContractCollection(collection: JsonRecord, index: Cont
   return { collection, warnings };
 }
 
+export interface ContractItemScript {
+  itemId: string;
+  exec: string[];
+}
+
+export interface ContractItemScriptPlan {
+  scripts: ContractItemScript[];
+  warnings: string[];
+}
+
+/**
+ * Adapt a v3 IR `http-request` item (method/url/headers/body at the root) into
+ * the request shape the contract matcher and static-shape checks read (v2-style
+ * `method`, `url:{raw,query}`, `header:[{key,value}]`, `body:{mode,raw}`). No v2
+ * collection is produced — this is an in-memory read adapter for a single item so
+ * `matchOperation`/`assertStaticRequestShape` can run against the v3 surface.
+ */
+function v3ItemToContractRequest(item: JsonRecord): JsonRecord {
+  const method = String(item.method ?? '');
+  const urlRecord = asRecord(item.url);
+  const rawUrl =
+    typeof item.url === 'string'
+      ? item.url
+      : typeof urlRecord?.raw === 'string'
+        ? String(urlRecord.raw)
+        : '';
+  const query: JsonRecord[] = [];
+  const queryStart = rawUrl.indexOf('?');
+  if (queryStart >= 0) {
+    for (const pair of rawUrl.slice(queryStart + 1).split('&')) {
+      if (!pair) continue;
+      const rawKey = pair.split('=')[0] ?? '';
+      let key = rawKey;
+      try {
+        key = decodeURIComponent(rawKey);
+      } catch {
+        // keep the raw key when it is not valid percent-encoding
+      }
+      if (key) query.push({ key });
+    }
+  }
+  const header = asArray(item.headers)
+    .map((entry) => asRecord(entry))
+    .filter((entry): entry is JsonRecord => Boolean(entry))
+    .map((entry) => ({
+      key: entry.key,
+      value: entry.value,
+      ...(entry.disabled != null ? { disabled: entry.disabled } : {})
+    }));
+  const request: JsonRecord = { method, url: { raw: rawUrl, query }, header };
+  const bodyRecord = asRecord(item.body);
+  if (bodyRecord && typeof bodyRecord.content === 'string') {
+    request.body = { mode: 'raw', raw: bodyRecord.content };
+  }
+  return request;
+}
+
+/**
+ * v3-native contract instrumentation planner. Given the flat list of v3
+ * `http-request` items (each paired with its item id) plus the contract index,
+ * produce the per-item `afterResponse` test exec lines — the SAME assertions
+ * {@link instrumentContractCollection} writes into a v2 `item.event`, but returned
+ * for the caller to PATCH onto the v3 `/scripts` surface. Enforces the same
+ * duplicate + coverage guarantees; no collection is read or written as v2.
+ */
+export function planContractItemScripts(
+  items: Array<{ itemId: string; item: JsonRecord }>,
+  index: ContractIndex
+): ContractItemScriptPlan {
+  const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
+  const covered = new Map<string, string>();
+  const scripts: ContractItemScript[] = [];
+
+  for (const { itemId, item } of items) {
+    const name = String(item.name ?? item.title ?? '<unnamed>');
+    const request = v3ItemToContractRequest(item);
+    const result = matchOperation(index, request);
+    let script: string[];
+    if (result.operation) {
+      const previous = covered.get(result.operation.id);
+      if (previous) {
+        throw new Error(
+          `CONTRACT_DUPLICATE_OPERATION_REQUEST: ${result.operation.id} matched more than one generated request (${previous}, ${name})`
+        );
+      }
+      // Static request-shape checks validate the generated request against the
+      // spec. Over the v3 surface the request is reconstructed from the item IR,
+      // so a check that cannot be evaluated degrades to a warning rather than a
+      // hard failure (the runtime contract script remains the real validation).
+      try {
+        warnings.push(...assertStaticRequestShape(result.operation, request));
+      } catch (error) {
+        warnings.push(
+          `CONTRACT_STATIC_REQUEST_CHECK_SKIPPED: ${result.operation.id} static request-shape check could not be evaluated over the v3 collection surface (${error instanceof Error ? error.message : String(error)})`
+        );
+      }
+      for (const queryName of [...requestQueryNames(request)].filter(
+        (entry) => !result.operation!.declaredQueryParameters.includes(entry)
+      )) {
+        warnings.push(
+          `CONTRACT_UNDOCUMENTED_QUERY_PARAM: ${result.operation.id} generated request sends query parameter ${queryName} that the OpenAPI operation does not declare`
+        );
+      }
+      covered.set(result.operation.id, name);
+      script = createContractScript(result.operation, warnings);
+    } else if (result.ambiguous && result.ambiguous.length > 0) {
+      script = createMappingFailureScript(
+        `Ambiguous OpenAPI operation match for request ${result.method} ${result.path}: ${result.ambiguous.map((entry) => entry.id).join(', ')}`
+      );
+    } else {
+      script = createMappingFailureScript(`No OpenAPI operation matched request ${result.method} ${result.path}`);
+    }
+    const sizeWarning = validateScript(script);
+    if (sizeWarning) warnings.push(sizeWarning);
+    scripts.push({ itemId, exec: script });
+  }
+
+  const missing = index.operations.filter((operation) => !covered.has(operation.id));
+  if (missing.length > 0) {
+    throw new Error(
+      `CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation) => `${operation.id} (${operation.pointer})`).join(', ')}`
+    );
+  }
+
+  return { scripts, warnings };
+}
+
 export function contractMediaUsesSchema(media: ContractMedia): boolean {
   return media.schema !== undefined && !media.unsupported;
 }

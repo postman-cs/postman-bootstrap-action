@@ -78,6 +78,9 @@ pm.test('Expected response element ' + soap.expectedResponseElement + ' is prese
       "name": "ListSymbols",
     },
   ],
-  "warnings": [],
+  "warnings": [
+    "SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation GetStockPrice asserts the SOAP envelope/body/fault and the top-level response element <GetStockPriceResponse> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)",
+    "SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation ListSymbols asserts the SOAP envelope/body/fault and the top-level response element <ListSymbolsResponse> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)",
+  ],
 }
 `;

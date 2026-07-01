@@ -32,9 +32,11 @@ const DEFAULT_URL = '{{baseUrl}}/graphql';
 
 function argTypeSdl(arg: GraphQLArgumentDef): string {
   const ref = arg.type;
+  // Wrap the named type by every list dimension (inner -> outer) so nested-list
+  // argument types (`[[Int]]`, `[[Int!]!]`) render faithfully.
   let inner = ref.name;
-  if (ref.list) {
-    inner = ref.listItemNonNull ? `[${ref.name}!]` : `[${ref.name}]`;
+  for (let i = ref.lists.length - 1; i >= 0; i -= 1) {
+    inner = ref.lists[i].itemNonNull ? `[${inner}!]` : `[${inner}]`;
   }
   return ref.nonNull ? `${inner}!` : inner;
 }

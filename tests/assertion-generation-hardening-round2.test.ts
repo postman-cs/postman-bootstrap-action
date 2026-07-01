@@ -459,3 +459,100 @@ describe.skipIf(!HAS_PROTOBUF)('gRPC map key validation (ProtoJSON integral/bool
     expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { byStr: { '!@#': 'z' } } }))).toBe(false);
   });
 });
+
+// Round-5 fix (gRPC): integer scalars carry their EXACT protobuf domain so the
+// runtime range/sign-checks them, instead of collapsing every int into a broad
+// "number" (any finite integer) or "string" (any string). 32-bit values are
+// range-checked numerically; 64-bit values via string comparison (JS doubles lose
+// precision past 2^53), so an out-of-range or wrong-sign value fails closed.
+describe.skipIf(!HAS_PROTOBUF)('gRPC ProtoJSON integer range/sign validation (round 5)', () => {
+  function intScript(): string {
+    const deps = PROTOBUF ? { protobuf: PROTOBUF } : undefined;
+    const proto = [
+      'syntax = "proto3";',
+      'package t;',
+      'message Req { string id = 1; }',
+      'message Resp { int32 c32 = 1; uint32 u32 = 2; int64 i64 = 3; uint64 u64 = 4; map<uint32, string> by_id = 5; }',
+      'service Svc { rpc Get(Req) returns (Resp); }'
+    ].join('\n');
+    const index = parseProtoSchema(proto, deps);
+    const { collection } = buildGrpcCollection(index, { baseUrl: 'grpcs://h:443', idSeed: 'r5int' });
+    instrumentGrpcCollection(collection, index);
+    const item = grpcItems(collection).find((entry) => String((entry.payload as JsonRecord).methodPath).endsWith('/Get'))!;
+    return ((item.event as Array<{ listen: string; script: { exec: string[] } }>).find((e) => e.listen === 'test')!.script.exec).join('\n');
+  }
+  it('accepts in-range integers (32-bit numbers, 64-bit boundary strings, integral map key)', () => {
+    const s = intScript();
+    expect(anyFail(runScript(s, { code: 0, status: 'OK', json: { c32: 7, u32: 7, i64: '9223372036854775807', u64: '18446744073709551615', byId: { '7': 'x' } } }))).toBe(false);
+  });
+  it('fails an int32 above 2^31-1', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { c32: 2147483648 } }))).toBe(true);
+  });
+  it('fails an int32 below -2^31', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { c32: -2147483649 } }))).toBe(true);
+  });
+  it('fails a negative uint32', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { u32: -1 } }))).toBe(true);
+  });
+  it('fails a uint32 above 2^32-1', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { u32: 4294967296 } }))).toBe(true);
+  });
+  it('fails an int64 non-numeric string (previously accepted as any string)', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { i64: 'not-a-number' } }))).toBe(true);
+  });
+  it('fails an int64 above 2^63-1 (string range, no double precision loss)', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { i64: '9223372036854775808' } }))).toBe(true);
+  });
+  it('fails a negative uint64 string', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { u64: '-1' } }))).toBe(true);
+  });
+  it('fails a uint64 above 2^64-1', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { u64: '18446744073709551616' } }))).toBe(true);
+  });
+  it('fails a negative uint32 map key', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { byId: { '-1': 'x' } } }))).toBe(true);
+  });
+  it('fails an out-of-range uint32 map key', () => {
+    expect(anyFail(runScript(intScript(), { code: 0, status: 'OK', json: { byId: { '4294967296': 'x' } } }))).toBe(true);
+  });
+});
+
+// Round-5 fix (GraphQL): nested lists (`[[Int]]`, `[[T!]!]`) are modeled as ordered
+// list wrappers and asserted at EVERY dimension. Previously only one list level was
+// stored, so an outer element of a nested list was type-checked as the inner named
+// type (false-fail on a legal nested response, false-pass on a wrong shape).
+describe('GraphQL nested-list validation (round 5)', () => {
+  function nestedScript(sdl: string, id: string): string {
+    const index = parseGraphQLSchema(sdl, { service: 'S' });
+    const collection = buildGraphQLCollection(index, { url: '{{u}}/graphql' }) as unknown as {
+      item: Array<{ id: string; event: Array<{ listen: string; script: { exec: string[] } }> }>;
+    };
+    instrumentGraphQLCollection(collection as unknown as JsonRecord, index);
+    const item = collection.item.find((entry) => entry.id === id)!;
+    return item.event.find((event) => event.listen === 'test')!.script.exec.join('\n');
+  }
+  it('accepts a legal [[Int]] matrix (does not false-fail the nested list)', () => {
+    const exec = nestedScript('type Query { grid: [[Int]] }', 'query.grid');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { grid: [[1, 2], [3, 4]] } } }))).toBe(false);
+  });
+  it('fails a [[Int]] with a non-integer inner element', () => {
+    const exec = nestedScript('type Query { grid: [[Int]] }', 'query.grid');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { grid: [[1, 'x']] } } }))).toBe(true);
+  });
+  it('fails a [[Int]] whose outer element is not itself a list', () => {
+    const exec = nestedScript('type Query { grid: [[Int]] }', 'query.grid');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { grid: [1, 2] } } }))).toBe(true);
+  });
+  it('accepts a null inner element in a nullable inner list [[Int]]', () => {
+    const exec = nestedScript('type Query { grid: [[Int]] }', 'query.grid');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { grid: [[1, null]] } } }))).toBe(false);
+  });
+  it('fails a null inner element when the inner list is [[Int!]!]', () => {
+    const exec = nestedScript('type Query { rows: [[Int!]!] }', 'query.rows');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { rows: [[1, null]] } } }))).toBe(true);
+  });
+  it('fails a null outer element when the outer items are non-null [[Int!]!]', () => {
+    const exec = nestedScript('type Query { rows: [[Int!]!] }', 'query.rows');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { rows: [null] } } }))).toBe(true);
+  });
+});

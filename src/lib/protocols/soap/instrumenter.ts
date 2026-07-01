@@ -86,6 +86,11 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
       `  pm.expect(bodyText, "expected SOAP response element <" + soap.expectedResponseElement + "> not found").to.match(new RegExp(${JSON.stringify(responseRegex)}));`,
       '});'
     );
+    // Explicit scope caveat (not a silent gap): SOAP assertions validate transport,
+    // content-type, Envelope/Body, Fault-absence and the top-level response element
+    // only. Deep WSDL/XSD child-element and scalar payload validation is out of scope
+    // for the XML-parser-free sandbox path.
+    warnings.push(`SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation ${operation.name} asserts the SOAP envelope/body/fault and the top-level response element <${operation.expectedResponseElement}> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)`);
   } else if (operation.output) {
     warnings.push(`SOAP_RESPONSE_ELEMENT_UNKNOWN: operation ${operation.name} has an output message but no resolvable response element; only Envelope/Body/Fault are asserted`);
   }

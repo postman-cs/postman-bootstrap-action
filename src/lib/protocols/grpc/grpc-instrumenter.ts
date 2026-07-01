@@ -61,17 +61,23 @@ interface FieldSpec {
   jsonName: string;
   jsonType: string;
   jsonFormat?: string;
+  // Exact protobuf integer scalar type (int32.. uint64) for a range/sign-checked
+  // integer field.
+  intType?: string;
   repeated: boolean;
   map: boolean;
   required: boolean;
   // Well-known wrapper types allow a present-but-null value.
   nullable?: boolean;
   enumValues?: string[];
-  // Runtime kind the JSON string key must satisfy for an integral/bool-keyed map.
+  // Exact protobuf integer/bool key type an integral/bool-keyed map's JSON string
+  // key must range/sign-validate against.
   mapKeyType?: string;
   // JSON type asserted on each map value.
   mapValueType?: string;
   mapValueFormat?: string;
+  // Exact protobuf integer scalar type of an integer-typed map value.
+  mapValueIntType?: string;
   mapValueEnumValues?: string[];
   // Nested message shape for object fields / repeated-message fields.
   shape?: ShapeSpec;
@@ -138,6 +144,7 @@ function buildShape(
       jsonName: field.jsonName,
       jsonType: field.jsonType,
       ...(field.jsonFormat ? { jsonFormat: field.jsonFormat } : {}),
+      ...(field.intType ? { intType: field.intType } : {}),
       repeated: field.repeated,
       map: field.map,
       required: field.required,
@@ -146,6 +153,7 @@ function buildShape(
       ...(field.mapKeyType ? { mapKeyType: field.mapKeyType } : {}),
       ...(field.mapValueType ? { mapValueType: field.mapValueType } : {}),
       ...(field.mapValueFormat ? { mapValueFormat: field.mapValueFormat } : {}),
+      ...(field.mapValueIntType ? { mapValueIntType: field.mapValueIntType } : {}),
       ...(mapValueEnumValues ? { mapValueEnumValues } : {})
     };
     if (field.messageType && field.jsonType === 'object' && !field.map) {
@@ -219,6 +227,21 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '  if (expected === "any") return true;',
     '  return true;',
     '}',
+    'var GRPC_INT_SPECS = { int32:{s:true,b:32,min:"-2147483648",max:"2147483647"}, sint32:{s:true,b:32,min:"-2147483648",max:"2147483647"}, sfixed32:{s:true,b:32,min:"-2147483648",max:"2147483647"}, uint32:{s:false,b:32,min:"0",max:"4294967295"}, fixed32:{s:false,b:32,min:"0",max:"4294967295"}, int64:{s:true,b:64,min:"-9223372036854775808",max:"9223372036854775807"}, sint64:{s:true,b:64,min:"-9223372036854775808",max:"9223372036854775807"}, sfixed64:{s:true,b:64,min:"-9223372036854775808",max:"9223372036854775807"}, uint64:{s:false,b:64,min:"0",max:"18446744073709551615"}, fixed64:{s:false,b:64,min:"0",max:"18446744073709551615"} };',
+    'function grpcDecStr(n) { var s = String(n); return (s.indexOf("e") === -1 && s.indexOf("E") === -1 && s.indexOf(".") === -1) ? s : null; }',
+    'function grpcCmpIntStr(a, b) { var na = a.charAt(0) === "-", nb = b.charAt(0) === "-"; if (na !== nb) return na ? -1 : 1; var aa = (na ? a.slice(1) : a).replace(/^0+(?=[0-9])/, ""); var bb = (nb ? b.slice(1) : b).replace(/^0+(?=[0-9])/, ""); var mag; if (aa.length !== bb.length) mag = aa.length < bb.length ? -1 : 1; else mag = aa < bb ? -1 : (aa > bb ? 1 : 0); return na ? -mag : mag; }',
+    'function matchesInt(intType, value) {',
+    '  var spec = GRPC_INT_SPECS[intType]; if (!spec) return true;',
+    '  var num, canonical;',
+    '  if (typeof value === "number") { if (!Number.isFinite(value) || !Number.isInteger(value)) return false; num = value; canonical = grpcDecStr(value); }',
+    '  else if (typeof value === "string") { if (!/^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(value) || !Number.isFinite(Number(value))) return false; num = Number(value); if (!Number.isInteger(num)) return false; canonical = /^-?[0-9]+$/.test(value) ? value.replace(/^(-?)0+(?=[0-9])/, "$1") : grpcDecStr(num); }',
+    '  else { return false; }',
+    '  if (canonical === "-0") canonical = "0";',
+    '  if (!spec.s && ((canonical !== null && canonical.charAt(0) === "-") || num < 0)) return false;',
+    '  if (spec.b === 32) return num >= Number(spec.min) && num <= Number(spec.max);',
+    '  if (canonical !== null) return grpcCmpIntStr(canonical, spec.min) >= 0 && grpcCmpIntStr(canonical, spec.max) <= 0;',
+    '  return false;',
+    '}',
     'function daysFromCivil(y, m, d) { y -= m <= 2 ? 1 : 0; var era = Math.floor(y / 400); var yoe = y - era * 400; var mp = m + (m > 2 ? -3 : 9); var doy = Math.floor((153 * mp + 2) / 5) + d - 1; var doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy; return era * 146097 + doe - 719468; }',
     'function validDate(y, m, d) { if (y < 1 || y > 9999 || m < 1 || m > 12 || d < 1) return false; var mdays = [31, ((y % 4 === 0 && y % 100 !== 0) || y % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; return d <= mdays[m - 1]; }',
     'function validProtoTimestamp(value) { if (typeof value !== "string") return false; var m = value.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})$/); if (!m) return false; var y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]), h = Number(m[4]), mi = Number(m[5]), s = Number(m[6]); if (!validDate(y, mo, d) || h > 23 || mi > 59 || s > 59) return false; var off = 0; if (m[8] !== "Z") { var sign = m[8][0] === "-" ? -1 : 1; var oh = Number(m[8].slice(1, 3)), om = Number(m[8].slice(4, 6)); if (oh > 23 || om > 59) return false; off = sign * (oh * 3600 + om * 60); } var sec = daysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s - off; return sec >= -62135596800 && sec <= 253402300799; }',
@@ -259,6 +282,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '      if (field.shape) { if (!matchesScalar("object", elem)) { pm.expect.fail("gRPC repeated field " + elemLabel + " must be an object but was " + jsonTypeOf(elem)); } else { grpcCheckShape(elem, field.shape, elemLabel + "."); } continue; }',
     '      if (field.enumValues && field.enumValues.length > 0) { if (typeof elem === "number") { if (!Number.isInteger(elem)) pm.expect.fail("gRPC repeated enum field " + elemLabel + " must be an integer but was " + elem); continue; } if (typeof elem !== "string") { pm.expect.fail("gRPC repeated enum field " + elemLabel + " must be a string or number but was " + jsonTypeOf(elem)); } else if (field.enumValues.indexOf(elem) === -1) { pm.expect.fail("gRPC repeated enum field " + elemLabel + " has value " + elem + " not in [" + field.enumValues.join(", ") + "]"); } continue; }',
     '      if (field.jsonType === "any") continue;',
+    '      if (field.intType) { if (!matchesInt(field.intType, elem)) pm.expect.fail("gRPC repeated field " + elemLabel + " must be a valid " + field.intType + " (in range) but was " + JSON.stringify(elem)); continue; }',
     '      if (!matchesScalar(field.jsonType, elem)) pm.expect.fail("gRPC repeated field " + elemLabel + " must be " + field.jsonType + " but was " + jsonTypeOf(elem));',
     '      else if (!matchesFormat(field.jsonFormat, elem)) pm.expect.fail("gRPC repeated field " + elemLabel + " must be " + formatLabel(field.jsonFormat));',
     '    }',
@@ -269,9 +293,10 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '    var keys = Object.keys(value);',
     '    for (var k = 0; k < keys.length; k++) {',
     '      var mk = keys[k], mv = value[mk], mvLabel = label + "[" + mk + "]";',
-    '      if (field.mapKeyType === "integer") { if (!/^-?[0-9]+$/.test(mk)) pm.expect.fail("gRPC map key " + mvLabel + " must be an integer string but was " + mk); }',
-    '      else if (field.mapKeyType === "boolean") { if (mk !== "true" && mk !== "false") pm.expect.fail("gRPC map key " + mvLabel + " must be the string true or false but was " + mk); }',
+    '      if (field.mapKeyType === "boolean") { if (mk !== "true" && mk !== "false") pm.expect.fail("gRPC map key " + mvLabel + " must be the string true or false but was " + mk); }',
+    '      else if (field.mapKeyType) { if (!matchesInt(field.mapKeyType, mk)) pm.expect.fail("gRPC map key " + mvLabel + " must be a valid " + field.mapKeyType + " string (in range) but was " + mk); }',
     '      if (field.mapValueShape && matchesScalar("object", mv)) { grpcCheckShape(mv, field.mapValueShape, mvLabel + "."); }',
+    '      else if (field.mapValueIntType) { if (!matchesInt(field.mapValueIntType, mv)) pm.expect.fail("gRPC map value " + mvLabel + " must be a valid " + field.mapValueIntType + " (in range) but was " + JSON.stringify(mv)); }',
     '      else if (field.mapValueEnumValues && field.mapValueEnumValues.length > 0) { if (typeof mv === "number") { if (!Number.isInteger(mv)) pm.expect.fail("gRPC map enum value " + mvLabel + " must be an integer but was " + mv); } else if (typeof mv !== "string") { pm.expect.fail("gRPC map enum value " + mvLabel + " must be a string or number but was " + jsonTypeOf(mv)); } else if (field.mapValueEnumValues.indexOf(mv) === -1) { pm.expect.fail("gRPC map enum value " + mvLabel + " has value " + mv + " not in [" + field.mapValueEnumValues.join(", ") + "]"); } }',
     '      else if (field.mapValueType && !matchesScalar(field.mapValueType, mv)) { pm.expect.fail("gRPC map value " + mvLabel + " must be " + field.mapValueType + " but was " + jsonTypeOf(mv)); }',
     '      else if (field.mapValueType && !matchesFormat(field.mapValueFormat, mv)) { pm.expect.fail("gRPC map value " + mvLabel + " must be " + formatLabel(field.mapValueFormat)); }',
@@ -286,6 +311,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '  }',
     '  if (field.jsonType === "any") return;',
     '  if (field.shape) { if (!matchesScalar("object", value)) { pm.expect.fail("gRPC field " + label + " must be an object but was " + jsonTypeOf(value)); return; } grpcCheckShape(value, field.shape, label + "."); return; }',
+    '  if (field.intType) { if (!matchesInt(field.intType, value)) pm.expect.fail("gRPC field " + label + " must be a valid " + field.intType + " (in range) but was " + JSON.stringify(value)); return; }',
     '  if (!matchesScalar(field.jsonType, value)) pm.expect.fail("gRPC field " + label + " must be " + field.jsonType + " but was " + jsonTypeOf(value));',
     '  else if (!matchesFormat(field.jsonFormat, value)) pm.expect.fail("gRPC field " + label + " must be " + formatLabel(field.jsonFormat));',
     '}',
@@ -338,6 +364,63 @@ function methodPathOf(item: JsonRecord): string {
   const payload = asRecord(item.payload);
   const value = payload?.methodPath;
   return typeof value === 'string' ? value : '';
+}
+
+const GRPC_INT_SPECS: Record<string, { signed: boolean; bits: 32 | 64; min: string; max: string }> = {
+  int32: { signed: true, bits: 32, min: '-2147483648', max: '2147483647' },
+  sint32: { signed: true, bits: 32, min: '-2147483648', max: '2147483647' },
+  sfixed32: { signed: true, bits: 32, min: '-2147483648', max: '2147483647' },
+  uint32: { signed: false, bits: 32, min: '0', max: '4294967295' },
+  fixed32: { signed: false, bits: 32, min: '0', max: '4294967295' },
+  int64: { signed: true, bits: 64, min: '-9223372036854775808', max: '9223372036854775807' },
+  sint64: { signed: true, bits: 64, min: '-9223372036854775808', max: '9223372036854775807' },
+  sfixed64: { signed: true, bits: 64, min: '-9223372036854775808', max: '9223372036854775807' },
+  uint64: { signed: false, bits: 64, min: '0', max: '18446744073709551615' },
+  fixed64: { signed: false, bits: 64, min: '0', max: '18446744073709551615' }
+};
+
+function grpcDecStr(n: number): string | null {
+  const s = String(n);
+  return s.indexOf('e') === -1 && s.indexOf('E') === -1 && s.indexOf('.') === -1 ? s : null;
+}
+
+function grpcCmpIntStr(a: string, b: string): number {
+  const na = a.charAt(0) === '-';
+  const nb = b.charAt(0) === '-';
+  if (na !== nb) return na ? -1 : 1;
+  const aa = (na ? a.slice(1) : a).replace(/^0+(?=[0-9])/, '');
+  const bb = (nb ? b.slice(1) : b).replace(/^0+(?=[0-9])/, '');
+  let mag: number;
+  if (aa.length !== bb.length) mag = aa.length < bb.length ? -1 : 1;
+  else mag = aa < bb ? -1 : aa > bb ? 1 : 0;
+  return na ? -mag : mag;
+}
+
+// Static mirror of the generated `matchesInt`: validate a value against an exact
+// protobuf integer domain (lexical shape, signedness, range; 64-bit via string
+// comparison to avoid JS double precision loss).
+function matchesIntValue(intType: string, value: unknown): boolean {
+  const spec = GRPC_INT_SPECS[intType];
+  if (!spec) return true;
+  let num: number;
+  let canonical: string | null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isInteger(value)) return false;
+    num = value;
+    canonical = grpcDecStr(value);
+  } else if (typeof value === 'string') {
+    if (!/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(value) || !Number.isFinite(Number(value))) return false;
+    num = Number(value);
+    if (!Number.isInteger(num)) return false;
+    canonical = /^-?[0-9]+$/.test(value) ? value.replace(/^(-?)0+(?=[0-9])/, '$1') : grpcDecStr(num);
+  } else {
+    return false;
+  }
+  if (canonical === '-0') canonical = '0';
+  if (!spec.signed && ((canonical !== null && canonical.charAt(0) === '-') || num < 0)) return false;
+  if (spec.bits === 32) return num >= Number(spec.min) && num <= Number(spec.max);
+  if (canonical !== null) return grpcCmpIntStr(canonical, spec.min) >= 0 && grpcCmpIntStr(canonical, spec.max) <= 0;
+  return false;
 }
 
 function matchesScalarValue(expected: string, value: unknown): boolean {
@@ -484,6 +567,12 @@ function staticRequestCheck(
       continue;
     }
     if (field.jsonType === 'any' || field.enumValues || field.map || field.shape) continue;
+    if (field.intType) {
+      if (!matchesIntValue(field.intType, value)) {
+        warnings.push(`PROTO_REQUEST_FIELD_TYPE_MISMATCH: ${methodPath} request field ${field.name} must be a valid ${field.intType} (in range)`);
+      }
+      continue;
+    }
     if (!matchesScalarValue(field.jsonType, value)) {
       warnings.push(`PROTO_REQUEST_FIELD_TYPE_MISMATCH: ${methodPath} request field ${field.name} must be ${field.jsonType}`);
     } else if (!matchesFormatValue(field.jsonFormat, value)) {

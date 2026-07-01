@@ -179,18 +179,27 @@ function emitValueAssertions(
   index: GraphQLContractIndex,
   warnings: string[]
 ): string[] {
-  if (ref.list) {
-    const elementRef: GraphQLTypeRef = { ...ref, list: false };
-    const elementLines = emitValueAssertions('__el', elementRef, selection, `${ctx} (list element)`, index, warnings);
+  if (ref.lists.length > 0) {
+    // Peel ONE list dimension (outer -> inner). Nested lists (`[[Int]]`) recurse
+    // through this branch once per dimension, so every level is asserted as an
+    // array and its item null-ness enforced per that level's own wrapper.
+    const [outer, ...rest] = ref.lists;
+    const innerRef: GraphQLTypeRef = {
+      ...ref,
+      lists: rest,
+      list: rest.length > 0,
+      listItemNonNull: rest.length > 0 ? rest[0].itemNonNull : false
+    };
+    const elementLines = emitValueAssertions('__el', innerRef, selection, `${ctx} (list element)`, index, warnings);
     const lines = [`pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected a list`)}).to.be.an("array");`];
     const body: string[] = [];
-    if (ref.listItemNonNull) {
+    if (outer.itemNonNull) {
       // `[T!]`: a null element is a contract violation, so fail closed on it and
-      // then type-check the (non-null) element.
+      // then validate the (non-null) element (which may itself be a list).
       body.push(`pm.expect(__el, ${JSON.stringify(`${ctx} (list element): a non-null list item ([T!]) was null`)}).to.not.be.null;`);
       body.push(...elementLines);
     } else if (elementLines.length > 0) {
-      // `[T]`: a null element is GraphQL-legal, so skip it before type-checking
+      // `[T]`: a null element is GraphQL-legal, so skip it before validating
       // (asserting the element type against null would false-fail a valid list).
       body.push('if (__el === null || __el === undefined) return;', ...elementLines);
     }

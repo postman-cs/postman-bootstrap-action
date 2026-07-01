@@ -40,8 +40,16 @@ export interface GraphQLTypeRef {
   nonNull: boolean;
   /** True when, after the outer NonNull is stripped, the type is a list. */
   list: boolean;
-  /** True when list items are themselves NonNull. */
+  /** True when the OUTERMOST list's items are themselves NonNull. */
   listItemNonNull: boolean;
+  /**
+   * Ordered list wrappers from OUTER to INNER, one entry per list dimension, so
+   * nested lists (`[[Int]]`, `[[T!]!]`) are asserted at every depth. Each entry's
+   * `itemNonNull` says whether the item at that dimension is NonNull. Empty when
+   * the type is not a list; `list`/`listItemNonNull` mirror the outermost entry
+   * for backward compatibility.
+   */
+  lists: Array<{ itemNonNull: boolean }>;
 }
 
 export interface GraphQLArgumentDef {
@@ -111,28 +119,32 @@ function classifyNamedType(named: GraphQLNamedType): GraphQLTypeShapeKind {
 function describeType(type: GraphQLType): GraphQLTypeRef {
   let current: GraphQLType = type;
   let nonNull = false;
-  let list = false;
-  let listItemNonNull = false;
 
   if (isNonNullType(current)) {
     nonNull = true;
     current = current.ofType;
   }
-  if (isListType(current)) {
-    list = true;
+  // Peel EVERY list dimension (not just the outermost) so nested lists like
+  // `[[Int]]` / `[[T!]!]` are recorded and asserted at every depth. Each list's
+  // item may carry its own NonNull wrapper.
+  const lists: Array<{ itemNonNull: boolean }> = [];
+  while (isListType(current)) {
     current = current.ofType;
+    let itemNonNull = false;
     if (isNonNullType(current)) {
-      listItemNonNull = true;
+      itemNonNull = true;
       current = current.ofType;
     }
+    lists.push({ itemNonNull });
   }
   const named = getNamedType(current);
   return {
     name: named.name,
     kind: classifyNamedType(named),
     nonNull,
-    list,
-    listItemNonNull
+    list: lists.length > 0,
+    listItemNonNull: lists.length > 0 ? lists[0].itemNonNull : false,
+    lists
   };
 }
 

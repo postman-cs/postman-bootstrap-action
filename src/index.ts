@@ -1150,6 +1150,21 @@ async function provisionWorkspace(
     }
   }
 
+  // Re-scope gateway-backed clients to the workspace-owning sub-team before
+  // create and all subsequent asset writes. They are constructed before team
+  // resolution; on org-mode accounts the gateway requires the sub-team
+  // x-entity-team-id.
+  const resolvedGatewayTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
+  if (dependencies.ecClient?.configureTeamContext) {
+    dependencies.ecClient.configureTeamContext(resolvedGatewayTeamId, ecOrgMode);
+  }
+  if (dependencies.postman.configureTeamContext) {
+    dependencies.postman.configureTeamContext(resolvedGatewayTeamId, ecOrgMode);
+  }
+  if (dependencies.internalIntegration?.configureTeamContext) {
+    dependencies.internalIntegration.configureTeamContext(resolvedGatewayTeamId, ecOrgMode);
+  }
+
   if (!workspaceId) {
     const workspace = await runGroup(
       dependencies.core,
@@ -1176,22 +1191,6 @@ async function provisionWorkspace(
   outputs['workspace-id'] = workspaceId || '';
   outputs['workspace-url'] = `https://go.postman.co/workspace/${workspaceId}`;
   outputs['workspace-name'] = workspaceName;
-
-  // Re-scope the EC (gRPC) gateway client to the workspace-owning sub-team. The
-  // client is constructed before team resolution with the parent-org teamId; on
-  // org-mode accounts the gateway requires the sub-team x-entity-team-id, so feed
-  // it the resolved sub-team (workspaceTeamId) and the independently-derived
-  // org-mode flag here, before any EC collection write.
-  if (dependencies.ecClient?.configureTeamContext) {
-    const ecTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
-    dependencies.ecClient.configureTeamContext(ecTeamId, ecOrgMode);
-  }
-  // Re-scope the access-token gateway asset client to the same sub-team so an
-  // org-mode spec create/generate carries the correct x-entity-team-id.
-  if (dependencies.postman.configureTeamContext) {
-    const gatewayTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
-    dependencies.postman.configureTeamContext(gatewayTeamId, ecOrgMode);
-  }
 
   const governanceGroupName = await resolveGovernanceGroupName(inputs, dependencies);
   const shouldAssignGovernance = Boolean(inputs.domain || governanceGroupName);

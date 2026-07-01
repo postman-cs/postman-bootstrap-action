@@ -312,21 +312,53 @@ export class PostmanGatewayAssetsClient {
   /**
    * Create a team-visible workspace through the gateway workspaces service.
    *
-   * The gateway rejects a direct team/public create ("role not configured"); the
-   * verified path (live probe, 2026-06-30) is create at PERSONAL visibility then
-   * flip to TEAM via the /visibility subpath, which assigns the default role
-   * server-side. `about`/`targetTeamId` are accepted for signature parity with the
-   * PMAK client but are not part of the gateway create body.
+   * Org-mode accounts (when `targetTeamId` is the resolved sub-team/squad id):
+   * POST a single team-visible workspace with `squad` + group roles — the reference
+   * app shape from WorkspaceService.createDraftWorkspace. The personal→team flip
+   * 403s for org service accounts (`addWorkspaceLevelTeamRoles`).
    *
-   * Authoritative + self-cleaning: if the create succeeds but the flip cannot be
-   * verified, the just-created workspace is deleted before throwing, so the
-   * facade's PMAK fallback never double-creates and no personal-visibility
-   * workspace is leaked. A failure of the create step itself throws before any
-   * workspace exists, so fallback is safe.
+   * Non-org accounts: create at PERSONAL visibility then flip to TEAM via the
+   * /visibility subpath (live-proven on team 10490519). `about` is accepted for
+   * signature parity with the PMAK client but is not part of the gateway body.
+   *
+   * Self-cleaning: if create succeeds but team visibility cannot be verified, the
+   * just-created workspace is deleted before throwing.
    */
-  async createWorkspace(name: string, _about: string, _targetTeamId?: number): Promise<{ id: string }> {
+  async createWorkspace(name: string, _about: string, targetTeamId?: number): Promise<{ id: string }> {
     void _about;
-    void _targetTeamId;
+
+    if (targetTeamId != null) {
+      const squadId = String(targetTeamId);
+      this.configureTeamContext(squadId, true);
+      const created = await this.gateway.requestJson<JsonRecord>({
+        service: 'workspaces',
+        method: 'post',
+        path: '/workspaces',
+        body: {
+          name,
+          visibilityStatus: 'team',
+          squad: squadId,
+          roles: {
+            group: { [squadId]: ['WORKSPACE_VIEWER_V9'] }
+          }
+        }
+      });
+      const workspaceId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
+      if (!workspaceId) {
+        throw new Error('Workspace create did not return an id');
+      }
+
+      const visibility = await this.getWorkspaceVisibility(workspaceId);
+      if (visibility !== 'team') {
+        await this.deleteWorkspace(workspaceId).catch(() => undefined);
+        throw new Error(
+          `Workspace ${workspaceId} was created but team visibility could not be verified (got '${visibility ?? 'unknown'}').`
+        );
+      }
+
+      return { id: workspaceId };
+    }
+
     const created = await this.gateway.requestJson<JsonRecord>({
       service: 'workspaces',
       method: 'post',

@@ -2538,9 +2538,16 @@ describe('lintSpecViaCli', () => {
     const { core, outputs } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
+    const callOrder: string[] = [];
     const postman = {
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-org' }),
+      configureTeamContext: vi.fn(() => {
+        callOrder.push('configureTeamContext');
+      }),
+      createWorkspace: vi.fn(async () => {
+        callOrder.push('createWorkspace');
+        return { id: 'ws-org' };
+      }),
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn().mockResolvedValue('col-1'),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('13347347'),
@@ -2555,6 +2562,14 @@ describe('lintSpecViaCli', () => {
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
     };
+    const internalIntegration = {
+      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+      configureTeamContext: vi.fn(() => {
+        callOrder.push('internalIntegration.configureTeamContext');
+      }),
+      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+      syncCollection: vi.fn().mockResolvedValue(undefined)
+    };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
     );
@@ -2563,10 +2578,18 @@ describe('lintSpecViaCli', () => {
       core,
       exec: execStub,
       io: ioStub,
+      internalIntegration,
       postman: withContractHelpers(postman),
       specFetcher
     });
 
+    expect(postman.configureTeamContext).toHaveBeenCalledWith('132319', true);
+    expect(internalIntegration.configureTeamContext).toHaveBeenCalledWith('132319', true);
+    expect(callOrder.indexOf('configureTeamContext')).toBeGreaterThanOrEqual(0);
+    expect(callOrder.indexOf('createWorkspace')).toBeGreaterThan(callOrder.indexOf('configureTeamContext'));
+    expect(callOrder.indexOf('createWorkspace')).toBeGreaterThan(
+      callOrder.indexOf('internalIntegration.configureTeamContext')
+    );
     expect(postman.createWorkspace).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),

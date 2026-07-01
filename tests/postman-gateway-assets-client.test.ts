@@ -13,6 +13,10 @@ interface Envelope {
   body?: unknown;
 }
 
+interface RecordedCall extends Envelope {
+  headers: Record<string, string>;
+}
+
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
     headers: { 'Content-Type': 'application/json' },
@@ -26,12 +30,15 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
  */
 function makeClient(
   handler: (env: Envelope, callIndex: number) => Response
-): { client: PostmanGatewayAssetsClient; gateway: AccessTokenGatewayClient; calls: Envelope[] } {
-  const calls: Envelope[] = [];
+): { client: PostmanGatewayAssetsClient; gateway: AccessTokenGatewayClient; calls: RecordedCall[] } {
+  const calls: RecordedCall[] = [];
   let i = 0;
   const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
     const env = JSON.parse(String((init as RequestInit).body)) as Envelope;
-    calls.push(env);
+    const headers = Object.fromEntries(
+      new Headers((init as RequestInit).headers).entries()
+    ) as Record<string, string>;
+    calls.push({ ...env, headers });
     return handler(env, i++);
   });
   const provider = new AccessTokenProvider({ accessToken: 'tok-1' });
@@ -135,6 +142,77 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ data: [] });
       });
       await expect(client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback')).rejects.toThrow(/task failed/);
+    });
+  });
+
+  describe('createWorkspace', () => {
+    it('org-mode: POSTs team visibility with squad and group roles (no flip)', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/workspaces') {
+          return jsonResponse({ meta: {}, data: { id: 'ws-org', visibility: 'team' } });
+        }
+        if (env.method === 'get' && env.path === '/workspaces/ws-org') {
+          return jsonResponse({ meta: {}, data: { id: 'ws-org', visibility: 'team' } });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      const result = await client.createWorkspace('Org WS', 'about', 132319);
+      expect(result).toEqual({ id: 'ws-org' });
+
+      const create = calls.find((c) => c.method === 'post' && c.path === '/workspaces');
+      const read = calls.find((c) => c.method === 'get' && c.path === '/workspaces/ws-org');
+      expect(create?.headers['x-entity-team-id']).toBe('132319');
+      expect(read?.headers['x-entity-team-id']).toBe('132319');
+      expect(create?.body).toEqual({
+        name: 'Org WS',
+        visibilityStatus: 'team',
+        squad: '132319',
+        roles: { group: { '132319': ['WORKSPACE_VIEWER_V9'] } }
+      });
+      expect(calls.some((c) => c.path.includes('/visibility'))).toBe(false);
+    });
+
+    it('non-org: creates personal then flips to team visibility', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/workspaces') {
+          return jsonResponse({ meta: {}, data: { id: 'ws-1' } });
+        }
+        if (env.method === 'put' && env.path === '/workspaces/ws-1/visibility') {
+          return jsonResponse({ meta: {}, data: { id: 'ws-1', visibility: 'team' } });
+        }
+        if (env.method === 'get' && env.path === '/workspaces/ws-1') {
+          return jsonResponse({ meta: {}, data: { id: 'ws-1', visibility: 'team' } });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      const result = await client.createWorkspace('Team WS', 'about');
+      expect(result).toEqual({ id: 'ws-1' });
+
+      expect(calls[0]?.body).toEqual({ name: 'Team WS', visibilityStatus: 'personal' });
+      expect(calls.some((c) => c.method === 'put' && c.path === '/workspaces/ws-1/visibility')).toBe(true);
+    });
+
+    it('org-mode: deletes workspace when team visibility cannot be verified', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/workspaces') {
+          return jsonResponse({ meta: {}, data: { id: 'ws-bad' } });
+        }
+        if (env.method === 'get' && env.path === '/workspaces/ws-bad') {
+          return jsonResponse({ meta: {}, data: { id: 'ws-bad', visibility: 'personal' } });
+        }
+        if (env.method === 'delete' && env.path === '/workspaces/ws-bad') {
+          return jsonResponse({ meta: {}, data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(client.createWorkspace('Bad Org WS', 'about', 132319)).rejects.toThrow(
+        /team visibility could not be verified/
+      );
+      const cleanup = calls.find((c) => c.method === 'delete' && c.path === '/workspaces/ws-bad');
+      expect(cleanup?.headers['x-entity-team-id']).toBe('132319');
     });
   });
 

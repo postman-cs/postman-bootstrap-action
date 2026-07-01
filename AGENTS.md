@@ -44,7 +44,7 @@ npm run check:dist   # build + git diff --exit-code (CI integrity)
 
 All asset operations run through the access-token gateway (Bifrost `POST /ws/proxy` envelope, `x-access-token`); see `docs/REST-to-gateway.md` for verified wire shapes. The PMAK is used only to mint/re-mint the access token and for the Postman CLI `spec lint` login.
 
-- `workspaces` service: `POST /workspaces` (personal) + `PUT /workspaces/{id}/visibility` (team) + `GET /workspaces` -- workspace create/visibility/lookup; `PATCH /workspaces/{id}/roles` (string role names) -- workspace admins + requester invite (email->id resolved via `god` `GET /api/organizations/{teamId}/members`)
+- `workspaces` service: org-mode `POST /workspaces` with `visibilityStatus: team`, `squad`, and group roles (`WORKSPACE_VIEWER_V9`); non-org `POST /workspaces` (personal) + `PUT /workspaces/{id}/visibility` (team) + `GET /workspaces` -- workspace create/visibility/lookup; `PATCH /workspaces/{id}/roles` (string role names) -- workspace admins + requester invite (email->id resolved via `god` `GET /api/organizations/{teamId}/members`)
 - `specification` service: `POST /specifications` + `PATCH /specifications/{id}/files/{fileId}` (JSON-patch `/content`) -- spec upload/update; `POST /specifications/{id}/collections` + task poll -- collection generation
 - `collection` service: `GET /v3/collections/{cid}/items/` (list) + `PATCH /v3/collections/{cid}/items/{itemId}` (test injection) + `POST /v3/collections/{cid}/items/` (create) -- bare model id
 - `tagging` service: `PUT /v1/tags/collections/{id}` -- collection tagging

@@ -36,11 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - id: postman_token
-        uses: postman-cs/postman-resolve-service-token-action@v1
+        uses: postman-cs/postman-resolve-service-token-action@v2
         with:
           postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
           postman-region: us
-      - uses: postman-cs/postman-bootstrap-action@v1
+      - uses: postman-cs/postman-bootstrap-action@v2
         with:
           project-name: core-payments
           spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
@@ -60,7 +60,7 @@ For Git-first workflows, read the OpenAPI document directly from the checked-out
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: postman-cs/postman-bootstrap-action@v1
+- uses: postman-cs/postman-bootstrap-action@v2
   with:
     project-name: core-payments
     spec-path: apis/core-payments/openapi.yaml
@@ -72,7 +72,7 @@ For Git-first workflows, read the OpenAPI document directly from the checked-out
 Pass `workspace-id`, `spec-id`, and existing collection IDs to rerun without creating duplicate Postman assets. When `.postman/resources.yaml` is committed on the checked-out ref, the action reuses its workspace, spec, and collection mappings automatically.
 
 ```yaml
-- uses: postman-cs/postman-bootstrap-action@v1
+- uses: postman-cs/postman-bootstrap-action@v2
   with:
     project-name: core-payments
     workspace-id: ws-123
@@ -89,7 +89,7 @@ Pass `workspace-id`, `spec-id`, and existing collection IDs to rerun without cre
 Create a release-scoped spec and collection set instead of refreshing the canonical assets in place:
 
 ```yaml
-- uses: postman-cs/postman-bootstrap-action@v1
+- uses: postman-cs/postman-bootstrap-action@v2
   with:
     project-name: core-payments
     spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
@@ -109,7 +109,7 @@ Compare the incoming contract before any Postman mutation. `pr-native` mode diff
 - uses: actions/checkout@v5
   with:
     fetch-depth: 0
-- uses: postman-cs/postman-bootstrap-action@v1
+- uses: postman-cs/postman-bootstrap-action@v2
   with:
     project-name: core-payments
     spec-path: apis/core-payments/openapi.yaml
@@ -127,12 +127,12 @@ Set the repository custom property `postman-governance-group`, then provide toke
 
 ```yaml
 - id: postman-token
-  uses: postman-cs/postman-resolve-service-token-action@v1
+  uses: postman-cs/postman-resolve-service-token-action@v2
   with:
     postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
     postman-region: us
 
-- uses: postman-cs/postman-bootstrap-action@v1
+- uses: postman-cs/postman-bootstrap-action@v2
   with:
     project-name: core-payments
     spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml
@@ -149,7 +149,7 @@ For one-off runs, `governance-group` can be passed directly and overrides the re
 Postman organizations with multiple sub-teams require an explicit `workspace-team-id` for workspace creation:
 
 ```yaml
-- uses: postman-cs/postman-bootstrap-action@v1
+- uses: postman-cs/postman-bootstrap-action@v2
   with:
     project-name: core-payments
     spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml

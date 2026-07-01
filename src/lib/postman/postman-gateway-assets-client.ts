@@ -3,6 +3,7 @@ import { transform, FormatVersion } from '@postman/runtime.models/transforms';
 
 import { HttpError } from '../http-error.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';
+import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
 import { AccessTokenGatewayClient } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
 import { planContractItemScripts } from '../spec/collection-contracts.js';
@@ -19,6 +20,28 @@ function asRecord(value: unknown): JsonRecord | null {
     return null;
   }
   return value as JsonRecord;
+}
+
+/**
+ * The non-org create path POSTs a personal workspace then flips it to team
+ * visibility. On an org service account that flip 403s
+ * (`addWorkspaceLevelTeamRoles` / "You are not authorized"): the account is
+ * actually org-mode and needs a sub-team owner. Rewrite that specific 403 into
+ * the definitive org-account guidance (set workspace-team-id) so the fix is
+ * obvious instead of a raw gateway 403. Any other error passes through unchanged
+ * (the non-org flip succeeds on real non-org accounts, so this never fires there).
+ */
+function adviseWorkspaceFlipForbidden(error: unknown): unknown {
+  if (error instanceof HttpError && error.status === 403) {
+    const body = error.responseBody || '';
+    if (
+      /addWorkspaceLevelTeamRoles/i.test(body) ||
+      /You are not authorized to perform this action/i.test(body)
+    ) {
+      return new Error(WORKSPACE_PERSONAL_ONLY_ADVICE, { cause: error });
+    }
+  }
+  return error;
 }
 
 /** Pull the git repo URL out of a Bifrost filesystem payload (mirrors the PMAK client). */
@@ -387,7 +410,7 @@ export class PostmanGatewayAssetsClient {
       }
     } catch (error) {
       await this.deleteWorkspace(workspaceId).catch(() => undefined);
-      throw error;
+      throw adviseWorkspaceFlipForbidden(error);
     }
 
     return { id: workspaceId };

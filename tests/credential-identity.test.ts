@@ -7,6 +7,7 @@ import {
   crossCheckIdentities,
   formatIdentityLine,
   getMemoizedSessionIdentity,
+  getSessionResolutionFailure,
   resolvePmakIdentity,
   resolveSessionIdentity,
   runCredentialPreflight,
@@ -286,7 +287,9 @@ describe('credential identity', () => {
       accessToken: 'access-token-case-7b',
       fetchImpl: vi.fn<typeof fetch>(async () => {
         throw new Error('network down');
-      })
+      }),
+      sleepImpl: async () => undefined,
+      randomImpl: () => 0
     });
     expect(network).toBeUndefined();
   });
@@ -575,5 +578,229 @@ describe('credential identity', () => {
     });
     expect(second?.teamId).toBe('22222222');
     expect(secondFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('event-based session retry', () => {
+  beforeEach(() => {
+    __resetIdentityMemo();
+  });
+
+  function sessionSequence(steps: Array<() => Response>) {
+    let n = 0;
+    return vi.fn<typeof fetch>(async () => {
+      const step = steps[Math.min(n, steps.length - 1)];
+      n += 1;
+      return step();
+    });
+  }
+
+  it('retries a transient 5xx and resolves on a later attempt, waiting the full-jitter delay via the injected clock', async () => {
+    const sleeps: number[] = [];
+    const fetchImpl = sessionSequence([
+      () => new Response('server error', { status: 503 }),
+      () => jsonResponse(sessionPayload(13347347))
+    ]);
+
+    const identity = await resolveSessionIdentity({
+      iapubBaseUrl: IAPUB_BASE,
+      accessToken: 'retry-5xx',
+      fetchImpl,
+      sleepImpl: async (ms) => {
+        sleeps.push(ms);
+      },
+      randomImpl: () => 0.5
+    });
+
+    expect(identity?.teamId).toBe('13347347');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    // No server signal on the 503, so full jitter: round(0.5 * min(8000, 500*2^0)) = 250.
+    expect(sleeps).toEqual([250]);
+    expect(getSessionResolutionFailure()).toBeUndefined();
+  });
+
+  it('honors a Retry-After (delta-seconds) header on 429 instead of jitter', async () => {
+    const sleeps: number[] = [];
+    const fetchImpl = sessionSequence([
+      () => new Response('slow down', { status: 429, headers: { 'retry-after': '2' } }),
+      () => jsonResponse(sessionPayload(13347347))
+    ]);
+
+    const identity = await resolveSessionIdentity({
+      iapubBaseUrl: IAPUB_BASE,
+      accessToken: 'retry-after-secs',
+      fetchImpl,
+      sleepImpl: async (ms) => {
+        sleeps.push(ms);
+      },
+      // A high rng would dominate if jitter were used; proves the header wins.
+      randomImpl: () => 0.99
+    });
+
+    expect(identity?.teamId).toBe('13347347');
+    expect(sleeps).toEqual([2000]);
+  });
+
+  it('honors a Retry-After HTTP-date header (converted to a positive delta)', async () => {
+    const sleeps: number[] = [];
+    const future = new Date(Date.now() + 5000).toUTCString();
+    const fetchImpl = sessionSequence([
+      () => new Response('slow', { status: 503, headers: { 'retry-after': future } }),
+      () => jsonResponse(sessionPayload(13347347))
+    ]);
+
+    const identity = await resolveSessionIdentity({
+      iapubBaseUrl: IAPUB_BASE,
+      accessToken: 'retry-after-date',
+      fetchImpl,
+      sleepImpl: async (ms) => {
+        sleeps.push(ms);
+      },
+      randomImpl: () => 0
+    });
+
+    expect(identity?.teamId).toBe('13347347');
+    expect(sleeps).toHaveLength(1);
+    expect(sleeps[0]).toBeGreaterThan(0);
+    expect(sleeps[0]).toBeLessThanOrEqual(5000);
+  });
+
+  it('falls back to RateLimit-Reset (seconds) when no Retry-After is present', async () => {
+    const sleeps: number[] = [];
+    const fetchImpl = sessionSequence([
+      () => new Response('limited', { status: 503, headers: { 'ratelimit-reset': '3' } }),
+      () => jsonResponse(sessionPayload(13347347))
+    ]);
+
+    const identity = await resolveSessionIdentity({
+      iapubBaseUrl: IAPUB_BASE,
+      accessToken: 'ratelimit-reset',
+      fetchImpl,
+      sleepImpl: async (ms) => {
+        sleeps.push(ms);
+      },
+      randomImpl: () => 0.99
+    });
+
+    expect(identity?.teamId).toBe('13347347');
+    expect(sleeps).toEqual([3000]);
+  });
+
+  it('clamps a rogue large Retry-After to the max delay so CI cannot stall', async () => {
+    const sleeps: number[] = [];
+    const fetchImpl = sessionSequence([
+      () => new Response('slow', { status: 503, headers: { 'retry-after': '9999' } }),
+      () => jsonResponse(sessionPayload(13347347))
+    ]);
+
+    const identity = await resolveSessionIdentity({
+      iapubBaseUrl: IAPUB_BASE,
+      accessToken: 'retry-after-huge',
+      fetchImpl,
+      sleepImpl: async (ms) => {
+        sleeps.push(ms);
+      },
+      randomImpl: () => 0
+    });
+
+    expect(identity?.teamId).toBe('13347347');
+    expect(sleeps).toEqual([8000]);
+  });
+
+  it('does NOT retry or sleep on 401 and classifies the failure as auth', async () => {
+    const sleeps: number[] = [];
+    const fetchImpl = sessionSequence([() => new Response('nope', { status: 401 })]);
+
+    const identity = await resolveSessionIdentity({
+      iapubBaseUrl: IAPUB_BASE,
+      accessToken: 'auth-401',
+      fetchImpl,
+      sleepImpl: async (ms) => {
+        sleeps.push(ms);
+      }
+    });
+
+    expect(identity).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleeps).toHaveLength(0);
+    expect(getSessionResolutionFailure()).toBe('auth');
+  });
+
+  it('retries network failures up to maxAttempts then classifies unavailable', async () => {
+    const sleeps: number[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      throw new Error('network down');
+    });
+
+    const identity = await resolveSessionIdentity({
+      iapubBaseUrl: IAPUB_BASE,
+      accessToken: 'net-fail',
+      fetchImpl,
+      sleepImpl: async (ms) => {
+        sleeps.push(ms);
+      },
+      randomImpl: () => 1
+    });
+
+    expect(identity).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    // Two waits between three attempts; full jitter ceilings 500 then 1000 at rng=1.
+    expect(sleeps).toEqual([500, 1000]);
+    expect(getSessionResolutionFailure()).toBe('unavailable');
+  });
+
+  it('runCredentialPreflight enforce FAILS closed when the session stays unresolved (auth), naming the re-mint fix', async () => {
+    const capture = createLogCapture();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/me')) {
+        return jsonResponse({ user: { id: 1, teamId: 10490519, teamName: 'jared-demo' } });
+      }
+      return new Response('expired', { status: 401 });
+    });
+
+    await expect(
+      runCredentialPreflight({
+        apiBaseUrl: API_BASE,
+        iapubBaseUrl: IAPUB_BASE,
+        postmanApiKey: 'pmak-enforce-unresolved',
+        postmanAccessToken: 'access-token-expired',
+        mode: 'enforce',
+        mask: passthroughMask,
+        log: capture.log,
+        fetchImpl,
+        sleepImpl: async () => undefined
+      })
+    ).rejects.toThrow(/enforce requires a resolvable session identity/);
+  });
+
+  it('runCredentialPreflight warn continues when the session stays unresolved (unavailable), naming the transient cause', async () => {
+    const capture = createLogCapture();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/me')) {
+        return jsonResponse({ user: { id: 1, teamId: 10490519, teamName: 'jared-demo' } });
+      }
+      return new Response('unavailable', { status: 503 });
+    });
+
+    await expect(
+      runCredentialPreflight({
+        apiBaseUrl: API_BASE,
+        iapubBaseUrl: IAPUB_BASE,
+        postmanApiKey: 'pmak-warn-unresolved',
+        postmanAccessToken: 'access-token-transient',
+        mode: 'warn',
+        mask: passthroughMask,
+        log: capture.log,
+        fetchImpl,
+        sleepImpl: async () => undefined,
+        randomImpl: () => 0
+      })
+    ).resolves.toBeUndefined();
+
+    expect(
+      capture.warnings.some((entry) => entry.includes('iapub was unreachable after retries'))
+    ).toBe(true);
   });
 });

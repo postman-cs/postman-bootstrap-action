@@ -4,6 +4,7 @@ import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
 import { __resetIdentityMemo, resolveSessionIdentity } from '../src/lib/postman/credential-identity.js';
+import { WORKSPACE_PERSONAL_ONLY_ADVICE } from '../src/lib/postman/error-advice.js';
 
 interface Envelope {
   service: string;
@@ -525,6 +526,59 @@ describe('PostmanGatewayAssetsClient', () => {
 
       const patch = calls.find((c) => c.method === 'patch' && c.path === '/v3/collections/cid-1');
       expect(patch?.body).toEqual([{ op: 'replace', path: '/name', value: 'Curated (updated)' }]);
+    });
+  });
+
+  describe('createWorkspace non-org flip 403 safety net', () => {
+    it('maps a flip-path 403 (addWorkspaceLevelTeamRoles) to the org-account workspace-team-id guidance', async () => {
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/workspaces') {
+          return jsonResponse({ data: { id: 'ws-flip' } });
+        }
+        if (env.method === 'put' && env.path === '/workspaces/ws-flip/visibility') {
+          return jsonResponse({ error: { name: 'addWorkspaceLevelTeamRoles' } }, { status: 403 });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(client.createWorkspace('ws', 'about')).rejects.toThrow(
+        WORKSPACE_PERSONAL_ONLY_ADVICE
+      );
+    });
+
+    it('maps a flip-path 403 ("not authorized") to the org-account guidance', async () => {
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/workspaces') {
+          return jsonResponse({ data: { id: 'ws-flip2' } });
+        }
+        if (env.method === 'put') {
+          return jsonResponse(
+            { error: { message: 'You are not authorized to perform this action' } },
+            { status: 403 }
+          );
+        }
+        return jsonResponse({});
+      });
+
+      await expect(client.createWorkspace('ws', 'about')).rejects.toThrow(
+        WORKSPACE_PERSONAL_ONLY_ADVICE
+      );
+    });
+
+    it('passes an unrelated flip 403 through unchanged (does not over-trigger)', async () => {
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/workspaces') {
+          return jsonResponse({ data: { id: 'ws-x' } });
+        }
+        if (env.method === 'put') {
+          return jsonResponse({ error: { message: 'workspace quota exceeded' } }, { status: 403 });
+        }
+        return jsonResponse({});
+      });
+
+      const error = await client.createWorkspace('ws', 'about').catch((e: Error) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain(WORKSPACE_PERSONAL_ONLY_ADVICE);
     });
   });
 });

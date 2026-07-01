@@ -1136,6 +1136,12 @@ async function provisionWorkspace(
 
   // Org-mode detection: only check if we need to create a workspace (not reuse existing)
   if (!workspaceId && !workspaceTeamId) {
+    // NOTE: intentionally no fail-fast on an unresolved session here. A stale
+    // access token (iapub 401) is recoverable: the gateway's AccessTokenProvider
+    // re-mints from the PMAK on the getTeams()/createWorkspace 401, so the run
+    // still succeeds. The org-account misleading-403 case is instead caught at
+    // the point it actually happens by adviseWorkspaceFlipForbidden (the
+    // create-path 403 -> workspace-team-id guidance safety net below).
     try {
       const teams = await dependencies.postman.getTeams();
       if (teams.length > 1 && teams.every(t => t.organizationId == null)) {

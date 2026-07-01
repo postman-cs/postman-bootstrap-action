@@ -81,7 +81,7 @@ function grpcScriptFor(methodSuffix: string): string {
     'package telecom;',
     'enum Quality { QUALITY_UNKNOWN = 0; ACTIVE = 1; }',
     'message GetReq { string user_id = 1; }',
-    'message GetResp { string user_id = 1; repeated string tags = 2; repeated Quality qualities = 3; }',
+    'message GetResp { string user_id = 1; repeated string tags = 2; repeated Quality qualities = 3; double lat = 4; int32 count = 5; map<string, Quality> tag_quality = 6; google.protobuf.Timestamp occurred_at = 7; google.protobuf.Duration ttl = 8; google.protobuf.FieldMask mask = 9; bytes payload = 10; }',
     'service Svc { rpc Get(GetReq) returns (GetResp); rpc List(GetReq) returns (stream GetResp); }'
   ].join('\n');
   const index = parseProtoSchema(proto, deps);
@@ -112,6 +112,48 @@ describe.skipIf(!HAS_PROTOBUF)('gRPC repeated-element + ProtoJSON-name runtime v
     // "user_id"), a proto3 singular field, so the type mismatch would be missed.
     const script = grpcScriptFor('/Get');
     expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 123, tags: [], qualities: [] } }))).toBe(true);
+  });
+  it('accepts ProtoJSON numeric-string encodings (numbers-as-strings, NaN/Infinity doubles)', () => {
+    // proto3-JSON encodes some numerics as strings and non-finite doubles as
+    // "NaN"/"Infinity"; those must NOT false-fail a numeric/double field.
+    const script = grpcScriptFor('/Get');
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], count: '7', lat: 'NaN' } }))).toBe(false);
+  });
+  it('fails a non-numeric string in a numeric field', () => {
+    const script = grpcScriptFor('/Get');
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], count: 'abc' } }))).toBe(true);
+  });
+  it('accepts exponent and zero-fraction numeric-string double spellings', () => {
+    // ProtoJSON allows "1e2" and "1.0"; the old canonical round-trip guard wrongly
+    // rejected both. A double field must accept every finite JSON-number spelling.
+    const script = grpcScriptFor('/Get');
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], lat: '1e2' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], lat: '1.0' } }))).toBe(false);
+  });
+  it('accepts an integral numeric-string (exponent/zero-fraction) for an int32 field', () => {
+    const script = grpcScriptFor('/Get');
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], count: '1e2' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], count: '1.0' } }))).toBe(false);
+  });
+  it('fails a fractional value (string or number) for an integer field', () => {
+    // int32 is integral; a fractional spelling must fail closed, not pass as a generic number.
+    const script = grpcScriptFor('/Get');
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], count: '1.5' } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], count: 1.5 } }))).toBe(true);
+  });
+  it('enforces enum membership on map<string, enum> values', () => {
+    const script = grpcScriptFor('/Get');
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], tagQuality: { a: 'ACTIVE' } } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], tagQuality: { a: 'BOGUS' } } }))).toBe(true);
+  });
+  it('validates ProtoJSON lexical formats for WKT strings and bytes', () => {
+    const script = grpcScriptFor('/Get');
+    const base = { userId: 'u1', tags: [], qualities: [], occurredAt: '2025-01-27T11:42:15.689823456+01:00', ttl: '-0.500000001s', mask: 'user.displayName,photo', payload: 'Zm8' };
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: base }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...base, occurredAt: '2025-01-27T11:42:15.1234567890Z' } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...base, ttl: '1.1234567890s' } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...base, mask: 'user.display_name' } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...base, payload: 'A' } }))).toBe(true);
   });
   it('does not false-fail an empty OK server-streaming stream (zero messages)', () => {
     const script = grpcScriptFor('/List');

@@ -43,7 +43,7 @@ describe('protocol dispatch format discriminant', () => {
     expect(Array.isArray(result.collection.children)).toBe(true);
   });
 
-  it.skipIf(!HAS_PROTOBUF)('grpc builds a v3-ec collection gated from CI execution', async () => {
+  it.skipIf(!HAS_PROTOBUF)('grpc builds a v3-ec collection runnable in CI', async () => {
     const result = await buildProtocolCollection('grpc', read('grpc/routeguide.proto'), {
       name: 'T',
       endpointUrl: 'grpc://host:443',
@@ -51,7 +51,7 @@ describe('protocol dispatch format discriminant', () => {
     });
     expect(result.type).toBe('grpc');
     expect(result.format).toBe('v3-ec');
-    expect(result.runnableInCi).toBe(false);
+    expect(result.runnableInCi).toBe(true);
     expect(result.operationCount).toBeGreaterThan(0);
     // The v3 tree is service folders containing grpc-request leaves.
     const items = (result.collection.item as Array<Record<string, unknown>>) ?? [];
@@ -106,7 +106,7 @@ describe('protocol dispatch format discriminant', () => {
     expect(items.every((item) => item.type === 'ws-raw-request')).toBe(true);
   });
 
-  it('all protocols emit v3-ec; runnableInCi is true for HTTP protocols, false for gRPC', async () => {
+  it.skipIf(!HAS_PROTOBUF)('all executable protocols emit v3-ec and are runnable in CI', async () => {
     const graphql = await buildProtocolCollection('graphql', read('graphql/telecom.graphql'), {
       name: 'T',
       endpointUrl: '{{baseUrl}}/graphql'
@@ -115,10 +115,17 @@ describe('protocol dispatch format discriminant', () => {
       name: 'T',
       endpointUrl: '{{baseUrl}}/soap'
     });
+    const grpc = await buildProtocolCollection('grpc', read('grpc/routeguide.proto'), {
+      name: 'T',
+      endpointUrl: 'grpc://host:443',
+      protobuf: PROTOBUF ?? undefined
+    });
     expect(graphql.format).toBe('v3-ec');
     expect(graphql.runnableInCi).toBe(true);
     expect(soap.format).toBe('v3-ec');
     expect(soap.runnableInCi).toBe(true);
+    expect(grpc.format).toBe('v3-ec');
+    expect(grpc.runnableInCi).toBe(true);
   });
 
   it('rejects on an unsupported protocol spec type', async () => {

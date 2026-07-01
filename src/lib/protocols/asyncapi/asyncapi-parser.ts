@@ -363,7 +363,8 @@ function channelDescriptor(
 }
 
 function assertAsyncApi2(version: string): void {
-  if (!/^2\./.test(version)) {
+  const match = /^2\.(\d+)/.exec(version);
+  if (!match || Number(match[1]) > 6) {
     throw new Error(
       `ASYNCAPI_VERSION_UNSUPPORTED: AsyncAPI ${version || '<unknown>'} is not supported; only AsyncAPI 2.0.0-2.6.0 documents are ingested for WebSocket/Socket.IO contract generation`
     );

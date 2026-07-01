@@ -119,35 +119,6 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Probes the `grpc_protocol_execution_allowed` plan/billing flag over the
-   * access-token gateway `features` service, live-proven 200 via
-   * `POST /features/list?entityType=team&entityValue=:teamId` with body
-   * `{ features: ['grpc_protocol_execution_allowed'] }` -> `{ data: { features: {
-   * grpc_protocol_execution_allowed: { value: boolean } } } }`. Team id is the
-   * memoized session identity (same source as `getTeams`); this is an account
-   * entitlement, not a token scope, so it is never PMAK-routed. Any read
-   * failure (no session, non-2xx, unexpected shape) resolves to `false` — the
-   * conservative default is "not runnable" rather than a thrown error.
-   */
-  async isGrpcExecutionAllowed(): Promise<boolean> {
-    const teamId = getMemoizedSessionIdentity()?.teamId;
-    if (!teamId) return false;
-    try {
-      const res = await this.gateway.requestJson<JsonRecord>({
-        service: 'features',
-        method: 'post',
-        path: `/features/list?entityType=team&entityValue=${teamId}`,
-        body: { features: ['grpc_protocol_execution_allowed'] }
-      });
-      const features = asRecord(asRecord(res?.data)?.features);
-      const flag = asRecord(features?.grpc_protocol_execution_allowed);
-      return flag?.value === true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
    * Create an OpenAPI spec in Spec Hub via the gateway specification service.
    * Verified shape: POST /specifications?containerType=workspace&containerId=:ws
    * with a file-level `type: 'ROOT'` (the gateway rejects the create otherwise).

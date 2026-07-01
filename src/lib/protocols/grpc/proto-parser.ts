@@ -96,7 +96,11 @@ export type GrpcStreamKind = 'unary' | 'server' | 'client' | 'bidi';
 // reflect in `jsonType`.
 // `any` is a value whose JSON type cannot be constrained (google.protobuf.Value):
 // present-only, no runtime type assertion.
-export type GrpcJsonType = 'number' | 'string' | 'boolean' | 'object' | 'array' | 'enum' | 'any' | 'unknown';
+// `double` distinguishes float/double from integer scalars: proto3-JSON encodes
+// non-finite doubles as the strings "NaN"/"Infinity"/"-Infinity", and all
+// numeric fields may also carry numeric strings.
+export type GrpcJsonType = 'number' | 'double' | 'string' | 'boolean' | 'object' | 'array' | 'enum' | 'any' | 'unknown';
+export type GrpcJsonFormat = 'proto-bytes' | 'proto-timestamp' | 'proto-duration' | 'proto-field-mask';
 
 export interface GrpcFieldDescriptor {
   name: string;
@@ -105,6 +109,7 @@ export interface GrpcFieldDescriptor {
   jsonName: string;
   protoType: string;
   jsonType: GrpcJsonType;
+  jsonFormat?: GrpcJsonFormat;
   repeated: boolean;
   map: boolean;
   // proto3 explicit `optional` or proto2 `optional`: presence is not asserted.
@@ -120,6 +125,8 @@ export interface GrpcFieldDescriptor {
   enumType?: string;
   // For map<K,V> fields, the JSON type asserted on each map value.
   mapValueType?: GrpcJsonType;
+  mapValueFormat?: GrpcJsonFormat;
+  mapValueEnumType?: string;
   // For map<K,V> fields whose value is a message, the value message name (for
   // nested shape reference).
   mapValueMessageType?: string;
@@ -163,25 +170,25 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-const SCALAR_JSON_TYPE: Record<string, GrpcJsonType> = {
-  double: 'number',
-  float: 'number',
-  int32: 'number',
-  sint32: 'number',
-  sfixed32: 'number',
-  fixed32: 'number',
-  uint32: 'number',
+const SCALAR_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; jsonFormat?: GrpcJsonFormat }> = {
+  double: { jsonType: 'double' },
+  float: { jsonType: 'double' },
+  int32: { jsonType: 'number' },
+  sint32: { jsonType: 'number' },
+  sfixed32: { jsonType: 'number' },
+  fixed32: { jsonType: 'number' },
+  uint32: { jsonType: 'number' },
   // 64-bit integers are JSON-encoded as strings by the proto JSON mapping and
   // by protobufjs default toObject, so we assert `string`.
-  int64: 'string',
-  uint64: 'string',
-  sint64: 'string',
-  fixed64: 'string',
-  sfixed64: 'string',
-  bool: 'boolean',
-  string: 'string',
+  int64: { jsonType: 'string' },
+  uint64: { jsonType: 'string' },
+  sint64: { jsonType: 'string' },
+  fixed64: { jsonType: 'string' },
+  sfixed64: { jsonType: 'string' },
+  bool: { jsonType: 'boolean' },
+  string: { jsonType: 'string' },
   // bytes are base64 strings in proto JSON.
-  bytes: 'string'
+  bytes: { jsonType: 'string', jsonFormat: 'proto-bytes' }
 };
 
 // google.protobuf well-known types have a canonical proto3-JSON encoding that is
@@ -190,19 +197,19 @@ const SCALAR_JSON_TYPE: Record<string, GrpcJsonType> = {
 // nullable scalar. Struct/Empty/Any encode as objects but carry no fixed field
 // shape, so they map to `object` with no nested descent (messageType undefined).
 // grounding: https://protobuf.dev/programming-guides/json/
-const WELL_KNOWN_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; nullable?: boolean }> = {
-  'google.protobuf.Timestamp': { jsonType: 'string' },
-  'google.protobuf.Duration': { jsonType: 'string' },
-  'google.protobuf.FieldMask': { jsonType: 'string' },
-  'google.protobuf.DoubleValue': { jsonType: 'number', nullable: true },
-  'google.protobuf.FloatValue': { jsonType: 'number', nullable: true },
+const WELL_KNOWN_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; jsonFormat?: GrpcJsonFormat; nullable?: boolean }> = {
+  'google.protobuf.Timestamp': { jsonType: 'string', jsonFormat: 'proto-timestamp' },
+  'google.protobuf.Duration': { jsonType: 'string', jsonFormat: 'proto-duration' },
+  'google.protobuf.FieldMask': { jsonType: 'string', jsonFormat: 'proto-field-mask' },
+  'google.protobuf.DoubleValue': { jsonType: 'double', nullable: true },
+  'google.protobuf.FloatValue': { jsonType: 'double', nullable: true },
   'google.protobuf.Int32Value': { jsonType: 'number', nullable: true },
   'google.protobuf.UInt32Value': { jsonType: 'number', nullable: true },
   'google.protobuf.Int64Value': { jsonType: 'string', nullable: true },
   'google.protobuf.UInt64Value': { jsonType: 'string', nullable: true },
   'google.protobuf.BoolValue': { jsonType: 'boolean', nullable: true },
   'google.protobuf.StringValue': { jsonType: 'string', nullable: true },
-  'google.protobuf.BytesValue': { jsonType: 'string', nullable: true },
+  'google.protobuf.BytesValue': { jsonType: 'string', jsonFormat: 'proto-bytes', nullable: true },
   'google.protobuf.Struct': { jsonType: 'object' },
   'google.protobuf.Empty': { jsonType: 'object' },
   'google.protobuf.Any': { jsonType: 'object' },
@@ -267,14 +274,14 @@ function stripLeadingDot(name: string): string {
 function classifyValueType(
   protoType: string,
   resolved: ProtoReflectionObject | null | undefined
-): { jsonType: GrpcJsonType; nullable?: boolean; messageType?: string; enumType?: string } {
+): { jsonType: GrpcJsonType; jsonFormat?: GrpcJsonFormat; nullable?: boolean; messageType?: string; enumType?: string } {
   // Well-known types are keyed by their raw proto type name: a standalone
   // protobufjs parse does not bundle google/protobuf/*.proto, so a WKT field
   // never resolves to a reflection object (resolvedType stays null). The type
   // string (e.g. `google.protobuf.Timestamp`) is preserved verbatim whether or
   // not the reference resolves, so it is the reliable classifier.
   const wkt = WELL_KNOWN_JSON_TYPE[stripLeadingDot(protoType)];
-  if (wkt) return { jsonType: wkt.jsonType, nullable: wkt.nullable };
+  if (wkt) return { jsonType: wkt.jsonType, jsonFormat: wkt.jsonFormat, nullable: wkt.nullable };
   if (resolved && Array.isArray(resolved.fieldsArray)) {
     return { jsonType: 'object', messageType: stripLeadingDot(resolved.fullName) };
   }
@@ -283,9 +290,8 @@ function classifyValueType(
     // toObject (enums: String); assert string membership at runtime.
     return { jsonType: 'enum', enumType: stripLeadingDot(resolved.fullName) };
   }
-  if (SCALAR_JSON_TYPE[protoType]) {
-    return { jsonType: SCALAR_JSON_TYPE[protoType] as GrpcJsonType };
-  }
+  const scalar = SCALAR_JSON_TYPE[protoType];
+  if (scalar) return { jsonType: scalar.jsonType, jsonFormat: scalar.jsonFormat };
   return { jsonType: 'unknown' };
 }
 
@@ -333,6 +339,8 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
       optional: Boolean(field.optional),
       required: Boolean(field.required),
       ...(value.jsonType !== 'unknown' ? { mapValueType: value.jsonType } : {}),
+      ...(value.jsonFormat ? { mapValueFormat: value.jsonFormat } : {}),
+      ...(value.enumType ? { mapValueEnumType: value.enumType } : {}),
       ...(value.messageType ? { mapValueMessageType: value.messageType } : {})
     };
   }
@@ -349,6 +357,7 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
     jsonName: protoJsonName(field),
     protoType,
     jsonType: classified.jsonType,
+    ...(classified.jsonFormat ? { jsonFormat: classified.jsonFormat } : {}),
     repeated,
     map: false,
     optional: Boolean(field.optional),

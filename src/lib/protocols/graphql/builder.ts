@@ -12,8 +12,7 @@ type JsonRecord = Record<string, unknown>;
  * v2.1.0 Collection schema URL. GraphQL-over-HTTP is represented as an ordinary
  * HTTP request with `body.mode: "graphql"`, which the published v2.1.0 schema
  * lists in its body-mode enum (raw | urlencoded | formdata | file | graphql).
- * This runs in the legacy Postman CLI / Newman HTTP path with no feature flag,
- * unlike the EC `graphql-request` item type which is server-flag gated.
+ * This runs in the legacy Postman CLI / Newman HTTP path.
  */
 export const COLLECTION_V210_SCHEMA =
   'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' as const;
@@ -150,7 +149,7 @@ function buildItem(
  * item per operation, in deterministic order (operations are already sorted in
  * the index). Each item carries an empty `event` array that the instrumenter
  * fills with an `afterResponse` (test) assertion script. The collection runs in
- * the Postman CLI / Newman HTTP path without any feature flag.
+ * the Postman CLI / Newman HTTP path.
  */
 export function buildGraphQLCollection(index: GraphQLContractIndex, opts: BuildGraphQLCollectionOptions = {}): JsonRecord {
   const variables = opts.variables ?? [{ key: 'baseUrl', value: '' }];

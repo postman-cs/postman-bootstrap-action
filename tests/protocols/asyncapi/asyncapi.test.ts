@@ -135,4 +135,13 @@ describe('asyncapi instrumenter (static validation)', () => {
     (collection.item as JsonRecord[])[0].children = [];
     expect(() => instrumentAsyncApiCollection(collection, index)).toThrow(/ASYNCAPI_MESSAGE_COVERAGE_FAILED/);
   });
+
+  it('fails closed when a message is duplicated and another dropped (count-stable)', async () => {
+    const index = await parseAsyncApi(read('ws.yaml'));
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const children = (collection.item as JsonRecord[])[0].children as JsonRecord[];
+    // Same node count as expected (2), but one identity duplicated and one dropped.
+    (collection.item as JsonRecord[])[0].children = [children[0], children[0]];
+    expect(() => instrumentAsyncApiCollection(collection, index)).toThrow(/ASYNCAPI_MESSAGE_COVERAGE_FAILED/);
+  });
 });

@@ -9,19 +9,16 @@ types are supported, the spec each is derived from, and where that support is gr
 | Postman protocol | Postman item type | Runnable in Postman CLI / Newman | Spec the action ingests | Assertion source |
 | --- | --- | --- | --- | --- |
 | HTTP / REST | `http` (v2) / `http-request` (v3 EC) | Yes | OpenAPI 3.0 / 3.1 | OpenAPI document |
-| GraphQL | `http` body mode `graphql` (v2) | Yes (no feature flag) | GraphQL SDL or introspection JSON | GraphQL schema |
+| GraphQL | `http` body mode `graphql` (v2) | Yes | GraphQL SDL or introspection JSON | GraphQL schema |
 | SOAP | `http` POST, raw XML body (v2) | Yes (plain HTTP) | WSDL 1.1 / 2.0 | WSDL |
-| gRPC | `grpc-request` (v3 EC) | Yes, but gated: `grpc_protocol_execution_allowed` feature flag + an authenticated, plan-qualified account | Protocol Buffers `.proto` | `.proto` |
+| gRPC | `grpc-request` (v3 EC) | Yes | Protocol Buffers `.proto` | `.proto` |
 | WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI 2.0-2.6 | AsyncAPI document |
 | Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI 2.0-2.6 | AsyncAPI document |
 | MQTT / LLM / MCP | `mqtt-request` / `llm-request` / `mcp-request` | No (label-only) | n/a | out of scope |
 
 GraphQL-over-HTTP and SOAP-over-HTTP are emitted as ordinary v2 `http` requests, so they run in the
 same legacy Postman CLI / Newman HTTP execution path the action already uses for REST. gRPC requires
-the v3 Extensible Collection format and the unified runner; when the gRPC feature flag or a
-plan-qualified login is unavailable, gRPC assertions are still generated but cannot execute in CI, so
-validation degrades to structural/snapshot checks. This limitation is upstream (Postman CLI), not in
-this action.
+the v3 Extensible Collection format and runs through the unified runner.
 
 WebSocket and Socket.IO are generated from an AsyncAPI 2.0-2.6 document into native EC
 `ws-raw-request` / `ws-socketio-request` items (Socket.IO detected conventionally), with per-message
@@ -29,6 +26,25 @@ schema/example validation applied statically at generation time. The unified run
 `ws-*` item types, so they carry `runnableInCi: false`: the assertions are persisted for authoring
 and structural validation but are not executed in CI. This runner limitation is upstream, not in this
 action.
+
+### gRPC assertion coverage
+
+The generated gRPC test asserts terminal status OK, a terminal response message for unary and
+client-streaming RPCs (server/bidi may legitimately return zero messages on an OK stream), and the
+response message shape recursively against the `.proto` definition: field JSON types, `repeated`
+array elements, `map` value types, enum name/number membership (numeric enum values must be
+integers), and `oneof` mutual exclusion. Per proto3 JSON, `float`/`double` fields (and their
+wrapper WKTs) additionally accept the `"NaN"`/`"Infinity"`/`"-Infinity"` string encodings and numeric
+strings.
+
+Well-known and scalar ProtoJSON string encodings are lexically validated: `google.protobuf.Timestamp`
+requires an RFC 3339 timestamp with `Z` or numeric offset and 0-9 fractional digits,
+`google.protobuf.Duration` requires a seconds string with `s` suffix and nanosecond precision,
+`google.protobuf.FieldMask` requires comma-separated lowerCamelCase paths, and `bytes` /
+`google.protobuf.BytesValue` require standard or URL-safe base64 with correct optional padding.
+`google.protobuf.Value` remains present-only because its ProtoJSON mapping is intentionally any JSON
+value. Shape recursion is bounded (depth 5, cycle-guarded); deeper nesting is asserted object-only
+with a `PROTO_NESTED_SHAPE_TRUNCATED` warning.
 
 ## Write path: public v2.1.0 vs gateway EC
 
@@ -53,12 +69,7 @@ empty or v2-shaped collection. `resolve-service-token` mints a suitable service-
 On org-mode accounts the EC client is scoped to the workspace-owning sub-team (`x-entity-team-id`)
 resolved during workspace provisioning, not the parent-org team.
 
-Creating the gRPC collection and executing it in CI are separate gates:
-
-- **Create** requires `postman-access-token` (the EC gateway write above).
-- **Execute** additionally requires the `grpc_protocol_execution_allowed` account feature flag plus an
-  authenticated, plan-qualified login in Postman CLI. Without the flag the assertions are still
-  generated and persisted but cannot run (`runnableInCi: false`), so CI degrades to structural checks.
+Creating the gRPC collection requires `postman-access-token` for the EC gateway write above.
 
 ## Why non-HTTP protocols need their own spec
 
@@ -87,9 +98,6 @@ runs collections in CI:
 - Executable item types — `postman-cli/lib/run/unified/run.ts`: `SUPPORTED_ITEM_TYPES = { collection,
   folder, http-request, graphql-request, grpc-request, http-example, graphql-example, grpc-example }`.
   Anything else is pruned by `filterUnsupportedItems` and reported as "skipping N unsupported item(s)".
-- Feature-flag gating — `run.ts` `FLAG_GATED_TYPES`: `grpc-request` -> `grpc_protocol_execution_allowed`,
-  `graphql-request` -> `graphql_v2_protocol_execution_allowed`, resolved server-side against the
-  logged-in plan.
 - Full protocol-label vocabulary (including the non-executable ones) —
   `postman-cli/lib/run/unified/summary.ts` `ITEM_TYPE_TO_PROTOCOL` maps `http-request, graphql-request,
   grpc-request, ws-raw-request, ws-socketio-request, mqtt-request, llm-request, mcp-request`.
@@ -100,5 +108,5 @@ corroborates the HTTP/GraphQL split: it defines a request `body.mode` enum of
 `raw | urlencoded | formdata | file | graphql` and no gRPC/WebSocket request type, confirming that
 GraphQL-over-HTTP is representable as a v2 HTTP request body mode.
 
-That the Postman CLI cannot currently run gRPC or WebSocket collections is documented upstream in
+That the Postman CLI cannot currently run WebSocket collections is documented upstream in
 postmanlabs/postman-app-support issues #10640, #11252, and #12316.

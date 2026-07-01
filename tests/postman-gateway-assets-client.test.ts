@@ -399,60 +399,6 @@ describe('PostmanGatewayAssetsClient', () => {
     });
   });
 
-  describe('isGrpcExecutionAllowed', () => {
-    async function seedSession(team: number): Promise<void> {
-      __resetIdentityMemo();
-      await resolveSessionIdentity({
-        iapubBaseUrl: 'https://iapub.example',
-        accessToken: `tok-${team}`,
-        fetchImpl: vi.fn<typeof fetch>(async () =>
-          jsonResponse({ session: { consumerType: 'service_account', identity: { user: 1, team, domain: 'd' } } })
-        )
-      });
-    }
-
-    it('POSTs the features service for the team entity and returns true when the flag value is true', async () => {
-      await seedSession(10490519);
-      const { client, calls } = makeClient(() =>
-        jsonResponse({
-          data: {
-            features: { grpc_protocol_execution_allowed: { type: 'boolean', value: true, properties: {} } }
-          }
-        })
-      );
-      expect(await client.isGrpcExecutionAllowed()).toBe(true);
-      expect(calls[0]).toMatchObject({
-        service: 'features',
-        method: 'post',
-        path: '/features/list?entityType=team&entityValue=10490519',
-        body: { features: ['grpc_protocol_execution_allowed'] }
-      });
-    });
-
-    it('returns false when the flag value is false', async () => {
-      await seedSession(10490519);
-      const { client } = makeClient(() =>
-        jsonResponse({ data: { features: { grpc_protocol_execution_allowed: { value: false } } } })
-      );
-      expect(await client.isGrpcExecutionAllowed()).toBe(false);
-    });
-
-    it('returns false (conservative default) on a non-2xx probe', async () => {
-      await seedSession(10490519);
-      const { client } = makeClient(() =>
-        jsonResponse({ error: { name: 'UnexpectedError' } }, { status: 500 })
-      );
-      expect(await client.isGrpcExecutionAllowed()).toBe(false);
-    });
-
-    it('returns false without probing when no session identity is memoized', async () => {
-      __resetIdentityMemo();
-      const { client, calls } = makeClient(() => jsonResponse({ data: {} }));
-      expect(await client.isGrpcExecutionAllowed()).toBe(false);
-      expect(calls).toHaveLength(0);
-    });
-  });
-
   describe('createCollection', () => {
     it('converts v2.1 -> v3 and creates the root + nested folder/leaf tree, returning the full uid', async () => {
       const v21 = {

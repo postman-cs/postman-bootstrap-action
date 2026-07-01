@@ -44,7 +44,7 @@ export interface ProtocolCollectionResult {
   collection: JsonRecord;
   /** Wire format of the produced collection. */
   format: 'v2.1.0' | 'v3-ec';
-  /** Whether the collection runs in Postman CLI / Newman without a feature flag. */
+  /** Whether the collection runs in Postman CLI / Newman. */
   runnableInCi: boolean;
   /** All non-fatal warnings (no silent drops), deduped, first-seen order. */
   warnings: string[];
@@ -61,12 +61,11 @@ export interface ProtocolCollectionResult {
  * All protocols produce v3/Extensible Collections. GraphQL and SOAP build a
  * v2.1.0 HTTP tree and run it through the `@postman/runtime.models` transform
  * (`convertV2CollectionToEc`) so the emitted collection is native EC with
- * `http-request` leaves that run in the Postman CLI / Newman HTTP path with no
- * feature flag. gRPC builds EC natively; its `grpc-request` execution is gated by
- * the `grpc_protocol_execution_allowed` account feature flag. AsyncAPI builds EC
- * `ws-raw-request` / `ws-socketio-request` items natively; those item types are
- * pruned by the Postman CLI runner and carry no test-script slot, so their
- * contract check is generation-time/static and they are `runnableInCi:false`.
+ * `http-request` leaves that run in the Postman CLI / Newman HTTP path. gRPC
+ * builds EC natively and runs as `grpc-request`. AsyncAPI builds EC `ws-raw-request`
+ * / `ws-socketio-request` items natively; those item types are pruned by the
+ * Postman CLI runner and carry no test-script slot, so their contract check is
+ * generation-time/static and they are `runnableInCi:false`.
  *
  * Async because the AsyncAPI parser is async; the other branches resolve
  * synchronously.
@@ -138,7 +137,7 @@ export async function buildProtocolCollection(
         type,
         collection: instrumented,
         format: 'v3-ec',
-        runnableInCi: false,
+        runnableInCi: true,
         warnings: [...built.warnings, ...warnings],
         operationCount: index.operations.length
       };

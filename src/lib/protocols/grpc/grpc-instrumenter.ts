@@ -60,6 +60,7 @@ interface FieldSpec {
   // ProtoJSON field name; runtime response lookups try this first, then `name`.
   jsonName: string;
   jsonType: string;
+  jsonFormat?: string;
   repeated: boolean;
   map: boolean;
   required: boolean;
@@ -68,16 +69,25 @@ interface FieldSpec {
   enumValues?: string[];
   // JSON type asserted on each map value.
   mapValueType?: string;
+  mapValueFormat?: string;
+  mapValueEnumValues?: string[];
   // Nested message shape for object fields / repeated-message fields.
   shape?: ShapeSpec;
   // Nested message shape for map<K, message> values.
   mapValueShape?: ShapeSpec;
 }
 
+// A oneof member carries both names so the runtime mutual-exclusion check can
+// use the same jsonName-then-proto-name lookup as field checks.
+interface OneofMemberSpec {
+  jsonName: string;
+  name: string;
+}
+
 // A message shape: its assertable fields plus its multi-member oneof groups.
 interface ShapeSpec {
   fields: FieldSpec[];
-  oneofs: string[][];
+  oneofs: OneofMemberSpec[][];
 }
 
 interface OperationSpec {
@@ -120,16 +130,20 @@ function buildShape(
       continue;
     }
     const enumValues = field.enumType ? index.enums[field.enumType] : undefined;
+    const mapValueEnumValues = field.mapValueEnumType ? index.enums[field.mapValueEnumType] : undefined;
     const spec: FieldSpec = {
       name: field.name,
       jsonName: field.jsonName,
       jsonType: field.jsonType,
+      ...(field.jsonFormat ? { jsonFormat: field.jsonFormat } : {}),
       repeated: field.repeated,
       map: field.map,
       required: field.required,
       ...(field.nullable ? { nullable: true } : {}),
       ...(enumValues ? { enumValues } : {}),
-      ...(field.mapValueType ? { mapValueType: field.mapValueType } : {})
+      ...(field.mapValueType ? { mapValueType: field.mapValueType } : {}),
+      ...(field.mapValueFormat ? { mapValueFormat: field.mapValueFormat } : {}),
+      ...(mapValueEnumValues ? { mapValueEnumValues } : {})
     };
     if (field.messageType && field.jsonType === 'object' && !field.map) {
       spec.shape = buildShape(field.messageType, index, warnings, operationId, `${label}.${field.name}`, depth + 1, nextStack);
@@ -139,7 +153,13 @@ function buildShape(
     }
     fields.push(spec);
   }
-  return { fields, oneofs: message.oneofs };
+  // oneof groups from the parser carry ProtoJSON names; pair each with its proto
+  // name so the runtime check resolves members the same way field checks do.
+  const protoNameByJsonName = new Map(message.fields.map((f) => [f.jsonName, f.name]));
+  const oneofs: OneofMemberSpec[][] = message.oneofs.map((group) =>
+    group.map((jsonName) => ({ jsonName, name: protoNameByJsonName.get(jsonName) ?? jsonName }))
+  );
+  return { fields, oneofs };
 }
 
 function shapeIsAssertable(shape: ShapeSpec | undefined): boolean {
@@ -174,7 +194,20 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '  return typeof value;',
     '}',
     'function matchesScalar(expected, value) {',
-    '  if (expected === "number") return typeof value === "number";',
+    '  function isJsonNumberString(text) { return typeof text === "string" && /^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(text) && Number.isFinite(Number(text)); }',
+    '  if (expected === "double") {',
+    '    if (typeof value === "number") return Number.isFinite(value);',
+    '    if (typeof value === "string") {',
+    '      if (value === "NaN" || value === "Infinity" || value === "-Infinity") return true;',
+    '      return isJsonNumberString(value);',
+    '    }',
+    '    return false;',
+    '  }',
+    '  if (expected === "number") {',
+    '    if (typeof value === "number") return Number.isFinite(value) && Number.isInteger(value);',
+    '    if (typeof value === "string") return isJsonNumberString(value) && Number.isInteger(Number(value));',
+    '    return false;',
+    '  }',
     '  if (expected === "string") return typeof value === "string";',
     '  if (expected === "boolean") return typeof value === "boolean";',
     '  if (expected === "object") return value !== null && typeof value === "object" && !Array.isArray(value);',
@@ -182,6 +215,27 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '  if (expected === "enum") return typeof value === "string" || typeof value === "number";',
     '  if (expected === "any") return true;',
     '  return true;',
+    '}',
+    'function daysFromCivil(y, m, d) { y -= m <= 2 ? 1 : 0; var era = Math.floor(y / 400); var yoe = y - era * 400; var mp = m + (m > 2 ? -3 : 9); var doy = Math.floor((153 * mp + 2) / 5) + d - 1; var doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy; return era * 146097 + doe - 719468; }',
+    'function validDate(y, m, d) { if (y < 1 || y > 9999 || m < 1 || m > 12 || d < 1) return false; var mdays = [31, ((y % 4 === 0 && y % 100 !== 0) || y % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]; return d <= mdays[m - 1]; }',
+    'function validProtoTimestamp(value) { if (typeof value !== "string") return false; var m = value.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})$/); if (!m) return false; var y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]), h = Number(m[4]), mi = Number(m[5]), s = Number(m[6]); if (!validDate(y, mo, d) || h > 23 || mi > 59 || s > 59) return false; var off = 0; if (m[8] !== "Z") { var sign = m[8][0] === "-" ? -1 : 1; var oh = Number(m[8].slice(1, 3)), om = Number(m[8].slice(4, 6)); if (oh > 23 || om > 59) return false; off = sign * (oh * 3600 + om * 60); } var sec = daysFromCivil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s - off; return sec >= -62135596800 && sec <= 253402300799; }',
+    'function validProtoDuration(value) { if (typeof value !== "string") return false; var m = value.match(/^-?([0-9]+)(?:\\.([0-9]{1,9}))?s$/); if (!m) return false; return Number(m[1]) <= 315576000000; }',
+    'function validProtoFieldMask(value) { if (typeof value !== "string") return false; if (value === "") return true; var paths = value.split(","); for (var i = 0; i < paths.length; i++) { if (!/^[a-z][A-Za-z0-9]*(\\.[a-z][A-Za-z0-9]*)*$/.test(paths[i])) return false; } return true; }',
+    'function validProtoBytes(value) { if (typeof value !== "string") return false; if (!/^[A-Za-z0-9+/_-]*={0,2}$/.test(value)) return false; var firstPad = value.indexOf("="); if (firstPad !== -1 && firstPad < value.length - (value.endsWith("==") ? 2 : 1)) return false; var pad = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0; var raw = value.length - pad; if (raw % 4 === 1) return false; return pad === 0 || (raw + pad) % 4 === 0 && pad === (4 - raw % 4) % 4; }',
+    'function matchesFormat(format, value) {',
+    '  if (!format) return true;',
+    '  if (format === "proto-timestamp") return validProtoTimestamp(value);',
+    '  if (format === "proto-duration") return validProtoDuration(value);',
+    '  if (format === "proto-field-mask") return validProtoFieldMask(value);',
+    '  if (format === "proto-bytes") return validProtoBytes(value);',
+    '  return true;',
+    '}',
+    'function formatLabel(format) {',
+    '  if (format === "proto-timestamp") return "a valid ProtoJSON Timestamp";',
+    '  if (format === "proto-duration") return "a valid ProtoJSON Duration";',
+    '  if (format === "proto-field-mask") return "a valid ProtoJSON FieldMask";',
+    '  if (format === "proto-bytes") return "valid ProtoJSON base64 bytes";',
+    '  return format || "valid ProtoJSON";',
     '}',
     // Recursive shape checker: validates fields (with nested message descent,
     // map value typing, enums, well-known nullable scalars) and oneof
@@ -200,30 +254,32 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '    for (var i = 0; i < value.length; i++) {',
     '      var elem = value[i]; var elemLabel = label + "[" + i + "]";',
     '      if (field.shape) { if (!matchesScalar("object", elem)) { pm.expect.fail("gRPC repeated field " + elemLabel + " must be an object but was " + jsonTypeOf(elem)); } else { grpcCheckShape(elem, field.shape, elemLabel + "."); } continue; }',
-    '      if (field.enumValues && field.enumValues.length > 0) { if (typeof elem === "number") continue; if (typeof elem !== "string") { pm.expect.fail("gRPC repeated enum field " + elemLabel + " must be a string or number but was " + jsonTypeOf(elem)); } else if (field.enumValues.indexOf(elem) === -1) { pm.expect.fail("gRPC repeated enum field " + elemLabel + " has value " + elem + " not in [" + field.enumValues.join(", ") + "]"); } continue; }',
+    '      if (field.enumValues && field.enumValues.length > 0) { if (typeof elem === "number") { if (!Number.isInteger(elem)) pm.expect.fail("gRPC repeated enum field " + elemLabel + " must be an integer but was " + elem); continue; } if (typeof elem !== "string") { pm.expect.fail("gRPC repeated enum field " + elemLabel + " must be a string or number but was " + jsonTypeOf(elem)); } else if (field.enumValues.indexOf(elem) === -1) { pm.expect.fail("gRPC repeated enum field " + elemLabel + " has value " + elem + " not in [" + field.enumValues.join(", ") + "]"); } continue; }',
     '      if (field.jsonType === "any") continue;',
     '      if (!matchesScalar(field.jsonType, elem)) pm.expect.fail("gRPC repeated field " + elemLabel + " must be " + field.jsonType + " but was " + jsonTypeOf(elem));',
+    '      else if (!matchesFormat(field.jsonFormat, elem)) pm.expect.fail("gRPC repeated field " + elemLabel + " must be " + formatLabel(field.jsonFormat));',
     '    }',
     '    return;',
     '  }',
     '  if (field.map) {',
     '    if (!matchesScalar("object", value)) { pm.expect.fail("gRPC map field " + label + " must be an object but was " + jsonTypeOf(value)); return; }',
-    '    if (field.mapValueType) { var keys = Object.keys(value); for (var k = 0; k < keys.length; k++) { var mv = value[keys[k]]; if (field.mapValueShape && matchesScalar("object", mv)) { grpcCheckShape(mv, field.mapValueShape, label + "[" + keys[k] + "]."); } else if (!matchesScalar(field.mapValueType, mv)) { pm.expect.fail("gRPC map value " + label + "[" + keys[k] + "] must be " + field.mapValueType + " but was " + jsonTypeOf(mv)); } } }',
+    '    if (field.mapValueType) { var keys = Object.keys(value); for (var k = 0; k < keys.length; k++) { var mv = value[keys[k]], mvLabel = label + "[" + keys[k] + "]"; if (field.mapValueShape && matchesScalar("object", mv)) { grpcCheckShape(mv, field.mapValueShape, mvLabel + "."); } else if (field.mapValueEnumValues && field.mapValueEnumValues.length > 0) { if (typeof mv === "number") { if (!Number.isInteger(mv)) pm.expect.fail("gRPC map enum value " + mvLabel + " must be an integer but was " + mv); } else if (typeof mv !== "string") { pm.expect.fail("gRPC map enum value " + mvLabel + " must be a string or number but was " + jsonTypeOf(mv)); } else if (field.mapValueEnumValues.indexOf(mv) === -1) { pm.expect.fail("gRPC map enum value " + mvLabel + " has value " + mv + " not in [" + field.mapValueEnumValues.join(", ") + "]"); } } else if (!matchesScalar(field.mapValueType, mv)) { pm.expect.fail("gRPC map value " + mvLabel + " must be " + field.mapValueType + " but was " + jsonTypeOf(mv)); } else if (!matchesFormat(field.mapValueFormat, mv)) { pm.expect.fail("gRPC map value " + mvLabel + " must be " + formatLabel(field.mapValueFormat)); } } }',
     '    return;',
     '  }',
     '  if (field.enumValues && field.enumValues.length > 0) {',
-    '    if (typeof value === "number") return;',
+    '    if (typeof value === "number") { if (!Number.isInteger(value)) pm.expect.fail("gRPC enum field " + label + " must be an integer but was " + value); return; }',
     '    if (typeof value === "string" && field.enumValues.indexOf(value) === -1) pm.expect.fail("gRPC enum field " + label + " has value " + value + " not in [" + field.enumValues.join(", ") + "]");',
     '    return;',
     '  }',
     '  if (field.jsonType === "any") return;',
     '  if (field.shape) { if (!matchesScalar("object", value)) { pm.expect.fail("gRPC field " + label + " must be an object but was " + jsonTypeOf(value)); return; } grpcCheckShape(value, field.shape, label + "."); return; }',
     '  if (!matchesScalar(field.jsonType, value)) pm.expect.fail("gRPC field " + label + " must be " + field.jsonType + " but was " + jsonTypeOf(value));',
+    '  else if (!matchesFormat(field.jsonFormat, value)) pm.expect.fail("gRPC field " + label + " must be " + formatLabel(field.jsonFormat));',
     '}',
     'function grpcCheckShape(obj, shape, path) {',
     '  shape.fields.forEach(function (field) { grpcCheckField(obj, field, path); });',
     '  (shape.oneofs || []).forEach(function (group) {',
-    '    var set = group.filter(function (n) { return obj[n] !== undefined && obj[n] !== null; });',
+    '    var set = group.filter(function (m) { var k = grpcFieldKey(obj, m); return k !== undefined && obj[k] !== null; }).map(function (m) { return m.jsonName; });',
     '    if (set.length > 1) pm.expect.fail("gRPC response at " + path + " sets multiple members of a oneof: " + set.join(", "));',
     '  });',
     '}',
@@ -272,13 +328,102 @@ function methodPathOf(item: JsonRecord): string {
 }
 
 function matchesScalarValue(expected: string, value: unknown): boolean {
+  const isJsonNumberString = (text: string): boolean =>
+    /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(text) && Number.isFinite(Number(text));
   switch (expected) {
-    case 'number': return typeof value === 'number';
+    case 'double': {
+      if (typeof value === 'number') return Number.isFinite(value);
+      if (typeof value === 'string') {
+        if (value === 'NaN' || value === 'Infinity' || value === '-Infinity') return true;
+        return isJsonNumberString(value);
+      }
+      return false;
+    }
+    case 'number': {
+      if (typeof value === 'number') return Number.isFinite(value) && Number.isInteger(value);
+      if (typeof value === 'string') return isJsonNumberString(value) && Number.isInteger(Number(value));
+      return false;
+    }
     case 'string': return typeof value === 'string';
     case 'boolean': return typeof value === 'boolean';
     case 'object': return value !== null && typeof value === 'object' && !Array.isArray(value);
     case 'array': return Array.isArray(value);
     case 'enum': return typeof value === 'string' || typeof value === 'number';
+    default: return true;
+  }
+}
+
+function daysFromCivil(year: number, month: number, day: number): number {
+  let y = year;
+  y -= month <= 2 ? 1 : 0;
+  const era = Math.floor(y / 400);
+  const yoe = y - era * 400;
+  const shiftedMonth = month + (month > 2 ? -3 : 9);
+  const doy = Math.floor((153 * shiftedMonth + 2) / 5) + day - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
+}
+
+function validDate(year: number, month: number, day: number): boolean {
+  if (year < 1 || year > 9999 || month < 1 || month > 12 || day < 1) return false;
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const monthDays = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= monthDays[month - 1];
+}
+
+function validProtoTimestamp(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const match = value.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.([0-9]{1,9}))?(Z|[+-][0-9]{2}:[0-9]{2})$/);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (!validDate(year, month, day) || hour > 23 || minute > 59 || second > 59) return false;
+  let offsetSeconds = 0;
+  const zone = match[8] ?? 'Z';
+  if (zone !== 'Z') {
+    const offsetHour = Number(zone.slice(1, 3));
+    const offsetMinute = Number(zone.slice(4, 6));
+    if (offsetHour > 23 || offsetMinute > 59) return false;
+    offsetSeconds = (zone[0] === '-' ? -1 : 1) * (offsetHour * 3600 + offsetMinute * 60);
+  }
+  const utcSeconds = daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offsetSeconds;
+  return utcSeconds >= -62135596800 && utcSeconds <= 253402300799;
+}
+
+function validProtoDuration(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const match = value.match(/^-?([0-9]+)(?:\.([0-9]{1,9}))?s$/);
+  return Boolean(match && Number(match[1]) <= 315576000000);
+}
+
+function validProtoFieldMask(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (value === '') return true;
+  return value.split(',').every((path) => /^[a-z][A-Za-z0-9]*(\.[a-z][A-Za-z0-9]*)*$/.test(path));
+}
+
+function validProtoBytes(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  if (!/^[A-Za-z0-9+/_-]*={0,2}$/.test(value)) return false;
+  const firstPad = value.indexOf('=');
+  if (firstPad !== -1 && firstPad < value.length - (value.endsWith('==') ? 2 : 1)) return false;
+  const pad = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const raw = value.length - pad;
+  if (raw % 4 === 1) return false;
+  return pad === 0 || ((raw + pad) % 4 === 0 && pad === (4 - raw % 4) % 4);
+}
+
+function matchesFormatValue(format: string | undefined, value: unknown): boolean {
+  switch (format) {
+    case undefined: return true;
+    case 'proto-timestamp': return validProtoTimestamp(value);
+    case 'proto-duration': return validProtoDuration(value);
+    case 'proto-field-mask': return validProtoFieldMask(value);
+    case 'proto-bytes': return validProtoBytes(value);
     default: return true;
   }
 }
@@ -308,13 +453,18 @@ function staticRequestCheck(
   const record = asRecord(body);
   if (!record) return;
   for (const field of shape.fields) {
-    const present = Object.prototype.hasOwnProperty.call(record, field.name);
+    const key = Object.prototype.hasOwnProperty.call(record, field.jsonName)
+      ? field.jsonName
+      : Object.prototype.hasOwnProperty.call(record, field.name)
+        ? field.name
+        : undefined;
+    const present = key !== undefined;
     if (field.required && !present) {
       warnings.push(`PROTO_REQUEST_BODY_INCOMPLETE: ${methodPath} generated request is missing required field ${field.name}`);
       continue;
     }
     if (!present) continue;
-    const value = record[field.name];
+    const value = record[key];
     if (field.nullable && value === null) continue;
     if (field.repeated) {
       if (!Array.isArray(value)) warnings.push(`PROTO_REQUEST_FIELD_TYPE_MISMATCH: ${methodPath} request field ${field.name} must be an array`);
@@ -323,6 +473,8 @@ function staticRequestCheck(
     if (field.jsonType === 'any' || field.enumValues || field.map || field.shape) continue;
     if (!matchesScalarValue(field.jsonType, value)) {
       warnings.push(`PROTO_REQUEST_FIELD_TYPE_MISMATCH: ${methodPath} request field ${field.name} must be ${field.jsonType}`);
+    } else if (!matchesFormatValue(field.jsonFormat, value)) {
+      warnings.push(`PROTO_REQUEST_FIELD_FORMAT_MISMATCH: ${methodPath} request field ${field.name} is not valid ${field.jsonFormat}`);
     }
   }
 }

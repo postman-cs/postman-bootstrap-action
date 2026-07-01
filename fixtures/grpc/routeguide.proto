@@ -1,8 +1,8 @@
 // Telecom-flavored gRPC contract fixture for postman-actions onboarding e2e.
 // Exercises every stream kind (unary, server, client, bidi), enums, repeated,
 // map, nested messages, 64-bit ints, a proto3 explicit optional field, plus
-// well-known types (Timestamp/Duration/StringValue), a multi-member oneof, and
-// a map whose value is a message, so the parser/builder/instrumenter golden
+// well-known types (Timestamp/Duration/FieldMask/StringValue/BytesValue), bytes,
+// a multi-member oneof, and a map whose value is a message, so the parser/builder/instrumenter golden
 // output covers the full surface. Well-known types are referenced without an
 // import: a standalone protobufjs parse never resolves them, and the parser
 // classifies them by raw proto type name.
@@ -87,6 +87,11 @@ message NetworkEvent {
   }
   // map whose value is a message -> nested value shape assertion.
   map<string, GeoPoint> waypoints = 7;
+  // WKT/scalar lexical encodings: FieldMask and bytes are ProtoJSON strings
+  // with format validation, including nullable BytesValue.
+  google.protobuf.FieldMask mask = 8;
+  bytes payload = 9;
+  google.protobuf.BytesValue wrapped_payload = 10;
 }
 
 service TowerService {

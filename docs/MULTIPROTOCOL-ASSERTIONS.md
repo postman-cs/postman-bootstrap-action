@@ -12,8 +12,8 @@ types are supported, the spec each is derived from, and where that support is gr
 | GraphQL | `http` body mode `graphql` (v2) | Yes (no feature flag) | GraphQL SDL or introspection JSON | GraphQL schema |
 | SOAP | `http` POST, raw XML body (v2) | Yes (plain HTTP) | WSDL 1.1 / 2.0 | WSDL |
 | gRPC | `grpc-request` (v3 EC) | Yes, but gated: `grpc_protocol_execution_allowed` feature flag + an authenticated, plan-qualified account | Protocol Buffers `.proto` | `.proto` |
-| WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI | not generated (warned) |
-| Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI | not generated (warned) |
+| WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI 2.0-2.6 | AsyncAPI document |
+| Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI 2.0-2.6 | AsyncAPI document |
 | MQTT / LLM / MCP | `mqtt-request` / `llm-request` / `mcp-request` | No (label-only) | n/a | out of scope |
 
 GraphQL-over-HTTP and SOAP-over-HTTP are emitted as ordinary v2 `http` requests, so they run in the
@@ -23,6 +23,13 @@ plan-qualified login is unavailable, gRPC assertions are still generated but can
 validation degrades to structural/snapshot checks. This limitation is upstream (Postman CLI), not in
 this action.
 
+WebSocket and Socket.IO are generated from an AsyncAPI 2.0-2.6 document into native EC
+`ws-raw-request` / `ws-socketio-request` items (Socket.IO detected conventionally), with per-message
+schema/example validation applied statically at generation time. The unified runner prunes both
+`ws-*` item types, so they carry `runnableInCi: false`: the assertions are persisted for authoring
+and structural validation but are not executed in CI. This runner limitation is upstream, not in this
+action.
+
 ## Write path: public v2.1.0 vs gateway EC
 
 The protocols split across two different create APIs because they produce two different collection
@@ -31,8 +38,9 @@ wire formats:
 - **GraphQL and SOAP -> public v2.1.0 collections API.** They build ordinary v2.1.0 `http` collections
   and are created with `POST https://api.getpostman.com/collections` using the `postman-api-key`. No
   access token is required for the create itself.
-- **gRPC -> gateway Extensible Collection (EC) API.** gRPC needs the `grpc-request` item type, which
-  only exists in the v3/EC schema. The public v2.1.0 endpoint validates the legacy schema and rejects
+- **gRPC and AsyncAPI (WebSocket / Socket.IO) -> gateway Extensible Collection (EC) API.** These need
+  the `grpc-request` / `ws-raw-request` / `ws-socketio-request` item types, which only exist in the
+  v3/EC schema. The public v2.1.0 endpoint validates the legacy schema and rejects
   EC payloads (`malformedRequestError: item must have required property 'request'`), so gRPC contract
   collections are created through the bifrost gateway (`POST {bifrost}/ws/proxy`, `service:'collection'`)
   against the collection service's EC API. On the EC path the v2.1.0 `item.event` test scripts are

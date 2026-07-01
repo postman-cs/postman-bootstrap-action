@@ -61,6 +61,35 @@ describe.skipIf(!HAS_PROTOBUF)('parseProtoSchema', () => {
     expect(streamingWarnings).toHaveLength(3);
   });
 
+  it('maps well-known types by raw proto type name', () => {
+    const index = parseProtoSchema(readFixture(), deps);
+    const event = index.messages['telecom.network.v1.NetworkEvent'];
+    expect(event).toBeDefined();
+    const fields = Object.fromEntries(event.fields.map((field) => [field.name, field]));
+    // Timestamp/Duration JSON-encode as strings; no messageType descent.
+    expect(fields.occurred_at?.jsonType).toBe('string');
+    expect(fields.occurred_at?.messageType).toBeUndefined();
+    expect(fields.ttl?.jsonType).toBe('string');
+    // StringValue wrapper is a nullable string.
+    expect(fields.note?.jsonType).toBe('string');
+    expect(fields.note?.nullable).toBe(true);
+  });
+
+  it('captures multi-member oneof groups (member order preserved)', () => {
+    const index = parseProtoSchema(readFixture(), deps);
+    const event = index.messages['telecom.network.v1.NetworkEvent'];
+    expect(event.oneofs).toEqual([['tower', 'pong']]);
+  });
+
+  it('classifies a map whose value is a message', () => {
+    const index = parseProtoSchema(readFixture(), deps);
+    const event = index.messages['telecom.network.v1.NetworkEvent'];
+    const waypoints = event.fields.find((field) => field.name === 'waypoints');
+    expect(waypoints?.map).toBe(true);
+    expect(waypoints?.mapValueType).toBe('object');
+    expect(waypoints?.mapValueMessageType).toBe('telecom.network.v1.GeoPoint');
+  });
+
   it('rejects empty input', () => {
     expect(() => parseProtoSchema('', deps)).toThrow(/PROTO_EMPTY_INPUT/);
   });

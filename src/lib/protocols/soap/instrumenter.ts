@@ -115,20 +115,35 @@ function forEachHttpRequest(node: JsonRecord, visit: (item: JsonRecord) => void)
 export function instrumentSoapCollection(collection: JsonRecord, index: SoapContractIndex): SoapInstrumentationResult {
   const warnings: string[] = [...index.warnings];
   const byName = new Map<string, SoapOperation>();
+  const allOperationNames = new Set<string>();
   for (const service of index.services) {
     for (const operation of service.operations) {
       byName.set(operation.name, operation);
+      allOperationNames.add(operation.name);
       warnings.push(...operation.warnings);
     }
   }
+  const covered = new Set<string>();
 
   forEachHttpRequest(collection, (item) => {
     const name = typeof item.name === 'string' ? item.name : '';
     const operation = byName.get(name) ?? byName.get(localName(name));
     if (!operation) {
-      warnings.push(`SOAP_ITEM_UNMATCHED: request "${name}" did not match any WSDL operation; left without SOAP assertions`);
+      const mappingError = `SOAP request "${name}" did not match any WSDL operation`;
+      warnings.push(`SOAP_ITEM_UNMATCHED: request "${name}" did not match any WSDL operation; attached fail-closed assertion`);
+      const failExec = [
+        `var contractMappingError = ${JSON.stringify(mappingError)};`,
+        "pm.test('SOAP operation mapping exists', function () {",
+        '  pm.expect.fail(contractMappingError);',
+        '});'
+      ];
+      const existing = asArray(item.event)
+        .map((entry) => asRecord(entry))
+        .filter((entry): entry is JsonRecord => Boolean(entry) && entry!.listen !== 'test');
+      item.event = [...existing, { listen: 'test', script: { type: 'text/javascript', exec: failExec } }];
       return;
     }
+    covered.add(operation.name);
     const exec = createSoapScript(operation, warnings).split('\n');
     const existing = asArray(item.event)
       .map((entry) => asRecord(entry))
@@ -138,6 +153,14 @@ export function instrumentSoapCollection(collection: JsonRecord, index: SoapCont
       { listen: 'test', script: { type: 'text/javascript', exec } }
     ];
   });
+
+  // Coverage enforcement (parity with OpenAPI/GraphQL/gRPC/AsyncAPI): every WSDL
+  // operation must be materialized as a request item, or the builder silently
+  // dropped one and the collection would ship it unasserted.
+  const missing = [...allOperationNames].filter((name) => !covered.has(name));
+  if (missing.length > 0) {
+    throw new Error(`SOAP_OPERATION_COVERAGE_FAILED: SOAP collection is missing generated request coverage for ${missing.join(', ')}`);
+  }
 
   return { collection, warnings: [...new Set(warnings)] };
 }

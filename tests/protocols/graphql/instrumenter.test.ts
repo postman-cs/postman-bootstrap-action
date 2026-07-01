@@ -42,7 +42,7 @@ describe('instrumentGraphQLCollection', () => {
   it('asserts errors absent and data.<rootField> presence via parsed JSON body', () => {
     const { collection } = buildInstrumented();
     const exec = execFor(collection as unknown as { item: Item[] }, 'query.subscribers');
-    expect(exec).toContain('response has no GraphQL errors');
+    expect(exec).toContain('GraphQL errors are well-formed and not a total failure');
     expect(exec).toContain('pm.response.json()');
     expect(exec).toContain('gqlBody.errors');
     expect(exec).toContain('data.subscribers is present');

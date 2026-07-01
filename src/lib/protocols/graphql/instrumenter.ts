@@ -16,6 +16,14 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+// Hard cap on a single generated GraphQL test script, mirroring the OpenAPI
+// (CONTRACT_SIZE_LIMITS) and gRPC (GRPC_INSTRUMENT_LIMITS) guards so a pathological
+// schema (e.g. tens of thousands of non-null scalar fields) cannot emit an oversized
+// script that the gateway would reject downstream.
+const GRAPHQL_INSTRUMENT_LIMITS = {
+  maxTestScriptBytes: 900_000
+};
+
 /** The Chai-friendly type token for a scalar leaf, used in `to.be.a(...)` assertions. */
 function chaiScalarType(typeName: string): 'number' | 'string' | 'boolean' | null {
   switch (typeName) {
@@ -59,13 +67,19 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
     '});'
   );
 
-  // 2. Errors absent.
+  // 2. Errors. GraphQL-over-HTTP returns 200 even for partial success, where a
+  // response may legitimately carry BOTH `data` and field-level `errors`. Validate
+  // the errors are well-formed when present and fail closed only on a TOTAL failure
+  // (errors present with no data at all) - never merely because `errors` is
+  // non-empty, which would false-fail a legitimate partial response.
   lines.push(
-    `pm.test(${JSON.stringify(`[${label}] response has no GraphQL errors`)}, function () {`,
+    `pm.test(${JSON.stringify(`[${label}] GraphQL errors are well-formed and not a total failure`)}, function () {`,
     '    var errors = gqlBody.errors;',
-    '    if (errors !== undefined && errors !== null) {',
-    '        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;',
-    '    }',
+    '    if (errors === undefined || errors === null) return;',
+    '    pm.expect(errors, "GraphQL \'errors\' must be an array when present").to.be.an("array");',
+    '    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });',
+    '    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;',
+    '    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }',
     '});'
   );
 
@@ -107,9 +121,12 @@ function buildShapeAssertions(operation: GraphQLOperationDef, index: GraphQLCont
 
   if (returns.list) {
     lines.push('pm.expect(value, "expected a list").to.be.an("array");');
-    // Assert element shape against the unwrapped element type.
+    // Assert element shape against the unwrapped element type. Only the first
+    // element is sampled to bound script size; flag that later elements are not
+    // individually shape-checked (no-silent-skip discipline).
     const elementLines = buildValueShapeAssertions('value[0]', returns, index, operation, warnings, true);
     if (elementLines.length > 0) {
+      warnings.push(`GQL_LIST_ELEMENT_SAMPLING: ${operation.id} list return is shape-asserted on the first element only; elements beyond index 0 are not individually validated`);
       lines.push('if (value.length > 0) {');
       lines.push(...elementLines.map((line) => `    ${line}`));
       lines.push('}');
@@ -150,12 +167,15 @@ function buildValueShapeAssertions(
     lines.push(`pm.expect(${accessor}, "expected ${returns.name} object").to.be.an("object");`);
     const shape = index.objectShapes[returns.name];
     if (shape) {
-      const nonNullScalarFields = shape.fields.filter((f) => f.type.nonNull && (f.type.kind === 'scalar' || f.type.kind === 'enum') && !f.type.list);
-      for (const f of nonNullScalarFields) {
+      // Presence-assert EVERY non-null field (scalar, enum, object, interface,
+      // list). A missing non-null object/interface/list field is as much a
+      // contract violation as a missing scalar, so it must not be filtered out.
+      const requiredFields = shape.fields.filter((f) => f.type.nonNull);
+      for (const f of requiredFields) {
         lines.push(`pm.expect(${accessor}, "${returns.name} is missing non-null field '${f.name}'").to.have.property(${JSON.stringify(f.name)});`);
       }
-      if (nonNullScalarFields.length === 0) {
-        warnings.push(`GQL_NO_REQUIRED_FIELDS_TO_ASSERT: ${ctx} object ${returns.name} declares no non-null scalar fields; only object-ness is asserted`);
+      if (requiredFields.length === 0) {
+        warnings.push(`GQL_NO_REQUIRED_FIELDS_TO_ASSERT: ${ctx} object ${returns.name} declares no non-null fields; only object-ness is asserted`);
       }
     } else {
       warnings.push(`GQL_OBJECT_SHAPE_UNKNOWN: ${ctx} object ${returns.name} shape was not resolved; only object-ness is asserted`);
@@ -220,7 +240,16 @@ function injectItem(item: JsonRecord, index: GraphQLContractIndex, covered: Set<
     const id = String(item.id ?? '');
     const operation = index.operations.find((op) => op.id === id);
     if (!operation) {
-      warnings.push(`PROTO_ITEM_UNMATCHED: graphql request item '${id || item.name || '<unnamed>'}' did not match any indexed operation; left uninstrumented`);
+      const mappingError = `graphql request item '${id || item.name || '<unnamed>'}' did not match any indexed GraphQL operation`;
+      warnings.push(`PROTO_ITEM_UNMATCHED: ${mappingError}; attached fail-closed assertion`);
+      const failExec = [
+        `var contractMappingError = ${JSON.stringify(mappingError)};`,
+        "pm.test('GraphQL operation mapping exists', function () {",
+        '  pm.expect.fail(contractMappingError);',
+        '});'
+      ];
+      const priorEvents = asArray(item.event).filter((entry) => asRecord(entry)?.listen !== 'test');
+      item.event = [...priorEvents, { listen: 'test', script: { type: 'text/javascript', exec: failExec } }];
       return;
     }
     covered.add(operation.id);
@@ -229,6 +258,12 @@ function injectItem(item: JsonRecord, index: GraphQLContractIndex, covered: Set<
       ...buildOperationScript(operation, index, warnings),
       ...buildVariableScript(operation)
     ];
+    const scriptBytes = Buffer.byteLength(exec.join('\n'), 'utf8');
+    if (scriptBytes > GRAPHQL_INSTRUMENT_LIMITS.maxTestScriptBytes) {
+      throw new Error(
+        `GQL_SCRIPT_SIZE_EXCEEDED: generated test script for '${operation.id}' exceeded ${GRAPHQL_INSTRUMENT_LIMITS.maxTestScriptBytes} bytes`
+      );
+    }
     const events = asArray(item.event).filter((entry) => asRecord(entry)?.listen !== 'test');
     item.event = [
       ...events,

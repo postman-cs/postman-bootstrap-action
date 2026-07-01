@@ -69,15 +69,17 @@ describe.skipIf(!HAS_PROTOBUF)('instrumentGrpcCollection', () => {
     expect(script).toContain('SIGNAL_QUALITY_EXCELLENT');
   });
 
-  it('uses exactly-one for unary/client and at-least for server/bidi message counts', () => {
+  it('emits an exactly-one terminal-message test for unary/client and omits the minimum for server/bidi', () => {
     const { collection } = buildInstrumented();
     const get = grpcItems(collection).find((entry) => String((entry.payload as JsonRecord).methodPath).endsWith('/GetTower'))!;
     const list = grpcItems(collection).find((entry) => String((entry.payload as JsonRecord).methodPath).endsWith('/ListTowers'))!;
-    expect(testScript(get)).toContain('gRPC message count');
-    // The count branch is shared logic keyed on grpcSpec.stream; assert the
-    // spec carries the right stream label so the runtime takes the right path.
-    // The spec is JSON.stringify'd into a JS string literal, so the inner
-    // quotes are backslash-escaped in the emitted script source.
+    // unary asserts exactly one terminal response message; server-streaming omits
+    // any minimum-message assertion (an empty OK stream is spec-legal).
+    expect(testScript(get)).toContain('must return exactly one terminal response message');
+    expect(testScript(list)).not.toContain('must return exactly one terminal response message');
+    expect(testScript(list)).not.toContain('must return at least');
+    // The spec carries the right stream label. The spec is JSON.stringify'd into a
+    // JS string literal, so the inner quotes are backslash-escaped in the source.
     expect(testScript(get)).toContain('\\"stream\\":\\"unary\\"');
     expect(testScript(list)).toContain('\\"stream\\":\\"server\\"');
   });
@@ -86,6 +88,31 @@ describe.skipIf(!HAS_PROTOBUF)('instrumentGrpcCollection', () => {
     const { warnings } = buildInstrumented();
     const streaming = warnings.filter((warning) => warning.startsWith('PROTO_STREAMING_METHOD'));
     expect(streaming).toHaveLength(3);
+  });
+
+  it('embeds oneof mutual-exclusion, well-known nullable, and message-map value shape for GetNetworkEvent', () => {
+    const { collection } = buildInstrumented();
+    const item = grpcItems(collection).find((entry) => String((entry.payload as JsonRecord).methodPath).endsWith('/GetNetworkEvent'))!;
+    const script = testScript(item);
+    // oneof mutual-exclusion runtime check + both members embedded in the spec.
+    expect(script).toContain('sets multiple members of a oneof');
+    expect(script).toContain('pong');
+    // well-known nullable wrapper carried through to the spec.
+    expect(script).toContain('note');
+    expect(script).toContain('nullable');
+    // map<string, GeoPoint> value shape recurses into GeoPoint's fields.
+    expect(script).toContain('mapValueShape');
+    expect(script).toContain('latitude');
+  });
+
+  it('statically flags a request body field type mismatch', () => {
+    const index = parseProtoSchema(readFixture(), deps);
+    const { collection } = buildGrpcCollection(index, { baseUrl: 'grpcs://host:443', idSeed: 'req' });
+    const item = grpcItems(collection).find((entry) => String((entry.payload as JsonRecord).methodPath).endsWith('/GetTower'))!;
+    // tower_id is a string; a numeric literal must be flagged at instrument time.
+    (item.payload as JsonRecord).message = { content: '{"tower_id": 123}' };
+    const { warnings } = instrumentGrpcCollection(collection, index);
+    expect(warnings.some((warning) => warning.startsWith('PROTO_REQUEST_FIELD_TYPE_MISMATCH'))).toBe(true);
   });
 
   it('matches the golden instrumented collection snapshot', () => {

@@ -491,13 +491,28 @@ function normalizeSchema(
   if (options.rootSchema) normalized.$schema = ctx.dialect;
 
   if (nullable) {
+    // A `const` pins the value to a single non-null literal, so `nullable` must
+    // widen it via anyOf(null, schema) - adding "null" to `type` alone leaves
+    // `const` rejecting a legitimate null.
+    if (Object.prototype.hasOwnProperty.call(normalized, 'const') && normalized.const !== null) {
+      const wrappedSchema = { ...normalized };
+      delete wrappedSchema.$schema;
+      const wrapper: JsonRecord = { anyOf: [{ type: 'null' }, wrappedSchema] };
+      if (options.rootSchema) wrapper.$schema = ctx.dialect;
+      return wrapper;
+    }
+    // An `enum` constrains the value space independently of `type`: when a schema
+    // carries BOTH `type` and `enum`, null must be added to the enum too, or a
+    // nullable enum false-fails a legitimate null.
+    if (Array.isArray(normalized.enum) && !normalized.enum.includes(null)) {
+      normalized.enum = [...normalized.enum, null];
+    }
     if (typeof normalized.type === 'string') {
       normalized.type = [normalized.type, 'null'];
     } else if (Array.isArray(normalized.type)) {
       normalized.type = [...new Set([...normalized.type, 'null'])];
-    } else if (Array.isArray(normalized.enum)) {
-      if (!normalized.enum.includes(null)) normalized.enum = [...normalized.enum, null];
-    } else {
+    } else if (!Array.isArray(normalized.enum)) {
+      // No `type` and no `enum` to relax: wrap so null is accepted.
       const wrappedSchema = { ...normalized };
       delete wrappedSchema.$schema;
       const wrapper: JsonRecord = { anyOf: [{ type: 'null' }, wrappedSchema] };

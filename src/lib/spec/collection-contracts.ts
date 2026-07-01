@@ -64,6 +64,33 @@ function isTemplateSegment(segment: string): boolean {
   return /^\{[^}]+\}$/.test(segment) || /^:[^/]+$/.test(segment) || /^\{\{[^}]+\}\}$/.test(segment) || /^<[^>]+>$/.test(segment);
 }
 
+function compoundSegmentMatches(candidateSegment: string, requestSegment: string): boolean {
+  // A segment like `{name}.{ext}` matches a concrete segment like `report.pdf`:
+  // literal chunks must appear in order and each `{param}` consumes >=1 non-slash
+  // char (OAS templating marks "a section of a URL path" replaceable, not only a
+  // whole segment). Adjacent `{a}{b}` params are treated as non-matching (ambiguous).
+  const parts = candidateSegment.split(/(\{[^}]+\})/).filter((part) => part.length > 0);
+  let pos = 0;
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i]!;
+    if (/^\{[^}]+\}$/.test(part)) {
+      const next = parts[i + 1];
+      if (next === undefined) {
+        return pos < requestSegment.length && !requestSegment.slice(pos).includes('/');
+      }
+      if (/^\{[^}]+\}$/.test(next)) return false;
+      const idx = requestSegment.indexOf(next, pos + 1);
+      if (idx === -1) return false;
+      pos = idx;
+    } else if (requestSegment.startsWith(part, pos)) {
+      pos += part.length;
+    } else {
+      return false;
+    }
+  }
+  return pos === requestSegment.length;
+}
+
 function matchCandidate(candidate: string, request: string): { matched: boolean; staticCount: number; templateCount: number } {
   const candidateSegments = segments(candidate);
   const requestSegments = segments(request);
@@ -74,6 +101,10 @@ function matchCandidate(candidate: string, request: string): { matched: boolean;
     const candidateSegment = candidateSegments[index] ?? '';
     const requestSegment = requestSegments[index] ?? '';
     if (isTemplateSegment(candidateSegment) || candidateSegment === '{serverVariable}') {
+      templateCount += 1;
+      continue;
+    }
+    if (candidateSegment.includes('{') && compoundSegmentMatches(candidateSegment, requestSegment)) {
       templateCount += 1;
       continue;
     }
@@ -126,42 +157,43 @@ function assignValidator(lines: string[], target: string, source: string): void 
 // valid types possible" - all observed in GitHub/DigitalOcean/Spotify public
 // specs). A compile failure degrades that one validator to a runtime skip
 // with an instrumentation warning instead of killing the whole bootstrap.
-function tryCompile(target: string, schema: unknown, lines: string[], warnings: string[], context: string): void {
+function tryCompile(target: string, schema: unknown, lines: string[], warnings: string[], context: string, skipped: string[]): void {
   try {
     assignValidator(lines, target, compileSchemaValidatorCode(schema));
   } catch (error) {
     lines.push(`${target} = { skip: true };`);
     warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: ${context} could not be compiled into a runtime validator (${error instanceof Error ? error.message.slice(0, 160) : String(error)})`);
+    skipped.push(context);
   }
 }
 
-function buildValidatorAssignments(operation: ContractOperation, warnings: string[]): string[] {
+function buildValidatorAssignments(operation: ContractOperation, warnings: string[], skipped: string[]): string[] {
   const lines = ['var validators = {};'];
   const parameterChecks = operation.parameterChecks ?? [];
   if (parameterChecks.length > 0) {
     lines.push('var paramValidators = {};');
     for (const check of parameterChecks) {
-      tryCompile(`paramValidators[${JSON.stringify(`${check.in}:${check.name.toLowerCase()}`)}]`, check.schema, lines, warnings, `parameter ${check.in}:${check.name} schema on ${operation.id}`);
+      tryCompile(`paramValidators[${JSON.stringify(`${check.in}:${check.name.toLowerCase()}`)}]`, check.schema, lines, warnings, `parameter ${check.in}:${check.name} schema on ${operation.id}`, skipped);
     }
   }
   const bodySchemas = Object.entries(operation.requestBody?.jsonSchemas ?? {});
   if (bodySchemas.length > 0) {
     lines.push('var requestBodyValidators = {};');
     for (const [base, schema] of bodySchemas) {
-      tryCompile(`requestBodyValidators[${JSON.stringify(base)}]`, schema, lines, warnings, `request body schema for ${base} on ${operation.id}`);
+      tryCompile(`requestBodyValidators[${JSON.stringify(base)}]`, schema, lines, warnings, `request body schema for ${base} on ${operation.id}`, skipped);
     }
   }
   for (const [status, response] of Object.entries(operation.responses)) {
     lines.push(`validators[${JSON.stringify(status)}] = validators[${JSON.stringify(status)}] || {};`);
     for (const [mediaType, media] of Object.entries(response.content)) {
       if (media.schema !== undefined && !media.unsupported) {
-        tryCompile(`validators[${JSON.stringify(status)}][${JSON.stringify(mediaType)}]`, media.schema, lines, warnings, `response schema for ${mediaType} on ${operation.id} status ${status}`);
+        tryCompile(`validators[${JSON.stringify(status)}][${JSON.stringify(mediaType)}]`, media.schema, lines, warnings, `response schema for ${mediaType} on ${operation.id} status ${status}`, skipped);
       }
     }
     for (const header of response.headers) {
       if (header.schema !== undefined && !header.unsupported) {
         lines.push(`validators[${JSON.stringify(status)}].__headers = validators[${JSON.stringify(status)}].__headers || {};`);
-        tryCompile(`validators[${JSON.stringify(status)}].__headers[${JSON.stringify(header.name.toLowerCase())}]`, header.schema, lines, warnings, `response header ${header.name} schema on ${operation.id} status ${status}`);
+        tryCompile(`validators[${JSON.stringify(status)}].__headers[${JSON.stringify(header.name.toLowerCase())}]`, header.schema, lines, warnings, `response header ${header.name} schema on ${operation.id} status ${status}`, skipped);
       }
     }
   }
@@ -170,9 +202,11 @@ function buildValidatorAssignments(operation: ContractOperation, warnings: strin
 
 export function createContractScript(operation: ContractOperation, warnings: string[] = []): string[] {
   const contract = { method: operation.method, path: operation.path, responses: operation.responses, security: operation.security, parameters: operation.parameterChecks };
+  const skipped: string[] = [];
+  const validatorLines = buildValidatorAssignments(operation, warnings, skipped);
   return [
     `var contract = JSON.parse(${JSON.stringify(JSON.stringify(contract))});`,
-    ...buildValidatorAssignments(operation, warnings),
+    ...validatorLines,
     'function selectedResponseContract() {',
     '  var status = String(pm.response.code);',
     '  if (contract.responses[status]) return { key: status, value: contract.responses[status] };',
@@ -214,6 +248,17 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '  return matches[0];',
     '}',
     'var selected = selectedResponseContract();',
+    ...(skipped.length > 0 ? [
+      // A schema schemasafe could not compile is NOT silently ignored: it is
+      // surfaced here (and as a CONTRACT_SCHEMA_NOT_COMPILED warning at generation
+      // time). This test passes - the RESPONSE is legitimate; only the local
+      // validator could not be built - but it documents the un-validated schemas
+      // in the run report so the skip is never invisible.
+      `var contractSkippedValidators = JSON.parse(${JSON.stringify(JSON.stringify(skipped))});`,
+      "pm.test('OpenAPI schemas without a compilable runtime validator are documented', function () {",
+      '  pm.expect(contractSkippedValidators, "these OpenAPI schemas were not runtime-validated (schemasafe could not compile): " + contractSkippedValidators.join("; ")).to.be.an("array");',
+      '});'
+    ] : []),
     "pm.test('OpenAPI operation mapping exists', function () { pm.expect(contract.path).to.be.a('string').and.not.empty; });",
     "pm.test('Status code is defined by OpenAPI', function () { pm.expect(selected, 'No OpenAPI response defined for ' + contract.method + ' ' + contract.path + ' status ' + pm.response.code).to.exist; });",
     "pm.test('Response headers match OpenAPI', function () {",
@@ -677,7 +722,11 @@ function collectStaticBodyWarnings(operation: ContractOperation, request: JsonRe
 
 function validateScript(script: string[]): string | undefined {
   const source = script.join('\n');
-  if (source.includes('pm.response.to.have.jsonSchema') || /\beval\b/.test(source) || /new\s+Function/.test(source)) {
+  // Match executable call contexts only (`eval(` / `new Function(`), consistent
+  // with the sibling guard in schema-validator-code.ts, so an OpenAPI spec that
+  // carries the token `eval` as DATA (an enum value, path, or description embedded
+  // via JSON.stringify) no longer trips a false CONTRACT_FORBIDDEN_SCRIPT_CONSTRUCT.
+  if (source.includes('pm.response.to.have.jsonSchema') || /\beval\s*\(/.test(source) || /\bnew\s+Function\s*\(/.test(source)) {
     throw new Error('CONTRACT_FORBIDDEN_SCRIPT_CONSTRUCT: Generated contract script contains forbidden validation construct');
   }
   const bytes = Buffer.byteLength(source, 'utf8');

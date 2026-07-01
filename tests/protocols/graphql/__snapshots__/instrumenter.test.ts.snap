@@ -7,11 +7,13 @@ exports[`instrumentGraphQLCollection > matches the golden snapshot of generated 
 pm.test("[query lineByMsisdn] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
-pm.test("[query lineByMsisdn] response has no GraphQL errors", function () {
+pm.test("[query lineByMsisdn] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
-    if (errors !== undefined && errors !== null) {
-        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
-    }
+    if (errors === undefined || errors === null) return;
+    pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });
+    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;
+    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[query lineByMsisdn] data.lineByMsisdn is present", function () {
     pm.expect(gqlBody.data, "response has no data object").to.exist;
@@ -23,6 +25,7 @@ pm.test("[query lineByMsisdn] data.lineByMsisdn matches schema return type", fun
     pm.expect(value, "expected Line object").to.be.an("object");
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
+    pm.expect(value, "Line is missing non-null field 'plan'").to.have.property("plan");
     pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
 });
 pm.test("[query lineByMsisdn] required variables are supplied", function () {
@@ -45,11 +48,13 @@ pm.test("[query lineByMsisdn] required variables are supplied", function () {
 pm.test("[query plans] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
-pm.test("[query plans] response has no GraphQL errors", function () {
+pm.test("[query plans] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
-    if (errors !== undefined && errors !== null) {
-        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
-    }
+    if (errors === undefined || errors === null) return;
+    pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });
+    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;
+    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[query plans] data.plans is present", function () {
     pm.expect(gqlBody.data, "response has no data object").to.exist;
@@ -74,11 +79,13 @@ pm.test("[query plans] data.plans matches schema return type", function () {
 pm.test("[query subscriber] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
-pm.test("[query subscriber] response has no GraphQL errors", function () {
+pm.test("[query subscriber] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
-    if (errors !== undefined && errors !== null) {
-        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
-    }
+    if (errors === undefined || errors === null) return;
+    pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });
+    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;
+    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[query subscriber] data.subscriber is present", function () {
     pm.expect(gqlBody.data, "response has no data object").to.exist;
@@ -90,6 +97,7 @@ pm.test("[query subscriber] data.subscriber matches schema return type", functio
     pm.expect(value, "expected Subscriber object").to.be.an("object");
     pm.expect(value, "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
     pm.expect(value, "Subscriber is missing non-null field 'id'").to.have.property("id");
+    pm.expect(value, "Subscriber is missing non-null field 'lines'").to.have.property("lines");
 });
 pm.test("[query subscriber] required variables are supplied", function () {
     var body = (pm.request && pm.request.body) || {};
@@ -111,11 +119,13 @@ pm.test("[query subscriber] required variables are supplied", function () {
 pm.test("[query subscribers] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
-pm.test("[query subscribers] response has no GraphQL errors", function () {
+pm.test("[query subscribers] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
-    if (errors !== undefined && errors !== null) {
-        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
-    }
+    if (errors === undefined || errors === null) return;
+    pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });
+    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;
+    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[query subscribers] data.subscribers is present", function () {
     pm.expect(gqlBody.data, "response has no data object").to.exist;
@@ -130,6 +140,7 @@ pm.test("[query subscribers] data.subscribers matches schema return type", funct
         pm.expect(value[0], "expected Subscriber object").to.be.an("object");
         pm.expect(value[0], "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
         pm.expect(value[0], "Subscriber is missing non-null field 'id'").to.have.property("id");
+        pm.expect(value[0], "Subscriber is missing non-null field 'lines'").to.have.property("lines");
     }
 });",
     "id": "query.subscribers",
@@ -139,11 +150,13 @@ pm.test("[query subscribers] data.subscribers matches schema return type", funct
 pm.test("[mutation provisionLine] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
-pm.test("[mutation provisionLine] response has no GraphQL errors", function () {
+pm.test("[mutation provisionLine] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
-    if (errors !== undefined && errors !== null) {
-        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
-    }
+    if (errors === undefined || errors === null) return;
+    pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });
+    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;
+    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[mutation provisionLine] data.provisionLine is present", function () {
     pm.expect(gqlBody.data, "response has no data object").to.exist;
@@ -156,6 +169,7 @@ pm.test("[mutation provisionLine] data.provisionLine matches schema return type"
     pm.expect(value, "expected Line object").to.be.an("object");
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
+    pm.expect(value, "Line is missing non-null field 'plan'").to.have.property("plan");
     pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
 });
 pm.test("[mutation provisionLine] required variables are supplied", function () {
@@ -178,11 +192,13 @@ pm.test("[mutation provisionLine] required variables are supplied", function () 
 pm.test("[mutation suspendLine] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
-pm.test("[mutation suspendLine] response has no GraphQL errors", function () {
+pm.test("[mutation suspendLine] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
-    if (errors !== undefined && errors !== null) {
-        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
-    }
+    if (errors === undefined || errors === null) return;
+    pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });
+    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;
+    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[mutation suspendLine] data.suspendLine is present", function () {
     pm.expect(gqlBody.data, "response has no data object").to.exist;
@@ -195,6 +211,7 @@ pm.test("[mutation suspendLine] data.suspendLine matches schema return type", fu
     pm.expect(value, "expected Line object").to.be.an("object");
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
+    pm.expect(value, "Line is missing non-null field 'plan'").to.have.property("plan");
     pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
 });
 pm.test("[mutation suspendLine] required variables are supplied", function () {
@@ -217,11 +234,13 @@ pm.test("[mutation suspendLine] required variables are supplied", function () {
 pm.test("[subscription lineStatusChanged] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
-pm.test("[subscription lineStatusChanged] response has no GraphQL errors", function () {
+pm.test("[subscription lineStatusChanged] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
-    if (errors !== undefined && errors !== null) {
-        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
-    }
+    if (errors === undefined || errors === null) return;
+    pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });
+    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;
+    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[subscription lineStatusChanged] data.lineStatusChanged is present", function () {
     pm.expect(gqlBody.data, "response has no data object").to.exist;
@@ -234,6 +253,7 @@ pm.test("[subscription lineStatusChanged] data.lineStatusChanged matches schema 
     pm.expect(value, "expected Line object").to.be.an("object");
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
+    pm.expect(value, "Line is missing non-null field 'plan'").to.have.property("plan");
     pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
 });
 pm.test("[subscription lineStatusChanged] required variables are supplied", function () {

@@ -421,9 +421,12 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
       continue;
     }
     // A path parameter embedded in a compound segment such as /files/{name}.{ext}
-    // cannot be extracted from the sent path, so it keeps its warning instead
-    // of a check that would never run.
-    if (location === 'path' && !pathTemplate.split('/').includes(`{${name}}`)) continue;
+    // cannot be extracted from the sent path, so it is not schema-validated. Emit
+    // a visible warning (no-silent-skip) rather than a check that would never run.
+    if (location === 'path' && !pathTemplate.split('/').includes(`{${name}}`)) {
+      warnings.push(`CONTRACT_PATH_PARAM_COMPOUND_SEGMENT_NOT_VALIDATED: path parameter ${name} of ${operationId} is embedded in a compound path segment and is not schema-validated`);
+      continue;
+    }
     const scalarSchema = packedScalarSchema(packed);
     if (scalarSchema !== undefined) {
       if (!defaultSerialization) continue;

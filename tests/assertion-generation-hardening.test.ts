@@ -109,6 +109,10 @@ describe('assertion generation hardening (panel defects)', () => {
     expect(smoke).toContain('pm.response.code === 205');
     expect(smoke).toContain('pm.response.code === 304');
     expect(smoke).toContain("pm.request.method === 'HEAD'");
+    // Status check accepts 2xx AND 3xx (a redirect is not an error), and an
+    // explicit Content-Length: 0 exempts the not-empty check - neither false-fails.
+    expect(smoke).toContain('to.be.below(400)');
+    expect(smoke).toContain("pm.response.headers.get('Content-Length')");
   });
 
   // Defect #4: an unmatched GraphQL item was left silently uninstrumented (a

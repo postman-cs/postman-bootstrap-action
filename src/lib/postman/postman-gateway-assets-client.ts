@@ -119,6 +119,35 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
+   * Probes the `grpc_protocol_execution_allowed` plan/billing flag over the
+   * access-token gateway `features` service, live-proven 200 via
+   * `POST /features/list?entityType=team&entityValue=:teamId` with body
+   * `{ features: ['grpc_protocol_execution_allowed'] }` -> `{ data: { features: {
+   * grpc_protocol_execution_allowed: { value: boolean } } } }`. Team id is the
+   * memoized session identity (same source as `getTeams`); this is an account
+   * entitlement, not a token scope, so it is never PMAK-routed. Any read
+   * failure (no session, non-2xx, unexpected shape) resolves to `false` — the
+   * conservative default is "not runnable" rather than a thrown error.
+   */
+  async isGrpcExecutionAllowed(): Promise<boolean> {
+    const teamId = getMemoizedSessionIdentity()?.teamId;
+    if (!teamId) return false;
+    try {
+      const res = await this.gateway.requestJson<JsonRecord>({
+        service: 'features',
+        method: 'post',
+        path: `/features/list?entityType=team&entityValue=${teamId}`,
+        body: { features: ['grpc_protocol_execution_allowed'] }
+      });
+      const features = asRecord(asRecord(res?.data)?.features);
+      const flag = asRecord(features?.grpc_protocol_execution_allowed);
+      return flag?.value === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Create an OpenAPI spec in Spec Hub via the gateway specification service.
    * Verified shape: POST /specifications?containerType=workspace&containerId=:ws
    * with a file-level `type: 'ROOT'` (the gateway rejects the create otherwise).
@@ -561,8 +590,10 @@ export class PostmanGatewayAssetsClient {
     const smokeTests = [
       '// [Smoke] Auto-generated test assertions',
       '',
-      "pm.test('Status code is successful (2xx)', function () {",
-      '    pm.response.to.be.success;',
+      "pm.test('Status code is not an error (2xx or 3xx)', function () {",
+      '    // Smoke is a generic liveness check, not a contract: a 3xx redirect is a',
+      '    // legitimate non-error response, so assert < 400 rather than strict 2xx.',
+      '    pm.expect(pm.response.code, "expected a non-error HTTP status (< 400)").to.be.below(400);',
       '});',
       '',
       "pm.test('Response time is acceptable', function () {",
@@ -571,7 +602,12 @@ export class PostmanGatewayAssetsClient {
       '});',
       '',
       "pm.test('Response body is not empty', function () {",
-      '    if (pm.response.code !== 204) {',
+      "    var bodyless = pm.response.code === 204 || pm.response.code === 205 || pm.response.code === 304 || pm.request.method === 'HEAD';",
+      "    var contentLength = pm.response.headers.get('Content-Length');",
+      "    // A legitimate empty-body response (e.g. a 200/201 with Content-Length: 0)",
+      '    // must not false-fail this generic smoke check.',
+      "    if (contentLength !== null && contentLength !== undefined && String(contentLength).trim() === '0') { return; }",
+      '    if (!bodyless) {',
       '        var body = pm.response.text();',
       '        pm.expect(body.length).to.be.above(0);',
       '    }',

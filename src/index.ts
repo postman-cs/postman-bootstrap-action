@@ -192,6 +192,7 @@ export interface BootstrapExecutionDependencies {
     injectTests(collectionId: string, type: 'smoke'): Promise<void>;
     tagCollection(collectionId: string, tags: string[]): Promise<void>;
     deleteCollection?(collectionUid: string): Promise<void>;
+    isGrpcExecutionAllowed?(): Promise<boolean>;
     injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
     createCollection?(workspaceId: string, collection: unknown): Promise<string>;
     updateCollection?(collectionUid: string, collection: unknown): Promise<void>;
@@ -1372,6 +1373,28 @@ async function runProtocolBootstrap(
   for (const warning of built.warnings) {
     dependencies.core.warning(warning);
   }
+
+  // gRPC's static runnableInCi:false is a compile-time default, not a platform
+  // wall: the Postman CLI actually gates grpc-request execution behind the
+  // grpc_protocol_execution_allowed account/plan feature flag, which is
+  // readable over the access-token gateway. Flip it to runnable only when the
+  // account has the flag AND a real target was provided (a missing target
+  // already produced the GRPC_NO_TARGET warning above, and the flag alone
+  // can't make an empty-url request executable).
+  if (specType === 'grpc' && !built.runnableInCi && dependencies.postman.isGrpcExecutionAllowed) {
+    const hasTarget =
+      Boolean(inputs.protocolEndpointUrl) && !built.warnings.some((w) => w.startsWith('GRPC_NO_TARGET'));
+    if (hasTarget) {
+      try {
+        if (await dependencies.postman.isGrpcExecutionAllowed()) {
+          built.runnableInCi = true;
+        }
+      } catch {
+        // Capability probe failure is not fatal; stay with the conservative static default.
+      }
+    }
+  }
+
   dependencies.core.info(
     `Generated ${built.operationCount} ${specType} contract item(s) (${built.format}). ` + protocolExecutionNote(specType, built.runnableInCi)
   );
@@ -2272,6 +2295,7 @@ export function createRoutingPostmanClient(options: {
       getWorkspaceGitRepoUrl: requireAccessToken('getWorkspaceGitRepoUrl'),
       findWorkspacesByName: requireAccessToken('findWorkspacesByName'),
       getTeams: requireAccessToken('getTeams'),
+      isGrpcExecutionAllowed: async () => false,
       addAdminsToWorkspace: requireAccessToken('addAdminsToWorkspace'),
       inviteRequesterToWorkspace: requireAccessToken('inviteRequesterToWorkspace'),
       injectTests: requireAccessToken('injectTests'),
@@ -2313,6 +2337,9 @@ export function createRoutingPostmanClient(options: {
     // Sub-team (squad) enumeration over the gateway `ums` service. Access-token
     // only — never PMAK — so org-mode detection no longer needs a PMAK GET /teams.
     getTeams: () => gateway.getTeams(),
+    // Account-entitlement probe for gRPC CLI execution (`features` service).
+    // Never PMAK-routed — this is a plan flag, not a token scope.
+    isGrpcExecutionAllowed: () => gateway.isGrpcExecutionAllowed(),
 
     // gateway-only (no PMAK fallback): workspace roles + member resolution and the
     // v3 collection delete are live-proven (probe-workspace-roles-gateway.ts,

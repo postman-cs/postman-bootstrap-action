@@ -83,6 +83,8 @@ interface ProtoField {
   optional?: boolean;
   keyType?: string;
   comment?: string | null;
+  jsonName?: string;
+  options?: Record<string, unknown> | null;
   resolvedType?: ProtoReflectionObject | null;
   resolve?(): ProtoField;
 }
@@ -98,6 +100,9 @@ export type GrpcJsonType = 'number' | 'string' | 'boolean' | 'object' | 'array' 
 
 export interface GrpcFieldDescriptor {
   name: string;
+  // ProtoJSON field name (json_name option or lowerCamelCase of `name`); gRPC
+  // responses key by this, so runtime lookups try it first, then `name`.
+  jsonName: string;
   protoType: string;
   jsonType: GrpcJsonType;
   repeated: boolean;
@@ -263,9 +268,14 @@ function classifyValueType(
   protoType: string,
   resolved: ProtoReflectionObject | null | undefined
 ): { jsonType: GrpcJsonType; nullable?: boolean; messageType?: string; enumType?: string } {
+  // Well-known types are keyed by their raw proto type name: a standalone
+  // protobufjs parse does not bundle google/protobuf/*.proto, so a WKT field
+  // never resolves to a reflection object (resolvedType stays null). The type
+  // string (e.g. `google.protobuf.Timestamp`) is preserved verbatim whether or
+  // not the reference resolves, so it is the reliable classifier.
+  const wkt = WELL_KNOWN_JSON_TYPE[stripLeadingDot(protoType)];
+  if (wkt) return { jsonType: wkt.jsonType, nullable: wkt.nullable };
   if (resolved && Array.isArray(resolved.fieldsArray)) {
-    const wkt = WELL_KNOWN_JSON_TYPE[stripLeadingDot(resolved.fullName)];
-    if (wkt) return { jsonType: wkt.jsonType, nullable: wkt.nullable };
     return { jsonType: 'object', messageType: stripLeadingDot(resolved.fullName) };
   }
   if (resolved && resolved.values && !Array.isArray(resolved.fieldsArray)) {
@@ -277,6 +287,24 @@ function classifyValueType(
     return { jsonType: SCALAR_JSON_TYPE[protoType] as GrpcJsonType };
   }
   return { jsonType: 'unknown' };
+}
+
+// The ProtoJSON name for a field: the explicit `json_name` option when set,
+// otherwise the lowerCamelCase of the proto field name (the canonical ProtoJSON
+// mapping). gRPC responses decode to canonical ProtoJSON, so runtime assertions
+// must look responses up by this name (with the raw proto name as a fallback).
+function toLowerCamelCase(name: string): string {
+  return name.replace(/_+([a-zA-Z0-9])/g, (_match, char: string) => char.toUpperCase()).replace(/_+$/g, '');
+}
+
+function protoJsonName(field: ProtoField): string {
+  const options = field.options;
+  if (options) {
+    const explicit = options['json_name'] ?? (options as Record<string, unknown>).jsonName;
+    if (typeof explicit === 'string' && explicit) return explicit;
+  }
+  if (typeof field.jsonName === 'string' && field.jsonName) return field.jsonName;
+  return toLowerCamelCase(String(field.name));
 }
 
 function fieldDescriptor(field: ProtoField, warnings: string[], context: string): GrpcFieldDescriptor {
@@ -297,6 +325,7 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
     }
     return {
       name: String(field.name),
+      jsonName: protoJsonName(field),
       protoType,
       jsonType: 'object',
       repeated: false,
@@ -317,6 +346,7 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
 
   return {
     name: String(field.name),
+    jsonName: protoJsonName(field),
     protoType,
     jsonType: classified.jsonType,
     repeated,
@@ -334,7 +364,7 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
 // multi-member oneofs are surfaced for the mutual-exclusion assertion.
 function collectOneofs(message: ProtoReflectionObject): string[][] {
   return asArray<ProtoOneof>(message.oneofsArray)
-    .map((oneof) => asArray<ProtoField>(oneof.fieldsArray).map((field) => String(field.name)))
+    .map((oneof) => asArray<ProtoField>(oneof.fieldsArray).map((field) => protoJsonName(field)))
     .filter((names) => names.length >= 2)
     .sort((a, b) => a.join(',').localeCompare(b.join(',')));
 }

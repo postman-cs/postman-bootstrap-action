@@ -8,8 +8,10 @@
 //      `required` => presence asserted; proto3 fields => type asserted only when
 //      present (no presence). Covers well-known-type JSON encodings, map value
 //      types, and `oneof` mutual-exclusion (at most one member set).
-//   3. streaming message-count expectations (server/client/bidi) using the
-//      stream-count surfaced on the execution/response.
+//   3. a terminal-response-message expectation for unary and client-streaming
+//      RPCs (exactly one message); server/bidi streaming may legitimately return
+//      zero messages on an OK stream, so no minimum is asserted for them (a >= 1
+//      assertion would false-fail a spec-legal empty stream).
 // The request side is validated statically at instrumentation time (the generated
 // request message content vs the request message definition), the gRPC analogue
 // of the OAS CONTRACT_REQUEST_BODY_INCOMPLETE check.
@@ -55,6 +57,8 @@ const MAX_SHAPE_DEPTH = 5;
 // only what the runtime test needs so the script stays small and stable.
 interface FieldSpec {
   name: string;
+  // ProtoJSON field name; runtime response lookups try this first, then `name`.
+  jsonName: string;
   jsonType: string;
   repeated: boolean;
   map: boolean;
@@ -118,6 +122,7 @@ function buildShape(
     const enumValues = field.enumType ? index.enums[field.enumType] : undefined;
     const spec: FieldSpec = {
       name: field.name,
+      jsonName: field.jsonName,
       jsonType: field.jsonType,
       repeated: field.repeated,
       map: field.map,
@@ -156,33 +161,13 @@ function buildOperationSpec(operation: GrpcOperation, index: GrpcContractIndex, 
 // The runtime test script. Written as plain ES5-ish strings to match the OAS
 // module's generated-script style and run inside the Postman sandbox.
 function createGrpcScript(spec: OperationSpec): string[] {
-  const streamCountExpectation = (() => {
-    switch (spec.stream) {
-      case 'unary': return 1;       // exactly one response message
-      case 'server': return 1;      // server-streaming: at least one
-      case 'client': return 1;      // client-streaming: single terminal response
-      case 'bidi': return 1;        // bidi: at least one
-      default: return 1;
-    }
-  })();
-
   return [
     `var grpcSpec = JSON.parse(${JSON.stringify(JSON.stringify(spec))});`,
-    `var grpcMinMessages = ${streamCountExpectation};`,
     // Resolve the human-readable status name from the numeric code, matching
     // reporters/cli/modules/grpc.ts:15-21.
     'var GRPC_STATUS = { 0: "OK", 1: "CANCELLED", 2: "UNKNOWN", 3: "INVALID_ARGUMENT", 4: "DEADLINE_EXCEEDED", 5: "NOT_FOUND", 6: "ALREADY_EXISTS", 7: "PERMISSION_DENIED", 8: "RESOURCE_EXHAUSTED", 9: "FAILED_PRECONDITION", 10: "ABORTED", 11: "OUT_OF_RANGE", 12: "UNIMPLEMENTED", 13: "INTERNAL", 14: "UNAVAILABLE", 15: "DATA_LOSS", 16: "UNAUTHENTICATED" };',
     'function grpcStatusName() { if (typeof pm.response.status === "string" && pm.response.status) return pm.response.status; return GRPC_STATUS[pm.response.code] || ("UNKNOWN(" + pm.response.code + ")"); }',
     'function grpcMessage() { try { return pm.response.json(); } catch (error) { return undefined; } }',
-    // Stream message count is surfaced by the runtime on the execution; fall
-    // back to 1 when the response carries a single message object so unary
-    // assertions still hold.
-    'function grpcMessageCount() {',
-    '  var count;',
-    '  try { count = pm.response && pm.response.stream && typeof pm.response.stream.count === "number" ? pm.response.stream.count : undefined; } catch (ignored) {}',
-    '  if (typeof count !== "number") { var msg = grpcMessage(); count = (msg === undefined || msg === null) ? 0 : 1; }',
-    '  return count;',
-    '}',
     'function jsonTypeOf(value) {',
     '  if (value === null || value === undefined) return "null";',
     '  if (Array.isArray(value)) return "array";',
@@ -201,16 +186,24 @@ function createGrpcScript(spec: OperationSpec): string[] {
     // Recursive shape checker: validates fields (with nested message descent,
     // map value typing, enums, well-known nullable scalars) and oneof
     // mutual-exclusion. `path` is a human-readable prefix for failure messages.
+    'function grpcFieldKey(obj, field) { if (Object.prototype.hasOwnProperty.call(obj, field.jsonName)) return field.jsonName; if (Object.prototype.hasOwnProperty.call(obj, field.name)) return field.name; return undefined; }',
     'function grpcCheckField(obj, field, path) {',
-    '  var label = path + field.name;',
-    '  var present = Object.prototype.hasOwnProperty.call(obj, field.name);',
+    '  var label = path + (field.jsonName || field.name);',
+    '  var key = grpcFieldKey(obj, field);',
+    '  var present = key !== undefined;',
     '  if (field.required && !present) { pm.expect.fail("gRPC response is missing required field " + label); return; }',
     '  if (!present) return;',
-    '  var value = obj[field.name];',
+    '  var value = obj[key];',
     '  if (field.nullable && value === null) return;',
     '  if (field.repeated) {',
     '    if (!matchesScalar("array", value)) { pm.expect.fail("gRPC field " + label + " must be a repeated (array) value but was " + jsonTypeOf(value)); return; }',
-    '    if (field.shape) { for (var i = 0; i < value.length; i++) { if (matchesScalar("object", value[i])) grpcCheckShape(value[i], field.shape, label + "[" + i + "]."); } }',
+    '    for (var i = 0; i < value.length; i++) {',
+    '      var elem = value[i]; var elemLabel = label + "[" + i + "]";',
+    '      if (field.shape) { if (!matchesScalar("object", elem)) { pm.expect.fail("gRPC repeated field " + elemLabel + " must be an object but was " + jsonTypeOf(elem)); } else { grpcCheckShape(elem, field.shape, elemLabel + "."); } continue; }',
+    '      if (field.enumValues && field.enumValues.length > 0) { if (typeof elem === "number") continue; if (typeof elem !== "string") { pm.expect.fail("gRPC repeated enum field " + elemLabel + " must be a string or number but was " + jsonTypeOf(elem)); } else if (field.enumValues.indexOf(elem) === -1) { pm.expect.fail("gRPC repeated enum field " + elemLabel + " has value " + elem + " not in [" + field.enumValues.join(", ") + "]"); } continue; }',
+    '      if (field.jsonType === "any") continue;',
+    '      if (!matchesScalar(field.jsonType, elem)) pm.expect.fail("gRPC repeated field " + elemLabel + " must be " + field.jsonType + " but was " + jsonTypeOf(elem));',
+    '    }',
     '    return;',
     '  }',
     '  if (field.map) {',
@@ -237,20 +230,23 @@ function createGrpcScript(spec: OperationSpec): string[] {
     `pm.test('gRPC status is OK for ' + grpcSpec.methodPath, function () {`,
     '  pm.expect(pm.response.code, "gRPC call for " + grpcSpec.methodPath + " returned " + grpcStatusName() + " (" + pm.response.code + ")").to.eql(0);',
     '});',
-    // Message-count expectation by stream kind.
-    `pm.test('gRPC message count for ' + grpcSpec.methodPath, function () {`,
-    '  if (pm.response.code !== 0) return;',
-    '  var count = grpcMessageCount();',
-    '  if (grpcSpec.stream === "unary" || grpcSpec.stream === "client") {',
-    '    pm.expect(count, grpcSpec.stream + " RPC " + grpcSpec.methodPath + " must return exactly one response message").to.eql(1);',
-    '  } else {',
-    '    pm.expect(count, grpcSpec.stream + "-streaming RPC " + grpcSpec.methodPath + " must return at least " + grpcMinMessages + " response message(s)").to.be.at.least(grpcMinMessages);',
-    '  }',
-    '});',
+    // Terminal-response-message expectation. unary and client-streaming RPCs
+    // return exactly one terminal response message; server/bidi streaming may
+    // legitimately return ZERO messages on an OK stream, so no minimum is
+    // asserted for them (a >= 1 check would false-fail an empty OK stream).
+    ...((spec.stream === 'unary' || spec.stream === 'client') ? [
+      `pm.test('gRPC ${spec.stream} RPC returns a terminal response message for ' + grpcSpec.methodPath, function () {`,
+      '  if (pm.response.code !== 0) return;',
+      '  pm.expect(grpcMessage(), grpcSpec.stream + " RPC " + grpcSpec.methodPath + " must return exactly one terminal response message").to.be.an("object");',
+      '});'
+    ] : []),
     ...(spec.hasResponseShape ? [
       `pm.test('gRPC response message matches ' + grpcSpec.responseType, function () {`,
       '  if (pm.response.code !== 0) return;',
       '  var message = grpcMessage();',
+      // An empty OK server/bidi stream has no terminal message to shape-check;
+      // that is spec-legal, so skip rather than false-fail on a missing message.
+      '  if ((grpcSpec.stream === "server" || grpcSpec.stream === "bidi") && (message === undefined || message === null)) return;',
       '  pm.expect(message, "gRPC response for " + grpcSpec.methodPath + " is not a decodable message object").to.be.an("object");',
       '  grpcCheckShape(message, grpcSpec.responseShape, grpcSpec.responseType + ".");',
       '});'

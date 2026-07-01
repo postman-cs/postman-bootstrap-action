@@ -1,7 +1,11 @@
 // Telecom-flavored gRPC contract fixture for postman-actions onboarding e2e.
 // Exercises every stream kind (unary, server, client, bidi), enums, repeated,
-// map, nested messages, 64-bit ints, and a proto3 explicit optional field so
-// the parser/builder/instrumenter golden output covers the full surface.
+// map, nested messages, 64-bit ints, a proto3 explicit optional field, plus
+// well-known types (Timestamp/Duration/StringValue), a multi-member oneof, and
+// a map whose value is a message, so the parser/builder/instrumenter golden
+// output covers the full surface. Well-known types are referenced without an
+// import: a standalone protobufjs parse never resolves them, and the parser
+// classifies them by raw proto type name.
 syntax = "proto3";
 
 package telecom.network.v1;
@@ -62,6 +66,29 @@ message DiagnosticPong {
   bool reachable = 2;
 }
 
+message GetNetworkEventRequest {
+  string event_id = 1;
+}
+
+// NetworkEvent exercises well-known-type JSON encodings, a multi-member oneof
+// (mutual exclusion), a map whose value is a message, and nested recursion
+// (tower -> location -> GeoPoint).
+message NetworkEvent {
+  string event_id = 1;
+  // WKT scalar encodings: Timestamp/Duration -> JSON string.
+  google.protobuf.Timestamp occurred_at = 2;
+  google.protobuf.Duration ttl = 3;
+  // WKT wrapper: nullable JSON string (present-but-null is legal).
+  google.protobuf.StringValue note = 4;
+  // multi-member oneof: at most one member may be set.
+  oneof detail {
+    Tower tower = 5;
+    DiagnosticPong pong = 6;
+  }
+  // map whose value is a message -> nested value shape assertion.
+  map<string, GeoPoint> waypoints = 7;
+}
+
 service TowerService {
   // unary
   rpc GetTower(GetTowerRequest) returns (Tower);
@@ -71,4 +98,6 @@ service TowerService {
   rpc RecordUplink(stream UplinkSample) returns (UplinkSummary);
   // bidirectional streaming
   rpc Diagnose(stream DiagnosticPing) returns (stream DiagnosticPong);
+  // unary returning a message with well-known types, a oneof, and a message map
+  rpc GetNetworkEvent(GetNetworkEventRequest) returns (NetworkEvent);
 }

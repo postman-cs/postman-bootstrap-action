@@ -275,11 +275,69 @@ function methodPathOf(item: JsonRecord): string {
   return typeof value === 'string' ? value : '';
 }
 
+function matchesScalarValue(expected: string, value: unknown): boolean {
+  switch (expected) {
+    case 'number': return typeof value === 'number';
+    case 'string': return typeof value === 'string';
+    case 'boolean': return typeof value === 'boolean';
+    case 'object': return value !== null && typeof value === 'object' && !Array.isArray(value);
+    case 'array': return Array.isArray(value);
+    case 'enum': return typeof value === 'string' || typeof value === 'number';
+    default: return true;
+  }
+}
+
+// Static request-side check: validate the generated request message content
+// against the request message definition at instrumentation time (top-level, the
+// gRPC analogue of the OAS CONTRACT_REQUEST_BODY_INCOMPLETE check). Bodies that
+// carry Postman template variables are skipped.
+function staticRequestCheck(
+  item: JsonRecord,
+  shape: ShapeSpec | undefined,
+  methodPath: string,
+  warnings: string[]
+): void {
+  if (!shape) return;
+  const message = asRecord(asRecord(item.payload)?.message);
+  const raw = typeof message?.content === 'string' ? message.content : '';
+  if (!raw.trim()) return;
+  if (/\{\{[^}]+\}\}|<[a-zA-Z]/.test(raw)) return; // placeholder / template body
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    warnings.push(`PROTO_REQUEST_BODY_INVALID_JSON: ${methodPath} generated request message content is not valid JSON and is not validated`);
+    return;
+  }
+  const record = asRecord(body);
+  if (!record) return;
+  for (const field of shape.fields) {
+    const present = Object.prototype.hasOwnProperty.call(record, field.name);
+    if (field.required && !present) {
+      warnings.push(`PROTO_REQUEST_BODY_INCOMPLETE: ${methodPath} generated request is missing required field ${field.name}`);
+      continue;
+    }
+    if (!present) continue;
+    const value = record[field.name];
+    if (field.nullable && value === null) continue;
+    if (field.repeated) {
+      if (!Array.isArray(value)) warnings.push(`PROTO_REQUEST_FIELD_TYPE_MISMATCH: ${methodPath} request field ${field.name} must be an array`);
+      continue;
+    }
+    if (field.jsonType === 'any' || field.enumValues || field.map || field.shape) continue;
+    if (!matchesScalarValue(field.jsonType, value)) {
+      warnings.push(`PROTO_REQUEST_FIELD_TYPE_MISMATCH: ${methodPath} request field ${field.name} must be ${field.jsonType}`);
+    }
+  }
+}
+
 export function instrumentGrpcCollection(collection: JsonRecord, index: GrpcContractIndex): GrpcInstrumentationResult {
   const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
   const specs = new Map<string, OperationSpec>();
+  const requestShapes = new Map<string, ShapeSpec | undefined>();
   for (const operation of index.operations) {
     specs.set(operation.methodPath, buildOperationSpec(operation, index, warnings));
+    requestShapes.set(operation.methodPath, buildShape(operation.requestType, index, warnings, operation.id, 'request', 0, []));
   }
 
   const covered = new Map<string, string>();
@@ -295,9 +353,14 @@ export function instrumentGrpcCollection(collection: JsonRecord, index: GrpcCont
           throw new Error(`PROTO_DUPLICATE_OPERATION_REQUEST: ${methodPath} matched more than one generated grpc-request (${previous}, ${String(item.name ?? item.title ?? '<unnamed>')})`);
         }
         covered.set(methodPath, String(item.name ?? item.title ?? '<unnamed>'));
+        staticRequestCheck(item, requestShapes.get(methodPath), methodPath, warnings);
         script = createGrpcScript(spec);
       } else {
         script = createMappingFailureScript(`No proto service method matched grpc-request methodPath ${methodPath || '<empty>'}`);
+      }
+      const scriptBytes = Buffer.byteLength(script.join('\n'), 'utf8');
+      if (scriptBytes > GRPC_INSTRUMENT_LIMITS.maxTestScriptBytes) {
+        throw new Error(`PROTO_SCRIPT_SIZE_EXCEEDED: generated test script for ${methodPath} exceeded ${GRPC_INSTRUMENT_LIMITS.maxTestScriptBytes} bytes`);
       }
       const events = asArray(item.event).filter((entry) => asRecord(entry)?.listen !== 'test');
       item.event = [...events, { listen: 'test', script: { type: 'text/javascript', exec: script } }];

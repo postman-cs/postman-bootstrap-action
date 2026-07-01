@@ -1,6 +1,6 @@
 # Obtaining Credentials
 
-Bootstrap needs a [Postman API key](https://learning.postman.com/docs/reference/postman-api/authentication/) for standard Postman API calls. Governance assignment, cloud spec-to-collection sync, and canonical workspace validation also need a Postman access token. The primary path is to mint that token in CI with [`postman-cs/postman-resolve-service-token-action`](https://github.com/postman-cs/postman-resolve-service-token-action). Use Postman's [service accounts documentation](https://learning.postman.com/docs/administration/service-accounts/) to create the automation identity and assign it to the right team or workspace.
+Bootstrap needs a [Postman API key](https://learning.postman.com/docs/reference/postman-api/authentication/) for standard Postman API calls. Governance assignment, cloud spec-to-collection sync, and canonical workspace validation also need a Postman access token. The primary path is to mint that token in CI with [`postman-cs/postman-resolve-service-token-action`](https://github.com/postman-cs/postman-resolve-service-token-action). See the [service accounts documentation](https://learning.postman.com/docs/administration/service-accounts/) to create the automation identity and assign it to the right team or workspace.
 
 ## Credential matrix
 
@@ -49,7 +49,7 @@ gh secret set POSTMAN_API_KEY --repo <owner>/<repo>
 
 The PMAK is long-lived. Rotate it according to your organization's secret policy and update the CI secret when rotated.
 
-Postman's [managing API keys](https://learning.postman.com/docs/administration/managing-your-team/managing-api-keys/) guide covers expiration, revocation, and exposed-key handling.
+The [managing API keys](https://learning.postman.com/docs/administration/managing-your-team/managing-api-keys/) guide covers expiration, revocation, and exposed-key handling.
 
 ## Legacy fallback: Postman CLI credential store
 

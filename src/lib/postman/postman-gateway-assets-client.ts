@@ -59,8 +59,8 @@ export interface PostmanGatewayAssetsClientOptions {
  * Implements only the routes proven against the live gateway (scripts/live-gateway-probe.ts):
  * the OpenAPI spec lifecycle (create, get, generate-collection + task poll),
  * workspace reads (visibility, list/find, git repo url), and sub-team (squad)
- * enumeration over the `ums` service. All of these answer the Postman app
- * `{meta, data}` envelope through the proxy.
+ * enumeration over the `ums` service. All of these use the app's `{meta, data}`
+ * envelope through the proxy.
  *
  * Method signatures mirror the retired PMAK assets client surface so the facade can prefer this
  * client per method and fall back to PMAK transparently.

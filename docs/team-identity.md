@@ -15,7 +15,7 @@ The action derives the parent Postman team ID from the PMAK with the `/me` API. 
 
 ## Org-mode workspace ownership
 
-Postman organizations with multiple sub-teams require a specific sub-team owner for new workspaces. The Postman API does not create a workspace directly at the organization level. Postman's [roles and permissions](https://learning.postman.com/docs/administration/roles-and-permissions/) and [manage roles](https://learning.postman.com/docs/administration/managing-your-team/team-members/manage-roles/) docs are the source of truth for workspace role semantics.
+Organizations with multiple sub-teams require a specific sub-team owner for new workspaces. The Postman API does not create a workspace directly at the organization level. The [roles and permissions](https://learning.postman.com/docs/administration/roles-and-permissions/) and [manage roles](https://learning.postman.com/docs/administration/managing-your-team/team-members/manage-roles/) docs are the source of truth for workspace role semantics.
 
 ### How it works
 

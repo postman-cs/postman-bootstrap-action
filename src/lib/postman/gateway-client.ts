@@ -60,7 +60,7 @@ function defaultSleep(ms: number): Promise<void> {
 /**
  * Generic access-token gateway client.
  *
- * Sends the Postman app's `POST {bifrost}/ws/proxy` envelope
+ * Sends the app's `POST {bifrost}/ws/proxy` envelope
  * (`{ service, method, path, query?, body? }`) authenticated with
  * `x-access-token` read live from the {@link AccessTokenProvider} (so a
  * re-minted token propagates without reconstruction), plus `x-entity-team-id`

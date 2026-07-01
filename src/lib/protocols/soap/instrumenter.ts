@@ -23,7 +23,7 @@ function asArray(value: unknown): unknown[] {
 }
 
 /**
- * The afterResponse code runs inside Postman's sandbox where pm.response.xml()
+ * The afterResponse code runs inside the runtime sandbox where pm.response.xml()
  * is not guaranteed (PROJECTED in recon). We assert structurally on the raw XML
  * text with namespace-agnostic regexes so the tests run on the existing HTTP
  * path without an XML parser dependency in the sandbox. Element-presence checks

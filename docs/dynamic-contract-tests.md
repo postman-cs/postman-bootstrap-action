@@ -178,7 +178,7 @@ Default resource limits:
 
 Generated scripts are scanned before upload:
 
-- `pm.response.to.have.jsonSchema` is forbidden so validation is not delegated to Postman's bundled schema engine.
+- `pm.response.to.have.jsonSchema` is forbidden so validation is not delegated to the bundled schema engine.
 - `eval` is forbidden.
 - `new Function` is forbidden.
 - Scripts above 256 KiB emit a warning.

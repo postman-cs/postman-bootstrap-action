@@ -5,8 +5,8 @@ type JsonRecord = Record<string, unknown>;
 
 /**
  * Convert a Postman v2.1.0 collection into the Extensible Collection (EC v3)
- * shape using the official `@postman/runtime.models` transform — the same
- * model transform the Postman app uses (no bespoke field mapping). The output
+ * shape using the `@postman/runtime.models` transform — the same in-app
+ * transform (no bespoke field mapping). The output
  * is the canonical Extensible collection:
  *   { type:'collection', title, payload, children:[...], extensions }
  * with leaves typed (`http-request`, ...), `script.exec` already collapsed to a

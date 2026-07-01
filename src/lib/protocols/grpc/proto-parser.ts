@@ -16,7 +16,7 @@ type JsonRecord = Record<string, unknown>;
 
 // Statically imported so esbuild bundles the parser into the published `dist/`
 // (the action ships only the bundle, not node_modules). Uses the Postman fork
-// `@postman/protobufjs`, which aligns descriptor parsing with Postman's gRPC
+// `@postman/protobufjs`, which aligns descriptor parsing with our gRPC
 // stack (same 7.5.x reflection surface). Tests can still inject a double via the
 // `custom` parameter of `loadProtoModule` / `deps.protobuf` of `parseProtoSchema`.
 import * as protobufjs from '@postman/protobufjs';
@@ -41,6 +41,11 @@ interface ProtoNamespace {
   lookup?(path: string): ProtoReflectionObject | null;
 }
 
+interface ProtoOneof {
+  name: string;
+  fieldsArray?: ProtoField[];
+}
+
 interface ProtoReflectionObject {
   name: string;
   fullName: string;
@@ -49,6 +54,7 @@ interface ProtoReflectionObject {
   methodsArray?: ProtoMethod[];
   // Type (message)
   fieldsArray?: ProtoField[];
+  oneofsArray?: ProtoOneof[];
   // Enum
   values?: Record<string, number>;
   comment?: string | null;

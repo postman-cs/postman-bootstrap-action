@@ -20,26 +20,97 @@ import { HAS_PROTOBUF, PROTOBUF } from './protocols/grpc/helpers.js';
 
 type JsonRecord = Record<string, unknown>;
 
-// Round-2 regression coverage for the unifusion panel audit (2026-06-30): every
-// generated pm.test must be executable and behave correctly on valid AND invalid
-// fixtures. This suite RUNS the emitted scripts under a mock Postman sandbox.
-//
-// Harness note: chai-style assertion chains (`.to.be.an(...)`) are no-ops here, so
-// a pm.test is marked failed ONLY when the script calls pm.expect.fail(...). That
-// is precisely the fail-closed mechanism every fix below uses, so "no fail across
-// all tests" is a clean pass and "a fail fired" is the intended rejection.
+// Round-2/3 regression coverage for the unifusion panel audit: every generated
+// pm.test must be executable and behave correctly on valid AND invalid fixtures.
+// This suite RUNS the emitted scripts under a mock Postman sandbox whose pm.expect
+// is a STRICT Chai-equivalent (the panel's "real Chai or a strict assertion mock"
+// requirement): every assertion chain is EVALUATED and throws on failure -- it is
+// not a no-op. So a green test proves the generated assertion passes on valid data
+// and a red test proves it fails closed on invalid data.
+interface Chainable {
+  to: Chainable; be: Chainable; been: Chainable; is: Chainable; that: Chainable;
+  which: Chainable; and: Chainable; has: Chainable; have: Chainable; with: Chainable;
+  of: Chainable; not: Chainable;
+  exist: Chainable; ok: Chainable; null: Chainable; true: Chainable; false: Chainable; empty: Chainable;
+  a(t: string): Chainable; an(t: string): Chainable;
+  below(n: number): Chainable; above(n: number): Chainable; least(n: number): Chainable; most(n: number): Chainable;
+  within(a: number, b: number): Chainable;
+  equal(v: unknown): Chainable; eq(v: unknown): Chainable; eql(v: unknown): Chainable;
+  oneOf(arr: unknown[]): Chainable; property(name: string): Chainable;
+  match(re: RegExp): Chainable; include(v: unknown): Chainable; contain(v: unknown): Chainable;
+}
+
+type StrictExpect = ((subject: unknown, message?: string) => Chainable) & { fail: (message?: string) => never };
+
+function makeStrictExpect(): StrictExpect {
+  const chaiTypeOf = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+  const deepEqual = (a: unknown, b: unknown): boolean => {
+    if (a === b) return true;
+    try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+  };
+  const includes = (subject: unknown, v: unknown): boolean =>
+    typeof subject === 'string' ? subject.indexOf(String(v)) !== -1 : Array.isArray(subject) && subject.indexOf(v) !== -1;
+  const sizeOf = (subject: unknown): number => {
+    if (Array.isArray(subject) || typeof subject === 'string') return (subject as string).length;
+    if (subject && typeof subject === 'object') return Object.keys(subject as object).length;
+    return -1;
+  };
+  const expect = (subject: unknown, message?: string): Chainable => {
+    let negate = false;
+    const prefix = message ? message + ': ' : '';
+    const check = (ok: boolean, why: string): Chainable => {
+      if (negate ? ok : !ok) throw new Error(prefix + why);
+      return chain;
+    };
+    const chain: Chainable = {
+      get to() { return chain; },
+      get be() { return chain; },
+      get been() { return chain; },
+      get is() { return chain; },
+      get that() { return chain; },
+      get which() { return chain; },
+      get and() { return chain; },
+      get has() { return chain; },
+      get have() { return chain; },
+      get with() { return chain; },
+      get of() { return chain; },
+      get not() { negate = !negate; return chain; },
+      get exist() { return check(subject !== null && subject !== undefined, 'expected value to exist'); },
+      get ok() { return check(Boolean(subject), 'expected value to be truthy'); },
+      get null() { return check(subject === null, 'expected value to be null'); },
+      get true() { return check(subject === true, 'expected value to be true'); },
+      get false() { return check(subject === false, 'expected value to be false'); },
+      get empty() { return check(sizeOf(subject) === 0, 'expected value to be empty'); },
+      a: (t: string) => check(chaiTypeOf(subject) === t, 'expected a ' + t + ' but got ' + chaiTypeOf(subject)),
+      an: (t: string) => check(chaiTypeOf(subject) === t, 'expected an ' + t + ' but got ' + chaiTypeOf(subject)),
+      below: (n: number) => check(typeof subject === 'number' && subject < n, 'expected below ' + n),
+      above: (n: number) => check(typeof subject === 'number' && subject > n, 'expected above ' + n),
+      least: (n: number) => check(typeof subject === 'number' && subject >= n, 'expected at least ' + n),
+      most: (n: number) => check(typeof subject === 'number' && subject <= n, 'expected at most ' + n),
+      within: (a: number, b: number) => check(typeof subject === 'number' && subject >= a && subject <= b, 'expected within ' + a + '..' + b),
+      equal: (v: unknown) => check(subject === v, 'expected to equal ' + String(v)),
+      eq: (v: unknown) => check(subject === v, 'expected to equal ' + String(v)),
+      eql: (v: unknown) => check(deepEqual(subject, v), 'expected to deep-equal ' + JSON.stringify(v)),
+      oneOf: (arr: unknown[]) => check(Array.isArray(arr) && arr.indexOf(subject) !== -1, 'expected one of ' + JSON.stringify(arr)),
+      property: (name: string) => check(subject !== null && subject !== undefined && Object.prototype.hasOwnProperty.call(subject, name), "expected property '" + name + "'"),
+      match: (re: RegExp) => check(typeof subject === 'string' && re.test(subject), 'expected to match ' + String(re)),
+      include: (v: unknown) => check(includes(subject, v), 'expected to include ' + String(v)),
+      contain: (v: unknown) => check(includes(subject, v), 'expected to include ' + String(v))
+    };
+    return chain;
+  };
+  (expect as StrictExpect).fail = (message?: string): never => { throw new Error(message ?? 'pm.expect.fail'); };
+  return expect as StrictExpect;
+}
+
 function runScript(script: string, response: JsonRecord): Record<string, 'pass' | 'fail'> {
   const results: Record<string, 'pass' | 'fail'> = {};
-  const permissive: unknown = new Proxy(function () {}, {
-    get: (_t, prop) => (prop === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
-    apply: () => permissive
-  });
   const headers = (response.headers as JsonRecord | undefined) ?? {};
   const pm = {
     test: (name: string, cb: () => void) => {
       try { cb(); results[name] = 'pass'; } catch { results[name] = 'fail'; }
     },
-    expect: permissive,
+    expect: makeStrictExpect(),
     response: {
       code: Number(response.code ?? 0),
       status: response.status,
@@ -81,7 +152,7 @@ function grpcScriptFor(methodSuffix: string): string {
     'package telecom;',
     'enum Quality { QUALITY_UNKNOWN = 0; ACTIVE = 1; }',
     'message GetReq { string user_id = 1; }',
-    'message GetResp { string user_id = 1; repeated string tags = 2; repeated Quality qualities = 3; double lat = 4; int32 count = 5; map<string, Quality> tag_quality = 6; google.protobuf.Timestamp occurred_at = 7; google.protobuf.Duration ttl = 8; google.protobuf.FieldMask mask = 9; bytes payload = 10; }',
+    'message GetResp { string user_id = 1; repeated string tags = 2; repeated Quality qualities = 3; double lat = 4; int32 count = 5; map<string, Quality> tag_quality = 6; google.protobuf.Timestamp occurred_at = 7; google.protobuf.Duration ttl = 8; google.protobuf.FieldMask mask = 9; bytes payload = 10; Quality state = 11; }',
     'service Svc { rpc Get(GetReq) returns (GetResp); rpc List(GetReq) returns (stream GetResp); }'
   ].join('\n');
   const index = parseProtoSchema(proto, deps);
@@ -161,6 +232,20 @@ describe.skipIf(!HAS_PROTOBUF)('gRPC repeated-element + ProtoJSON-name runtime v
     expect(script).not.toContain('must return exactly one terminal response message');
     expect(script).not.toContain('must return at least');
   });
+  // Round-3 fix #1: a singular enum field whose value is neither a string nor a
+  // number must fail closed (the scalar-enum branch previously returned silently
+  // on a boolean/object/array/null, a false-pass).
+  it('fails a singular enum field whose value is neither string nor number', () => {
+    const script = grpcScriptFor('/Get');
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], state: true } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], state: {} } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], state: [] } }))).toBe(true);
+  });
+  it('accepts a valid singular enum member and fails one outside the set', () => {
+    const script = grpcScriptFor('/Get');
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], state: 'ACTIVE' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], state: 'NOPE' } }))).toBe(true);
+  });
 });
 
 // Defect #1 (GraphQL): a 200 with data + field errors is legitimate partial
@@ -184,20 +269,65 @@ describe('GraphQL 200-with-errors partial success vs total failure', () => {
   });
 });
 
-// Defect (GraphQL): non-null OBJECT/interface sub-fields are presence-asserted,
-// not only non-null scalars.
-describe('GraphQL non-null composite field presence', () => {
-  it('presence-asserts a non-null object sub-field (previously omitted)', () => {
+// Round-3 fix #2 (GraphQL): assertions are generated from the query's ACTUAL
+// selection set. A non-null composite the generated query does not select must NOT
+// be asserted (that was the false-fail); a selected non-null scalar still is.
+describe('GraphQL selection-aligned field assertions', () => {
+  function meScript(): { query: string; exec: string } {
     const sdl = 'type Query { me: User } type User { id: ID! profile: Profile! } type Profile { name: String! }';
+    const index = parseGraphQLSchema(sdl, { service: 'S' });
+    const collection = buildGraphQLCollection(index, { url: '{{u}}/graphql' }) as unknown as {
+      item: Array<{ id: string; request: { body: { graphql: { query: string } } }; event: Array<{ listen: string; script: { exec: string[] } }> }>;
+    };
+    instrumentGraphQLCollection(collection as unknown as JsonRecord, index);
+    const item = collection.item.find((entry) => entry.id === 'query.me')!;
+    return { query: item.request.body.graphql.query, exec: item.event.find((event) => event.listen === 'test')!.script.exec.join('\n') };
+  }
+  it('does not assert a non-null composite the generated query does not select', () => {
+    const { query, exec } = meScript();
+    expect(query).toContain('id');
+    expect(query).not.toContain('profile');
+    expect(exec).not.toContain("'profile'");
+    expect(exec).toContain("User is missing non-null field 'id'");
+  });
+  it('does not false-fail a valid response that omits the unselected composite', () => {
+    const { exec } = meScript();
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { me: { id: 'x' } } } }))).toBe(false);
+  });
+  it('fails when a selected non-null scalar field is missing', () => {
+    const { exec } = meScript();
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { me: {} } } }))).toBe(true);
+  });
+});
+
+// Round-3 fix #3 (GraphQL): enum membership, Int 32-bit range, and per-element
+// list validation are enforced at runtime, not merely type-of.
+describe('GraphQL scalar/enum/list runtime validation', () => {
+  function scriptFor(sdl: string, id: string): string {
     const index = parseGraphQLSchema(sdl, { service: 'S' });
     const collection = buildGraphQLCollection(index, { url: '{{u}}/graphql' }) as unknown as {
       item: Array<{ id: string; event: Array<{ listen: string; script: { exec: string[] } }> }>;
     };
     instrumentGraphQLCollection(collection as unknown as JsonRecord, index);
-    const item = collection.item.find((entry) => entry.id === 'query.me')!;
-    const exec = item.event.find((event) => event.listen === 'test')!.script.exec.join('\n');
-    expect(exec).toContain("User is missing non-null field 'profile'");
-    expect(exec).toContain("User is missing non-null field 'id'");
+    const item = collection.item.find((entry) => entry.id === id)!;
+    return item.event.find((event) => event.listen === 'test')!.script.exec.join('\n');
+  }
+  const rowSdl = 'enum Status { ACTIVE INACTIVE } type Row { id: ID! count: Int! state: Status! } type Query { row: Row }';
+
+  it('passes a valid enum member and fails a value outside the enum set', () => {
+    const exec = scriptFor(rowSdl, 'query.row');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { row: { id: 'x', count: 1, state: 'ACTIVE' } } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { row: { id: 'x', count: 1, state: 'BOGUS' } } } }))).toBe(true);
+  });
+  it('fails an Int outside the signed 32-bit range and a fractional Int', () => {
+    const exec = scriptFor(rowSdl, 'query.row');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { row: { id: 'x', count: 4294967296, state: 'ACTIVE' } } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { row: { id: 'x', count: 1.5, state: 'ACTIVE' } } } }))).toBe(true);
+  });
+  it('validates every list element, not only the first', () => {
+    const exec = scriptFor('type Plan { id: ID! } type Query { plans: [Plan!]! }', 'query.plans');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { plans: [{ id: 'a' }, { id: 'b' }] } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { plans: [{ id: 'a' }, {}] } } }))).toBe(true);
   });
 });
 

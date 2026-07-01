@@ -88,6 +88,8 @@ export interface GraphQLContractIndex {
   operations: GraphQLOperationDef[];
   /** Selectable object/interface shapes keyed by type name, for field-presence assertions. */
   objectShapes: Record<string, GraphQLObjectShape>;
+  /** Enum value sets keyed by enum type name, for runtime membership assertions. */
+  enumValues: Record<string, string[]>;
   warnings: string[];
 }
 
@@ -261,10 +263,18 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
 
   for (const operation of operations) warnings.push(...operation.warnings);
 
+  const enumValues: Record<string, string[]> = {};
+  for (const namedType of Object.values(schema.getTypeMap())) {
+    if (isEnumType(namedType)) {
+      enumValues[namedType.name] = namedType.getValues().map((value) => value.name);
+    }
+  }
+
   return {
     service: opts.service?.trim() || 'GraphQL',
     operations,
     objectShapes,
+    enumValues,
     warnings
   };
 }

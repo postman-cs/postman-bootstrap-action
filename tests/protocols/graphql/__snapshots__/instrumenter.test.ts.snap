@@ -22,11 +22,20 @@ pm.test("[query lineByMsisdn] data.lineByMsisdn is present", function () {
 pm.test("[query lineByMsisdn] data.lineByMsisdn matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["lineByMsisdn"];
     if (value === undefined || value === null) return;
-    pm.expect(value, "expected Line object").to.be.an("object");
+    pm.expect(value, "query.lineByMsisdn: expected Line object").to.be.an("object");
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
+    if (value["id"] !== undefined && value["id"] !== null) {
+        pm.expect(value["id"], "query.lineByMsisdn.id: expected ID scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
-    pm.expect(value, "Line is missing non-null field 'plan'").to.have.property("plan");
+    if (value["msisdn"] !== undefined && value["msisdn"] !== null) {
+        pm.expect(value["msisdn"], "query.lineByMsisdn.msisdn: expected String scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
+    if (value["status"] !== undefined && value["status"] !== null) {
+        pm.expect(value["status"], "query.lineByMsisdn.status: expected enum LineStatus as string").to.be.a("string");
+        pm.expect(value["status"], "query.lineByMsisdn.status: value is not a member of enum LineStatus").to.be.oneOf(["ACTIVE","SUSPENDED","PORTING"]);
+    }
 });
 pm.test("[query lineByMsisdn] required variables are supplied", function () {
     var body = (pm.request && pm.request.body) || {};
@@ -64,13 +73,27 @@ pm.test("[query plans] data.plans is present", function () {
 pm.test("[query plans] data.plans matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["plans"];
     if (value === undefined || value === null) return;
-    pm.expect(value, "expected a list").to.be.an("array");
-    if (value.length > 0) {
-        pm.expect(value[0], "expected Plan object").to.be.an("object");
-        pm.expect(value[0], "Plan is missing non-null field 'id'").to.have.property("id");
-        pm.expect(value[0], "Plan is missing non-null field 'monthlyPriceCents'").to.have.property("monthlyPriceCents");
-        pm.expect(value[0], "Plan is missing non-null field 'name'").to.have.property("name");
-    }
+    pm.expect(value, "query.plans: expected a list").to.be.an("array");
+    value.forEach(function (__el) {
+        pm.expect(__el, "query.plans (list element): expected Plan object").to.be.an("object");
+        if (__el["dataCapGb"] !== undefined && __el["dataCapGb"] !== null) {
+            pm.expect(__el["dataCapGb"], "query.plans (list element).dataCapGb: expected Int scalar").to.be.a("number");
+            pm.expect(Number.isInteger(__el["dataCapGb"]) && __el["dataCapGb"] >= -2147483648 && __el["dataCapGb"] <= 2147483647, "query.plans (list element).dataCapGb: Int must be a signed 32-bit integer").to.equal(true);
+        }
+        pm.expect(__el, "Plan is missing non-null field 'id'").to.have.property("id");
+        if (__el["id"] !== undefined && __el["id"] !== null) {
+            pm.expect(__el["id"], "query.plans (list element).id: expected ID scalar (serialized as a string)").to.be.a("string");
+        }
+        pm.expect(__el, "Plan is missing non-null field 'monthlyPriceCents'").to.have.property("monthlyPriceCents");
+        if (__el["monthlyPriceCents"] !== undefined && __el["monthlyPriceCents"] !== null) {
+            pm.expect(__el["monthlyPriceCents"], "query.plans (list element).monthlyPriceCents: expected Int scalar").to.be.a("number");
+            pm.expect(Number.isInteger(__el["monthlyPriceCents"]) && __el["monthlyPriceCents"] >= -2147483648 && __el["monthlyPriceCents"] <= 2147483647, "query.plans (list element).monthlyPriceCents: Int must be a signed 32-bit integer").to.equal(true);
+        }
+        pm.expect(__el, "Plan is missing non-null field 'name'").to.have.property("name");
+        if (__el["name"] !== undefined && __el["name"] !== null) {
+            pm.expect(__el["name"], "query.plans (list element).name: expected String scalar (serialized as a string)").to.be.a("string");
+        }
+    });
 });",
     "id": "query.plans",
   },
@@ -94,10 +117,18 @@ pm.test("[query subscriber] data.subscriber is present", function () {
 pm.test("[query subscriber] data.subscriber matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["subscriber"];
     if (value === undefined || value === null) return;
-    pm.expect(value, "expected Subscriber object").to.be.an("object");
+    pm.expect(value, "query.subscriber: expected Subscriber object").to.be.an("object");
     pm.expect(value, "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
+    if (value["displayName"] !== undefined && value["displayName"] !== null) {
+        pm.expect(value["displayName"], "query.subscriber.displayName: expected String scalar (serialized as a string)").to.be.a("string");
+    }
+    if (value["email"] !== undefined && value["email"] !== null) {
+        pm.expect(value["email"], "query.subscriber.email: expected String scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Subscriber is missing non-null field 'id'").to.have.property("id");
-    pm.expect(value, "Subscriber is missing non-null field 'lines'").to.have.property("lines");
+    if (value["id"] !== undefined && value["id"] !== null) {
+        pm.expect(value["id"], "query.subscriber.id: expected ID scalar (serialized as a string)").to.be.a("string");
+    }
 });
 pm.test("[query subscriber] required variables are supplied", function () {
     var body = (pm.request && pm.request.body) || {};
@@ -135,13 +166,21 @@ pm.test("[query subscribers] data.subscribers is present", function () {
 pm.test("[query subscribers] data.subscribers matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["subscribers"];
     if (value === undefined || value === null) return;
-    pm.expect(value, "expected a list").to.be.an("array");
-    if (value.length > 0) {
-        pm.expect(value[0], "expected Subscriber object").to.be.an("object");
-        pm.expect(value[0], "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
-        pm.expect(value[0], "Subscriber is missing non-null field 'id'").to.have.property("id");
-        pm.expect(value[0], "Subscriber is missing non-null field 'lines'").to.have.property("lines");
-    }
+    pm.expect(value, "query.subscribers: expected a list").to.be.an("array");
+    value.forEach(function (__el) {
+        pm.expect(__el, "query.subscribers (list element): expected Subscriber object").to.be.an("object");
+        pm.expect(__el, "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
+        if (__el["displayName"] !== undefined && __el["displayName"] !== null) {
+            pm.expect(__el["displayName"], "query.subscribers (list element).displayName: expected String scalar (serialized as a string)").to.be.a("string");
+        }
+        if (__el["email"] !== undefined && __el["email"] !== null) {
+            pm.expect(__el["email"], "query.subscribers (list element).email: expected String scalar (serialized as a string)").to.be.a("string");
+        }
+        pm.expect(__el, "Subscriber is missing non-null field 'id'").to.have.property("id");
+        if (__el["id"] !== undefined && __el["id"] !== null) {
+            pm.expect(__el["id"], "query.subscribers (list element).id: expected ID scalar (serialized as a string)").to.be.a("string");
+        }
+    });
 });",
     "id": "query.subscribers",
   },
@@ -166,11 +205,20 @@ pm.test("[mutation provisionLine] data.provisionLine is present", function () {
 pm.test("[mutation provisionLine] data.provisionLine matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["provisionLine"];
     if (value === undefined || value === null) return;
-    pm.expect(value, "expected Line object").to.be.an("object");
+    pm.expect(value, "mutation.provisionLine: expected Line object").to.be.an("object");
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
+    if (value["id"] !== undefined && value["id"] !== null) {
+        pm.expect(value["id"], "mutation.provisionLine.id: expected ID scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
-    pm.expect(value, "Line is missing non-null field 'plan'").to.have.property("plan");
+    if (value["msisdn"] !== undefined && value["msisdn"] !== null) {
+        pm.expect(value["msisdn"], "mutation.provisionLine.msisdn: expected String scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
+    if (value["status"] !== undefined && value["status"] !== null) {
+        pm.expect(value["status"], "mutation.provisionLine.status: expected enum LineStatus as string").to.be.a("string");
+        pm.expect(value["status"], "mutation.provisionLine.status: value is not a member of enum LineStatus").to.be.oneOf(["ACTIVE","SUSPENDED","PORTING"]);
+    }
 });
 pm.test("[mutation provisionLine] required variables are supplied", function () {
     var body = (pm.request && pm.request.body) || {};
@@ -208,11 +256,20 @@ pm.test("[mutation suspendLine] data.suspendLine is present", function () {
 pm.test("[mutation suspendLine] data.suspendLine matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["suspendLine"];
     if (value === undefined || value === null) return;
-    pm.expect(value, "expected Line object").to.be.an("object");
+    pm.expect(value, "mutation.suspendLine: expected Line object").to.be.an("object");
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
+    if (value["id"] !== undefined && value["id"] !== null) {
+        pm.expect(value["id"], "mutation.suspendLine.id: expected ID scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
-    pm.expect(value, "Line is missing non-null field 'plan'").to.have.property("plan");
+    if (value["msisdn"] !== undefined && value["msisdn"] !== null) {
+        pm.expect(value["msisdn"], "mutation.suspendLine.msisdn: expected String scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
+    if (value["status"] !== undefined && value["status"] !== null) {
+        pm.expect(value["status"], "mutation.suspendLine.status: expected enum LineStatus as string").to.be.a("string");
+        pm.expect(value["status"], "mutation.suspendLine.status: value is not a member of enum LineStatus").to.be.oneOf(["ACTIVE","SUSPENDED","PORTING"]);
+    }
 });
 pm.test("[mutation suspendLine] required variables are supplied", function () {
     var body = (pm.request && pm.request.body) || {};
@@ -250,11 +307,20 @@ pm.test("[subscription lineStatusChanged] data.lineStatusChanged is present", fu
 pm.test("[subscription lineStatusChanged] data.lineStatusChanged matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["lineStatusChanged"];
     if (value === undefined || value === null) return;
-    pm.expect(value, "expected Line object").to.be.an("object");
+    pm.expect(value, "subscription.lineStatusChanged: expected Line object").to.be.an("object");
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
+    if (value["id"] !== undefined && value["id"] !== null) {
+        pm.expect(value["id"], "subscription.lineStatusChanged.id: expected ID scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
-    pm.expect(value, "Line is missing non-null field 'plan'").to.have.property("plan");
+    if (value["msisdn"] !== undefined && value["msisdn"] !== null) {
+        pm.expect(value["msisdn"], "subscription.lineStatusChanged.msisdn: expected String scalar (serialized as a string)").to.be.a("string");
+    }
     pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
+    if (value["status"] !== undefined && value["status"] !== null) {
+        pm.expect(value["status"], "subscription.lineStatusChanged.status: expected enum LineStatus as string").to.be.a("string");
+        pm.expect(value["status"], "subscription.lineStatusChanged.status: value is not a member of enum LineStatus").to.be.oneOf(["ACTIVE","SUSPENDED","PORTING"]);
+    }
 });
 pm.test("[subscription lineStatusChanged] required variables are supplied", function () {
     var body = (pm.request && pm.request.body) || {};

@@ -2,9 +2,9 @@ import type {
   GraphQLArgumentDef,
   GraphQLContractIndex,
   GraphQLObjectShape,
-  GraphQLOperationDef,
-  GraphQLTypeRef
+  GraphQLOperationDef
 } from './parser.js';
+import { renderSelection, selectFields } from './selection.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -29,33 +29,6 @@ export interface BuildGraphQLCollectionOptions {
 }
 
 const DEFAULT_URL = '{{baseUrl}}/graphql';
-const SELECTION_DEPTH = 1;
-
-function indent(depth: number): string {
-  return '  '.repeat(depth);
-}
-
-/**
- * Build a leaf-or-shallow selection set for an object/interface return type:
- * scalar/enum sub-fields are selected directly; one level of nested object
- * fields is expanded to their scalar leaves so the query is valid GraphQL.
- */
-function selectionSet(typeRef: GraphQLTypeRef, index: GraphQLContractIndex, depth: number): string {
-  if (typeRef.kind !== 'object' && typeRef.kind !== 'interface') return '';
-  const shape = index.objectShapes[typeRef.name];
-  if (!shape || shape.fields.length === 0) return ' { __typename }';
-  const lines: string[] = [];
-  for (const field of shape.fields) {
-    if (field.type.kind === 'scalar' || field.type.kind === 'enum') {
-      lines.push(`${indent(depth + 1)}${field.name}`);
-    } else if ((field.type.kind === 'object' || field.type.kind === 'interface') && depth < SELECTION_DEPTH) {
-      const nested = selectionSet(field.type, index, depth + 1);
-      lines.push(`${indent(depth + 1)}${field.name}${nested || ' { __typename }'}`);
-    }
-  }
-  if (lines.length === 0) return ' { __typename }';
-  return ` {\n${lines.join('\n')}\n${indent(depth)}}`;
-}
 
 function argTypeSdl(arg: GraphQLArgumentDef): string {
   const ref = arg.type;
@@ -80,7 +53,7 @@ export function buildOperationDocument(operation: GraphQLOperationDef, index: Gr
   const fieldArgs = declaredVars.length
     ? `(${declaredVars.map((arg) => `${arg.name}: $${arg.name}`).join(', ')})`
     : '';
-  const selection = selectionSet(operation.returns, index, 1);
+  const selection = renderSelection(selectFields(operation.returns, index, 1), 1);
   return `${operation.kind} ${opName}${varDecls} {\n  ${operation.field}${fieldArgs}${selection}\n}`;
 }
 

@@ -52,9 +52,35 @@ describe('asyncapi parser', () => {
     expect(conventionWarning).toBe(true);
   });
 
-  it('rejects AsyncAPI 3.x with ASYNCAPI_VERSION_UNSUPPORTED', async () => {
-    const doc = 'asyncapi: 3.0.0\ninfo:\n  title: X\n  version: 1.0.0\nchannels: {}\n';
-    await expect(parseAsyncApi(doc)).rejects.toThrow(/ASYNCAPI_VERSION_UNSUPPORTED/);
+  it('parses an AsyncAPI 3.0 document (host+pathname server, request/reply)', async () => {
+    const index = await parseAsyncApi(read('ws-v3.yaml'));
+    expect(index.version).toBe('3.0.0');
+    expect(index.channels).toHaveLength(1);
+    const channel = index.channels[0];
+    expect(channel.transport).toBe('ws-raw');
+    // v3 server url is synthesised from protocol+host+pathname, then joined with the channel address.
+    expect(channel.url).toBe('wss://stream.example.com/v3/telemetry');
+    expect(channel.messages).toHaveLength(2);
+    // The 3.x operation reply maps to the request message's acknowledgement schema.
+    const command = channel.messages.find((m) => m.eventName === 'telemetryCommand');
+    expect(command?.ackSchema).toBeDefined();
+    expect(command?.ackSource).toBe('reply');
+  });
+
+  it('rejects an out-of-range AsyncAPI version via the version gate', async () => {
+    // The bundled parser only recognises 2.0-2.6 and 3.0, so a version outside our
+    // supported set that the parser nonetheless yields (here injected as 3.1.0) is
+    // rejected by our explicit gate. A version the parser cannot parse at all (e.g.
+    // a real 3.1.0 body) is rejected upstream as ASYNCAPI_PARSE_FAILED.
+    const stubParser = {
+      parse: async () => ({ document: { version: () => '3.1.0' }, diagnostics: [] })
+    };
+    await expect(parseAsyncApi('asyncapi: 3.1.0', { parser: stubParser })).rejects.toThrow(/ASYNCAPI_VERSION_UNSUPPORTED/);
+  });
+
+  it('rejects an unparseable AsyncAPI version body as ASYNCAPI_PARSE_FAILED', async () => {
+    const doc = 'asyncapi: 3.1.0\ninfo:\n  title: X\n  version: 1.0.0\nchannels: {}\n';
+    await expect(parseAsyncApi(doc)).rejects.toThrow(/ASYNCAPI_PARSE_FAILED|ASYNCAPI_VERSION_UNSUPPORTED/);
   });
 
   it('rejects empty input', async () => {
@@ -143,5 +169,65 @@ describe('asyncapi instrumenter (static validation)', () => {
     // Same node count as expected (2), but one identity duplicated and one dropped.
     (collection.item as JsonRecord[])[0].children = [children[0], children[0]];
     expect(() => instrumentAsyncApiCollection(collection, index)).toThrow(/ASYNCAPI_MESSAGE_COVERAGE_FAILED/);
+  });
+});
+
+describe('asyncapi 3.0 collection build', () => {
+  it('builds a ws-raw-request per channel with EC-schema-valid children for a 3.0 document', async () => {
+    const index = await parseAsyncApi(read('ws-v3.yaml'));
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const request = (collection.item as JsonRecord[])[0];
+    expect(request.type).toBe('ws-raw-request');
+    expect(ecIssues(request)).toBeFalsy();
+    for (const child of request.children as JsonRecord[]) {
+      expect(child.type).toBe('ws-raw-message');
+      expect(ecIssues(child)).toBeFalsy();
+    }
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    // Both messages carry conformant examples -> no schema mismatch.
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MESSAGE_SCHEMA_MISMATCH'))).toBe(false);
+  });
+});
+
+describe('asyncapi non-JSON payload validation', () => {
+  it('validates a text/plain string example against its string schema and an xml object example against its object schema', async () => {
+    const index = await parseAsyncApi(read('nonjson.yaml'));
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    // Conformant text + xml examples must not mismatch and must not fall into the
+    // blanket "not validated" bucket.
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MESSAGE_SCHEMA_MISMATCH'))).toBe(false);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_NON_JSON_PAYLOAD_NOT_VALIDATED'))).toBe(false);
+  });
+
+  it('flags a text/plain example that violates its string schema (pattern)', async () => {
+    const index = await parseAsyncApi(read('nonjson.yaml'));
+    const line = index.channels[0].messages.find((m) => m.contentKind === 'text')!;
+    expect(line).toBeDefined();
+    line.sample = 'DEBUG: not a log line';
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MESSAGE_SCHEMA_MISMATCH'))).toBe(true);
+  });
+
+  it('flags an xml object example that violates its object schema', async () => {
+    const index = await parseAsyncApi(read('nonjson.yaml'));
+    const xml = index.channels[0].messages.find((m) => m.contentKind === 'xml')!;
+    expect(xml).toBeDefined();
+    xml.sample = { code: 'not-an-integer' };
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MESSAGE_SCHEMA_MISMATCH'))).toBe(true);
+  });
+
+  it('does not false-fail a raw wire-string example supplied for a structured schema', async () => {
+    const index = await parseAsyncApi(read('nonjson.yaml'));
+    const xml = index.channels[0].messages.find((m) => m.contentKind === 'xml')!;
+    // A raw XML wire string for an object schema cannot be structurally validated.
+    xml.sample = '<status><code>200</code></status>';
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MESSAGE_SCHEMA_MISMATCH'))).toBe(false);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_NON_JSON_PAYLOAD_NOT_VALIDATED'))).toBe(true);
   });
 });

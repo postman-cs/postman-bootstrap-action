@@ -1,4 +1,4 @@
-// AsyncAPI (2.0-2.6) -> typed WebSocket / Socket.IO contract index.
+// AsyncAPI (2.0-2.6 and 3.0) -> typed WebSocket / Socket.IO contract index.
 //
 // Parsing uses `@postman/asyncapi-parser`, whose intent-driven model unifies the
 // spec versions behind one interface (channels/operations/messages/servers). We
@@ -7,8 +7,13 @@
 // instrumenter (message payload schema validation vs the AsyncAPI message
 // schemas). Nothing here is Postman-specific; it is AsyncAPI reflection -> data.
 //
-// Scope is AsyncAPI 2.x only (2.0.0-2.6.0), matching our AsyncAPIToCollection
-// generator (Spec Hub / cloud-ec); 3.x is rejected with ASYNCAPI_VERSION_UNSUPPORTED.
+// Scope is AsyncAPI 2.0.0-2.6.0 and 3.0.0. The parser's intent model normalises
+// both major versions (2.x publish/subscribe operations and 3.x send/receive
+// operations both surface as `channel.messages()`; a v3 server url is synthesised
+// from protocol+host+pathname). AsyncAPI 3.x `reply` (request/reply) is mapped to
+// the message acknowledgement schema, the normative analogue of the 2.x Socket.IO
+// `x-ack` convention. Any other version is rejected with ASYNCAPI_VERSION_UNSUPPORTED.
+//
 // Socket.IO has no normative AsyncAPI binding, so it is inferred from convention
 // (server protocol, an `x-ack` on messages, or an `x-socketio` extension) and
 // every such inference emits an ASYNCAPI_SOCKETIO_CONVENTION warning: no silent
@@ -33,11 +38,16 @@ export interface AsyncApiMessageDescriptor {
   // Socket.IO event name (message name/title/id); also the display title.
   eventName: string;
   title: string;
+  // Effective content type (message contentType, else the document
+  // defaultContentType, else application/json), matching AsyncAPI semantics.
   contentType?: string;
   // Raw JSON Schema object for the payload (from SchemaInterface.json()); undefined when absent.
   payloadSchema?: JsonRecord;
-  // Raw JSON Schema object for the acknowledgement (from `x-ack`); undefined when absent.
+  // Raw JSON Schema object for the acknowledgement; undefined when absent. Sourced
+  // from the 2.x Socket.IO `x-ack` convention or a 3.x operation `reply` message.
   ackSchema?: JsonRecord;
+  // How ackSchema was derived, for precise warnings/notes. undefined when no ack.
+  ackSource?: 'x-ack' | 'reply';
   // Concrete sample used as the generated message content. Derived from a spec
   // example when present (hasExample true), otherwise synthesized from the schema.
   sample: unknown;
@@ -95,9 +105,11 @@ function asArray<T>(value: unknown): T[] {
 // parser stays decoupled from the concrete dependency version.
 interface DocumentModel {
   version(): string;
+  defaultContentType?(): string | undefined;
   info(): { title(): string } | undefined;
   servers(): { all(): ServerModel[] };
   channels(): { all(): ChannelModel[] };
+  operations?(): { all(): OperationModel[] };
   json(): JsonRecord;
 }
 interface ServerModel {
@@ -123,6 +135,13 @@ interface MessageModel {
   payload(): SchemaModel | undefined;
   examples(): { all(): ExampleModel[] };
   json(): JsonRecord;
+}
+interface OperationModel {
+  messages(): { all(): MessageModel[] };
+  reply?(): OperationReplyModel | undefined;
+}
+interface OperationReplyModel {
+  messages(): { all(): MessageModel[] };
 }
 interface SchemaModel {
   json(): JsonRecord;
@@ -267,11 +286,46 @@ function wsBindingKeyValues(channel: ChannelModel): { headers: AsyncApiKeyValue[
   };
 }
 
-function messageDescriptor(message: MessageModel, warnings: string[], channelId: string): AsyncApiMessageDescriptor {
+// AsyncAPI 3.x request/reply: map each request message to its operation's reply
+// payload schema. The reply schema is the normative analogue of the 2.x Socket.IO
+// x-ack acknowledgement schema, so it feeds the same ackSchema slot. Defensive:
+// documents without operations/reply (all 2.x, and 3.x without reply) yield an
+// empty map and change nothing. Keyed by the parser's stable message id().
+function buildReplySchemaByMessageId(document: DocumentModel): Map<string, JsonRecord> {
+  const map = new Map<string, JsonRecord>();
+  const operations = document.operations?.().all() ?? [];
+  for (const operation of operations) {
+    let reply: OperationReplyModel | undefined;
+    try {
+      reply = operation.reply?.();
+    } catch {
+      reply = undefined;
+    }
+    if (!reply) continue;
+    const replyMessage = reply.messages().all().find((message) => message.hasPayload());
+    const replySchema = replyMessage ? asRecord(replyMessage.payload()?.json()) ?? undefined : undefined;
+    if (!replySchema) continue;
+    for (const requestMessage of operation.messages().all()) {
+      const id = requestMessage.id();
+      if (id && !map.has(id)) map.set(id, replySchema);
+    }
+  }
+  return map;
+}
+
+function messageDescriptor(
+  message: MessageModel,
+  warnings: string[],
+  channelId: string,
+  defaultContentType: string | undefined,
+  replyByMessageId: Map<string, JsonRecord>
+): AsyncApiMessageDescriptor {
   const id = message.id() || message.name() || message.title() || 'message';
   const eventName = message.name() || message.title() || message.id() || channelId;
   const title = message.title() || message.name() || id;
-  const contentType = message.contentType();
+  // AsyncAPI content-type resolution: message contentType, else the document
+  // defaultContentType, else application/json.
+  const contentType = message.contentType() || defaultContentType || 'application/json';
   const contentKind = contentKindFor(contentType);
 
   const payloadSchema = message.hasPayload() ? asRecord(message.payload()?.json()) ?? undefined : undefined;
@@ -280,7 +334,10 @@ function messageDescriptor(message: MessageModel, warnings: string[], channelId:
   }
 
   const rawMessage = asRecord(message.json()) ?? {};
-  const ackSchema = asRecord(rawMessage['x-ack']) ?? undefined;
+  const xAckSchema = asRecord(rawMessage['x-ack']) ?? undefined;
+  const replySchema = replyByMessageId.get(message.id());
+  const ackSchema = xAckSchema ?? replySchema;
+  const ackSource: AsyncApiMessageDescriptor['ackSource'] = xAckSchema ? 'x-ack' : replySchema ? 'reply' : undefined;
 
   const examples = message.examples().all().filter((example) => example.hasPayload());
   const hasExample = examples.length > 0;
@@ -294,7 +351,7 @@ function messageDescriptor(message: MessageModel, warnings: string[], channelId:
   }
 
   if (contentKind === 'binary') {
-    warnings.push(`ASYNCAPI_BINARY_PAYLOAD_NOT_VALIDATED: message ${id} on channel ${channelId} has a binary/non-text content type (${contentType ?? 'unknown'}); its payload is not schema-validated`);
+    warnings.push(`ASYNCAPI_BINARY_PAYLOAD_NOT_VALIDATED: message ${id} on channel ${channelId} has a binary/non-text content type (${contentType}); its opaque payload is emitted as a base64 template and is not schema-validated`);
   }
 
   return {
@@ -304,6 +361,7 @@ function messageDescriptor(message: MessageModel, warnings: string[], channelId:
     contentType,
     payloadSchema,
     ackSchema,
+    ackSource,
     sample,
     hasExample,
     contentKind,
@@ -315,6 +373,8 @@ function channelDescriptor(
   channel: ChannelModel,
   document: DocumentModel,
   documentJson: JsonRecord,
+  defaultContentType: string | undefined,
+  replyByMessageId: Map<string, JsonRecord>,
   options: AsyncApiParseOptions
 ): AsyncApiChannelDescriptor {
   const warnings: string[] = [];
@@ -329,7 +389,9 @@ function channelDescriptor(
     warnings.push(`ASYNCAPI_NO_SERVER_URL: channel ${channel.id()} has no resolvable server url; the generated request url is derived from the channel address only and must be completed before use`);
   }
 
-  const messages = messagesRaw.map((message) => messageDescriptor(message, warnings, channel.id()));
+  const messages = messagesRaw.map((message) =>
+    messageDescriptor(message, warnings, channel.id(), defaultContentType, replyByMessageId)
+  );
   if (messages.length === 0) {
     warnings.push(`ASYNCAPI_CHANNEL_NO_MESSAGES: channel ${channel.id()} declares no messages; the generated request carries no message templates`);
   }
@@ -362,13 +424,13 @@ function channelDescriptor(
   };
 }
 
-function assertAsyncApi2(version: string): void {
-  const match = /^2\.(\d+)/.exec(version);
-  if (!match || Number(match[1]) > 6) {
-    throw new Error(
-      `ASYNCAPI_VERSION_UNSUPPORTED: AsyncAPI ${version || '<unknown>'} is not supported; only AsyncAPI 2.0.0-2.6.0 documents are ingested for WebSocket/Socket.IO contract generation`
-    );
-  }
+function assertSupportedAsyncApiVersion(version: string): void {
+  const v2 = /^2\.(\d+)/.exec(version);
+  if (v2 && Number(v2[1]) <= 6) return;
+  if (/^3\.0(?:\.\d+)?$/.test(version)) return;
+  throw new Error(
+    `ASYNCAPI_VERSION_UNSUPPORTED: AsyncAPI ${version || '<unknown>'} is not supported; only AsyncAPI 2.0.0-2.6.0 and 3.0.0 documents are ingested for WebSocket/Socket.IO contract generation`
+  );
 }
 
 export async function parseAsyncApi(content: string, options: AsyncApiParseOptions = {}): Promise<AsyncApiContractIndex> {
@@ -393,7 +455,7 @@ export async function parseAsyncApi(content: string, options: AsyncApiParseOptio
 
   const document = output.document as unknown as DocumentModel;
   const version = document.version();
-  assertAsyncApi2(version);
+  assertSupportedAsyncApiVersion(version);
 
   const warnings: string[] = errors
     .map((error) => `ASYNCAPI_DIAGNOSTIC: ${String(error.message ?? '')}`)
@@ -401,11 +463,13 @@ export async function parseAsyncApi(content: string, options: AsyncApiParseOptio
 
   const documentJson = document.json();
   const title = document.info()?.title() || 'AsyncAPI';
+  const defaultContentType = document.defaultContentType?.();
+  const replyByMessageId = buildReplySchemaByMessageId(document);
 
   const channels = document
     .channels()
     .all()
-    .map((channel) => channelDescriptor(channel, document, documentJson, options))
+    .map((channel) => channelDescriptor(channel, document, documentJson, defaultContentType, replyByMessageId, options))
     .sort((a, b) => a.id.localeCompare(b.id));
 
   if (channels.length === 0) {

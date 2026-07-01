@@ -1,0 +1,45 @@
+asyncapi: '2.6.0'
+info:
+  title: NonJson Streaming
+  version: 1.0.0
+  description: Synthetic AsyncAPI fixture exercising non-JSON (text/plain, application/xml) payload validation.
+servers:
+  production:
+    url: wss://nonjson.example.com
+    protocol: wss
+channels:
+  logs:
+    subscribe:
+      message:
+        $ref: '#/components/messages/LogLine'
+    publish:
+      message:
+        $ref: '#/components/messages/StatusXml'
+components:
+  messages:
+    LogLine:
+      name: logLine
+      contentType: text/plain
+      payload:
+        type: string
+        pattern: '^LOG:'
+      examples:
+        - name: sample
+          payload: 'LOG: started'
+    StatusXml:
+      name: statusXml
+      contentType: application/xml
+      payload:
+        type: object
+        required:
+          - code
+        properties:
+          code:
+            type: integer
+          message:
+            type: string
+      examples:
+        - name: sample
+          payload:
+            code: 200
+            message: ok

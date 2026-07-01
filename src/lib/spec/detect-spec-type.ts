@@ -12,7 +12,7 @@ export type SpecType = 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi';
  * - grpc  -> Protocol Buffers `.proto` IDL
  * - soap  -> WSDL 1.1 / 2.0 XML
  * - graphql -> GraphQL SDL or introspection JSON (`__schema`)
- * - asyncapi -> AsyncAPI 2.x document (`asyncapi:` version key) for WebSocket / Socket.IO
+ * - asyncapi -> AsyncAPI 2.x/3.0 document (`asyncapi:` version key) for WebSocket / Socket.IO
  * - openapi -> OpenAPI 3.0 / 3.1 (or Swagger 2.0, rejected later by the loader)
  */
 export function detectSpecType(content: string, fileName?: string): SpecType {

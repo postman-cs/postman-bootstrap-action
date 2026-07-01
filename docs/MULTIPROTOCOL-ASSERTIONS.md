@@ -12,9 +12,9 @@ types are supported, the spec each is derived from, and where that support is gr
 | GraphQL | `http` body mode `graphql` (v2) | Yes | GraphQL SDL or introspection JSON | GraphQL schema |
 | SOAP | `http` POST, raw XML body (v2) | Yes (plain HTTP) | WSDL 1.1 / 2.0 | WSDL |
 | gRPC | `grpc-request` (v3 EC) | Yes | Protocol Buffers `.proto` | `.proto` |
-| WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI 2.0-2.6 | AsyncAPI document |
-| Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI 2.0-2.6 | AsyncAPI document |
-| MQTT / LLM / MCP | `mqtt-request` / `llm-request` / `mcp-request` | No (label-only) | n/a | out of scope |
+| WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI 2.0-2.6 today; AsyncAPI 3.x required | AsyncAPI document |
+| Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI 2.0-2.6 today; AsyncAPI 3.x required | AsyncAPI document |
+| MQTT / LLM / MCP | `mqtt-request` / `llm-request` / `mcp-request` | No (label-only) | Required future protocol specs | Required future protocol specs |
 
 GraphQL-over-HTTP and SOAP-over-HTTP are emitted as ordinary v2 `http` requests, so they run in the
 same legacy Postman CLI / Newman HTTP execution path the action already uses for REST. gRPC requires
@@ -26,6 +26,25 @@ schema/example validation applied statically at generation time. The unified run
 `ws-*` item types, so they carry `runnableInCi: false`: the assertions are persisted for authoring
 and structural validation but are not executed in CI. This runner limitation is upstream, not in this
 action.
+
+### Required production-grade coverage
+
+The following protocol surfaces are not optional gaps. They must be supported by bootstrap with
+production-grade contract assertion generation:
+
+- **WebSocket / Socket.IO via AsyncAPI:** bootstrap currently generates native EC items and validates
+  message schemas/examples only at generation time. Because Postman CLI prunes `ws-*` items and those
+  items do not expose a test-script slot, bootstrap cannot yet enforce live request/response/message
+  behavior in CI. Production-grade support requires executable runtime assertions or an equivalent
+  runner path for message exchange behavior.
+- **AsyncAPI non-JSON payloads:** bootstrap now emits an explicit warning when a message has a schema
+  and non-JSON example payload, but it does not validate that example against the schema. Production
+  support must validate non-JSON payload examples, not only warn.
+- **AsyncAPI 3.x:** bootstrap currently ingests AsyncAPI 2.0-2.6 only. Production support must include
+  AsyncAPI 3.x parsing, collection generation, and assertion generation.
+- **MQTT / LLM / MCP:** bootstrap lists the Postman item types but does not ingest specs or generate
+  contract enforcement for them. Production support must define the accepted contract source for each
+  protocol and generate enforceable assertions from it.
 
 ### gRPC assertion coverage
 

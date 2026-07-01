@@ -1,4 +1,5 @@
 import type { GraphQLContractIndex, GraphQLOperationDef, GraphQLTypeRef } from './parser.js';
+import { selectFields, type SelectedField } from './selection.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -24,21 +25,55 @@ const GRAPHQL_INSTRUMENT_LIMITS = {
   maxTestScriptBytes: 900_000
 };
 
-/** The Chai-friendly type token for a scalar leaf, used in `to.be.a(...)` assertions. */
-function chaiScalarType(typeName: string): 'number' | 'string' | 'boolean' | null {
+// Signed 32-bit bounds for the GraphQL `Int` scalar (the spec defines Int as a
+// signed 32-bit integer; a value outside this range is a serialization error).
+const GRAPHQL_INT_MIN = -2147483648;
+const GRAPHQL_INT_MAX = 2147483647;
+
+/**
+ * Runtime assertions for a built-in GraphQL scalar leaf at `accessor`. `Int` is
+ * validated as a signed 32-bit integer (not merely a JS number), `Float` as a
+ * finite number, `String`/`ID` as strings, `Boolean` as a boolean. Custom
+ * scalars have no portable runtime type, so only a warning is emitted.
+ */
+function scalarAssertions(accessor: string, typeName: string, ctx: string, warnings: string[]): string[] {
   switch (typeName) {
     case 'Int':
+      return [
+        `pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected Int scalar`)}).to.be.a("number");`,
+        `pm.expect(Number.isInteger(${accessor}) && ${accessor} >= ${GRAPHQL_INT_MIN} && ${accessor} <= ${GRAPHQL_INT_MAX}, ${JSON.stringify(`${ctx}: Int must be a signed 32-bit integer`)}).to.equal(true);`
+      ];
     case 'Float':
-      return 'number';
+      return [
+        `pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected Float scalar`)}).to.be.a("number");`,
+        `pm.expect(Number.isFinite(${accessor}), ${JSON.stringify(`${ctx}: Float must be a finite number`)}).to.equal(true);`
+      ];
     case 'String':
     case 'ID':
-      return 'string';
+      return [`pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected ${typeName} scalar (serialized as a string)`)}).to.be.a("string");`];
     case 'Boolean':
-      return 'boolean';
+      return [`pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected Boolean scalar`)}).to.be.a("boolean");`];
     default:
-      // Custom scalars (DateTime, JSON, ...) have no portable runtime type.
-      return null;
+      warnings.push(`GQL_CUSTOM_SCALAR_NOT_TYPE_ASSERTED: ${ctx} custom scalar ${typeName} has no portable runtime type; only presence is asserted`);
+      return [];
   }
+}
+
+/**
+ * Runtime assertions for an enum leaf at `accessor`: it must be a string that is
+ * a member of the enum's declared value set. When the value set is unresolved,
+ * only string-ness is asserted and a warning is emitted.
+ */
+function enumAssertions(accessor: string, typeName: string, ctx: string, index: GraphQLContractIndex, warnings: string[]): string[] {
+  const values = index.enumValues[typeName];
+  if (!values || values.length === 0) {
+    warnings.push(`GQL_ENUM_VALUES_UNKNOWN: ${ctx} enum ${typeName} value set was not resolved; only string-ness is asserted`);
+    return [`pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected enum ${typeName} as string`)}).to.be.a("string");`];
+  }
+  return [
+    `pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected enum ${typeName} as string`)}).to.be.a("string");`,
+    `pm.expect(${accessor}, ${JSON.stringify(`${ctx}: value is not a member of enum ${typeName}`)}).to.be.oneOf(${JSON.stringify(values)});`
+  ];
 }
 
 /**
@@ -115,80 +150,90 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   return lines;
 }
 
+/**
+ * Build the response-shape assertions for an operation's return value (bound to
+ * the local `value`). Assertions are generated from the SAME selection set the
+ * builder renders into the query (see selection.ts), so a non-null field the
+ * query does not select is never asserted (which would false-fail a legitimate
+ * response). Lists validate EVERY element; scalars, enums, and selected object
+ * sub-fields are type-checked, not merely presence-checked.
+ */
 function buildShapeAssertions(operation: GraphQLOperationDef, index: GraphQLContractIndex, warnings: string[]): string[] {
-  const returns = operation.returns;
-  const lines: string[] = [];
-
-  if (returns.list) {
-    lines.push('pm.expect(value, "expected a list").to.be.an("array");');
-    // Assert element shape against the unwrapped element type. Only the first
-    // element is sampled to bound script size; flag that later elements are not
-    // individually shape-checked (no-silent-skip discipline).
-    const elementLines = buildValueShapeAssertions('value[0]', returns, index, operation, warnings, true);
-    if (elementLines.length > 0) {
-      warnings.push(`GQL_LIST_ELEMENT_SAMPLING: ${operation.id} list return is shape-asserted on the first element only; elements beyond index 0 are not individually validated`);
-      lines.push('if (value.length > 0) {');
-      lines.push(...elementLines.map((line) => `    ${line}`));
-      lines.push('}');
-    }
-    return lines;
-  }
-
-  return buildValueShapeAssertions('value', returns, index, operation, warnings, false);
+  const selection = selectFields(operation.returns, index, 1);
+  return emitValueAssertions('value', operation.returns, selection, operation.id, index, warnings);
 }
 
-function buildValueShapeAssertions(
+/**
+ * Emit assertions for a value of type `ref`. `selection` carries the selected
+ * sub-fields when `ref` is an expanded object/interface (null for scalars,
+ * enums, and unexpanded composites). A list wrapper is handled here by asserting
+ * array-ness and validating EVERY element against the element type.
+ */
+function emitValueAssertions(
   accessor: string,
-  returns: GraphQLTypeRef,
+  ref: GraphQLTypeRef,
+  selection: SelectedField[] | null,
+  ctx: string,
   index: GraphQLContractIndex,
-  operation: GraphQLOperationDef,
-  warnings: string[],
-  isElement: boolean
+  warnings: string[]
 ): string[] {
+  if (ref.list) {
+    const elementRef: GraphQLTypeRef = { ...ref, list: false };
+    const elementLines = emitValueAssertions('__el', elementRef, selection, `${ctx} (list element)`, index, warnings);
+    const lines = [`pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected a list`)}).to.be.an("array");`];
+    if (elementLines.length > 0) {
+      lines.push(`${accessor}.forEach(function (__el) {`, ...elementLines.map((line) => `    ${line}`), '});');
+    }
+    return lines;
+  }
+
+  if (ref.kind === 'scalar') return scalarAssertions(accessor, ref.name, ctx, warnings);
+  if (ref.kind === 'enum') return enumAssertions(accessor, ref.name, ctx, index, warnings);
+
+  if (ref.kind === 'object' || ref.kind === 'interface') {
+    const lines = [`pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected ${ref.name} object`)}).to.be.an("object");`];
+    const fields = selection ?? [];
+    if (fields.length === 0) {
+      warnings.push(`GQL_NO_SELECTED_FIELDS_TO_ASSERT: ${ctx} object ${ref.name} exposes no selected scalar/enum fields; only object-ness is asserted`);
+    }
+    for (const field of fields) {
+      lines.push(...emitFieldAssertions(accessor, ref.name, field, ctx, index, warnings));
+    }
+    return lines;
+  }
+
+  if (ref.kind === 'union') {
+    warnings.push(`GQL_UNION_RETURN_NOT_SHAPE_ASSERTED: ${ctx} returns union ${ref.name}; only presence is asserted`);
+    return [];
+  }
+  warnings.push(`GQL_UNKNOWN_RETURN_TYPE: ${ctx} return type ${ref.name} could not be classified; only presence is asserted`);
+  return [];
+}
+
+/**
+ * Emit assertions for one SELECTED field of an object: a non-null field must be
+ * present, and (when present and non-null) its value is type-checked against the
+ * field type. Nullable fields are only checked when present and non-null, so a
+ * legitimately absent/null nullable field never false-fails.
+ */
+function emitFieldAssertions(
+  objectAccessor: string,
+  parentTypeName: string,
+  field: SelectedField,
+  ctx: string,
+  index: GraphQLContractIndex,
+  warnings: string[]
+): string[] {
+  const propName = JSON.stringify(field.name);
+  const prop = `${objectAccessor}[${propName}]`;
   const lines: string[] = [];
-  const ctx = `${operation.id}${isElement ? ' (list element)' : ''}`;
-
-  if (returns.kind === 'scalar') {
-    const chai = chaiScalarType(returns.name);
-    if (chai) {
-      lines.push(`pm.expect(${accessor}, "expected ${returns.name} scalar").to.be.a(${JSON.stringify(chai)});`);
-    } else {
-      warnings.push(`GQL_CUSTOM_SCALAR_NOT_TYPE_ASSERTED: ${ctx} returns custom scalar ${returns.name}; only presence is asserted, not its runtime type`);
-    }
-    return lines;
+  if (field.type.nonNull) {
+    lines.push(`pm.expect(${objectAccessor}, ${JSON.stringify(`${parentTypeName} is missing non-null field '${field.name}'`)}).to.have.property(${propName});`);
   }
-
-  if (returns.kind === 'enum') {
-    lines.push(`pm.expect(${accessor}, "expected enum ${returns.name} as string").to.be.a("string");`);
-    return lines;
+  const valueLines = emitValueAssertions(prop, field.type, field.selection, `${ctx}.${field.name}`, index, warnings);
+  if (valueLines.length > 0) {
+    lines.push(`if (${prop} !== undefined && ${prop} !== null) {`, ...valueLines.map((line) => `    ${line}`), '}');
   }
-
-  if (returns.kind === 'object' || returns.kind === 'interface') {
-    lines.push(`pm.expect(${accessor}, "expected ${returns.name} object").to.be.an("object");`);
-    const shape = index.objectShapes[returns.name];
-    if (shape) {
-      // Presence-assert EVERY non-null field (scalar, enum, object, interface,
-      // list). A missing non-null object/interface/list field is as much a
-      // contract violation as a missing scalar, so it must not be filtered out.
-      const requiredFields = shape.fields.filter((f) => f.type.nonNull);
-      for (const f of requiredFields) {
-        lines.push(`pm.expect(${accessor}, "${returns.name} is missing non-null field '${f.name}'").to.have.property(${JSON.stringify(f.name)});`);
-      }
-      if (requiredFields.length === 0) {
-        warnings.push(`GQL_NO_REQUIRED_FIELDS_TO_ASSERT: ${ctx} object ${returns.name} declares no non-null fields; only object-ness is asserted`);
-      }
-    } else {
-      warnings.push(`GQL_OBJECT_SHAPE_UNKNOWN: ${ctx} object ${returns.name} shape was not resolved; only object-ness is asserted`);
-    }
-    return lines;
-  }
-
-  if (returns.kind === 'union') {
-    warnings.push(`GQL_UNION_RETURN_NOT_SHAPE_ASSERTED: ${ctx} returns union ${returns.name}; only presence is asserted`);
-    return lines;
-  }
-
-  warnings.push(`GQL_UNKNOWN_RETURN_TYPE: ${ctx} return type ${returns.name} could not be classified; only presence is asserted`);
   return lines;
 }
 

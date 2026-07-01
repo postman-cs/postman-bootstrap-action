@@ -1,0 +1,84 @@
+asyncapi: 3.0.0
+info:
+  title: Telecom Streaming V3
+  version: 1.0.0
+  description: Synthetic AsyncAPI 3.0 WebSocket fixture (host+pathname server, request/reply) for postman-bootstrap-action contract generation.
+servers:
+  production:
+    host: stream.example.com
+    pathname: /v3
+    protocol: wss
+channels:
+  telemetry:
+    address: /telemetry
+    servers:
+      - $ref: '#/servers/production'
+    bindings:
+      ws:
+        headers:
+          type: object
+          properties:
+            Authorization:
+              type: string
+        query:
+          type: object
+          properties:
+            token:
+              type: string
+    messages:
+      telemetryEvent:
+        $ref: '#/components/messages/TelemetryEvent'
+      telemetryCommand:
+        $ref: '#/components/messages/TelemetryCommand'
+operations:
+  sendCommand:
+    action: send
+    channel:
+      $ref: '#/channels/telemetry'
+    messages:
+      - $ref: '#/channels/telemetry/messages/telemetryCommand'
+    reply:
+      channel:
+        $ref: '#/channels/telemetry'
+      messages:
+        - $ref: '#/channels/telemetry/messages/telemetryEvent'
+components:
+  messages:
+    TelemetryEvent:
+      name: telemetryEvent
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/Telemetry'
+      examples:
+        - name: sample
+          payload:
+            deviceId: dev-123
+            value: 42
+    TelemetryCommand:
+      name: telemetryCommand
+      contentType: application/json
+      payload:
+        type: object
+        required:
+          - action
+        properties:
+          action:
+            type: string
+            enum:
+              - start
+              - stop
+      examples:
+        - name: cmd
+          payload:
+            action: start
+  schemas:
+    Telemetry:
+      type: object
+      required:
+        - deviceId
+        - value
+      properties:
+        deviceId:
+          type: string
+        value:
+          type: number

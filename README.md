@@ -295,6 +295,7 @@ The action handles the bootstrap slice of the Postman onboarding workflow: creat
 - **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, cloud spec-to-collection syncing, and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
 - **Credentials:** `postman-access-token` is the primary credential and carries every asset operation over the gateway; the optional `postman-api-key` powers access-token minting and the Postman CLI `spec lint` login. See [Obtaining Credentials](docs/credentials.md).
 - **Protocol write split:** GraphQL and SOAP build v2.1.0 collections created through the public collections API with `postman-api-key`. gRPC builds a v3/Extensible Collection (the only schema with the `grpc-request` item type) and is created through the gateway EC API, which is access-token only — so gRPC **hard-requires** `postman-access-token` and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when it is absent (`resolve-service-token` mints one). See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
+- **Required protocol coverage:** WebSocket / Socket.IO via AsyncAPI, AsyncAPI non-JSON payload validation, AsyncAPI 3.x, and MQTT / LLM / MCP all need production-grade contract assertion generation. Current gaps and required end state are tracked in [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md#required-production-grade-coverage).
 
 ## Dynamic contract tests
 

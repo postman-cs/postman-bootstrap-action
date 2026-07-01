@@ -15,8 +15,8 @@ function read(rel: string): string {
 }
 
 describe('protocol dispatch format discriminant', () => {
-  it('graphql builds a v3-ec collection runnable in CI', () => {
-    const result = buildProtocolCollection('graphql', read('graphql/telecom.graphql'), {
+  it('graphql builds a v3-ec collection runnable in CI', async () => {
+    const result = await buildProtocolCollection('graphql', read('graphql/telecom.graphql'), {
       name: 'T',
       endpointUrl: '{{baseUrl}}/graphql'
     });
@@ -30,8 +30,8 @@ describe('protocol dispatch format discriminant', () => {
     expect('item' in result.collection).toBe(false);
   });
 
-  it('soap builds a v3-ec collection runnable in CI', () => {
-    const result = buildProtocolCollection('soap', read('soap/stockquote.wsdl'), {
+  it('soap builds a v3-ec collection runnable in CI', async () => {
+    const result = await buildProtocolCollection('soap', read('soap/stockquote.wsdl'), {
       name: 'T',
       endpointUrl: '{{baseUrl}}/soap'
     });
@@ -43,8 +43,8 @@ describe('protocol dispatch format discriminant', () => {
     expect(Array.isArray(result.collection.children)).toBe(true);
   });
 
-  it.skipIf(!HAS_PROTOBUF)('grpc builds a v3-ec collection gated from CI execution', () => {
-    const result = buildProtocolCollection('grpc', read('grpc/routeguide.proto'), {
+  it.skipIf(!HAS_PROTOBUF)('grpc builds a v3-ec collection gated from CI execution', async () => {
+    const result = await buildProtocolCollection('grpc', read('grpc/routeguide.proto'), {
       name: 'T',
       endpointUrl: 'grpc://host:443',
       protobuf: PROTOBUF ?? undefined
@@ -58,8 +58,8 @@ describe('protocol dispatch format discriminant', () => {
     expect(items.length).toBeGreaterThan(0);
   });
 
-  it.skipIf(!HAS_PROTOBUF)('grpc collection carries the v3.0.0 $schema authoring descriptor', () => {
-    const result = buildProtocolCollection('grpc', read('grpc/routeguide.proto'), {
+  it.skipIf(!HAS_PROTOBUF)('grpc collection carries the v3.0.0 $schema authoring descriptor', async () => {
+    const result = await buildProtocolCollection('grpc', read('grpc/routeguide.proto'), {
       name: 'T',
       endpointUrl: 'grpc://host:443',
       protobuf: PROTOBUF ?? undefined
@@ -69,8 +69,8 @@ describe('protocol dispatch format discriminant', () => {
     );
   });
 
-  it.skipIf(!HAS_PROTOBUF)('grpc tree is service folders of grpc-request leaves carrying test events', () => {
-    const result = buildProtocolCollection('grpc', read('grpc/routeguide.proto'), {
+  it.skipIf(!HAS_PROTOBUF)('grpc tree is service folders of grpc-request leaves carrying test events', async () => {
+    const result = await buildProtocolCollection('grpc', read('grpc/routeguide.proto'), {
       name: 'T',
       endpointUrl: 'grpc://host:443',
       protobuf: PROTOBUF ?? undefined
@@ -93,12 +93,25 @@ describe('protocol dispatch format discriminant', () => {
     expect(leaves).toBe(result.operationCount);
   });
 
-  it('all protocols emit v3-ec; runnableInCi is true for HTTP protocols, false for gRPC', () => {
-    const graphql = buildProtocolCollection('graphql', read('graphql/telecom.graphql'), {
+  it('asyncapi builds a v3-ec ws collection pruned from CI execution', async () => {
+    const result = await buildProtocolCollection('asyncapi', read('asyncapi/ws.yaml'), {
+      name: 'T'
+    });
+    expect(result.type).toBe('asyncapi');
+    expect(result.format).toBe('v3-ec');
+    expect(result.runnableInCi).toBe(false);
+    expect(result.operationCount).toBeGreaterThan(0);
+    const items = (result.collection.item as Array<Record<string, unknown>>) ?? [];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((item) => item.type === 'ws-raw-request')).toBe(true);
+  });
+
+  it('all protocols emit v3-ec; runnableInCi is true for HTTP protocols, false for gRPC', async () => {
+    const graphql = await buildProtocolCollection('graphql', read('graphql/telecom.graphql'), {
       name: 'T',
       endpointUrl: '{{baseUrl}}/graphql'
     });
-    const soap = buildProtocolCollection('soap', read('soap/stockquote.wsdl'), {
+    const soap = await buildProtocolCollection('soap', read('soap/stockquote.wsdl'), {
       name: 'T',
       endpointUrl: '{{baseUrl}}/soap'
     });
@@ -108,13 +121,13 @@ describe('protocol dispatch format discriminant', () => {
     expect(soap.runnableInCi).toBe(true);
   });
 
-  it('throws on an unsupported protocol spec type', () => {
-    expect(() =>
+  it('rejects on an unsupported protocol spec type', async () => {
+    await expect(
       buildProtocolCollection(
         'thrift' as unknown as Parameters<typeof buildProtocolCollection>[0],
         'irrelevant',
         { name: 'T' }
       )
-    ).toThrow(/Unsupported protocol spec type/);
+    ).rejects.toThrow(/Unsupported protocol spec type/);
   });
 });

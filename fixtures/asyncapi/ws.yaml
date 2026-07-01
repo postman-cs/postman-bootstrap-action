@@ -1,0 +1,69 @@
+asyncapi: '2.6.0'
+info:
+  title: Telecom Streaming API
+  version: 1.0.0
+  description: Synthetic AsyncAPI WebSocket fixture for postman-bootstrap-action contract generation.
+servers:
+  production:
+    url: wss://stream.example.com
+    protocol: wss
+channels:
+  telemetry:
+    description: Device telemetry stream.
+    bindings:
+      ws:
+        headers:
+          type: object
+          properties:
+            Authorization:
+              type: string
+        query:
+          type: object
+          properties:
+            token:
+              type: string
+    subscribe:
+      message:
+        $ref: '#/components/messages/TelemetryEvent'
+    publish:
+      message:
+        $ref: '#/components/messages/TelemetryCommand'
+components:
+  messages:
+    TelemetryEvent:
+      name: telemetryEvent
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/Telemetry'
+      examples:
+        - name: sample
+          payload:
+            deviceId: dev-123
+            metric: signal
+            value: 42
+    TelemetryCommand:
+      name: telemetryCommand
+      contentType: application/json
+      payload:
+        type: object
+        required:
+          - action
+        properties:
+          action:
+            type: string
+            enum:
+              - start
+              - stop
+  schemas:
+    Telemetry:
+      type: object
+      required:
+        - deviceId
+        - value
+      properties:
+        deviceId:
+          type: string
+        metric:
+          type: string
+        value:
+          type: number

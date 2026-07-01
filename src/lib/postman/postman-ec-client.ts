@@ -21,6 +21,12 @@ const EC_EVENT_LISTEN_BY_V2: Record<string, string> = {
   test: 'afterResponse'
 };
 
+// EC leaf request types that own message/example children in the item model
+// (AsyncAPI WebSocket / Socket.IO). Unlike `folder`, these are request leaves,
+// but the collection service accepts their messages as items parented to the
+// request. Every other request type is a childless leaf.
+const EC_CHILD_BEARING_REQUEST_TYPES = new Set(['ws-raw-request', 'ws-socketio-request']);
+
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as JsonRecord;
@@ -114,7 +120,7 @@ export interface CreateExtensibleCollectionInput {
  * collections must be created through the gateway proxy against the Collection
  * service's EC API instead.
  *
- * Transport and wire contract mirror the Postman app's cloud-ec service
+ * Transport and wire contract mirror the cloud-ec service
  * (postman-app data/collection-data/src/services/cloud-ec/operations/*) and our
  * own BifrostInternalIntegrationAdapter: a `POST {bifrost}/ws/proxy` envelope
  * `{ service:'collection', method, path, body }`, authenticated with
@@ -517,7 +523,12 @@ export class PostmanExtensibleCollectionClient {
    *     v2-style `event` array (folded to `extensions.events` by createItem);
    *   - `@postman/runtime.models` transform output (graphql/soap/OAS): children
    *     nest under `children`, tests already under `extensions.events`, and each
-   *     node carries a logical `id` the cloud must reassign.
+   *     node carries a logical `id` the cloud must reassign;
+   *   - AsyncAPI WS/Socket.IO trees: a `ws-raw-request` / `ws-socketio-request`
+   *     leaf that itself carries `ws-*-message` / `ws-*-example` children. In the
+   *     EC item model these messages belong to the request, so the request is
+   *     created first and each message/example is created beneath it (its
+   *     `position.parent` is the request id). The request counts as one leaf.
    */
   async populateFromTree(collectionId: string, tree: JsonRecord): Promise<number> {
     let leafCount = 0;
@@ -530,14 +541,17 @@ export class PostmanExtensibleCollectionClient {
         const children = childrenOf(node);
         const type = typeof node.type === 'string' ? node.type : '';
         const isFolder = type === 'folder';
-        // Type-authoritative: only a `folder` may carry children. A `*-request`
-        // leaf (or any other type) with nested items is a malformed tree whose
-        // children would otherwise be silently dropped, so fail loudly.
-        if (!isFolder && children.length > 0) {
+        // A ws-raw-request / ws-socketio-request is a leaf request that owns its
+        // message/example children in the EC item model.
+        const isChildBearingRequest = EC_CHILD_BEARING_REQUEST_TYPES.has(type);
+        // Type-authoritative: only a `folder` or a child-bearing ws request may
+        // carry children. Any other type with nested items is a malformed tree
+        // whose children would otherwise be silently dropped, so fail loudly.
+        if (!isFolder && !isChildBearingRequest && children.length > 0) {
           const label = typeof node.title === 'string' ? node.title : String(node.name ?? '<unnamed>');
           throw new Error(
-            `EC_TREE_INVALID: node "${label}" (type=${type || '<none>'}) carries child items but is not a folder; ` +
-              "only 'folder' nodes may contain children"
+            `EC_TREE_INVALID: node "${label}" (type=${type || '<none>'}) carries child items but is not a folder or ws request; ` +
+              "only 'folder' and 'ws-raw-request'/'ws-socketio-request' nodes may contain children"
           );
         }
         const nodeBody: JsonRecord = { ...node };
@@ -548,6 +562,19 @@ export class PostmanExtensibleCollectionClient {
         const createdId = await this.createItem(collectionId, nodeBody, parentId);
         if (isFolder) {
           await createChildren(children, createdId);
+        } else if (isChildBearingRequest) {
+          // Messages/examples are items beneath the request, not request leaves,
+          // so they are created but not counted toward the request-leaf total.
+          for (const childRaw of children) {
+            const childNode = asRecord(childRaw);
+            if (!childNode) continue;
+            const childBody: JsonRecord = { ...childNode };
+            delete childBody.item;
+            delete childBody.children;
+            delete childBody.id;
+            await this.createItem(collectionId, childBody, createdId);
+          }
+          leafCount += 1;
         } else {
           leafCount += 1;
         }

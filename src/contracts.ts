@@ -110,10 +110,10 @@ export const bootstrapActionContract: ActionContract = {
     },
     'protocol': {
       description:
-        'API spec protocol. auto (default) detects from the spec content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly.',
+        'API spec protocol. auto (default) detects from the spec content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), soap (WSDL), and asyncapi (AsyncAPI 2.x WebSocket/Socket.IO) build and instrument a Postman collection directly.',
       required: false,
       default: 'auto',
-      allowedValues: ['auto', 'openapi', 'graphql', 'grpc', 'soap']
+      allowedValues: ['auto', 'openapi', 'graphql', 'grpc', 'soap', 'asyncapi']
     },
     'protocol-endpoint-url': {
       description:

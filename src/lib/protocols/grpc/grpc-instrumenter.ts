@@ -3,11 +3,16 @@
 // Assertions, per recon assertionSurface (pm.response available after the
 // grpc:status event; test script runs on the afterResponse phase):
 //   1. terminal status code is OK (pm.response.code === 0 / status === 'OK').
-//   2. response message field presence + JSON type vs the proto response
-//      message definition (proto2 `required` => presence asserted; proto3
-//      fields => type asserted only when present, since proto3 has no presence).
+//   2. response message shape vs the proto response message definition, walked
+//      recursively into nested messages (bounded depth, cycle-guarded): proto2
+//      `required` => presence asserted; proto3 fields => type asserted only when
+//      present (no presence). Covers well-known-type JSON encodings, map value
+//      types, and `oneof` mutual-exclusion (at most one member set).
 //   3. streaming message-count expectations (server/client/bidi) using the
 //      stream-count surfaced on the execution/response.
+// The request side is validated statically at instrumentation time (the generated
+// request message content vs the request message definition), the gRPC analogue
+// of the OAS CONTRACT_REQUEST_BODY_INCOMPLETE check.
 //
 // Discipline mirrors the OAS module (src/lib/spec/collection-contracts.ts): no
 // silent drops. Anything that cannot be deterministically asserted emits a
@@ -42,6 +47,10 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+// Bounded recursion into nested messages so a cyclic or very deep proto does not
+// blow the script size. Beyond the cap the field is asserted object-only.
+const MAX_SHAPE_DEPTH = 5;
+
 // Compact per-field assertion spec embedded in the generated script. We keep
 // only what the runtime test needs so the script stays small and stable.
 interface FieldSpec {
@@ -50,7 +59,21 @@ interface FieldSpec {
   repeated: boolean;
   map: boolean;
   required: boolean;
+  // Well-known wrapper types allow a present-but-null value.
+  nullable?: boolean;
   enumValues?: string[];
+  // JSON type asserted on each map value.
+  mapValueType?: string;
+  // Nested message shape for object fields / repeated-message fields.
+  shape?: ShapeSpec;
+  // Nested message shape for map<K, message> values.
+  mapValueShape?: ShapeSpec;
+}
+
+// A message shape: its assertable fields plus its multi-member oneof groups.
+interface ShapeSpec {
+  fields: FieldSpec[];
+  oneofs: string[][];
 }
 
 interface OperationSpec {
@@ -58,48 +81,75 @@ interface OperationSpec {
   methodPath: string;
   stream: GrpcStreamKind;
   responseType: string;
-  responseFields: FieldSpec[];
-  // true when at least one field is statically assertable; drives whether the
-  // field-shape test is emitted.
+  responseShape?: ShapeSpec;
+  // true when the response shape has at least one assertable field or oneof.
   hasResponseShape: boolean;
 }
 
-function fieldSpecs(message: GrpcMessageDescriptor | undefined, index: GrpcContractIndex, warnings: string[], operationId: string): { fields: FieldSpec[]; hasShape: boolean } {
+// Build a message shape descriptor, recursing into nested message fields up to
+// MAX_SHAPE_DEPTH with a cycle guard on message full name. `label` names the
+// slot (response / a field path) for no-silent-drop warnings.
+function buildShape(
+  messageFullName: string,
+  index: GrpcContractIndex,
+  warnings: string[],
+  operationId: string,
+  label: string,
+  depth: number,
+  stack: string[]
+): ShapeSpec | undefined {
+  const message: GrpcMessageDescriptor | undefined = index.messages[messageFullName];
   if (!message) {
-    warnings.push(`PROTO_RESPONSE_MESSAGE_UNKNOWN: ${operationId} response message could not be resolved from the .proto; response field shape is not asserted`);
-    return { fields: [], hasShape: false };
+    warnings.push(`PROTO_MESSAGE_UNKNOWN: ${operationId} ${label} message ${messageFullName} could not be resolved from the .proto; its shape is not asserted`);
+    return undefined;
   }
+  if (depth > MAX_SHAPE_DEPTH || stack.includes(messageFullName)) {
+    warnings.push(`PROTO_NESTED_SHAPE_TRUNCATED: ${operationId} ${label} nesting into ${messageFullName} exceeded depth ${MAX_SHAPE_DEPTH} or is cyclic; deeper fields are asserted object-only`);
+    return undefined;
+  }
+
+  const nextStack = [...stack, messageFullName];
   const fields: FieldSpec[] = [];
-  let assertable = false;
   for (const field of message.fields) {
     if (field.jsonType === 'unknown') {
-      warnings.push(`PROTO_FIELD_NOT_ASSERTED: ${operationId} response field ${message.fullName}.${field.name} has an unresolved type and is not asserted`);
+      warnings.push(`PROTO_FIELD_NOT_ASSERTED: ${operationId} field ${message.fullName}.${field.name} has an unresolved type and is not asserted`);
       continue;
     }
     const enumValues = field.enumType ? index.enums[field.enumType] : undefined;
-    fields.push({
+    const spec: FieldSpec = {
       name: field.name,
       jsonType: field.jsonType,
       repeated: field.repeated,
       map: field.map,
       required: field.required,
-      ...(enumValues ? { enumValues } : {})
-    });
-    assertable = true;
+      ...(field.nullable ? { nullable: true } : {}),
+      ...(enumValues ? { enumValues } : {}),
+      ...(field.mapValueType ? { mapValueType: field.mapValueType } : {})
+    };
+    if (field.messageType && field.jsonType === 'object' && !field.map) {
+      spec.shape = buildShape(field.messageType, index, warnings, operationId, `${label}.${field.name}`, depth + 1, nextStack);
+    }
+    if (field.map && field.mapValueMessageType) {
+      spec.mapValueShape = buildShape(field.mapValueMessageType, index, warnings, operationId, `${label}.${field.name}[]`, depth + 1, nextStack);
+    }
+    fields.push(spec);
   }
-  return { fields, hasShape: assertable };
+  return { fields, oneofs: message.oneofs };
+}
+
+function shapeIsAssertable(shape: ShapeSpec | undefined): boolean {
+  return Boolean(shape && (shape.fields.length > 0 || shape.oneofs.length > 0));
 }
 
 function buildOperationSpec(operation: GrpcOperation, index: GrpcContractIndex, warnings: string[]): OperationSpec {
-  const message = index.messages[operation.responseType];
-  const { fields, hasShape } = fieldSpecs(message, index, warnings, operation.id);
+  const responseShape = buildShape(operation.responseType, index, warnings, operation.id, 'response', 0, []);
   return {
     id: operation.id,
     methodPath: operation.methodPath,
     stream: operation.stream,
     responseType: operation.responseType,
-    responseFields: fields,
-    hasResponseShape: hasShape
+    responseShape,
+    hasResponseShape: shapeIsAssertable(responseShape)
   };
 }
 

@@ -76,7 +76,7 @@ export interface ResolvedInputs {
   repoSlug?: string;
   specUrl: string;
   specPath?: string;
-  protocol: 'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap';
+  protocol: 'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi';
   protocolEndpointUrl?: string;
   openapiVersion: string;
   breakingChangeMode: BreakingChangeMode;
@@ -420,7 +420,7 @@ export function resolveInputs(
     repoSlug: repoContext.repoSlug || '',
     specUrl,
     specPath,
-    protocol: parseEnumInput<'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap'>(
+    protocol: parseEnumInput<'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi'>(
       'protocol',
       getInput('protocol', env),
       'auto'
@@ -1315,9 +1315,24 @@ async function provisionWorkspace(
 }
 
 /**
- * Multi-protocol contract path for non-OpenAPI specs (graphql/grpc/soap). Parses
- * the spec, builds and instruments a Postman collection locally, creates it in
- * the provisioned workspace, tags it, and records it as the contract collection.
+ * Human-readable note on whether a generated protocol collection executes in the
+ * Postman CLI runner, used in the bootstrap log after the collection is built.
+ */
+function protocolExecutionNote(specType: Exclude<SpecType, 'openapi'>, runnableInCi: boolean): string {
+  if (runnableInCi) return 'Runs in Postman CLI / Newman.';
+  if (specType === 'grpc') {
+    return 'gRPC execution requires the grpc_protocol_execution_allowed account feature flag in Postman CLI (v12+).';
+  }
+  if (specType === 'asyncapi') {
+    return 'WebSocket/Socket.IO items are pruned by the Postman CLI runner (WS_NOT_CI_EXECUTABLE); the collection provides schema-validated contract examples for manual and in-app runs.';
+  }
+  return 'This protocol is not executable in the Postman CLI runner.';
+}
+
+/**
+ * Multi-protocol contract path for non-OpenAPI specs (graphql/grpc/soap/asyncapi).
+ * Parses the spec, builds and instruments a Postman collection locally, creates it
+ * in the provisioned workspace, tags it, and records it as the contract collection.
  * Reuses the same workspace provisioning as the OpenAPI path; it does not touch
  * Spec Hub, breaking-change checks, or collection generation.
  */
@@ -1358,10 +1373,7 @@ async function runProtocolBootstrap(
     dependencies.core.warning(warning);
   }
   dependencies.core.info(
-    `Generated ${built.operationCount} ${specType} contract item(s) (${built.format}). ` +
-      (built.runnableInCi
-        ? 'Runs in Postman CLI / Newman.'
-        : 'gRPC execution requires the grpc_protocol_execution_allowed account feature flag in Postman CLI.')
+    `Generated ${built.operationCount} ${specType} contract item(s) (${built.format}). ` + protocolExecutionNote(specType, built.runnableInCi)
   );
 
   // Every protocol builder emits a v3/Extensible Collection (graphql/soap are

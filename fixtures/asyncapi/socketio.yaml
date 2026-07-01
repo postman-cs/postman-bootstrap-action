@@ -1,0 +1,54 @@
+asyncapi: '2.6.0'
+info:
+  title: Chat Realtime API
+  version: 1.0.0
+  description: Synthetic AsyncAPI Socket.IO fixture (x-ack convention) for postman-bootstrap-action contract generation.
+servers:
+  production:
+    url: wss://chat.example.com
+    protocol: wss
+channels:
+  /chat:
+    description: Chat namespace.
+    publish:
+      message:
+        $ref: '#/components/messages/SendMessage'
+    subscribe:
+      message:
+        $ref: '#/components/messages/MessageReceived'
+components:
+  messages:
+    SendMessage:
+      name: message:send
+      contentType: application/json
+      x-ack:
+        type: object
+        properties:
+          ok:
+            type: boolean
+          id:
+            type: string
+      payload:
+        type: object
+        required:
+          - text
+        properties:
+          text:
+            type: string
+          room:
+            type: string
+      examples:
+        - name: sample
+          payload:
+            text: hello
+            room: general
+    MessageReceived:
+      name: message:received
+      contentType: application/json
+      payload:
+        type: object
+        properties:
+          text:
+            type: string
+          from:
+            type: string

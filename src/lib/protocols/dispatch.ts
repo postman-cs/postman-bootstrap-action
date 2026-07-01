@@ -14,6 +14,11 @@ import {
   instrumentSoapCollection,
   parseWsdl
 } from './soap/index.js';
+import {
+  buildAsyncApiCollection,
+  instrumentAsyncApiCollection,
+  parseAsyncApi
+} from './asyncapi/index.js';
 import { convertV2CollectionToEc } from './v2-to-ec.js';
 import type { SpecType } from '../spec/detect-spec-type.js';
 
@@ -54,19 +59,40 @@ export interface ProtocolCollectionResult {
  * same way it does for the OAS contract collection.
  *
  * All protocols produce v3/Extensible Collections. GraphQL and SOAP build a
- * v2.1.0 HTTP tree and run it through the official `@postman/runtime.models`
- * transform (`convertV2CollectionToEc`) so the emitted collection is native EC
- * with `http-request` leaves that run in the Postman CLI / Newman HTTP path with
- * no feature flag. gRPC builds EC natively; its `grpc-request` execution is gated
- * by the `grpc_protocol_execution_allowed` account feature flag (upstream Postman
- * CLI limitation).
+ * v2.1.0 HTTP tree and run it through the `@postman/runtime.models` transform
+ * (`convertV2CollectionToEc`) so the emitted collection is native EC with
+ * `http-request` leaves that run in the Postman CLI / Newman HTTP path with no
+ * feature flag. gRPC builds EC natively; its `grpc-request` execution is gated by
+ * the `grpc_protocol_execution_allowed` account feature flag. AsyncAPI builds EC
+ * `ws-raw-request` / `ws-socketio-request` items natively; those item types are
+ * pruned by the Postman CLI runner and carry no test-script slot, so their
+ * contract check is generation-time/static and they are `runnableInCi:false`.
+ *
+ * Async because the AsyncAPI parser is async; the other branches resolve
+ * synchronously.
  */
-export function buildProtocolCollection(
+export async function buildProtocolCollection(
   type: ProtocolSpecType,
   content: string,
   options: ProtocolBuildOptions = {}
-): ProtocolCollectionResult {
+): Promise<ProtocolCollectionResult> {
   switch (type) {
+    case 'asyncapi': {
+      const index = await parseAsyncApi(content, { endpointUrl: options.endpointUrl });
+      const collection = buildAsyncApiCollection(index, {
+        name: options.name ? `${options.name} Contract` : undefined
+      });
+      const { collection: instrumented, warnings } = instrumentAsyncApiCollection(collection, index);
+      const operationCount = index.channels.reduce((sum, channel) => sum + channel.messages.length, 0);
+      return {
+        type,
+        collection: instrumented,
+        format: 'v3-ec',
+        runnableInCi: false,
+        warnings,
+        operationCount
+      };
+    }
     case 'graphql': {
       const index = parseGraphQLSchema(content, { service: options.name });
       const collection = buildGraphQLCollection(index, {

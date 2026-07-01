@@ -92,7 +92,9 @@ export type GrpcStreamKind = 'unary' | 'server' | 'client' | 'bidi';
 // Proto scalar wire types we can deterministically assert on the JSON-encoded
 // response. protobufjs surfaces 64-bit ints as strings by default, which we
 // reflect in `jsonType`.
-export type GrpcJsonType = 'number' | 'string' | 'boolean' | 'object' | 'array' | 'enum' | 'unknown';
+// `any` is a value whose JSON type cannot be constrained (google.protobuf.Value):
+// present-only, no runtime type assertion.
+export type GrpcJsonType = 'number' | 'string' | 'boolean' | 'object' | 'array' | 'enum' | 'any' | 'unknown';
 
 export interface GrpcFieldDescriptor {
   name: string;
@@ -104,16 +106,26 @@ export interface GrpcFieldDescriptor {
   optional: boolean;
   // proto2 `required`: presence IS asserted.
   required: boolean;
+  // Well-known wrapper types (google.protobuf.*Value) JSON-encode as a nullable
+  // scalar, so a present-but-null value is legal and skips the type assertion.
+  nullable?: boolean;
   // For message-typed fields, the fully-qualified message name (for nested
-  // shape reference); undefined for scalars/enums.
+  // shape reference); undefined for scalars/enums/well-known scalar mappings.
   messageType?: string;
   enumType?: string;
+  // For map<K,V> fields, the JSON type asserted on each map value.
+  mapValueType?: GrpcJsonType;
+  // For map<K,V> fields whose value is a message, the value message name (for
+  // nested shape reference).
+  mapValueMessageType?: string;
 }
 
 export interface GrpcMessageDescriptor {
   name: string;
   fullName: string;
   fields: GrpcFieldDescriptor[];
+  // Non-synthetic oneof groups (>= 2 members): at most one member may be set.
+  oneofs: string[][];
 }
 
 export interface GrpcOperation {
@@ -167,6 +179,32 @@ const SCALAR_JSON_TYPE: Record<string, GrpcJsonType> = {
   bytes: 'string'
 };
 
+// google.protobuf well-known types have a canonical proto3-JSON encoding that is
+// NOT a plain object; treating them as ordinary messages (object) mis-asserts
+// the runtime shape. `nullable` marks the wrapper types, which JSON-encode as a
+// nullable scalar. Struct/Empty/Any encode as objects but carry no fixed field
+// shape, so they map to `object` with no nested descent (messageType undefined).
+// grounding: https://protobuf.dev/programming-guides/json/
+const WELL_KNOWN_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; nullable?: boolean }> = {
+  'google.protobuf.Timestamp': { jsonType: 'string' },
+  'google.protobuf.Duration': { jsonType: 'string' },
+  'google.protobuf.FieldMask': { jsonType: 'string' },
+  'google.protobuf.DoubleValue': { jsonType: 'number', nullable: true },
+  'google.protobuf.FloatValue': { jsonType: 'number', nullable: true },
+  'google.protobuf.Int32Value': { jsonType: 'number', nullable: true },
+  'google.protobuf.UInt32Value': { jsonType: 'number', nullable: true },
+  'google.protobuf.Int64Value': { jsonType: 'string', nullable: true },
+  'google.protobuf.UInt64Value': { jsonType: 'string', nullable: true },
+  'google.protobuf.BoolValue': { jsonType: 'boolean', nullable: true },
+  'google.protobuf.StringValue': { jsonType: 'string', nullable: true },
+  'google.protobuf.BytesValue': { jsonType: 'string', nullable: true },
+  'google.protobuf.Struct': { jsonType: 'object' },
+  'google.protobuf.Empty': { jsonType: 'object' },
+  'google.protobuf.Any': { jsonType: 'object' },
+  'google.protobuf.Value': { jsonType: 'any' },
+  'google.protobuf.ListValue': { jsonType: 'array' }
+};
+
 function streamKind(requestStream: boolean, responseStream: boolean): GrpcStreamKind {
   if (requestStream && responseStream) return 'bidi';
   if (responseStream) return 'server';
@@ -218,6 +256,29 @@ function stripLeadingDot(name: string): string {
   return name.startsWith('.') ? name.slice(1) : name;
 }
 
+// Classify a single value type (used for both a direct field and a map value):
+// well-known type first, then message -> object (with descent name), enum,
+// scalar. Returns `unknown` when nothing resolves so the caller can warn.
+function classifyValueType(
+  protoType: string,
+  resolved: ProtoReflectionObject | null | undefined
+): { jsonType: GrpcJsonType; nullable?: boolean; messageType?: string; enumType?: string } {
+  if (resolved && Array.isArray(resolved.fieldsArray)) {
+    const wkt = WELL_KNOWN_JSON_TYPE[stripLeadingDot(resolved.fullName)];
+    if (wkt) return { jsonType: wkt.jsonType, nullable: wkt.nullable };
+    return { jsonType: 'object', messageType: stripLeadingDot(resolved.fullName) };
+  }
+  if (resolved && resolved.values && !Array.isArray(resolved.fieldsArray)) {
+    // proto enums JSON-encode as their string name by default in protobufjs
+    // toObject (enums: String); assert string membership at runtime.
+    return { jsonType: 'enum', enumType: stripLeadingDot(resolved.fullName) };
+  }
+  if (SCALAR_JSON_TYPE[protoType]) {
+    return { jsonType: SCALAR_JSON_TYPE[protoType] as GrpcJsonType };
+  }
+  return { jsonType: 'unknown' };
+}
+
 function fieldDescriptor(field: ProtoField, warnings: string[], context: string): GrpcFieldDescriptor {
   if (typeof field.resolve === 'function') {
     try { field.resolve(); } catch { /* unresolved type left as raw name below */ }
@@ -226,41 +287,56 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
   const map = Boolean(field.map);
   const protoType = String(field.type);
   const resolved = field.resolvedType;
-  let jsonType: GrpcJsonType;
-  let messageType: string | undefined;
-  let enumType: string | undefined;
 
   if (map) {
-    // proto map<K,V> JSON-encodes as a JSON object keyed by string.
-    jsonType = 'object';
-  } else if (resolved && Array.isArray(resolved.fieldsArray)) {
-    jsonType = 'object';
-    messageType = stripLeadingDot(resolved.fullName);
-  } else if (resolved && resolved.values && !Array.isArray(resolved.fieldsArray)) {
-    // proto enums JSON-encode as their string name by default in protobufjs
-    // toObject (enums: String); assert string membership at runtime.
-    jsonType = 'enum';
-    enumType = stripLeadingDot(resolved.fullName);
-  } else if (SCALAR_JSON_TYPE[protoType]) {
-    jsonType = SCALAR_JSON_TYPE[protoType] as GrpcJsonType;
-  } else {
+    // proto map<K,V> JSON-encodes as a JSON object keyed by string; classify the
+    // value type so each entry's value can be asserted.
+    const value = classifyValueType(protoType, resolved);
+    if (value.jsonType === 'unknown') {
+      warnings.push(`PROTO_FIELD_TYPE_UNRESOLVED: map field ${context}.${field.name} has value type ${protoType} that could not be resolved; map values are not asserted`);
+    }
+    return {
+      name: String(field.name),
+      protoType,
+      jsonType: 'object',
+      repeated: false,
+      map: true,
+      optional: Boolean(field.optional),
+      required: Boolean(field.required),
+      ...(value.jsonType !== 'unknown' ? { mapValueType: value.jsonType } : {}),
+      ...(value.messageType ? { mapValueMessageType: value.messageType } : {})
+    };
+  }
+
+  const classified = classifyValueType(protoType, resolved);
+  if (classified.jsonType === 'unknown') {
     // A type name that did not resolve and is not a known scalar. We cannot
     // assert its runtime shape — surface a no-silent-drop warning.
-    jsonType = 'unknown';
     warnings.push(`PROTO_FIELD_TYPE_UNRESOLVED: field ${context}.${field.name} has type ${protoType} that could not be resolved to a scalar, message, or enum; its runtime shape is not asserted`);
   }
 
   return {
     name: String(field.name),
     protoType,
-    jsonType: repeated ? jsonType : jsonType,
+    jsonType: classified.jsonType,
     repeated,
-    map,
+    map: false,
     optional: Boolean(field.optional),
     required: Boolean(field.required),
-    messageType,
-    enumType
+    ...(classified.nullable ? { nullable: true } : {}),
+    ...(classified.messageType ? { messageType: classified.messageType } : {}),
+    ...(classified.enumType ? { enumType: classified.enumType } : {})
   };
+}
+
+// proto3 `optional` scalars are modeled by protobufjs as a synthetic single-field
+// oneof named `_field`; those are presence wrappers, not real oneofs, so only
+// multi-member oneofs are surfaced for the mutual-exclusion assertion.
+function collectOneofs(message: ProtoReflectionObject): string[][] {
+  return asArray<ProtoOneof>(message.oneofsArray)
+    .map((oneof) => asArray<ProtoField>(oneof.fieldsArray).map((field) => String(field.name)))
+    .filter((names) => names.length >= 2)
+    .sort((a, b) => a.join(',').localeCompare(b.join(',')));
 }
 
 function messageDescriptor(message: ProtoReflectionObject, warnings: string[]): GrpcMessageDescriptor {
@@ -269,7 +345,7 @@ function messageDescriptor(message: ProtoReflectionObject, warnings: string[]): 
     .slice()
     .sort((a, b) => (a.id - b.id) || a.name.localeCompare(b.name))
     .map((field) => fieldDescriptor(field, warnings, fullName));
-  return { name: message.name, fullName, fields };
+  return { name: message.name, fullName, fields, oneofs: collectOneofs(message) };
 }
 
 function methodPath(serviceFullName: string, methodName: string): string {

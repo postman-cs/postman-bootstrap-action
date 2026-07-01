@@ -1,6 +1,6 @@
 type JsonRecord = Record<string, unknown>;
 
-export type SpecType = 'openapi' | 'graphql' | 'grpc' | 'soap';
+export type SpecType = 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi';
 
 /**
  * Classify an API spec document into the protocol whose generator owns it.
@@ -12,6 +12,7 @@ export type SpecType = 'openapi' | 'graphql' | 'grpc' | 'soap';
  * - grpc  -> Protocol Buffers `.proto` IDL
  * - soap  -> WSDL 1.1 / 2.0 XML
  * - graphql -> GraphQL SDL or introspection JSON (`__schema`)
+ * - asyncapi -> AsyncAPI 2.x document (`asyncapi:` version key) for WebSocket / Socket.IO
  * - openapi -> OpenAPI 3.0 / 3.1 (or Swagger 2.0, rejected later by the loader)
  */
 export function detectSpecType(content: string, fileName?: string): SpecType {
@@ -25,6 +26,7 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
   if (lowerName.endsWith('.graphql') || lowerName.endsWith('.graphqls') || lowerName.endsWith('.gql')) {
     return 'graphql';
   }
+  if (lowerName.includes('asyncapi')) return 'asyncapi';
 
   // WSDL / SOAP: XML document with a WSDL definitions root.
   if (trimmed.startsWith('<')) {
@@ -48,6 +50,7 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
     const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as JsonRecord) : null;
     if (record) {
       if (looksLikeIntrospection(record)) return 'graphql';
+      if (typeof record.asyncapi === 'string') return 'asyncapi';
       if (typeof record.openapi === 'string' || record.swagger === '2.0') return 'openapi';
     }
     // Unrecognized JSON defaults to OpenAPI so the loader can produce its
@@ -72,6 +75,13 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
     )
   ) {
     return 'graphql';
+  }
+
+  // YAML AsyncAPI: an `asyncapi:` version key at the document root. Checked
+  // before the OpenAPI fallback, which would otherwise swallow any non-OpenAPI
+  // YAML document.
+  if (/^\s*["']?asyncapi["']?\s*:\s*["']?\d/m.test(text)) {
+    return 'asyncapi';
   }
 
   // YAML OpenAPI (openapi:/swagger: key) or anything else falls back to OpenAPI.

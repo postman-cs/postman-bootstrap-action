@@ -28,7 +28,7 @@ tests/                      # vitest unit tests
 
 ```bash
 npm ci && npm test && npm run typecheck && npm run build
-npm run check:dist   # build + git diff --exit-code (CI integrity)
+npm run verify:dist  # CI/hook gate: rebuild + git diff (dev runs build)
 ```
 
 ## Key Behaviors

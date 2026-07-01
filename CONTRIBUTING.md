@@ -15,7 +15,8 @@ npm ci              # Install dependencies
 npm run lint        # ESLint
 npm run typecheck   # TypeScript type checking
 npm test            # Run tests (vitest)
-npm run check:dist  # Rebuild and verify committed dist/ output
+npm run build       # Rebuild dist/ (stage it before pushing)
+npm run verify:dist # CI/hook gate: rebuild + git diff committed dist/
 actionlint          # Validate GitHub workflow syntax, if installed
 ```
 
@@ -24,7 +25,7 @@ actionlint          # Validate GitHub workflow syntax, if installed
 - [ ] `npm run lint` passes
 - [ ] `npm run typecheck` passes
 - [ ] `npm test` passes
-- [ ] `npm run check:dist` passes and `dist/` is updated
+- [ ] `npm run build` was run and updated `dist/` is staged (`npm run verify:dist` passes)
 - [ ] `actionlint` passes for workflow changes
 - [ ] The `Live E2E` PR check passes; PRs should not be approved or merged until the correlated `postman-actions-e2e` run succeeds.
 - [ ] Changes are focused and address a single concern
@@ -32,7 +33,7 @@ actionlint          # Validate GitHub workflow syntax, if installed
 
 ### Rebuilding dist/
 
-This action ships bundled JavaScript in `dist/`. After any source change, run `npm run build` and include the updated `dist/` files in your commit. CI enforces this with `npm run check:dist`.
+This action ships bundled JavaScript in `dist/`. After any source change, run `npm run build` and include the updated `dist/` files in your commit. CI enforces this with a dedicated `check-dist` job (`npm run verify:dist`), and a pre-push hook rebuilds and stages `dist/` for you.
 
 ## PR E2E Gate
 

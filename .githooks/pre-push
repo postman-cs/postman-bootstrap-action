@@ -1,0 +1,7 @@
+#!/bin/sh
+if git diff HEAD --name-only | grep -Eq '^(src/|package\.json|package-lock\.json|tsconfig)'; then
+  npm run verify:dist || {
+    echo "dist is stale. Run 'npm run build' and stage dist/ before pushing." >&2
+    exit 1
+  }
+fi

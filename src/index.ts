@@ -48,6 +48,7 @@ import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker, createMutableSecretMasker } from './lib/secrets.js';
 import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
+import { resolveActionVersion } from './action-version.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
@@ -1017,6 +1018,7 @@ export async function runBootstrap(
   // It can never block, fail, or alter the bootstrap result.
   const telemetry = createTelemetryContext({
     action: 'postman-bootstrap-action',
+    actionVersion: resolveActionVersion(),
     logger: dependencies.core
   });
   try {

@@ -21,7 +21,7 @@ Run the package validators from this directory before pushing an immutable tag:
 3. `npm run typecheck`
 4. `npm run lint`
 5. `npm run build`
-6. `npm run check:dist`
+6. `npm run verify:dist`
 7. `npm run docs:tables` when `action.yml` changes, then confirm the `README.md` tables still match.
 8. Confirm `SECURITY.md`, `SUPPORT.md`, and this file still describe the release surface.
 

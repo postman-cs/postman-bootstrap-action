@@ -224,6 +224,52 @@ describe.skipIf(!HAS_PROTOBUF)('instrumentGrpcCollection', () => {
     }
   });
 
+  it('emitted Duration/bytes validators match the ProtoJSON (Go parseDuration / base64) accepted-set', () => {
+    const { collection } = buildInstrumented();
+    const item = grpcItems(collection).find((entry) => String((entry.payload as JsonRecord).methodPath).endsWith('/GetNetworkEvent'))!;
+    const all = testScript(item);
+    const extract = (name: string): string => {
+      const start = all.indexOf(`function ${name}(value) {`);
+      if (start < 0) throw new Error(`missing ${name}`);
+      let depth = 0;
+      for (let k = all.indexOf('{', start); k < all.length; k++) {
+        if (all[k] === '{') depth++;
+        else if (all[k] === '}') { depth--; if (depth === 0) return all.slice(start, k + 1); }
+      }
+      throw new Error(`unbalanced ${name}`);
+    };
+    // Run the real emitted validator functions in a VM to prove their accepted-set,
+    // not merely that their source text is present.
+    const context = createContext({ Number, Array, Object, Math, JSON, String, RegExp, Boolean }) as Record<string, unknown>;
+    new Script(`${extract('validProtoDuration')}\n${extract('validProtoBytes')}`).runInContext(context);
+    const validDuration = context.validProtoDuration as (v: unknown) => boolean;
+    const validBytes = context.validProtoBytes as (v: unknown) => boolean;
+
+    // ProtoJSON Duration accepted-set mirrors Go encoding/protojson parseDuration:
+    // optional +/- sign, fractional-only (.5s) and trailing-dot (1.s) forms, up to
+    // 9 fractional digits; leading-zero integers (01s) and >9 digits are rejected.
+    const durationVectors: Array<[string, boolean]> = [
+      ['1s', true], ['0s', true], ['0.5s', true], ['1.s', true], ['.5s', true],
+      ['+1s', true], ['-1.5s', true], ['3.000000001s', true], ['315576000000s', true],
+      ['01s', false], ['s', false], ['1', false], ['1.1234567890s', false],
+      ['315576000001s', false], ['1e3s', false], ['1S', false]
+    ];
+    for (const [value, ok] of durationVectors) {
+      expect(validDuration(value), `Duration ${JSON.stringify(value)}`).toBe(ok);
+    }
+
+    // ProtoJSON bytes accept standard or URL-safe base64, padded or unpadded, but
+    // never a mix of the two alphabets in one string.
+    const bytesVectors: Array<[string, boolean]> = [
+      ['', true], ['SGVsbG8=', true], ['SGVs', true], ['SGk', true],
+      ['a-_9', true], ['a+/b', true],
+      ['a+b_', false], ['a=b', false], ['SGVsb', false], ['====', false]
+    ];
+    for (const [value, ok] of bytesVectors) {
+      expect(validBytes(value), `bytes ${JSON.stringify(value)}`).toBe(ok);
+    }
+  });
+
   it('matches the golden instrumented collection snapshot', () => {
     const { collection } = buildInstrumented();
     expect(collection).toMatchSnapshot();

@@ -12,39 +12,60 @@ types are supported, the spec each is derived from, and where that support is gr
 | GraphQL | `http` body mode `graphql` (v2) | Yes | GraphQL SDL or introspection JSON | GraphQL schema |
 | SOAP | `http` POST, raw XML body (v2) | Yes (plain HTTP) | WSDL 1.1 / 2.0 | WSDL |
 | gRPC | `grpc-request` (v3 EC) | Yes | Protocol Buffers `.proto` | `.proto` |
-| WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI 2.0-2.6 today; AsyncAPI 3.x required | AsyncAPI document |
-| Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI 2.0-2.6 today; AsyncAPI 3.x required | AsyncAPI document |
+| WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI 2.0-2.6 / 3.0 | AsyncAPI document |
+| Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI 2.0-2.6 / 3.0 | AsyncAPI document |
 | MQTT / LLM / MCP | `mqtt-request` / `llm-request` / `mcp-request` | No (label-only) | Required future protocol specs | Required future protocol specs |
 
 GraphQL-over-HTTP and SOAP-over-HTTP are emitted as ordinary v2 `http` requests, so they run in the
 same legacy Postman CLI / Newman HTTP execution path the action already uses for REST. gRPC requires
 the v3 Extensible Collection format and runs through the unified runner.
 
-WebSocket and Socket.IO are generated from an AsyncAPI 2.0-2.6 document into native EC
+WebSocket and Socket.IO are generated from an AsyncAPI 2.0-2.6 / 3.0 document into native EC
 `ws-raw-request` / `ws-socketio-request` items (Socket.IO detected conventionally), with per-message
 schema/example validation applied statically at generation time. The unified runner prunes both
 `ws-*` item types, so they carry `runnableInCi: false`: the assertions are persisted for authoring
 and structural validation but are not executed in CI. This runner limitation is upstream, not in this
 action.
 
-### Required production-grade coverage
+### AsyncAPI contract coverage
 
-The following protocol surfaces are not optional gaps. They must be supported by bootstrap with
-production-grade contract assertion generation:
+WebSocket and Socket.IO collections are generated from AsyncAPI 2.0-2.6 and 3.0 documents. The
+`@postman/asyncapi-parser` intent model normalises both major versions behind one channel/message
+interface: 2.x `publish`/`subscribe` and 3.x `send`/`receive` operations both surface as channel
+messages, a 3.x server url is synthesised from `protocol` + `host` + `pathname`, and a 3.x operation
+`reply` maps to the same acknowledgement slot as the 2.x Socket.IO `x-ack` convention. A version
+outside 2.0-2.6 / 3.0 is rejected with `ASYNCAPI_VERSION_UNSUPPORTED`.
 
-- **WebSocket / Socket.IO via AsyncAPI:** bootstrap currently generates native EC items and validates
-  message schemas/examples only at generation time. Because Postman CLI prunes `ws-*` items and those
-  items do not expose a test-script slot, bootstrap cannot yet enforce live request/response/message
-  behavior in CI. Production-grade support requires executable runtime assertions or an equivalent
-  runner path for message exchange behavior.
-- **AsyncAPI non-JSON payloads:** bootstrap now emits an explicit warning when a message has a schema
-  and non-JSON example payload, but it does not validate that example against the schema. Production
-  support must validate non-JSON payload examples, not only warn.
-- **AsyncAPI 3.x:** bootstrap currently ingests AsyncAPI 2.0-2.6 only. Production support must include
-  AsyncAPI 3.x parsing, collection generation, and assertion generation.
-- **MQTT / LLM / MCP:** bootstrap lists the Postman item types but does not ingest specs or generate
-  contract enforcement for them. Production support must define the accepted contract source for each
-  protocol and generate enforceable assertions from it.
+Socket.IO has no normative AsyncAPI binding, so it is inferred from convention (a Socket.IO server
+protocol, an `x-ack` on a message, or an `x-socketio` extension); every such inference emits an
+`ASYNCAPI_SOCKETIO_CONVENTION` warning so the classification is auditable.
+
+Contract validation runs statically at generation time (WS/Socket.IO EC items expose no test-script
+slot and the unified runner prunes them, so they carry `runnableInCi: false`). Each message payload
+example is validated against its packed AsyncAPI payload schema — the async analogue of the OpenAPI
+`CONTRACT_EXAMPLE_SCHEMA_MISMATCH` self-consistency check — the acknowledgement / 3.x reply schema is
+compiled, channel-to-message coverage is enforced against the built collection (a drop or a
+count-stable duplicate fails closed with `ASYNCAPI_MESSAGE_COVERAGE_FAILED`), and a collection size
+gate is applied.
+
+Non-JSON payloads are validated structurally. An AsyncAPI example `payload` is a structured value that
+validates against the payload schema independent of the wire content type (content type governs
+serialization; the value's structure is validated), so JSON, XML, text, and HTML example values are
+validated against their packed schema. The two cases a JSON-schema validator cannot decide are
+surfaced as precise warnings rather than a false failure: binary content (opaque bytes, emitted as a
+base64 template with a base64 well-formedness check on string examples) raises
+`ASYNCAPI_BINARY_PAYLOAD_NOT_VALIDATED`, and a raw wire-string example supplied for a structured schema
+raises `ASYNCAPI_NON_JSON_PAYLOAD_NOT_VALIDATED`.
+
+Runtime message-exchange execution in CI remains blocked by the upstream Postman CLI limitation that
+prunes `ws-*` item types (issues #10640, #11252, #12316); the generation-time validation above is the
+enforceable contract surface until that runner path exists.
+
+### Remaining protocol surfaces
+
+- **MQTT / LLM / MCP:** the Postman item types (`mqtt-request` / `llm-request` / `mcp-request`) are
+  label-only. Contract ingestion and assertion generation for them require the accepted contract
+  source for each protocol to be defined first.
 
 ### gRPC assertion coverage
 

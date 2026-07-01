@@ -67,7 +67,7 @@ export interface PostmanGatewayAssetsClientOptions {
  */
 export class PostmanGatewayAssetsClient {
   private static readonly GENERATION_LOCKED_MAX_RETRIES = 5;
-  private static readonly GENERATION_POLL_ATTEMPTS = 45;
+  private static readonly GENERATION_POLL_ATTEMPTS = 90;
   private static readonly GENERATION_POLL_DELAY_MS = 2000;
 
   private readonly gateway: AccessTokenGatewayClient;
@@ -506,6 +506,41 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
+   * PATCH a freshly-created item's `/scripts`, tolerating the two transient
+   * failures this immediate-after-create write is prone to on the shared gateway:
+   *   - `404 RESOURCE_NOT_FOUND` — the create write returns the assigned id, but
+   *     an immediate PATCH can hit a replica that has not yet observed the create
+   *     (read-after-write lag, live-observed on org-mode teams).
+   *   - a downstream `5xx` (e.g. `500 ESOCKETTIMEDOUT`) — a Bifrost/gateway read
+   *     timeout, not a durable rejection.
+   * `op:add /scripts` is idempotent (overwrites), so retrying either is safe.
+   * This is a deeper, longer-backoff budget than the gateway client's inner
+   * transient retry, to wait out a longer platform hiccup on this fragile write.
+   * Non-transient errors (e.g. 4xx schema rejections) surface immediately.
+   */
+  private async patchNewItemScripts(cid: string, itemId: string, scripts: JsonRecord[]): Promise<void> {
+    const maxAttempts = 6;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${cid}/items/${itemId}`,
+          headers: { 'X-Entity-Type': 'http-request' },
+          body: [{ op: 'add', path: '/scripts', value: scripts }]
+        });
+        return;
+      } catch (error) {
+        const retriable = error instanceof HttpError && (error.status === 404 || error.status >= 500);
+        if (!retriable || attempt === maxAttempts - 1) {
+          throw error;
+        }
+        await this.sleep(Math.min(2000, 300 * 2 ** attempt));
+      }
+    }
+  }
+
+  /**
    * Apply tag slugs via the dedicated `tagging` service:
    * `PUT /v1/tags/collections/:uid` (full uid), body `{ tags:[{ slug }] }` — the
    * server assigns `type:'default'` (sending `type` is rejected by its schema).
@@ -647,26 +682,14 @@ export class PostmanGatewayAssetsClient {
     if (!newItemId) return;
     // Attach the secrets-resolution test script (CI-skipped) as a canonical v3
     // afterResponse script — same `/scripts` shape as the leaf assertions.
-    await this.gateway.requestJson<JsonRecord>({
-      service: 'collection',
-      method: 'patch',
-      path: `/v3/collections/${cid}/items/${newItemId}`,
-      headers: { 'X-Entity-Type': 'http-request' },
-      body: [
-        {
-          op: 'add',
-          path: '/scripts',
-          value: toV3Scripts([
-            'if (pm.environment.get("CI") === "true") { return; }',
-            'const body = pm.response.json();',
-            'if (body.SecretString) {',
-            '  const secrets = JSON.parse(body.SecretString);',
-            '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
-            '}'
-          ])
-        }
-      ]
-    });
+    await this.patchNewItemScripts(cid, newItemId, toV3Scripts([
+      'if (pm.environment.get("CI") === "true") { return; }',
+      'const body = pm.response.json();',
+      'if (body.SecretString) {',
+      '  const secrets = JSON.parse(body.SecretString);',
+      '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
+      '}'
+    ]));
   }
 
   // --- workspace roles + member resolution (live-proven 2026-06-30) ---
@@ -844,26 +867,14 @@ export class PostmanGatewayAssetsClient {
       });
       const newItemId = String(asRecord(created?.data)?.id ?? '').trim();
       if (newItemId) {
-        await this.gateway.requestJson<JsonRecord>({
-          service: 'collection',
-          method: 'patch',
-          path: `/v3/collections/${cid}/items/${newItemId}`,
-          headers: { 'X-Entity-Type': 'http-request' },
-          body: [
-            {
-              op: 'add',
-              path: '/scripts',
-              value: toV3Scripts([
-                'if (pm.environment.get("CI") === "true") { return; }',
-                'const body = pm.response.json();',
-                'if (body.SecretString) {',
-                '  const secrets = JSON.parse(body.SecretString);',
-                '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
-                '}'
-              ])
-            }
-          ]
-        });
+        await this.patchNewItemScripts(cid, newItemId, toV3Scripts([
+          'if (pm.environment.get("CI") === "true") { return; }',
+          'const body = pm.response.json();',
+          'if (body.SecretString) {',
+          '  const secrets = JSON.parse(body.SecretString);',
+          '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
+          '}'
+        ]));
       }
     }
 

@@ -338,6 +338,29 @@ describe('PostmanGatewayAssetsClient', () => {
       expect((secretsPatch?.body as Array<{ path: string }>)[0].path).toBe('/scripts');
     });
 
+    it('retries the secrets-resolver scripts patch on a transient 404 (read-after-write lag)', async () => {
+      const items = [{ id: '55363555-leaf-1', $kind: 'http-request', name: 'Ping' }];
+      let secretsPatchAttempts = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get') return jsonResponse({ data: items });
+        if (env.method === 'post') return jsonResponse({ data: { id: '55363555-secrets' } });
+        if (env.method === 'patch' && /\/items\/55363555-secrets$/.test(env.path)) {
+          secretsPatchAttempts += 1;
+          return secretsPatchAttempts === 1
+            ? jsonResponse({ error: { code: 'RESOURCE_NOT_FOUND', message: 'Item not found' } }, { status: 404 })
+            : jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({ data: { id: 'patched' } });
+      });
+
+      await client.injectTests('55363555-model-9', 'smoke');
+
+      // created once, patched twice (404 then 200)
+      expect(secretsPatchAttempts).toBe(2);
+      const secretsPatches = calls.filter((c) => c.method === 'patch' && /\/items\/55363555-secrets$/.test(c.path));
+      expect(secretsPatches).toHaveLength(2);
+    });
+
     it('is idempotent: skips the create when a secrets resolver already exists', async () => {
       const items = [
         { id: '55363555-leaf-1', $kind: 'http-request', name: 'Ping' },

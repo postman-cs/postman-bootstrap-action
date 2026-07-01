@@ -67,6 +67,8 @@ interface FieldSpec {
   // Well-known wrapper types allow a present-but-null value.
   nullable?: boolean;
   enumValues?: string[];
+  // Runtime kind the JSON string key must satisfy for an integral/bool-keyed map.
+  mapKeyType?: string;
   // JSON type asserted on each map value.
   mapValueType?: string;
   mapValueFormat?: string;
@@ -141,6 +143,7 @@ function buildShape(
       required: field.required,
       ...(field.nullable ? { nullable: true } : {}),
       ...(enumValues ? { enumValues } : {}),
+      ...(field.mapKeyType ? { mapKeyType: field.mapKeyType } : {}),
       ...(field.mapValueType ? { mapValueType: field.mapValueType } : {}),
       ...(field.mapValueFormat ? { mapValueFormat: field.mapValueFormat } : {}),
       ...(mapValueEnumValues ? { mapValueEnumValues } : {})
@@ -263,7 +266,16 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '  }',
     '  if (field.map) {',
     '    if (!matchesScalar("object", value)) { pm.expect.fail("gRPC map field " + label + " must be an object but was " + jsonTypeOf(value)); return; }',
-    '    if (field.mapValueType) { var keys = Object.keys(value); for (var k = 0; k < keys.length; k++) { var mv = value[keys[k]], mvLabel = label + "[" + keys[k] + "]"; if (field.mapValueShape && matchesScalar("object", mv)) { grpcCheckShape(mv, field.mapValueShape, mvLabel + "."); } else if (field.mapValueEnumValues && field.mapValueEnumValues.length > 0) { if (typeof mv === "number") { if (!Number.isInteger(mv)) pm.expect.fail("gRPC map enum value " + mvLabel + " must be an integer but was " + mv); } else if (typeof mv !== "string") { pm.expect.fail("gRPC map enum value " + mvLabel + " must be a string or number but was " + jsonTypeOf(mv)); } else if (field.mapValueEnumValues.indexOf(mv) === -1) { pm.expect.fail("gRPC map enum value " + mvLabel + " has value " + mv + " not in [" + field.mapValueEnumValues.join(", ") + "]"); } } else if (!matchesScalar(field.mapValueType, mv)) { pm.expect.fail("gRPC map value " + mvLabel + " must be " + field.mapValueType + " but was " + jsonTypeOf(mv)); } else if (!matchesFormat(field.mapValueFormat, mv)) { pm.expect.fail("gRPC map value " + mvLabel + " must be " + formatLabel(field.mapValueFormat)); } } }',
+    '    var keys = Object.keys(value);',
+    '    for (var k = 0; k < keys.length; k++) {',
+    '      var mk = keys[k], mv = value[mk], mvLabel = label + "[" + mk + "]";',
+    '      if (field.mapKeyType === "integer") { if (!/^-?[0-9]+$/.test(mk)) pm.expect.fail("gRPC map key " + mvLabel + " must be an integer string but was " + mk); }',
+    '      else if (field.mapKeyType === "boolean") { if (mk !== "true" && mk !== "false") pm.expect.fail("gRPC map key " + mvLabel + " must be the string true or false but was " + mk); }',
+    '      if (field.mapValueShape && matchesScalar("object", mv)) { grpcCheckShape(mv, field.mapValueShape, mvLabel + "."); }',
+    '      else if (field.mapValueEnumValues && field.mapValueEnumValues.length > 0) { if (typeof mv === "number") { if (!Number.isInteger(mv)) pm.expect.fail("gRPC map enum value " + mvLabel + " must be an integer but was " + mv); } else if (typeof mv !== "string") { pm.expect.fail("gRPC map enum value " + mvLabel + " must be a string or number but was " + jsonTypeOf(mv)); } else if (field.mapValueEnumValues.indexOf(mv) === -1) { pm.expect.fail("gRPC map enum value " + mvLabel + " has value " + mv + " not in [" + field.mapValueEnumValues.join(", ") + "]"); } }',
+    '      else if (field.mapValueType && !matchesScalar(field.mapValueType, mv)) { pm.expect.fail("gRPC map value " + mvLabel + " must be " + field.mapValueType + " but was " + jsonTypeOf(mv)); }',
+    '      else if (field.mapValueType && !matchesFormat(field.mapValueFormat, mv)) { pm.expect.fail("gRPC map value " + mvLabel + " must be " + formatLabel(field.mapValueFormat)); }',
+    '    }',
     '    return;',
     '  }',
     '  if (field.enumValues && field.enumValues.length > 0) {',

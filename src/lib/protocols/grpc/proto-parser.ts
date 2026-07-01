@@ -123,6 +123,11 @@ export interface GrpcFieldDescriptor {
   // shape reference); undefined for scalars/enums/well-known scalar mappings.
   messageType?: string;
   enumType?: string;
+  // For map<K,V> fields, the runtime kind the JSON string key must satisfy: proto
+  // map keys always JSON-encode as strings, but an integral or bool key type still
+  // constrains that string (an integer, or "true"/"false"). String keys need no
+  // check and are left undefined.
+  mapKeyType?: 'integer' | 'boolean';
   // For map<K,V> fields, the JSON type asserted on each map value.
   mapValueType?: GrpcJsonType;
   mapValueFormat?: GrpcJsonFormat;
@@ -295,6 +300,16 @@ function classifyValueType(
   return { jsonType: 'unknown' };
 }
 
+// proto map keys are always JSON strings, but for an integral or bool key type the
+// string must still be a valid integer / "true"|"false" (proto only permits
+// integral, bool, or string map keys). Returns the runtime key kind to validate,
+// or undefined for string keys (which need no check).
+function classifyMapKey(keyType: string | undefined): 'integer' | 'boolean' | undefined {
+  if (keyType === 'bool') return 'boolean';
+  if (keyType && /^(?:u?int|sint|s?fixed)(?:32|64)$/.test(keyType)) return 'integer';
+  return undefined;
+}
+
 // The ProtoJSON name for a field: the explicit `json_name` option when set,
 // otherwise the lowerCamelCase of the proto field name (the canonical ProtoJSON
 // mapping). gRPC responses decode to canonical ProtoJSON, so runtime assertions
@@ -329,6 +344,7 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
     if (value.jsonType === 'unknown') {
       warnings.push(`PROTO_FIELD_TYPE_UNRESOLVED: map field ${context}.${field.name} has value type ${protoType} that could not be resolved; map values are not asserted`);
     }
+    const mapKeyType = classifyMapKey(field.keyType);
     return {
       name: String(field.name),
       jsonName: protoJsonName(field),
@@ -338,6 +354,7 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
       map: true,
       optional: Boolean(field.optional),
       required: Boolean(field.required),
+      ...(mapKeyType ? { mapKeyType } : {}),
       ...(value.jsonType !== 'unknown' ? { mapValueType: value.jsonType } : {}),
       ...(value.jsonFormat ? { mapValueFormat: value.jsonFormat } : {}),
       ...(value.enumType ? { mapValueEnumType: value.enumType } : {}),

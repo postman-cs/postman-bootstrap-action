@@ -167,7 +167,9 @@ function buildShapeAssertions(operation: GraphQLOperationDef, index: GraphQLCont
  * Emit assertions for a value of type `ref`. `selection` carries the selected
  * sub-fields when `ref` is an expanded object/interface (null for scalars,
  * enums, and unexpanded composites). A list wrapper is handled here by asserting
- * array-ness and validating EVERY element against the element type.
+ * array-ness and validating EVERY element against the element type; for a `[T!]`
+ * list each element is also asserted non-null, while for a nullable `[T]` list a
+ * null element is skipped (it is GraphQL-legal).
  */
 function emitValueAssertions(
   accessor: string,
@@ -181,8 +183,19 @@ function emitValueAssertions(
     const elementRef: GraphQLTypeRef = { ...ref, list: false };
     const elementLines = emitValueAssertions('__el', elementRef, selection, `${ctx} (list element)`, index, warnings);
     const lines = [`pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected a list`)}).to.be.an("array");`];
-    if (elementLines.length > 0) {
-      lines.push(`${accessor}.forEach(function (__el) {`, ...elementLines.map((line) => `    ${line}`), '});');
+    const body: string[] = [];
+    if (ref.listItemNonNull) {
+      // `[T!]`: a null element is a contract violation, so fail closed on it and
+      // then type-check the (non-null) element.
+      body.push(`pm.expect(__el, ${JSON.stringify(`${ctx} (list element): a non-null list item ([T!]) was null`)}).to.not.be.null;`);
+      body.push(...elementLines);
+    } else if (elementLines.length > 0) {
+      // `[T]`: a null element is GraphQL-legal, so skip it before type-checking
+      // (asserting the element type against null would false-fail a valid list).
+      body.push('if (__el === null || __el === undefined) return;', ...elementLines);
+    }
+    if (body.length > 0) {
+      lines.push(`${accessor}.forEach(function (__el) {`, ...body.map((line) => `    ${line}`), '});');
     }
     return lines;
   }
@@ -229,6 +242,10 @@ function emitFieldAssertions(
   const lines: string[] = [];
   if (field.type.nonNull) {
     lines.push(`pm.expect(${objectAccessor}, ${JSON.stringify(`${parentTypeName} is missing non-null field '${field.name}'`)}).to.have.property(${propName});`);
+    // A non-null field may be present but explicitly null, which the property
+    // check alone would accept; fail closed on it before the shape check (which
+    // legitimately skips null for nullable fields).
+    lines.push(`pm.expect(${prop}, ${JSON.stringify(`${parentTypeName}.${field.name} is declared non-null but was null`)}).to.not.be.null;`);
   }
   const valueLines = emitValueAssertions(prop, field.type, field.selection, `${ctx}.${field.name}`, index, warnings);
   if (valueLines.length > 0) {

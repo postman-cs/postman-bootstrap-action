@@ -381,3 +381,81 @@ describe('OpenAPI compound path-parameter warning', () => {
     expect(warnings.some((warning) => warning.startsWith('CONTRACT_PATH_PARAM_COMPOUND_SEGMENT_NOT_VALIDATED'))).toBe(true);
   });
 });
+
+// Round-4 fix (GraphQL): list-element and selected-field nullability. A nullable
+// list [T] may legitimately contain null (skip it); a non-null list [T!] must not
+// (fail closed). A SELECTED non-null field that is present but explicitly null must
+// fail (the property check alone would accept it).
+describe('GraphQL nullability: list elements and selected non-null fields', () => {
+  function gqlScript(sdl: string, id: string): string {
+    const index = parseGraphQLSchema(sdl, { service: 'S' });
+    const collection = buildGraphQLCollection(index, { url: '{{u}}/graphql' }) as unknown as {
+      item: Array<{ id: string; event: Array<{ listen: string; script: { exec: string[] } }> }>;
+    };
+    instrumentGraphQLCollection(collection as unknown as JsonRecord, index);
+    const item = collection.item.find((entry) => entry.id === id)!;
+    return item.event.find((event) => event.listen === 'test')!.script.exec.join('\n');
+  }
+  it('accepts a null element in a nullable scalar list [String]', () => {
+    const exec = gqlScript('type Query { tags: [String] }', 'query.tags');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { tags: ['a', null] } } }))).toBe(false);
+  });
+  it('fails a null element in a non-null scalar list [String!]', () => {
+    const exec = gqlScript('type Query { tags: [String!] }', 'query.tags');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { tags: ['a', null] } } }))).toBe(true);
+  });
+  it('accepts a null element in a nullable object list [Thing]', () => {
+    const exec = gqlScript('type Thing { id: ID! } type Query { things: [Thing] }', 'query.things');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { things: [{ id: 'a' }, null] } } }))).toBe(false);
+  });
+  it('fails a null element in a non-null object list [Thing!]', () => {
+    const exec = gqlScript('type Thing { id: ID! } type Query { things: [Thing!] }', 'query.things');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { things: [{ id: 'a' }, null] } } }))).toBe(true);
+  });
+  it('fails a selected non-null field that is present but explicitly null', () => {
+    const exec = gqlScript('type User { id: ID! } type Query { me: User }', 'query.me');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { me: { id: null } } } }))).toBe(true);
+  });
+  it('accepts a selected non-null field with a valid value', () => {
+    const exec = gqlScript('type User { id: ID! } type Query { me: User }', 'query.me');
+    expect(anyFail(runScript(exec, { code: 200, json: { data: { me: { id: 'x' } } } }))).toBe(false);
+  });
+});
+
+// Round-4 fix (gRPC): proto map keys JSON-encode as strings, but an integral or
+// bool key type still constrains that string. A map<int32,V> key that is not an
+// integer string, or a map<bool,V> key that is not "true"/"false", must fail
+// closed; a map<string,V> accepts any string key.
+describe.skipIf(!HAS_PROTOBUF)('gRPC map key validation (ProtoJSON integral/bool keys)', () => {
+  function mapKeyScript(): string {
+    const deps = PROTOBUF ? { protobuf: PROTOBUF } : undefined;
+    const proto = [
+      'syntax = "proto3";',
+      'package t;',
+      'message Req { string id = 1; }',
+      'message Resp { map<int32, string> by_int = 1; map<bool, string> by_bool = 2; map<string, string> by_str = 3; }',
+      'service S { rpc Get(Req) returns (Resp); }'
+    ].join('\n');
+    const index = parseProtoSchema(proto, deps);
+    const { collection } = buildGrpcCollection(index, { baseUrl: 'grpcs://h:443', idSeed: 'mk' });
+    instrumentGrpcCollection(collection, index);
+    const item = grpcItems(collection).find((entry) => String((entry.payload as JsonRecord).methodPath).endsWith('/Get'))!;
+    return ((item.event as Array<{ listen: string; script: { exec: string[] } }>).find((e) => e.listen === 'test')!.script.exec).join('\n');
+  }
+  it('passes ProtoJSON-valid integral, bool, and string keys', () => {
+    const script = mapKeyScript();
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { byInt: { '1': 'a', '-2': 'b' }, byBool: { 'true': 'x', 'false': 'y' }, byStr: { anything: 'z' } } }))).toBe(false);
+  });
+  it('fails a non-integer key on a map<int32, V>', () => {
+    const script = mapKeyScript();
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { byInt: { abc: 'a' } } }))).toBe(true);
+  });
+  it('fails a non-boolean key on a map<bool, V>', () => {
+    const script = mapKeyScript();
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { byBool: { yes: 'x' } } }))).toBe(true);
+  });
+  it('accepts any string key on a map<string, V>', () => {
+    const script = mapKeyScript();
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { byStr: { '!@#': 'z' } } }))).toBe(false);
+  });
+});

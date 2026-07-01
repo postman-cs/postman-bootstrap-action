@@ -80,7 +80,7 @@ jobs:
     needs: preflight
     if: ${{ needs.preflight.outputs.bootstrap_api == 'true' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
@@ -186,7 +186,7 @@ jobs:
     needs: preflight
     if: ${{ needs.preflight.outputs.bifrost == 'true' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Verify Bifrost API key creation
         env:
           ACCESS_TOKEN: ${{ secrets.SMOKE_ORG_ACCESS_TOKEN }}
@@ -213,7 +213,7 @@ jobs:
     needs: preflight
     if: ${{ needs.preflight.outputs.session == 'true' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Verify iapub session endpoint
         env:
           ACCESS_TOKEN: ${{ secrets.SMOKE_ORG_ACCESS_TOKEN }}

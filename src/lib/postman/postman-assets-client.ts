@@ -854,6 +854,19 @@ export class PostmanAssetsClient {
     });
   }
 
+  async createCollection(workspaceId: string, collection: unknown): Promise<string> {
+    const response = await this.request(`/collections?workspace=${encodeURIComponent(workspaceId)}`, {
+      method: 'POST',
+      body: JSON.stringify({ collection })
+    });
+    const createdCollection = asRecord(response?.collection);
+    const uid = String(createdCollection?.uid ?? createdCollection?.id ?? '').trim();
+    if (!uid) {
+      throw new Error('Collection create did not return a UID');
+    }
+    return uid;
+  }
+
   async deleteCollection(collectionUid: string): Promise<void> {
     try {
       await this.request(`/collections/${collectionUid}`, {

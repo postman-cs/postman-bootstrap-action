@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -45,6 +45,9 @@ const VALID_SPEC_31 = `{
   }
 }
 `;
+
+const COLLECTION_SCHEMA =
+  'https://schema.getpostman.com/json/collection/v2.1.0/collection.json';
 
 function createCoreStub(values: Record<string, string> = {}) {
   const outputs: Record<string, string> = {};
@@ -165,6 +168,24 @@ function createGeneratedContractCollection() {
   };
 }
 
+function createCuratedCollection(name: string) {
+  return {
+    info: {
+      name,
+      schema: COLLECTION_SCHEMA
+    },
+    item: [
+      {
+        name: 'GET /curated',
+        request: {
+          method: 'GET',
+          url: 'https://example.test/curated'
+        }
+      }
+    ]
+  };
+}
+
 function collectionNotFound(uid: string): HttpError {
   return new HttpError({
     method: 'PUT',
@@ -207,6 +228,7 @@ function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
 function createRollbackPostman(overrides: Record<string, unknown> = {}) {
   return {
     addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+    createCollection: vi.fn().mockResolvedValue('col-created'),
     createWorkspace: vi.fn(),
     deleteCollection: vi.fn().mockResolvedValue(undefined),
     findWorkspacesByName: vi.fn().mockResolvedValue([]),
@@ -271,6 +293,23 @@ async function runExistingSpecBootstrap(
       )
     }
   );
+}
+
+async function withCwd<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const previous = process.cwd();
+  const previousWorkspace = process.env.GITHUB_WORKSPACE;
+  process.chdir(dir);
+  process.env.GITHUB_WORKSPACE = dir;
+  try {
+    return await fn();
+  } finally {
+    process.chdir(previous);
+    if (previousWorkspace === undefined) {
+      delete process.env.GITHUB_WORKSPACE;
+    } else {
+      process.env.GITHUB_WORKSPACE = previousWorkspace;
+    }
+  }
 }
 
 describe('bootstrap action', () => {
@@ -492,6 +531,198 @@ describe('bootstrap action', () => {
         warnings: 0
       })
     );
+  });
+
+  it('syncs additional local collections without linking them as generated spec collections', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-additional-collections-run-'));
+    mkdirSync(join(workspace, 'postman/curated/nested'), { recursive: true });
+    mkdirSync(join(workspace, '.postman'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(createCuratedCollection('Payments curated'), null, 2)
+    );
+    writeFileSync(
+      join(workspace, 'postman/curated/nested/refunds.yaml'),
+      stringifyYaml(createCuratedCollection('Refunds curated'))
+    );
+    writeFileSync(
+      join(workspace, '.postman/resources.yaml'),
+      stringifyYaml({
+        workspace: { id: 'ws-existing' },
+        cloudResources: {
+          additionalCollections: {
+            '../postman/curated/payments.json': 'col-payments-existing'
+          }
+        }
+      })
+    );
+
+    try {
+      await withCwd(workspace, async () => {
+        const { core } = createCoreStub();
+        const postman = createRollbackPostman({
+          createCollection: vi.fn().mockResolvedValue('col-refunds-created'),
+          updateCollection: vi.fn().mockResolvedValue(undefined)
+        });
+        const internalIntegration = createRollbackIntegration();
+
+        await runExistingSpecBootstrap(postman, {
+          core,
+          internalIntegration,
+          inputs: {
+            additionalCollectionsDir: 'postman/curated',
+            baselineCollectionId: 'col-baseline-existing',
+            collectionSyncMode: 'version',
+            contractCollectionId: 'col-contract-existing',
+            releaseLabel: 'v1',
+            smokeCollectionId: 'col-smoke-existing'
+          }
+        });
+
+        expect(postman.createCollection).toHaveBeenCalledWith(
+          'ws-existing',
+          expect.objectContaining({
+            info: expect.objectContaining({ name: 'Refunds curated' })
+          })
+        );
+        expect(postman.updateCollection).toHaveBeenCalledWith(
+          'col-payments-existing',
+          expect.objectContaining({
+            info: expect.objectContaining({ name: 'Payments curated' })
+          })
+        );
+        const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8'));
+        expect(resources.cloudResources?.additionalCollections).toMatchObject({
+          '../postman/curated/nested/refunds.yaml': 'col-refunds-created',
+          '../postman/curated/payments.json': 'col-payments-existing'
+        });
+        expect(resources.workspace).toEqual({ id: 'ws-existing' });
+        expect(resources.cloudResources?.specs).toEqual({
+          'spec-url:https://example.test/openapi.yaml': 'spec-existing'
+        });
+        expect(resources.cloudResources?.collections).toMatchObject({
+          '../postman/collections/core-payments v1': 'col-baseline-existing',
+          '../postman/collections/[Smoke] core-payments v1': 'col-smoke-existing',
+          '../postman/collections/[Contract] core-payments v1': 'col-contract-existing'
+        });
+
+        expect(postman.injectTests).toHaveBeenCalledTimes(1);
+        expect(postman.injectTests).toHaveBeenCalledWith('col-smoke-existing', 'smoke');
+        expect(postman.tagCollection).toHaveBeenCalledTimes(3);
+        expect(postman.tagCollection).not.toHaveBeenCalledWith(
+          'col-payments-existing',
+          expect.any(Array)
+        );
+        expect(postman.tagCollection).not.toHaveBeenCalledWith(
+          'col-refunds-created',
+          expect.any(Array)
+        );
+        expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledWith(
+          'spec-existing',
+          [
+            { collectionId: 'col-baseline-existing', syncOptions: { syncExamples: true } },
+            { collectionId: 'col-smoke-existing', syncOptions: { syncExamples: true } },
+            { collectionId: 'col-contract-existing', syncOptions: { syncExamples: true } }
+          ]
+        );
+        expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(3);
+        expect(internalIntegration.syncCollection).not.toHaveBeenCalledWith(
+          'spec-existing',
+          'col-payments-existing'
+        );
+        expect(internalIntegration.syncCollection).not.toHaveBeenCalledWith(
+          'spec-existing',
+          'col-refunds-created'
+        );
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('persists current bootstrap resource state before additional collection mappings', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-additional-fresh-state-'));
+    mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(createCuratedCollection('Payments curated'), null, 2)
+    );
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+
+    try {
+      await withCwd(workspace, async () => {
+        const postman = createRollbackPostman({
+          createCollection: vi.fn().mockResolvedValue('col-payments-created')
+        });
+
+        await runExistingSpecBootstrap(postman, {
+          inputs: {
+            additionalCollectionsDir: 'postman/curated',
+            baselineCollectionId: 'col-baseline-existing',
+            collectionSyncMode: 'version',
+            contractCollectionId: 'col-contract-existing',
+            releaseLabel: 'v1',
+            smokeCollectionId: 'col-smoke-existing',
+            specPath: 'openapi.yaml',
+            specUrl: ''
+          }
+        });
+
+        const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8'));
+        expect(resources).toMatchObject({
+          workspace: { id: 'ws-existing' },
+          cloudResources: {
+            specs: {
+              '../openapi.yaml': 'spec-existing'
+            },
+            collections: {
+              '../postman/collections/core-payments v1': 'col-baseline-existing',
+              '../postman/collections/[Smoke] core-payments v1': 'col-smoke-existing',
+              '../postman/collections/[Contract] core-payments v1': 'col-contract-existing'
+            },
+            additionalCollections: {
+              '../postman/curated/payments.json': 'col-payments-created'
+            }
+          }
+        });
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects invalid additional collections before bootstrap side effects', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-additional-invalid-'));
+    mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'postman/curated/not-a-collection.json'),
+      JSON.stringify({ item: [] }, null, 2)
+    );
+
+    try {
+      await withCwd(workspace, async () => {
+        const execStub = createExecStub();
+        const postman = createRollbackPostman({
+          createCollection: vi.fn().mockResolvedValue('col-created'),
+          updateCollection: vi.fn().mockResolvedValue(undefined)
+        });
+
+        await expect(
+          runExistingSpecBootstrap(postman, {
+            exec: execStub,
+            inputs: {
+              additionalCollectionsDir: 'postman/curated'
+            }
+          })
+        ).rejects.toThrow(/ADDITIONAL_COLLECTION_INVALID/);
+
+        expect(execStub.exec).not.toHaveBeenCalled();
+        expect(postman.createCollection).not.toHaveBeenCalled();
+        expect(postman.updateCollection).not.toHaveBeenCalled();
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('uses postman-governance-group repository custom property when no explicit group is provided', async () => {
@@ -2269,9 +2500,15 @@ paths:
         cloudResources: {
           specs: { '../index.yaml': 'spec-from-file' },
           collections: {
+            '../postman/curated/[Smoke] curated.json': 'col-additional-smoke-legacy',
+            '../postman/curated/[Contract] curated.json': 'col-additional-contract-legacy',
             '../postman/collections/core-payments v1': 'col-baseline-from-file',
             '../postman/collections/[Smoke] core-payments v1': 'col-smoke-from-file',
             '../postman/collections/[Contract] core-payments v1': 'col-contract-from-file'
+          },
+          additionalCollections: {
+            '../postman/curated/[Smoke] curated.json': 'col-additional-smoke',
+            '../postman/curated/[Contract] curated.json': 'col-additional-contract'
           }
         }
       })

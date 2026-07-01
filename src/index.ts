@@ -2,7 +2,6 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { parse, stringify } from 'yaml';
 
 import { bootstrapActionContract } from './contracts.js';
@@ -14,6 +13,14 @@ import {
   type BreakingChangeMode,
   type OpenApiBreakingChangeCheckRunner
 } from './lib/openapi-changes.js';
+import {
+  findCloudResourceId,
+  getFirstCloudResourceId,
+  loadAdditionalCollectionFiles,
+  readResourcesState,
+  syncAdditionalCollections,
+  type PostmanResourcesState
+} from './lib/postman/additional-collections.js';
 import {
   parsePostmanRegion,
   parsePostmanStack,
@@ -46,6 +53,7 @@ export interface ResolvedInputs {
   baselineCollectionId?: string;
   smokeCollectionId?: string;
   contractCollectionId?: string;
+  additionalCollectionsDir?: string;
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
@@ -174,7 +182,7 @@ export interface BootstrapExecutionDependencies {
     | 'uploadSpec'
     | 'updateSpec'
   > &
-    Partial<Pick<PostmanAssetsClient, 'deleteCollection' | 'getCollection' | 'updateCollection'>>;
+    Partial<Pick<PostmanAssetsClient, 'createCollection' | 'deleteCollection' | 'getCollection' | 'updateCollection'>>;
   openApiChanges?: OpenApiBreakingChangeCheckRunner;
   specFetcher: typeof fetch;
 }
@@ -367,6 +375,7 @@ export function resolveInputs(
     baselineCollectionId: getInput('baseline-collection-id', env),
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
+    additionalCollectionsDir: getInput('additional-collections-dir', env),
     syncExamples: parseBooleanInput('sync-examples', getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
@@ -517,6 +526,7 @@ export function readActionInputs(
     INPUT_BASELINE_COLLECTION_ID: optionalInput(actionCore, 'baseline-collection-id'),
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
+    INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, 'additional-collections-dir'),
     INPUT_SYNC_EXAMPLES:
       optionalInput(actionCore, 'sync-examples') ??
       bootstrapActionContract.inputs['sync-examples'].default,
@@ -818,44 +828,72 @@ function matchesBaselineCollectionResource(filePath: string, assetProjectName: s
   );
 }
 
-type CloudResourceMap = Record<string, string>;
-
-type PostmanResourcesState = {
-  workspace?: {
-    id?: string;
-  };
-  cloudResources?: {
-    collections?: CloudResourceMap;
-    environments?: CloudResourceMap;
-    specs?: CloudResourceMap;
-  };
-};
-
-function readResourcesState(): PostmanResourcesState | null {
-  try {
-    return parse(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
-  } catch {
-    return null;
-  }
+function matchesPrefixedCollectionResource(
+  filePath: string,
+  prefix: typeof SMOKE_COLLECTION_PREFIX | typeof CONTRACT_COLLECTION_PREFIX,
+  assetProjectName: string
+): boolean {
+  return matchesCollectionDirectory(filePath, `${prefix} ${assetProjectName}`);
 }
 
-function getFirstCloudResourceId(map: CloudResourceMap | undefined): string | undefined {
-  if (!map) {
-    return undefined;
-  }
-  return Object.values(map)[0];
+function toResourcesStatePath(filePath: string): string {
+  return `../${normalizedResourcePath(filePath).replace(/^\/+/, '')}`;
 }
 
-function findCloudResourceId(
-  map: CloudResourceMap | undefined,
-  matcher: (path: string) => boolean
-): string | undefined {
-  if (!map) {
-    return undefined;
+function generatedCollectionResourcePath(
+  prefix: GeneratedCollectionPrefix,
+  assetProjectName: string
+): string {
+  const directoryName = prefix ? `${prefix} ${assetProjectName}` : assetProjectName;
+  return `../postman/collections/${directoryName}`;
+}
+
+function specResourceStatePath(inputs: ResolvedInputs): string | undefined {
+  if (inputs.specPath) {
+    return toResourcesStatePath(inputs.specPath);
+  }
+  if (inputs.specUrl) {
+    return `spec-url:${sanitizeUrlForLog(inputs.specUrl)}`;
+  }
+  return undefined;
+}
+
+function recordCurrentBootstrapResources(options: {
+  assetProjectName: string;
+  inputs: ResolvedInputs;
+  outputs: PlannedOutputs;
+  resourcesState: PostmanResourcesState;
+}): void {
+  const { assetProjectName, inputs, outputs, resourcesState } = options;
+  if (outputs['workspace-id']) {
+    resourcesState.workspace ??= {};
+    resourcesState.workspace.id = outputs['workspace-id'];
   }
 
-  const match = Object.entries(map).find(([filePath]) => matcher(filePath));
-  return match?.[1];
+  const specPath = specResourceStatePath(inputs);
+  if (outputs['spec-id'] && specPath) {
+    resourcesState.cloudResources ??= {};
+    resourcesState.cloudResources.specs ??= {};
+    resourcesState.cloudResources.specs[specPath] = outputs['spec-id'];
+  }
+
+  const collectionMappings: Array<[GeneratedCollectionPrefix, string]> = [
+    [BASELINE_COLLECTION_PREFIX, outputs['baseline-collection-id']],
+    [SMOKE_COLLECTION_PREFIX, outputs['smoke-collection-id']],
+    [CONTRACT_COLLECTION_PREFIX, outputs['contract-collection-id']]
+  ].filter((entry): entry is [GeneratedCollectionPrefix, string] => Boolean(entry[1]));
+
+  if (collectionMappings.length === 0) {
+    return;
+  }
+
+  resourcesState.cloudResources ??= {};
+  resourcesState.cloudResources.collections ??= {};
+  for (const [prefix, collectionId] of collectionMappings) {
+    resourcesState.cloudResources.collections[
+      generatedCollectionResourcePath(prefix, assetProjectName)
+    ] = collectionId;
+  }
 }
 
 function sanitizeCollectionForUpdate(
@@ -1003,6 +1041,12 @@ async function runBootstrapInner(
       'Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata'
     );
   }
+  const resourcesState = readResourcesState();
+  const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
+  const additionalCollections = loadAdditionalCollectionFiles(
+    inputs.additionalCollectionsDir,
+    resourcesState
+  );
   const collectionAssetProjectName =
     inputs.collectionSyncMode === 'version'
       ? createAssetProjectName(inputs, releaseLabel)
@@ -1013,8 +1057,6 @@ async function runBootstrapInner(
   await runGroup(dependencies.core, 'Install Postman CLI', async () => {
     await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
   });
-
-  const resourcesState = readResourcesState();
 
   let specId = inputs.specId;
   if (!specId) {
@@ -1348,7 +1390,11 @@ async function runBootstrapInner(
   if (!smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
-      (filePath) => filePath.includes('[Smoke]')
+      (filePath) => matchesPrefixedCollectionResource(
+        filePath,
+        SMOKE_COLLECTION_PREFIX,
+        collectionAssetProjectName
+      )
     );
     if (smokeCollectionId) {
       dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
@@ -1357,7 +1403,11 @@ async function runBootstrapInner(
   if (!contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
-      (filePath) => filePath.includes('[Contract]')
+      (filePath) => matchesPrefixedCollectionResource(
+        filePath,
+        CONTRACT_COLLECTION_PREFIX,
+        collectionAssetProjectName
+      )
     );
     if (contractCollectionId) {
       dependencies.core.info('Resolved contract-collection-id from .postman/resources.yaml');
@@ -1861,6 +1911,36 @@ async function runBootstrapInner(
       }
     )
   );
+
+  if (additionalCollections.length > 0) {
+    await runRollbackStage(
+      'Sync Additional Collections',
+      async () => runGroup(
+        dependencies.core,
+        'Sync Additional Collections',
+        async () => {
+          recordCurrentBootstrapResources({
+            assetProjectName: collectionAssetProjectName,
+            inputs,
+            outputs,
+            resourcesState: writableResourcesState
+          });
+          const additionalResults = await syncAdditionalCollections({
+            collectionFiles: additionalCollections,
+            core: dependencies.core,
+            postman: dependencies.postman,
+            resourcesState: writableResourcesState,
+            workspaceId: workspaceId || ''
+          });
+          for (const result of additionalResults) {
+            completedExternalSideEffects.push(
+              `${result.operation}AdditionalCollection(${result.collectionId} from ${result.displayPath})`
+            );
+          }
+        }
+      )
+    );
+  }
 
   const linkedCollectionIds = [
     outputs['baseline-collection-id'],

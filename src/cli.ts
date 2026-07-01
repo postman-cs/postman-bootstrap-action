@@ -85,6 +85,7 @@ const cliInputNames = [
   'baseline-collection-id',
   'smoke-collection-id',
   'contract-collection-id',
+  'additional-collections-dir',
   'sync-examples',
   'collection-sync-mode',
   'spec-sync-mode',

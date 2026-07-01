@@ -24,30 +24,42 @@ jobs:
             nested-folder-hierarchy: 'false'
             request-name-source: 'Fallback'
             spec-fixture: 'e2e-spec.yaml'
+            additional-collections-dir: ''
+
+          - name: 'Paths + Fallback + additional collections'
+            folder-strategy: 'Paths'
+            nested-folder-hierarchy: 'false'
+            request-name-source: 'Fallback'
+            spec-fixture: 'e2e-spec.yaml'
+            additional-collections-dir: 'tests/fixtures/additional-collections/generated'
 
           - name: 'Tags + nested hierarchy + URL names'
             folder-strategy: 'Tags'
             nested-folder-hierarchy: 'true'
             request-name-source: 'URL'
             spec-fixture: 'e2e-spec.yaml'
+            additional-collections-dir: ''
 
           - name: 'OAS 3.1 auto-detect (Paths + Fallback)'
             folder-strategy: 'Paths'
             nested-folder-hierarchy: 'false'
             request-name-source: 'Fallback'
             spec-fixture: 'e2e-spec-oas31.yaml'
+            additional-collections-dir: ''
 
           - name: 'OAS 3.1 Petstore (real-world multi-file JSON spec)'
             folder-strategy: 'Paths'
             nested-folder-hierarchy: 'false'
             request-name-source: 'Fallback'
             spec-fixture: 'petstore-oas31.json'
+            additional-collections-dir: ''
 
           - name: 'OAS 3.1 Petstore (single-file JSON spec)'
             folder-strategy: 'Paths'
             nested-folder-hierarchy: 'false'
             request-name-source: 'Fallback'
             spec-fixture: 'petstore-oas31-single-file.json'
+            additional-collections-dir: ''
 
     steps:
       - uses: actions/checkout@v6
@@ -67,6 +79,7 @@ jobs:
           project-name: 'e2e-${{ matrix.folder-strategy }}-${{ github.run_id }}'
           spec-url: 'https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/tests/fixtures/${{ matrix.spec-fixture }}'
           postman-api-key: ${{ secrets.SMOKE_NON_ORG_API_KEY }}
+          additional-collections-dir: ${{ matrix.additional-collections-dir }}
           folder-strategy: ${{ matrix.folder-strategy }}
           nested-folder-hierarchy: ${{ matrix.nested-folder-hierarchy }}
           request-name-source: ${{ matrix.request-name-source }}
@@ -85,6 +98,52 @@ jobs:
           [ -n "${{ steps.bootstrap.outputs.smoke-collection-id }}" ]    || { echo "FAIL: smoke-collection-id is empty"; exit 1; }
           [ -n "${{ steps.bootstrap.outputs.contract-collection-id }}" ] || { echo "FAIL: contract-collection-id is empty"; exit 1; }
           echo "All collection outputs present – E2E passed."
+
+      - name: Capture additional collection IDs
+        id: additional_created
+        if: ${{ matrix.additional-collections-dir != '' }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { parse } = require('yaml');
+
+          const state = parse(fs.readFileSync('.postman/resources.yaml', 'utf8'));
+          const additionalCollections = state?.cloudResources?.additionalCollections ?? {};
+          const baselineId = additionalCollections['../tests/fixtures/additional-collections/generated/baseline.json'];
+          const smokeId = additionalCollections['../tests/fixtures/additional-collections/generated/nested/smoke.yaml'];
+
+          if (!baselineId || !smokeId) {
+            console.error('FAIL: additional collection IDs were not persisted to .postman/resources.yaml');
+            console.error(JSON.stringify(additionalCollections, null, 2));
+            process.exit(1);
+          }
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `baseline_id=${baselineId}\nsmoke_id=${smokeId}\n`);
+          NODE
+
+      - name: Verify additional collections were created
+        if: ${{ matrix.additional-collections-dir != '' }}
+        env:
+          BASELINE_ADDITIONAL_ID: ${{ steps.additional_created.outputs.baseline_id }}
+          PMAK: ${{ secrets.SMOKE_NON_ORG_API_KEY }}
+          SMOKE_ADDITIONAL_ID: ${{ steps.additional_created.outputs.smoke_id }}
+        run: |
+          set -euo pipefail
+
+          baseline=$(curl -sf -H "X-Api-Key: $PMAK" "https://api.getpostman.com/collections/$BASELINE_ADDITIONAL_ID")
+          smoke=$(curl -sf -H "X-Api-Key: $PMAK" "https://api.getpostman.com/collections/$SMOKE_ADDITIONAL_ID")
+
+          [ "$(echo "$baseline" | jq -r '.collection.info.name // empty')" = "E2E Test API generated baseline artifact" ] || {
+            echo "FAIL: baseline additional collection was not created with expected name"
+            echo "$baseline" | jq '.collection.info'
+            exit 1
+          }
+          [ "$(echo "$smoke" | jq -r '.collection.info.name // empty')" = "E2E Test API generated smoke artifact" ] || {
+            echo "FAIL: smoke additional collection was not created with expected name"
+            echo "$smoke" | jq '.collection.info'
+            exit 1
+          }
 
       - name: Cleanup – delete test workspace
         if: always() && inputs.skip-cleanup != 'true'

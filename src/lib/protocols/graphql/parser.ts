@@ -98,6 +98,8 @@ export interface GraphQLContractIndex {
   objectShapes: Record<string, GraphQLObjectShape>;
   /** Enum value sets keyed by enum type name, for runtime membership assertions. */
   enumValues: Record<string, string[]>;
+  /** Union member object-type names keyed by union type name, for runtime __typename membership assertions. */
+  unionMembers: Record<string, string[]>;
   warnings: string[];
 }
 
@@ -194,7 +196,7 @@ function collectRootOperations(
       }
       if (returns.kind === 'union') {
         opWarnings.push(
-          `GQL_UNION_RETURN_NOT_SHAPE_ASSERTED: ${kind}.${fieldName} returns union ${returns.name}; only data.${fieldName} presence is asserted, not member-type fields`
+          `GQL_UNION_MEMBER_FIELDS_NOT_EXPANDED: ${kind}.${fieldName} returns union ${returns.name}; its __typename is validated (object + declared member name) but member-specific fields are not expanded or asserted`
         );
       }
       if (returns.kind === 'unknown') {
@@ -276,9 +278,12 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
   for (const operation of operations) warnings.push(...operation.warnings);
 
   const enumValues: Record<string, string[]> = {};
+  const unionMembers: Record<string, string[]> = {};
   for (const namedType of Object.values(schema.getTypeMap())) {
     if (isEnumType(namedType)) {
       enumValues[namedType.name] = namedType.getValues().map((value) => value.name);
+    } else if (isUnionType(namedType)) {
+      unionMembers[namedType.name] = namedType.getTypes().map((member) => member.name).sort((x, y) => x.localeCompare(y));
     }
   }
 
@@ -287,6 +292,7 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
     operations,
     objectShapes,
     enumValues,
+    unionMembers,
     warnings
   };
 }

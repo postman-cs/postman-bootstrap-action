@@ -100,7 +100,7 @@ export type GrpcStreamKind = 'unary' | 'server' | 'client' | 'bidi';
 // non-finite doubles as the strings "NaN"/"Infinity"/"-Infinity", and all
 // numeric fields may also carry numeric strings.
 export type GrpcJsonType = 'number' | 'double' | 'string' | 'boolean' | 'object' | 'array' | 'enum' | 'any' | 'unknown';
-export type GrpcJsonFormat = 'proto-bytes' | 'proto-timestamp' | 'proto-duration' | 'proto-field-mask';
+export type GrpcJsonFormat = 'proto-bytes' | 'proto-timestamp' | 'proto-duration' | 'proto-field-mask' | 'proto-float32';
 
 export interface GrpcFieldDescriptor {
   name: string;
@@ -181,7 +181,9 @@ function asArray<T>(value: unknown): T[] {
 
 const SCALAR_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; jsonFormat?: GrpcJsonFormat; intType?: string }> = {
   double: { jsonType: 'double' },
-  float: { jsonType: 'double' },
+  // proto float is float32; carry a format so the runtime enforces float32 range
+  // (a finite double like 3.5e38 overflows float32 and must fail).
+  float: { jsonType: 'double', jsonFormat: 'proto-float32' },
   // 32-bit integers JSON-encode as numbers; `intType` carries the exact protobuf
   // integer domain so the runtime range/sign-checks it (not just integrality).
   int32: { jsonType: 'number', intType: 'int32' },
@@ -215,7 +217,7 @@ const WELL_KNOWN_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; jsonFormat?
   'google.protobuf.Duration': { jsonType: 'string', jsonFormat: 'proto-duration' },
   'google.protobuf.FieldMask': { jsonType: 'string', jsonFormat: 'proto-field-mask' },
   'google.protobuf.DoubleValue': { jsonType: 'double', nullable: true },
-  'google.protobuf.FloatValue': { jsonType: 'double', nullable: true },
+  'google.protobuf.FloatValue': { jsonType: 'double', jsonFormat: 'proto-float32', nullable: true },
   'google.protobuf.Int32Value': { jsonType: 'number', intType: 'int32', nullable: true },
   'google.protobuf.UInt32Value': { jsonType: 'number', intType: 'uint32', nullable: true },
   'google.protobuf.Int64Value': { jsonType: 'string', intType: 'int64', nullable: true },

@@ -1895,9 +1895,12 @@ paths:
         '200': { description: OK }
 `);
     const compoundOperation = compound.operations[0]!;
-    expect(compoundOperation.parameterChecks?.filter((check) => check.in === 'path') ?? []).toEqual([]);
-    expect(compoundOperation.warnings).toContain('CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter name value is not validated at runtime');
-    expect(compoundOperation.warnings).toContain('CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter ext value is not validated at runtime');
+    // A separable compound segment (/files/{name}.{ext}) is extracted and schema-validated
+    // at runtime, so both scalar path parameters carry a check.
+    const compoundPathChecks = compoundOperation.parameterChecks?.filter((check) => check.in === 'path') ?? [];
+    expect(compoundPathChecks.map((check) => check.name).sort()).toEqual(['ext', 'name']);
+    expect(compoundOperation.warnings).not.toContain('CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter name value is not validated at runtime');
+    expect(compoundOperation.warnings).not.toContain('CONTRACT_PATH_PARAM_NOT_VALIDATED: path parameter ext value is not validated at runtime');
   });
 
   it('decodes and validates array query and header parameters across form, spaceDelimited, and pipeDelimited styles', async () => {

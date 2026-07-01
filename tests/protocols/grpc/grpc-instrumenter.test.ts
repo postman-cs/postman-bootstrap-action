@@ -166,12 +166,14 @@ describe.skipIf(!HAS_PROTOBUF)('instrumentGrpcCollection', () => {
     expect(script).toContain('double');
   });
 
-  it('requires integer enum numbers in the generated shape checker', () => {
+  it('bounds numeric enum values to the int32 range in the generated shape checker', () => {
     const { collection } = buildInstrumented();
     const item = grpcItems(collection).find((entry) => String((entry.payload as JsonRecord).methodPath).endsWith('/GetTower'))!;
     const script = testScript(item);
+    expect(script).toContain('matchesEnumNumber');
     expect(script).toContain('Number.isInteger');
-    expect(script).toContain('must be an integer');
+    expect(script).toContain('must be an int32-range integer');
+    expect(script).toContain('2147483647');
   });
 
   it('resolves oneof members with the same jsonName/proto-name lookup as field checks', () => {

@@ -420,12 +420,24 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
       if (defaultSerialization) warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
       continue;
     }
-    // A path parameter embedded in a compound segment such as /files/{name}.{ext}
-    // cannot be extracted from the sent path, so it is not schema-validated. Emit
-    // a visible warning (no-silent-skip) rather than a check that would never run.
-    if (location === 'path' && !pathTemplate.split('/').includes(`{${name}}`)) {
-      warnings.push(`CONTRACT_PATH_PARAM_COMPOUND_SEGMENT_NOT_VALIDATED: path parameter ${name} of ${operationId} is embedded in a compound path segment and is not schema-validated`);
-      continue;
+    // A path parameter embedded in a compound segment such as /reports/{name}.{ext}
+    // is extracted at runtime by matching the concrete request segment against the
+    // template segment (see pathParamValue), so it IS schema-validated. Only an
+    // ambiguous adjacent-parameter segment ({a}{b}) cannot be resolved and stays
+    // warning-only.
+    if (location === 'path') {
+      const containingSegment = pathTemplate.split('/').find((segment) => segment.includes(`{${name}}`));
+      if (containingSegment !== undefined && containingSegment !== `{${name}}`) {
+        const segmentParts = containingSegment.split(/(\{[^}]+\})/).filter(Boolean);
+        let extractable = true;
+        for (let partIndex = 0; partIndex < segmentParts.length - 1; partIndex += 1) {
+          if (/^\{[^}]+\}$/.test(segmentParts[partIndex]!) && /^\{[^}]+\}$/.test(segmentParts[partIndex + 1]!)) extractable = false;
+        }
+        if (!extractable) {
+          warnings.push(`CONTRACT_PATH_PARAM_COMPOUND_SEGMENT_NOT_VALIDATED: path parameter ${name} of ${operationId} is in an ambiguous adjacent-parameter path segment and is not schema-validated`);
+          continue;
+        }
+      }
     }
     const scalarSchema = packedScalarSchema(packed);
     if (scalarSchema !== undefined) {

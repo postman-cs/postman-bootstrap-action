@@ -23,8 +23,9 @@ export interface SelectedField {
 /**
  * Compute the selected fields for an object/interface type at `depth`. Scalar
  * and enum fields become leaves; object/interface fields are expanded only while
- * `depth < SELECTION_DEPTH`. Unions, unknowns, and unexpanded composites are
- * omitted. Returns `null` when `typeRef` is not a selectable composite.
+ * `depth < SELECTION_DEPTH`. A union returns an empty selection (rendered as
+ * `{ __typename }`, the minimal valid selection set a union field requires).
+ * Returns `null` for scalars, enums, and unknowns, which need no selection set.
  *
  * This is the single source of truth shared by the builder (which renders the
  * query from it) and the instrumenter (which asserts only what it selects).
@@ -34,6 +35,10 @@ export function selectFields(
   index: GraphQLContractIndex,
   depth: number
 ): SelectedField[] | null {
+  // A union field still requires a selection set in the query, but its members
+  // share no common fields to select, so emit the minimal valid selection
+  // (rendered as { __typename } from an empty selection).
+  if (typeRef.kind === 'union') return [];
   if (typeRef.kind !== 'object' && typeRef.kind !== 'interface') return null;
   const shape = index.objectShapes[typeRef.name];
   if (!shape) return [];

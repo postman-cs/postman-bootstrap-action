@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { packSchema } from '../src/lib/spec/schema-pack.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
+import { createContractScript } from '../src/lib/spec/collection-contracts.js';
 import { parseOpenApiDocument } from '../src/lib/spec/openapi-loader.js';
 import { parseGraphQLSchema } from '../src/lib/protocols/graphql/parser.js';
 import { buildGraphQLCollection } from '../src/lib/protocols/graphql/builder.js';
@@ -152,7 +153,7 @@ function grpcScriptFor(methodSuffix: string): string {
     'package telecom;',
     'enum Quality { QUALITY_UNKNOWN = 0; ACTIVE = 1; }',
     'message GetReq { string user_id = 1; }',
-    'message GetResp { string user_id = 1; repeated string tags = 2; repeated Quality qualities = 3; double lat = 4; int32 count = 5; map<string, Quality> tag_quality = 6; google.protobuf.Timestamp occurred_at = 7; google.protobuf.Duration ttl = 8; google.protobuf.FieldMask mask = 9; bytes payload = 10; Quality state = 11; }',
+    'message GetResp { string user_id = 1; repeated string tags = 2; repeated Quality qualities = 3; double lat = 4; int32 count = 5; map<string, Quality> tag_quality = 6; google.protobuf.Timestamp occurred_at = 7; google.protobuf.Duration ttl = 8; google.protobuf.FieldMask mask = 9; bytes payload = 10; Quality state = 11; map<int64, string> id_names = 12; map<uint32, string> u_names = 13; int64 big = 14; float fl = 15; }',
     'service Svc { rpc Get(GetReq) returns (GetResp); rpc List(GetReq) returns (stream GetResp); }'
   ].join('\n');
   const index = parseProtoSchema(proto, deps);
@@ -246,6 +247,108 @@ describe.skipIf(!HAS_PROTOBUF)('gRPC repeated-element + ProtoJSON-name runtime v
     expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], state: 'ACTIVE' } }))).toBe(false);
     expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { userId: 'u1', tags: [], qualities: [], state: 'NOPE' } }))).toBe(true);
   });
+  // Round-7 (gRPC integer map keys): ProtoJSON parses integral map keys with Go
+  // strconv.ParseInt/ParseUint (verified against encoding/protojson v1.36.11) -- a
+  // STRICTER accepted-set than scalar integer VALUES: decimal/exponent spellings are
+  // rejected, unsigned keys take no sign, but leading zeros are accepted.
+  it('validates integer map keys with ParseInt/ParseUint semantics, distinct from scalar values', () => {
+    const script = grpcScriptFor('/Get');
+    const ok = { userId: 'u1', tags: [], qualities: [] };
+    // plain / leading-zero / signed int64 keys are ACCEPTED (Go accepts)
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, idNames: { '1': 'a' } } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, idNames: { '01': 'a' } } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, idNames: { '+1': 'a' } } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, idNames: { '-1': 'a' } } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, uNames: { '01': 'a' } } }))).toBe(false);
+    // decimal/exponent map-key spellings are REJECTED (Go rejects, though scalar values accept them)
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, idNames: { '1.0': 'a' } } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, idNames: { '1e0': 'a' } } }))).toBe(true);
+    // unsigned key with a sign, and signed 64-bit overflow, are REJECTED
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, uNames: { '-1': 'a' } } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, idNames: { '9223372036854775808': 'a' } } }))).toBe(true);
+  });
+  // Round-7 (gRPC enum numeric range): ProtoJSON enum numeric decoding is int32-bounded
+  // (verified against Go): out-of-int32 numbers are rejected in singular, repeated, and
+  // map-value enum positions; unknown-but-in-range numbers stay accepted (open enums).
+  it('bounds numeric enum values to the int32 range in every enum position', () => {
+    const script = grpcScriptFor('/Get');
+    const ok = { userId: 'u1', tags: [], qualities: [] };
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, state: 1 } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, state: -2147483648 } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, state: 2147483648 } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, state: 4294967296 } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, state: -2147483649 } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, qualities: [4294967296] } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, tagQuality: { a: 4294967296 } } }))).toBe(true);
+  });
+  // Round-9 (gRPC zero-valued exponent integer strings): Go protojson accepts a
+  // zero-valued exponent spelling like "0e100"/"0e-100" as 0, so the exponent safety
+  // bound must not false-fail an all-zero mantissa; non-zero out-of-range exponents
+  // still fail (overflow or non-integral).
+  it('accepts zero-valued exponent integer spellings, still rejecting non-zero out-of-range', () => {
+    const script = grpcScriptFor('/Get');
+    const ok = { userId: 'u1', tags: [], qualities: [] };
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '0e100' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '0e-100' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '0.0e100' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, count: '0e100' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '1e100' } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '1e-100' } }))).toBe(true);
+  });
+  // Round-9 (gRPC null = default/unset): Go protojson accepts JSON null for a WHOLE
+  // singular/repeated/map field (interpreted as the field's default), but rejects
+  // null as an array ELEMENT or a map VALUE.
+  it('accepts JSON null for a whole field, rejecting null array elements and map values', () => {
+    const script = grpcScriptFor('/Get');
+    const ok = { userId: 'u1', tags: [], qualities: [] };
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, count: null } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, state: null } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, qualities: null } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, tagQuality: null } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, qualities: [null] } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, tagQuality: { a: null } } }))).toBe(true);
+  });
+  // Round-10 (gRPC float32): proto float is float32, so a finite double that overflows
+  // float32 (e.g. 3.5e38) must fail, while in-range values and NaN/Infinity pass. Verified
+  // vs Go encoding/protojson (float rejects 3.5e38; the same value on a double accepts).
+  it('enforces float32 range on proto float fields, distinct from double', () => {
+    const script = grpcScriptFor('/Get');
+    const ok = { userId: 'u1', tags: [], qualities: [] };
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, fl: 3.14 } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, fl: '3.4028235e38' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, fl: 'NaN' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, fl: 'Infinity' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, fl: '3.5e38' } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, fl: 3.5e38 } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, fl: '1e39' } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, lat: '3.5e38' } }))).toBe(false);
+  });
+  // Round-10 (gRPC integer exponent): a legal zero-padded spelling with an exponent
+  // outside the old [-60,60] guard but normalizing to an in-range integer must pass;
+  // genuinely out-of-range magnitudes still fail. Verified vs Go.
+  it('normalizes integer spellings by magnitude, not a fixed exponent window', () => {
+    const script = grpcScriptFor('/Get');
+    const ok = { userId: 'u1', tags: [], qualities: [] };
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '1' + '0'.repeat(61) + 'e-61' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '1e100' } }))).toBe(true);
+  });
+  // Round-11 (gRPC integer exponent Go-parity): Go rejects positive-exponent spellings
+  // syntactically when intpSize + exp > 20, even when the VALUE is in range (e.g.
+  // '0.(20 zeros)1e21' = 1 is rejected), while intpSize + exp <= 20 with an in-range
+  // value is accepted. Verified vs Go encoding/protojson.
+  it('matches Go int-from-string exponent parity (syntactic intpSize+exp<=20)', () => {
+    const script = grpcScriptFor('/Get');
+    const ok = { userId: 'u1', tags: [], qualities: [] };
+    // in-syntactic-bound, in-range: accepted
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '0.' + '0'.repeat(19) + '1e20' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '1e18' } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '0.0001e20' } }))).toBe(false);
+    // over syntactic bound (intpSize+exp>20): rejected even though the value is 1
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '0.' + '0'.repeat(20) + '1e21' } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '0.0001e21' } }))).toBe(true);
+    // in syntactic bound but out of int64 range: rejected by range
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '1e19' } }))).toBe(true);
+  });
 });
 
 // Defect #1 (GraphQL): a 200 with data + field errors is legitimate partial
@@ -297,6 +400,53 @@ describe('GraphQL selection-aligned field assertions', () => {
   it('fails when a selected non-null scalar field is missing', () => {
     const { exec } = meScript();
     expect(anyFail(runScript(exec, { code: 200, json: { data: { me: {} } } }))).toBe(true);
+  });
+});
+
+// Round-8 fix (GraphQL): a union (and list-of-union) return renders '{ __typename }'
+// in the query, so the runtime script must assert the value is an object carrying a
+// string __typename that names a declared union member. A scalar union value, an
+// object missing __typename, or a __typename outside the member set is a false-pass
+// unless rejected. Verified as legal/illegal per the graphql execution model.
+describe('GraphQL union return runtime validation', () => {
+  function unionScripts(): { pet: string; pets: string; petQuery: string } {
+    const sdl = 'union Pet = Cat | Dog type Cat { name: String! } type Dog { name: String! } type Query { pet: Pet! pets: [Pet!]! }';
+    const index = parseGraphQLSchema(sdl, { service: 'S' });
+    const collection = buildGraphQLCollection(index, { url: '{{u}}/graphql' }) as unknown as {
+      item: Array<{ id: string; request: { body: { graphql: { query: string } } }; event: Array<{ listen: string; script: { exec: string[] } }> }>;
+    };
+    instrumentGraphQLCollection(collection as unknown as JsonRecord, index);
+    const pet = collection.item.find((entry) => entry.id === 'query.pet')!;
+    const pets = collection.item.find((entry) => entry.id === 'query.pets')!;
+    return {
+      pet: pet.event.find((event) => event.listen === 'test')!.script.exec.join(String.fromCharCode(10)),
+      pets: pets.event.find((event) => event.listen === 'test')!.script.exec.join(String.fromCharCode(10)),
+      petQuery: pet.request.body.graphql.query
+    };
+  }
+  it('selects { __typename } for a union field', () => {
+    expect(unionScripts().petQuery).toContain('__typename');
+  });
+  it('accepts a union object carrying a declared member __typename', () => {
+    const { pet } = unionScripts();
+    expect(anyFail(runScript(pet, { code: 200, json: { data: { pet: { __typename: 'Cat' } } } }))).toBe(false);
+  });
+  it('fails a scalar union value (not an object)', () => {
+    const { pet } = unionScripts();
+    expect(anyFail(runScript(pet, { code: 200, json: { data: { pet: 'Cat' } } }))).toBe(true);
+  });
+  it('fails a union object missing __typename', () => {
+    const { pet } = unionScripts();
+    expect(anyFail(runScript(pet, { code: 200, json: { data: { pet: {} } } }))).toBe(true);
+  });
+  it('fails a __typename outside the union member set', () => {
+    const { pet } = unionScripts();
+    expect(anyFail(runScript(pet, { code: 200, json: { data: { pet: { __typename: 'Fish' } } } }))).toBe(true);
+  });
+  it('validates every element of a list-of-union return', () => {
+    const { pets } = unionScripts();
+    expect(anyFail(runScript(pets, { code: 200, json: { data: { pets: [{ __typename: 'Cat' }, { __typename: 'Dog' }] } } }))).toBe(false);
+    expect(anyFail(runScript(pets, { code: 200, json: { data: { pets: ['Cat', {}] } } }))).toBe(true);
   });
 });
 
@@ -361,23 +511,73 @@ describe('SOAP operation coverage enforcement', () => {
   });
 });
 
-// Defect #6 (OpenAPI): a compound path segment emits a visible warning rather
-// than silently skipping the path-parameter schema check.
-describe('OpenAPI compound path-parameter warning', () => {
-  it('emits CONTRACT_PATH_PARAM_COMPOUND_SEGMENT_NOT_VALIDATED', () => {
-    const spec = [
+// Defect #6 (OpenAPI), revised after ground-truth review: a SEPARABLE compound
+// path segment (e.g. /reports/{name}.{ext}) is now extracted at runtime and
+// schema-validated, so a spec-illegal value fails closed and a legal one passes;
+// only an ambiguous adjacent-parameter segment ({a}{b}) stays warning-only.
+describe('OpenAPI compound path-parameter runtime validation', () => {
+  const compoundSpec = [
+    'openapi: 3.0.3',
+    "info: { title: t, version: '1.0.0' }",
+    'paths:',
+    '  /reports/{name}.{ext}:',
+    '    get:',
+    '      parameters:',
+    '        - { name: name, in: path, required: true, schema: { type: string } }',
+    '        - { name: ext, in: path, required: true, schema: { type: string, enum: [pdf] } }',
+    '      responses:',
+    "        '200': { description: ok }"
+  ].join('\n');
+  const index = buildContractIndex(parseOpenApiDocument(compoundSpec));
+  const operation = index.operations[0]!;
+  const exec = createContractScript(operation).join('\n');
+  const PARAM_TEST = 'Request parameters match OpenAPI schemas';
+
+  // Run a generated contract script against a mocked request whose URL path is
+  // `path`; returns each pm.test's pass/fail so the path-parameter assertion can
+  // be inspected in isolation.
+  function runWithPath(script: string, path: string): Record<string, 'pass' | 'fail'> {
+    const results: Record<string, 'pass' | 'fail'> = {};
+    const pm = {
+      test: (name: string, cb: () => void) => { try { cb(); results[name] = 'pass'; } catch { results[name] = 'fail'; } },
+      expect: makeStrictExpect(),
+      response: { code: 200, status: undefined, responseTime: 1, headers: { get: () => null }, text: () => '', json: () => undefined },
+      request: { method: 'GET', headers: { each: () => undefined }, url: { query: { each: () => undefined }, getPath: () => path, path: path.split('/').filter(Boolean) } },
+      environment: { get: () => undefined }
+    };
+    runInContext(script, createContext({ pm }));
+    return results;
+  }
+
+  it('emits a runtime path check (no compound warning) for a separable segment', () => {
+    const warnings = [...index.warnings, ...index.operations.flatMap((op) => op.warnings)];
+    expect(warnings.some((warning) => warning.startsWith('CONTRACT_PATH_PARAM_COMPOUND_SEGMENT_NOT_VALIDATED'))).toBe(false);
+    expect((operation.parameterChecks ?? []).some((check) => check.in === 'path' && check.name === 'ext')).toBe(true);
+  });
+  it('fails closed when a compound path parameter violates its schema', () => {
+    expect(runWithPath(exec, '/reports/foo.exe')[PARAM_TEST]).toBe('fail');
+  });
+  it('passes when a compound path parameter satisfies its schema', () => {
+    expect(runWithPath(exec, '/reports/foo.pdf')[PARAM_TEST]).toBe('pass');
+  });
+  it('does not false-fail a templated compound segment', () => {
+    expect(runWithPath(exec, '/reports/{{file}}.pdf')[PARAM_TEST]).toBe('pass');
+  });
+  it('stays warning-only for an ambiguous adjacent-parameter segment', () => {
+    const ambiguous = [
       'openapi: 3.0.3',
       "info: { title: t, version: '1.0.0' }",
       'paths:',
-      '  /reports/{id}.json:',
+      '  /x/{a}{b}:',
       '    get:',
       '      parameters:',
-      '        - { name: id, in: path, required: true, schema: { type: string } }',
+      '        - { name: a, in: path, required: true, schema: { type: string } }',
+      '        - { name: b, in: path, required: true, schema: { type: string } }',
       '      responses:',
       "        '200': { description: ok }"
     ].join('\n');
-    const index = buildContractIndex(parseOpenApiDocument(spec));
-    const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
+    const idx = buildContractIndex(parseOpenApiDocument(ambiguous));
+    const warnings = [...idx.warnings, ...idx.operations.flatMap((op) => op.warnings)];
     expect(warnings.some((warning) => warning.startsWith('CONTRACT_PATH_PARAM_COMPOUND_SEGMENT_NOT_VALIDATED'))).toBe(true);
   });
 });

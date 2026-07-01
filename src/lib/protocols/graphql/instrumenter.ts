@@ -107,6 +107,12 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   // the errors are well-formed when present and fail closed only on a TOTAL failure
   // (errors present with no data at all) - never merely because `errors` is
   // non-empty, which would false-fail a legitimate partial response.
+  //
+  // Intentional CONTRACT policy (not a raw protocol-legality assertion): a total
+  // failure (data:null with errors) is legal GraphQL wire-format but represents a
+  // FAILED operation, so a contract/smoke run fails it - the same way an OpenAPI
+  // contract test fails a spec-legal 5xx. Successful-operation assertion by design;
+  // partial success (data + errors) still passes.
   lines.push(
     `pm.test(${JSON.stringify(`[${label}] GraphQL errors are well-formed and not a total failure`)}, function () {`,
     '    var errors = gqlBody.errors;',
@@ -225,8 +231,26 @@ function emitValueAssertions(
   }
 
   if (ref.kind === 'union') {
-    warnings.push(`GQL_UNION_RETURN_NOT_SHAPE_ASSERTED: ${ctx} returns union ${ref.name}; only presence is asserted`);
-    return [];
+    // A union value in the response corresponds to the query's `{ __typename }`
+    // selection: it must be an object carrying a string `__typename`, and (when the
+    // member set is known) that `__typename` must name a declared union member.
+    // Member-specific fields are not expanded, so they are not asserted.
+    const members = index.unionMembers[ref.name];
+    const objMsg = JSON.stringify(ctx + ': expected union ' + ref.name + ' value as an object');
+    const presentMsg = JSON.stringify(ctx + ': union ' + ref.name + ' value must carry __typename');
+    const stringMsg = JSON.stringify(ctx + ': union ' + ref.name + ' __typename must be a string');
+    const lines = [
+      'pm.expect(' + accessor + ', ' + objMsg + ').to.be.an("object");',
+      'pm.expect(' + accessor + ', ' + presentMsg + ').to.have.property("__typename");',
+      'pm.expect(' + accessor + ' && ' + accessor + '.__typename, ' + stringMsg + ').to.be.a("string");'
+    ];
+    if (members && members.length > 0) {
+      const memberMsg = JSON.stringify(ctx + ': __typename is not a declared member of union ' + ref.name);
+      lines.push('pm.expect(' + accessor + ' && ' + accessor + '.__typename, ' + memberMsg + ').to.be.oneOf(' + JSON.stringify(members) + ');');
+    } else {
+      warnings.push('GQL_UNION_MEMBERS_UNKNOWN: ' + ctx + ' union ' + ref.name + ' member set was not resolved; only object + string __typename is asserted');
+    }
+    return lines;
   }
   warnings.push(`GQL_UNKNOWN_RETURN_TYPE: ${ctx} return type ${ref.name} could not be classified; only presence is asserted`);
   return [];

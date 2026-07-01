@@ -1,0 +1,255 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`instrumentGraphQLCollection > matches the golden snapshot of generated assertions 1`] = `
+[
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test("[query lineByMsisdn] HTTP transport is ok", function () {
+    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query lineByMsisdn] response has no GraphQL errors", function () {
+    var errors = gqlBody.errors;
+    if (errors !== undefined && errors !== null) {
+        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
+    }
+});
+pm.test("[query lineByMsisdn] data.lineByMsisdn is present", function () {
+    pm.expect(gqlBody.data, "response has no data object").to.exist;
+    pm.expect(gqlBody.data, "data is missing field 'lineByMsisdn'").to.have.property("lineByMsisdn");
+});
+pm.test("[query lineByMsisdn] data.lineByMsisdn matches schema return type", function () {
+    var value = gqlBody.data && gqlBody.data["lineByMsisdn"];
+    if (value === undefined || value === null) return;
+    pm.expect(value, "expected Line object").to.be.an("object");
+    pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
+    pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
+    pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
+});
+pm.test("[query lineByMsisdn] required variables are supplied", function () {
+    var body = (pm.request && pm.request.body) || {};
+    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
+    var vars = {};
+    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
+    catch (e) { vars = {}; }
+    if (vars && vars.variables !== undefined) { vars = vars.variables; }
+    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    var required = ["msisdn"];
+    required.forEach(function (name) {
+        pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
+    });
+});",
+    "id": "query.lineByMsisdn",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test("[query plans] HTTP transport is ok", function () {
+    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query plans] response has no GraphQL errors", function () {
+    var errors = gqlBody.errors;
+    if (errors !== undefined && errors !== null) {
+        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
+    }
+});
+pm.test("[query plans] data.plans is present", function () {
+    pm.expect(gqlBody.data, "response has no data object").to.exist;
+    pm.expect(gqlBody.data, "data is missing field 'plans'").to.have.property("plans");
+    pm.expect(gqlBody.data["plans"], "plans is declared non-null but was null").to.not.be.null;
+});
+pm.test("[query plans] data.plans matches schema return type", function () {
+    var value = gqlBody.data && gqlBody.data["plans"];
+    if (value === undefined || value === null) return;
+    pm.expect(value, "expected a list").to.be.an("array");
+    if (value.length > 0) {
+        pm.expect(value[0], "expected Plan object").to.be.an("object");
+        pm.expect(value[0], "Plan is missing non-null field 'id'").to.have.property("id");
+        pm.expect(value[0], "Plan is missing non-null field 'monthlyPriceCents'").to.have.property("monthlyPriceCents");
+        pm.expect(value[0], "Plan is missing non-null field 'name'").to.have.property("name");
+    }
+});",
+    "id": "query.plans",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test("[query subscriber] HTTP transport is ok", function () {
+    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query subscriber] response has no GraphQL errors", function () {
+    var errors = gqlBody.errors;
+    if (errors !== undefined && errors !== null) {
+        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
+    }
+});
+pm.test("[query subscriber] data.subscriber is present", function () {
+    pm.expect(gqlBody.data, "response has no data object").to.exist;
+    pm.expect(gqlBody.data, "data is missing field 'subscriber'").to.have.property("subscriber");
+});
+pm.test("[query subscriber] data.subscriber matches schema return type", function () {
+    var value = gqlBody.data && gqlBody.data["subscriber"];
+    if (value === undefined || value === null) return;
+    pm.expect(value, "expected Subscriber object").to.be.an("object");
+    pm.expect(value, "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
+    pm.expect(value, "Subscriber is missing non-null field 'id'").to.have.property("id");
+});
+pm.test("[query subscriber] required variables are supplied", function () {
+    var body = (pm.request && pm.request.body) || {};
+    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
+    var vars = {};
+    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
+    catch (e) { vars = {}; }
+    if (vars && vars.variables !== undefined) { vars = vars.variables; }
+    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    var required = ["id"];
+    required.forEach(function (name) {
+        pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
+    });
+});",
+    "id": "query.subscriber",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test("[query subscribers] HTTP transport is ok", function () {
+    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query subscribers] response has no GraphQL errors", function () {
+    var errors = gqlBody.errors;
+    if (errors !== undefined && errors !== null) {
+        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
+    }
+});
+pm.test("[query subscribers] data.subscribers is present", function () {
+    pm.expect(gqlBody.data, "response has no data object").to.exist;
+    pm.expect(gqlBody.data, "data is missing field 'subscribers'").to.have.property("subscribers");
+    pm.expect(gqlBody.data["subscribers"], "subscribers is declared non-null but was null").to.not.be.null;
+});
+pm.test("[query subscribers] data.subscribers matches schema return type", function () {
+    var value = gqlBody.data && gqlBody.data["subscribers"];
+    if (value === undefined || value === null) return;
+    pm.expect(value, "expected a list").to.be.an("array");
+    if (value.length > 0) {
+        pm.expect(value[0], "expected Subscriber object").to.be.an("object");
+        pm.expect(value[0], "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
+        pm.expect(value[0], "Subscriber is missing non-null field 'id'").to.have.property("id");
+    }
+});",
+    "id": "query.subscribers",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test("[mutation provisionLine] HTTP transport is ok", function () {
+    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[mutation provisionLine] response has no GraphQL errors", function () {
+    var errors = gqlBody.errors;
+    if (errors !== undefined && errors !== null) {
+        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
+    }
+});
+pm.test("[mutation provisionLine] data.provisionLine is present", function () {
+    pm.expect(gqlBody.data, "response has no data object").to.exist;
+    pm.expect(gqlBody.data, "data is missing field 'provisionLine'").to.have.property("provisionLine");
+    pm.expect(gqlBody.data["provisionLine"], "provisionLine is declared non-null but was null").to.not.be.null;
+});
+pm.test("[mutation provisionLine] data.provisionLine matches schema return type", function () {
+    var value = gqlBody.data && gqlBody.data["provisionLine"];
+    if (value === undefined || value === null) return;
+    pm.expect(value, "expected Line object").to.be.an("object");
+    pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
+    pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
+    pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
+});
+pm.test("[mutation provisionLine] required variables are supplied", function () {
+    var body = (pm.request && pm.request.body) || {};
+    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
+    var vars = {};
+    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
+    catch (e) { vars = {}; }
+    if (vars && vars.variables !== undefined) { vars = vars.variables; }
+    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    var required = ["input"];
+    required.forEach(function (name) {
+        pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
+    });
+});",
+    "id": "mutation.provisionLine",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test("[mutation suspendLine] HTTP transport is ok", function () {
+    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[mutation suspendLine] response has no GraphQL errors", function () {
+    var errors = gqlBody.errors;
+    if (errors !== undefined && errors !== null) {
+        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
+    }
+});
+pm.test("[mutation suspendLine] data.suspendLine is present", function () {
+    pm.expect(gqlBody.data, "response has no data object").to.exist;
+    pm.expect(gqlBody.data, "data is missing field 'suspendLine'").to.have.property("suspendLine");
+    pm.expect(gqlBody.data["suspendLine"], "suspendLine is declared non-null but was null").to.not.be.null;
+});
+pm.test("[mutation suspendLine] data.suspendLine matches schema return type", function () {
+    var value = gqlBody.data && gqlBody.data["suspendLine"];
+    if (value === undefined || value === null) return;
+    pm.expect(value, "expected Line object").to.be.an("object");
+    pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
+    pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
+    pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
+});
+pm.test("[mutation suspendLine] required variables are supplied", function () {
+    var body = (pm.request && pm.request.body) || {};
+    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
+    var vars = {};
+    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
+    catch (e) { vars = {}; }
+    if (vars && vars.variables !== undefined) { vars = vars.variables; }
+    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    var required = ["id"];
+    required.forEach(function (name) {
+        pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
+    });
+});",
+    "id": "mutation.suspendLine",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test("[subscription lineStatusChanged] HTTP transport is ok", function () {
+    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[subscription lineStatusChanged] response has no GraphQL errors", function () {
+    var errors = gqlBody.errors;
+    if (errors !== undefined && errors !== null) {
+        pm.expect(errors, "GraphQL errors: " + JSON.stringify(errors)).to.be.an("array").that.is.empty;
+    }
+});
+pm.test("[subscription lineStatusChanged] data.lineStatusChanged is present", function () {
+    pm.expect(gqlBody.data, "response has no data object").to.exist;
+    pm.expect(gqlBody.data, "data is missing field 'lineStatusChanged'").to.have.property("lineStatusChanged");
+    pm.expect(gqlBody.data["lineStatusChanged"], "lineStatusChanged is declared non-null but was null").to.not.be.null;
+});
+pm.test("[subscription lineStatusChanged] data.lineStatusChanged matches schema return type", function () {
+    var value = gqlBody.data && gqlBody.data["lineStatusChanged"];
+    if (value === undefined || value === null) return;
+    pm.expect(value, "expected Line object").to.be.an("object");
+    pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
+    pm.expect(value, "Line is missing non-null field 'msisdn'").to.have.property("msisdn");
+    pm.expect(value, "Line is missing non-null field 'status'").to.have.property("status");
+});
+pm.test("[subscription lineStatusChanged] required variables are supplied", function () {
+    var body = (pm.request && pm.request.body) || {};
+    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
+    var vars = {};
+    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
+    catch (e) { vars = {}; }
+    if (vars && vars.variables !== undefined) { vars = vars.variables; }
+    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    var required = ["subscriberId"];
+    required.forEach(function (name) {
+        pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
+    });
+});",
+    "id": "subscription.lineStatusChanged",
+  },
+]
+`;

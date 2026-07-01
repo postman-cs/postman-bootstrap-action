@@ -18,6 +18,7 @@ import {
 } from '../src/lib/postman/error-advice.js';
 import {
   REDACTED,
+  createMutableSecretMasker,
   createSecretMasker,
   redactSecrets,
   sanitizeHeaders,
@@ -370,5 +371,27 @@ describe('CLI ConsoleReporter masking path (AC7)', () => {
     } finally {
       consoleError.mockRestore();
     }
+  });
+});
+
+describe('createMutableSecretMasker', () => {
+  it('redacts the initial secret set', () => {
+    const masker = createMutableSecretMasker(['tok-initial']);
+    expect(masker.mask('value tok-initial here')).toBe(`value ${REDACTED} here`);
+  });
+
+  it('redacts a value added after construction (re-minted token case)', () => {
+    const masker = createMutableSecretMasker([]);
+    expect(masker.mask('leak tok-new')).toBe('leak tok-new');
+    masker.add('tok-new');
+    expect(masker.mask('leak tok-new')).toBe(`leak ${REDACTED}`);
+  });
+
+  it('ignores empty values and de-duplicates', () => {
+    const masker = createMutableSecretMasker(['tok']);
+    masker.add('');
+    masker.add('   ');
+    masker.add('tok');
+    expect(masker.mask('tok and tok')).toBe(`${REDACTED} and ${REDACTED}`);
   });
 });

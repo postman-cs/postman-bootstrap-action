@@ -1,0 +1,65 @@
+"""
+Synthetic telecom GraphQL contract fixture for postman-actions onboarding
+(disposable). Mirrors the telecom OpenAPI fixture's domain: subscribers, lines,
+and plans. Exercises scalar/enum/object/list/non-null return types, required and
+optional arguments, a mutation, and a subscription.
+"""
+
+scalar DateTime
+
+enum LineStatus {
+  ACTIVE
+  SUSPENDED
+  PORTING
+}
+
+type Plan {
+  id: ID!
+  name: String!
+  monthlyPriceCents: Int!
+  dataCapGb: Int
+}
+
+type Line {
+  id: ID!
+  msisdn: String!
+  status: LineStatus!
+  activatedAt: DateTime
+  plan: Plan!
+}
+
+type Subscriber {
+  id: ID!
+  displayName: String!
+  email: String
+  lines: [Line!]!
+}
+
+input ProvisionLineInput {
+  subscriberId: ID!
+  planId: ID!
+  msisdn: String!
+}
+
+type Query {
+  "Fetch a single subscriber by id."
+  subscriber(id: ID!): Subscriber
+  "List all subscribers."
+  subscribers: [Subscriber!]!
+  "List available plans."
+  plans: [Plan!]!
+  "Look up one line by its MSISDN."
+  lineByMsisdn(msisdn: String!): Line
+}
+
+type Mutation {
+  "Provision a new line for a subscriber."
+  provisionLine(input: ProvisionLineInput!): Line!
+  "Suspend an active line."
+  suspendLine(id: ID!): Line!
+}
+
+type Subscription {
+  "Stream line status changes for a subscriber."
+  lineStatusChanged(subscriberId: ID!): Line!
+}

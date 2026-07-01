@@ -1,9 +1,10 @@
 import { HttpError } from '../http-error.js';
-import { normalizeGitRepoUrl } from './postman-assets-client.js';
+import { normalizeGitRepoUrl } from './git-url.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { adviseFromHttpError, type ErrorAdviceContext } from './error-advice.js';
+import type { AccessTokenProvider } from './token-provider.js';
 
 export type InternalIntegrationBackend = 'bifrost';
 
@@ -16,6 +17,12 @@ export interface SpecificationCollectionLink {
 
 export interface InternalIntegrationAdapterOptions {
   accessToken: string;
+  /**
+   * Optional live-token accessor. When present, every request reads the token
+   * through `tokenProvider.current()` so a mid-run re-mint propagates without
+   * reconstructing the adapter; `accessToken` remains the back-compat seed.
+   */
+  tokenProvider?: AccessTokenProvider;
   backend: string;
   bifrostBaseUrl?: string;
   fetchImpl?: typeof fetch;
@@ -52,6 +59,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private static readonly POSTMAN_APP_VERSION_URL = `https://dl.pstmn.io/update/status?currentVersion=${BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION}&platform=osx_arm64`;
 
   private readonly accessToken: string;
+  private readonly tokenProvider?: AccessTokenProvider;
   private appVersionPromise?: Promise<string>;
   private readonly bifrostBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -62,6 +70,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
 
   constructor(options: InternalIntegrationAdapterOptions) {
     this.accessToken = String(options.accessToken || '').trim();
+    this.tokenProvider = options.tokenProvider;
     this.bifrostBaseUrl = String(
       options.bifrostBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.bifrostBaseUrl
     ).replace(/\/+$/, '');
@@ -80,11 +89,16 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     this.orgMode = orgMode;
   }
 
+  /** Live access token: the provider's current value when wired, else the seed. */
+  private currentToken(): string {
+    return this.tokenProvider ? this.tokenProvider.current() : this.accessToken;
+  }
+
   private adviceContext(operation: string): ErrorAdviceContext {
     const session = getMemoizedSessionIdentity();
     return {
       operation,
-      hasAccessToken: Boolean(this.accessToken),
+      hasAccessToken: Boolean(this.currentToken()),
       sessionTeamId: session?.teamId,
       sessionRoles: session?.roles,
       sessionConsumerType: session?.consumerType,
@@ -103,7 +117,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'x-access-token': this.accessToken
+      'x-access-token': this.currentToken()
     };
     if (options.appVersion) {
       headers['x-app-version'] = options.appVersion;
@@ -180,11 +194,11 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         method: 'GET',
         requestHeaders: {
           'Content-Type': 'application/json',
-          'x-access-token': this.accessToken,
+          'x-access-token': this.currentToken(),
           'x-app-version': appVersion,
           ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
         },
-        secretValues: [this.accessToken],
+        secretValues: [this.currentToken()],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
       const advised = adviseFromHttpError(httpErr, this.adviceContext('governance assignment'));
@@ -224,11 +238,11 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         method: 'PATCH',
         requestHeaders: {
           'Content-Type': 'application/json',
-          'x-access-token': this.accessToken,
+          'x-access-token': this.currentToken(),
           'x-app-version': appVersion,
           ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
         },
-        secretValues: [this.accessToken],
+        secretValues: [this.currentToken()],
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
       const advised = adviseFromHttpError(httpErr, this.adviceContext('governance assignment'));
@@ -282,10 +296,10 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       method: 'POST',
       requestHeaders: {
         'Content-Type': 'application/json',
-        'x-access-token': this.accessToken,
+        'x-access-token': this.currentToken(),
         ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
       },
-      secretValues: [this.accessToken],
+      secretValues: [this.currentToken()],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
     const advised = adviseFromHttpError(httpErr, this.adviceContext('workspace repository linking'));
@@ -318,10 +332,10 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       method: 'POST',
       requestHeaders: {
         'Content-Type': 'application/json',
-        'x-access-token': this.accessToken,
+        'x-access-token': this.currentToken(),
         ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
       },
-      secretValues: [this.accessToken],
+      secretValues: [this.currentToken()],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
     const advised = adviseFromHttpError(
@@ -349,10 +363,10 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       method: 'POST',
       requestHeaders: {
         'Content-Type': 'application/json',
-        'x-access-token': this.accessToken,
+        'x-access-token': this.currentToken(),
         ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
       },
-      secretValues: [this.accessToken],
+      secretValues: [this.currentToken()],
       url: `${this.bifrostBaseUrl}/ws/proxy`
     });
     const advised = adviseFromHttpError(httpErr, this.adviceContext('collection sync'));

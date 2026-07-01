@@ -1,4 +1,4 @@
-import { normalizeGitRepoUrl } from './postman-assets-client.js';
+import { normalizeGitRepoUrl } from './git-url.js';
 
 type WorkspaceCandidate = {
   id: string;

@@ -2,6 +2,8 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
 import { parse, stringify } from 'yaml';
 
 import { bootstrapActionContract } from './contracts.js';
@@ -36,15 +38,20 @@ import {
 import { adviseFromHttpError } from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
-import { PostmanAssetsClient } from './lib/postman/postman-assets-client.js';
+import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
+import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
+import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
+import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
+import { AccessTokenProvider } from './lib/postman/token-provider.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
-import { createSecretMasker } from './lib/secrets.js';
+import { createSecretMasker, createMutableSecretMasker } from './lib/secrets.js';
 import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
-import { instrumentContractCollection } from './lib/spec/collection-contracts.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
+import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
+import { buildProtocolCollection, type ProtocolCollectionResult } from './lib/protocols/dispatch.js';
 
 export interface ResolvedInputs {
   projectName: string;
@@ -69,6 +76,8 @@ export interface ResolvedInputs {
   repoSlug?: string;
   specUrl: string;
   specPath?: string;
+  protocol: 'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap';
+  protocolEndpointUrl?: string;
   openapiVersion: string;
   breakingChangeMode: BreakingChangeMode;
   breakingBaselineSpecPath?: string;
@@ -166,23 +175,36 @@ export interface BootstrapExecutionDependencies {
   >;
   github?: Pick<GitHubApiClient, 'getRepositoryCustomProperty'>;
   postman: Pick<
-    PostmanAssetsClient,
+    PostmanGatewayAssetsClient,
     | 'addAdminsToWorkspace'
     | 'createWorkspace'
     | 'findWorkspacesByName'
     | 'generateCollection'
-    | 'getAutoDerivedTeamId'
     | 'getSpecContent'
     | 'getTeams'
     | 'getWorkspaceGitRepoUrl'
     | 'getWorkspaceVisibility'
-    | 'injectTests'
     | 'inviteRequesterToWorkspace'
-    | 'tagCollection'
     | 'uploadSpec'
     | 'updateSpec'
-  > &
-    Partial<Pick<PostmanAssetsClient, 'createCollection' | 'deleteCollection' | 'getCollection' | 'updateCollection'>>;
+  > & {
+    configureTeamContext?(teamId: string, orgMode: boolean): void;
+    injectTests(collectionId: string, type: 'smoke'): Promise<void>;
+    tagCollection(collectionId: string, tags: string[]): Promise<void>;
+    deleteCollection?(collectionUid: string): Promise<void>;
+    injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
+    createCollection?(workspaceId: string, collection: unknown): Promise<string>;
+    updateCollection?(collectionUid: string, collection: unknown): Promise<void>;
+  };
+  ecClient?: Pick<
+    PostmanExtensibleCollectionClient,
+    | 'createExtensibleCollection'
+    | 'populateFromTree'
+    | 'getExtensibleCollection'
+    | 'deleteExtensibleCollection'
+    | 'listExtensibleCollectionItems'
+    | 'configureTeamContext'
+  >;
   openApiChanges?: OpenApiBreakingChangeCheckRunner;
   specFetcher: typeof fetch;
 }
@@ -194,6 +216,12 @@ export interface BootstrapDependencyFactories {
   exec: ExecLike;
   io: IOLike;
   specFetcher?: typeof fetch;
+  /**
+   * Registers a re-minted access token with the Actions log scrubber. Wired from
+   * `actionCore.setSecret` in runAction so refreshed tokens are masked in logs;
+   * defaults to a no-op for the CLI path (which has no GitHub log scrubber).
+   */
+  setSecret?: (secret: string) => void;
 }
 
 function normalizeInputValue(value: string | undefined): string | undefined {
@@ -392,6 +420,12 @@ export function resolveInputs(
     repoSlug: repoContext.repoSlug || '',
     specUrl,
     specPath,
+    protocol: parseEnumInput<'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap'>(
+      'protocol',
+      getInput('protocol', env),
+      'auto'
+    ),
+    protocolEndpointUrl: getInput('protocol-endpoint-url', env),
     openapiVersion: resolveOpenapiVersion(getInput('openapi-version', env)),
     breakingChangeMode: parseBreakingChangeMode(getInput('breaking-change-mode', env)),
     breakingBaselineSpecPath: getInput('breaking-baseline-spec-path', env),
@@ -508,12 +542,17 @@ export function readActionInputs(
   if (specUrl && specPath) {
     throw new Error('Provide either spec-url or spec-path, not both.');
   }
-  const postmanApiKey = requireInput(actionCore, 'postman-api-key');
+  // postman-api-key is optional: a run may be access-token-primary. At least one
+  // of postman-api-key / postman-access-token must be present to do any work.
+  const postmanApiKey = optionalInput(actionCore, 'postman-api-key') ?? '';
   const postmanAccessToken = optionalInput(actionCore, 'postman-access-token');
+  if (!postmanApiKey && !postmanAccessToken) {
+    throw new Error('One of postman-api-key or postman-access-token is required.');
+  }
   const githubToken = optionalInput(actionCore, 'github-token') || process.env.GITHUB_TOKEN;
   const ghFallbackToken = optionalInput(actionCore, 'gh-fallback-token') || process.env.GH_FALLBACK_TOKEN;
 
-  actionCore.setSecret(postmanApiKey);
+  if (postmanApiKey) actionCore.setSecret(postmanApiKey);
   if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
   if (githubToken) actionCore.setSecret(githubToken);
   if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
@@ -896,41 +935,6 @@ function recordCurrentBootstrapResources(options: {
   }
 }
 
-function sanitizeCollectionForUpdate(
-  value: unknown,
-  options: { dropResponses?: boolean } = {}
-): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeCollectionForUpdate(entry, options));
-  }
-
-  if (!value || typeof value !== 'object') {
-    return value;
-  }
-
-  const record = { ...(value as Record<string, unknown>) };
-  delete record.id;
-  delete record.uid;
-  delete record._postman_id;
-  if (options.dropResponses !== false) {
-    delete record.response;
-  }
-
-  if (record.request && typeof record.request === 'object' && record.request !== null) {
-    const request = { ...(record.request as Record<string, unknown>) };
-    delete request.id;
-    delete request.uid;
-    delete request._postman_id;
-    record.request = request;
-  }
-
-  for (const [key, entry] of Object.entries(record)) {
-    record[key] = sanitizeCollectionForUpdate(entry, options);
-  }
-
-  return record;
-}
-
 const SPEC_SUMMARY_MAX_LEN = 200;
 const SPEC_HTTP_METHODS = new Set([
   'get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'
@@ -1023,142 +1027,47 @@ export async function runBootstrap(
   } catch (error) {
     telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion('failure');
+    // Asset ops run gateway-only. The gateway client already re-mints the token
+    // once and retries on an auth failure; this catch only sees the error that
+    // survived that automatic retry (PMAK rejected, wrong parent org, or no
+    // PMAK to re-mint from). Rewrite it with actionable re-mint/role guidance
+    // (no-op for non-HttpError or unrecognized bodies). Adapter-advised errors
+    // are already plain Errors, so they pass through untouched.
+    if (error instanceof HttpError) {
+      const session = getMemoizedSessionIdentity();
+      const advised = adviseFromHttpError(error, {
+        operation: 'Postman gateway operation',
+        hasAccessToken: Boolean(inputs.postmanAccessToken),
+        sessionTeamId: session?.teamId,
+        sessionRoles: session?.roles,
+        sessionConsumerType: session?.consumerType,
+        workspaceTeamId: inputs.workspaceTeamId,
+        explicitTeamId: inputs.teamId || undefined,
+        mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+      });
+      if (advised) {
+        throw advised;
+      }
+    }
     throw error;
   }
 }
 
-async function runBootstrapInner(
+/**
+ * Resolve, reuse, or create the Postman workspace (with org-mode sub-team
+ * handling and visibility checks), assign governance, invite the requester, and
+ * add admins. Shared by the OpenAPI and multi-protocol paths so both provision
+ * the workspace identically. Returns the resolved workspace id.
+ */
+async function provisionWorkspace(
   inputs: ResolvedInputs,
   dependencies: BootstrapExecutionDependencies,
-  telemetry: TelemetryContext
-): Promise<PlannedOutputs> {
-  const outputs = createPlannedOutputs(inputs);
-  const requiresReleaseLabel =
-    inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
-  const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
-  if (requiresReleaseLabel && !releaseLabel) {
-    throw new Error(
-      'Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata'
-    );
-  }
-  const resourcesState = readResourcesState();
-  const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
-  const additionalCollections = loadAdditionalCollectionFiles(
-    inputs.additionalCollectionsDir,
-    resourcesState
-  );
-  const collectionAssetProjectName =
-    inputs.collectionSyncMode === 'version'
-      ? createAssetProjectName(inputs, releaseLabel)
-      : inputs.projectName;
-  const workspaceName = createWorkspaceName(inputs);
-  const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
-
-  await runGroup(dependencies.core, 'Install Postman CLI', async () => {
-    await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
-  });
-
-  let specId = inputs.specId;
-  if (!specId) {
-    specId = getFirstCloudResourceId(resourcesState?.cloudResources?.specs);
-    if (specId) {
-      dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
-    }
-  }
-
-  let previousSpecContent: string | undefined;
-  let previousSpecRollbackHash: string | undefined;
-  let detectedOpenapiVersion: '3.0' | '3.1' = '3.0';
-  let contractIndex: ContractIndex | undefined;
-  let sourceSpecContent = '';
-  const specContent = await runGroup(
-    dependencies.core,
-    'Preflight OpenAPI Contract',
-    async () => {
-      const loaderOptions = {
-        fetchText: dependencies.specFetcher === fetch
-          ? undefined
-          : async (url: string) => fetchSpecDocument(url, dependencies.specFetcher)
-      };
-      const loaded = inputs.specPath
-        ? await loadOpenApiContractSpecFromPath(inputs.specPath, loaderOptions)
-        : await loadOpenApiContractSpec(inputs.specUrl, loaderOptions);
-      sourceSpecContent = loaded.content;
-      const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
-        dependencies.core.warning(msg)
-      );
-      contractIndex = buildContractIndex(parseOpenApiDocument(document));
-      const incomingSpecType = normalizeSpecTypeFromContent(document);
-      detectedOpenapiVersion = incomingSpecType.replace('OPENAPI:', '') as '3.0' | '3.1';
-      for (const warning of contractIndex.warnings) {
-        dependencies.core.warning(warning);
-      }
-
-      if (inputs.openapiVersion && inputs.openapiVersion !== detectedOpenapiVersion) {
-        throw new Error(
-          `openapi-version input ${inputs.openapiVersion} does not match spec content OpenAPI ${detectedOpenapiVersion}`
-        );
-      }
-
-      if (specId) {
-        const previousRaw = await dependencies.postman.getSpecContent(specId);
-        if (!previousRaw) {
-          throw new Error(
-            `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
-          );
-        }
-        previousSpecContent = normalizeSpecDocument(previousRaw, (msg) =>
-          dependencies.core.warning(`Previous spec normalization: ${msg}`)
-        );
-        previousSpecRollbackHash = createHash('sha256').update(previousSpecContent).digest('hex');
-        const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
-        if (existingSpecType !== incomingSpecType) {
-          throw new Error(
-            `Existing Spec Hub spec version ${existingSpecType.replace('OPENAPI:', '')} cannot be updated with OpenAPI ${detectedOpenapiVersion} content; clear spec-id to create a fresh spec`
-          );
-        }
-      }
-
-      dependencies.core.info(
-        `Auto-detected OpenAPI version from spec content: ${detectedOpenapiVersion}`
-      );
-      return document;
-    }
-  );
-
-  const breakingChangeResult = await runGroup(
-    dependencies.core,
-    'OpenAPI Breaking Change Check',
-    async () => (dependencies.openApiChanges ?? runOpenApiBreakingChangeCheck)(
-      {
-        baselineSpecPath: inputs.breakingBaselineSpecPath,
-        currentSourceContent: sourceSpecContent,
-        currentUploadContent: specContent,
-        logPath: inputs.breakingLogPath,
-        mode: inputs.breakingChangeMode,
-        previousSpecContent,
-        rulesPath: inputs.breakingRulesPath,
-        specPath: inputs.specPath,
-        summaryPath: inputs.breakingSummaryPath,
-        targetRef: inputs.breakingTargetRef
-      },
-      {
-        core: dependencies.core,
-        env: process.env,
-        exec: dependencies.exec
-      }
-    )
-  );
-  outputs['breaking-change-status'] = breakingChangeResult.status;
-  outputs['breaking-change-summary-json'] = createBreakingChangeSummaryJson(breakingChangeResult);
-  if (breakingChangeResult.status === 'failed') {
-    dependencies.core.setOutput('breaking-change-status', outputs['breaking-change-status']);
-    dependencies.core.setOutput('breaking-change-summary-json', outputs['breaking-change-summary-json']);
-    throw new Error(
-      `OpenAPI breaking-change check failed: ${breakingChangeResult.message || 'breaking changes detected'}`
-    );
-  }
-
+  telemetry: TelemetryContext,
+  outputs: PlannedOutputs,
+  resourcesState: PostmanResourcesState | null,
+  workspaceName: string,
+  aboutText: string
+): Promise<string | undefined> {
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
     explicitWorkspaceId = resourcesState.workspace.id;
@@ -1170,7 +1079,13 @@ async function runBootstrapInner(
 
   let teamId = inputs.teamId || '';
   if (!teamId) {
-    teamId = await dependencies.postman.getAutoDerivedTeamId() || '';
+    // Team scope comes from the access token's session (iapub
+    // /api/sessions/current), resolved + memoized by the credential preflight
+    // both entrypoints run before this. It is the same team
+    // resolve-service-token derives. PMAK is reserved for minting the access
+    // token and the Postman CLI login, so it is never used to derive team scope
+    // (no GET /me here).
+    teamId = getMemoizedSessionIdentity()?.teamId || '';
   }
   telemetry.setTeamId(teamId);
   const repoUrl = inputs.repoUrl || '';
@@ -1207,11 +1122,16 @@ async function runBootstrapInner(
 
   // Parse workspace-team-id from already-resolved inputs
   let workspaceTeamId: number | undefined;
+  // Org-mode for EC (gRPC) gateway writes, derived from the resolved team scope
+  // independently of POSTMAN_TEAM_ID: an explicit workspace-team-id or a detected
+  // org-mode account both require the x-entity-team-id sub-team header.
+  let ecOrgMode = false;
   if (inputs.workspaceTeamId) {
     workspaceTeamId = parseInt(inputs.workspaceTeamId, 10);
     if (Number.isNaN(workspaceTeamId)) {
       throw new Error(`workspace-team-id must be a numeric sub-team ID, got: ${inputs.workspaceTeamId}`);
     }
+    ecOrgMode = true;
   }
 
   // Org-mode detection: only check if we need to create a workspace (not reuse existing)
@@ -1230,6 +1150,9 @@ async function runBootstrapInner(
       // even if the PMAK is scoped to a single sub-team (typical for service
       // accounts). POST /workspaces at the org level rejects these keys too.
       const isOrgMode = teams.some(t => t.organizationId != null);
+      if (isOrgMode) {
+        ecOrgMode = true;
+      }
 
       if (isOrgMode) {
         if (teams.length === 1) {
@@ -1266,6 +1189,21 @@ async function runBootstrapInner(
         `Could not check for org-mode sub-teams: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+  }
+
+  // Re-scope gateway-backed clients to the workspace-owning sub-team before
+  // create and all subsequent asset writes. They are constructed before team
+  // resolution; on org-mode accounts the gateway requires the sub-team
+  // x-entity-team-id.
+  const resolvedGatewayTeamId = workspaceTeamId != null ? String(workspaceTeamId) : teamId;
+  if (dependencies.ecClient?.configureTeamContext) {
+    dependencies.ecClient.configureTeamContext(resolvedGatewayTeamId, ecOrgMode);
+  }
+  if (dependencies.postman.configureTeamContext) {
+    dependencies.postman.configureTeamContext(resolvedGatewayTeamId, ecOrgMode);
+  }
+  if (dependencies.internalIntegration?.configureTeamContext) {
+    dependencies.internalIntegration.configureTeamContext(resolvedGatewayTeamId, ecOrgMode);
   }
 
   if (!workspaceId) {
@@ -1372,6 +1310,421 @@ async function runBootstrapInner(
       }
     );
   }
+
+  return workspaceId;
+}
+
+/**
+ * Multi-protocol contract path for non-OpenAPI specs (graphql/grpc/soap). Parses
+ * the spec, builds and instruments a Postman collection locally, creates it in
+ * the provisioned workspace, tags it, and records it as the contract collection.
+ * Reuses the same workspace provisioning as the OpenAPI path; it does not touch
+ * Spec Hub, breaking-change checks, or collection generation.
+ */
+async function runProtocolBootstrap(
+  specType: Exclude<SpecType, 'openapi'>,
+  rawSpecContent: string,
+  inputs: ResolvedInputs,
+  dependencies: BootstrapExecutionDependencies,
+  outputs: PlannedOutputs,
+  telemetry: TelemetryContext
+): Promise<PlannedOutputs> {
+  const workspaceName = createWorkspaceName(inputs);
+  const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
+  const resourcesState = readResourcesState();
+
+  const workspaceId = await provisionWorkspace(
+    inputs,
+    dependencies,
+    telemetry,
+    outputs,
+    resourcesState,
+    workspaceName,
+    aboutText
+  );
+
+  const built = await runGroup(
+    dependencies.core,
+    `Build ${specType.toUpperCase()} Contract Collection`,
+    async () =>
+      buildProtocolCollection(specType, rawSpecContent, {
+        name: inputs.projectName,
+        endpointUrl: inputs.protocolEndpointUrl,
+        schemaLocation: inputs.specPath || inputs.specUrl
+      })
+  );
+
+  for (const warning of built.warnings) {
+    dependencies.core.warning(warning);
+  }
+  dependencies.core.info(
+    `Generated ${built.operationCount} ${specType} contract item(s) (${built.format}). ` +
+      (built.runnableInCi
+        ? 'Runs in Postman CLI / Newman.'
+        : 'gRPC execution requires the grpc_protocol_execution_allowed account feature flag in Postman CLI.')
+  );
+
+  // Every protocol builder emits a v3/Extensible Collection (graphql/soap are
+  // transformed from v2 via runtime.models; gRPC is EC-native), so the contract
+  // collection is always created through the access-token gateway EC API. The
+  // public v2.1.0 collections endpoint (PMAK) has been retired — a builder that
+  // returned v2.1.0 would fail loudly here rather than silently reach for PMAK.
+  if (built.format !== 'v3-ec') {
+    throw new Error(
+      `CONTRACT_COLLECTION_FORMAT_UNSUPPORTED: protocol builder returned ${built.format}; only v3-ec collections are created (access-token EC API)`
+    );
+  }
+  const contractCollectionId = await createExtensibleContractCollection(
+    workspaceId || '',
+    built,
+    inputs,
+    dependencies
+  );
+
+  outputs['contract-collection-id'] = contractCollectionId;
+  outputs['collections-json'] = JSON.stringify({
+    baseline: '',
+    smoke: '',
+    contract: contractCollectionId
+  });
+
+  if (built.format !== 'v3-ec') {
+    await runGroup(
+      dependencies.core,
+      'Tag Contract Collection',
+      async () => {
+        try {
+          await dependencies.postman.tagCollection(contractCollectionId, ['generated-contract']);
+        } catch (error) {
+          dependencies.core.warning(
+            `Failed to tag contract collection ${contractCollectionId}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    );
+  }
+
+  for (const [name, value] of Object.entries(outputs)) {
+    dependencies.core.setOutput(name, value);
+  }
+  return outputs;
+}
+
+/**
+ * Create a v3/Extensible contract collection through the gateway EC API. Used by
+ * every protocol: graphql/soap (transformed from v2 via runtime.models) and gRPC
+ * (built EC-native). The collection is created empty, then each folder and
+ * request item is materialized under it. Requires the EC client (access-token only).
+ *
+ * Idempotent refresh: an EC contract collection resolved from
+ * `contract-collection-id` or `.postman/resources.yaml` is deleted and rebuilt
+ * (the EC API has no in-place tree replace, so a clean rebuild is the honest
+ * refresh). Atomic: if populating the freshly created collection fails, the
+ * half-built collection is deleted before rethrowing so no orphaned, partially
+ * populated collection is left behind.
+ */
+async function createExtensibleContractCollection(
+  workspaceId: string,
+  built: ProtocolCollectionResult,
+  inputs: ResolvedInputs,
+  dependencies: BootstrapExecutionDependencies
+): Promise<string> {
+  if (!dependencies.ecClient) {
+    throw new Error(
+      'EC_REQUIRES_ACCESS_TOKEN: creating an extensible (v3) contract collection requires postman-access-token; ' +
+        'provide postman-access-token (resolve-service-token mints one) to enable the contract path.'
+    );
+  }
+  const ecClient = dependencies.ecClient;
+  // Two EC tree shapes feed this path: the runtime.models transform output
+  // (graphql/soap) is typed at the root (`title`, `payload`, `extensions`); the
+  // native gRPC builder uses a v2-style `info.name` envelope. Resolve from both.
+  const collectionInfo =
+    built.collection.info && typeof built.collection.info === 'object'
+      ? (built.collection.info as Record<string, unknown>)
+      : undefined;
+  const collectionName =
+    (typeof built.collection.title === 'string' && built.collection.title.trim()) ||
+    (typeof collectionInfo?.name === 'string' && collectionInfo.name.trim()) ||
+    `${inputs.projectName} Contract`;
+  // Forward the transform's collection-level payload (lifted `variables`, e.g.
+  // baseUrl) and extensions (documentation); absent on the gRPC tree (no-op).
+  const collectionPayload =
+    built.collection.payload && typeof built.collection.payload === 'object'
+      ? (built.collection.payload as Record<string, unknown>)
+      : undefined;
+  const collectionExtensions =
+    built.collection.extensions && typeof built.collection.extensions === 'object'
+      ? (built.collection.extensions as Record<string, unknown>)
+      : undefined;
+
+  // State chain: explicit input -> checked-out resources.yaml. An EC contract
+  // collection already on record is refreshed (delete-and-recreate).
+  let existingId = inputs.contractCollectionId?.trim() || undefined;
+  if (!existingId) {
+    existingId = findCloudResourceId(
+      readResourcesState()?.cloudResources?.collections,
+      (filePath) => filePath.includes(CONTRACT_COLLECTION_PREFIX)
+    );
+  }
+
+  const label = built.type.toUpperCase();
+  return runGroup(
+    dependencies.core,
+    'Create Contract Collection (EC)',
+    async () => {
+      if (existingId) {
+        try {
+          await ecClient.deleteExtensibleCollection(existingId);
+          dependencies.core.info(
+            `Refreshing ${label} EC contract collection: deleted existing ${existingId} before rebuild.`
+          );
+        } catch (error) {
+          dependencies.core.warning(
+            `Could not delete existing ${label} EC contract collection ${existingId} for refresh ` +
+              `(${error instanceof Error ? error.message : String(error)}); creating a new one.`
+          );
+        }
+      }
+
+      const collectionId = await ecClient.createExtensibleCollection(workspaceId, {
+        name: collectionName,
+        ...(collectionPayload ? { payload: collectionPayload } : {}),
+        ...(collectionExtensions ? { extensions: collectionExtensions } : {})
+      });
+      let leafCount: number;
+      try {
+        leafCount = await ecClient.populateFromTree(collectionId, built.collection);
+      } catch (error) {
+        // Atomic: never leave a half-populated collection behind.
+        try {
+          await ecClient.deleteExtensibleCollection(collectionId);
+          dependencies.core.warning(
+            `Populating ${label} EC contract collection ${collectionId} failed; deleted the partial collection.`
+          );
+        } catch (cleanupError) {
+          dependencies.core.warning(
+            `Populating ${label} EC contract collection ${collectionId} failed and cleanup also failed ` +
+              `(${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}); ` +
+              `delete collection ${collectionId} manually.`
+          );
+        }
+        throw error;
+      }
+      dependencies.core.info(
+        `Created ${label} extensible collection ${collectionId} with ${leafCount} request item(s).`
+      );
+      return collectionId;
+    }
+  );
+}
+
+async function runBootstrapInner(
+  inputs: ResolvedInputs,
+  dependencies: BootstrapExecutionDependencies,
+  telemetry: TelemetryContext
+): Promise<PlannedOutputs> {
+  const outputs = createPlannedOutputs(inputs);
+  const requiresReleaseLabel =
+    inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
+  const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
+  if (requiresReleaseLabel && !releaseLabel) {
+    throw new Error(
+      'Versioned spec or collection sync requires a release-label or derivable GitHub ref metadata'
+    );
+  }
+  const collectionAssetProjectName =
+    inputs.collectionSyncMode === 'version'
+      ? createAssetProjectName(inputs, releaseLabel)
+      : inputs.projectName;
+  const workspaceName = createWorkspaceName(inputs);
+  const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
+
+  // Validated before any side effect (CLI install, spec upload, workspace
+  // create, ...): an invalid additional-collections-dir must fail fast, not
+  // after partial provisioning has already run.
+  const resourcesState = readResourcesState();
+  const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
+  const additionalCollections = loadAdditionalCollectionFiles(
+    inputs.additionalCollectionsDir,
+    resourcesState
+  );
+
+  // The Postman CLI authenticates with the PMAK and only powers the spec lint.
+  // Without a postman-api-key the lint is skipped, so the CLI install is too.
+  const lintEnabled = Boolean(inputs.postmanApiKey);
+  if (lintEnabled) {
+    await runGroup(dependencies.core, 'Install Postman CLI', async () => {
+      await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
+    });
+  } else {
+    dependencies.core.info('Skipping Postman CLI install: no postman-api-key (spec lint is skipped).');
+  }
+
+  let specId = inputs.specId;
+  if (!specId) {
+    specId = getFirstCloudResourceId(resourcesState?.cloudResources?.specs);
+    if (specId) {
+      dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
+    }
+  }
+
+  let previousSpecContent: string | undefined;
+  let previousSpecRollbackHash: string | undefined;
+  let detectedOpenapiVersion: '3.0' | '3.1' = '3.0';
+  let contractIndex: ContractIndex | undefined;
+  let sourceSpecContent = '';
+
+  // Detect the spec protocol before any OpenAPI-specific work. Only `openapi`
+  // flows through Spec Hub; graphql/grpc/soap are handled by the protocol path.
+  // The URL read goes through the same SSRF-guarded fetch the OpenAPI loader
+  // uses (so private-host/redirect protections still fire); a custom injected
+  // fetcher (tests) is delegated to verbatim.
+  const rawSpecContent = await runGroup(
+    dependencies.core,
+    'Read API Spec',
+    async () => {
+      if (inputs.specPath) {
+        const workspaceRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+        return readFileSync(path.resolve(workspaceRoot, inputs.specPath), 'utf8');
+      }
+      if (dependencies.specFetcher === fetch) {
+        return safeFetchText(inputs.specUrl, { depth: 0 });
+      }
+      return fetchSpecDocument(inputs.specUrl, dependencies.specFetcher);
+    }
+  );
+  const specSourceName = inputs.specPath || inputs.specUrl;
+  const resolvedSpecType: SpecType =
+    inputs.protocol && inputs.protocol !== 'auto'
+      ? inputs.protocol
+      : detectSpecType(rawSpecContent, specSourceName);
+  if (resolvedSpecType !== 'openapi') {
+    dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
+    return runProtocolBootstrap(
+      resolvedSpecType,
+      rawSpecContent,
+      inputs,
+      dependencies,
+      outputs,
+      telemetry
+    );
+  }
+
+  const specContent = await runGroup(
+    dependencies.core,
+    'Preflight OpenAPI Contract',
+    async () => {
+      // Reuse the already-fetched root bytes for the root resource so the spec
+      // is read exactly once; external $refs still flow through the real fetcher
+      // (or the SSRF-guarded default, preserving the loader's fetch options).
+      // The loader normalizes the root URL (drops the hash) before calling
+      // fetchText, so match on the same normalized form.
+      const normalizeRef = (value: string): string => {
+        try {
+          const u = new URL(value);
+          u.hash = '';
+          return u.toString();
+        } catch {
+          return value;
+        }
+      };
+      const rootKey = inputs.specPath ? undefined : normalizeRef(inputs.specUrl);
+      const loaderOptions = {
+        fetchText: async (url: string, fetchOptions: Parameters<typeof safeFetchText>[1]) => {
+          if (rootKey && normalizeRef(url) === rootKey) return rawSpecContent;
+          if (dependencies.specFetcher === fetch) return safeFetchText(url, fetchOptions);
+          return fetchSpecDocument(url, dependencies.specFetcher);
+        }
+      };
+      const loaded = inputs.specPath
+        ? await loadOpenApiContractSpecFromPath(inputs.specPath, loaderOptions)
+        : await loadOpenApiContractSpec(inputs.specUrl, loaderOptions);
+      sourceSpecContent = loaded.content;
+      const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
+        dependencies.core.warning(msg)
+      );
+      contractIndex = buildContractIndex(parseOpenApiDocument(document));
+      const incomingSpecType = normalizeSpecTypeFromContent(document);
+      detectedOpenapiVersion = incomingSpecType.replace('OPENAPI:', '') as '3.0' | '3.1';
+      for (const warning of contractIndex.warnings) {
+        dependencies.core.warning(warning);
+      }
+
+      if (inputs.openapiVersion && inputs.openapiVersion !== detectedOpenapiVersion) {
+        throw new Error(
+          `openapi-version input ${inputs.openapiVersion} does not match spec content OpenAPI ${detectedOpenapiVersion}`
+        );
+      }
+
+      if (specId) {
+        const previousRaw = await dependencies.postman.getSpecContent(specId);
+        if (!previousRaw) {
+          throw new Error(
+            `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
+          );
+        }
+        previousSpecContent = normalizeSpecDocument(previousRaw, (msg) =>
+          dependencies.core.warning(`Previous spec normalization: ${msg}`)
+        );
+        previousSpecRollbackHash = createHash('sha256').update(previousSpecContent).digest('hex');
+        const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
+        if (existingSpecType !== incomingSpecType) {
+          throw new Error(
+            `Existing Spec Hub spec version ${existingSpecType.replace('OPENAPI:', '')} cannot be updated with OpenAPI ${detectedOpenapiVersion} content; clear spec-id to create a fresh spec`
+          );
+        }
+      }
+
+      dependencies.core.info(
+        `Auto-detected OpenAPI version from spec content: ${detectedOpenapiVersion}`
+      );
+      return document;
+    }
+  );
+
+  const breakingChangeResult = await runGroup(
+    dependencies.core,
+    'OpenAPI Breaking Change Check',
+    async () => (dependencies.openApiChanges ?? runOpenApiBreakingChangeCheck)(
+      {
+        baselineSpecPath: inputs.breakingBaselineSpecPath,
+        currentSourceContent: sourceSpecContent,
+        currentUploadContent: specContent,
+        logPath: inputs.breakingLogPath,
+        mode: inputs.breakingChangeMode,
+        previousSpecContent,
+        rulesPath: inputs.breakingRulesPath,
+        specPath: inputs.specPath,
+        summaryPath: inputs.breakingSummaryPath,
+        targetRef: inputs.breakingTargetRef
+      },
+      {
+        core: dependencies.core,
+        env: process.env,
+        exec: dependencies.exec
+      }
+    )
+  );
+  outputs['breaking-change-status'] = breakingChangeResult.status;
+  outputs['breaking-change-summary-json'] = createBreakingChangeSummaryJson(breakingChangeResult);
+  if (breakingChangeResult.status === 'failed') {
+    dependencies.core.setOutput('breaking-change-status', outputs['breaking-change-status']);
+    dependencies.core.setOutput('breaking-change-summary-json', outputs['breaking-change-summary-json']);
+    throw new Error(
+      `OpenAPI breaking-change check failed: ${breakingChangeResult.message || 'breaking changes detected'}`
+    );
+  }
+
+  const workspaceId = await provisionWorkspace(
+    inputs,
+    dependencies,
+    telemetry,
+    outputs,
+    resourcesState,
+    workspaceName,
+    aboutText
+  );
 
   let baselineCollectionId = inputs.baselineCollectionId;
   let smokeCollectionId = inputs.smokeCollectionId;
@@ -1508,37 +1861,48 @@ async function runBootstrapInner(
     )
   );
 
-  const lintSummary = await runRollbackStage(
-    'Lint Spec via Postman CLI',
-    async () => runGroup(
-      dependencies.core,
+  if (lintEnabled) {
+    const lintSummary = await runRollbackStage(
       'Lint Spec via Postman CLI',
-      async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
-    )
-  );
-  outputs['lint-summary-json'] = JSON.stringify({
-    errors: lintSummary.errors,
-    total: lintSummary.violations.length,
-    violations: lintSummary.violations,
-    warnings: lintSummary.warnings
-  });
-
-  if (lintSummary.errors > 0) {
-    lintSummary.violations
-      .filter((entry) => entry.severity === 'ERROR')
-      .forEach((entry) => {
-        dependencies.core.error(`  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint error'}`);
-      });
-    throw new Error(`Spec lint found ${lintSummary.errors} errors`);
-  }
-
-  lintSummary.violations
-    .filter((entry) => entry.severity === 'WARNING')
-    .forEach((entry) => {
-      dependencies.core.warning(
-        `  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint warning'}`
-      );
+      async () => runGroup(
+        dependencies.core,
+        'Lint Spec via Postman CLI',
+        async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
+      )
+    );
+    outputs['lint-summary-json'] = JSON.stringify({
+      errors: lintSummary.errors,
+      total: lintSummary.violations.length,
+      violations: lintSummary.violations,
+      warnings: lintSummary.warnings
     });
+
+    if (lintSummary.errors > 0) {
+      lintSummary.violations
+        .filter((entry) => entry.severity === 'ERROR')
+        .forEach((entry) => {
+          dependencies.core.error(`  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint error'}`);
+        });
+      throw new Error(`Spec lint found ${lintSummary.errors} errors`);
+    }
+
+    lintSummary.violations
+      .filter((entry) => entry.severity === 'WARNING')
+      .forEach((entry) => {
+        dependencies.core.warning(
+          `  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint warning'}`
+        );
+      });
+  } else {
+    // Access-token-only run: no PMAK to authenticate the Postman CLI, so the
+    // governance lint is skipped rather than hard-failing. Mirror the existing
+    // skipped-output shape and warn that governance errors are not enforced.
+    outputs['lint-summary-json'] = JSON.stringify({
+      status: 'skipped',
+      reason: 'no postman-api-key'
+    });
+    dependencies.core.warning('lint skipped: governance errors not enforced (no postman-api-key)');
+  }
 
   await runRollbackStage(
     'Generate Collections from Spec',
@@ -1547,311 +1911,77 @@ async function runBootstrapInner(
       'Generate Collections from Spec',
       async () => {
         const assetProjectName = collectionAssetProjectName;
-        const shouldReuseCollections = inputs.collectionSyncMode !== 'refresh';
-        const temporaryCollectionIds = new Set<string>();
-        const getCollection = dependencies.postman.getCollection?.bind(dependencies.postman);
-        const updateCollection = dependencies.postman.updateCollection?.bind(dependencies.postman);
-        const deleteCollection = dependencies.postman.deleteCollection?.bind(dependencies.postman);
-        const cleanupTemporaryCollections = async (failure: unknown): Promise<void> => {
-          if (temporaryCollectionIds.size === 0) return;
-          if (failure) {
-            dependencies.core.warning(
-              `Refresh failed after temporary collection generation; attempting cleanup for temporary collections: ${Array.from(temporaryCollectionIds).join(', ')}`
-            );
-          }
-          for (const tempCollectionId of temporaryCollectionIds) {
-            try {
-              if (!deleteCollection) {
-                dependencies.core.warning(
-                  `Temporary collection ${tempCollectionId} was not deleted because deleteCollection is unavailable`
-                );
-                continue;
-              }
-              await deleteCollection(tempCollectionId);
-              dependencies.core.info(`Deleted temporary generated collection ${tempCollectionId}`);
-            } catch (error) {
-              dependencies.core.warning(
-                `Failed to delete temporary collection ${tempCollectionId}: ${error instanceof Error ? error.message : String(error)}`
-              );
-            }
-          }
-          temporaryCollectionIds.clear();
-        };
-        const requireContractCollectionHelpers = () => {
-          if (!getCollection || !updateCollection) {
-            throw new Error(
-              'Dynamic contract tests require getCollection and updateCollection support from the Postman client'
-            );
-          }
-          if (!contractIndex) {
-            throw new Error('CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight');
-          }
-        };
-        const instrumentAndUpdateContractCollection = async (
-          targetCollectionId: string,
-          sourceCollectionId: string = targetCollectionId
-        ): Promise<string> => {
-          requireContractCollectionHelpers();
-          const sourceCollection = await getCollection!(sourceCollectionId);
-          const planned = instrumentContractCollection(
-            sanitizeCollectionForUpdate(sourceCollection) as Record<string, unknown>,
-            contractIndex!
-          );
-          for (const warning of planned.warnings) {
-            dependencies.core.warning(warning);
-          }
-          try {
-            await updateCollection!(targetCollectionId, planned.collection);
-            return targetCollectionId;
-          } catch (error) {
-            if (targetCollectionId !== sourceCollectionId && error instanceof HttpError && error.status === 404) {
-              dependencies.core.warning(
-                `Existing [Contract] collection ${targetCollectionId} was not found during refresh; using newly generated collection ${sourceCollectionId}`
-              );
-              await updateCollection!(sourceCollectionId, planned.collection);
-              return sourceCollectionId;
-            }
-            throw error;
-          }
-        };
+        const specId = outputs['spec-id'];
 
-        type RefreshPlan = {
-          existingId?: string;
-          generatedId: string;
-          outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id';
-          prefix: GeneratedCollectionPrefix;
-          snapshot?: Record<string, unknown>;
-          updateBody?: Record<string, unknown>;
-        };
-        const requireRefreshCollectionHelpers = () => {
-          if (!getCollection || !updateCollection) {
-            throw new Error(
-              'Refresh-in-place requires getCollection and updateCollection support from the Postman client'
-            );
-          }
-        };
-        const refreshPlanSlot = (
-          outputKey: RefreshPlan['outputKey']
-        ): 'baseline' | 'contract' | 'smoke' => {
-          if (outputKey === 'baseline-collection-id') return 'baseline';
-          if (outputKey === 'contract-collection-id') return 'contract';
-          return 'smoke';
-        };
-        const assertDistinctRefreshPlanOutputs = (plans: RefreshPlan[]): void => {
-          const ids: Record<'baseline' | 'contract' | 'smoke', string | undefined> = {
-            baseline: undefined,
-            contract: undefined,
-            smoke: undefined
-          };
-          for (const plan of plans) {
-            ids[refreshPlanSlot(plan.outputKey)] = plan.existingId ?? plan.generatedId;
-          }
-          assertDistinctCollectionIds(ids);
-        };
-        const createRefreshPlan = async (
-          prefix: RefreshPlan['prefix'],
+        // Regenerate each spec-linked collection in place from the current spec
+        // via the access-token `specification` sync route (preserving the
+        // collection UID so persisted repo-var references stay valid), or generate
+        // a fresh one. Both are access-token gateway routes — PMAK is never used
+        // and no v2 collection is read or written.
+        const ensureCollection = async (
+          prefix: GeneratedCollectionPrefix,
           existingId: string | undefined,
-          outputKey: RefreshPlan['outputKey']
-        ): Promise<RefreshPlan> => {
-          const generatedId = await dependencies.postman.generateCollection(
-            outputs['spec-id'],
+          outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id'
+        ): Promise<void> => {
+          if (existingId) {
+            if (inputs.collectionSyncMode === 'refresh' && dependencies.internalIntegration) {
+              try {
+                await dependencies.internalIntegration.syncCollection(specId, existingId);
+                outputs[outputKey] = existingId;
+                dependencies.core.info(
+                  `Refreshed existing ${describeGeneratedCollection(prefix)} collection ${existingId} from the current spec`
+                );
+                return;
+              } catch (error) {
+                dependencies.core.warning(
+                  `Could not regenerate existing ${describeGeneratedCollection(prefix)} collection ${existingId} from spec ` +
+                    `(${error instanceof Error ? error.message : String(error)}); generating a fresh collection`
+                );
+              }
+            } else {
+              outputs[outputKey] = existingId;
+              dependencies.core.info(
+                `Using existing ${describeGeneratedCollection(prefix)} collection: ${existingId}`
+              );
+              return;
+            }
+          }
+          outputs[outputKey] = await dependencies.postman.generateCollection(
+            specId,
             assetProjectName,
             prefix,
             inputs.folderStrategy,
             inputs.nestedFolderHierarchy,
             inputs.requestNameSource
           );
-          temporaryCollectionIds.add(generatedId);
-          return {
-            existingId,
-            generatedId,
-            outputKey,
-            prefix
-          };
-        };
-        const prepareContractUpdateBody = async (sourceCollectionId: string): Promise<Record<string, unknown>> => {
-          requireContractCollectionHelpers();
-          const sourceCollection = await getCollection!(sourceCollectionId);
-          const planned = instrumentContractCollection(
-            sanitizeCollectionForUpdate(sourceCollection) as Record<string, unknown>,
-            contractIndex!
-          );
-          for (const warning of planned.warnings) {
-            dependencies.core.warning(warning);
-          }
-          return planned.collection;
-        };
-        const restoreUpdatedCollections = async (
-          updatedCollections: Array<{ collectionId: string; snapshot: Record<string, unknown> }>
-        ): Promise<void> => {
-          for (const updated of [...updatedCollections].reverse()) {
-            try {
-              await updateCollection!(
-                updated.collectionId,
-                sanitizeCollectionForUpdate(updated.snapshot, { dropResponses: false })
-              );
-              dependencies.core.warning(
-                `Restored previous collection content for ${updated.collectionId} after refresh failure`
-              );
-            } catch (error) {
-              dependencies.core.warning(
-                `Failed to restore previous collection content for ${updated.collectionId}: ${error instanceof Error ? error.message : String(error)}`
-              );
-            }
-          }
-        };
-        const adoptGeneratedCollection = async (plan: RefreshPlan): Promise<void> => {
-          if (plan.prefix === CONTRACT_COLLECTION_PREFIX) {
-            await updateCollection!(plan.generatedId, plan.updateBody ?? await prepareContractUpdateBody(plan.generatedId));
-          }
-          outputs[plan.outputKey] = plan.generatedId;
           dependencies.core.info(
-            `No existing ${describeGeneratedCollection(plan.prefix)} collection found; using newly generated collection ${plan.generatedId}`
+            `Generated ${describeGeneratedCollection(prefix)} collection: ${outputs[outputKey]}`
           );
         };
-        const commitRefreshPlans = async (plans: RefreshPlan[]): Promise<void> => {
-          requireRefreshCollectionHelpers();
 
-          for (const plan of plans) {
-            if (plan.prefix === CONTRACT_COLLECTION_PREFIX) {
-              plan.updateBody = await prepareContractUpdateBody(plan.generatedId);
-            } else {
-              const generatedCollection = await getCollection!(plan.generatedId);
-              plan.updateBody = sanitizeCollectionForUpdate(generatedCollection) as Record<string, unknown>;
-            }
-          }
+        await ensureCollection(BASELINE_COLLECTION_PREFIX, baselineCollectionId, 'baseline-collection-id');
+        await ensureCollection(SMOKE_COLLECTION_PREFIX, smokeCollectionId, 'smoke-collection-id');
+        await ensureCollection(CONTRACT_COLLECTION_PREFIX, contractCollectionId, 'contract-collection-id');
 
-          for (const plan of plans.filter((entry) => entry.existingId)) {
-            try {
-              plan.snapshot = sanitizeCollectionForUpdate(
-                await getCollection!(plan.existingId!),
-                { dropResponses: false }
-              ) as Record<string, unknown>;
-            } catch (error) {
-              if (error instanceof HttpError && error.status === 404) {
-                dependencies.core.warning(
-                  `Existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
-                );
-                plan.existingId = undefined;
-                assertDistinctRefreshPlanOutputs(plans);
-                await adoptGeneratedCollection(plan);
-                continue;
-              }
-              throw error;
-            }
-          }
-
-          assertDistinctRefreshPlanOutputs(plans);
-
-          for (const plan of plans.filter((entry) => !entry.existingId && !outputs[entry.outputKey])) {
-            await adoptGeneratedCollection(plan);
-          }
-
-          const updatedCollections: Array<{ collectionId: string; snapshot: Record<string, unknown> }> = [];
-          try {
-            for (const plan of plans.filter((entry) => entry.existingId)) {
-              try {
-                await updateCollection!(
-                  plan.existingId!,
-                  plan.updateBody!
-                );
-                updatedCollections.push({
-                  collectionId: plan.existingId!,
-                  snapshot: plan.snapshot!
-                });
-                outputs[plan.outputKey] = plan.existingId!;
-                dependencies.core.info(
-                  `Refreshed existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} with temporary collection ${plan.generatedId}`
-                );
-              } catch (error) {
-                if (error instanceof HttpError && error.status === 404) {
-                  dependencies.core.warning(
-                    `Existing ${describeGeneratedCollection(plan.prefix)} collection ${plan.existingId} was not found during refresh; using newly generated collection ${plan.generatedId}`
-                  );
-                  plan.existingId = undefined;
-                  assertDistinctRefreshPlanOutputs(plans);
-                  await adoptGeneratedCollection(plan);
-                  continue;
-                }
-                throw error;
-              }
-            }
-            for (const plan of plans) {
-              if (outputs[plan.outputKey] === plan.generatedId) {
-                temporaryCollectionIds.delete(plan.generatedId);
-              }
-            }
-          } catch (error) {
-            await restoreUpdatedCollections(updatedCollections);
-            throw error;
-          }
-        };
-
-        let generationFailure: unknown;
-        try {
-          if (shouldReuseCollections) {
-            outputs['baseline-collection-id'] = baselineCollectionId || '';
-            outputs['smoke-collection-id'] = smokeCollectionId || '';
-            outputs['contract-collection-id'] = contractCollectionId || '';
-
-            if (!outputs['baseline-collection-id']) {
-              outputs['baseline-collection-id'] = await dependencies.postman.generateCollection(
-                outputs['spec-id'],
-                assetProjectName,
-                BASELINE_COLLECTION_PREFIX,
-                inputs.folderStrategy,
-                inputs.nestedFolderHierarchy,
-                inputs.requestNameSource
-              );
-            } else {
-              dependencies.core.info(
-                `Using existing baseline collection: ${outputs['baseline-collection-id']}`
-              );
-            }
-            if (!outputs['smoke-collection-id']) {
-              outputs['smoke-collection-id'] = await dependencies.postman.generateCollection(
-                outputs['spec-id'],
-                assetProjectName,
-                SMOKE_COLLECTION_PREFIX,
-                inputs.folderStrategy,
-                inputs.nestedFolderHierarchy,
-                inputs.requestNameSource
-              );
-            } else {
-              dependencies.core.info(
-                `Using existing smoke collection: ${outputs['smoke-collection-id']}`
-              );
-            }
-            if (!outputs['contract-collection-id']) {
-              outputs['contract-collection-id'] = await dependencies.postman.generateCollection(
-                outputs['spec-id'],
-                assetProjectName,
-                CONTRACT_COLLECTION_PREFIX,
-                inputs.folderStrategy,
-                inputs.nestedFolderHierarchy,
-                inputs.requestNameSource
-              );
-            } else {
-              dependencies.core.info(
-                `Using existing contract collection: ${outputs['contract-collection-id']}`
-              );
-            }
-            outputs['contract-collection-id'] = await instrumentAndUpdateContractCollection(
-              outputs['contract-collection-id']
-            );
-            return;
-          }
-
-          await commitRefreshPlans([
-            await createRefreshPlan(BASELINE_COLLECTION_PREFIX, baselineCollectionId, 'baseline-collection-id'),
-            await createRefreshPlan(SMOKE_COLLECTION_PREFIX, smokeCollectionId, 'smoke-collection-id'),
-            await createRefreshPlan(CONTRACT_COLLECTION_PREFIX, contractCollectionId, 'contract-collection-id')
-          ]);
-        } catch (error) {
-          generationFailure = error;
-          throw error;
-        } finally {
-          await cleanupTemporaryCollections(generationFailure);
+        // Contract test injection is v3-native over the access-token gateway:
+        // list the generated collection's items, then PATCH each `http-request`
+        // leaf's `/scripts` with the deterministic contract afterResponse script
+        // and prepend the secrets resolver. This retires the PMAK collection read
+        // + v2.1.0 collection PUT the dynamic-contract refresh used to perform.
+        if (!dependencies.postman.injectContractTests) {
+          throw new Error(
+            'Dynamic contract tests require injectContractTests support from the access-token gateway client'
+          );
+        }
+        if (!contractIndex) {
+          throw new Error('CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight');
+        }
+        const contractWarnings = await dependencies.postman.injectContractTests(
+          outputs['contract-collection-id'],
+          contractIndex
+        );
+        for (const warning of contractWarnings) {
+          dependencies.core.warning(warning);
         }
       }
     )
@@ -2044,17 +2174,28 @@ export async function runAction(
   });
   warnIfDeprecatedAccessToken(actionCore, inputs);
 
-  // Early org-mode detection for proper adapter configuration
+  // Early org-mode detection for proper adapter configuration. Enumerates squads
+  // over the access-token gateway `ums` service (org id from the preflight's
+  // memoized session); a non-org account returns no squads. PMAK is never used
+  // for this (reserved for token mint + CLI login).
   let orgMode = false;
-  if (inputs.postmanAccessToken && inputs.teamId) {
+  if (inputs.postmanAccessToken) {
     try {
-      const tempPostman = new PostmanAssetsClient({
+      const probeProvider = new AccessTokenProvider({
+        accessToken: inputs.postmanAccessToken,
         apiKey: inputs.postmanApiKey,
-        baseUrl: inputs.postmanApiBase,
-        bifrostBaseUrl: inputs.postmanBifrostBase,
-        secretMasker: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+        apiBaseUrl: inputs.postmanApiBase
       });
-      const teams = await tempPostman.getTeams();
+      const probeGateway = new PostmanGatewayAssetsClient({
+        gateway: new AccessTokenGatewayClient({
+          tokenProvider: probeProvider,
+          bifrostBaseUrl: inputs.postmanBifrostBase,
+          teamId: inputs.teamId || '',
+          orgMode: false,
+          secretMasker: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+        })
+      });
+      const teams = await probeGateway.getTeams();
       orgMode = teams.some(t => t.organizationId != null);
     } catch {
       // Org-mode detection failure is not fatal; default to false
@@ -2065,7 +2206,8 @@ export async function runAction(
     core: actionCore,
     exec: actionExec,
     io: actionIo,
-    specFetcher: fetch
+    specFetcher: fetch,
+    setSecret: (secret: string) => actionCore.setSecret(secret)
   }, orgMode);
 
   if ((inputs.domain || inputs.governanceGroup) && !dependencies.internalIntegration) {
@@ -2077,31 +2219,177 @@ export async function runAction(
   return runBootstrap(inputs, dependencies);
 }
 
+/**
+ * Build the routing `postman` facade. Every asset op routes through the
+ * access-token gateway and NEVER touches PMAK — a gateway error surfaces rather
+ * than masking it (the short-TTL service-account token is re-minted by the token
+ * provider on a 401, so failures are real). PMAK is used only for minting/re-minting
+ * the access token + the CLI spec-lint login; it is never an asset route. The
+ * gateway is always constructed (from an access token, or minted from the PMAK),
+ * so the no-gateway branch is unreachable in practice and rejects every asset op
+ * rather than falling back to any PMAK route.
+ */
+export function createRoutingPostmanClient(options: {
+  gateway?: PostmanGatewayAssetsClient;
+}): BootstrapExecutionDependencies['postman'] {
+  const { gateway } = options;
+
+  const requireAccessToken = (operation: string) => async (): Promise<never> => {
+    throw new Error(
+      `${operation} requires an access token: PMAK asset routes are retired. ` +
+        'Mint a service-account token with postman-resolve-service-token-action.'
+    );
+  };
+
+  if (!gateway) {
+    // No access token and no PMAK to mint one from: every asset op is
+    // access-token-only, so reject rather than fall back to any PMAK route.
+    // Unreachable in practice — resolveInputs requires a credential and the
+    // gateway is minted from the PMAK when no access token is supplied.
+    return {
+      configureTeamContext: (_teamId: string, _orgMode: boolean): void => {
+        void _teamId;
+        void _orgMode;
+      },
+      uploadSpec: requireAccessToken('uploadSpec'),
+      updateSpec: requireAccessToken('updateSpec'),
+      getSpecContent: requireAccessToken('getSpecContent'),
+      generateCollection: requireAccessToken('generateCollection'),
+      createWorkspace: requireAccessToken('createWorkspace'),
+      getWorkspaceVisibility: requireAccessToken('getWorkspaceVisibility'),
+      getWorkspaceGitRepoUrl: requireAccessToken('getWorkspaceGitRepoUrl'),
+      findWorkspacesByName: requireAccessToken('findWorkspacesByName'),
+      getTeams: requireAccessToken('getTeams'),
+      addAdminsToWorkspace: requireAccessToken('addAdminsToWorkspace'),
+      inviteRequesterToWorkspace: requireAccessToken('inviteRequesterToWorkspace'),
+      injectTests: requireAccessToken('injectTests'),
+      tagCollection: requireAccessToken('tagCollection'),
+      deleteCollection: requireAccessToken('deleteCollection'),
+      injectContractTests: requireAccessToken('injectContractTests'),
+      createCollection: requireAccessToken('createCollection'),
+      updateCollection: requireAccessToken('updateCollection')
+    };
+  }
+
+  return {
+    // Gateway-only (verified live 200): every migrated asset op routes through the
+    // access-token gateway and NEVER falls back to PMAK, even on a gateway error.
+    // PMAK is reserved for minting/re-minting the access token + the CLI spec-lint
+    // login. The short-TTL service-account token is re-minted transparently by the
+    // token provider on a 401, so a gateway failure here is a real error to surface,
+    // not a reason to reach for the API key.
+    uploadSpec: (workspaceId, projectName, specContent, openapiVersion) =>
+      gateway.uploadSpec(workspaceId, projectName, specContent, openapiVersion ?? '3.0'),
+    generateCollection: (specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) =>
+      gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
+    updateSpec: (specId, specContent, workspaceId) =>
+      gateway.updateSpec(specId, specContent, workspaceId),
+    getSpecContent: (specId) => gateway.getSpecContent(specId),
+    createWorkspace: (name, about, targetTeamId) =>
+      gateway.createWorkspace(name, about, targetTeamId),
+    getWorkspaceVisibility: (workspaceId) => gateway.getWorkspaceVisibility(workspaceId),
+    getWorkspaceGitRepoUrl: (workspaceId, teamId, accessToken) =>
+      gateway.getWorkspaceGitRepoUrl(workspaceId, teamId, accessToken),
+    findWorkspacesByName: (name) => gateway.findWorkspacesByName(name),
+    configureTeamContext: (teamId, orgMode) => gateway.configureTeamContext(teamId, orgMode),
+
+    // gateway-only (no PMAK fallback): asset mutation over the v3 collection-items
+    // + tagging surfaces (live-proven). PMAK is reserved for token minting, so
+    // these never fall back to the API key even when one is present.
+    injectTests: (collectionId, type) => gateway.injectTests(collectionId, type),
+    tagCollection: (collectionId, tags) => gateway.tagCollection(collectionId, tags),
+    // Sub-team (squad) enumeration over the gateway `ums` service. Access-token
+    // only — never PMAK — so org-mode detection no longer needs a PMAK GET /teams.
+    getTeams: () => gateway.getTeams(),
+
+    // gateway-only (no PMAK fallback): workspace roles + member resolution and the
+    // v3 collection delete are live-proven (probe-workspace-roles-gateway.ts,
+    // probe-god-members.ts, probe-collection-v3-crud.ts, 2026-06-30). Role values
+    // are the string enum names the gateway requires (numeric ids are rejected).
+    addAdminsToWorkspace: (workspaceId, adminIds) => gateway.addAdminsToWorkspace(workspaceId, adminIds),
+    inviteRequesterToWorkspace: (workspaceId, email) => gateway.inviteRequesterToWorkspace(workspaceId, email),
+    deleteCollection: (collectionUid) => gateway.deleteCollection(collectionUid),
+
+    // gateway-only (no PMAK fallback): v3-native contract test injection over the
+    // collection-items `/scripts` surface. Replaces the retired PMAK collection
+    // read + v2.1.0 collection PUT the dynamic-contract refresh used to perform,
+    // so no asset op ever reaches for the API key.
+    injectContractTests: (collectionUid, index) => gateway.injectContractTests(collectionUid, index),
+    createCollection: (workspaceId, collection) => gateway.createCollection(workspaceId, collection),
+    updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection)
+  };
+}
+
 export function createBootstrapDependencies(
   inputs: ResolvedInputs,
   factories: BootstrapDependencyFactories,
   orgMode = false
 ): BootstrapExecutionDependencies {
-  const secretMasker = createSecretMasker([
+  // Mutable masker: a mid-run access-token re-mint adds the new token here so the
+  // same masker instance already threaded into every client keeps redacting it.
+  const mutableMasker = createMutableSecretMasker([
     inputs.postmanApiKey,
     inputs.postmanAccessToken
   ]);
-  const postman = new PostmanAssetsClient({
+  const secretMasker = mutableMasker.mask;
+
+  // Single source of the live access token. onToken registers each re-mint with
+  // the Actions log scrubber (when wired) and the mutable masker.
+  const tokenProvider = new AccessTokenProvider({
+    accessToken: inputs.postmanAccessToken,
     apiKey: inputs.postmanApiKey,
-    baseUrl: inputs.postmanApiBase,
-    bifrostBaseUrl: inputs.postmanBifrostBase,
-    secretMasker
+    apiBaseUrl: inputs.postmanApiBase,
+    onToken: (token) => {
+      factories.setSecret?.(token);
+      mutableMasker.add(token);
+    }
   });
+
+  // Access-token asset path — the sole asset path. Built whenever any credential
+  // exists: from an access token directly, or minted from the PMAK on first use by
+  // the token provider. The PMAK is only ever the mint credential, never an asset
+  // route. resolveInputs guarantees one of the two, so this is always present.
+  const gatewayClient = (inputs.postmanAccessToken || inputs.postmanApiKey)
+    ? new AccessTokenGatewayClient({
+        tokenProvider,
+        bifrostBaseUrl: inputs.postmanBifrostBase,
+        teamId: inputs.teamId || '',
+        orgMode,
+        secretMasker
+      })
+    : undefined;
+  const gatewayAssets = gatewayClient
+    ? new PostmanGatewayAssetsClient({ gateway: gatewayClient })
+    : undefined;
+
+  const postman = createRoutingPostmanClient({ gateway: gatewayAssets });
+
   const internalIntegration =
     inputs.postmanAccessToken
       ? createInternalIntegrationAdapter({
         accessToken: inputs.postmanAccessToken,
+        tokenProvider,
         backend: inputs.integrationBackend,
         bifrostBaseUrl: inputs.postmanBifrostBase,
         gatewayBaseUrl: inputs.postmanGatewayBase,
         orgMode,
         secretMasker,
         teamId: inputs.teamId || ''
+      })
+      : undefined;
+  // gRPC contract collections use the v3/Extensible Collection schema, which the
+  // public v2.1.0 collections API rejects; they are created through the gateway
+  // EC API instead, which is access-token only.
+  const ecClient =
+    inputs.postmanAccessToken
+      ? new PostmanExtensibleCollectionClient({
+        accessToken: inputs.postmanAccessToken,
+        tokenProvider,
+        bifrostBaseUrl: inputs.postmanBifrostBase,
+        orgMode,
+        secretMasker,
+        teamId: inputs.teamId || '',
+        validationReporter: (message) => factories.core.warning(message)
       })
       : undefined;
   const github =
@@ -2116,6 +2404,7 @@ export function createBootstrapDependencies(
 
   return {
     core: factories.core,
+    ecClient,
     exec: factories.exec,
     github,
     io: factories.io,

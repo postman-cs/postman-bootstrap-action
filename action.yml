@@ -59,8 +59,8 @@ inputs:
     required: false
   workspace-team-id:
     description: >-
-      Numeric sub-team ID for org-mode workspace creation. Required when the
-      API key belongs to an org with multiple sub-teams. Run the action without
+      Numeric sub-team ID for org-mode workspace creation. Required when your
+      Postman team is an org with multiple sub-teams. Run the action without
       this input to see available sub-teams listed in the error output.
     required: false
   spec-url:
@@ -69,6 +69,14 @@ inputs:
   spec-path:
     description: Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path.
     required: false
+  protocol:
+    description: API spec protocol. auto (default) detects from content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly.
+    required: false
+    default: auto
+  protocol-endpoint-url:
+    description: Endpoint URL/authority used by generated non-OpenAPI requests (e.g. {{baseUrl}}/graphql, grpc://host:port). Supports Postman variable interpolation. Ignored for openapi.
+    required: false
+    default: ''
   openapi-version:
     description: OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.
     required: false
@@ -106,10 +114,10 @@ inputs:
     description: Fallback GitHub token used to read repository custom properties when github-token cannot
     required: false
   postman-api-key:
-    description: Postman API key used for bootstrap operations
-    required: true
+    description: Postman service-account API key (PMAK). With a postman-access-token present, the PMAK is used ONLY to mint/re-mint the access token and to log in the Postman CLI for `spec lint` — never for an asset operation. When the key is absent, the CLI spec lint is skipped (governance errors are not enforced). Optional.
+    required: false
   postman-access-token:
-    description: Postman access token used for governance and workspace mutations
+    description: Postman service-account access token (x-access-token). Primary credential — every asset operation (workspace create/visibility, spec upload/update, collection generation/read/mutation, test injection, tagging, team-scope) runs through the access-token gateway. Mint it with postman-resolve-service-token-action. Optional only for legacy PMAK-only runs; supply it for the gateway path.
     required: false
   credential-preflight:
     description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created."
@@ -156,7 +164,7 @@ outputs:
   collections-json:
     description: JSON summary of generated collections
   lint-summary-json:
-    description: JSON summary of lint errors and warnings
+    description: 'JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }.'
   breaking-change-status:
     description: OpenAPI breaking-change check status
   breaking-change-summary-json:

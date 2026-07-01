@@ -76,6 +76,32 @@ export function createSecretMasker(
   return (input: string) => redactSecrets(input, secretValues, replacement);
 }
 
+export interface MutableSecretMasker {
+  mask: SecretMasker;
+  add(value: string): void;
+}
+
+/**
+ * A masker whose secret set can grow at runtime. Required because access tokens
+ * may be re-minted mid-run; the new token must be redacted by the same masker
+ * instance already threaded into the HTTP clients.
+ */
+export function createMutableSecretMasker(
+  initialSecretValues: unknown = [],
+  replacement = REDACTED
+): MutableSecretMasker {
+  const secrets: string[] = normalizeSecretValues(initialSecretValues);
+  return {
+    mask: (input: string) => redactSecrets(input, secrets, replacement),
+    add(value: string): void {
+      const normalized = String(value ?? '').trim();
+      if (normalized && !secrets.includes(normalized)) {
+        secrets.push(normalized);
+      }
+    }
+  };
+}
+
 function headerEntries(headers: HeaderBag): Array<[string, string]> {
   if (headers instanceof Headers) {
     return Array.from(headers.entries());

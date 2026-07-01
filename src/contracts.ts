@@ -108,6 +108,19 @@ export const bootstrapActionContract: ActionContract = {
       description: 'Local filesystem path to the OpenAPI document (read from the workspace). Provide either spec-url or spec-path.',
       required: false
     },
+    'protocol': {
+      description:
+        'API spec protocol. auto (default) detects from the spec content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly.',
+      required: false,
+      default: 'auto',
+      allowedValues: ['auto', 'openapi', 'graphql', 'grpc', 'soap']
+    },
+    'protocol-endpoint-url': {
+      description:
+        'Endpoint URL/authority used by generated non-OpenAPI requests (e.g. {{baseUrl}}/graphql, grpc://host:port). Supports Postman variable interpolation. Ignored for openapi.',
+      required: false,
+      default: ''
+    },
     'openapi-version': {
       description: 'OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.',
       required: false,
@@ -158,8 +171,9 @@ export const bootstrapActionContract: ActionContract = {
       required: false
     },
     'postman-api-key': {
-      description: 'Postman API key used for bootstrap operations.',
-      required: true
+      description:
+        'Postman API key for bootstrap operations and the Postman CLI spec lint. Optional: with a postman-access-token, asset operations run access-token-primary; when the key is absent the CLI spec lint is skipped (governance errors are not enforced).',
+      required: false
     },
     'postman-access-token': {
       description: 'Postman access token used for governance and workspace mutations.',
@@ -234,7 +248,8 @@ export const bootstrapActionContract: ActionContract = {
       description: 'JSON summary of generated collections.'
     },
     'lint-summary-json': {
-      description: 'JSON summary of lint errors and warnings.'
+      description:
+        'JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }.'
     },
     'breaking-change-status': {
       description: 'OpenAPI breaking-change check status.'

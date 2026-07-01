@@ -1,9 +1,16 @@
+import * as V2 from '@postman/runtime.models/v2';
+import { transform, FormatVersion } from '@postman/runtime.models/transforms';
+
 import { HttpError } from '../http-error.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { AccessTokenGatewayClient } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
 import { planContractItemScripts } from '../spec/collection-contracts.js';
 import type { ContractIndex } from '../spec/contract-index.js';
+
+function asItemArray(value: unknown): JsonRecord[] {
+  return Array.isArray(value) ? (value as JsonRecord[]) : [];
+}
 
 type JsonRecord = Record<string, unknown>;
 
@@ -870,5 +877,192 @@ export class PostmanGatewayAssetsClient {
       }
       throw error;
     }
+  }
+
+  // --- collection v3 create/update (additional local collections; live-proven
+  // 2026-07-01; see scripts/probe-collection-v3-crud.ts,
+  // scripts/probe-additional-collections-nested.ts,
+  // scripts/probe-additional-collections-desc-rename.ts) ---
+  //
+  // Retires the last PMAK collection-write route (createCollection/updateCollection
+  // for user-curated v2.1.0 collections synced from local JSON/YAML). The v2.1
+  // input is converted to the canonical v3 IR with the same official
+  // `@postman/runtime.models` pipeline repo-sync's converter uses, then written
+  // via the v3 items surface: root create (`X-Entity-Target: http`), one
+  // `POST .../items/` per node (folder = `$kind:'collection'`, leaf =
+  // `$kind:'http-request'`/`'graphql-request'`), recursing into folder children
+  // with the new item id as `position.parent`. Multi-level nesting, per-item
+  // `description`, and collection-level rename/auth/variables are all
+  // live-proven against the sandbox.
+
+  /**
+   * Bridge the same v2->v3 graphql gap repo-sync's converter documents: the v2
+   * model has no GraphQLRequest, so a v2 graphql body (`{mode:'graphql'}`)
+   * transforms into an `http-request` carrying `body.type:'graphql'`, which the
+   * v3 item-create surface has no use for. Mirror `postman collection migrate`'s
+   * `graphql-request` node (top-level `query`/`variables`, no `body`).
+   */
+  private normalizeGraphqlRequests(node: JsonRecord): void {
+    if (!node || typeof node !== 'object') return;
+    const body = node.body as JsonRecord | undefined;
+    if (node.$kind === 'http-request' && body && body.type === 'graphql') {
+      const content = (body.content ?? {}) as JsonRecord;
+      node.$kind = 'graphql-request';
+      node.query = typeof content.query === 'string' ? content.query : '';
+      node.variables = typeof content.variables === 'string' ? content.variables : '';
+      delete node.body;
+    }
+    for (const child of asItemArray(node.items)) {
+      this.normalizeGraphqlRequests(child);
+    }
+  }
+
+  /** v2.1 collection JSON -> canonical v3 IR, via the official runtime.models transform. */
+  private convertV2CollectionToV3(v2Collection: unknown): JsonRecord {
+    const model = (V2 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
+    const parsed = model.parse(v2Collection ?? {});
+    const v3 = transform(model as never, FormatVersion.V3, parsed as never) as unknown as JsonRecord;
+    for (const item of asItemArray(v3.items)) {
+      this.normalizeGraphqlRequests(item);
+    }
+    return v3;
+  }
+
+  /** v3 IR item node -> the POST .../items/ create body, scoped to the fields live-proven above. */
+  private buildItemCreateBody(item: JsonRecord, parentId: string): JsonRecord {
+    const kind = String(item.$kind ?? 'http-request');
+    const body: JsonRecord = {
+      $kind: kind,
+      name: String(item.name ?? 'Untitled'),
+      position: { parent: { id: parentId, $kind: 'collection' } }
+    };
+    if (typeof item.description === 'string' && item.description) {
+      body.description = item.description;
+    }
+    if (kind === 'collection') {
+      return body;
+    }
+    if (kind === 'graphql-request') {
+      if (typeof item.query === 'string') body.query = item.query;
+      if (typeof item.variables === 'string') body.variables = item.variables;
+      return body;
+    }
+    if (typeof item.method === 'string') body.method = item.method;
+    if (typeof item.url === 'string') body.url = item.url;
+    if (Array.isArray(item.headers)) body.headers = item.headers;
+    if (item.body && typeof item.body === 'object') body.body = item.body;
+    if (item.auth && typeof item.auth === 'object') body.auth = item.auth;
+    return body;
+  }
+
+  /** Recursively create a v3 IR item tree under `parentId` (folders recurse into their children). */
+  private async createItemTree(cid: string, items: JsonRecord[], parentId: string): Promise<void> {
+    for (const item of items) {
+      const kind = String(item.$kind ?? 'http-request');
+      const created = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'post',
+        path: `/v3/collections/${cid}/items/`,
+        headers: { 'X-Entity-Type': kind },
+        body: this.buildItemCreateBody(item, parentId)
+      });
+      const newId = String(asRecord(created?.data)?.id ?? '').trim();
+      const children = asItemArray(item.items);
+      if (kind === 'collection' && children.length > 0 && newId) {
+        await this.createItemTree(cid, children, newId);
+      }
+    }
+  }
+
+  /** Collection-level rename/auth/variables via a single JSON-Patch PATCH; no-op when nothing applies. */
+  private async applyCollectionLevelSettings(
+    cid: string,
+    v3: JsonRecord,
+    options: { rename?: boolean } = {}
+  ): Promise<void> {
+    const ops: JsonRecord[] = [];
+    if (options.rename && typeof v3.name === 'string' && v3.name) {
+      ops.push({ op: 'replace', path: '/name', value: v3.name });
+    }
+    if (v3.auth && typeof v3.auth === 'object') {
+      ops.push({ op: 'add', path: '/auth', value: v3.auth });
+    }
+    if (Array.isArray(v3.variables) && v3.variables.length > 0) {
+      ops.push({ op: 'add', path: '/variables', value: v3.variables });
+    }
+    if (ops.length === 0) return;
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'patch',
+      path: `/v3/collections/${cid}`,
+      body: ops
+    });
+  }
+
+  /**
+   * Create a curated local v2.1.0 collection through the gateway v3 write
+   * surface. Returns the full uid (same format `generateCollection` returns),
+   * so callers can persist it and pass it straight to `updateCollection`/
+   * `deleteCollection`/`tagCollection`/`injectTests` unchanged.
+   */
+  async createCollection(workspaceId: string, collection: unknown): Promise<string> {
+    const v3 = this.convertV2CollectionToV3(collection);
+    const rootBody: JsonRecord = { name: String(v3.name ?? 'Untitled Collection') };
+    if (typeof v3.description === 'string' && v3.description) {
+      rootBody.description = v3.description;
+    }
+    const created = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'post',
+      path: `/v3/collections/?workspace=${workspaceId}`,
+      headers: { 'X-Entity-Target': 'http' },
+      body: rootBody
+    });
+    const rawId = String(asRecord(created?.data)?.id ?? '').trim();
+    if (!rawId) {
+      throw new Error('Collection create did not return an id');
+    }
+    const cid = this.bareModelId(rawId);
+    await this.createItemTree(cid, asItemArray(v3.items), cid);
+    await this.applyCollectionLevelSettings(cid, v3);
+    return rawId;
+  }
+
+  /**
+   * Full-replace reconcile of a curated local v2.1.0 collection: delete every
+   * root-level item (deleting a folder cascades its children server-side —
+   * live-proven), tolerating the gateway's spurious 500 on an already-cascaded
+   * child by not trusting individual delete statuses, then recreate the tree
+   * from the converted v3 IR and reapply name/auth/variables.
+   */
+  async updateCollection(collectionUid: string, collection: unknown): Promise<void> {
+    const cid = this.bareModelId(collectionUid);
+    const v3 = this.convertV2CollectionToV3(collection);
+
+    const listed = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'get',
+      path: `/v3/collections/${cid}/items/`
+    });
+    const rootItems = asItemArray(listed?.data);
+    for (const item of rootItems) {
+      const itemId = String(item.id ?? '').trim();
+      if (!itemId) continue;
+      try {
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'delete',
+          path: `/v3/collections/${cid}/items/${itemId}`,
+          headers: { 'X-Entity-Type': String(item.$kind ?? 'http-request') }
+        });
+      } catch (error) {
+        if (!(error instanceof HttpError && (error.status === 404 || error.status === 500))) {
+          throw error;
+        }
+      }
+    }
+
+    await this.createItemTree(cid, asItemArray(v3.items), cid);
+    await this.applyCollectionLevelSettings(cid, v3, { rename: true });
   }
 }

@@ -398,4 +398,110 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls).toHaveLength(0);
     });
   });
+
+  describe('createCollection', () => {
+    it('converts v2.1 -> v3 and creates the root + nested folder/leaf tree, returning the full uid', async () => {
+      const v21 = {
+        info: { name: 'Curated', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+        item: [
+          {
+            name: 'Folder',
+            item: [
+              {
+                name: 'Leaf',
+                request: { method: 'GET', url: { raw: 'https://example.test/get', host: ['example', 'test'], path: ['get'] } }
+              }
+            ]
+          }
+        ]
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-root-uid' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/root-uid/items/') {
+          const body = env.body as { name?: string };
+          if (body?.name === 'Folder') return jsonResponse({ data: { id: '55363555-folder-uid' } });
+          return jsonResponse({ data: { id: '55363555-leaf-uid' } });
+        }
+        return jsonResponse({});
+      });
+
+      const id = await client.createCollection('ws-1', v21);
+      expect(id).toBe('55363555-root-uid');
+
+      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      expect(rootCreate).toMatchObject({ headers: expect.objectContaining({ 'x-entity-target': 'http' }), body: { name: 'Curated' } });
+
+      const folderCreate = calls.find(
+        (c) => c.path === '/v3/collections/root-uid/items/' && (c.body as { name?: string })?.name === 'Folder'
+      );
+      expect(folderCreate).toMatchObject({
+        headers: expect.objectContaining({ 'x-entity-type': 'collection' }),
+        body: { $kind: 'collection', name: 'Folder', position: { parent: { id: 'root-uid', $kind: 'collection' } } }
+      });
+
+      const leafCreate = calls.find(
+        (c) => c.path === '/v3/collections/root-uid/items/' && (c.body as { name?: string })?.name === 'Leaf'
+      );
+      expect(leafCreate?.headers['x-entity-type']).toBe('http-request');
+      expect(leafCreate?.body).toMatchObject({
+        $kind: 'http-request',
+        name: 'Leaf',
+        method: 'GET',
+        url: 'https://example.test/get',
+        position: { parent: { id: '55363555-folder-uid', $kind: 'collection' } }
+      });
+    });
+
+    it('throws when the root create returns no id', async () => {
+      const { client } = makeClient(() => jsonResponse({ data: {} }));
+      await expect(
+        client.createCollection('ws-1', {
+          info: { name: 'X', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+          item: []
+        })
+      ).rejects.toThrow('Collection create did not return an id');
+    });
+  });
+
+  describe('updateCollection', () => {
+    it('deletes every existing root item, tolerating a 500 on an already-cascaded child, then recreates from the new tree and renames', async () => {
+      const v21 = {
+        info: { name: 'Curated (updated)', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+        item: [
+          { name: 'New Leaf', request: { method: 'GET', url: { raw: 'https://example.test/v2', host: ['example', 'test'], path: ['v2'] } } }
+        ]
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+          return jsonResponse({ data: [{ id: 'old-1', $kind: 'http-request' }, { id: 'old-2', $kind: 'http-request' }] });
+        }
+        if (env.method === 'delete' && env.path === '/v3/collections/cid-1/items/old-1') {
+          return new Response(null, { status: 204 });
+        }
+        if (env.method === 'delete' && env.path === '/v3/collections/cid-1/items/old-2') {
+          return jsonResponse({ error: { code: 'GENERIC_ERROR' } }, { status: 500 });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/cid-1/items/') {
+          return jsonResponse({ data: { id: '55363555-new-leaf-uid' } });
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: { id: 'cid-1' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.updateCollection('55363555-cid-1', v21);
+
+      expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/cid-1/items/old-1')).toBe(true);
+      expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/cid-1/items/old-2')).toBe(true);
+
+      const created = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/cid-1/items/');
+      expect(created).toMatchObject({ body: expect.objectContaining({ name: 'New Leaf' }) });
+
+      const patch = calls.find((c) => c.method === 'patch' && c.path === '/v3/collections/cid-1');
+      expect(patch?.body).toEqual([{ op: 'replace', path: '/name', value: 'Curated (updated)' }]);
+    });
+  });
 });

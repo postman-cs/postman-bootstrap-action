@@ -303,6 +303,8 @@ Before any durable contract collection is overwritten, the action hardens the ge
 
 Full pipeline, validation scope, OpenAPI semantics, limits, and rollback behavior are documented in [Dynamic Contract Tests](docs/dynamic-contract-tests.md).
 
+The user-facing inventory of everything above — the exact test names per protocol, the RFC or specification each check enforces, and what to do when one fails — is in [Generated Assertions](docs/generated-assertions.md).
+
 ## Errors
 
 Dynamic contract failures and warnings use `CONTRACT_` error codes. Remediation guidance for each code:

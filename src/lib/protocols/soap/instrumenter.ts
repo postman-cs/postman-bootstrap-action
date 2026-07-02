@@ -46,6 +46,7 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
   const responseRegex = operation.expectedResponseElement
     ? elementPresenceRegex(operation.expectedResponseElement)
     : '';
+  const mediaType = operation.soapVersion === '1.2' ? 'application/soap+xml' : 'text/xml';
   const lines: string[] = [
     `var soap = JSON.parse(${JSON.stringify(JSON.stringify(meta))});`,
     'var bodyText = (pm.response.text && pm.response.text()) || "";',
@@ -56,9 +57,11 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     '  pm.response.to.have.status(200);',
     '});',
     '',
-    "pm.test('SOAP response Content-Type is XML', function () {",
+    // SOAP 1.1 responses bind to text/xml (SOAP 1.1 HTTP binding, WS-I Basic
+    // Profile); SOAP 1.2 responses bind to application/soap+xml (RFC 3902).
+    `pm.test('SOAP response Content-Type matches the SOAP ${operation.soapVersion} binding', function () {`,
     '  var ct = header("Content-Type").toLowerCase();',
-    '  pm.expect(ct, "expected an XML SOAP content-type, got: " + ct).to.match(/(?:text\\/xml|application\\/soap\\+xml|application\\/xml|\\+xml)/);',
+    `  pm.expect(ct, "SOAP ${operation.soapVersion} responses use ${mediaType} (got: " + (ct || "<missing>") + ")").to.include("${mediaType}");`,
     '});',
     '',
     "pm.test('SOAP Envelope element is present', function () {",

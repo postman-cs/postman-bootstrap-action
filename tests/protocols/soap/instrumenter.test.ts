@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseWsdl } from '../../../src/lib/protocols/soap/parser.js';
 import { buildSoapCollection } from '../../../src/lib/protocols/soap/builder.js';
-import { instrumentSoapCollection } from '../../../src/lib/protocols/soap/instrumenter.js';
+import { createSoapScript, instrumentSoapCollection } from '../../../src/lib/protocols/soap/instrumenter.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wsdl = readFileSync(resolve(here, '../../../fixtures/soap/stockquote.wsdl'), 'utf8');
@@ -38,7 +38,8 @@ describe('instrumentSoapCollection', () => {
     const { collection } = instrumentSoapCollection(built, index);
     const code = scriptCode(items(collection)[0]!);
     expect(code).toContain("pm.response.to.have.status(200)");
-    expect(code).toMatch(/Content-Type is XML/);
+    expect(code).toContain('SOAP response Content-Type matches the SOAP 1.1 binding');
+    expect(code).toContain('to.include("text/xml")');
     expect(code).toContain('matchTag("Envelope")');
     expect(code).toContain('matchTag("Body")');
     expect(code).toContain('matchTag("Fault")');
@@ -75,6 +76,13 @@ describe('instrumentSoapCollection', () => {
     const built = buildSoapCollection(index);
     const { warnings } = instrumentSoapCollection(built, index);
     expect(warnings.join('\n')).toMatch(/SOAP_RESPONSE_ELEMENT_UNKNOWN/);
+  });
+
+  it('asserts application/soap+xml for a SOAP 1.2 operation (RFC 3902)', () => {
+    const code = createSoapScript({ name: 'GetLastTradePrice', soapAction: 'urn:GetLastTradePrice', soapVersion: '1.2', warnings: [] });
+    expect(code).toContain('SOAP response Content-Type matches the SOAP 1.2 binding');
+    expect(code).toContain('to.include("application/soap+xml")');
+    expect(code).not.toContain('to.include("text/xml")');
   });
 
   it('golden snapshot: generated assertions for the stockquote service', () => {

@@ -16,7 +16,7 @@ Each request in the generated `[Contract]` collection carries a test script buil
 | `Response headers match OpenAPI` | Response headers declared in the spec validate against their schemas. |
 | `Response body matches OpenAPI body contract` | The presence or absence of a body agrees with the content the spec declares for that status. |
 | `Response body matches OpenAPI schema` | The parsed response body validates against the compiled JSON Schema for the matched status and media type. |
-| `Request carries credentials required by OpenAPI security` | The request supplies the credential demanded by the operation's `security` requirement. |
+| `Request carries credentials required by OpenAPI security` | The request satisfies at least one declared security requirement. `apiKey` schemes assert the named header, query parameter, or cookie; `http` schemes assert the `Authorization` value opens with the declared scheme token, compared case-insensitively per RFC 9110 section 11.1 (`Basic` per RFC 7617, `Bearer` per RFC 6750, and any other registered scheme by its name); `oauth2`/`openIdConnect` accept an `Authorization` header or an `access_token` query parameter (RFC 6750). |
 | `Request parameters match OpenAPI schemas` | Declared path, query, and header parameters validate against their schemas. |
 | `Request body matches OpenAPI request schema` | The request body validates against the `requestBody` schema. |
 | `Content-Length is consistent with OpenAPI body expectations` | The `Content-Length` header agrees with the body the spec allows for the response. |
@@ -60,6 +60,17 @@ Generated from a Protocol Buffers `.proto` file into v3 `grpc-request` items:
 
 Response validation follows the canonical proto3 JSON mapping (the protobuf.dev JSON specification).
 
+Well-known types and scalars are validated against their canonical JSON encodings:
+
+| Proto type | Enforced encoding |
+| --- | --- |
+| `google.protobuf.Timestamp` | RFC 3339 timestamp with UTC offset, at most 9 fractional digits, within the proto range 0001-01-01T00:00:00Z to 9999-12-31T23:59:59Z (calendar-validated, leap years included). |
+| `google.protobuf.Duration` | Decimal seconds with an `s` suffix, at most 9 fractional digits, magnitude at most 315,576,000,000 seconds. |
+| `google.protobuf.FieldMask` | Comma-separated lowerCamelCase field paths. |
+| `bytes` | Base64 in the standard (RFC 4648 section 4) or URL-safe (RFC 4648 section 5) alphabet, with padding validated. |
+| `float` | Finite values must be representable in IEEE 754 binary32; `NaN`/`Infinity`/`-Infinity` string literals are accepted. |
+| integer scalars (`int32` .. `uint64`) | Range- and sign-checked per scalar type; 64-bit values compare as decimal strings so precision is never lost. |
+
 ## SOAP
 
 Generated from a WSDL 1.1 / 2.0 document into plain HTTP POST requests with XML bodies:
@@ -68,11 +79,13 @@ Generated from a WSDL 1.1 / 2.0 document into plain HTTP POST requests with XML 
 | --- | --- |
 | `SOAP operation mapping exists` | The request resolved to a WSDL operation. |
 | `SOAP transport returned HTTP 200` | The HTTP transport succeeded. |
-| `SOAP response Content-Type is XML` | The response is served as XML. |
+| `SOAP response Content-Type matches the SOAP <version> binding` | SOAP 1.1 responses are served as `text/xml` (SOAP 1.1 HTTP binding, WS-I Basic Profile); SOAP 1.2 responses as `application/soap+xml` (RFC 3902). |
 | `SOAP Envelope element is present` | The response contains a SOAP `Envelope`. |
 | `SOAP Body element is present` | The response contains a SOAP `Body`. |
 | `Response is not a SOAP Fault` | The `Body` carries a result rather than a `Fault`. |
 | `Expected response element <name>` | The operation's declared response element is present. |
+
+On the request side, generated SOAP 1.1 requests always carry the `SOAPAction` HTTP header (required by the WS-I Basic Profile), while SOAP 1.2 requests carry the action as the `action` parameter of the `application/soap+xml` Content-Type (RFC 3902).
 
 ## GraphQL
 

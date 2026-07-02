@@ -13,9 +13,9 @@ pm.test('SOAP transport returned HTTP 200', function () {
   pm.response.to.have.status(200);
 });
 
-pm.test('SOAP response Content-Type is XML', function () {
+pm.test('SOAP response Content-Type matches the SOAP 1.1 binding', function () {
   var ct = header("Content-Type").toLowerCase();
-  pm.expect(ct, "expected an XML SOAP content-type, got: " + ct).to.match(/(?:text\\/xml|application\\/soap\\+xml|application\\/xml|\\+xml)/);
+  pm.expect(ct, "SOAP 1.1 responses use text/xml (got: " + (ct || "<missing>") + ")").to.include("text/xml");
 });
 
 pm.test('SOAP Envelope element is present', function () {
@@ -50,9 +50,9 @@ pm.test('SOAP transport returned HTTP 200', function () {
   pm.response.to.have.status(200);
 });
 
-pm.test('SOAP response Content-Type is XML', function () {
+pm.test('SOAP response Content-Type matches the SOAP 1.1 binding', function () {
   var ct = header("Content-Type").toLowerCase();
-  pm.expect(ct, "expected an XML SOAP content-type, got: " + ct).to.match(/(?:text\\/xml|application\\/soap\\+xml|application\\/xml|\\+xml)/);
+  pm.expect(ct, "SOAP 1.1 responses use text/xml (got: " + (ct || "<missing>") + ")").to.include("text/xml");
 });
 
 pm.test('SOAP Envelope element is present', function () {

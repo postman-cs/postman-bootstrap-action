@@ -138,3 +138,29 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           files: release.tgz
+
+  advance-major-alias:
+    # Keep the rolling major alias (e.g. v2) pointing at the newest published
+    # release so consumers pinned to the alias pick it up automatically.
+    # GITHUB_TOKEN pushes do not re-trigger workflows, so moving the alias
+    # here cannot recurse into another Release run.
+    needs:
+      - validate
+      - publish
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.validate.outputs.npm_publish == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Force-move rolling major alias tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          MAJOR="v${VERSION%%.*}"
+          if [ "$MAJOR" = "v$VERSION" ]; then
+            echo "::notice::Tag $GITHUB_REF_NAME is already a major alias; nothing to move."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          COMMIT="$(git rev-parse "HEAD^{commit}")"
+          git tag -fa "$MAJOR" -m "Rolling $MAJOR alias -> $GITHUB_REF_NAME" "$COMMIT"
+          git push origin "$MAJOR" --force

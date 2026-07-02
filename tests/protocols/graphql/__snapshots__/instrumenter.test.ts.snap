@@ -4,20 +4,39 @@ exports[`instrumentGraphQLCollection > matches the golden snapshot of generated 
 [
   {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[query lineByMsisdn] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
 pm.test("[query lineByMsisdn] GraphQL-over-HTTP media type and status are consistent", function () {
-    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
-    var mediaType = contentType.split(";")[0].trim();
+    var mediaType = gqlMediaType;
     if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") { pm.expect.fail("GraphQL-over-HTTP responses must be encoded in UTF-8 (GraphQL-over-HTTP 6.4); got charset " + charsetMatch[1]); }
+    if (!charsetMatch) { console.warn("[query lineByMsisdn] the response Content-Type omits an explicit charset; UTF-8 is assumed (GraphQL-over-HTTP 6.4, SHOULD)"); }
+    var accept = ((pm.request && pm.request.headers && pm.request.headers.get && pm.request.headers.get("Accept")) || "").toLowerCase();
+    if (accept && mediaType) {
+        var acceptable = accept.split(",").map(function (entry) { return entry.split(";")[0].trim(); }).filter(function (entry) { return entry.length > 0; });
+        if (acceptable.length > 0 && acceptable.indexOf(mediaType) === -1 && acceptable.indexOf("*/*") === -1 && acceptable.indexOf("application/*") === -1) { pm.expect.fail("the response media type " + mediaType + " was not offered in the request Accept header (" + accept + ") (GraphQL-over-HTTP 6.1)"); }
+    }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
-    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && !(pm.response.code >= 400 && pm.response.code < 600)) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a 4xx or 5xx status (GraphQL-over-HTTP 6.4.2); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !(pm.response.code >= 200 && pm.response.code < 300)) { pm.expect.fail("an application/graphql-response+json response with non-null data must use a 2xx status (GraphQL-over-HTTP 6.4.1); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !Array.isArray(gqlBody.errors) && pm.response.code !== 200) { console.warn("[query lineByMsisdn] a fully successful GraphQL response should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && Array.isArray(gqlBody.errors) && gqlBody.errors.length > 0 && pm.response.code !== 294) { console.warn("[query lineByMsisdn] a partial-success GraphQL response (data with field errors) may use draft status 294 (GraphQL-over-HTTP status guidance, SHOULD-level); got status " + pm.response.code); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+    if (mediaType === "application/json" && wellFormed && pm.response.code !== 200) { console.warn("[query lineByMsisdn] a well-formed GraphQL response over legacy application/json should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+});
+pm.test("[query lineByMsisdn] legacy application/json non-200 responses are not trusted as GraphQL", function () {
+    if (!gqlLegacyUntrusted) return;
+    pm.expect.fail("HTTP " + pm.response.code + " with Content-Type application/json is not a GraphQL response the client may rely on (GraphQL-over-HTTP 6.3.1); the GraphQL body assertions were skipped");
 });
 pm.test("[query lineByMsisdn] GraphQL response map follows the spec response format", function () {
+    if (gqlLegacyUntrusted) return;
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
     if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
@@ -25,6 +44,7 @@ pm.test("[query lineByMsisdn] GraphQL response map follows the spec response for
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
 pm.test("[query lineByMsisdn] GraphQL errors are well-formed and not a total failure", function () {
+    if (gqlLegacyUntrusted) return;
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
@@ -57,10 +77,16 @@ pm.test("[query lineByMsisdn] GraphQL errors are well-formed and not a total fai
     if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[query lineByMsisdn] data.lineByMsisdn is present", function () {
+    if (gqlLegacyUntrusted) return;
     pm.expect(gqlBody.data, "response has no data object").to.exist;
     pm.expect(gqlBody.data, "data is missing field 'lineByMsisdn'").to.have.property("lineByMsisdn");
+    if (gqlBody.data && typeof gqlBody.data === "object" && !Array.isArray(gqlBody.data)) {
+        var gqlDataKeys = Object.keys(gqlBody.data);
+        if (gqlDataKeys.length !== 1 || gqlDataKeys[0] !== "lineByMsisdn") pm.expect.fail("the data map must contain exactly the single requested root field 'lineByMsisdn' (GraphQL spec 7.1); got keys: " + gqlDataKeys.join(", "));
+    }
 });
 pm.test("[query lineByMsisdn] data.lineByMsisdn matches schema return type", function () {
+    if (gqlLegacyUntrusted) return;
     var value = gqlBody.data && gqlBody.data["lineByMsisdn"];
     if (value === undefined || value === null) return;
     pm.expect(value, "query.lineByMsisdn: expected Line object").to.be.an("object");
@@ -98,20 +124,39 @@ pm.test("[query lineByMsisdn] required variables are supplied", function () {
   },
   {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[query plans] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
 pm.test("[query plans] GraphQL-over-HTTP media type and status are consistent", function () {
-    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
-    var mediaType = contentType.split(";")[0].trim();
+    var mediaType = gqlMediaType;
     if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") { pm.expect.fail("GraphQL-over-HTTP responses must be encoded in UTF-8 (GraphQL-over-HTTP 6.4); got charset " + charsetMatch[1]); }
+    if (!charsetMatch) { console.warn("[query plans] the response Content-Type omits an explicit charset; UTF-8 is assumed (GraphQL-over-HTTP 6.4, SHOULD)"); }
+    var accept = ((pm.request && pm.request.headers && pm.request.headers.get && pm.request.headers.get("Accept")) || "").toLowerCase();
+    if (accept && mediaType) {
+        var acceptable = accept.split(",").map(function (entry) { return entry.split(";")[0].trim(); }).filter(function (entry) { return entry.length > 0; });
+        if (acceptable.length > 0 && acceptable.indexOf(mediaType) === -1 && acceptable.indexOf("*/*") === -1 && acceptable.indexOf("application/*") === -1) { pm.expect.fail("the response media type " + mediaType + " was not offered in the request Accept header (" + accept + ") (GraphQL-over-HTTP 6.1)"); }
+    }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
-    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && !(pm.response.code >= 400 && pm.response.code < 600)) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a 4xx or 5xx status (GraphQL-over-HTTP 6.4.2); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !(pm.response.code >= 200 && pm.response.code < 300)) { pm.expect.fail("an application/graphql-response+json response with non-null data must use a 2xx status (GraphQL-over-HTTP 6.4.1); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !Array.isArray(gqlBody.errors) && pm.response.code !== 200) { console.warn("[query plans] a fully successful GraphQL response should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && Array.isArray(gqlBody.errors) && gqlBody.errors.length > 0 && pm.response.code !== 294) { console.warn("[query plans] a partial-success GraphQL response (data with field errors) may use draft status 294 (GraphQL-over-HTTP status guidance, SHOULD-level); got status " + pm.response.code); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+    if (mediaType === "application/json" && wellFormed && pm.response.code !== 200) { console.warn("[query plans] a well-formed GraphQL response over legacy application/json should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+});
+pm.test("[query plans] legacy application/json non-200 responses are not trusted as GraphQL", function () {
+    if (!gqlLegacyUntrusted) return;
+    pm.expect.fail("HTTP " + pm.response.code + " with Content-Type application/json is not a GraphQL response the client may rely on (GraphQL-over-HTTP 6.3.1); the GraphQL body assertions were skipped");
 });
 pm.test("[query plans] GraphQL response map follows the spec response format", function () {
+    if (gqlLegacyUntrusted) return;
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
     if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
@@ -119,6 +164,7 @@ pm.test("[query plans] GraphQL response map follows the spec response format", f
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
 pm.test("[query plans] GraphQL errors are well-formed and not a total failure", function () {
+    if (gqlLegacyUntrusted) return;
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
@@ -151,11 +197,17 @@ pm.test("[query plans] GraphQL errors are well-formed and not a total failure", 
     if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[query plans] data.plans is present", function () {
+    if (gqlLegacyUntrusted) return;
     pm.expect(gqlBody.data, "response has no data object").to.exist;
     pm.expect(gqlBody.data, "data is missing field 'plans'").to.have.property("plans");
+    if (gqlBody.data && typeof gqlBody.data === "object" && !Array.isArray(gqlBody.data)) {
+        var gqlDataKeys = Object.keys(gqlBody.data);
+        if (gqlDataKeys.length !== 1 || gqlDataKeys[0] !== "plans") pm.expect.fail("the data map must contain exactly the single requested root field 'plans' (GraphQL spec 7.1); got keys: " + gqlDataKeys.join(", "));
+    }
     pm.expect(gqlBody.data["plans"], "plans is declared non-null but was null").to.not.be.null;
 });
 pm.test("[query plans] non-null field errors propagate per the spec", function () {
+    if (gqlLegacyUntrusted) return;
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
     var data = gqlBody.data;
     var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
@@ -163,6 +215,7 @@ pm.test("[query plans] non-null field errors propagate per the spec", function (
     if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
 });
 pm.test("[query plans] data.plans matches schema return type", function () {
+    if (gqlLegacyUntrusted) return;
     var value = gqlBody.data && gqlBody.data["plans"];
     if (value === undefined || value === null) return;
     pm.expect(value, "query.plans: expected a list").to.be.an("array");
@@ -195,20 +248,39 @@ pm.test("[query plans] data.plans matches schema return type", function () {
   },
   {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[query subscriber] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
 pm.test("[query subscriber] GraphQL-over-HTTP media type and status are consistent", function () {
-    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
-    var mediaType = contentType.split(";")[0].trim();
+    var mediaType = gqlMediaType;
     if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") { pm.expect.fail("GraphQL-over-HTTP responses must be encoded in UTF-8 (GraphQL-over-HTTP 6.4); got charset " + charsetMatch[1]); }
+    if (!charsetMatch) { console.warn("[query subscriber] the response Content-Type omits an explicit charset; UTF-8 is assumed (GraphQL-over-HTTP 6.4, SHOULD)"); }
+    var accept = ((pm.request && pm.request.headers && pm.request.headers.get && pm.request.headers.get("Accept")) || "").toLowerCase();
+    if (accept && mediaType) {
+        var acceptable = accept.split(",").map(function (entry) { return entry.split(";")[0].trim(); }).filter(function (entry) { return entry.length > 0; });
+        if (acceptable.length > 0 && acceptable.indexOf(mediaType) === -1 && acceptable.indexOf("*/*") === -1 && acceptable.indexOf("application/*") === -1) { pm.expect.fail("the response media type " + mediaType + " was not offered in the request Accept header (" + accept + ") (GraphQL-over-HTTP 6.1)"); }
+    }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
-    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && !(pm.response.code >= 400 && pm.response.code < 600)) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a 4xx or 5xx status (GraphQL-over-HTTP 6.4.2); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !(pm.response.code >= 200 && pm.response.code < 300)) { pm.expect.fail("an application/graphql-response+json response with non-null data must use a 2xx status (GraphQL-over-HTTP 6.4.1); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !Array.isArray(gqlBody.errors) && pm.response.code !== 200) { console.warn("[query subscriber] a fully successful GraphQL response should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && Array.isArray(gqlBody.errors) && gqlBody.errors.length > 0 && pm.response.code !== 294) { console.warn("[query subscriber] a partial-success GraphQL response (data with field errors) may use draft status 294 (GraphQL-over-HTTP status guidance, SHOULD-level); got status " + pm.response.code); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+    if (mediaType === "application/json" && wellFormed && pm.response.code !== 200) { console.warn("[query subscriber] a well-formed GraphQL response over legacy application/json should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+});
+pm.test("[query subscriber] legacy application/json non-200 responses are not trusted as GraphQL", function () {
+    if (!gqlLegacyUntrusted) return;
+    pm.expect.fail("HTTP " + pm.response.code + " with Content-Type application/json is not a GraphQL response the client may rely on (GraphQL-over-HTTP 6.3.1); the GraphQL body assertions were skipped");
 });
 pm.test("[query subscriber] GraphQL response map follows the spec response format", function () {
+    if (gqlLegacyUntrusted) return;
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
     if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
@@ -216,6 +288,7 @@ pm.test("[query subscriber] GraphQL response map follows the spec response forma
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
 pm.test("[query subscriber] GraphQL errors are well-formed and not a total failure", function () {
+    if (gqlLegacyUntrusted) return;
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
@@ -248,10 +321,16 @@ pm.test("[query subscriber] GraphQL errors are well-formed and not a total failu
     if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[query subscriber] data.subscriber is present", function () {
+    if (gqlLegacyUntrusted) return;
     pm.expect(gqlBody.data, "response has no data object").to.exist;
     pm.expect(gqlBody.data, "data is missing field 'subscriber'").to.have.property("subscriber");
+    if (gqlBody.data && typeof gqlBody.data === "object" && !Array.isArray(gqlBody.data)) {
+        var gqlDataKeys = Object.keys(gqlBody.data);
+        if (gqlDataKeys.length !== 1 || gqlDataKeys[0] !== "subscriber") pm.expect.fail("the data map must contain exactly the single requested root field 'subscriber' (GraphQL spec 7.1); got keys: " + gqlDataKeys.join(", "));
+    }
 });
 pm.test("[query subscriber] data.subscriber matches schema return type", function () {
+    if (gqlLegacyUntrusted) return;
     var value = gqlBody.data && gqlBody.data["subscriber"];
     if (value === undefined || value === null) return;
     pm.expect(value, "query.subscriber: expected Subscriber object").to.be.an("object");
@@ -286,20 +365,39 @@ pm.test("[query subscriber] required variables are supplied", function () {
   },
   {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[query subscribers] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
 pm.test("[query subscribers] GraphQL-over-HTTP media type and status are consistent", function () {
-    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
-    var mediaType = contentType.split(";")[0].trim();
+    var mediaType = gqlMediaType;
     if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") { pm.expect.fail("GraphQL-over-HTTP responses must be encoded in UTF-8 (GraphQL-over-HTTP 6.4); got charset " + charsetMatch[1]); }
+    if (!charsetMatch) { console.warn("[query subscribers] the response Content-Type omits an explicit charset; UTF-8 is assumed (GraphQL-over-HTTP 6.4, SHOULD)"); }
+    var accept = ((pm.request && pm.request.headers && pm.request.headers.get && pm.request.headers.get("Accept")) || "").toLowerCase();
+    if (accept && mediaType) {
+        var acceptable = accept.split(",").map(function (entry) { return entry.split(";")[0].trim(); }).filter(function (entry) { return entry.length > 0; });
+        if (acceptable.length > 0 && acceptable.indexOf(mediaType) === -1 && acceptable.indexOf("*/*") === -1 && acceptable.indexOf("application/*") === -1) { pm.expect.fail("the response media type " + mediaType + " was not offered in the request Accept header (" + accept + ") (GraphQL-over-HTTP 6.1)"); }
+    }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
-    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && !(pm.response.code >= 400 && pm.response.code < 600)) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a 4xx or 5xx status (GraphQL-over-HTTP 6.4.2); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !(pm.response.code >= 200 && pm.response.code < 300)) { pm.expect.fail("an application/graphql-response+json response with non-null data must use a 2xx status (GraphQL-over-HTTP 6.4.1); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !Array.isArray(gqlBody.errors) && pm.response.code !== 200) { console.warn("[query subscribers] a fully successful GraphQL response should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && Array.isArray(gqlBody.errors) && gqlBody.errors.length > 0 && pm.response.code !== 294) { console.warn("[query subscribers] a partial-success GraphQL response (data with field errors) may use draft status 294 (GraphQL-over-HTTP status guidance, SHOULD-level); got status " + pm.response.code); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+    if (mediaType === "application/json" && wellFormed && pm.response.code !== 200) { console.warn("[query subscribers] a well-formed GraphQL response over legacy application/json should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+});
+pm.test("[query subscribers] legacy application/json non-200 responses are not trusted as GraphQL", function () {
+    if (!gqlLegacyUntrusted) return;
+    pm.expect.fail("HTTP " + pm.response.code + " with Content-Type application/json is not a GraphQL response the client may rely on (GraphQL-over-HTTP 6.3.1); the GraphQL body assertions were skipped");
 });
 pm.test("[query subscribers] GraphQL response map follows the spec response format", function () {
+    if (gqlLegacyUntrusted) return;
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
     if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
@@ -307,6 +405,7 @@ pm.test("[query subscribers] GraphQL response map follows the spec response form
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
 pm.test("[query subscribers] GraphQL errors are well-formed and not a total failure", function () {
+    if (gqlLegacyUntrusted) return;
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
@@ -339,11 +438,17 @@ pm.test("[query subscribers] GraphQL errors are well-formed and not a total fail
     if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[query subscribers] data.subscribers is present", function () {
+    if (gqlLegacyUntrusted) return;
     pm.expect(gqlBody.data, "response has no data object").to.exist;
     pm.expect(gqlBody.data, "data is missing field 'subscribers'").to.have.property("subscribers");
+    if (gqlBody.data && typeof gqlBody.data === "object" && !Array.isArray(gqlBody.data)) {
+        var gqlDataKeys = Object.keys(gqlBody.data);
+        if (gqlDataKeys.length !== 1 || gqlDataKeys[0] !== "subscribers") pm.expect.fail("the data map must contain exactly the single requested root field 'subscribers' (GraphQL spec 7.1); got keys: " + gqlDataKeys.join(", "));
+    }
     pm.expect(gqlBody.data["subscribers"], "subscribers is declared non-null but was null").to.not.be.null;
 });
 pm.test("[query subscribers] non-null field errors propagate per the spec", function () {
+    if (gqlLegacyUntrusted) return;
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
     var data = gqlBody.data;
     var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
@@ -351,6 +456,7 @@ pm.test("[query subscribers] non-null field errors propagate per the spec", func
     if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
 });
 pm.test("[query subscribers] data.subscribers matches schema return type", function () {
+    if (gqlLegacyUntrusted) return;
     var value = gqlBody.data && gqlBody.data["subscribers"];
     if (value === undefined || value === null) return;
     pm.expect(value, "query.subscribers: expected a list").to.be.an("array");
@@ -376,20 +482,39 @@ pm.test("[query subscribers] data.subscribers matches schema return type", funct
   },
   {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[mutation provisionLine] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
 pm.test("[mutation provisionLine] GraphQL-over-HTTP media type and status are consistent", function () {
-    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
-    var mediaType = contentType.split(";")[0].trim();
+    var mediaType = gqlMediaType;
     if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") { pm.expect.fail("GraphQL-over-HTTP responses must be encoded in UTF-8 (GraphQL-over-HTTP 6.4); got charset " + charsetMatch[1]); }
+    if (!charsetMatch) { console.warn("[mutation provisionLine] the response Content-Type omits an explicit charset; UTF-8 is assumed (GraphQL-over-HTTP 6.4, SHOULD)"); }
+    var accept = ((pm.request && pm.request.headers && pm.request.headers.get && pm.request.headers.get("Accept")) || "").toLowerCase();
+    if (accept && mediaType) {
+        var acceptable = accept.split(",").map(function (entry) { return entry.split(";")[0].trim(); }).filter(function (entry) { return entry.length > 0; });
+        if (acceptable.length > 0 && acceptable.indexOf(mediaType) === -1 && acceptable.indexOf("*/*") === -1 && acceptable.indexOf("application/*") === -1) { pm.expect.fail("the response media type " + mediaType + " was not offered in the request Accept header (" + accept + ") (GraphQL-over-HTTP 6.1)"); }
+    }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
-    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && !(pm.response.code >= 400 && pm.response.code < 600)) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a 4xx or 5xx status (GraphQL-over-HTTP 6.4.2); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !(pm.response.code >= 200 && pm.response.code < 300)) { pm.expect.fail("an application/graphql-response+json response with non-null data must use a 2xx status (GraphQL-over-HTTP 6.4.1); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !Array.isArray(gqlBody.errors) && pm.response.code !== 200) { console.warn("[mutation provisionLine] a fully successful GraphQL response should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && Array.isArray(gqlBody.errors) && gqlBody.errors.length > 0 && pm.response.code !== 294) { console.warn("[mutation provisionLine] a partial-success GraphQL response (data with field errors) may use draft status 294 (GraphQL-over-HTTP status guidance, SHOULD-level); got status " + pm.response.code); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+    if (mediaType === "application/json" && wellFormed && pm.response.code !== 200) { console.warn("[mutation provisionLine] a well-formed GraphQL response over legacy application/json should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+});
+pm.test("[mutation provisionLine] legacy application/json non-200 responses are not trusted as GraphQL", function () {
+    if (!gqlLegacyUntrusted) return;
+    pm.expect.fail("HTTP " + pm.response.code + " with Content-Type application/json is not a GraphQL response the client may rely on (GraphQL-over-HTTP 6.3.1); the GraphQL body assertions were skipped");
 });
 pm.test("[mutation provisionLine] GraphQL response map follows the spec response format", function () {
+    if (gqlLegacyUntrusted) return;
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
     if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
@@ -397,6 +522,7 @@ pm.test("[mutation provisionLine] GraphQL response map follows the spec response
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
 pm.test("[mutation provisionLine] GraphQL errors are well-formed and not a total failure", function () {
+    if (gqlLegacyUntrusted) return;
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
@@ -429,11 +555,17 @@ pm.test("[mutation provisionLine] GraphQL errors are well-formed and not a total
     if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[mutation provisionLine] data.provisionLine is present", function () {
+    if (gqlLegacyUntrusted) return;
     pm.expect(gqlBody.data, "response has no data object").to.exist;
     pm.expect(gqlBody.data, "data is missing field 'provisionLine'").to.have.property("provisionLine");
+    if (gqlBody.data && typeof gqlBody.data === "object" && !Array.isArray(gqlBody.data)) {
+        var gqlDataKeys = Object.keys(gqlBody.data);
+        if (gqlDataKeys.length !== 1 || gqlDataKeys[0] !== "provisionLine") pm.expect.fail("the data map must contain exactly the single requested root field 'provisionLine' (GraphQL spec 7.1); got keys: " + gqlDataKeys.join(", "));
+    }
     pm.expect(gqlBody.data["provisionLine"], "provisionLine is declared non-null but was null").to.not.be.null;
 });
 pm.test("[mutation provisionLine] non-null field errors propagate per the spec", function () {
+    if (gqlLegacyUntrusted) return;
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
     var data = gqlBody.data;
     var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
@@ -441,6 +573,7 @@ pm.test("[mutation provisionLine] non-null field errors propagate per the spec",
     if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
 });
 pm.test("[mutation provisionLine] data.provisionLine matches schema return type", function () {
+    if (gqlLegacyUntrusted) return;
     var value = gqlBody.data && gqlBody.data["provisionLine"];
     if (value === undefined || value === null) return;
     pm.expect(value, "mutation.provisionLine: expected Line object").to.be.an("object");
@@ -478,20 +611,39 @@ pm.test("[mutation provisionLine] required variables are supplied", function () 
   },
   {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[mutation suspendLine] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
 pm.test("[mutation suspendLine] GraphQL-over-HTTP media type and status are consistent", function () {
-    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
-    var mediaType = contentType.split(";")[0].trim();
+    var mediaType = gqlMediaType;
     if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") { pm.expect.fail("GraphQL-over-HTTP responses must be encoded in UTF-8 (GraphQL-over-HTTP 6.4); got charset " + charsetMatch[1]); }
+    if (!charsetMatch) { console.warn("[mutation suspendLine] the response Content-Type omits an explicit charset; UTF-8 is assumed (GraphQL-over-HTTP 6.4, SHOULD)"); }
+    var accept = ((pm.request && pm.request.headers && pm.request.headers.get && pm.request.headers.get("Accept")) || "").toLowerCase();
+    if (accept && mediaType) {
+        var acceptable = accept.split(",").map(function (entry) { return entry.split(";")[0].trim(); }).filter(function (entry) { return entry.length > 0; });
+        if (acceptable.length > 0 && acceptable.indexOf(mediaType) === -1 && acceptable.indexOf("*/*") === -1 && acceptable.indexOf("application/*") === -1) { pm.expect.fail("the response media type " + mediaType + " was not offered in the request Accept header (" + accept + ") (GraphQL-over-HTTP 6.1)"); }
+    }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
-    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && !(pm.response.code >= 400 && pm.response.code < 600)) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a 4xx or 5xx status (GraphQL-over-HTTP 6.4.2); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !(pm.response.code >= 200 && pm.response.code < 300)) { pm.expect.fail("an application/graphql-response+json response with non-null data must use a 2xx status (GraphQL-over-HTTP 6.4.1); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !Array.isArray(gqlBody.errors) && pm.response.code !== 200) { console.warn("[mutation suspendLine] a fully successful GraphQL response should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && Array.isArray(gqlBody.errors) && gqlBody.errors.length > 0 && pm.response.code !== 294) { console.warn("[mutation suspendLine] a partial-success GraphQL response (data with field errors) may use draft status 294 (GraphQL-over-HTTP status guidance, SHOULD-level); got status " + pm.response.code); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+    if (mediaType === "application/json" && wellFormed && pm.response.code !== 200) { console.warn("[mutation suspendLine] a well-formed GraphQL response over legacy application/json should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+});
+pm.test("[mutation suspendLine] legacy application/json non-200 responses are not trusted as GraphQL", function () {
+    if (!gqlLegacyUntrusted) return;
+    pm.expect.fail("HTTP " + pm.response.code + " with Content-Type application/json is not a GraphQL response the client may rely on (GraphQL-over-HTTP 6.3.1); the GraphQL body assertions were skipped");
 });
 pm.test("[mutation suspendLine] GraphQL response map follows the spec response format", function () {
+    if (gqlLegacyUntrusted) return;
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
     if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
@@ -499,6 +651,7 @@ pm.test("[mutation suspendLine] GraphQL response map follows the spec response f
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
 pm.test("[mutation suspendLine] GraphQL errors are well-formed and not a total failure", function () {
+    if (gqlLegacyUntrusted) return;
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
@@ -531,11 +684,17 @@ pm.test("[mutation suspendLine] GraphQL errors are well-formed and not a total f
     if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[mutation suspendLine] data.suspendLine is present", function () {
+    if (gqlLegacyUntrusted) return;
     pm.expect(gqlBody.data, "response has no data object").to.exist;
     pm.expect(gqlBody.data, "data is missing field 'suspendLine'").to.have.property("suspendLine");
+    if (gqlBody.data && typeof gqlBody.data === "object" && !Array.isArray(gqlBody.data)) {
+        var gqlDataKeys = Object.keys(gqlBody.data);
+        if (gqlDataKeys.length !== 1 || gqlDataKeys[0] !== "suspendLine") pm.expect.fail("the data map must contain exactly the single requested root field 'suspendLine' (GraphQL spec 7.1); got keys: " + gqlDataKeys.join(", "));
+    }
     pm.expect(gqlBody.data["suspendLine"], "suspendLine is declared non-null but was null").to.not.be.null;
 });
 pm.test("[mutation suspendLine] non-null field errors propagate per the spec", function () {
+    if (gqlLegacyUntrusted) return;
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
     var data = gqlBody.data;
     var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
@@ -543,6 +702,7 @@ pm.test("[mutation suspendLine] non-null field errors propagate per the spec", f
     if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
 });
 pm.test("[mutation suspendLine] data.suspendLine matches schema return type", function () {
+    if (gqlLegacyUntrusted) return;
     var value = gqlBody.data && gqlBody.data["suspendLine"];
     if (value === undefined || value === null) return;
     pm.expect(value, "mutation.suspendLine: expected Line object").to.be.an("object");
@@ -580,20 +740,39 @@ pm.test("[mutation suspendLine] required variables are supplied", function () {
   },
   {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[subscription lineStatusChanged] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
 pm.test("[subscription lineStatusChanged] GraphQL-over-HTTP media type and status are consistent", function () {
-    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
-    var mediaType = contentType.split(";")[0].trim();
+    var mediaType = gqlMediaType;
     if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") { pm.expect.fail("GraphQL-over-HTTP responses must be encoded in UTF-8 (GraphQL-over-HTTP 6.4); got charset " + charsetMatch[1]); }
+    if (!charsetMatch) { console.warn("[subscription lineStatusChanged] the response Content-Type omits an explicit charset; UTF-8 is assumed (GraphQL-over-HTTP 6.4, SHOULD)"); }
+    var accept = ((pm.request && pm.request.headers && pm.request.headers.get && pm.request.headers.get("Accept")) || "").toLowerCase();
+    if (accept && mediaType) {
+        var acceptable = accept.split(",").map(function (entry) { return entry.split(";")[0].trim(); }).filter(function (entry) { return entry.length > 0; });
+        if (acceptable.length > 0 && acceptable.indexOf(mediaType) === -1 && acceptable.indexOf("*/*") === -1 && acceptable.indexOf("application/*") === -1) { pm.expect.fail("the response media type " + mediaType + " was not offered in the request Accept header (" + accept + ") (GraphQL-over-HTTP 6.1)"); }
+    }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
-    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && !(pm.response.code >= 400 && pm.response.code < 600)) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a 4xx or 5xx status (GraphQL-over-HTTP 6.4.2); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !(pm.response.code >= 200 && pm.response.code < 300)) { pm.expect.fail("an application/graphql-response+json response with non-null data must use a 2xx status (GraphQL-over-HTTP 6.4.1); got " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !Array.isArray(gqlBody.errors) && pm.response.code !== 200) { console.warn("[subscription lineStatusChanged] a fully successful GraphQL response should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && Array.isArray(gqlBody.errors) && gqlBody.errors.length > 0 && pm.response.code !== 294) { console.warn("[subscription lineStatusChanged] a partial-success GraphQL response (data with field errors) may use draft status 294 (GraphQL-over-HTTP status guidance, SHOULD-level); got status " + pm.response.code); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+    if (mediaType === "application/json" && wellFormed && pm.response.code !== 200) { console.warn("[subscription lineStatusChanged] a well-formed GraphQL response over legacy application/json should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status " + pm.response.code); }
+});
+pm.test("[subscription lineStatusChanged] legacy application/json non-200 responses are not trusted as GraphQL", function () {
+    if (!gqlLegacyUntrusted) return;
+    pm.expect.fail("HTTP " + pm.response.code + " with Content-Type application/json is not a GraphQL response the client may rely on (GraphQL-over-HTTP 6.3.1); the GraphQL body assertions were skipped");
 });
 pm.test("[subscription lineStatusChanged] GraphQL response map follows the spec response format", function () {
+    if (gqlLegacyUntrusted) return;
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
     if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
@@ -601,6 +780,7 @@ pm.test("[subscription lineStatusChanged] GraphQL response map follows the spec 
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
 pm.test("[subscription lineStatusChanged] GraphQL errors are well-formed and not a total failure", function () {
+    if (gqlLegacyUntrusted) return;
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
@@ -633,11 +813,17 @@ pm.test("[subscription lineStatusChanged] GraphQL errors are well-formed and not
     if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }
 });
 pm.test("[subscription lineStatusChanged] data.lineStatusChanged is present", function () {
+    if (gqlLegacyUntrusted) return;
     pm.expect(gqlBody.data, "response has no data object").to.exist;
     pm.expect(gqlBody.data, "data is missing field 'lineStatusChanged'").to.have.property("lineStatusChanged");
+    if (gqlBody.data && typeof gqlBody.data === "object" && !Array.isArray(gqlBody.data)) {
+        var gqlDataKeys = Object.keys(gqlBody.data);
+        if (gqlDataKeys.length !== 1 || gqlDataKeys[0] !== "lineStatusChanged") pm.expect.fail("the data map must contain exactly the single requested root field 'lineStatusChanged' (GraphQL spec 7.1); got keys: " + gqlDataKeys.join(", "));
+    }
     pm.expect(gqlBody.data["lineStatusChanged"], "lineStatusChanged is declared non-null but was null").to.not.be.null;
 });
 pm.test("[subscription lineStatusChanged] non-null field errors propagate per the spec", function () {
+    if (gqlLegacyUntrusted) return;
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
     var data = gqlBody.data;
     var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
@@ -645,6 +831,7 @@ pm.test("[subscription lineStatusChanged] non-null field errors propagate per th
     if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
 });
 pm.test("[subscription lineStatusChanged] data.lineStatusChanged matches schema return type", function () {
+    if (gqlLegacyUntrusted) return;
     var value = gqlBody.data && gqlBody.data["lineStatusChanged"];
     if (value === undefined || value === null) return;
     pm.expect(value, "subscription.lineStatusChanged: expected Line object").to.be.an("object");

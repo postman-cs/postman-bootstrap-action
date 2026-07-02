@@ -55,7 +55,7 @@ export const GRAPHQL_PROBE_IDS = {
  * this without arguments beyond includeDeprecated).
  */
 export const INTROSPECTION_DRIFT_QUERY =
-  'query PostmanContractIntrospectionProbe { __schema { queryType { name } mutationType { name } subscriptionType { name } types { name kind fields(includeDeprecated: true) { name isDeprecated } enumValues(includeDeprecated: true) { name isDeprecated } } } }';
+  'query PostmanContractIntrospectionProbe { __schema { queryType { name } mutationType { name } subscriptionType { name } types { name kind possibleTypes { name } fields(includeDeprecated: true) { name isDeprecated type { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } } } } enumValues(includeDeprecated: true) { name isDeprecated } } } }';
 
 const PROBE_HEADERS = [
   { key: 'Content-Type', value: 'application/json' },

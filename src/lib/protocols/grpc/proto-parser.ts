@@ -470,12 +470,153 @@ function messageDescriptor(message: ProtoReflectionObject, warnings: string[]): 
 const FIELD_NUMBER_MAX = 536870911;
 const FIELD_NUMBER_RESERVED_LO = 19000;
 const FIELD_NUMBER_RESERVED_HI = 19999;
+const INT32_MIN = -2147483648;
+const INT32_MAX = 2147483647;
 
-function lintMessage(message: ProtoReflectionObject, warnings: string[]): void {
+// Built-in (non-extension) option names protoc accepts per descriptor scope
+// (descriptor.proto FieldOptions/MessageOptions/EnumOptions/ServiceOptions/
+// MethodOptions, plus the parser-level json_name/default pseudo-options that
+// protobufjs surfaces through the same options record). Any other
+// non-parenthesized option name is rejected by protoc, and a parenthesized
+// custom option cannot be validated without its extension descriptor, so both
+// surface as warnings (no silent drops).
+const KNOWN_OPTIONS_BY_SCOPE: Record<'field' | 'message' | 'enum' | 'service' | 'rpc', Set<string>> = {
+  field: new Set(['ctype', 'packed', 'jstype', 'lazy', 'unverified_lazy', 'deprecated', 'weak', 'debug_redact', 'retention', 'targets', 'edition_defaults', 'features', 'json_name', 'default', 'proto3_optional']),
+  message: new Set(['message_set_wire_format', 'no_standard_descriptor_accessor', 'deprecated', 'map_entry', 'deprecated_legacy_json_field_conflicts', 'features']),
+  enum: new Set(['allow_alias', 'deprecated', 'deprecated_legacy_json_field_conflicts', 'features']),
+  service: new Set(['deprecated', 'features']),
+  rpc: new Set(['deprecated', 'idempotency_level', 'features'])
+};
+
+// Custom (extension) options this generator itself consumes and validates; any
+// other custom option is disclosed as unverifiable.
+const HANDLED_CUSTOM_OPTIONS = new Set(['(google.api.http)', '(google.api.field_behavior)']);
+
+function lintOptionSet(
+  options: Record<string, unknown> | null | undefined,
+  scope: 'field' | 'message' | 'enum' | 'service' | 'rpc',
+  owner: string,
+  warnings: string[]
+): void {
+  if (!options) return;
+  const custom: string[] = [];
+  for (const key of Object.keys(options)) {
+    if (key.startsWith('(')) {
+      // Nested aggregate assignments surface as "(ext).sub" keys; classify by
+      // the extension name alone.
+      if (!HANDLED_CUSTOM_OPTIONS.has(key.replace(/\)\..*$/, ')'))) custom.push(key);
+      continue;
+    }
+    if (!KNOWN_OPTIONS_BY_SCOPE[scope].has(key)) {
+      warnings.push(`GRPC_OPTION_UNKNOWN: ${scope} ${owner} sets option "${key}", which is not a built-in ${scope} option (descriptor.proto); protoc rejects unknown non-extension options`);
+    }
+  }
+  if (custom.length > 0) {
+    warnings.push(`GRPC_OPTION_CUSTOM_UNVERIFIED: ${scope} ${owner} uses custom option(s) ${custom.sort().join(', ')}; custom options cannot be validated without their extension descriptors and are not enforced`);
+  }
+  if (options.deprecated !== undefined && typeof options.deprecated !== 'boolean') {
+    warnings.push(`GRPC_OPTION_VALUE_INVALID: ${scope} ${owner} option deprecated must be a boolean (descriptor.proto); got ${JSON.stringify(options.deprecated)}`);
+  }
+}
+
+// packed applies only to repeated packable scalars: numeric, bool, or enum
+// (protoc rejects string/bytes/message targets and non-repeated fields).
+function isPackableType(field: ProtoField): boolean {
+  const protoType = String(field.type);
+  if (SCALAR_JSON_TYPE[protoType]) return protoType !== 'string' && protoType !== 'bytes';
+  const resolved = field.resolvedType;
+  return Boolean(resolved && resolved.values && !Array.isArray(resolved.fieldsArray));
+}
+
+function lintFieldOptions(field: ProtoField, owner: string, proto3: boolean, warnings: string[]): void {
+  const options = field.options;
+  if (!options) return;
+  lintOptionSet(options, 'field', owner, warnings);
+  // protoc rejects a NUL byte in an explicit json_name (C-string boundary).
+  const explicit = options['json_name'];
+  if (typeof explicit === 'string' && explicit.includes(' ')) {
+    warnings.push(`GRPC_JSON_NAME_INVALID: field ${owner} json_name contains a NUL character; protoc rejects NUL in json_name`);
+  }
+  // proto3 removed explicit field defaults (implicit zero values only).
+  if (proto3 && options['default'] !== undefined) {
+    warnings.push(`GRPC_PROTO3_DEFAULT_FORBIDDEN: field ${owner} declares [default = ...]; proto3 forbids explicit field defaults (protoc rejects this)`);
+  }
+  if (options.packed !== undefined) {
+    if (typeof options.packed !== 'boolean') {
+      warnings.push(`GRPC_OPTION_PACKED_INVALID: field ${owner} option packed must be a boolean (descriptor.proto); got ${JSON.stringify(options.packed)}`);
+    } else if (!(Boolean(field.repeated) && !field.map && isPackableType(field))) {
+      warnings.push(`GRPC_OPTION_PACKED_INVALID: field ${owner} sets [packed]; packed applies only to repeated numeric scalar, bool, or enum fields (protoc rejects other targets)`);
+    }
+  }
+  if (options.jstype !== undefined) {
+    if (typeof options.jstype !== 'string' || !['JS_NORMAL', 'JS_STRING', 'JS_NUMBER'].includes(options.jstype)) {
+      warnings.push(`GRPC_OPTION_VALUE_INVALID: field ${owner} option jstype must be one of JS_NORMAL, JS_STRING, JS_NUMBER (descriptor.proto); got ${JSON.stringify(options.jstype)}`);
+    } else if (!/^(?:u?int64|sint64|s?fixed64)$/.test(String(field.type))) {
+      warnings.push(`GRPC_OPTION_SCOPE_INVALID: field ${owner} sets jstype on type ${field.type}; jstype applies only to 64-bit integer fields (descriptor.proto)`);
+    }
+  }
+  if (options.ctype !== undefined) {
+    if (typeof options.ctype !== 'string' || !['STRING', 'CORD', 'STRING_PIECE'].includes(options.ctype)) {
+      warnings.push(`GRPC_OPTION_VALUE_INVALID: field ${owner} option ctype must be one of STRING, CORD, STRING_PIECE (descriptor.proto); got ${JSON.stringify(options.ctype)}`);
+    } else if (String(field.type) !== 'string' && String(field.type) !== 'bytes') {
+      warnings.push(`GRPC_OPTION_SCOPE_INVALID: field ${owner} sets ctype on type ${field.type}; ctype applies only to string or bytes fields (descriptor.proto)`);
+    }
+  }
+}
+
+// Reserved declaration validity, shared by messages (field-number domain) and
+// enums (int32 domain). protobufjs preserves malformed, overlapping, and
+// duplicate entries verbatim, so declaration defects survive to this lint.
+function lintReserved(
+  reserved: Array<[number, number] | string> | undefined,
+  owner: string,
+  domain: { lo: number; hi: number; label: string },
+  warnings: string[]
+): { ranges: Array<[number, number]>; names: Set<string> } {
+  const ranges: Array<[number, number]> = [];
+  const names = new Set<string>();
+  for (const entry of asArray<[number, number] | string>(reserved)) {
+    if (typeof entry === 'string') {
+      if (names.has(entry)) {
+        warnings.push(`GRPC_RESERVED_NAME_DUPLICATE: ${owner} reserves name "${entry}" more than once (protoc rejects duplicate reserved names)`);
+      }
+      names.add(entry);
+      continue;
+    }
+    const [lo, hi] = entry;
+    if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo > hi) {
+      warnings.push(`GRPC_RESERVED_DECLARATION_INVALID: ${owner} reserved range ${lo} to ${hi} is malformed; the range start must not exceed its end (protoc rejects this)`);
+      continue;
+    }
+    if (lo < domain.lo || hi > domain.hi) {
+      warnings.push(`GRPC_RESERVED_DECLARATION_INVALID: ${owner} reserved range ${lo} to ${hi} is outside the ${domain.label} domain [${domain.lo}, ${domain.hi}]`);
+    }
+    ranges.push([lo, hi]);
+  }
+  const sorted = ranges.slice().sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (sorted[i][0] <= sorted[i - 1][1]) {
+      warnings.push(`GRPC_RESERVED_RANGE_OVERLAP: ${owner} reserved ranges ${sorted[i - 1][0]} to ${sorted[i - 1][1]} and ${sorted[i][0]} to ${sorted[i][1]} overlap (protoc rejects overlapping reserved ranges)`);
+    }
+  }
+  return { ranges, names };
+}
+
+// protoc derives the synthetic nested map-entry message name by UpperCamelCasing
+// the field name and appending "Entry".
+function upperCamelCase(name: string): string {
+  const camel = toLowerCamelCase(name);
+  return camel.charAt(0).toUpperCase() + camel.slice(1);
+}
+
+function lintMessage(message: ProtoReflectionObject, warnings: string[], proto3: boolean): void {
   const fullName = stripLeadingDot(message.fullName);
-  const reservedRanges = asArray<[number, number] | string>(message.reserved).filter(
-    (entry): entry is [number, number] => Array.isArray(entry)
-  );
+  const { ranges: reservedRanges } = lintReserved(message.reserved, `message ${fullName}`, { lo: 1, hi: FIELD_NUMBER_MAX, label: 'field-number' }, warnings);
+  lintOptionSet(asRecord(message.options), 'message', fullName, warnings);
+
+  // Effective ProtoJSON name (explicit json_name or lowerCamelCase default)
+  // per field; collisions make responses undecodable and protoc rejects them.
+  const jsonNames = new Map<string, string>();
   for (const field of asArray<ProtoField>(message.fieldsArray)) {
     const id = field.id;
     if (id < 1 || id > FIELD_NUMBER_MAX || (id >= FIELD_NUMBER_RESERVED_LO && id <= FIELD_NUMBER_RESERVED_HI)) {
@@ -487,9 +628,52 @@ function lintMessage(message: ProtoReflectionObject, warnings: string[]): void {
     if (field.options?.deprecated === true) {
       warnings.push(`GRPC_DEPRECATED: field ${fullName}.${field.name} is marked deprecated`);
     }
+    lintFieldOptions(field, `${fullName}.${field.name}`, proto3, warnings);
+    const jsonName = protoJsonName(field);
+    const priorField = jsonNames.get(jsonName);
+    if (priorField !== undefined && priorField !== String(field.name)) {
+      warnings.push(`GRPC_JSON_NAME_COLLISION: fields ${fullName}.${priorField} and ${fullName}.${field.name} share the ProtoJSON name "${jsonName}"; protoc rejects JSON-name collisions and responses cannot be decoded unambiguously`);
+    }
+    jsonNames.set(jsonName, String(field.name));
   }
   if (asRecord(message.options)?.deprecated === true) {
     warnings.push(`GRPC_DEPRECATED: message ${fullName} is marked deprecated`);
+  }
+
+  // Map fields synthesize a nested <UpperCamel(field)>Entry message; an
+  // explicit nested symbol (or another map field) with that name collides.
+  const nestedNames = new Set(asArray<ProtoReflectionObject>(message.nestedArray).map((child) => child.name));
+  const entryNames = new Set<string>();
+  for (const field of asArray<ProtoField>(message.fieldsArray)) {
+    if (!field.map) continue;
+    const entryName = `${upperCamelCase(String(field.name))}Entry`;
+    if (nestedNames.has(entryName) || entryNames.has(entryName)) {
+      warnings.push(`GRPC_MAP_ENTRY_NAME_COLLISION: map field ${fullName}.${field.name} synthesizes nested message ${entryName}, which collides with an existing nested symbol of that name (protoc rejects this)`);
+    }
+    entryNames.add(entryName);
+  }
+
+  // Message-scope symbol table: fields, real oneofs, nested types, and nested
+  // enum VALUES (enum constants scope to the enclosing message, C++ scoping
+  // rules), which the textual parser accepts silently.
+  const symbols = new Map<string, string>();
+  const declare = (name: string, kind: string): void => {
+    const prior = symbols.get(name);
+    if (prior !== undefined) {
+      warnings.push(`GRPC_MESSAGE_SCOPE_COLLISION: ${fullName} declares ${kind} "${name}", which collides with the ${prior} of the same name (enum values scope to the enclosing message; protoc rejects this)`);
+      return;
+    }
+    symbols.set(name, kind);
+  };
+  for (const field of asArray<ProtoField>(message.fieldsArray)) declare(String(field.name), 'field');
+  for (const oneof of asArray<ProtoOneof>(message.oneofsArray)) {
+    if (asArray<ProtoField>(oneof.fieldsArray).length >= 2) declare(oneof.name, 'oneof');
+  }
+  for (const child of asArray<ProtoReflectionObject>(message.nestedArray)) {
+    declare(child.name, isEnum(child) ? 'nested enum' : 'nested type');
+    if (isEnum(child)) {
+      for (const valueName of Object.keys(asRecord(child.values) ?? {})) declare(valueName, `enum value of ${child.name}`);
+    }
   }
 }
 
@@ -674,7 +858,7 @@ export function parseProtoSchema(content: string, deps?: ProtoParseDeps): GrpcCo
   for (const message of messages) {
     const descriptor = messageDescriptor(message, warnings);
     messageIndex[descriptor.fullName] = descriptor;
-    lintMessage(message, warnings);
+    lintMessage(message, warnings, proto3);
   }
 
   const enumIndex: Record<string, string[]> = {};

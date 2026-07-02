@@ -30,6 +30,10 @@ export interface SelectedField {
  * This is the single source of truth shared by the builder (which renders the
  * query from it) and the instrumenter (which asserts only what it selects).
  */
+// __typename is always selectable (GraphQL spec 4.1) and serializes as a
+// non-null String naming the concrete object type.
+const TYPENAME_TYPE: GraphQLTypeRef = { name: 'String', kind: 'scalar', nonNull: true, list: false, listItemNonNull: false, lists: [] };
+
 export function selectFields(
   typeRef: GraphQLTypeRef,
   index: GraphQLContractIndex,
@@ -42,6 +46,9 @@ export function selectFields(
   if (typeRef.kind !== 'object' && typeRef.kind !== 'interface') return null;
   const shape = index.objectShapes[typeRef.name];
   if (!shape) return [];
+  // An interface selection additionally requests __typename so the runtime can
+  // assert the concrete type is a declared implementor (GraphQL spec 4.1).
+  const typename: SelectedField[] = typeRef.kind === 'interface' ? [{ name: '__typename', type: TYPENAME_TYPE, selection: null }] : [];
   // When the type itself is a Relay connection, pageInfo and edges { cursor }
   // are selected past the depth cap so the runtime can assert the Relay Cursor
   // Connections response contract, not only its schema shape.
@@ -60,7 +67,7 @@ export function selectFields(
       selected.push({ name: field.name, type: field.type, selection: selectFields(field.type, index, depth + 1) ?? [] });
     }
   }
-  return selected;
+  return [...typename, ...selected];
 }
 
 // Relay Cursor Connections spec section 5.1: only these PageInfo fields are

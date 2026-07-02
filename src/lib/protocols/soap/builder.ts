@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { defaultActionIri, localName, type SoapContractIndex, type SoapOperation, type SoapService, type SoapVersion } from './parser.js';
+import { defaultActionIri, localName, SOAP_RESPONSE_MEP, type SoapContractIndex, type SoapOperation, type SoapService, type SoapVersion } from './parser.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -20,9 +20,10 @@ export interface SoapHttpRequestItem extends JsonRecord {
   id: string;
   name: string;
   request: {
-    method: 'POST';
+    method: 'POST' | 'GET';
     header: Array<{ key: string; value: string }>;
-    body: { mode: 'raw'; raw: string; options: { raw: { language: 'xml' } } };
+    /** Absent for SOAP-response MEP items (HTTP GET carries no envelope). */
+    body?: { mode: 'raw'; raw: string; options: { raw: { language: 'xml' } } };
     url: { raw: string; host?: string[]; path?: string[] };
     auth: { type: 'noauth' };
   };
@@ -61,7 +62,7 @@ function contentType(version: SoapVersion): string {
  * an anonymous wsa:ReplyTo, so a conformant server replies instead of faulting
  * with MissingAddressInHeader (WS-Addressing 1.0 SOAP Binding section 6.4.2).
  */
-function buildEnvelope(operation: SoapOperation, targetNamespace: string, declaresAddressing: boolean): string {
+function buildEnvelope(operation: SoapOperation, targetNamespace: string, declaresAddressing: boolean, endpoint = ''): string {
   const version = operation.soapVersion;
   const envNs = envelopeNamespace(version);
   const part = operation.input?.parts[0];
@@ -70,18 +71,29 @@ function buildEnvelope(operation: SoapOperation, targetNamespace: string, declar
   const wrapperOpen = targetNamespace ? `op:${wrapper}` : wrapper;
   const action = declaresAddressing ? requestActionIri(operation, targetNamespace) : '';
   const wsaNsAttr = action ? ` xmlns:wsa="${WSA_NS}"` : '';
-  const headerLines = action
+  const headerBlocks = (operation.inputHeaders ?? []).map((header) =>
+    `    <${header.element}${header.namespace ? ` xmlns="${header.namespace}"` : ''}><!-- TODO: populate required header ${header.element} --></${header.element}>`
+  );
+  const headerLines = action || headerBlocks.length > 0
     ? [
         '  <soap:Header>',
-        `    <wsa:Action>${action}</wsa:Action>`,
-        ...(operation.output
+        ...(action
           ? [
-              '    <wsa:MessageID>urn:uuid:{{$guid}}</wsa:MessageID>',
-              '    <wsa:ReplyTo>',
-              `      <wsa:Address>${WSA_NS}/anonymous</wsa:Address>`,
-              '    </wsa:ReplyTo>'
+              // [destination] MAP: wsa:To names the addressed endpoint (WS-Addressing
+              // 1.0 Core section 3.2); omitted when the WSDL declares no endpoint.
+              ...(endpoint ? [`    <wsa:To>${endpoint}</wsa:To>`] : []),
+              `    <wsa:Action>${action}</wsa:Action>`,
+              ...(operation.output
+                ? [
+                    '    <wsa:MessageID>urn:uuid:{{$guid}}</wsa:MessageID>',
+                    '    <wsa:ReplyTo>',
+                    `      <wsa:Address>${WSA_NS}/anonymous</wsa:Address>`,
+                    '    </wsa:ReplyTo>'
+                  ]
+                : [])
             ]
           : []),
+        ...headerBlocks,
         '  </soap:Header>'
       ]
     : ['  <soap:Header/>'];
@@ -150,6 +162,21 @@ function buildItem(
   targetNamespace: string,
   declaresAddressing: boolean
 ): SoapHttpRequestItem {
+  // WSDL 2.0 SOAP-response MEP (Adjuncts section 5.10.3): the request is a plain
+  // HTTP GET with no SOAP envelope; only the response is a SOAP message.
+  if (operation.soapMep === SOAP_RESPONSE_MEP) {
+    return {
+      id: stableId(`${service.name}::${operation.name}`),
+      name: operation.name,
+      request: {
+        method: 'GET',
+        header: [{ key: 'Accept', value: 'application/soap+xml' }],
+        url: buildUrlDescriptor(service.endpoint || '{{baseUrl}}'),
+        auth: { type: 'noauth' }
+      },
+      event: []
+    };
+  }
   return {
     id: stableId(`${service.name}::${operation.name}`),
     name: operation.name,
@@ -158,7 +185,7 @@ function buildItem(
       header: headersFor(operation),
       body: {
         mode: 'raw',
-        raw: buildEnvelope(operation, targetNamespace, declaresAddressing),
+        raw: buildEnvelope(operation, targetNamespace, declaresAddressing, service.endpoint),
         options: { raw: { language: 'xml' } }
       },
       url: buildUrlDescriptor(service.endpoint || '{{baseUrl}}'),

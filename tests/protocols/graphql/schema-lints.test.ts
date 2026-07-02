@@ -102,7 +102,7 @@ describe('GraphQL-over-HTTP request/response conformance additions', () => {
     const { collection: instrumented } = instrumentGraphQLCollection(collection, index);
     const scripts = JSON.stringify(instrumented);
     expect(scripts).toContain('must declare their media type in a Content-Type header');
-    expect(scripts).toContain('request-error results (no data entry) must use a non-2xx status');
+    expect(scripts).toContain('request-error results (no data entry) must use a 4xx or 5xx status');
     expect(scripts).toContain('must not be an empty list when present');
     expect(scripts).toContain('at most one entry per unique response path');
     expect(scripts).toContain('must be null or a map of root fields');

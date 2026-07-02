@@ -5,6 +5,7 @@ export type {
   SoapOperation,
   SoapMessage,
   SoapMessagePart,
+  SoapHeaderDecl,
   SoapVersion
 } from './parser.js';
 export { buildSoapCollection } from './builder.js';

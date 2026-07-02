@@ -66,6 +66,74 @@ function walk(node: XNode, visit: (node: XNode) => void): void {
   for (const child of node.children) walk(child, visit);
 }
 
+/**
+ * Deterministic import resolver supplied by the caller: maps a
+ * wsdl:import/xsd:import location to already-fetched document text. No
+ * network I/O happens in this module; unresolvable locations simply skip the
+ * resolution-dependent checks.
+ */
+export type WsdlImportResolver = (location: string) => string | undefined;
+
+/** Merge a node's xmlns declarations onto an inherited prefix scope. */
+function xmlnsScope(node: XNode, base: Record<string, string>): Record<string, string> {
+  let merged = base;
+  for (const [k, v] of Object.entries(node.attrs)) {
+    if (k !== 'xmlns' && !k.startsWith('xmlns:')) continue;
+    if (merged === base) merged = { ...base };
+    merged[k === 'xmlns' ? '' : k.slice(6)] = v;
+  }
+  return merged;
+}
+
+/** Walk the ordered tree carrying the in-scope xmlns prefix declarations. */
+function walkWithScope(
+  node: XNode,
+  scope: Record<string, string>,
+  visit: (node: XNode, ns: Record<string, string>) => void
+): void {
+  const merged = xmlnsScope(node, scope);
+  visit(node, merged);
+  for (const child of node.children) walkWithScope(child, merged, visit);
+}
+
+function tagNamespace(tag: string, ns: Record<string, string>): string {
+  const i = tag.indexOf(':');
+  return i === -1 ? ns[''] ?? '' : ns[tag.slice(0, i)] ?? '';
+}
+
+function qnameNamespace(qname: string, ns: Record<string, string>): string {
+  const i = qname.indexOf(':');
+  return i === -1 ? ns[''] ?? '' : ns[qname.slice(0, i)] ?? '';
+}
+
+/** Parse a resolver-supplied document into its root element, or null. */
+function parseImported(content: string): XNode | null {
+  try {
+    const roots = normalize(new XMLParser(ORDERED_PARSER_OPTIONS).parse(content) as unknown);
+    return roots.find((r) => !r.tag.startsWith('?')) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * XML declaration hygiene for resolver-supplied imports: WS-I Basic Profile
+ * 1.1 R4003/R4004 apply to every document in the description, not only the
+ * root WSDL.
+ */
+function lintImportedXmlDeclaration(content: string, label: string, warnings: string[]): void {
+  const decl = /^\uFEFF?\s*<\?xml\b([^?]*)\?>/.exec(content);
+  if (!decl) return;
+  const version = /version\s*=\s*["']([^"']+)["']/.exec(decl[1]);
+  if (version && version[1] !== '1.0') {
+    warnings.push('SOAP_WSI_IMPORT_XML_DECL: ' + label + ' declares XML version "' + version[1] + '"; WS-I Basic Profile 1.1 R4004 requires XML 1.0');
+  }
+  const encoding = /encoding\s*=\s*["']([^"']+)["']/.exec(decl[1]);
+  if (encoding && !/^utf-(8|16)(le|be)?$/i.test(encoding[1])) {
+    warnings.push('SOAP_WSI_IMPORT_XML_ENCODING: ' + label + ' declares encoding "' + encoding[1] + '"; WS-I Basic Profile 1.1 R4003 requires UTF-8 or UTF-16');
+  }
+}
+
 interface WsdlMessagePart {
   name: string;
   element?: string;
@@ -79,7 +147,7 @@ interface PortTypeOperation {
   wsamAction?: string;
 }
 
-export function lintWsiConformance(text: string): string[] {
+export function lintWsiConformance(text: string, resolveImport?: WsdlImportResolver): string[] {
   const warnings: string[] = [];
   const decl = /^\uFEFF?\s*<\?xml\b([^?]*)\?>/.exec(text);
   if (decl) {
@@ -110,12 +178,13 @@ export function lintWsiConformance(text: string): string[] {
   }
   const definitions = roots.find((r) => local(r.tag) === 'definitions');
   const description = roots.find((r) => local(r.tag) === 'description');
-  if (definitions) lintWsdl11(definitions, warnings);
+  if (definitions) lintWsdl11(definitions, warnings, resolveImport);
   if (description) lintWsdl20(description, warnings);
   return warnings;
 }
 
-function lintWsdl11(defs: XNode, warnings: string[]): void {
+function lintWsdl11(defs: XNode, warnings: string[], resolveImport?: WsdlImportResolver): void {
+  lintWsdl11Structure(defs, warnings);
   lintWsdl11Ordering(defs, warnings);
   lintWsdl11Imports(defs, warnings);
   const { elements, schemasComplete } = lintWsdl11Types(defs, warnings);
@@ -125,6 +194,51 @@ function lintWsdl11(defs: XNode, warnings: string[]): void {
   lintWsdl11PartElements(messages, elements, schemasComplete, warnings);
   lintWsdl11Services(defs, warnings);
   lintRequiredExtensions(defs, warnings);
+}
+
+const WSDL11_NS = 'http://schemas.xmlsoap.org/wsdl/';
+const SOAP11_EXT_NS = 'http://schemas.xmlsoap.org/wsdl/soap/';
+const SOAP12_EXT_NS = 'http://schemas.xmlsoap.org/wsdl/soap12/';
+const SOAP_HTTP_TRANSPORT_URI = 'http://schemas.xmlsoap.org/soap/http';
+
+// Element locals defined by the WS-I corrected WSDL 1.1 schema, plus the
+// required attributes this generator depends on. Foreign-namespace extension
+// elements are exempt (WSDL 1.1 section 2.1.3 extensibility).
+const WSDL11_SCHEMA_LOCALS = new Set([
+  'definitions', 'documentation', 'import', 'types', 'message', 'part', 'portType', 'operation',
+  'input', 'output', 'fault', 'binding', 'service', 'port'
+]);
+const WSDL11_REQUIRED_ATTRS: Record<string, string[]> = {
+  message: ['name'],
+  part: ['name'],
+  portType: ['name'],
+  operation: ['name'],
+  binding: ['name', 'type'],
+  service: ['name'],
+  port: ['name', 'binding'],
+  import: ['namespace']
+};
+
+/**
+ * Pinned structural pass over the WSDL 1.1 content model: every element in
+ * the WSDL 1.1 namespace must be schema-defined and carry its required
+ * attributes (WS-I Basic Profile 1.1 R2028/R2029: descriptions must be valid
+ * against the corrected WSDL 1.1 schema).
+ */
+function lintWsdl11Structure(defs: XNode, warnings: string[]): void {
+  walkWithScope(defs, {}, (node, ns) => {
+    if (tagNamespace(node.tag, ns) !== WSDL11_NS) return;
+    const name = local(node.tag);
+    if (!WSDL11_SCHEMA_LOCALS.has(name)) {
+      warnings.push('SOAP_WSI_SCHEMA_INVALID: element <' + node.tag + '> is not defined by the WSDL 1.1 schema (WS-I Basic Profile 1.1 R2028/R2029)');
+      return;
+    }
+    for (const required of WSDL11_REQUIRED_ATTRS[name] ?? []) {
+      if (attr(node, required) === undefined) {
+        warnings.push('SOAP_WSI_SCHEMA_INVALID: <' + node.tag + '> omits its required ' + required + ' attribute (WS-I Basic Profile 1.1 R2028/R2029)');
+      }
+    }
+  });
 }
 
 function lintWsdl11Ordering(defs: XNode, warnings: string[]): void {

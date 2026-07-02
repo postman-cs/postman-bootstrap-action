@@ -1,6 +1,7 @@
-import { XMLParser } from 'fast-xml-parser';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 
 import { lintWsiConformance } from './wsi-lints.js';
+import { buildXsdIndex, type XsdSchemaIndex } from './xsd-index.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -21,6 +22,13 @@ export interface SoapMessage {
   parts: SoapMessagePart[];
 }
 
+export interface SoapHeaderDecl {
+  /** Local name of the header block element resolved from message/part. */
+  element: string;
+  /** Namespace of the header element, when derivable from the document. */
+  namespace?: string;
+}
+
 export interface SoapOperation {
   /** Local operation name as declared on the portType/interface. */
   name: string;
@@ -38,6 +46,14 @@ export interface SoapOperation {
   outputBodyParts?: string;
   /** Effective declared part count for the output body (parts attr narrows the message). */
   outputBodyPartCount?: number;
+  /** WSDL 2.0 interface operation pattern IRI (message exchange pattern). */
+  mepPattern?: string;
+  /** WSDL 2.0 binding wsoap:mep (or wsoap:mepDefault) IRI, when declared. */
+  soapMep?: string;
+  /** Binding soap:header blocks declared for the request (WSDL 1.1 section 3.7). */
+  inputHeaders?: SoapHeaderDecl[];
+  /** Binding soap:header blocks declared for the response (WSDL 1.1 section 3.7). */
+  outputHeaders?: SoapHeaderDecl[];
   /** Name of the portType/interface declaring this operation. */
   portTypeName?: string;
   /** Name attribute of the portType wsdl:input element, when present. */
@@ -76,6 +92,8 @@ export interface SoapContractIndex {
    * or a wsam:/wsp: Addressing policy assertion anywhere in the definitions).
    */
   declaresAddressing: boolean;
+  /** Inline-XSD component index over wsdl:types (single-document, offline). */
+  schemaIndex: XsdSchemaIndex;
   services: SoapService[];
   warnings: string[];
 }
@@ -214,6 +232,8 @@ interface BindingOp11 {
   use?: 'literal' | 'encoded';
   bodyNamespace?: string;
   outputBodyParts?: string;
+  inputHeaders?: SoapHeaderDecl[];
+  outputHeaders?: SoapHeaderDecl[];
 }
 
 /** First soapbind:body marker child of a wsdl:input/wsdl:output record. */
@@ -222,7 +242,35 @@ function bodyMarker(direction: JsonRecord | null): JsonRecord | null {
   return children(direction, 'body')[0] ?? null;
 }
 
-function parseSoapBindings11(definitions: JsonRecord, warnings: string[]): Map<string, Map<string, BindingOp11>> {
+/**
+ * Binding soap:header declarations for a wsdl:input/wsdl:output record,
+ * resolved to the header element local name + namespace via message/part.
+ */
+function headerDecls(
+  direction: JsonRecord | null,
+  messages: Map<string, SoapMessage>,
+  scopes: JsonRecord[]
+): SoapHeaderDecl[] {
+  const out: SoapHeaderDecl[] = [];
+  if (!direction) return out;
+  for (const header of children(direction, 'header')) {
+    const message = messages.get(localName(attr(header, 'message')));
+    const partName = attr(header, 'part');
+    const part = message?.parts.find((candidate) => candidate.name === partName);
+    if (!part?.element) continue;
+    out.push({
+      element: localName(part.element),
+      namespace: namespaceForPrefix(scopes, prefixOf(part.element)) || undefined
+    });
+  }
+  return out;
+}
+
+function parseSoapBindings11(
+  definitions: JsonRecord,
+  messages: Map<string, SoapMessage>,
+  warnings: string[]
+): Map<string, Map<string, BindingOp11>> {
   // bindingName -> operationName -> { soapAction, soapVersion, style, use, ... }
   const out = new Map<string, Map<string, BindingOp11>>();
   for (const binding of children(definitions, 'binding')) {
@@ -265,21 +313,29 @@ function parseSoapBindings11(definitions: JsonRecord, warnings: string[]): Map<s
         warnings.push(`SOAP_BINDING_STYLE_UNPARSEABLE: binding ${bindingName} operation ${opName} declares style "${styleRaw}" (expected document|rpc); style-specific assertions are skipped`);
         style = undefined;
       }
-      const inputBody = bodyMarker(asRecord(child(operation, 'input')));
-      const outputBody = bodyMarker(asRecord(child(operation, 'output')));
+      const inputDirection = asRecord(child(operation, 'input'));
+      const outputDirection = asRecord(child(operation, 'output'));
+      const inputBody = bodyMarker(inputDirection);
+      const outputBody = bodyMarker(outputDirection);
       const useRaw = attr(outputBody, 'use') || attr(inputBody, 'use');
       let use: 'literal' | 'encoded' | undefined;
       if (useRaw === 'literal' || useRaw === 'encoded') use = useRaw;
       else if (useRaw) warnings.push(`SOAP_BODY_USE_UNPARSEABLE: binding ${bindingName} operation ${opName} declares soap:body use "${useRaw}" (expected literal|encoded); use-specific assertions are skipped`);
+      // WS-I Basic Profile 1.1 R2706: an omitted soap:body use defaults to literal.
+      else if (inputBody || outputBody) use = 'literal';
       const bodyNamespace = attr(outputBody, 'namespace') || attr(inputBody, 'namespace') || undefined;
       const outputBodyParts = hasLocalAttr(outputBody, 'parts') ? attr(outputBody, 'parts') : undefined;
+      const inputHeaders = headerDecls(inputDirection, messages, [definitions, binding]);
+      const outputHeaders = headerDecls(outputDirection, messages, [definitions, binding]);
       ops.set(opName, {
         soapAction,
         soapVersion: soapVersion ?? '1.1',
         style,
         use,
         bodyNamespace,
-        outputBodyParts
+        outputBodyParts,
+        inputHeaders: inputHeaders.length > 0 ? inputHeaders : undefined,
+        outputHeaders: outputHeaders.length > 0 ? outputHeaders : undefined
       });
     }
     out.set(bindingName, ops);
@@ -382,6 +438,8 @@ function parseServices11(
         bodyNamespace: bindingOp?.bodyNamespace,
         outputBodyParts: bindingOp?.outputBodyParts,
         outputBodyPartCount,
+        inputHeaders: bindingOp?.inputHeaders,
+        outputHeaders: bindingOp?.outputHeaders,
         portTypeName,
         inputName: attr(inputRecord, 'name') || undefined,
         inputAction: attr(inputRecord, 'Action') || undefined,
@@ -430,47 +488,123 @@ function parseServices11(
   return services;
 }
 
+const WSDL20_SOAP_BINDING_TYPE = 'http://www.w3.org/ns/wsdl/soap';
+
+interface BindingOp20 {
+  action?: string;
+  mep?: string;
+}
+
+interface Binding20 {
+  interfaceName: string;
+  soapVersion: SoapVersion;
+  mepDefault?: string;
+  ops: Map<string, BindingOp20>;
+}
+
+/** Parse WSDL 2.0 <binding> elements: SOAP version, per-operation MEPs and actions. */
+function parseBindings20(description: JsonRecord, warnings: string[]): Map<string, Binding20> {
+  const out = new Map<string, Binding20>();
+  for (const binding of children(description, 'binding')) {
+    const name = attr(binding, 'name');
+    if (!name) continue;
+    const type = attr(binding, 'type');
+    if (type && type !== WSDL20_SOAP_BINDING_TYPE) {
+      warnings.push(`SOAP_WSDL20_BINDING_TYPE_UNSUPPORTED: binding ${name} declares type "${type}"; only the WSDL 2.0 SOAP binding (${WSDL20_SOAP_BINDING_TYPE}) is generated as SOAP requests`);
+    }
+    // wsoap:version defaults to 1.2 (WSDL 2.0 Adjuncts section 5.10.1).
+    const soapVersion: SoapVersion = attr(binding, 'version') === '1.1' ? '1.1' : '1.2';
+    const ops = new Map<string, BindingOp20>();
+    for (const operation of children(binding, 'operation')) {
+      const ref = localName(attr(operation, 'ref'));
+      if (!ref) continue;
+      ops.set(ref, {
+        action: attr(operation, 'action') || undefined,
+        mep: attr(operation, 'mep') || undefined
+      });
+    }
+    out.set(name, {
+      interfaceName: localName(attr(binding, 'interface')),
+      soapVersion,
+      mepDefault: attr(binding, 'mepDefault') || undefined,
+      ops
+    });
+  }
+  return out;
+}
+
 function parseServices20(description: JsonRecord, warnings: string[]): SoapService[] {
-  warnings.push('SOAP_WSDL20_PARTIAL: WSDL 2.0 support is partial; operations are derived from interface/binding but message element resolution is best-effort');
+  warnings.push('SOAP_WSDL20_PARTIAL: WSDL 2.0 support is partial; operations are derived from interface/binding but import resolution and full component-model validation are best-effort');
   const interfaces = new Map<string, JsonRecord>();
   for (const iface of children(description, 'interface')) {
     const name = attr(iface, 'name');
     if (name) interfaces.set(name, iface);
   }
-  const buildOperations = (iface: JsonRecord): SoapOperation[] =>
+  const bindings = parseBindings20(description, warnings);
+
+  const buildOperations = (iface: JsonRecord, binding: Binding20 | undefined): SoapOperation[] =>
     children(iface, 'operation').map((operation) => {
       const name = attr(operation, 'name');
       const opWarnings: string[] = [];
-      const out = asRecord(child(operation, 'output'));
-      const outElement = localName(attr(out, 'element'));
-      if (!out) opWarnings.push(`SOAP_OPERATION_ONE_WAY: operation ${name} declares no output; response assertions limited to transport`);
+      const inputRecord = asRecord(child(operation, 'input'));
+      const outputRecord = asRecord(child(operation, 'output'));
+      const inputElement = attr(inputRecord, 'element');
+      const outputElement = attr(outputRecord, 'element');
+      const outLocal = outputElement.startsWith('#') ? '' : localName(outputElement);
+      if (!outputRecord) opWarnings.push(`SOAP_OPERATION_ONE_WAY: operation ${name} declares no output; response assertions limited to transport`);
+      const bindingOp = binding?.ops.get(name);
+      // The input message reference makes one-way shapes parse-confirmed
+      // (input present, output absent) so the instrumenter can switch to the
+      // one-way transport contract for WSDL 2.0 in-only operations.
+      const input = inputRecord
+        ? { name, parts: inputElement && !inputElement.startsWith('#') ? [{ name, element: inputElement }] : [] }
+        : undefined;
       return {
         name,
-        soapAction: '',
-        soapVersion: '1.2' as SoapVersion,
-        input: undefined,
-        output: outElement ? { name, parts: [{ name, element: attr(out, 'element') }] } : undefined,
-        expectedResponseElement: outElement || undefined,
-        expectedResponseNamespace: namespaceForPrefix([description], prefixOf(attr(out, 'element'))) || undefined,
+        soapAction: bindingOp?.action ?? '',
+        soapVersion: binding?.soapVersion ?? ('1.2' as SoapVersion),
+        mepPattern: attr(operation, 'pattern') || undefined,
+        soapMep: bindingOp?.mep ?? binding?.mepDefault,
+        portTypeName: attr(iface, 'name') || undefined,
+        input,
+        output: outLocal ? { name, parts: [{ name, element: outputElement }] } : undefined,
+        expectedResponseElement: outLocal || undefined,
+        expectedResponseNamespace: outLocal
+          ? namespaceForPrefix([description, iface, operation, outputRecord ?? {}], prefixOf(outputElement)) || undefined
+          : undefined,
         warnings: opWarnings
       };
     });
+
   const services: SoapService[] = [];
   for (const service of children(description, 'service')) {
     const name = attr(service, 'name');
     const ifaceName = localName(attr(service, 'interface'));
     const iface = interfaces.get(ifaceName);
     let endpoint = '';
+    let binding: Binding20 | undefined;
     for (const ep of children(service, 'endpoint')) {
-      const address = attr(ep, 'address');
+      let address = attr(ep, 'address');
+      if (!address) {
+        // WSDL 2.0 endpoints may carry the address as a child wsa:EndpointReference.
+        const epr = asRecord(child(ep, 'EndpointReference'));
+        const addressNode = child(epr, 'Address');
+        const addressRecord = asRecord(addressNode);
+        address = addressRecord ? asString(addressRecord['#text']) : asString(addressNode);
+        if (address) warnings.push(`SOAP_WSDL20_ENDPOINT_EPR: endpoint ${attr(ep, 'name')} address taken from its child wsa:EndpointReference/Address; reference parameters are not propagated`);
+      }
       if (address && !endpoint) endpoint = address;
+      if (!binding) binding = bindings.get(localName(attr(ep, 'binding')));
     }
     if (!endpoint) warnings.push(`SOAP_ENDPOINT_MISSING: service ${name} has no endpoint address; request URL left as placeholder`);
-    services.push({ name, endpoint, operations: iface ? buildOperations(iface) : [] });
+    if (!binding) binding = [...bindings.values()].find((candidate) => candidate.interfaceName === ifaceName);
+    services.push({ name, endpoint, operations: iface ? buildOperations(iface, binding) : [] });
   }
   if (services.length === 0) {
     for (const iface of interfaces.values()) {
-      services.push({ name: attr(iface, 'name'), endpoint: '', operations: buildOperations(iface) });
+      const ifaceName = attr(iface, 'name');
+      const binding = [...bindings.values()].find((candidate) => candidate.interfaceName === ifaceName);
+      services.push({ name: ifaceName, endpoint: '', operations: buildOperations(iface, binding) });
     }
   }
   return services;
@@ -509,6 +643,9 @@ export function defaultActionIri(targetNamespace: string, portTypeName: string |
 }
 
 const SOAP_HTTP_TRANSPORT = 'http://schemas.xmlsoap.org/soap/http';
+
+/** WSDL 2.0 Adjuncts section 5.10.3: the SOAP-response MEP binds to HTTP GET. */
+export const SOAP_RESPONSE_MEP = 'http://www.w3.org/2003/05/soap/mep/soap-response/';
 const ABSOLUTE_URI = /^[A-Za-z][A-Za-z0-9+.-]*:/;
 
 /** Message parts bound to the soap:body, honoring the body parts attribute. */
@@ -619,7 +756,8 @@ function lintWsdl11(definitions: JsonRecord, messages: Map<string, SoapMessage>,
         }
       }
       const use = attr(outputBody, 'use') || attr(inputBody, 'use');
-      const literal = use === 'literal';
+      // WS-I Basic Profile 1.1 R2706: an omitted soap:body use defaults to literal.
+      const literal = use === 'literal' || (!use && Boolean(inputBody ?? outputBody));
 
       if (effStyle === 'document' && literal) {
         for (const [direction, body] of [['input', inputBody], ['output', outputBody]] as const) {
@@ -722,6 +860,13 @@ function lintWsdl11(definitions: JsonRecord, messages: Map<string, SoapMessage>,
 export function parseWsdl(content: string): SoapContractIndex {
   const text = asString(content).trim();
   if (!text) throw new Error('SOAP_EMPTY_WSDL: WSDL content is empty');
+  // Well-formedness gate: malformed XML fails fast with a line number. Full
+  // WSDL/XSD schema validation needs a validator bundle and stays out of the
+  // offline scope; structural conformance is covered by the SOAP_WSI_* lints.
+  const validation = XMLValidator.validate(text);
+  if (validation !== true) {
+    throw new Error(`SOAP_WSDL_XML_INVALID: WSDL is not well-formed XML: ${validation.err.msg} (line ${validation.err.line})`);
+  }
   const parser = createParser();
   let root: JsonRecord | null;
   try {
@@ -743,11 +888,12 @@ export function parseWsdl(content: string): SoapContractIndex {
   const docNode = (definitions ?? description) as JsonRecord;
   const targetNamespace = attr(docNode, 'targetNamespace');
   const declaresAddressing = detectAddressing(docNode);
+  const schemaIndex = buildXsdIndex(docNode);
 
   let services: SoapService[];
   if (definitions) {
     const messages = parseMessages11(definitions);
-    const bindings = parseSoapBindings11(definitions, warnings);
+    const bindings = parseSoapBindings11(definitions, messages, warnings);
     lintWsdl11(definitions, messages, warnings);
     services = parseServices11(definitions, messages, bindings, warnings);
   } else {
@@ -757,5 +903,5 @@ export function parseWsdl(content: string): SoapContractIndex {
   const totalOperations = services.reduce((sum, service) => sum + service.operations.length, 0);
   if (totalOperations === 0) throw new Error('SOAP_NO_OPERATIONS: WSDL declares no operations to assert against');
 
-  return { wsdlVersion, targetNamespace, declaresAddressing, services, warnings };
+  return { wsdlVersion, targetNamespace, declaresAddressing, schemaIndex, services, warnings };
 }

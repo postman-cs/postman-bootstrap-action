@@ -20,6 +20,7 @@ import {
 } from 'graphql';
 import { buildOperationDocument } from './builder.js';
 import { lintGeneratedDocument, lintGraphQLSchema, lintIntrospectionJson, lintSdlDocument } from './schema-lints.js';
+import { selectFields, type SelectedField } from './selection.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -102,10 +103,14 @@ export interface GraphQLContractIndex {
   enumValues: Record<string, string[]>;
   /** Union member object-type names keyed by union type name, for runtime __typename membership assertions. */
   unionMembers: Record<string, string[]>;
+  /** Implementing object-type names keyed by interface type name, for runtime __typename membership assertions. */
+  interfacePossibleTypes: Record<string, string[]>;
   /** Named type -> kind for every non-introspection schema type (introspection drift probe). */
   typeKinds: Record<string, GraphQLTypeShapeKind>;
   /** Sorted field names per object/interface type (introspection drift probe). */
   typeFields: Record<string, string[]>;
+  /** SDL-rendered field type signature per object/interface type field (introspection drift probe). */
+  typeFieldTypeSignatures: Record<string, Record<string, string>>;
   /** Declared root operation type names (introspection drift probe). */
   rootTypes: { query?: string; mutation?: string; subscription?: string };
   /** Deprecated field names per object/interface type (introspection drift probe). */
@@ -173,6 +178,19 @@ function describeField(field: GraphQLField<unknown, unknown>): GraphQLFieldDef {
   return { name: field.name, type: describeType(field.type) };
 }
 
+/**
+ * Render a GraphQLTypeRef back to SDL type notation (e.g. `[User!]!`). The
+ * introspection drift probe compares live field type wrapper chains against
+ * this schema-of-record rendering.
+ */
+export function renderTypeRefSdl(ref: GraphQLTypeRef): string {
+  let inner = ref.name;
+  for (let i = ref.lists.length - 1; i >= 0; i -= 1) {
+    inner = ref.lists[i].itemNonNull ? `[${inner}!]` : `[${inner}]`;
+  }
+  return ref.nonNull ? `${inner}!` : inner;
+}
+
 function collectObjectShape(returns: GraphQLTypeRef, schema: GraphQLSchema, shapes: Record<string, GraphQLObjectShape>): void {
   if (shapes[returns.name]) return;
   if (returns.kind !== 'object' && returns.kind !== 'interface') return;
@@ -231,6 +249,16 @@ function collectRootOperations(
       if (returns.kind === 'unknown') {
         opWarnings.push(
           `GQL_UNKNOWN_RETURN_TYPE: ${kind}.${fieldName} return type ${returns.name} could not be classified; only data.${fieldName} presence is asserted`
+        );
+      }
+      // Deprecated arguments the generated document actually passes: required
+      // args are declared as variables and forwarded, so a deprecated required
+      // arg is exercised by every run (GraphQL spec 4.2.3 deprecation).
+      for (const arg of field.args) {
+        if (arg.deprecationReason == null) continue;
+        if (!describeArgument(arg).required) continue;
+        opWarnings.push(
+          'GQL_DEPRECATED_ARGUMENT_USED: ' + kind + '.' + fieldName + ' argument ' + arg.name + ' is deprecated (' + (arg.deprecationReason || 'no reason given') + '); the generated operation still passes it'
         );
       }
       return {
@@ -316,8 +344,10 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
 
   const enumValues: Record<string, string[]> = {};
   const unionMembers: Record<string, string[]> = {};
+  const interfacePossibleTypes: Record<string, string[]> = {};
   const typeKinds: Record<string, GraphQLTypeShapeKind> = {};
   const typeFields: Record<string, string[]> = {};
+  const typeFieldTypeSignatures: Record<string, Record<string, string>> = {};
   const deprecatedFields: Record<string, string[]> = {};
   const deprecatedEnumValues: Record<string, string[]> = {};
   for (const namedType of Object.values(schema.getTypeMap())) {
@@ -331,6 +361,14 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
       unionMembers[namedType.name] = namedType.getTypes().map((member) => member.name).sort((x, y) => x.localeCompare(y));
     } else if (isObjectType(namedType) || isInterfaceType(namedType)) {
       typeFields[namedType.name] = Object.keys(namedType.getFields()).sort((x, y) => x.localeCompare(y));
+      const signatures: Record<string, string> = {};
+      for (const fieldName of typeFields[namedType.name]) {
+        signatures[fieldName] = renderTypeRefSdl(describeType(namedType.getFields()[fieldName]!.type));
+      }
+      typeFieldTypeSignatures[namedType.name] = signatures;
+      if (isInterfaceType(namedType)) {
+        interfacePossibleTypes[namedType.name] = schema.getPossibleTypes(namedType).map((member) => member.name).sort((x, y) => x.localeCompare(y));
+      }
       const fieldNames = Object.values(namedType.getFields()).filter((fieldDef) => fieldDef.deprecationReason != null).map((fieldDef) => fieldDef.name).sort((x, y) => x.localeCompare(y));
       if (fieldNames.length > 0) deprecatedFields[namedType.name] = fieldNames;
     }
@@ -350,14 +388,22 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
     objectShapes,
     enumValues,
     unionMembers,
+    interfacePossibleTypes,
     typeKinds,
     typeFields,
+    typeFieldTypeSignatures,
     rootTypes,
     deprecatedFields,
     deprecatedEnumValues,
     federated,
     warnings
   };
+  // Deprecated members exercised by the generated documents beyond the root
+  // field: nested selected fields (Relay expansion and depth>1 composites) are
+  // checked against the schema's deprecation metadata (GraphQL spec 4.2.3).
+  for (const operation of operations) {
+    warnings.push(...collectDeprecatedSelectionWarnings(schema, operation, index));
+  }
   // Self-check (GraphQL spec 5): every generated operation document must pass
   // validation against the schema it was derived from; a failure here is a
   // generator defect surfaced as a warning, never silently shipped.
@@ -365,4 +411,36 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
     warnings.push(...lintGeneratedDocument(schema, operation.id, buildOperationDocument(operation, index)));
   }
   return index;
+}
+
+/**
+ * Walk the operation's generated selection tree (the SAME selection the builder
+ * renders) and warn for every deprecated nested field it selects. The root
+ * field's own deprecation is reported by collectRootOperations.
+ */
+function collectDeprecatedSelectionWarnings(
+  schema: GraphQLSchema,
+  operation: GraphQLOperationDef,
+  index: GraphQLContractIndex
+): string[] {
+  const warnings: string[] = [];
+  const visit = (typeName: string, selection: SelectedField[] | null): void => {
+    if (!selection) return;
+    const named = schema.getType(typeName);
+    if (!named || (!isObjectType(named) && !isInterfaceType(named))) return;
+    const fieldMap = (named as GraphQLObjectType).getFields();
+    for (const selected of selection) {
+      if (selected.name === '__typename') continue;
+      const fieldDef = fieldMap[selected.name];
+      if (!fieldDef) continue;
+      if (fieldDef.deprecationReason != null) {
+        warnings.push(
+          'GQL_DEPRECATED_FIELD_SELECTED: ' + operation.id + ' selects deprecated field ' + typeName + '.' + selected.name + ' (' + (fieldDef.deprecationReason || 'no reason given') + '); the generated operation still exercises it'
+        );
+      }
+      visit(selected.type.name, selected.selection);
+    }
+  };
+  visit(operation.returns.name, selectFields(operation.returns, index, 1));
+  return warnings;
 }

@@ -1,3 +1,4 @@
+import { Kind, parse } from 'graphql';
 import { GRAPHQL_PROBE_IDS } from './builder.js';
 import type { GraphQLContractIndex, GraphQLOperationDef, GraphQLTypeRef } from './parser.js';
 import { selectFields, type SelectedField } from './selection.js';
@@ -93,7 +94,14 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
 
   // Parse the GraphQL-over-HTTP JSON body once; reused by every assertion below.
   lines.push(
-    'var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();'
+    'var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();',
+    'var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();',
+    'var gqlMediaType = gqlContentType.split(";")[0].trim();',
+    // Legacy application/json responses outside HTTP 200 are not GraphQL
+    // responses the client may rely on (GraphQL-over-HTTP 6.3.1): the body
+    // assertions below skip them and a dedicated trust-boundary test fails
+    // the operation instead.
+    'var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;'
   );
 
   // 1. Transport: GraphQL-over-HTTP is POST returning HTTP 200 even with errors.
@@ -110,14 +118,34 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   // Content-Type-conditional: a response without a Content-Type is skipped.
   lines.push(
     'pm.test(' + JSON.stringify('[' + label + '] GraphQL-over-HTTP media type and status are consistent') + ', function () {',
-    '    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();',
-    '    var mediaType = contentType.split(";")[0].trim();',
+    '    var mediaType = gqlMediaType;',
     '    if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }',
     '    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }',
+    '    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlContentType);',
+    '    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") { pm.expect.fail("GraphQL-over-HTTP responses must be encoded in UTF-8 (GraphQL-over-HTTP 6.4); got charset " + charsetMatch[1]); }',
+    '    if (!charsetMatch) { console.warn(' + JSON.stringify('[' + label + '] the response Content-Type omits an explicit charset; UTF-8 is assumed (GraphQL-over-HTTP 6.4, SHOULD)') + '); }',
+    '    var accept = ((pm.request && pm.request.headers && pm.request.headers.get && pm.request.headers.get("Accept")) || "").toLowerCase();',
+    '    if (accept && mediaType) {',
+    '        var acceptable = accept.split(",").map(function (entry) { return entry.split(";")[0].trim(); }).filter(function (entry) { return entry.length > 0; });',
+    '        if (acceptable.length > 0 && acceptable.indexOf(mediaType) === -1 && acceptable.indexOf("*/*") === -1 && acceptable.indexOf("application/*") === -1) { pm.expect.fail("the response media type " + mediaType + " was not offered in the request Accept header (" + accept + ") (GraphQL-over-HTTP 6.1)"); }',
+    '    }',
     '    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);',
     '    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }',
-    '    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }',
+    '    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && !(pm.response.code >= 400 && pm.response.code < 600)) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a 4xx or 5xx status (GraphQL-over-HTTP 6.4.2); got " + pm.response.code); }',
+    '    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !(pm.response.code >= 200 && pm.response.code < 300)) { pm.expect.fail("an application/graphql-response+json response with non-null data must use a 2xx status (GraphQL-over-HTTP 6.4.1); got " + pm.response.code); }',
+    '    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && !Array.isArray(gqlBody.errors) && pm.response.code !== 200) { console.warn(' + JSON.stringify('[' + label + '] a fully successful GraphQL response should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status ') + ' + pm.response.code); }',
+    '    if (mediaType === "application/graphql-response+json" && gqlBody.data !== undefined && gqlBody.data !== null && Array.isArray(gqlBody.errors) && gqlBody.errors.length > 0 && pm.response.code !== 294) { console.warn(' + JSON.stringify('[' + label + '] a partial-success GraphQL response (data with field errors) may use draft status 294 (GraphQL-over-HTTP status guidance, SHOULD-level); got status ') + ' + pm.response.code); }',
     '    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }',
+    '    if (mediaType === "application/json" && wellFormed && pm.response.code !== 200) { console.warn(' + JSON.stringify('[' + label + '] a well-formed GraphQL response over legacy application/json should use HTTP 200 (GraphQL-over-HTTP 6.4.1, SHOULD); got status ') + ' + pm.response.code); }',
+    '});'
+  );
+  // Trust boundary (GraphQL-over-HTTP 6.3.1): over legacy application/json the
+  // body of a non-200 response is not a GraphQL response the client may rely
+  // on, so the operation fails here and every body assertion below skips.
+  lines.push(
+    'pm.test(' + JSON.stringify('[' + label + '] legacy application/json non-200 responses are not trusted as GraphQL') + ', function () {',
+    '    if (!gqlLegacyUntrusted) return;',
+    '    pm.expect.fail("HTTP " + pm.response.code + " with Content-Type application/json is not a GraphQL response the client may rely on (GraphQL-over-HTTP 6.3.1); the GraphQL body assertions were skipped");',
     '});'
   );
 
@@ -138,6 +166,7 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   // carry a non-empty errors list.
   lines.push(
     `pm.test(${JSON.stringify(`[${label}] GraphQL response map follows the spec response format`)}, function () {`,
+    '    if (gqlLegacyUntrusted) return;',
     '    var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });',
     '    if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));',
     '    if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");',
@@ -147,6 +176,7 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   );
   lines.push(
     `pm.test(${JSON.stringify(`[${label}] GraphQL errors are well-formed and not a total failure`)}, function () {`,
+    '    if (gqlLegacyUntrusted) return;',
     '    var errors = gqlBody.errors;',
     '    if (errors === undefined || errors === null) return;',
     '    pm.expect(errors, "GraphQL \'errors\' must be an array when present").to.be.an("array");',
@@ -189,8 +219,15 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   // 3. data.<rootField> present (unless the field is nullable and could legitimately be null).
   lines.push(
     `pm.test(${JSON.stringify(`[${label}] data.${field} is present`)}, function () {`,
+    '    if (gqlLegacyUntrusted) return;',
     '    pm.expect(gqlBody.data, "response has no data object").to.exist;',
-    `    pm.expect(gqlBody.data, "data is missing field '${field}'").to.have.property(${JSON.stringify(field)});`
+    `    pm.expect(gqlBody.data, "data is missing field '${field}'").to.have.property(${JSON.stringify(field)});`,
+    // The data map carries exactly one entry per requested root field, and the
+    // generated document requests exactly one (GraphQL spec 7.1).
+    '    if (gqlBody.data && typeof gqlBody.data === "object" && !Array.isArray(gqlBody.data)) {',
+    '        var gqlDataKeys = Object.keys(gqlBody.data);',
+    `        if (gqlDataKeys.length !== 1 || gqlDataKeys[0] !== ${JSON.stringify(field)}) pm.expect.fail("the data map must contain exactly the single requested root field '${field}' (GraphQL spec 7.1); got keys: " + gqlDataKeys.join(", "));`,
+    '    }'
   );
   if (returns.nonNull) {
     lines.push(`    pm.expect(gqlBody.data[${JSON.stringify(field)}], "${field} is declared non-null but was null").to.not.be.null;`);
@@ -205,6 +242,7 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   if (returns.nonNull) {
     lines.push(
       `pm.test(${JSON.stringify(`[${label}] non-null field errors propagate per the spec`)}, function () {`,
+      '    if (gqlLegacyUntrusted) return;',
       '    if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;',
       '    var data = gqlBody.data;',
       '    var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];',
@@ -219,6 +257,7 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   if (shapeLines.length > 0) {
     lines.push(
       `pm.test(${JSON.stringify(`[${label}] data.${field} matches schema return type`)}, function () {`,
+      '    if (gqlLegacyUntrusted) return;',
       `    var value = gqlBody.data && gqlBody.data[${JSON.stringify(field)}];`,
       '    if (value === undefined || value === null) return;',
       ...shapeLines.map((line) => `    ${line}`),

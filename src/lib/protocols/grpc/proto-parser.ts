@@ -677,9 +677,6 @@ function lintMessage(message: ProtoReflectionObject, warnings: string[], proto3:
   }
 }
 
-const ENUM_VALUE_MIN = -2147483648;
-const ENUM_VALUE_MAX = 2147483647;
-
 function lintEnum(enumObj: ProtoReflectionObject, warnings: string[], proto3: boolean, conventions: boolean): void {
   const fullName = stripLeadingDot(enumObj.fullName);
   const entries = Object.entries(asRecord(enumObj.values) ?? {});
@@ -688,13 +685,13 @@ function lintEnum(enumObj: ProtoReflectionObject, warnings: string[], proto3: bo
   const { ranges: reservedRanges, names: reservedNames } = lintReserved(
     enumObj.reserved,
     `enum ${fullName}`,
-    { lo: ENUM_VALUE_MIN, hi: ENUM_VALUE_MAX, label: 'enum-constant' },
+    { lo: INT32_MIN, hi: INT32_MAX, label: 'enum-constant' },
     warnings
   );
   for (const [name, rawValue] of entries) {
     const value = typeof rawValue === 'number' ? rawValue : Number.NaN;
-    if (!Number.isInteger(value) || value < ENUM_VALUE_MIN || value > ENUM_VALUE_MAX) {
-      warnings.push(`GRPC_ENUM_VALUE_RANGE: enum ${fullName} constant ${name} = ${value} is outside the int32 range [${ENUM_VALUE_MIN}, ${ENUM_VALUE_MAX}] (protoc rejects out-of-range enum constants)`);
+    if (!Number.isInteger(value) || value < INT32_MIN || value > INT32_MAX) {
+      warnings.push(`GRPC_ENUM_VALUE_RANGE: enum ${fullName} constant ${name} = ${value} is outside the int32 range [${INT32_MIN}, ${INT32_MAX}] (protoc rejects out-of-range enum constants)`);
     }
     if (reservedRanges.some(([lo, hi]) => value >= lo && value <= hi)) {
       warnings.push(`GRPC_RESERVED_ENUM_VALUE_REUSED: enum ${fullName} constant ${name} = ${value} reuses a reserved enum value (protoc rejects reserved-value reuse)`);

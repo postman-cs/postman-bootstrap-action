@@ -124,3 +124,75 @@ describe.skipIf(!HAS_PROTOBUF)('parseProtoSchema', () => {
     expect(() => parseProtoSchema('syntax = "proto3"; this is not valid proto', deps)).toThrow(/PROTO_PARSE_FAILED/);
   });
 });
+
+describe.skipIf(!HAS_PROTOBUF)('proto static lints (catalog additions)', () => {
+  const parse = (lines: string[]) => parseProtoSchema(lines.join('\n'), deps);
+  const indexWarnings = (index: unknown): string[] => (index as { warnings?: string[] }).warnings ?? [];
+  const opWarnings = (index: ReturnType<typeof parseProtoSchema>, method: string) =>
+    index.operations.find((operation) => operation.method === method)?.warnings ?? [];
+
+  const HTTP_PROTO = [
+    'syntax = "proto3";',
+    'package t;',
+    'message Sub { string x = 1; }',
+    'message Req { string name = 1; repeated Sub items = 2; map<string,string> tags = 3; Sub payload = 4; }',
+    'message Res { string out = 1; }',
+    'service S {',
+    '  rpc A(Req) returns (Res) { option (google.api.http) = { get: "/v1/{name}" body: "payload" response_body: "missing" }; }',
+    '  rpc B(Req) returns (Res) { option (google.api.http) = { get: "/v1/x" put: "/v1/y" }; }',
+    '  rpc C(Req) returns (Res) { option (google.api.http) = { post: "v1/{items}" }; }',
+    '  rpc D(Req) returns (Res) { option (google.api.http) = { get: "/v1/**/x/{name=a/*}" }; }',
+    '  rpc E(Req) returns (Res) { option (google.api.http) = { get: "/v1/{name}/x" body: "name" }; }',
+    '}'
+  ];
+
+  it('lints google.api.http rules: body on GET, query transcodability, response_body', () => {
+    const index = parse(HTTP_PROTO);
+    const a = opWarnings(index, 'A').join('\n');
+    expect(a).toContain('GRPC_HTTP_BODY_ON_GET');
+    expect(a).toContain('GRPC_HTTP_QUERY_FIELD_UNSUPPORTED');
+    expect(a).toContain('field "items"');
+    expect(a).toContain('map field "tags"');
+    expect(a).toContain('GRPC_HTTP_RESPONSE_BODY_FIELD_UNKNOWN');
+  });
+
+  it('lints google.api.http rules: pattern oneof, template grammar, variable types, body/path overlap', () => {
+    const index = parse(HTTP_PROTO);
+    expect(opWarnings(index, 'B').join('\n')).toContain('GRPC_HTTP_RULE_PATTERN_CONFLICT');
+    const c = opWarnings(index, 'C').join('\n');
+    expect(c).toContain('GRPC_HTTP_PATH_TEMPLATE_INVALID');
+    expect(c).toContain('must start with "/"');
+    expect(c).toContain('GRPC_HTTP_PATH_VARIABLE_TYPE_INVALID');
+    expect(opWarnings(index, 'D').join('\n')).toContain('uses "**" before the final path segment');
+    expect(opWarnings(index, 'E').join('\n')).toContain('GRPC_HTTP_BODY_PATH_OVERLAP');
+  });
+
+  it('flags enum constants outside the int32 range', () => {
+    const index = parse(['syntax = "proto3";', 'package t;', 'enum E { E_UNSPECIFIED = 0; E_BIG = 3000000000; }', 'message M { E e = 1; }', 'service S { rpc G(M) returns (M); }']);
+    expect(indexWarnings(index).join('\n')).toContain('GRPC_ENUM_VALUE_RANGE');
+  });
+
+  it('flags malformed and overlapping enum reserved declarations', () => {
+    const index = parse(['syntax = "proto3";', 'package t;', 'enum E { reserved 2 to 4; reserved 3 to 5; reserved 90 to 80; E_UNSPECIFIED = 0; }', 'message M { E e = 1; }', 'service S { rpc G(M) returns (M); }']);
+    const warnings = indexWarnings(index).join('\n');
+    expect(warnings).toContain('GRPC_RESERVED_DECLARATION_INVALID');
+    expect(warnings).toContain('GRPC_RESERVED_RANGE_OVERLAP');
+  });
+
+  it('surfaces protobufjs rejection of enum reserved-value reuse as a parse failure (protoc parity)', () => {
+    expect(() => parse(['syntax = "proto3";', 'package t;', 'enum E { reserved 2 to 4; E_UNSPECIFIED = 0; E_X = 3; }', 'message M { E e = 1; }', 'service S { rpc G(M) returns (M); }'])).toThrow(/PROTO_PARSE_FAILED/);
+  });
+
+  it('flags a syntax declaration that is not the first statement', () => {
+    const index = parse(['package t;', 'syntax = "proto3";', 'message M { string a = 1; }', 'service S { rpc G(M) returns (M); }']);
+    expect(indexWarnings(index).join('\n')).toContain('GRPC_SYNTAX_PLACEMENT_INVALID');
+  });
+
+  it('lints the import surface: duplicates, weak imports, unresolved disclosure', () => {
+    const index = parse(['syntax = "proto3";', 'import "a.proto";', 'import "a.proto";', 'import weak "b.proto";', 'package t;', 'message M { string a = 1; }', 'service S { rpc G(M) returns (M); }']);
+    const warnings = indexWarnings(index).join('\n');
+    expect(warnings).toContain('GRPC_IMPORT_DUPLICATE');
+    expect(warnings).toContain('GRPC_IMPORT_WEAK');
+    expect(warnings).toContain('GRPC_IMPORT_UNRESOLVED_DISCLOSURE');
+  });
+});

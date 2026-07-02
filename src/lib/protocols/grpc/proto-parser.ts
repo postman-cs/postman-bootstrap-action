@@ -534,7 +534,7 @@ function lintFieldOptions(field: ProtoField, owner: string, proto3: boolean, war
   lintOptionSet(options, 'field', owner, warnings);
   // protoc rejects a NUL byte in an explicit json_name (C-string boundary).
   const explicit = options['json_name'];
-  if (typeof explicit === 'string' && explicit.includes(' ')) {
+  if (typeof explicit === 'string' && explicit.includes('\u0000')) {
     warnings.push(`GRPC_JSON_NAME_INVALID: field ${owner} json_name contains a NUL character; protoc rejects NUL in json_name`);
   }
   // proto3 removed explicit field defaults (implicit zero values only).
@@ -677,9 +677,32 @@ function lintMessage(message: ProtoReflectionObject, warnings: string[], proto3:
   }
 }
 
+const ENUM_VALUE_MIN = -2147483648;
+const ENUM_VALUE_MAX = 2147483647;
+
 function lintEnum(enumObj: ProtoReflectionObject, warnings: string[], proto3: boolean, conventions: boolean): void {
   const fullName = stripLeadingDot(enumObj.fullName);
   const entries = Object.entries(asRecord(enumObj.values) ?? {});
+  // Enum reserved declarations share the message machinery but span the full
+  // int32 constant domain (negative enum constants are legal).
+  const { ranges: reservedRanges, names: reservedNames } = lintReserved(
+    enumObj.reserved,
+    `enum ${fullName}`,
+    { lo: ENUM_VALUE_MIN, hi: ENUM_VALUE_MAX, label: 'enum-constant' },
+    warnings
+  );
+  for (const [name, rawValue] of entries) {
+    const value = typeof rawValue === 'number' ? rawValue : Number.NaN;
+    if (!Number.isInteger(value) || value < ENUM_VALUE_MIN || value > ENUM_VALUE_MAX) {
+      warnings.push(`GRPC_ENUM_VALUE_RANGE: enum ${fullName} constant ${name} = ${value} is outside the int32 range [${ENUM_VALUE_MIN}, ${ENUM_VALUE_MAX}] (protoc rejects out-of-range enum constants)`);
+    }
+    if (reservedRanges.some(([lo, hi]) => value >= lo && value <= hi)) {
+      warnings.push(`GRPC_RESERVED_ENUM_VALUE_REUSED: enum ${fullName} constant ${name} = ${value} reuses a reserved enum value (protoc rejects reserved-value reuse)`);
+    }
+    if (reservedNames.has(name)) {
+      warnings.push(`GRPC_RESERVED_ENUM_NAME_REUSED: enum ${fullName} constant ${name} reuses a reserved name (protoc rejects reserved-name reuse)`);
+    }
+  }
   if (proto3 && entries.length > 0 && entries[0][1] !== 0) {
     warnings.push(`GRPC_ENUM_FIRST_VALUE_NOT_ZERO: enum ${fullName} declares ${entries[0][0]} = ${entries[0][1]} first; proto3 requires the first enum value to be 0 (protoc rejects this)`);
   }
@@ -695,33 +718,165 @@ function lintEnum(enumObj: ProtoReflectionObject, warnings: string[], proto3: bo
 }
 
 // google.api.http annotation statics (linted only when protobufjs surfaces the
-// aggregate option via parsedOptions): path template variables and body must
-// reference request fields; additional_bindings must not nest further.
+// aggregate option via parsedOptions): exactly one non-empty grammatical URL
+// pattern, variables/body/response_body referencing the right message fields
+// with transcodable types, and additional_bindings that do not nest further.
+interface HttpRuleFieldInfo {
+  repeated: boolean;
+  map: boolean;
+  message: boolean;
+}
+
+const HTTP_RULE_VERBS = ['get', 'put', 'post', 'delete', 'patch'] as const;
+
+// Validate a google.api.http path template against the http.proto grammar:
+// Template = "/" Segments [ ":" Verb ]; Segment = "*" | "**" | LITERAL |
+// Variable; Variable = "{" FieldPath [ "=" Segments ] "}", with no variable
+// nesting and "**" only in the final segment position.
+function httpTemplateErrors(template: string): string[] {
+  const errors: string[] = [];
+  if (!template.startsWith('/')) {
+    errors.push('must start with "/"');
+    return errors;
+  }
+  let verbIdx = -1;
+  let depth = 0;
+  for (let i = 0; i < template.length; i += 1) {
+    const ch = template[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') depth -= 1;
+    else if (ch === ':' && depth === 0) verbIdx = i;
+    else if (ch === '/' && depth === 0) verbIdx = -1;
+  }
+  const path = verbIdx === -1 ? template : template.slice(0, verbIdx);
+  if (verbIdx !== -1 && verbIdx === template.length - 1) errors.push('declares an empty verb after ":"');
+
+  const segments: string[] = [];
+  let current = '';
+  depth = 0;
+  for (let i = 1; i < path.length; i += 1) {
+    const ch = path[i];
+    if (ch === '{') { depth += 1; if (depth > 1) errors.push('nests a variable inside a variable'); }
+    if (ch === '}') { depth -= 1; if (depth < 0) errors.push('closes a variable that was never opened'); }
+    if (ch === '/' && depth === 0) { segments.push(current); current = ''; continue; }
+    current += ch;
+  }
+  segments.push(current);
+  if (depth > 0) errors.push('leaves a variable unterminated (missing "}")');
+
+  segments.forEach((segment, i) => {
+    if (segment.length === 0) { errors.push('contains an empty path segment'); return; }
+    if (segment.startsWith('{') && segment.endsWith('}')) {
+      const inner = segment.slice(1, -1);
+      const eq = inner.indexOf('=');
+      const fieldPath = eq === -1 ? inner : inner.slice(0, eq);
+      const subPattern = eq === -1 ? null : inner.slice(eq + 1);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(fieldPath.trim())) {
+        errors.push(`declares variable field path "${fieldPath}" that is not a dotted proto field path`);
+      }
+      if (subPattern !== null) {
+        if (subPattern.length === 0) {
+          errors.push(`declares variable {${fieldPath}=} with an empty sub-pattern`);
+        } else {
+          const subSegments = subPattern.split('/');
+          subSegments.forEach((sub, j) => {
+            if (sub.length === 0) errors.push(`declares variable {${fieldPath}} with an empty sub-pattern segment`);
+            else if (sub === '**' && j !== subSegments.length - 1) errors.push('uses "**" before the final segment of a variable sub-pattern');
+            else if (sub !== '*' && sub !== '**' && /[{}]/.test(sub)) errors.push(`declares sub-pattern segment "${sub}" that is not a literal or wildcard`);
+          });
+        }
+      }
+      return;
+    }
+    if (segment === '**') {
+      if (i !== segments.length - 1) errors.push('uses "**" before the final path segment');
+      return;
+    }
+    if (segment === '*') return;
+    if (/[{}]/.test(segment)) errors.push(`mixes literals and variable braces in segment "${segment}"`);
+  });
+  return errors;
+}
+
 function lintHttpRule(
   rule: JsonRecord,
-  requestFieldNames: Set<string> | null,
+  requestFields: Map<string, HttpRuleFieldInfo> | null,
+  responseFieldNames: Set<string> | null,
   warnings: string[],
   operationId: string,
   nested: boolean
 ): void {
-  const paths: string[] = [];
-  for (const verb of ['get', 'put', 'post', 'delete', 'patch'] as const) {
-    if (typeof rule[verb] === 'string') paths.push(rule[verb] as string);
+  const patterns: Array<{ verb: string; path: string }> = [];
+  for (const verb of HTTP_RULE_VERBS) {
+    if (typeof rule[verb] === 'string') patterns.push({ verb, path: rule[verb] as string });
   }
   const custom = asRecord(rule.custom);
-  if (custom && typeof custom.path === 'string') paths.push(custom.path);
-  for (const path of paths) {
+  if (custom && typeof custom.path === 'string') patterns.push({ verb: String(custom.kind ?? 'custom'), path: custom.path });
+
+  // http.proto declares the URL pattern as a oneof: exactly one must be set.
+  if (patterns.length === 0) {
+    warnings.push(`GRPC_HTTP_RULE_PATTERN_MISSING: ${operationId} google.api.http ${nested ? 'additional binding' : 'rule'} declares no URL pattern (get/put/post/delete/patch/custom); transcoding requires exactly one (google.api.http pattern oneof)`);
+  } else if (patterns.length > 1) {
+    warnings.push(`GRPC_HTTP_RULE_PATTERN_CONFLICT: ${operationId} google.api.http ${nested ? 'additional binding' : 'rule'} declares ${patterns.length} URL patterns (${patterns.map((entry) => entry.verb).join(', ')}); the pattern is a oneof, so only one may be set (google.api.http)`);
+  }
+
+  const variableRoots = new Set<string>();
+  for (const { path } of patterns) {
+    if (path.length === 0) {
+      warnings.push(`GRPC_HTTP_RULE_PATH_EMPTY: ${operationId} google.api.http declares an empty path template; transcoding requires a non-empty template starting with "/" (google.api.http)`);
+      continue;
+    }
+    for (const problem of httpTemplateErrors(path)) {
+      warnings.push(`GRPC_HTTP_PATH_TEMPLATE_INVALID: ${operationId} google.api.http path template "${path}" ${problem} (google/api/http.proto template grammar)`);
+    }
     for (const match of path.matchAll(/\{([^}=]+)(?:=[^}]*)?\}/g)) {
-      const rootSegment = match[1].trim().split('.')[0];
-      if (requestFieldNames && !requestFieldNames.has(rootSegment)) {
+      const fieldPath = match[1].trim();
+      const rootSegment = fieldPath.split('.')[0];
+      variableRoots.add(rootSegment);
+      if (requestFields && !requestFields.has(rootSegment)) {
         warnings.push(`GRPC_HTTP_PATH_VARIABLE_UNKNOWN: ${operationId} google.api.http path template variable {${match[1]}} does not reference a request message field`);
+      } else if (requestFields) {
+        const info = requestFields.get(rootSegment);
+        // A path variable must transcode from a single URL path value: maps,
+        // repeated fields, and whole-message bindings cannot.
+        if (info && (info.repeated || info.map || (info.message && !fieldPath.includes('.')))) {
+          const kind = info.map ? 'a map' : info.repeated ? 'a repeated' : 'a message-typed';
+          warnings.push(`GRPC_HTTP_PATH_VARIABLE_TYPE_INVALID: ${operationId} google.api.http path variable {${match[1]}} binds ${kind} field; path variables must map to non-repeated primitive fields (google.api.http)`);
+        }
       }
     }
   }
-  const body = rule.body;
-  if (typeof body === 'string' && body !== '' && body !== '*' && requestFieldNames && !requestFieldNames.has(body.split('.')[0])) {
-    warnings.push(`GRPC_HTTP_BODY_FIELD_UNKNOWN: ${operationId} google.api.http body "${body}" is neither "*" nor a request message field`);
+
+  const body = typeof rule.body === 'string' ? rule.body : null;
+  if (body && body !== '*') {
+    if (requestFields && !requestFields.has(body)) {
+      warnings.push(`GRPC_HTTP_BODY_FIELD_UNKNOWN: ${operationId} google.api.http body "${body}" is neither "*" nor a request message field`);
+    }
+    if (variableRoots.has(body)) {
+      warnings.push(`GRPC_HTTP_BODY_PATH_OVERLAP: ${operationId} google.api.http body field "${body}" is also bound by a path template variable; path and body bindings must be disjoint (google.api.http)`);
+    }
   }
+  if (body && patterns.length === 1 && (patterns[0].verb === 'get' || patterns[0].verb === 'delete')) {
+    warnings.push(`GRPC_HTTP_BODY_ON_${patterns[0].verb.toUpperCase()}: ${operationId} google.api.http declares a body with a ${patterns[0].verb.toUpperCase()} pattern; GET/DELETE requests must not carry a transcoded body (google.api.http / AIP-127)`);
+  }
+
+  // Fields left to URL query mapping must be primitive (possibly repeated) or
+  // non-repeated messages that expand recursively; repeated messages and maps
+  // have no query encoding.
+  if (requestFields && body !== '*' && patterns.length > 0) {
+    for (const [name, info] of requestFields) {
+      if (variableRoots.has(name) || name === body) continue;
+      if (info.map || (info.repeated && info.message)) {
+        warnings.push(`GRPC_HTTP_QUERY_FIELD_UNSUPPORTED: ${operationId} google.api.http leaves ${info.map ? 'map' : 'repeated message-typed'} field "${name}" to URL query mapping, which has no transcoding (google.api.http)`);
+      }
+    }
+  }
+
+  const responseBody = typeof rule.response_body === 'string' ? rule.response_body : null;
+  if (responseBody && responseBody.length > 0 && responseFieldNames && !responseFieldNames.has(responseBody)) {
+    warnings.push(`GRPC_HTTP_RESPONSE_BODY_FIELD_UNKNOWN: ${operationId} google.api.http response_body "${responseBody}" is not a top-level response message field (google.api.http)`);
+  }
+
   const bindings = rule.additional_bindings;
   const bindingList: unknown[] = Array.isArray(bindings) ? bindings : bindings ? [bindings] : [];
   if (nested && bindingList.length > 0) {
@@ -730,17 +885,37 @@ function lintHttpRule(
   }
   for (const binding of bindingList) {
     const record = asRecord(binding);
-    if (record) lintHttpRule(record, requestFieldNames, warnings, operationId, true);
+    if (record) lintHttpRule(record, requestFields, responseFieldNames, warnings, operationId, true);
   }
 }
 
+// Field surface of a request/response message as the transcoding lints need
+// it: repeated/map flags plus whether the field is message-typed (an enum or
+// unresolved type counts as primitive for query/path purposes).
+function httpFieldInfo(type: ProtoReflectionObject | null | undefined): Map<string, HttpRuleFieldInfo> | null {
+  if (!type) return null;
+  const map = new Map<string, HttpRuleFieldInfo>();
+  for (const field of asArray<ProtoField>(type.fieldsArray)) {
+    if (typeof field.resolve === 'function') { try { field.resolve(); } catch { /* raw type info */ } }
+    const resolved = field.resolvedType;
+    const isMessage = Boolean(resolved && resolved.values === undefined);
+    map.set(String(field.name), {
+      repeated: field.repeated === true,
+      map: field.map === true,
+      message: isMessage && field.map !== true
+    });
+  }
+  return map;
+}
+
 function lintMethodOptions(method: ProtoMethod, operationId: string, warnings: string[]): void {
-  const requestFieldNames = method.resolvedRequestType
-    ? new Set(asArray<ProtoField>(method.resolvedRequestType.fieldsArray).map((field) => String(field.name)))
+  const requestFields = httpFieldInfo(method.resolvedRequestType);
+  const responseFieldNames = method.resolvedResponseType
+    ? new Set(asArray<ProtoField>(method.resolvedResponseType.fieldsArray).map((field) => String(field.name)))
     : null;
   for (const entry of asArray<Record<string, unknown>>(method.parsedOptions)) {
     const http = asRecord(asRecord(entry)?.['(google.api.http)']);
-    if (http) lintHttpRule(http, requestFieldNames, warnings, operationId, false);
+    if (http) lintHttpRule(http, requestFields, responseFieldNames, warnings, operationId, false);
   }
   if (asRecord(method.options)?.deprecated === true) {
     warnings.push(`GRPC_DEPRECATED: rpc ${operationId} is marked deprecated`);
@@ -852,6 +1027,31 @@ export function parseProtoSchema(content: string, deps?: ProtoParseDeps): GrpcCo
   // The fork's parse result does not surface `syntax`, so proto3-only lints key
   // off the source declaration directly (protobufjs defaults to proto2 without one).
   const proto3 = /^\s*syntax\s*=\s*["']proto3["']\s*;/m.test(content);
+  // protoc requires the syntax declaration, when present, to be the first
+  // non-comment, non-whitespace statement of the file.
+  const withoutComments = content.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, '');
+  const firstStatement = /^\s*([^;]*);/.exec(withoutComments);
+  if (/\bsyntax\s*=/.test(withoutComments) && firstStatement && !/^\s*syntax\s*=\s*["'](proto2|proto3)["']\s*$/.test(firstStatement[1])) {
+    warnings.push('GRPC_SYNTAX_PLACEMENT_INVALID: the syntax declaration is not the first non-comment statement of the file; protoc requires syntax = "..." before any other declaration');
+  }
+  // Import surface: a standalone parse does not resolve imported files, so
+  // cross-file rules (import public visibility, proto2 enums referenced from
+  // proto3 messages) are disclosed rather than silently skipped.
+  const importStatements = [...withoutComments.matchAll(/^\s*import\s+(public\s+|weak\s+)?"([^"]+)"\s*;/gm)];
+  const seenImports = new Set<string>();
+  for (const statement of importStatements) {
+    const target = statement[2];
+    if (seenImports.has(target)) {
+      warnings.push(`GRPC_IMPORT_DUPLICATE: "${target}" is imported more than once (protoc rejects duplicate imports)`);
+    }
+    seenImports.add(target);
+    if ((statement[1] ?? '').trim() === 'weak') {
+      warnings.push(`GRPC_IMPORT_WEAK: "${target}" uses import weak, which is Google-internal and ignored or rejected by most toolchains (protobuf language guide)`);
+    }
+  }
+  if (importStatements.length > 0) {
+    warnings.push(`GRPC_IMPORT_UNRESOLVED_DISCLOSURE: ${importStatements.length} import statement(s) are not resolved by this single-file parse; cross-file rules (import public visibility, proto2 enum references from proto3) are not asserted and imported types degrade to PROTO_FIELD_TYPE_UNRESOLVED`);
+  }
   const conventions = deps?.conventionWarnings === true;
 
   const messageIndex: Record<string, GrpcMessageDescriptor> = {};

@@ -88,6 +88,7 @@ Generated Postman test scripts validate response behavior for the matched OpenAP
   - Validates concrete scalar query/header parameter values against their OpenAPI schemas at runtime, coercing numeric and boolean strings to the declared type.
   - Covers default-serialization scalar parameters plus single-JSON-media `content` parameters (parsed and schema-validated at runtime).
   - Decodes and validates array-of-scalar query parameters across the decodable styles: exploded `form` arrays are gathered from repeated query keys, and non-exploded `form`, `spaceDelimited`, and `pipeDelimited` arrays are split on their declared delimiter; each item is coerced to the declared item type and the decoded array is validated against the full array schema. Array-of-scalar header parameters with default `simple` serialization are split on commas the same way.
+  - Decodes and validates `deepObject` query objects of scalar properties (reassembled from `name[prop]=value` pairs) and `label`/`matrix` path scalars (the style prefix is stripped before validation).
   - Parameters declaring `allowReserved`, an unvalidatable `content` shape, or a style/explode combination the runtime cannot decode carry `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`; object parameter schemas are skipped because their serialized form is not decodable.
   - Placeholder values such as `<integer>` or `{{variable}}` are skipped; absent required parameters fail; a present-but-empty scalar value is validated as the empty string, and an empty delimited array value decodes to the empty array, where `minItems` can fail it. Decoded query items are percent-decoded before validation; `allowEmptyValue` skips empty scalar and empty array values alike.
   - Header parameters named `Accept`, `Content-Type`, or `Authorization` are ignored everywhere, as the OAS Parameter Object requires.
@@ -137,7 +138,7 @@ Fail-closed or warning behavior:
 - Security requirements are warned as not runtime-proven beyond credential presence.
 - Required cookie parameters are warned as not includable in generated requests; the runtime presence assertion fails until the cookie is supplied at send time.
 - Deprecated operations are warned with `CONTRACT_OPERATION_DEPRECATED`.
-- Response links are warned with `CONTRACT_LINKS_NOT_VALIDATED`.
+- Response link expressions of the form `$response.body#/...` and `$response.header....` are evaluated at runtime against the response the link is declared on; links with no evaluable expression are warned with `CONTRACT_LINKS_NOT_VALIDATED`, and mixed links with `CONTRACT_LINKS_PARTIALLY_VALIDATED`.
 - Parameters with non-default `style`, `explode`, or `allowReserved` are warned with `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`. Parameters declared through `content` with a single JSON media type carry literal JSON values, so they are parsed and validated against their schema at runtime (placeholder values skip; unparseable values fail); other `content` shapes warn.
 - Query parameters with `allowEmptyValue: true` skip value validation for empty sent values.
 - Parameter schemas that fail to pack are warned with `CONTRACT_SCHEMA_NOT_COMPILED`; object parameter schemas and undecodable array forms (tuple schemas, `$ref` or non-scalar items) are a documented skip.
@@ -212,7 +213,7 @@ Common failure categories:
 | Ref/resource limits | `CONTRACT_REF_LIMIT_EXCEEDED`, `CONTRACT_REF_DEPTH_EXCEEDED`, `CONTRACT_REF_SIZE_EXCEEDED` |
 | OpenAPI loading | `CONTRACT_SPEC_PARSE_FAILED`, `CONTRACT_SPEC_VALIDATION_FAILED`, `CONTRACT_UNSUPPORTED_OPENAPI_VERSION` |
 | Contract indexing | `CONTRACT_OPERATION_NO_RESPONSES`, `CONTRACT_NO_ELIGIBLE_OPERATIONS`, `CONTRACT_DUPLICATE_OPERATION_MATCH` |
-| Indexing warnings | `CONTRACT_SECURITY_NOT_VALIDATED`, `CONTRACT_COOKIE_PARAM_NOT_VALIDATED`, `CONTRACT_OPERATION_DEPRECATED`, `CONTRACT_LINKS_NOT_VALIDATED`, `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`, `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED` |
+| Indexing warnings | `CONTRACT_SECURITY_NOT_VALIDATED`, `CONTRACT_COOKIE_PARAM_NOT_VALIDATED`, `CONTRACT_OPERATION_DEPRECATED`, `CONTRACT_LINKS_NOT_VALIDATED`, `CONTRACT_LINKS_PARTIALLY_VALIDATED`, `CONTRACT_UNKNOWN_HTTP_AUTH_SCHEME`, `CONTRACT_CREDENTIALS_IN_QUERY`, `CONTRACT_SECURITY_SCHEME_URL`, `CONTRACT_OAUTH2_UNDECLARED_SCOPE`, `CONTRACT_SECURITY_RESPONSES_INCOMPLETE`, `CONTRACT_UNSECURED_AUTH_RESPONSES`, `CONTRACT_INVALID_STATUS_CODE`, `CONTRACT_BODYLESS_STATUS_WITH_CONTENT`, `CONTRACT_METHOD_BODY_SEMANTICS`, `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`, `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED` |
 | Instrumentation warnings | `CONTRACT_REQUEST_BODY_INCOMPLETE`, `CONTRACT_READONLY_PROPERTY_IN_REQUEST`, `CONTRACT_UNDOCUMENTED_QUERY_PARAM`, `CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED` |
 | Request matching | `CONTRACT_DUPLICATE_OPERATION_REQUEST`, `CONTRACT_OPERATION_COVERAGE_FAILED`, `CONTRACT_STATIC_REQUEST_CHECK_FAILED` |
 | Script safety | `CONTRACT_FORBIDDEN_SCRIPT_CONSTRUCT`, `CONTRACT_SCRIPT_SIZE_EXCEEDED`, `CONTRACT_COLLECTION_SIZE_EXCEEDED` |

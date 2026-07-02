@@ -1956,9 +1956,9 @@ paths:
     expect(checkFor('names')).toMatchObject({ in: 'query', decode: 'ssv' });
     expect(checkFor('codes')).toMatchObject({ in: 'query', decode: 'pipes' });
     expect(checkFor('X-Flags')).toMatchObject({ in: 'header', decode: 'csv' });
-    expect(checkFor('filter')).toBeUndefined();
+    expect(checkFor('filter')).toMatchObject({ in: 'query', decode: 'deepObject' });
     const serialization = operation.warnings.filter((entry) => entry.startsWith('CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED'));
-    expect(serialization).toEqual(['CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter query:filter declares non-default style, explode, allowReserved, or content and its serialization is not validated']);
+    expect(serialization).toEqual([]);
 
     const script = createContractScript(operation).join('\n');
     const run = (query: Array<{ key: string; value: string }>, headers: Record<string, string> = {}) => {

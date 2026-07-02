@@ -13,10 +13,18 @@ export interface ContractHeader {
   unsupported?: string;
 }
 
+export interface ContractLinkExpression {
+  link: string;
+  kind: 'body' | 'header';
+  pointer?: string;
+  header?: string;
+}
+
 export interface ContractResponse {
   content: Record<string, ContractMedia>;
   hasBody: boolean;
   headers: ContractHeader[];
+  links?: ContractLinkExpression[];
 }
 
 export interface ContractParameterRequirement {
@@ -53,7 +61,8 @@ export interface ContractParameterCheck {
   allowEmptyValue?: boolean;
   content?: boolean;
   schema: unknown;
-  decode?: 'multi' | 'csv' | 'ssv' | 'pipes';
+  decode?: 'multi' | 'csv' | 'ssv' | 'pipes' | 'deepObject';
+  pathStyle?: 'label' | 'matrix';
   items?: unknown;
 }
 
@@ -64,6 +73,7 @@ export interface ContractSecurityCheck {
   in?: 'header' | 'query' | 'cookie';
   name?: string;
   prefix?: string;
+  bearerFormat?: string;
 }
 
 export interface ContractOperation {
@@ -79,6 +89,8 @@ export interface ContractOperation {
   requestBody?: ContractRequestBodyRequirement;
   security?: ContractSecurityCheck[][];
   pathMethods?: string[];
+  deprecated?: boolean;
+  servers?: string[];
   warnings: string[];
 }
 
@@ -223,7 +235,11 @@ function securityCheckFor(schemeName: string, scheme: JsonRecord | null): Contra
   if (scheme?.type === 'http') {
     const httpScheme = String(scheme.scheme || '').toLowerCase();
     if (httpScheme === 'basic') return { scheme: schemeName, kind, checkable: true, prefix: 'Basic ' };
-    if (httpScheme === 'bearer') return { scheme: schemeName, kind, checkable: true, prefix: 'Bearer ' };
+    if (httpScheme === 'bearer') {
+      const check: ContractSecurityCheck = { scheme: schemeName, kind, checkable: true, prefix: 'Bearer ' };
+      if (typeof scheme.bearerFormat === 'string' && scheme.bearerFormat) check.bearerFormat = scheme.bearerFormat;
+      return check;
+    }
     // RFC 7235 credentials always open with the auth-scheme token, so any
     // registered HTTP scheme (Digest, DPoP, Negotiate, ...) is checkable by
     // prefix; the runtime comparison is case-insensitive.
@@ -421,6 +437,7 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
       if (defaultSerialization) warnings.push(`CONTRACT_SCHEMA_NOT_COMPILED: parameter ${location}:${name} schema on ${operationId} skipped (${packed.unsupported})`);
       continue;
     }
+    validateParameterExamples(root, param, packed, `${location}:${name} of ${operationId}`, warnings);
     // A path parameter embedded in a compound segment such as /reports/{name}.{ext}
     // is extracted at runtime by matching the concrete request segment against the
     // template segment (see pathParamValue), so it IS schema-validated. Only an
@@ -442,11 +459,36 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
     }
     const scalarSchema = packedScalarSchema(packed);
     if (scalarSchema !== undefined) {
-      if (!defaultSerialization) continue;
+      // Label and matrix path values carry their style prefix in the concrete
+      // segment, which the runtime strips before validating, so those styles
+      // are decodable rather than warning-only.
+      const decodablePathStyle = location === 'path' && (style === 'label' || style === 'matrix') && !explode ? (style as 'label' | 'matrix') : undefined;
+      if (!defaultSerialization && !decodablePathStyle) continue;
+      if (!defaultSerialization) warnings.push(...noteWarnings);
       const check: ContractParameterCheck = { in: location, name, required: param.required === true, schema: scalarSchema };
+      if (decodablePathStyle) check.pathStyle = decodablePathStyle;
       if (location === 'query' && param.allowEmptyValue === true) check.allowEmptyValue = true;
       checks.push(check);
       continue;
+    }
+    // deepObject objects of scalar properties arrive as name[prop]=value query
+    // pairs the runtime reassembles into an object for the schema validator.
+    if (location === 'query' && style === 'deepObject' && explode) {
+      const objectSchema = asRecord(packed.schema);
+      const properties = objectSchema ? asRecord(objectSchema.properties) : null;
+      const allScalar = properties !== null && Object.keys(properties).length > 0 && Object.values(properties).every((prop) => {
+        const record = asRecord(prop);
+        if (!record) return false;
+        const types = Array.isArray(record.type) ? record.type : [record.type];
+        return types.every((entry) => typeof entry === 'string' && SCALAR_SCHEMA_TYPES.has(entry));
+      });
+      if (allScalar) {
+        warnings.push(...noteWarnings);
+        const check: ContractParameterCheck = { in: 'query', name, required: param.required === true, schema: packed.schema, decode: 'deepObject' };
+        if (param.allowEmptyValue === true) check.allowEmptyValue = true;
+        checks.push(check);
+        continue;
+      }
     }
     if (location !== 'query' && location !== 'header') continue;
     const items = packedArrayItemsSchema(packed);
@@ -832,6 +874,174 @@ function responseHeaders(root: JsonRecord, version: OpenApiVersion, response: Js
   return entries;
 }
 
+// IANA HTTP Authentication Scheme registry, 2026-06 snapshot. An http-type
+// security scheme outside this set still generates a prefix check, but the
+// unknown registration is surfaced instead of silently trusted.
+const IANA_HTTP_AUTH_SCHEMES = new Set([
+  'basic', 'bearer', 'concealed', 'digest', 'dpop', 'gnap', 'hoba', 'mutual', 'negotiate', 'oauth', 'privatetoken', 'scram-sha-1', 'scram-sha-256', 'vapid'
+]);
+
+function httpsUrlLint(value: unknown, label: string, schemeName: string): string | undefined {
+  if (typeof value !== 'string' || !value) return undefined;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:') return `CONTRACT_SECURITY_SCHEME_URL: security scheme ${schemeName} ${label} ${value} is not an HTTPS URL`;
+  } catch {
+    return `CONTRACT_SECURITY_SCHEME_URL: security scheme ${schemeName} ${label} ${value} is not a valid URL`;
+  }
+  return undefined;
+}
+
+function collectSecurityStaticLints(root: JsonRecord, operation: JsonRecord): string[] {
+  const securitySchemes = asRecord(asRecord(root.components)?.securitySchemes);
+  const requirements = operation.security === undefined ? asArray(root.security) : asArray(operation.security);
+  const warnings = new Set<string>();
+  for (const requirement of requirements.map((entry) => asRecord(entry)).filter((entry): entry is JsonRecord => Boolean(entry))) {
+    for (const [schemeName, requiredScopes] of Object.entries(requirement)) {
+      let scheme: JsonRecord | null;
+      try { scheme = resolveInternalRef<JsonRecord>(root, securitySchemes?.[schemeName]); } catch { scheme = null; }
+      if (!scheme) continue;
+      if (scheme.type === 'http') {
+        const httpScheme = String(scheme.scheme || '').toLowerCase();
+        if (httpScheme && !IANA_HTTP_AUTH_SCHEMES.has(httpScheme)) {
+          warnings.add(`CONTRACT_UNKNOWN_HTTP_AUTH_SCHEME: security scheme ${schemeName} uses "${httpScheme}", which is not in the IANA HTTP Authentication Scheme registry`);
+        }
+      }
+      if (scheme.type === 'apiKey' && String(scheme.in) === 'query') {
+        warnings.add(`CONTRACT_CREDENTIALS_IN_QUERY: security scheme ${schemeName} sends credentials in the query string, which leaks into logs and referrers`);
+      }
+      if (scheme.type === 'openIdConnect') {
+        const urlWarning = httpsUrlLint(scheme.openIdConnectUrl, 'openIdConnectUrl', schemeName);
+        if (urlWarning) warnings.add(urlWarning);
+        else if (typeof scheme.openIdConnectUrl === 'string' && !scheme.openIdConnectUrl.endsWith('/.well-known/openid-configuration')) {
+          warnings.add(`CONTRACT_SECURITY_SCHEME_URL: security scheme ${schemeName} openIdConnectUrl does not end in /.well-known/openid-configuration`);
+        }
+      }
+      if (scheme.type === 'oauth2') {
+        const flows = asRecord(scheme.flows) ?? {};
+        const declaredScopes = new Set<string>();
+        for (const [flowName, rawFlow] of Object.entries(flows)) {
+          const flow = asRecord(rawFlow);
+          if (!flow) continue;
+          for (const scope of Object.keys(asRecord(flow.scopes) ?? {})) declaredScopes.add(scope);
+          const urlFields: Array<[string, unknown]> = [['refreshUrl', flow.refreshUrl]];
+          if (flowName === 'implicit' || flowName === 'authorizationCode') urlFields.push(['authorizationUrl', flow.authorizationUrl]);
+          if (flowName === 'password' || flowName === 'clientCredentials' || flowName === 'authorizationCode') urlFields.push(['tokenUrl', flow.tokenUrl]);
+          for (const [label, value] of urlFields) {
+            const urlWarning = httpsUrlLint(value, `${flowName} ${label}`, schemeName);
+            if (urlWarning) warnings.add(urlWarning);
+          }
+        }
+        for (const scope of asArray(requiredScopes).filter((entry): entry is string => typeof entry === 'string')) {
+          if (!declaredScopes.has(scope)) {
+            warnings.add(`CONTRACT_OAUTH2_UNDECLARED_SCOPE: operation requires scope "${scope}" of ${schemeName}, which no flow of the scheme declares`);
+          }
+        }
+      }
+    }
+  }
+  return [...warnings];
+}
+
+function collectSecurityResponseLints(root: JsonRecord, operation: JsonRecord, responses: JsonRecord, operationId: string): string[] {
+  const warnings: string[] = [];
+  const requirements = operation.security === undefined ? asArray(root.security) : asArray(operation.security);
+  const requirementRecords = requirements.map((entry) => asRecord(entry)).filter((entry): entry is JsonRecord => Boolean(entry));
+  const secured = requirementRecords.length > 0 && requirementRecords.every((entry) => Object.keys(entry).length > 0);
+  const statusKeys = new Set(Object.keys(responses));
+  const hasCatchAll = statusKeys.has('default') || statusKeys.has('4XX');
+  if (secured && !statusKeys.has('401') && !hasCatchAll) {
+    warnings.push(`CONTRACT_SECURITY_RESPONSES_INCOMPLETE: ${operationId} requires authentication but documents no 401 (or 4XX/default) response`);
+  }
+  const usesScopes = requirementRecords.some((entry) => Object.values(entry).some((scopes) => Array.isArray(scopes) && scopes.length > 0));
+  if (secured && usesScopes && !statusKeys.has('403') && !hasCatchAll) {
+    warnings.push(`CONTRACT_SECURITY_RESPONSES_INCOMPLETE: ${operationId} requires scopes but documents no 403 (or 4XX/default) response`);
+  }
+  if (requirementRecords.length === 0) {
+    for (const status of ['401', '403']) {
+      if (statusKeys.has(status)) warnings.push(`CONTRACT_UNSECURED_AUTH_RESPONSES: ${operationId} documents a ${status} response but declares no security requirement`);
+    }
+  }
+  return warnings;
+}
+
+// Link parameter/requestBody values of the form $response.body#/ptr and
+// $response.header.Name are runtime-evaluable against the very response the
+// link is declared on; everything else ($request.*, $url, whole-body) stays
+// warning-only.
+function collectLinkExpressions(root: JsonRecord, response: JsonRecord, operationId: string, warnings: Set<string>): ContractLinkExpression[] {
+  const links = asRecord(response.links);
+  if (!links) return [];
+  const expressions: ContractLinkExpression[] = [];
+  let unevaluated = false;
+  for (const [linkName, rawLink] of Object.entries(links)) {
+    let link: JsonRecord | null;
+    try { link = resolveInternalRef<JsonRecord>(root, rawLink); } catch { link = null; }
+    if (!link) { unevaluated = true; continue; }
+    const values: unknown[] = Object.values(asRecord(link.parameters) ?? {});
+    if (link.requestBody !== undefined) values.push(link.requestBody);
+    if (values.length === 0) unevaluated = true;
+    for (const value of values) {
+      if (typeof value !== 'string' || !value.startsWith('$')) continue;
+      const bodyMatch = value.match(/^\$response\.body#(\/.*)$/);
+      if (bodyMatch) { expressions.push({ link: linkName, kind: 'body', pointer: bodyMatch[1]! }); continue; }
+      const headerMatch = value.match(/^\$response\.header\.([!#$%&'*+.^_`|~0-9A-Za-z-]+)$/);
+      if (headerMatch) { expressions.push({ link: linkName, kind: 'header', header: headerMatch[1]! }); continue; }
+      unevaluated = true;
+    }
+  }
+  if (expressions.length === 0) {
+    if (unevaluated) warnings.add(`CONTRACT_LINKS_NOT_VALIDATED: response links are not validated for ${operationId}`);
+  } else if (unevaluated) {
+    warnings.add(`CONTRACT_LINKS_PARTIALLY_VALIDATED: some link expressions for ${operationId} are not runtime-evaluable and are skipped`);
+  }
+  return expressions;
+}
+
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Advisory-only server conformance: the request URL is matched against the
+// declared servers with enum-constrained variables; mismatches surface in the
+// advisory channel rather than failing, because pointing a run at a mock or
+// staging host is legitimate.
+function serverAdvisoryPatterns(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): string[] | undefined {
+  const serverLists = [asArray(operation.servers), asArray(pathItem.servers), asArray(root.servers)];
+  const servers = serverLists.find((list) => list.length > 0) ?? [];
+  const patterns: string[] = [];
+  for (const rawServer of servers) {
+    const server = asRecord(rawServer);
+    if (!server) continue;
+    const url = typeof server.url === 'string' ? server.url.trim() : '';
+    if (!url || url === '/') continue;
+    const variables = asRecord(server.variables);
+    const pattern = url.split(/(\{[^}]+\})/).map((part) => {
+      const varMatch = part.match(/^\{([^}]+)\}$/);
+      if (!varMatch) return escapeRegExpLiteral(part);
+      const variable = asRecord(variables?.[varMatch[1]!]);
+      const enumValues = asArray(variable?.enum).filter((entry): entry is string => typeof entry === 'string');
+      if (enumValues.length > 0) return `(${enumValues.map(escapeRegExpLiteral).join('|')})`;
+      return '[^/]*';
+    }).join('');
+    patterns.push(`^${pattern}`);
+  }
+  return patterns.length > 0 ? patterns : undefined;
+}
+
+function validateParameterExamples(root: JsonRecord, param: JsonRecord, packed: PackedSchema, context: string, warnings: string[]): void {
+  if (packed.schema === undefined || packed.unsupported) return;
+  const candidates = exampleCandidates(root, param);
+  if (candidates.length === 0) return;
+  const validate = compileSchemaValidator(packed.schema);
+  if (!validate) return;
+  for (const candidate of candidates) {
+    if (!validate(candidate.value)) {
+      warnings.push(`CONTRACT_EXAMPLE_SCHEMA_MISMATCH: ${candidate.label} for parameter ${context} does not match its schema`);
+    }
+  }
+}
+
 export function buildContractIndex(root: JsonRecord): ContractIndex {
   if (root.swagger === '2.0') throw new Error('CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (found swagger 2.0)');
   if (!('openapi' in root)) throw new Error('CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (missing openapi)');
@@ -852,6 +1062,9 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
         const operation = resolveInternalRef<JsonRecord>(root, rawOperation);
         if (!operation) continue;
         if (operation.callbacks) warnings.push(`CONTRACT_CALLBACKS_NOT_VALIDATED: callbacks are not validated for ${lowerMethod.toUpperCase()} ${path}`);
+        if (operation.requestBody !== undefined && ['get', 'head', 'delete'].includes(lowerMethod)) {
+          warnings.push(`CONTRACT_METHOD_BODY_SEMANTICS: ${lowerMethod.toUpperCase()} ${path} declares a request body; RFC 9110 defines no request-body semantics for ${lowerMethod.toUpperCase()}`);
+        }
         const responses = asRecord(operation.responses);
         if (!responses || Object.keys(responses).length === 0) {
           throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path} must define at least one response`);
@@ -861,11 +1074,15 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
         for (const [status, rawResponse] of Object.entries(responses)) {
           const response = resolveInternalRef<JsonRecord>(root, rawResponse);
           if (!response) continue;
-          if (asRecord(response.links)) {
-            responseWarnings.add(`CONTRACT_LINKS_NOT_VALIDATED: response links are not validated for ${lowerMethod.toUpperCase()} ${path}`);
+          if (status !== 'default' && !/^[1-5]XX$/.test(status) && !/^[1-5][0-9][0-9]$/.test(status)) {
+            responseWarnings.add(`CONTRACT_INVALID_STATUS_CODE: ${lowerMethod.toUpperCase()} ${path} declares response status "${status}" outside RFC 9110's 100-599, 1XX-5XX, or default forms`);
           }
+          const linkExpressions = collectLinkExpressions(root, response, `${lowerMethod.toUpperCase()} ${path}`, responseWarnings);
           const responseContext = `${lowerMethod.toUpperCase()} ${path} status ${status}`;
           const content = responseContent(root, version, response, responseContext, responseWarnings);
+          if ((status === '204' || status === '205' || status === '304') && Object.keys(content).length > 0) {
+            responseWarnings.add(`CONTRACT_BODYLESS_STATUS_WITH_CONTENT: ${lowerMethod.toUpperCase()} ${path} declares content for status ${status}, which RFC 9110 forbids on the wire`);
+          }
           for (const [contentType, media] of Object.entries(content)) {
             const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
             const schemaType = asRecord(media.schema)?.type;
@@ -877,7 +1094,8 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           contractResponses[normalizeResponseKey(status)] = {
             content,
             hasBody: Object.keys(content).length > 0,
-            headers
+            headers,
+            ...(linkExpressions.length > 0 ? { links: linkExpressions } : {})
           };
         }
         const candidates = [...new Set([
@@ -890,11 +1108,13 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
         opWarnings.push(...collectSecuritySchemeWarnings(root, operation));
         const parameterChecks = collectParameterChecks(root, pathItem, operation, version, operationId, path, opWarnings);
         const checkedKeys = new Set((parameterChecks ?? []).map((check) => `${check.in}:${check.name.toLowerCase()}`));
-        const decodedKeys = new Set((parameterChecks ?? []).filter((check) => check.decode).map((check) => `${check.in}:${check.name.toLowerCase()}`));
+        const decodedKeys = new Set((parameterChecks ?? []).filter((check) => check.decode || check.pathStyle).map((check) => `${check.in}:${check.name.toLowerCase()}`));
         opWarnings.push(...collectSerializationWarnings(root, pathItem, operation, decodedKeys));
         if (operation.deprecated === true) {
           opWarnings.push(`CONTRACT_OPERATION_DEPRECATED: ${lowerMethod.toUpperCase()} ${path} is marked deprecated in the OpenAPI document`);
         }
+        opWarnings.push(...collectSecurityStaticLints(root, operation));
+        opWarnings.push(...collectSecurityResponseLints(root, operation, responses, operationId));
         const requiredParameters = collectParameters(root, pathItem, operation);
         for (const parameter of requiredParameters.filter((entry) => entry.securityDerived)) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);
@@ -928,6 +1148,8 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           requestBody: collectRequestBody(root, operation, version, operationId, opWarnings),
           security: collectSecurityRuntimeChecks(root, operation),
           pathMethods: Object.keys(pathItem).filter((key) => HTTP_METHODS.has(key)).map((key) => key.toUpperCase()),
+          deprecated: operation.deprecated === true || undefined,
+          servers: serverAdvisoryPatterns(root, pathItem, operation),
           warnings: opWarnings
         });
       }

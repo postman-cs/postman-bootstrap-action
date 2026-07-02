@@ -162,4 +162,8 @@ describe('WSDL 2.0 conformance lints (catalog additions)', () => {
     const wsdl = ROOT_WSDL.replace('<soap:operation soapAction="urn:do"/>', '<soap:operation soapActionRequired="true"/>');
     expect(lintWsiConformance(wsdl).join('\n')).toContain('SOAP_WSI_SOAPACTION_REQUIRED');
   });
+  it('validates wrpc:signature direction tokens', () => {
+    const doc = DESC.replace('style="http://www.w3.org/ns/wsdl/style/rpc"', 'style="http://www.w3.org/ns/wsdl/style/rpc" signature="x:Req #bogus"');
+    expect(lintWsiConformance(doc).join('\n')).toContain('SOAP_WSDL20_RPC_SIGNATURE');
+  });
 });

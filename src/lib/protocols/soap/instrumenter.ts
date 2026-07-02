@@ -452,6 +452,33 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     '  var faultKids = directChildNames(faultBodyInner);',
     '  if (faultKids.length !== 1 || localPart(faultKids[0]) !== "Fault") pm.expect.fail("a Fault must be the sole direct child of soap:Body; got [" + faultKids.join(", ") + "]");',
     '});',
+    ...(operation.faultElements && operation.faultElements.length > 0
+      ? [
+          '',
+          "pm.test('SOAP Fault Detail children match the declared interface faults (WSDL 2.0 section 2.6)', function () {",
+          '  if (!matchTag("Fault").test(bodyText)) return;',
+          '  var detailInner = elementInner(cleanXml, "Detail") || elementInner(cleanXml, "detail");',
+          '  if (detailInner === null || !detailInner.trim()) return;',
+          '  var declaredDetail = ' + JSON.stringify(operation.faultElements) + ';',
+          '  var detailKids = directChildNames(detailInner).map(localPart);',
+          '  for (var d = 0; d < detailKids.length; d++) { if (declaredDetail.indexOf(detailKids[d]) === -1) pm.expect.fail("fault Detail child " + detailKids[d] + " matches no declared interface fault element (" + declaredDetail.join(", ") + ")"); }',
+          '});'
+        ]
+      : []),
+    ...(operation.faultCodes && operation.faultCodes.length > 0 && operation.soapVersion === '1.2'
+      ? [
+          '',
+          "pm.test('SOAP Fault Subcode is declared by the binding (WSDL 2.0 Adjuncts section 5.5.7)', function () {",
+          '  if (!matchTag("Fault").test(bodyText)) return;',
+          '  var subMatch = bodyText.match(/<(?:[\\w.-]*:)?Subcode[^>]*>[\\s\\S]*?<(?:[\\w.-]*:)?Value[^>]*>([^<]*)</);',
+          '  if (!subMatch) return;',
+          '  var subValue = subMatch[1].trim();',
+          '  var subLocal = subValue.indexOf(":") === -1 ? subValue : subValue.slice(subValue.indexOf(":") + 1);',
+          '  var declaredCodes = ' + JSON.stringify(operation.faultCodes) + ';',
+          '  if (declaredCodes.indexOf(subLocal) === -1) pm.expect.fail("fault Subcode " + subValue + " is not one of the binding-declared codes (" + declaredCodes.join(", ") + ")");',
+          '});'
+        ]
+      : []),
     // Fault well-formedness (diagnostic companion to the Fault-absence test: a
     // faulted run already fails, this pinpoints a malformed Fault). SOAP 1.1
     // section 4.4 requires faultcode + faultstring children; SOAP 1.2 Part 1

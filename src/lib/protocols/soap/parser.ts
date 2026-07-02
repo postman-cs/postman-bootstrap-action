@@ -50,6 +50,10 @@ export interface SoapOperation {
   mepPattern?: string;
   /** WSDL 2.0 binding wsoap:mep (or wsoap:mepDefault) IRI, when declared. */
   soapMep?: string;
+  /** Local names of schema elements bound as fault detail (WSDL 2.0 infault/outfault refs). */
+  faultElements?: string[];
+  /** Local parts of binding-declared SOAP fault codes (wsoap:code, excluding #any). */
+  faultCodes?: string[];
   /** Binding soap:header blocks declared for the request (WSDL 1.1 section 3.7). */
   inputHeaders?: SoapHeaderDecl[];
   /** Binding soap:header blocks declared for the response (WSDL 1.1 section 3.7). */
@@ -493,6 +497,8 @@ const WSDL20_SOAP_BINDING_TYPE = 'http://www.w3.org/ns/wsdl/soap';
 interface BindingOp20 {
   action?: string;
   mep?: string;
+  inputHeaders?: SoapHeaderDecl[];
+  outputHeaders?: SoapHeaderDecl[];
 }
 
 interface Binding20 {
@@ -500,6 +506,7 @@ interface Binding20 {
   soapVersion: SoapVersion;
   mepDefault?: string;
   ops: Map<string, BindingOp20>;
+  faultCodes?: string[];
 }
 
 /** Parse WSDL 2.0 <binding> elements: SOAP version, per-operation MEPs and actions. */
@@ -518,15 +525,36 @@ function parseBindings20(description: JsonRecord, warnings: string[]): Map<strin
     for (const operation of children(binding, 'operation')) {
       const ref = localName(attr(operation, 'ref'));
       if (!ref) continue;
+      const headerDecls20 = (direction: 'input' | 'output'): SoapHeaderDecl[] => {
+        const decls: SoapHeaderDecl[] = [];
+        for (const dirNode of children(operation, direction)) {
+          for (const header of children(dirNode, 'header')) {
+            const element = attr(header, 'element');
+            if (!element || element.startsWith('#')) continue;
+            decls.push({ element: localName(element), namespace: namespaceForPrefix([description, binding, operation, dirNode, header], prefixOf(element)) || undefined });
+          }
+        }
+        return decls;
+      };
+      const inputHeaders20 = headerDecls20('input');
+      const outputHeaders20 = headerDecls20('output');
       ops.set(ref, {
         action: attr(operation, 'action') || undefined,
-        mep: attr(operation, 'mep') || undefined
+        mep: attr(operation, 'mep') || undefined,
+        inputHeaders: inputHeaders20.length > 0 ? inputHeaders20 : undefined,
+        outputHeaders: outputHeaders20.length > 0 ? outputHeaders20 : undefined
       });
+    }
+    const faultCodes: string[] = [];
+    for (const fault of children(binding, 'fault')) {
+      const code = attr(fault, 'code');
+      if (code && code !== '#any') faultCodes.push(localName(code));
     }
     out.set(name, {
       interfaceName: localName(attr(binding, 'interface')),
       soapVersion,
       mepDefault: attr(binding, 'mepDefault') || undefined,
+      faultCodes: faultCodes.length > 0 ? faultCodes : undefined,
       ops
     });
   }
@@ -553,6 +581,21 @@ function parseServices20(description: JsonRecord, warnings: string[]): SoapServi
       const outLocal = outputElement.startsWith('#') ? '' : localName(outputElement);
       if (!outputRecord) opWarnings.push(`SOAP_OPERATION_ONE_WAY: operation ${name} declares no output; response assertions limited to transport`);
       const bindingOp = binding?.ops.get(name);
+      const ifaceFaultElements = new Map<string, string>();
+      for (const fault of children(iface, 'fault')) {
+        const faultName = attr(fault, 'name');
+        const faultElement = attr(fault, 'element');
+        if (faultName && faultElement && !faultElement.startsWith('#')) ifaceFaultElements.set(faultName, localName(faultElement));
+      }
+      const faultElements = [...children(operation, 'infault'), ...children(operation, 'outfault')]
+        .map((faultRef) => ifaceFaultElements.get(localName(attr(faultRef, 'ref'))))
+        .filter((element): element is string => Boolean(element));
+      const inputAction = attr(inputRecord, 'Action') || undefined;
+      // WS-Addressing Metadata section 4.4.1: an explicit wsam:Action and the
+      // binding's wsoap:action must agree when both are declared.
+      if (inputAction && bindingOp?.action && inputAction !== bindingOp.action) {
+        opWarnings.push(`SOAP_WSDL20_ACTION_MISMATCH: operation ${name} declares wsam:Action "${inputAction}" but the binding declares wsoap:action "${bindingOp.action}"; WS-Addressing Metadata section 4.4.1 requires them to be identical`);
+      }
       // The input message reference makes one-way shapes parse-confirmed
       // (input present, output absent) so the instrumenter can switch to the
       // one-way transport contract for WSDL 2.0 in-only operations.
@@ -565,6 +608,11 @@ function parseServices20(description: JsonRecord, warnings: string[]): SoapServi
         soapVersion: binding?.soapVersion ?? ('1.2' as SoapVersion),
         mepPattern: attr(operation, 'pattern') || undefined,
         soapMep: bindingOp?.mep ?? binding?.mepDefault,
+        inputAction,
+        inputHeaders: bindingOp?.inputHeaders,
+        outputHeaders: bindingOp?.outputHeaders,
+        faultElements: faultElements.length > 0 ? faultElements : undefined,
+        faultCodes: binding?.faultCodes,
         portTypeName: attr(iface, 'name') || undefined,
         input,
         output: outLocal ? { name, parts: [{ name, element: outputElement }] } : undefined,

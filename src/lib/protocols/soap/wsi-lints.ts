@@ -1085,6 +1085,18 @@ function lintWsdl20MepShape(op: XNode, ifName: string, opName: string, pattern: 
       }
     }
   }
+  const signature = attr(op, 'signature');
+  if (signature !== undefined) {
+    const tokens = signature.split(/\s+/).filter(Boolean);
+    if (tokens.length % 2 !== 0) {
+      warnings.push('SOAP_WSDL20_RPC_SIGNATURE: ' + label + ' wrpc:signature must pair each element with a direction token (WSDL 2.0 Adjuncts section 4.1.2)');
+    }
+    for (let i = 1; i < tokens.length; i += 2) {
+      if (!['#in', '#out', '#inout', '#return'].includes(tokens[i])) {
+        warnings.push('SOAP_WSDL20_RPC_SIGNATURE: ' + label + ' wrpc:signature direction token "' + tokens[i] + '" must be #in, #out, #inout, or #return (WSDL 2.0 Adjuncts section 4.1.2)');
+      }
+    }
+  }
 }
 
 function lintWsdl20ElementResolution(description: XNode, table: SchemaElementTable, warnings: string[]): void {

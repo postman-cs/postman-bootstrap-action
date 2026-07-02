@@ -1233,7 +1233,10 @@ paths:
     expect(search.warnings).toContain(
       'CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: application/x-www-form-urlencoded request body field tags on POST /search declares non-default encoding style, explode, or allowReserved and its serialization is not validated'
     );
-    expect(search.warnings.filter((entry) => entry.includes('field label'))).toEqual([]);
+    expect(search.warnings.filter((entry) => entry.startsWith('CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED') && entry.includes('field label'))).toEqual([]);
+    expect(search.warnings).toContain(
+      'CONTRACT_MULTIPART_ENCODING_FIELD_UNKNOWN: POST /search application/x-www-form-urlencoded encoding map names field label, which is not a property of the request body schema'
+    );
     const item = (formdata: unknown[]) => ({
       item: [{
         request: {

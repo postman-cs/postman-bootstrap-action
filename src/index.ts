@@ -1329,7 +1329,10 @@ async function provisionWorkspace(
 function protocolExecutionNote(specType: Exclude<SpecType, 'openapi'>, runnableInCi: boolean): string {
   if (runnableInCi) return 'Runs in Postman CLI / Newman.';
   if (specType === 'asyncapi') {
-    return 'WebSocket/Socket.IO items are pruned by the Postman CLI runner (WS_NOT_CI_EXECUTABLE); the collection provides schema-validated contract examples for manual and in-app runs.';
+    return 'WebSocket/Socket.IO/MQTT items are pruned by the Postman CLI runner (WS_NOT_CI_EXECUTABLE); the collection provides schema-validated contract examples for manual and in-app runs.';
+  }
+  if (specType === 'mcp') {
+    return 'MCP items are pruned by the Postman CLI runner; the collection provides statically validated JSON-RPC templates for manual and in-app runs.';
   }
   return 'This protocol is not executable in the Postman CLI runner.';
 }

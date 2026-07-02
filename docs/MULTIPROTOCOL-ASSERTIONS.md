@@ -14,7 +14,9 @@ types are supported, the spec each is derived from, and where that support is gr
 | gRPC | `grpc-request` (v3 EC) | Yes | Protocol Buffers `.proto` | `.proto` |
 | WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI 2.0-2.6 / 3.0 | AsyncAPI document |
 | Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI 2.0-2.6 / 3.0 | AsyncAPI document |
-| MQTT / LLM / MCP | `mqtt-request` / `llm-request` / `mcp-request` | No (label-only) | Required future protocol specs | Required future protocol specs |
+| MQTT | `mqtt-request` (v3 EC) | No (pruned) | AsyncAPI 2.0-2.6 / 3.0 with MQTT servers/bindings | AsyncAPI document |
+| MCP | `mcp-request` (v3 EC) | No (pruned) | MCP registry `server.json` / `mcpServers` client config | MCP server manifest |
+| LLM | `llm-request` | No (label-only) | Required future protocol spec | Required future protocol spec |
 
 GraphQL-over-HTTP and SOAP-over-HTTP are emitted as ordinary v2 `http` requests, so they run in the
 same legacy Postman CLI / Newman HTTP execution path the action already uses for REST. gRPC requires
@@ -61,11 +63,28 @@ Runtime message-exchange execution in CI remains blocked by the upstream Postman
 prunes `ws-*` item types (issues #10640, #11252, #12316); the generation-time validation above is the
 enforceable contract surface until that runner path exists.
 
+### MQTT contract coverage
+
+AsyncAPI documents whose servers declare `mqtt`, `mqtts`, or `secure-mqtt` (or whose channels carry MQTT bindings) generate native `mqtt-request` items through the same AsyncAPI pipeline, with MQTT-specific generation-time checks layered on top of the payload/coverage discipline above:
+
+- Channel addresses must satisfy the MQTT 3.1.1/5.0 topic grammar (non-empty, no U+0000, at most 65535 UTF-8 bytes). A concrete publish topic must not contain `+`/`#`; violations raise `ASYNCAPI_MQTT_TOPIC_INVALID`.
+- A wildcard address is treated as a subscription topic filter: `#` only in the final level, `+` occupying a whole level, flagged with `ASYNCAPI_MQTT_TOPIC_FILTER` so the publish/subscribe asymmetry is auditable.
+- MQTT binding values are range-checked (`qos` 0-2, `retain` boolean, `keepAlive`/`messageExpiryInterval` non-negative integers, `payloadFormatIndicator` 0 or 1, `responseTopic` and `lastWill.topic` concrete topics, `lastWill.qos`/`lastWill.retain` typed); violations raise `ASYNCAPI_MQTT_BINDING_INVALID`.
+
+The unified runner prunes `mqtt-request` like the `ws-*` types, so these collections are `runnableInCi: false` with the generation-time validation as the enforceable contract surface.
+
+### MCP contract coverage
+
+MCP server manifests are ingested as a first-class spec source: the detector recognizes both the MCP registry `server.json` shape and the `mcpServers` client-configuration shape. The parser builds a contract index of servers (remote `sse`/streamable-HTTP endpoints and `stdio` package commands) and declared tools; secret header and environment values are replaced with `{{variable}}` placeholders and never persisted (`MCP_SECRET_VALUE_PRESENT` guards a concrete value). A streamable-HTTP remote is generated on the `sse` transport payload with `MCP_STREAMABLE_HTTP_AS_SSE` recording the downgrade.
+
+The builder emits deterministic `mcp-request` EC items per server — `initialize`, `tools/list`, and one `tools/call` per tool with arguments synthesized from the tool’s `inputSchema` — grounded in the bundled `@postman/runtime.models` extensible item schema (`mcp-request.payload` is `{ transport: sse | stdio, …, message }` and carries no test-script slot).
+
+Because `mcp-request` has no script slot and the unified runner prunes it, contract enforcement is generation-time/static, mirroring the AsyncAPI discipline: every generated JSON-RPC message must be a well-formed JSON-RPC 2.0 request (a malformed one is a builder bug and fails closed with `MCP_MESSAGE_INVALID`), each tool’s `inputSchema` is compiled through the packed-schema machinery and the synthesized `tools/call` arguments are validated against it (the MCP analogue of `CONTRACT_EXAMPLE_SCHEMA_MISMATCH`; `MCP_TOOL_SAMPLE_MISMATCH` / `MCP_TOOL_SCHEMA_INVALID` / `MCP_TOOL_SCHEMA_NOT_VALIDATED` otherwise), server transport material is checked (`MCP_SERVER_URL_INVALID`/`MCP_SERVER_URL_MISSING`, `MCP_SERVER_COMMAND_MISSING`), tool naming is audited (`MCP_TOOL_NAME_*`), item coverage is enforced against the built collection (`MCP_ITEM_COVERAGE_FAILED` fails closed), and a collection size gate applies (`MCP_COLLECTION_SIZE_EXCEEDED`).
+
 ### Remaining protocol surfaces
 
-- **MQTT / LLM / MCP:** the Postman item types (`mqtt-request` / `llm-request` / `mcp-request`) are
-  label-only. Contract ingestion and assertion generation for them require the accepted contract
-  source for each protocol to be defined first.
+- **LLM:** the Postman item type (`llm-request`) is label-only. Contract ingestion and assertion
+  generation for it require the accepted contract source for the protocol to be defined first.
 
 ### gRPC assertion coverage
 
@@ -83,7 +102,12 @@ requires an RFC 3339 timestamp with `Z` or numeric offset and 0-9 fractional dig
 `google.protobuf.FieldMask` requires comma-separated lowerCamelCase paths, and `bytes` /
 `google.protobuf.BytesValue` require standard or URL-safe base64 with correct optional padding.
 `google.protobuf.Value` remains present-only because its ProtoJSON mapping is intentionally any JSON
-value. Shape recursion is bounded (depth 5, cycle-guarded); deeper nesting is asserted object-only
+value. `google.rpc.Status`-shaped fields resolved from the `.proto` (for example
+`google.longrunning.Operation.error`) get a dedicated semantic check: `code` in the canonical 0-16
+range, a string `message`, and `details` entries that are objects with a string `@type`. The
+HTTP↔grpc-status mapping and `grpc-message`/trailer metadata are not script-visible in
+`grpc-request` items (the sandbox surface is `pm.response.code`/`status`/`json()` only), so they are
+out of scope for generated assertions. Shape recursion is bounded (depth 5, cycle-guarded); deeper nesting is asserted object-only
 with a `PROTO_NESTED_SHAPE_TRUNCATED` warning.
 
 ## Write path: public v2.1.0 vs gateway EC

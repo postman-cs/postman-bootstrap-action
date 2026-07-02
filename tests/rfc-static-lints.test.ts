@@ -165,6 +165,48 @@ paths:
     expect(index.operations[0]!.warnings.some((w) => w.startsWith('CONTRACT_EXAMPLE_SCHEMA_MISMATCH') && w.includes('query:n'))).toBe(true);
   });
 
+  it('flags unregistered /.well-known/ suffixes against the IANA snapshot', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /.well-known/openid-configuration:
+    get:
+      responses:
+        '200': { description: OK }
+  /.well-known/my-custom-thing:
+    get:
+      responses:
+        '200': { description: OK }
+`);
+    expect(index.warnings.filter((w) => w.startsWith('CONTRACT_WELL_KNOWN_UNREGISTERED'))).toEqual([
+      expect.stringContaining('my-custom-thing')
+    ]);
+  });
+
+  it('flags encoding map keys that are not request body schema properties', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /upload:
+    post:
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+            encoding:
+              file: { contentType: application/octet-stream }
+              ghost: { contentType: application/json }
+      responses:
+        '201': { description: Created }
+`);
+    const warnings = index.operations[0]!.warnings;
+    expect(warnings.some((w) => w.startsWith('CONTRACT_MULTIPART_ENCODING_FIELD_UNKNOWN') && w.includes('ghost'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_MULTIPART_ENCODING_FIELD_UNKNOWN') && w.includes('field file'))).toBe(false);
+  });
+
   it('emits server advisory patterns with enum-constrained variables', () => {
     const index = indexFrom(`openapi: 3.1.0
 info: { title: T, version: 1 }

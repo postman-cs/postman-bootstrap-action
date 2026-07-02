@@ -297,6 +297,12 @@ function classifyValueType(
   // not the reference resolves, so it is the reliable classifier.
   const wkt = WELL_KNOWN_JSON_TYPE[stripLeadingDot(protoType)];
   if (wkt) return { jsonType: wkt.jsonType, jsonFormat: wkt.jsonFormat, nullable: wkt.nullable, intType: wkt.intType };
+  // google.rpc.Status rides the same name-keyed path as the WKTs: its
+  // google/rpc/status.proto import is never bundled by a standalone parse, and
+  // the instrumenter carries a canonical built-in shape for it.
+  if (stripLeadingDot(protoType) === 'google.rpc.Status') {
+    return { jsonType: 'object', messageType: 'google.rpc.Status' };
+  }
   if (resolved && Array.isArray(resolved.fieldsArray)) {
     return { jsonType: 'object', messageType: stripLeadingDot(resolved.fullName) };
   }

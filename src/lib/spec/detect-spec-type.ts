@@ -1,6 +1,6 @@
 type JsonRecord = Record<string, unknown>;
 
-export type SpecType = 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi';
+export type SpecType = 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi' | 'mcp';
 
 /**
  * Classify an API spec document into the protocol whose generator owns it.
@@ -12,7 +12,8 @@ export type SpecType = 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi';
  * - grpc  -> Protocol Buffers `.proto` IDL
  * - soap  -> WSDL 1.1 / 2.0 XML
  * - graphql -> GraphQL SDL or introspection JSON (`__schema`)
- * - asyncapi -> AsyncAPI 2.x/3.0 document (`asyncapi:` version key) for WebSocket / Socket.IO
+ * - asyncapi -> AsyncAPI 2.x/3.0 document (`asyncapi:` version key) for WebSocket / Socket.IO / MQTT
+ * - mcp -> MCP server description (registry server.json or `mcpServers` client config)
  * - openapi -> OpenAPI 3.0 / 3.1 (or Swagger 2.0, rejected later by the loader)
  */
 export function detectSpecType(content: string, fileName?: string): SpecType {
@@ -52,6 +53,7 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
       if (looksLikeIntrospection(record)) return 'graphql';
       if (typeof record.asyncapi === 'string') return 'asyncapi';
       if (typeof record.openapi === 'string' || record.swagger === '2.0') return 'openapi';
+      if (looksLikeMcp(record)) return 'mcp';
     }
     // Unrecognized JSON defaults to OpenAPI so the loader can produce its
     // canonical version-gate error rather than a vague protocol mismatch.
@@ -86,6 +88,16 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
 
   // YAML OpenAPI (openapi:/swagger: key) or anything else falls back to OpenAPI.
   return 'openapi';
+}
+
+// MCP server descriptions are conservative to detect (arbitrary JSON must keep
+// falling back to OpenAPI): the `mcpServers` client-config key, a
+// modelcontextprotocol `$schema`, or the registry server.json identity shape
+// (`name` plus a `remotes`/`packages` array).
+function looksLikeMcp(record: JsonRecord): boolean {
+  if (record.mcpServers && typeof record.mcpServers === 'object' && !Array.isArray(record.mcpServers)) return true;
+  if (typeof record.$schema === 'string' && /modelcontextprotocol/i.test(record.$schema)) return true;
+  return typeof record.name === 'string' && (Array.isArray(record.remotes) || Array.isArray(record.packages));
 }
 
 function looksLikeIntrospection(record: JsonRecord): boolean {

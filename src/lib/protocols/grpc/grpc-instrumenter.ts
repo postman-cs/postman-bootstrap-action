@@ -83,6 +83,9 @@ interface FieldSpec {
   shape?: ShapeSpec;
   // Nested message shape for map<K, message> values.
   mapValueShape?: ShapeSpec;
+  // Field is a google.rpc.Status message; its canonical code range and Any
+  // detail shape get the dedicated semantic check.
+  rpcStatus?: boolean;
 }
 
 // A oneof member carries both names so the runtime mutual-exclusion check can
@@ -106,6 +109,9 @@ interface OperationSpec {
   responseShape?: ShapeSpec;
   // true when the response shape has at least one assertable field or oneof.
   hasResponseShape: boolean;
+  // The RPC returns google.rpc.Status directly, so the semantic check applies
+  // to the terminal message itself.
+  responseIsRpcStatus?: boolean;
 }
 
 // Build a message shape descriptor, recursing into nested message fields up to
@@ -122,6 +128,19 @@ function buildShape(
 ): ShapeSpec | undefined {
   const message: GrpcMessageDescriptor | undefined = index.messages[messageFullName];
   if (!message) {
+    // google.rpc.Status is classified by name (its import is never bundled by
+    // a standalone parse), so supply its canonical google/rpc/status.proto
+    // shape; the rpcStatus semantic check covers the code range and Any @type.
+    if (messageFullName === 'google.rpc.Status') {
+      return {
+        fields: [
+          { name: 'code', jsonName: 'code', jsonType: 'number', intType: 'int32', repeated: false, map: false, required: false },
+          { name: 'message', jsonName: 'message', jsonType: 'string', repeated: false, map: false, required: false },
+          { name: 'details', jsonName: 'details', jsonType: 'object', repeated: true, map: false, required: false }
+        ],
+        oneofs: []
+      };
+    }
     warnings.push(`PROTO_MESSAGE_UNKNOWN: ${operationId} ${label} message ${messageFullName} could not be resolved from the .proto; its shape is not asserted`);
     return undefined;
   }
@@ -154,7 +173,8 @@ function buildShape(
       ...(field.mapValueType ? { mapValueType: field.mapValueType } : {}),
       ...(field.mapValueFormat ? { mapValueFormat: field.mapValueFormat } : {}),
       ...(field.mapValueIntType ? { mapValueIntType: field.mapValueIntType } : {}),
-      ...(mapValueEnumValues ? { mapValueEnumValues } : {})
+      ...(mapValueEnumValues ? { mapValueEnumValues } : {}),
+      ...(field.messageType === 'google.rpc.Status' && !field.map ? { rpcStatus: true } : {})
     };
     if (field.messageType && field.jsonType === 'object' && !field.map) {
       spec.shape = buildShape(field.messageType, index, warnings, operationId, `${label}.${field.name}`, depth + 1, nextStack);
@@ -185,7 +205,8 @@ function buildOperationSpec(operation: GrpcOperation, index: GrpcContractIndex, 
     stream: operation.stream,
     responseType: operation.responseType,
     responseShape,
-    hasResponseShape: shapeIsAssertable(responseShape)
+    hasResponseShape: shapeIsAssertable(responseShape),
+    ...(operation.responseType === 'google.rpc.Status' ? { responseIsRpcStatus: true } : {})
   };
 }
 
@@ -272,6 +293,25 @@ function createGrpcScript(spec: OperationSpec): string[] {
     // Recursive shape checker: validates fields (with nested message descent,
     // map value typing, enums, well-known nullable scalars) and oneof
     // mutual-exclusion. `path` is a human-readable prefix for failure messages.
+    // google.rpc.Status semantic check (google/rpc/status.proto ProtoJSON):
+    // code is a canonical gRPC code 0-16, message a string, details an array
+    // of Any objects each carrying a string @type URL.
+    'function grpcCheckRpcStatus(value, label) {',
+    '  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) return;',
+    '  if (Object.prototype.hasOwnProperty.call(value, "code") && value.code !== null) {',
+    '    var rpcCode = value.code;',
+    '    var rpcCodeNum = typeof rpcCode === "number" ? rpcCode : (typeof rpcCode === "string" && /^[0-9]+$/.test(rpcCode) ? Number(rpcCode) : NaN);',
+    '    if (!Number.isInteger(rpcCodeNum) || rpcCodeNum < 0 || rpcCodeNum > 16) pm.expect.fail("google.rpc.Status " + label + ".code must be a canonical gRPC code 0-16 but was " + JSON.stringify(rpcCode));',
+    '  }',
+    '  if (Object.prototype.hasOwnProperty.call(value, "message") && value.message !== null && typeof value.message !== "string") pm.expect.fail("google.rpc.Status " + label + ".message must be a string but was " + jsonTypeOf(value.message));',
+    '  if (Object.prototype.hasOwnProperty.call(value, "details") && value.details !== null) {',
+    '    if (!Array.isArray(value.details)) { pm.expect.fail("google.rpc.Status " + label + ".details must be an array of Any messages but was " + jsonTypeOf(value.details)); return; }',
+    '    value.details.forEach(function (detail, detailIndex) {',
+    '      if (!detail || typeof detail !== "object" || Array.isArray(detail)) { pm.expect.fail("google.rpc.Status " + label + ".details[" + detailIndex + "] must be an object but was " + jsonTypeOf(detail)); return; }',
+    '      if (typeof detail["@type"] !== "string" || !detail["@type"]) pm.expect.fail("google.rpc.Status " + label + ".details[" + detailIndex + "] must carry a string @type URL (ProtoJSON Any)");',
+    '    });',
+    '  }',
+    '}',
     'function grpcFieldKey(obj, field) { if (Object.prototype.hasOwnProperty.call(obj, field.jsonName)) return field.jsonName; if (Object.prototype.hasOwnProperty.call(obj, field.name)) return field.name; return undefined; }',
     'function grpcCheckField(obj, field, path) {',
     '  var label = path + (field.jsonName || field.name);',
@@ -285,6 +325,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '    if (!matchesScalar("array", value)) { pm.expect.fail("gRPC field " + label + " must be a repeated (array) value but was " + jsonTypeOf(value)); return; }',
     '    for (var i = 0; i < value.length; i++) {',
     '      var elem = value[i]; var elemLabel = label + "[" + i + "]";',
+    '      if (field.rpcStatus) grpcCheckRpcStatus(elem, elemLabel);',
     '      if (field.shape) { if (!matchesScalar("object", elem)) { pm.expect.fail("gRPC repeated field " + elemLabel + " must be an object but was " + jsonTypeOf(elem)); } else { grpcCheckShape(elem, field.shape, elemLabel + "."); } continue; }',
     '      if (field.enumValues && field.enumValues.length > 0) { if (typeof elem === "number") { if (!matchesEnumNumber(elem)) pm.expect.fail("gRPC repeated enum field " + elemLabel + " must be an int32-range integer but was " + elem); continue; } if (typeof elem !== "string") { pm.expect.fail("gRPC repeated enum field " + elemLabel + " must be a string or number but was " + jsonTypeOf(elem)); } else if (field.enumValues.indexOf(elem) === -1) { pm.expect.fail("gRPC repeated enum field " + elemLabel + " has value " + elem + " not in [" + field.enumValues.join(", ") + "]"); } continue; }',
     '      if (field.jsonType === "any") continue;',
@@ -315,6 +356,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '    if (field.enumValues.indexOf(value) === -1) pm.expect.fail("gRPC enum field " + label + " has value " + value + " not in [" + field.enumValues.join(", ") + "]");',
     '    return;',
     '  }',
+    '  if (field.rpcStatus) grpcCheckRpcStatus(value, label);',
     '  if (field.jsonType === "any") return;',
     '  if (field.shape) { if (!matchesScalar("object", value)) { pm.expect.fail("gRPC field " + label + " must be an object but was " + jsonTypeOf(value)); return; } grpcCheckShape(value, field.shape, label + "."); return; }',
     '  if (field.intType) { if (!matchesInt(field.intType, value)) pm.expect.fail("gRPC field " + label + " must be a valid " + field.intType + " (in range) but was " + JSON.stringify(value)); return; }',
@@ -341,7 +383,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
       '  pm.expect(grpcMessage(), grpcSpec.stream + " RPC " + grpcSpec.methodPath + " must return exactly one terminal response message").to.be.an("object");',
       '});'
     ] : []),
-    ...(spec.hasResponseShape ? [
+    ...(spec.hasResponseShape || spec.responseIsRpcStatus ? [
       `pm.test('gRPC response message matches ' + grpcSpec.responseType, function () {`,
       '  if (pm.response.code !== 0) return;',
       '  var message = grpcMessage();',
@@ -349,7 +391,8 @@ function createGrpcScript(spec: OperationSpec): string[] {
       // that is spec-legal, so skip rather than false-fail on a missing message.
       '  if ((grpcSpec.stream === "server" || grpcSpec.stream === "bidi") && (message === undefined || message === null)) return;',
       '  pm.expect(message, "gRPC response for " + grpcSpec.methodPath + " is not a decodable message object").to.be.an("object");',
-      '  grpcCheckShape(message, grpcSpec.responseShape, grpcSpec.responseType + ".");',
+      '  if (grpcSpec.responseShape) grpcCheckShape(message, grpcSpec.responseShape, grpcSpec.responseType + ".");',
+      '  if (grpcSpec.responseIsRpcStatus) grpcCheckRpcStatus(message, grpcSpec.responseType);',
       '});'
     ] : [])
   ];

@@ -1,0 +1,73 @@
+asyncapi: 2.6.0
+info:
+  title: Sensor Telemetry
+  version: 1.0.0
+defaultContentType: application/json
+servers:
+  production:
+    url: mqtt://broker.example.com:1883
+    protocol: mqtt
+    protocolVersion: '5'
+    bindings:
+      mqtt:
+        clientId: telemetry-publisher
+        cleanSession: true
+        keepAlive: 60
+        sessionExpiryInterval: 120
+        lastWill:
+          topic: sensors/status
+          qos: 1
+          retain: false
+          message: offline
+        bindingVersion: 0.2.0
+channels:
+  sensors/temperature:
+    publish:
+      bindings:
+        mqtt:
+          qos: 1
+          retain: false
+          messageExpiryInterval: 60
+          bindingVersion: 0.2.0
+      message:
+        $ref: '#/components/messages/temperatureReading'
+  sensors/+/events:
+    subscribe:
+      message:
+        $ref: '#/components/messages/sensorEvent'
+components:
+  messages:
+    temperatureReading:
+      name: temperatureReading
+      title: Temperature Reading
+      contentType: application/json
+      bindings:
+        mqtt:
+          payloadFormatIndicator: 1
+          contentType: application/json
+          responseTopic: sensors/temperature/ack
+          bindingVersion: 0.2.0
+      payload:
+        type: object
+        required: [sensorId, celsius]
+        properties:
+          sensorId:
+            type: string
+          celsius:
+            type: number
+      examples:
+        - payload:
+            sensorId: sensor-1
+            celsius: 21.5
+    sensorEvent:
+      name: sensorEvent
+      title: Sensor Event
+      payload:
+        type: object
+        required: [event]
+        properties:
+          event:
+            type: string
+      examples:
+        - payload:
+            event: online

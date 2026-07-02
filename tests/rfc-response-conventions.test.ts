@@ -91,7 +91,14 @@ const HEADER_SYNTAX = 'Response header fields satisfy RFC 9110 field syntax';
 const GRAMMARS = 'Response header values satisfy their RFC grammars';
 const ACCEPT_TEST = 'Response media type is acceptable under the request Accept header';
 const MEDIA_TEST = 'Response body satisfies its media type RFC conventions';
-const SF_TEST = 'Structured field response headers parse per RFC 8941';
+const SF_TEST = 'Structured field response headers parse per RFC 9651';
+const PROXY_STATUS_TEST = 'Proxy-Status members are typed per RFC 9209';
+const SIGNATURE_TEST = 'HTTP message signatures are structurally valid (RFC 9421)';
+const RATELIMIT_TEST = 'RateLimit headers follow the IETF ratelimit-headers draft (advisory)';
+const COOKIE_TEST = 'Set-Cookie response headers satisfy RFC 6265';
+const SECURITY_TEST = 'Security response headers satisfy their specifications';
+const CORS_TEST = 'CORS response headers satisfy the WHATWG Fetch standard';
+const MULTIPART_TEST = 'Request multipart bodies and Idempotency-Key follow their specifications';
 const DIGEST_TEST = 'Content-Digest and Repr-Digest match the response body (RFC 9530)';
 const AUTH_TEST = 'Request credentials are well-formed per their authentication scheme RFCs';
 const PRECOND_TEST = 'Request preconditions, preferences, and patch bodies follow their RFCs';
@@ -238,13 +245,168 @@ describe('RFC message-mechanics assertions', () => {
     expect(runScript(script, { code: 200, headers: { 'Content-Type': 'application/vnd.api+json' }, body: '{"data":[]}' })[MEDIA_TEST]).toBe('pass');
   });
 
-  it('structured fields and digests parse per RFC 8941 / 9530', () => {
+  it('structured fields and digests parse per RFC 9651 / 9530', () => {
     expect(runScript(script, { code: 200, headers: { Priority: 'u=1, i' } })[SF_TEST]).toBe('pass');
     expect(runScript(script, { code: 200, headers: { Priority: 'u=&&' } })[SF_TEST]).toBe('fail');
     expect(runScript(script, { code: 200, headers: { 'Cache-Status': 'ExampleCache; hit' } })[SF_TEST]).toBe('pass');
     expect(runScript(script, { code: 200, headers: { 'Signature-Input': 'sig1=("@method" "@path");created=1618884475;keyid="test-key"' } })[SF_TEST]).toBe('pass');
     expect(runScript(script, { code: 200, headers: { 'Content-Digest': 'sha-256=:AbC=:' } })[DIGEST_TEST]).toBe('pass');
     expect(runScript(script, { code: 200, headers: { 'Content-Digest': 'sha-256=:!!:' } })[DIGEST_TEST]).toBe('fail');
+  });
+
+  it('accepts RFC 9651 Date and Display String bare items and enforces digit limits', () => {
+    expect(runScript(script, { code: 200, headers: { Priority: 'u=1;at=@1659578233' } })[SF_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Cache-Status': 'cache;msg=%"caf%c3%a9"' } })[SF_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Cache-Status': 'cache;msg=%"bad%ZZescape"' } })[SF_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Cache-Status': 'cache;msg=%"upper%C3%A9"' } })[SF_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { Priority: 'u=1234567890123456' } })[SF_TEST]).toBe('fail');
+  });
+
+  it('types Proxy-Status members per RFC 9209', () => {
+    expect(runScript(script, { code: 200, headers: { 'Proxy-Status': 'proxy.example.net; error=connection_timeout; received-status=504' } })[PROXY_STATUS_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Proxy-Status': 'proxy.example.net; error="connection_timeout"' } })[PROXY_STATUS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Proxy-Status': 'proxy.example.net; received-status="504"' } })[PROXY_STATUS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Proxy-Status': 'proxy.example.net; details=unquoted' } })[PROXY_STATUS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Proxy-Status': '("inner" "list")' } })[PROXY_STATUS_TEST]).toBe('fail');
+    const advisory = runScript(script, { code: 200, headers: { 'Proxy-Status': 'proxy.example.net; error=made_up_error' } });
+    expect(advisory[PROXY_STATUS_TEST]).toBe('pass');
+    expect(advisory[`${ADVISORY_TEST} :: error`] ?? '').toBe('');
+  });
+
+  it('validates RFC 9421 message-signature structure', () => {
+    const okInput = 'sig1=("@method" "content-type");created=1618884475;expires=1618884775;keyid="k1"';
+    expect(runScript(script, { code: 200, headers: { 'Signature-Input': okInput, Signature: 'sig1=:AbC=:' } })[SIGNATURE_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Signature-Input': okInput, Signature: 'other=:AbC=:' } })[SIGNATURE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Signature-Input': okInput, Signature: 'sig1="not-bytes"' } })[SIGNATURE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Signature-Input': 'sig1=("@bogus");created=1', Signature: 'sig1=:AbC=:' } })[SIGNATURE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Signature-Input': 'sig1=("Content-Type")', Signature: 'sig1=:AbC=:' } })[SIGNATURE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Signature-Input': 'sig1=("@method");created=2;expires=1', Signature: 'sig1=:AbC=:' } })[SIGNATURE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Signature-Input': 'sig1="not-a-list"', Signature: 'sig1=:AbC=:' } })[SIGNATURE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { Signature: 'sig1=:AbC=:' } })[SIGNATURE_TEST]).toBe('fail');
+  });
+
+  it('keeps RateLimit draft findings advisory-only', () => {
+    expect(runScript(script, { code: 200, headers: { RateLimit: 'not==valid==sf' } })[RATELIMIT_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { RateLimit: '"default";r=50;t=30', 'RateLimit-Policy': '"default";q=100;w=60' } })[RATELIMIT_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { RateLimit: '"default";r=150', 'RateLimit-Policy': '"default";q=100' } })[RATELIMIT_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'X-RateLimit-Remaining': '5' } })[RATELIMIT_TEST]).toBe('pass');
+  });
+
+  it('enforces Set-Cookie grammar, attribute rules, and prefixes per RFC 6265', () => {
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=abc123; Path=/; Secure; HttpOnly; SameSite=Lax' } })[COOKIE_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'no-equals-sign' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'bad name=x' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=has space' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; Max-Age=abc' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; Max-Age=3600; Secure' } })[COOKIE_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; Expires=not-a-date' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Secure' } })[COOKIE_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; Secure; Secure' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; Secure=please' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; SameSite=None' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; SameSite=None; Secure' } })[COOKIE_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x; SameSite=Sometimes; Secure' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': '__Host-sid=x; Secure; Path=/' } })[COOKIE_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': '__Host-sid=x; Secure; Path=/app' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': '__Host-sid=x; Secure; Path=/; Domain=example.com' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': '__Secure-sid=x; Path=/' } })[COOKIE_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Set-Cookie': '__Secure-sid=x; Secure' } })[COOKIE_TEST]).toBe('pass');
+    const bare = runScript(script, { code: 200, headers: { 'Set-Cookie': 'sid=x' } });
+    expect(bare[COOKIE_TEST]).toBe('pass');
+    expect(bare[`${ADVISORY_TEST} :: error`] ?? '').toBe('');
+  });
+
+  it('enforces HSTS and security-header enums', () => {
+    expect(runScript(script, { code: 200, headers: { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload' } })[SECURITY_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Strict-Transport-Security': 'includeSubDomains' } })[SECURITY_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Strict-Transport-Security': 'max-age=abc' } })[SECURITY_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Strict-Transport-Security': 'max-age=60; max-age=60' } })[SECURITY_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Strict-Transport-Security': 'max-age=60; includeSubDomains=yes' } })[SECURITY_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'X-Content-Type-Options': 'nosniff' } })[SECURITY_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'X-Content-Type-Options': 'sniff' } })[SECURITY_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Referrer-Policy': 'strict-origin-when-cross-origin' } })[SECURITY_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Referrer-Policy': 'no-referrer, unsafe-url' } })[SECURITY_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Referrer-Policy': 'sometimes' } })[SECURITY_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Permissions-Policy': 'geolocation=(), camera=(self)' } })[SECURITY_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Permissions-Policy': 'geolocation=&&' } })[SECURITY_TEST]).toBe('fail');
+  });
+
+  it('enforces CORS header grammar per WHATWG Fetch', () => {
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Origin': '*' } })[CORS_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Origin': 'null' } })[CORS_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Origin': 'https://app.example.com', Vary: 'Origin' } })[CORS_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Origin': 'https://app.example.com/' } })[CORS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Origin': 'https://a.com https://b.com' } })[CORS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Credentials': 'true' } })[CORS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Credentials': 'True' } })[CORS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Origin': 'https://app.example.com', 'Access-Control-Allow-Credentials': 'true', Vary: 'Origin' } })[CORS_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' } })[CORS_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Methods': 'GET,, POST' } })[CORS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Expose-Headers': 'X-Total-Count, ETag' } })[CORS_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Allow-Headers': 'Bad Header Name' } })[CORS_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Max-Age': '86400' } })[CORS_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Access-Control-Max-Age': 'soon' } })[CORS_TEST]).toBe('fail');
+    const varyAdvisory = runScript(script, { code: 200, headers: { 'Access-Control-Allow-Origin': 'https://app.example.com' } });
+    expect(varyAdvisory[CORS_TEST]).toBe('pass');
+  });
+
+  it('extends Cache-Control checks with RFC 8246 immutable and valueless directives', () => {
+    expect(runScript(script, { code: 200, headers: { 'Cache-Control': 'max-age=60, immutable' } })[GRAMMARS]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Cache-Control': 'immutable=1' } })[GRAMMARS]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Cache-Control': 'no-store=please' } })[GRAMMARS]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Cache-Control': 'stale-while-revalidate=60, stale-if-error=120' } })[GRAMMARS]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Cache-Control': 'stale-while-revalidate' } })[GRAMMARS]).toBe('fail');
+  });
+
+  it('validates Trailer and Alt-Svc grammar', () => {
+    expect(runScript(script, { code: 200, headers: { Trailer: 'Server-Timing, X-Checksum' } })[GRAMMARS]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { Trailer: 'Content-Length' } })[GRAMMARS]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { Trailer: 'Authorization' } })[GRAMMARS]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { Trailer: 'Bad Field' } })[GRAMMARS]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Alt-Svc': 'clear' } })[GRAMMARS]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Alt-Svc': 'h3=":443"; ma=2592000; persist=1' } })[GRAMMARS]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Alt-Svc': 'h3=":443", h2="alt.example.com:443"' } })[GRAMMARS]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Alt-Svc': 'h3=:443' } })[GRAMMARS]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Alt-Svc': 'h3=":443"; ma=soon' } })[GRAMMARS]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Alt-Svc': 'h3=":443"; persist=2' } })[GRAMMARS]).toBe('fail');
+  });
+
+  it('upgrades SSE checks with the id NUL rule while staying silent on benign streams', () => {
+    expect(runScript(script, { code: 200, headers: { 'Content-Type': 'text/event-stream' }, body: 'id: 7\ndata: {}\n\n' })[MEDIA_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Content-Type': 'text/event-stream' }, body: 'id: a\u0000b\ndata: {}\n\n' })[MEDIA_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, headers: { 'Content-Type': 'text/event-stream' }, body: '\uFEFFdata: {}\n\n' })[MEDIA_TEST]).toBe('pass');
+  });
+
+  it('validates Idempotency-Key and raw multipart request bodies', () => {
+    expect(runScript(script, { code: 200, requestHeaders: { 'Idempotency-Key': '"key-123"' } })[MULTIPART_TEST]).toBe('pass');
+    expect(runScript(script, { code: 200, requestHeaders: { 'Idempotency-Key': 'bare-token' } })[MULTIPART_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, requestHeaders: { 'Idempotency-Key': '""' } })[MULTIPART_TEST]).toBe('fail');
+    const multipartBody = (parts: string) => ({ mode: 'raw', raw: parts });
+    expect(runScript(script, {
+      code: 200,
+      requestHeaders: { 'Content-Type': 'multipart/form-data; boundary=xyz' },
+      requestBody: multipartBody('--xyz\r\nContent-Disposition: form-data; name="file"\r\n\r\ndata\r\n--xyz--')
+    })[MULTIPART_TEST]).toBe('pass');
+    expect(runScript(script, {
+      code: 200,
+      requestHeaders: { 'Content-Type': 'multipart/form-data' },
+      requestBody: multipartBody('--xyz\r\nContent-Disposition: form-data; name="file"\r\n\r\ndata\r\n--xyz--')
+    })[MULTIPART_TEST]).toBe('fail');
+    expect(runScript(script, {
+      code: 200,
+      requestHeaders: { 'Content-Type': 'multipart/form-data; boundary=xyz' },
+      requestBody: multipartBody('--xyz\r\nContent-Type: text/plain\r\n\r\ndata\r\n--xyz--')
+    })[MULTIPART_TEST]).toBe('fail');
+    expect(runScript(script, {
+      code: 200,
+      requestHeaders: { 'Content-Type': 'multipart/form-data; boundary=xyz' },
+      requestBody: multipartBody('--xyz\r\nContent-Disposition: attachment; name="file"\r\n\r\ndata\r\n--xyz--')
+    })[MULTIPART_TEST]).toBe('fail');
+    expect(runScript(script, {
+      code: 200,
+      requestHeaders: { 'Content-Type': 'multipart/form-data; boundary=xyz' },
+      requestBody: multipartBody('--xyz\r\nContent-Disposition: form-data\r\n\r\ndata\r\n--xyz--')
+    })[MULTIPART_TEST]).toBe('fail');
   });
 
   it('auth credentials: Basic base64, Bearer b64token, Digest params', () => {
@@ -285,6 +447,42 @@ describe('RFC message-mechanics assertions', () => {
   });
 });
 
+
+describe('RFC 9110 15.4.5 304 header consistency', () => {
+  const SPEC_304 = [
+    'openapi: 3.1.0',
+    'info:',
+    '  title: T',
+    '  version: 1.0.0',
+    'paths:',
+    '  /cached:',
+    '    get:',
+    '      responses:',
+    "        '200':",
+    '          description: OK',
+    '          headers:',
+    '            ETag: { schema: { type: string } }',
+    '            Cache-Control: { schema: { type: string } }',
+    '          content:',
+    '            application/json:',
+    '              schema: { type: object }',
+    "        '304':",
+    '          description: Not Modified',
+    ''
+  ].join('\n');
+  const script = createContractScript(indexFrom(SPEC_304).operations[0]!).join('\n');
+
+  it('requires 304 responses to carry the headers the spec declares on the 200', () => {
+    expect(runScript(script, { code: 304 })[RFC9110]).toBe('fail');
+    expect(runScript(script, { code: 304, headers: { ETag: '"v1"' } })[RFC9110]).toBe('fail');
+    expect(runScript(script, { code: 304, headers: { ETag: '"v1"', 'Cache-Control': 'max-age=60' } })[RFC9110]).toBe('pass');
+  });
+
+  it('does not demand undeclared headers on a 304', () => {
+    const plain = createContractScript(indexFrom(SPEC).operations.find((op) => op.method === 'GET')!).join('\n');
+    expect(runScript(plain, { code: 304 })[RFC9110]).toBe('pass');
+  });
+});
 
 describe('RFC phase-B assertions: JWT, links, lifecycle, servers', () => {
   const SPEC_B = [

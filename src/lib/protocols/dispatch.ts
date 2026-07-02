@@ -19,6 +19,11 @@ import {
   instrumentAsyncApiCollection,
   parseAsyncApi
 } from './asyncapi/index.js';
+import {
+  buildMcpCollection,
+  instrumentMcpCollection,
+  parseMcpServerSpec
+} from './mcp/index.js';
 import { convertV2CollectionToEc } from './v2-to-ec.js';
 import type { SpecType } from '../spec/detect-spec-type.js';
 
@@ -63,8 +68,9 @@ export interface ProtocolCollectionResult {
  * (`convertV2CollectionToEc`) so the emitted collection is native EC with
  * `http-request` leaves that run in the Postman CLI / Newman HTTP path. gRPC
  * builds EC natively and runs as `grpc-request`. AsyncAPI builds EC `ws-raw-request`
- * / `ws-socketio-request` items natively; those item types are pruned by the
- * Postman CLI runner and carry no test-script slot, so their contract check is
+ * / `ws-socketio-request` / `mqtt-request` items natively, and MCP builds EC
+ * `mcp-request` items; those item types are pruned by the Postman CLI runner
+ * and carry no test-script slot, so their contract check is
  * generation-time/static and they are `runnableInCi:false`.
  *
  * Async because the AsyncAPI parser is async; the other branches resolve
@@ -83,6 +89,22 @@ export async function buildProtocolCollection(
       });
       const { collection: instrumented, warnings } = instrumentAsyncApiCollection(collection, index);
       const operationCount = index.channels.reduce((sum, channel) => sum + channel.messages.length, 0);
+      return {
+        type,
+        collection: instrumented,
+        format: 'v3-ec',
+        runnableInCi: false,
+        warnings,
+        operationCount
+      };
+    }
+    case 'mcp': {
+      const index = parseMcpServerSpec(content);
+      const collection = buildMcpCollection(index, {
+        name: options.name ? `${options.name} Contract` : undefined
+      });
+      const { collection: instrumented, warnings } = instrumentMcpCollection(collection, index);
+      const operationCount = index.servers.length * (2 + index.tools.length);
       return {
         type,
         collection: instrumented,

@@ -189,6 +189,97 @@ describe('asyncapi 3.0 collection build', () => {
   });
 });
 
+describe('asyncapi mqtt', () => {
+  it('detects the mqtt transport from the server protocol and captures binding material', async () => {
+    const index = await parseAsyncApi(read('mqtt.yaml'));
+    expect(index.channels).toHaveLength(2);
+    const temperature = index.channels.find((c) => c.id === 'sensors/temperature')!;
+    expect(temperature.transport).toBe('mqtt');
+    // The channel address is a topic, not a url segment: the request url is the broker endpoint alone.
+    expect(temperature.url).toBe('mqtt://broker.example.com:1883');
+    expect(temperature.address).toBe('sensors/temperature');
+    const mqtt = temperature.mqtt!;
+    expect(mqtt.protocolVersion).toBe(5);
+    expect(mqtt.operationBindings[0].qos).toBe(1);
+    expect(mqtt.serverBindings[0].clientId).toBe('telemetry-publisher');
+    expect(mqtt.messageBindings.find((m) => m.messageId === 'temperatureReading')?.binding.responseTopic).toBe('sensors/temperature/ack');
+  });
+
+  it('builds an mqtt-request per channel with schema-valid mqtt-message children', async () => {
+    const index = await parseAsyncApi(read('mqtt.yaml'));
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const items = collection.item as JsonRecord[];
+    const request = items.find((i) => (i.payload as JsonRecord).topics && ((i.payload as JsonRecord).topics as JsonRecord[])[0].name === 'sensors/temperature')!;
+    expect(request.type).toBe('mqtt-request');
+    const payload = request.payload as JsonRecord;
+    expect(payload.url).toBe('mqtt://broker.example.com:1883');
+    expect(payload.version).toBe(5);
+    expect(payload.clientId).toBe('telemetry-publisher');
+    expect((payload.settings as JsonRecord).cleanSession).toBe(true);
+    expect((payload.settings as JsonRecord).keepAlive).toBe(60);
+    expect((payload.properties as JsonRecord).sessionExpiryInterval).toBe(120);
+    expect((payload.lastWill as JsonRecord).topic).toBe('sensors/status');
+    expect((payload.lastWill as JsonRecord).payload).toBe('offline');
+    expect(((payload.topics as JsonRecord[])[0] as JsonRecord).qos).toBe(1);
+    expect(ecIssues(request)).toBeFalsy();
+    const children = request.children as JsonRecord[];
+    expect(children).toHaveLength(1);
+    const message = children[0];
+    expect(message.type).toBe('mqtt-message');
+    const messagePayload = message.payload as JsonRecord;
+    expect(messagePayload.topic).toBe('sensors/temperature');
+    expect(messagePayload.type).toBe('json');
+    expect(messagePayload.qos).toBe(1);
+    expect(messagePayload.retain).toBe(false);
+    expect((messagePayload.properties as JsonRecord).payloadFormatIndicator).toBe(true);
+    expect((messagePayload.properties as JsonRecord).responseTopic).toBe('sensors/temperature/ack');
+    expect(ecIssues(message)).toBeFalsy();
+  });
+
+  it('marks a wildcard channel address as a subscription topic and warns it is a filter', async () => {
+    const index = await parseAsyncApi(read('mqtt.yaml'));
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const items = collection.item as JsonRecord[];
+    const request = items.find((i) => ((i.payload as JsonRecord).topics as JsonRecord[])[0].name === 'sensors/+/events')!;
+    expect(((request.payload as JsonRecord).topics as JsonRecord[])[0].subscribe).toBe(true);
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MQTT_TOPIC_FILTER'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MQTT_TOPIC_INVALID'))).toBe(false);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MQTT_BINDING_INVALID'))).toBe(false);
+  });
+
+  it('flags out-of-range binding values and malformed topics', async () => {
+    const index = await parseAsyncApi(read('mqtt.yaml'));
+    const temperature = index.channels.find((c) => c.id === 'sensors/temperature')!;
+    temperature.mqtt!.operationBindings[0].qos = 3;
+    temperature.mqtt!.serverBindings[0].keepAlive = -1;
+    temperature.mqtt!.messageBindings[0].binding.responseTopic = 'bad/#/topic';
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MQTT_BINDING_INVALID') && w.includes('qos'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MQTT_BINDING_INVALID') && w.includes('keepAlive'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MQTT_TOPIC_INVALID') && w.includes('responseTopic'))).toBe(true);
+  });
+
+  it('flags a channel address with a misplaced wildcard', async () => {
+    const index = await parseAsyncApi(read('mqtt.yaml'));
+    const events = index.channels.find((c) => c.id === 'sensors/+/events')!;
+    (events as { address: string }).address = 'sensors/#/events';
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MQTT_TOPIC_INVALID') && w.includes('sensors/#/events'))).toBe(true);
+  });
+
+  it('still validates message examples against payload schemas on mqtt channels', async () => {
+    const index = await parseAsyncApi(read('mqtt.yaml'));
+    const temperature = index.channels.find((c) => c.id === 'sensors/temperature')!;
+    temperature.messages[0].sample = { sensorId: 'sensor-1', celsius: 'not-a-number' };
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_MESSAGE_SCHEMA_MISMATCH'))).toBe(true);
+  });
+});
+
 describe('asyncapi non-JSON payload validation', () => {
   it('validates a text/plain string example against its string schema and an xml object example against its object schema', async () => {
     const index = await parseAsyncApi(read('nonjson.yaml'));

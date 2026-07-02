@@ -121,6 +121,26 @@ describe.skipIf(!HAS_PROTOBUF)('instrumentGrpcCollection', () => {
     expect(testScript(list)).toContain('\\"stream\\":\\"server\\"');
   });
 
+  it('validates google.rpc.Status shapes semantically when the proto declares them', () => {
+    const statusProto = `syntax = "proto3";
+package demo;
+import "google/rpc/status.proto";
+message OpResult { string name = 1; google.rpc.Status error = 2; }
+service Ops { rpc GetOp (OpResult) returns (OpResult); }
+`;
+    const index = parseProtoSchema(statusProto, deps);
+    const { collection } = buildGrpcCollection(index, { baseUrl: 'grpcs://host:443', idSeed: 'rpcstatus' });
+    instrumentGrpcCollection(collection, index);
+    const item = grpcItems(collection)[0]!;
+    const script = testScript(item);
+    expect(script).toContain('grpcCheckRpcStatus');
+    const run = (message: unknown) => runGrpcScript(script, message).find((entry) => entry.name.startsWith('gRPC response message matches'));
+    expect(run({ name: 'op', error: { code: 5, message: 'not found' } })?.passed).toBe(true);
+    expect(run({ name: 'op', error: { code: 99, message: 'bogus' } })?.passed).toBe(false);
+    expect(run({ name: 'op', error: { code: 5, details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo' }] } })?.passed).toBe(true);
+    expect(run({ name: 'op', error: { code: 5, details: [{ reason: 'no type' }] } })?.passed).toBe(false);
+  });
+
   it('warns PROTO_STREAMING_METHOD for server/client/bidi rpcs', () => {
     const { warnings } = buildInstrumented();
     const streaming = warnings.filter((warning) => warning.startsWith('PROTO_STREAMING_METHOD'));

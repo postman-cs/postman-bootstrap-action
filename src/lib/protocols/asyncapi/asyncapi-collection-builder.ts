@@ -1,6 +1,6 @@
-// Build a v3/EC (Extensible Collection) JSON object with one ws-raw-request or
-// ws-socketio-request item per AsyncAPI channel, each carrying its messages as
-// child items.
+// Build a v3/EC (Extensible Collection) JSON object with one ws-raw-request,
+// ws-socketio-request, or mqtt-request item per AsyncAPI channel, each carrying
+// its messages as child items.
 //
 // Grounding for the node + payload shape is the bundled `@postman/runtime.models`
 // extensible item schemas (the published v3.0.0 JSON Schema is not fetchable):
@@ -10,7 +10,10 @@
 //     with ws-socketio-message / ws-socketio-example children.
 //   - ws-raw-message.payload = { type:'json'|'text'|'html'|'xml', content } | { type:'binary', subtype, content }.
 //   - ws-socketio-message.payload = { eventName, acknowledgement?, args:[{content,type}|binary] }.
-// (see node_modules/@postman/runtime.models/dist/extensible/item-types/ws-*.d.ts)
+//   - mqtt-request.payload = { url, clientId?, version:4|5, topics:[{name,qos?,subscribe?}],
+//     lastWill?, properties?, settings? }, with mqtt-message children.
+//   - mqtt-message.payload = { payload, topic, type:'base64'|'hex'|'json'|'text', qos?, retain?, properties? }.
+// (see node_modules/@postman/runtime.models/dist/extensible/item-types/{ws,mqtt}-*.d.ts)
 //
 // WS/Socket.IO EC items expose no test-script (`extensions.events`) slot and the
 // Postman CLI runner prunes them, so no runtime assertions are attached here; the
@@ -174,11 +177,158 @@ function buildSocketioRequest(channel: AsyncApiChannelDescriptor, options: Async
   };
 }
 
+// mqtt-message payload.type accepts base64|hex|json|text only; xml/html wire
+// content is still text on the wire, and binary samples are emitted as base64.
+function mqttMessageType(message: AsyncApiMessageDescriptor): 'base64' | 'json' | 'text' {
+  if (message.contentKind === 'binary') return 'base64';
+  if (message.contentKind === 'json') return 'json';
+  return 'text';
+}
+
+function firstNumber(records: JsonRecord[], key: string): number | undefined {
+  for (const record of records) {
+    if (typeof record[key] === 'number') return record[key] as number;
+  }
+  return undefined;
+}
+
+function firstBoolean(records: JsonRecord[], key: string): boolean | undefined {
+  for (const record of records) {
+    if (typeof record[key] === 'boolean') return record[key] as boolean;
+  }
+  return undefined;
+}
+
+function firstString(records: JsonRecord[], key: string): string | undefined {
+  for (const record of records) {
+    if (typeof record[key] === 'string' && record[key]) return record[key] as string;
+  }
+  return undefined;
+}
+
+function buildMqttMessageChild(
+  channel: AsyncApiChannelDescriptor,
+  message: AsyncApiMessageDescriptor,
+  options: AsyncApiCollectionOptions
+): JsonRecord {
+  const seed = options.idSeed ?? 'asyncapi';
+  const mqtt = channel.mqtt;
+  const operationBindings = mqtt?.operationBindings ?? [];
+  const messageBinding = mqtt?.messageBindings.find((entry) => entry.messageId === message.id)?.binding;
+  const type = mqttMessageType(message);
+  const content = type === 'base64'
+    ? Buffer.from(serializeSample(message.sample), 'utf8').toString('base64')
+    : serializeSample(message.sample);
+
+  const payload: JsonRecord = {
+    payload: content,
+    topic: channel.address,
+    type
+  };
+  const qos = firstNumber(operationBindings, 'qos');
+  if (qos !== undefined) payload.qos = qos;
+  const retain = firstBoolean(operationBindings, 'retain');
+  if (retain !== undefined) payload.retain = retain;
+
+  const properties: JsonRecord = {};
+  const messageExpiryInterval = firstNumber(operationBindings, 'messageExpiryInterval');
+  if (messageExpiryInterval !== undefined) properties.messageExpiryInterval = messageExpiryInterval;
+  if (messageBinding) {
+    // MQTT 5 payloadFormatIndicator is 0|1 in the AsyncAPI binding but boolean
+    // in the mqtt-message model.
+    if (messageBinding.payloadFormatIndicator === 0 || messageBinding.payloadFormatIndicator === 1) {
+      properties.payloadFormatIndicator = messageBinding.payloadFormatIndicator === 1;
+    }
+    if (typeof messageBinding.contentType === 'string' && messageBinding.contentType) {
+      properties.contentType = messageBinding.contentType;
+    }
+    if (typeof messageBinding.responseTopic === 'string' && messageBinding.responseTopic) {
+      properties.responseTopic = messageBinding.responseTopic;
+    }
+  } else if (message.contentType) {
+    properties.contentType = message.contentType;
+  }
+  if (Object.keys(properties).length > 0) payload.properties = properties;
+
+  return {
+    type: 'mqtt-message',
+    id: stableId(seed, `msg:${channel.id}:${message.id}`),
+    title: message.title,
+    createdAt: options.createdAt ?? DEFAULT_CREATED_AT,
+    payload,
+    extensions: {}
+  };
+}
+
+function buildMqttRequest(channel: AsyncApiChannelDescriptor, options: AsyncApiCollectionOptions): JsonRecord {
+  const seed = options.idSeed ?? 'asyncapi';
+  const mqtt = channel.mqtt;
+  const operationBindings = mqtt?.operationBindings ?? [];
+  const serverBindings = mqtt?.serverBindings ?? [];
+
+  const topic: JsonRecord = { name: channel.address };
+  const qos = firstNumber(operationBindings, 'qos');
+  if (qos !== undefined) topic.qos = qos;
+  // A wildcard address is a topic FILTER, only usable as a subscription.
+  if (/[+#]/.test(channel.address)) topic.subscribe = true;
+
+  const payload: JsonRecord = {
+    url: channel.url,
+    version: mqtt?.protocolVersion === 5 ? 5 : 4,
+    topics: [topic]
+  };
+
+  const clientId = firstString(serverBindings, 'clientId');
+  if (clientId) payload.clientId = clientId;
+
+  const settings: JsonRecord = {};
+  const cleanSession = firstBoolean(serverBindings, 'cleanSession');
+  if (cleanSession !== undefined) settings.cleanSession = cleanSession;
+  const keepAlive = firstNumber(serverBindings, 'keepAlive');
+  if (keepAlive !== undefined) settings.keepAlive = keepAlive;
+  if (Object.keys(settings).length > 0) payload.settings = settings;
+
+  const properties: JsonRecord = {};
+  const sessionExpiryInterval = firstNumber(serverBindings, 'sessionExpiryInterval');
+  if (sessionExpiryInterval !== undefined) properties.sessionExpiryInterval = sessionExpiryInterval;
+  const maximumPacketSize = firstNumber(serverBindings, 'maximumPacketSize');
+  if (maximumPacketSize !== undefined) properties.maximumPacketSize = maximumPacketSize;
+  if (Object.keys(properties).length > 0) payload.properties = properties;
+
+  const lastWillBinding = serverBindings
+    .map((binding) => binding.lastWill)
+    .find((value) => value && typeof value === 'object' && !Array.isArray(value)) as JsonRecord | undefined;
+  if (lastWillBinding) {
+    const lastWill: JsonRecord = {};
+    if (typeof lastWillBinding.topic === 'string' && lastWillBinding.topic) lastWill.topic = lastWillBinding.topic;
+    if (typeof lastWillBinding.qos === 'number') lastWill.qos = lastWillBinding.qos;
+    if (typeof lastWillBinding.retain === 'boolean') lastWill.retain = lastWillBinding.retain;
+    if (typeof lastWillBinding.message === 'string') {
+      lastWill.payload = lastWillBinding.message;
+      lastWill.type = 'text';
+    }
+    if (Object.keys(lastWill).length > 0) payload.lastWill = lastWill;
+  }
+
+  return {
+    type: 'mqtt-request',
+    id: stableId(seed, `chan:${channel.id}`),
+    title: channel.address || channel.id,
+    name: channel.address || channel.id,
+    createdAt: options.createdAt ?? DEFAULT_CREATED_AT,
+    payload,
+    children: channel.messages.map((message) => buildMqttMessageChild(channel, message, options)),
+    extensions: {}
+  };
+}
+
 export function buildAsyncApiCollection(index: AsyncApiContractIndex, options: AsyncApiCollectionOptions = {}): JsonRecord {
   const name = options.name?.trim() || `${index.title} Contract`;
-  const item = index.channels.map((channel) =>
-    channel.transport === 'socketio' ? buildSocketioRequest(channel, options) : buildRawRequest(channel, options)
-  );
+  const item = index.channels.map((channel) => {
+    if (channel.transport === 'mqtt') return buildMqttRequest(channel, options);
+    if (channel.transport === 'socketio') return buildSocketioRequest(channel, options);
+    return buildRawRequest(channel, options);
+  });
   return {
     $schema: 'https://schema.postman.com/json/draft-2020-12/collection/v3.0.0/',
     info: {

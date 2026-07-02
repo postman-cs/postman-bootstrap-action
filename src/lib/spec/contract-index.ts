@@ -1,3 +1,4 @@
+import { WELL_KNOWN_URI_SUFFIXES } from './iana-registries.js';
 import { isSchemaGraphOverflow, packSchema, resolvePointer, type OpenApiVersion, type PackedSchema } from './schema-pack.js';
 import { compileSchemaValidator } from './schema-validator-code.js';
 
@@ -617,7 +618,7 @@ function propertyIsBinary(root: JsonRecord, properties: JsonRecord, name: string
 // against the declaration: explicit per-part contentType, binary fields as
 // file parts, and non-default style/explode/allowReserved surfaced as
 // serialization warnings.
-function fieldEncodings(root: JsonRecord, base: string, mediaObject: JsonRecord | null, properties: JsonRecord): Record<string, ContractFieldEncoding> | undefined {
+function fieldEncodings(root: JsonRecord, base: string, mediaObject: JsonRecord | null, properties: JsonRecord, operationId: string, warnings: string[]): Record<string, ContractFieldEncoding> | undefined {
   const declared = asRecord(mediaObject?.encoding);
   const encodings: Record<string, ContractFieldEncoding> = {};
   for (const name of Object.keys(properties)) {
@@ -629,6 +630,12 @@ function fieldEncodings(root: JsonRecord, base: string, mediaObject: JsonRecord 
     for (const [name, rawEncoding] of Object.entries(declared)) {
       const encoding = asRecord(rawEncoding);
       if (!encoding) continue;
+      // OAS: the Encoding Object keys "SHALL only apply to requestBody objects
+      // ... exist as a property" of the schema; an unknown key is dead config.
+      if (!(name in properties)) {
+        warnings.push(`CONTRACT_MULTIPART_ENCODING_FIELD_UNKNOWN: ${operationId} ${base} encoding map names field ${name}, which is not a property of the request body schema`);
+        continue;
+      }
       const entry: ContractFieldEncoding = { ...encodings[name] };
       if (typeof encoding.contentType === 'string' && encoding.contentType.trim()) {
         entry.contentType = encoding.contentType.toLowerCase();
@@ -687,7 +694,7 @@ function requestBodyFieldRules(root: JsonRecord, content: JsonRecord, version: O
     // requests, so they are excluded from the request-side required list.
     const required = merged.required.filter((name) => !propertyIsReadOnly(root, merged.properties, name));
     const formRules = BODY_FIELD_RULE_TYPES.has(base);
-    const encodings = formRules ? fieldEncodings(root, base, mediaRecord, merged.properties) : undefined;
+    const encodings = formRules ? fieldEncodings(root, base, mediaRecord, merged.properties, operationId, warnings) : undefined;
     const fieldSchemas = formRules ? formFieldSchemas(root, version, merged.properties, `request body ${contentType} of ${operationId}`, warnings) : undefined;
     if (required.length > 0 || readOnly.length > 0 || encodings || fieldSchemas) {
       const rule: ContractBodyFieldRules = { required, readOnly };
@@ -1056,6 +1063,12 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
     for (const [path, rawPathItem] of Object.entries(paths)) {
       const pathItem = resolveInternalRef<JsonRecord>(root, rawPathItem);
       if (!pathItem) continue;
+      if (path.startsWith('/.well-known/')) {
+        const suffix = path.slice('/.well-known/'.length).split('/')[0] ?? '';
+        if (!WELL_KNOWN_URI_SUFFIXES.includes(suffix.toLowerCase())) {
+          warnings.push(`CONTRACT_WELL_KNOWN_UNREGISTERED: path ${path} uses a /.well-known/ suffix that is not in the IANA Well-Known URIs registry snapshot (RFC 8615): ${suffix}`);
+        }
+      }
       for (const [method, rawOperation] of Object.entries(pathItem)) {
         const lowerMethod = method.toLowerCase();
         if (!HTTP_METHODS.has(lowerMethod)) continue;

@@ -22,7 +22,7 @@
 
 import { compileSchemaValidator } from '../../spec/schema-validator-code.js';
 import { packSchema, isSchemaGraphOverflow } from '../../spec/schema-pack.js';
-import type { AsyncApiContractIndex, AsyncApiMessageDescriptor } from './asyncapi-parser.js';
+import type { AsyncApiChannelDescriptor, AsyncApiContractIndex, AsyncApiMessageDescriptor } from './asyncapi-parser.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -35,7 +35,7 @@ export const ASYNCAPI_INSTRUMENT_LIMITS = {
   maxCollectionUpdateBytes: 4_000_000
 } as const;
 
-const MESSAGE_NODE_TYPES = new Set(['ws-raw-message', 'ws-socketio-message']);
+const MESSAGE_NODE_TYPES = new Set(['ws-raw-message', 'ws-socketio-message', 'mqtt-message']);
 
 // Base64 well-formedness: canonical base64 (optionally padded), byte-aligned.
 const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
@@ -123,6 +123,88 @@ function validateMessage(
   }
 }
 
+// MQTT topic-name grammar (MQTT 3.1.1 §4.7 / MQTT 5.0 §4.7): at least one
+// character, no U+0000, at most 65535 UTF-8 bytes. Wildcards make it a topic
+// FILTER: '+' must occupy an entire level; '#' must be the last character and
+// occupy an entire level. Returns a violation description, or null when valid.
+function mqttTopicViolation(topic: string, allowWildcards: boolean): string | null {
+  if (topic.length === 0) return 'is empty (a topic must contain at least one character)';
+  if (topic.includes('\u0000')) return 'contains U+0000, forbidden in MQTT topics';
+  if (Buffer.byteLength(topic, 'utf8') > 65535) return 'exceeds 65535 UTF-8 bytes';
+  const hasWildcard = /[+#]/.test(topic);
+  if (!hasWildcard) return null;
+  if (!allowWildcards) return 'contains wildcard characters (+/#), which are forbidden in a concrete topic name';
+  const levels = topic.split('/');
+  for (let i = 0; i < levels.length; i += 1) {
+    const level = levels[i];
+    if (level.includes('+') && level !== '+') return `level "${level}" mixes '+' with other characters; '+' must occupy an entire level`;
+    if (level.includes('#') && (level !== '#' || i !== levels.length - 1)) {
+      return `'#' must be the final level and occupy it entirely`;
+    }
+  }
+  return null;
+}
+
+function isNonNegativeInteger(value: unknown): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function checkMqttBindingValues(
+  binding: JsonRecord,
+  scope: string,
+  channelId: string,
+  warnings: string[]
+): void {
+  const bad = (field: string, expectation: string): void => {
+    warnings.push(`ASYNCAPI_MQTT_BINDING_INVALID: channel ${channelId} ${scope} binding ${field} ${expectation} (got ${JSON.stringify(binding[field])})`);
+  };
+  if (binding.qos !== undefined && ![0, 1, 2].includes(binding.qos as number)) bad('qos', 'must be 0, 1, or 2');
+  if (binding.retain !== undefined && typeof binding.retain !== 'boolean') bad('retain', 'must be a boolean');
+  if (binding.messageExpiryInterval !== undefined && !isNonNegativeInteger(binding.messageExpiryInterval)) bad('messageExpiryInterval', 'must be a non-negative integer (seconds)');
+  if (binding.cleanSession !== undefined && typeof binding.cleanSession !== 'boolean') bad('cleanSession', 'must be a boolean');
+  if (binding.keepAlive !== undefined && !isNonNegativeInteger(binding.keepAlive)) bad('keepAlive', 'must be a non-negative integer (seconds)');
+  if (binding.sessionExpiryInterval !== undefined && !isNonNegativeInteger(binding.sessionExpiryInterval) && asRecord(binding.sessionExpiryInterval) === null) bad('sessionExpiryInterval', 'must be a non-negative integer or a schema object');
+  if (binding.maximumPacketSize !== undefined && !isNonNegativeInteger(binding.maximumPacketSize) && asRecord(binding.maximumPacketSize) === null) bad('maximumPacketSize', 'must be a positive integer or a schema object');
+  if (binding.payloadFormatIndicator !== undefined && binding.payloadFormatIndicator !== 0 && binding.payloadFormatIndicator !== 1) bad('payloadFormatIndicator', 'must be 0 (unspecified bytes) or 1 (UTF-8)');
+  if (binding.contentType !== undefined && typeof binding.contentType !== 'string') bad('contentType', 'must be a string');
+  if (typeof binding.responseTopic === 'string') {
+    const violation = mqttTopicViolation(binding.responseTopic, false);
+    if (violation) warnings.push(`ASYNCAPI_MQTT_TOPIC_INVALID: channel ${channelId} ${scope} binding responseTopic "${binding.responseTopic}" ${violation}`);
+  } else if (binding.responseTopic !== undefined && asRecord(binding.responseTopic) === null) {
+    bad('responseTopic', 'must be a string or a schema object');
+  }
+  const lastWill = asRecord(binding.lastWill);
+  if (lastWill) {
+    if (typeof lastWill.topic === 'string') {
+      const violation = mqttTopicViolation(lastWill.topic, false);
+      if (violation) warnings.push(`ASYNCAPI_MQTT_TOPIC_INVALID: channel ${channelId} ${scope} binding lastWill.topic "${lastWill.topic}" ${violation}`);
+    }
+    if (lastWill.qos !== undefined && ![0, 1, 2].includes(lastWill.qos as number)) {
+      warnings.push(`ASYNCAPI_MQTT_BINDING_INVALID: channel ${channelId} ${scope} binding lastWill.qos must be 0, 1, or 2 (got ${JSON.stringify(lastWill.qos)})`);
+    }
+    if (lastWill.retain !== undefined && typeof lastWill.retain !== 'boolean') {
+      warnings.push(`ASYNCAPI_MQTT_BINDING_INVALID: channel ${channelId} ${scope} binding lastWill.retain must be a boolean (got ${JSON.stringify(lastWill.retain)})`);
+    }
+  }
+}
+
+// Generation-time MQTT contract checks: channel-address topic grammar and
+// AsyncAPI MQTT binding value ranges. Violations are warnings, matching the
+// module's no-silent-drop discipline for statically checkable contract facts.
+function validateMqttChannel(channel: AsyncApiChannelDescriptor, warnings: string[]): void {
+  const addressViolation = mqttTopicViolation(channel.address, true);
+  if (addressViolation) {
+    warnings.push(`ASYNCAPI_MQTT_TOPIC_INVALID: channel ${channel.id} address "${channel.address}" ${addressViolation}`);
+  } else if (/[+#]/.test(channel.address)) {
+    warnings.push(`ASYNCAPI_MQTT_TOPIC_FILTER: channel ${channel.id} address "${channel.address}" is a wildcard topic filter; it is generated as a subscription and any publish must target a concrete topic`);
+  }
+  const mqtt = channel.mqtt;
+  if (!mqtt) return;
+  mqtt.operationBindings.forEach((binding) => checkMqttBindingValues(binding, 'operation', channel.id, warnings));
+  mqtt.serverBindings.forEach((binding) => checkMqttBindingValues(binding, 'server', channel.id, warnings));
+  mqtt.messageBindings.forEach(({ messageId, binding }) => checkMqttBindingValues(binding, `message ${messageId}`, channel.id, warnings));
+}
+
 // Collect the identity of every materialized message node. Each node carries a
 // deterministic id derived from `msg:<channelId>:<messageId>`, so gathering ids
 // lets coverage catch a drop-and-duplicate (which a count-only check misses: the
@@ -149,6 +231,7 @@ export function instrumentAsyncApiCollection(
   ];
 
   for (const channel of index.channels) {
+    if (channel.transport === 'mqtt') validateMqttChannel(channel, warnings);
     for (const message of channel.messages) {
       validateMessage(index, channel.id, message, warnings);
     }

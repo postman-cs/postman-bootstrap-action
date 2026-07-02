@@ -1,4 +1,4 @@
-// AsyncAPI (2.0-2.6 and 3.0) -> typed WebSocket / Socket.IO contract index.
+// AsyncAPI (2.0-2.6 and 3.0) -> typed WebSocket / Socket.IO / MQTT contract index.
 //
 // Parsing uses `@postman/asyncapi-parser`, whose intent-driven model unifies the
 // spec versions behind one interface (channels/operations/messages/servers). We
@@ -25,11 +25,24 @@ import { Parser, DiagnosticSeverity } from '@postman/asyncapi-parser';
 
 type JsonRecord = Record<string, unknown>;
 
-export type AsyncApiTransport = 'ws-raw' | 'socketio';
+export type AsyncApiTransport = 'ws-raw' | 'socketio' | 'mqtt';
 
 export interface AsyncApiKeyValue {
   key: string;
   value: string;
+}
+
+// Raw AsyncAPI MQTT binding objects (OASIS MQTT semantics), captured verbatim
+// for generation-time value validation and mqtt-request payload construction.
+export interface AsyncApiMqttInfo {
+  // publish/subscribe (2.x) or operation (3.x) bindings.mqtt objects.
+  operationBindings: JsonRecord[];
+  // server bindings.mqtt objects from the channel's resolved servers.
+  serverBindings: JsonRecord[];
+  // message bindings.mqtt keyed by message id.
+  messageBindings: Array<{ messageId: string; binding: JsonRecord }>;
+  // MQTT protocol version from the server (5 when declared, else 4).
+  protocolVersion: 4 | 5;
 }
 
 export interface AsyncApiMessageDescriptor {
@@ -68,6 +81,8 @@ export interface AsyncApiChannelDescriptor {
   // Socket.IO namespace (the channel address) and handshake path (default /socket.io).
   socketioNamespace?: string;
   socketioPath?: string;
+  // MQTT binding material; present only when transport === 'mqtt'.
+  mqtt?: AsyncApiMqttInfo;
   messages: AsyncApiMessageDescriptor[];
   warnings: string[];
 }
@@ -89,6 +104,7 @@ export interface AsyncApiParseOptions {
 }
 
 const SOCKETIO_PROTOCOLS = new Set(['socketio', 'socket.io', 'sio']);
+const MQTT_PROTOCOLS = new Set(['mqtt', 'mqtts', 'secure-mqtt', 'mqtt5']);
 const DEFAULT_SOCKETIO_PATH = '/socket.io';
 const SAMPLE_MAX_DEPTH = 5;
 
@@ -254,6 +270,11 @@ function detectTransport(
   documentJson: JsonRecord,
   warnings: string[]
 ): AsyncApiTransport {
+  // MQTT is decided by the normative server protocol (and normative bindings),
+  // so it wins over the convention-based Socket.IO inference.
+  const protocolMqtt = servers.some((server) => MQTT_PROTOCOLS.has(server.protocol().toLowerCase()));
+  if (protocolMqtt) return 'mqtt';
+
   const protocolSocketio = servers.some((server) => SOCKETIO_PROTOCOLS.has(server.protocol().toLowerCase()));
   if (protocolSocketio) return 'socketio';
 
@@ -284,6 +305,57 @@ function wsBindingKeyValues(channel: ChannelModel): { headers: AsyncApiKeyValue[
     headers: bindingKeyValues(value.headers),
     queryParams: bindingKeyValues(value.query)
   };
+}
+
+// Collect the raw `bindings.mqtt` objects that apply to a channel: 2.x
+// publish/subscribe operation bindings from the channel JSON, 3.x operation
+// bindings from the document's top-level operations (matched by channel $ref),
+// server bindings from the channel's resolved servers, and per-message
+// bindings. Values are captured verbatim; range/grammar validation happens at
+// instrumentation time so every violation surfaces as an ASYNCAPI_MQTT_*
+// warning rather than a parse failure.
+function collectMqttInfo(
+  channel: ChannelModel,
+  servers: ServerModel[],
+  messagesRaw: MessageModel[],
+  documentJson: JsonRecord
+): AsyncApiMqttInfo {
+  const channelJson = channel.json();
+  const operationBindings: JsonRecord[] = [];
+  for (const operationKey of ['publish', 'subscribe'] as const) {
+    const binding = asRecord(asRecord(asRecord(channelJson[operationKey])?.bindings)?.mqtt);
+    if (binding) operationBindings.push(binding);
+  }
+  const unescapePointer = (segment: string): string => segment.replace(/~1/g, '/').replace(/~0/g, '~');
+  const operations = asRecord(documentJson.operations) ?? {};
+  for (const operation of Object.values(operations)) {
+    const operationRecord = asRecord(operation);
+    if (!operationRecord) continue;
+    const ref = String(asRecord(operationRecord.channel)?.$ref ?? '');
+    const lastSegment = ref.includes('/') ? unescapePointer(ref.slice(ref.lastIndexOf('/') + 1)) : '';
+    if (lastSegment !== channel.id()) continue;
+    const binding = asRecord(asRecord(operationRecord.bindings)?.mqtt);
+    if (binding) operationBindings.push(binding);
+  }
+
+  const serverBindings: JsonRecord[] = [];
+  let protocolVersion: 4 | 5 = 4;
+  for (const server of servers) {
+    const serverJson = asRecord(server.json()) ?? {};
+    if (String(serverJson.protocolVersion ?? '') === '5' || server.protocol().toLowerCase() === 'mqtt5') {
+      protocolVersion = 5;
+    }
+    const binding = asRecord(asRecord(serverJson.bindings)?.mqtt);
+    if (binding) serverBindings.push(binding);
+  }
+
+  const messageBindings: AsyncApiMqttInfo['messageBindings'] = [];
+  for (const message of messagesRaw) {
+    const binding = asRecord(asRecord(asRecord(message.json())?.bindings)?.mqtt);
+    if (binding) messageBindings.push({ messageId: message.id() || message.name() || 'message', binding });
+  }
+
+  return { operationBindings, serverBindings, messageBindings, protocolVersion };
 }
 
 // AsyncAPI 3.x request/reply: map each request message to its operation's reply
@@ -394,6 +466,22 @@ function channelDescriptor(
   );
   if (messages.length === 0) {
     warnings.push(`ASYNCAPI_CHANNEL_NO_MESSAGES: channel ${channel.id()} declares no messages; the generated request carries no message templates`);
+  }
+
+  if (transport === 'mqtt') {
+    // The channel address is the MQTT topic, not a url path segment: the
+    // request url is the broker endpoint alone and the topic rides separately.
+    return {
+      id: channel.id(),
+      address,
+      transport,
+      url: serverUrl || address,
+      headers: [],
+      queryParams: [],
+      mqtt: collectMqttInfo(channel, servers, messagesRaw, documentJson),
+      messages,
+      warnings
+    };
   }
 
   if (transport === 'socketio') {

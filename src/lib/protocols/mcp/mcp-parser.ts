@@ -52,6 +52,9 @@ export interface McpToolDescriptor {
   // Raw JSON Schema for the tool arguments (MCP requires a type:object schema).
   inputSchema?: JsonRecord;
   outputSchema?: JsonRecord;
+  // Raw MCP ToolAnnotations object (display/behavior hints), captured verbatim
+  // for generation-time hint-type validation.
+  annotations?: JsonRecord;
   // Synthesized sample arguments used in the generated tools/call template.
   sampleArguments: unknown;
   warnings: string[];
@@ -261,6 +264,7 @@ function toolDescriptor(tool: JsonRecord, warnings: string[]): McpToolDescriptor
     description: typeof tool.description === 'string' ? tool.description : undefined,
     inputSchema,
     outputSchema: asRecord(tool.outputSchema) ?? undefined,
+    annotations: asRecord(tool.annotations) ?? undefined,
     sampleArguments: inputSchema ? sampleFromSchema(inputSchema, 0) : {},
     warnings: toolWarnings
   };

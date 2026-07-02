@@ -22,6 +22,11 @@ pm.test('SOAP Envelope element is present', function () {
   pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));
 });
 
+pm.test('SOAP Envelope namespace matches SOAP 1.1', function () {
+  if (!matchTag("Envelope").test(bodyText)) return;
+  pm.expect(bodyText.indexOf("http://schemas.xmlsoap.org/soap/envelope/") !== -1, "SOAP 1.1 envelopes must declare the http://schemas.xmlsoap.org/soap/envelope/ namespace").to.equal(true);
+});
+
 pm.test('SOAP Body element is present', function () {
   pm.expect(bodyText, "SOAP envelope has no Body element").to.match(matchTag("Body"));
 });
@@ -39,6 +44,12 @@ pm.test('SOAP Fault and HTTP status are consistent', function () {
   var code = pm.response.code;
   if (faulted && code !== 500) pm.expect.fail("SOAP 1.1 Faults must ride HTTP 500 (WS-I Basic Profile R1126); got HTTP " + code);
   if (!faulted && code === 500) pm.expect.fail("HTTP 500 from a SOAP endpoint must carry a SOAP Fault in the body");
+});
+
+pm.test('SOAP Fault is well-formed for SOAP 1.1', function () {
+  if (!matchTag("Fault").test(bodyText)) return;
+  if (!matchTag("faultcode").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultcode child (SOAP 1.1 section 4.4)");
+  if (!matchTag("faultstring").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultstring child (SOAP 1.1 section 4.4)");
 });
 
 pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {
@@ -66,6 +77,11 @@ pm.test('SOAP Envelope element is present', function () {
   pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));
 });
 
+pm.test('SOAP Envelope namespace matches SOAP 1.1', function () {
+  if (!matchTag("Envelope").test(bodyText)) return;
+  pm.expect(bodyText.indexOf("http://schemas.xmlsoap.org/soap/envelope/") !== -1, "SOAP 1.1 envelopes must declare the http://schemas.xmlsoap.org/soap/envelope/ namespace").to.equal(true);
+});
+
 pm.test('SOAP Body element is present', function () {
   pm.expect(bodyText, "SOAP envelope has no Body element").to.match(matchTag("Body"));
 });
@@ -83,6 +99,12 @@ pm.test('SOAP Fault and HTTP status are consistent', function () {
   var code = pm.response.code;
   if (faulted && code !== 500) pm.expect.fail("SOAP 1.1 Faults must ride HTTP 500 (WS-I Basic Profile R1126); got HTTP " + code);
   if (!faulted && code === 500) pm.expect.fail("HTTP 500 from a SOAP endpoint must carry a SOAP Fault in the body");
+});
+
+pm.test('SOAP Fault is well-formed for SOAP 1.1', function () {
+  if (!matchTag("Fault").test(bodyText)) return;
+  if (!matchTag("faultcode").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultcode child (SOAP 1.1 section 4.4)");
+  if (!matchTag("faultstring").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultstring child (SOAP 1.1 section 4.4)");
 });
 
 pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {

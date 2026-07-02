@@ -130,12 +130,40 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   // FAILED operation, so a contract/smoke run fails it - the same way an OpenAPI
   // contract test fails a spec-legal 5xx. Successful-operation assertion by design;
   // partial success (data + errors) still passes.
+  // 2a. Response map format (GraphQL spec section 7.1): the top-level map must
+  // not contain entries other than data/errors/extensions, extensions must be a
+  // map when present, and a request-error result (no data entry at all) must
+  // carry a non-empty errors list.
+  lines.push(
+    `pm.test(${JSON.stringify(`[${label}] GraphQL response map follows the spec response format`)}, function () {`,
+    '    var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });',
+    '    if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));',
+    '    if (Object.prototype.hasOwnProperty.call(gqlBody, "extensions") && (typeof gqlBody.extensions !== "object" || gqlBody.extensions === null || Array.isArray(gqlBody.extensions))) pm.expect.fail("the GraphQL extensions entry must be a map (GraphQL spec 7.1)");',
+    '    if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");',
+    '});'
+  );
   lines.push(
     `pm.test(${JSON.stringify(`[${label}] GraphQL errors are well-formed and not a total failure`)}, function () {`,
     '    var errors = gqlBody.errors;',
     '    if (errors === undefined || errors === null) return;',
     '    pm.expect(errors, "GraphQL \'errors\' must be an array when present").to.be.an("array");',
-    '    errors.forEach(function (err) { pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message"); });',
+    '    errors.forEach(function (err, errIndex) {',
+    '      pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message");',
+    '      if (typeof err.message !== "string") pm.expect.fail("errors[" + errIndex + "].message must be a string (GraphQL spec 7.1.2)");',
+    '      if (err.locations !== undefined && err.locations !== null) {',
+    '        if (!Array.isArray(err.locations)) { pm.expect.fail("errors[" + errIndex + "].locations must be a list (GraphQL spec 7.1.2)"); return; }',
+    '        err.locations.forEach(function (loc, locIndex) {',
+    '          var locLabel = "errors[" + errIndex + "].locations[" + locIndex + "]";',
+    '          if (!loc || typeof loc !== "object" || Array.isArray(loc)) { pm.expect.fail(locLabel + " must be a map with line and column (GraphQL spec 7.1.2)"); return; }',
+    '          if (!Number.isInteger(loc.line) || loc.line < 1 || !Number.isInteger(loc.column) || loc.column < 1) pm.expect.fail(locLabel + " line and column must be positive integers starting from 1 (GraphQL spec 7.1.2)");',
+    '        });',
+    '      }',
+    '      if (err.path !== undefined && err.path !== null) {',
+    '        if (!Array.isArray(err.path)) { pm.expect.fail("errors[" + errIndex + "].path must be a list of path segments (GraphQL spec 7.1.2)"); return; }',
+    '        err.path.forEach(function (segment, segIndex) { if (typeof segment !== "string" && !Number.isInteger(segment)) pm.expect.fail("errors[" + errIndex + "].path[" + segIndex + "] must be a string field name or an integer list index (GraphQL spec 7.1.2)"); });',
+    '      }',
+    '      if (err.extensions !== undefined && err.extensions !== null && (typeof err.extensions !== "object" || Array.isArray(err.extensions))) pm.expect.fail("errors[" + errIndex + "].extensions must be a map (GraphQL spec 7.1.2)");',
+    '    });',
     '    var hasData = gqlBody.data !== undefined && gqlBody.data !== null;',
     '    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }',
     '});'

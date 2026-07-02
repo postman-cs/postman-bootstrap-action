@@ -322,3 +322,79 @@ describe('asyncapi non-JSON payload validation', () => {
     expect(warnings.some((w) => w.startsWith('ASYNCAPI_NON_JSON_PAYLOAD_NOT_VALIDATED'))).toBe(true);
   });
 });
+
+
+describe('asyncapi spec-conformance static checks', () => {
+  const conformanceDoc = [
+    "asyncapi: '2.6.0'",
+    'info:',
+    '  title: Conformance',
+    "  version: '1.0.0'",
+    'servers:',
+    '  prod:',
+    '    url: wss://example.com',
+    '    protocol: wss',
+    'channels:',
+    "  'rooms/{roomId}':",
+    '    parameters:',
+    '      roomId:',
+    '        schema:',
+    '          type: string',
+    '    subscribe:',
+    '      message:',
+    '        name: roomEvent',
+    '        correlationId:',
+    "          location: '$message.payload#/id'",
+    '        payload:',
+    '          type: object'
+  ].join('\n');
+
+  it('captures channel parameters and correlationId location, and passes a conformant document', async () => {
+    const index = await parseAsyncApi(conformanceDoc);
+    const channel = index.channels[0];
+    expect(channel.parameterNames).toEqual(['roomId']);
+    expect(channel.messages[0].correlationLocation).toBe('$message.payload#/id');
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_CHANNEL_PARAMETER') || w.startsWith('ASYNCAPI_CORRELATION_LOCATION'))).toBe(false);
+  });
+
+  it('flags undeclared, unused, and empty channel address parameters', async () => {
+    const index = await parseAsyncApi(conformanceDoc);
+    const channel = index.channels[0];
+    channel.address = 'rooms/{roomId}/{}';
+    channel.parameterNames = ['ghost'];
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_CHANNEL_PARAMETER_UNDECLARED') && w.includes('{roomId}'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_CHANNEL_PARAMETER_UNUSED') && w.includes('ghost'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_CHANNEL_PARAMETER_INVALID'))).toBe(true);
+  });
+
+  it('flags a correlationId location that is not a valid runtime expression', async () => {
+    const index = await parseAsyncApi(conformanceDoc);
+    index.channels[0].messages[0].correlationLocation = '$message.body#/id';
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_CORRELATION_LOCATION_INVALID'))).toBe(true);
+  });
+
+  it('captures the raw ws channel binding and flags method/query violations', async () => {
+    const index = await parseAsyncApi(read('ws.yaml'));
+    const channel = index.channels[0];
+    expect(channel.wsBinding).toBeDefined();
+    channel.wsBinding = { method: 'PUT', query: { type: 'string' } };
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.filter((w) => w.startsWith('ASYNCAPI_WS_BINDING_INVALID'))).toHaveLength(2);
+  });
+
+  it('flags a reserved Socket.IO lifecycle event name', async () => {
+    const index = await parseAsyncApi(read('socketio.yaml'));
+    index.channels[0].messages[0].eventName = 'disconnect';
+    const collection = buildAsyncApiCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentAsyncApiCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('ASYNCAPI_SOCKETIO_RESERVED_EVENT'))).toBe(true);
+  });
+});
+

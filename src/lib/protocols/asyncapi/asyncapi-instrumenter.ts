@@ -221,6 +221,70 @@ function collectMessageNodeIds(node: JsonRecord, ids: string[], path: string): v
   });
 }
 
+// AsyncAPI channel-parameter conformance: every {name} expression in a channel
+// address MUST have an entry in the channel's parameters object (AsyncAPI 2.x
+// section "Channel Item Object" / 3.x "Channel Object"), and a declared
+// parameter that never appears in the address is dead spec. Violations are
+// warnings, matching the module's no-silent-drop discipline.
+function validateChannelParameters(channel: AsyncApiChannelDescriptor, warnings: string[]): void {
+  const declared = new Set(channel.parameterNames ?? []);
+  const used = new Set<string>();
+  for (const match of channel.address.matchAll(/\{([^{}]*)\}/g)) {
+    const name = match[1] ?? '';
+    if (!name) {
+      warnings.push(`ASYNCAPI_CHANNEL_PARAMETER_INVALID: channel ${channel.id} address ${channel.address} contains an empty {} parameter expression`);
+      continue;
+    }
+    used.add(name);
+    if (!declared.has(name)) {
+      warnings.push(`ASYNCAPI_CHANNEL_PARAMETER_UNDECLARED: channel ${channel.id} address parameter {${name}} has no entry in the channel parameters object; AsyncAPI requires every address parameter to be declared`);
+    }
+  }
+  for (const name of declared) {
+    if (!used.has(name)) {
+      warnings.push(`ASYNCAPI_CHANNEL_PARAMETER_UNUSED: channel ${channel.id} declares parameter ${name} that never appears in the channel address ${channel.address}`);
+    }
+  }
+}
+
+// AsyncAPI correlationId `location` is a normative runtime expression:
+// $message.header#/<json-pointer> or $message.payload#/<json-pointer> (RFC 6901
+// fragment). Any other shape can never be resolved by a consumer.
+const CORRELATION_LOCATION_GRAMMAR = /^\$message\.(header|payload)#(\/(?:[^~/]|~[01])*)+$/;
+
+function validateCorrelationLocation(channelId: string, message: AsyncApiMessageDescriptor, warnings: string[]): void {
+  if (message.correlationLocation === undefined) return;
+  if (!CORRELATION_LOCATION_GRAMMAR.test(message.correlationLocation)) {
+    warnings.push(
+      `ASYNCAPI_CORRELATION_LOCATION_INVALID: message ${message.id} on channel ${channelId} correlationId location ${JSON.stringify(message.correlationLocation)} is not a valid AsyncAPI runtime expression ($message.header#/<pointer> or $message.payload#/<pointer>)`
+    );
+  }
+}
+
+// Socket.IO reserves these event names for its own lifecycle (emit cheatsheet /
+// socket-instance docs); an application event carrying one can never be
+// emitted or received, so a spec that names one describes an impossible contract.
+const SOCKETIO_RESERVED_EVENTS = new Set(['connect', 'connect_error', 'disconnect', 'disconnecting', 'newListener', 'removeListener']);
+
+// AsyncAPI WebSockets channel-binding value ranges (binding spec): method MUST
+// be GET or POST, and query/headers MUST be Schema Objects of type object.
+function validateWsBinding(channel: AsyncApiChannelDescriptor, warnings: string[]): void {
+  const binding = channel.wsBinding;
+  if (!binding) return;
+  const method = binding.method;
+  if (method !== undefined && (typeof method !== 'string' || (method !== 'GET' && method !== 'POST'))) {
+    warnings.push(`ASYNCAPI_WS_BINDING_INVALID: channel ${channel.id} ws binding method must be "GET" or "POST" but was ${JSON.stringify(method)}`);
+  }
+  for (const key of ['query', 'headers'] as const) {
+    const schema = binding[key];
+    if (schema === undefined) continue;
+    const record = asRecord(schema);
+    if (!record || (record.type !== undefined && record.type !== 'object')) {
+      warnings.push(`ASYNCAPI_WS_BINDING_INVALID: channel ${channel.id} ws binding ${key} must be a Schema Object of type object`);
+    }
+  }
+}
+
 export function instrumentAsyncApiCollection(
   collection: JsonRecord,
   index: AsyncApiContractIndex
@@ -231,8 +295,16 @@ export function instrumentAsyncApiCollection(
   ];
 
   for (const channel of index.channels) {
+    validateChannelParameters(channel, warnings);
     if (channel.transport === 'mqtt') validateMqttChannel(channel, warnings);
+    if (channel.transport === 'ws-raw') validateWsBinding(channel, warnings);
     for (const message of channel.messages) {
+      if (channel.transport === 'socketio' && SOCKETIO_RESERVED_EVENTS.has(message.eventName)) {
+        warnings.push(
+          `ASYNCAPI_SOCKETIO_RESERVED_EVENT: message ${message.id} on channel ${channel.id} uses the reserved Socket.IO event name "${message.eventName}"; reserved lifecycle events cannot be emitted or received as application events`
+        );
+      }
+      validateCorrelationLocation(channel.id, message, warnings);
       validateMessage(index, channel.id, message, warnings);
     }
   }

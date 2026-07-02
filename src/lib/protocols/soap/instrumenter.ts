@@ -47,6 +47,10 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     ? elementPresenceRegex(operation.expectedResponseElement)
     : '';
   const mediaType = operation.soapVersion === '1.2' ? 'application/soap+xml' : 'text/xml';
+  // SOAP 1.1 envelopes are namespace-qualified with the soap/envelope/ URI;
+  // SOAP 1.2 (Part 1 section 5.4.7) makes a mismatched envelope namespace a
+  // VersionMismatch fault condition.
+  const envelopeNs = operation.soapVersion === '1.2' ? 'http://www.w3.org/2003/05/soap-envelope' : 'http://schemas.xmlsoap.org/soap/envelope/';
   // A Fault and the HTTP status must agree: SOAP 1.1 binds Faults to HTTP 500
   // (WS-I Basic Profile R1126); SOAP 1.2 (Part 2, HTTP binding) maps env:Sender
   // faults to 400 and all other faults to 500.
@@ -74,6 +78,11 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     '  pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));',
     '});',
     '',
+    `pm.test('SOAP Envelope namespace matches SOAP ${operation.soapVersion}', function () {`,
+    '  if (!matchTag("Envelope").test(bodyText)) return;',
+    `  pm.expect(bodyText.indexOf(${JSON.stringify(envelopeNs)}) !== -1, "SOAP ${operation.soapVersion} envelopes must declare the ${envelopeNs} namespace").to.equal(true);`,
+    '});',
+    '',
     "pm.test('SOAP Body element is present', function () {",
     '  pm.expect(bodyText, "SOAP envelope has no Body element").to.match(matchTag("Body"));',
     '});',
@@ -91,7 +100,33 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     '  var code = pm.response.code;',
     faultStatusLine,
     '  if (!faulted && code === 500) pm.expect.fail("HTTP 500 from a SOAP endpoint must carry a SOAP Fault in the body");',
-    '});'
+    '});',
+    // Fault well-formedness (diagnostic companion to the Fault-absence test: a
+    // faulted run already fails, this pinpoints a malformed Fault). SOAP 1.1
+    // section 4.4 requires faultcode + faultstring children; SOAP 1.2 Part 1
+    // section 5.4 requires Code/Value + Reason/Text and pins the top-level
+    // Value QName to the five defined fault codes.
+    ...(operation.soapVersion === '1.2' ? [
+      '',
+      "pm.test('SOAP Fault is well-formed for SOAP 1.2', function () {",
+      '  if (!matchTag("Fault").test(bodyText)) return;',
+      '  if (!matchTag("Code").test(bodyText)) { pm.expect.fail("a SOAP 1.2 Fault must carry an env:Code child (SOAP 1.2 Part 1 section 5.4)"); return; }',
+      '  if (!matchTag("Value").test(bodyText)) { pm.expect.fail("a SOAP 1.2 Fault Code must carry an env:Value child (SOAP 1.2 Part 1 section 5.4.1)"); return; }',
+      '  if (!matchTag("Reason").test(bodyText)) pm.expect.fail("a SOAP 1.2 Fault must carry an env:Reason child (SOAP 1.2 Part 1 section 5.4)");',
+      '  else if (!matchTag("Text").test(bodyText)) pm.expect.fail("a SOAP 1.2 Fault Reason must carry an env:Text child (SOAP 1.2 Part 1 section 5.4.2)");',
+      '  var faultValue = (bodyText.match(/<(?:[A-Za-z_][\\w.-]*:)?Value[^>]*>([\\s\\S]*?)<\\//) || [])[1] || "";',
+      '  var faultLocal = faultValue.trim().split(":").pop();',
+      '  var faultCodes = ["VersionMismatch", "MustUnderstand", "DataEncodingUnknown", "Sender", "Receiver"];',
+      '  if (faultLocal && faultCodes.indexOf(faultLocal) === -1) pm.expect.fail("the SOAP 1.2 Fault Code Value must be one of " + faultCodes.join(", ") + " (SOAP 1.2 Part 1 table 4); got " + faultValue.trim());',
+      '});'
+    ] : [
+      '',
+      "pm.test('SOAP Fault is well-formed for SOAP 1.1', function () {",
+      '  if (!matchTag("Fault").test(bodyText)) return;',
+      '  if (!matchTag("faultcode").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultcode child (SOAP 1.1 section 4.4)");',
+      '  if (!matchTag("faultstring").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultstring child (SOAP 1.1 section 4.4)");',
+      '});'
+    ])
   ];
 
   if (responseRegex) {

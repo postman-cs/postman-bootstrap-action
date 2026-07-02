@@ -184,3 +184,29 @@ describe('mcp instrumenter (static validation)', () => {
     expect(() => instrumentMcpCollection(collection, index)).toThrow(/MCP_MESSAGE_INVALID/);
   });
 });
+
+
+describe('mcp tool annotations and outputSchema static checks', () => {
+  it('flags mis-typed annotation hints and a non-object outputSchema', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools[0];
+    expect(tool).toBeDefined();
+    tool.annotations = { readOnlyHint: 'yes', title: 42 };
+    tool.outputSchema = { type: 'string' };
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentMcpCollection(collection, index);
+    expect(warnings.filter((w) => w.startsWith('MCP_TOOL_ANNOTATION_INVALID'))).toHaveLength(2);
+    expect(warnings.some((w) => w.startsWith('MCP_TOOL_OUTPUT_SCHEMA_INVALID'))).toBe(true);
+  });
+
+  it('accepts boolean hints and a compilable object outputSchema', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools[0];
+    tool.annotations = { readOnlyHint: true, title: 'Weather' };
+    tool.outputSchema = { type: 'object', properties: { temperature: { type: 'number' } } };
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentMcpCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('MCP_TOOL_ANNOTATION_INVALID') || w.startsWith('MCP_TOOL_OUTPUT_SCHEMA'))).toBe(false);
+  });
+});
+

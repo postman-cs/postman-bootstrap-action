@@ -88,10 +88,51 @@ function validateServer(server: McpServerDescriptor, warnings: string[]): void {
   }
 }
 
+// MCP 2025-06-18 ToolAnnotations: the behavior hints are booleans and title is
+// a string; a mis-typed hint is a manifest bug a client would misread.
+const TOOL_ANNOTATION_BOOLEAN_HINTS = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'] as const;
+
+function validateToolAnnotations(tool: McpToolDescriptor, warnings: string[]): void {
+  if (!tool.annotations) return;
+  for (const hint of TOOL_ANNOTATION_BOOLEAN_HINTS) {
+    const value = tool.annotations[hint];
+    if (value !== undefined && typeof value !== 'boolean') {
+      warnings.push(`MCP_TOOL_ANNOTATION_INVALID: tool ${tool.name} annotations.${hint} must be a boolean (MCP ToolAnnotations); got ${JSON.stringify(value)}`);
+    }
+  }
+  if (tool.annotations.title !== undefined && typeof tool.annotations.title !== 'string') {
+    warnings.push(`MCP_TOOL_ANNOTATION_INVALID: tool ${tool.name} annotations.title must be a string (MCP ToolAnnotations); got ${JSON.stringify(tool.annotations.title)}`);
+  }
+}
+
+// MCP 2025-06-18: a tool that declares an outputSchema commits its tools/call
+// results to carry structuredContent conforming to it, so the schema itself
+// must be a compilable object schema. There is no runtime surface on
+// mcp-request items, so conformance of live results stays out of scope; the
+// deterministic generation-time contract is schema validity.
+function validateToolOutputSchema(index: McpContractIndex, tool: McpToolDescriptor, warnings: string[]): void {
+  if (!tool.outputSchema) return;
+  const declaredType = tool.outputSchema.type;
+  if (declaredType !== undefined && declaredType !== 'object') {
+    warnings.push(`MCP_TOOL_OUTPUT_SCHEMA_INVALID: tool ${tool.name} outputSchema type is ${JSON.stringify(declaredType)}; the MCP specification requires tool output schemas to describe the structuredContent object`);
+  }
+  const packed = packSchema(index.documentJson, tool.outputSchema, '3.0', 'response');
+  if (packed.unsupported) {
+    const code = isSchemaGraphOverflow(packed) ? 'MCP_SCHEMA_NOT_COMPILED' : 'MCP_TOOL_OUTPUT_SCHEMA_NOT_VALIDATED';
+    warnings.push(`${code}: tool ${tool.name} outputSchema is not validated (${packed.unsupported})`);
+    return;
+  }
+  if (!compileSchemaValidator(packed.schema)) {
+    warnings.push(`MCP_TOOL_OUTPUT_SCHEMA_NOT_VALIDATED: tool ${tool.name} outputSchema could not be compiled to a validator`);
+  }
+}
+
 function validateTool(index: McpContractIndex, tool: McpToolDescriptor, warnings: string[]): void {
   if (!TOOL_NAME_RE.test(tool.name)) {
     warnings.push(`MCP_TOOL_NAME_UNCONVENTIONAL: tool name "${tool.name}" is outside the conventional [A-Za-z0-9_./-]{1,128} identifier set`);
   }
+  validateToolAnnotations(tool, warnings);
+  validateToolOutputSchema(index, tool, warnings);
   if (!tool.inputSchema) return;
   const declaredType = tool.inputSchema.type;
   if (declaredType !== undefined && declaredType !== 'object') {

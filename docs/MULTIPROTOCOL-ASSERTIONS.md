@@ -59,6 +59,17 @@ base64 template with a base64 well-formedness check on string examples) raises
 `ASYNCAPI_BINARY_PAYLOAD_NOT_VALIDATED`, and a raw wire-string example supplied for a structured schema
 raises `ASYNCAPI_NON_JSON_PAYLOAD_NOT_VALIDATED`.
 
+Spec-conformance checks run in the same generation-time pass: every `{name}` parameter expression
+in a channel address must have an entry in the channel's `parameters` object and every declared
+parameter must appear in the address (`ASYNCAPI_CHANNEL_PARAMETER_UNDECLARED` / `_UNUSED`, with an
+empty `{}` expression flagged as `_INVALID`); a message `correlationId.location` must be a valid
+AsyncAPI runtime expression — `$message.header#/<pointer>` or `$message.payload#/<pointer>` with an
+RFC 6901 fragment (`ASYNCAPI_CORRELATION_LOCATION_INVALID`); an AsyncAPI WebSockets channel binding
+must use `method` GET or POST with `query`/`headers` as object Schema Objects
+(`ASYNCAPI_WS_BINDING_INVALID`); and a Socket.IO message must not use a reserved lifecycle event name
+(`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener` —
+`ASYNCAPI_SOCKETIO_RESERVED_EVENT`).
+
 Runtime message-exchange execution in CI remains blocked by the upstream Postman CLI limitation that
 prunes `ws-*` item types (issues #10640, #11252, #12316); the generation-time validation above is the
 enforceable contract surface until that runner path exists.
@@ -80,6 +91,13 @@ MCP server manifests are ingested as a first-class spec source: the detector rec
 The builder emits deterministic `mcp-request` EC items per server — `initialize`, `tools/list`, and one `tools/call` per tool with arguments synthesized from the tool’s `inputSchema` — grounded in the bundled `@postman/runtime.models` extensible item schema (`mcp-request.payload` is `{ transport: sse | stdio, …, message }` and carries no test-script slot).
 
 Because `mcp-request` has no script slot and the unified runner prunes it, contract enforcement is generation-time/static, mirroring the AsyncAPI discipline: every generated JSON-RPC message must be a well-formed JSON-RPC 2.0 request (a malformed one is a builder bug and fails closed with `MCP_MESSAGE_INVALID`), each tool’s `inputSchema` is compiled through the packed-schema machinery and the synthesized `tools/call` arguments are validated against it (the MCP analogue of `CONTRACT_EXAMPLE_SCHEMA_MISMATCH`; `MCP_TOOL_SAMPLE_MISMATCH` / `MCP_TOOL_SCHEMA_INVALID` / `MCP_TOOL_SCHEMA_NOT_VALIDATED` otherwise), server transport material is checked (`MCP_SERVER_URL_INVALID`/`MCP_SERVER_URL_MISSING`, `MCP_SERVER_COMMAND_MISSING`), tool naming is audited (`MCP_TOOL_NAME_*`), item coverage is enforced against the built collection (`MCP_ITEM_COVERAGE_FAILED` fails closed), and a collection size gate applies (`MCP_COLLECTION_SIZE_EXCEEDED`).
+
+Tool metadata is validated against MCP 2025-06-18: `annotations` behavior hints
+(`readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint`) must be booleans and
+`annotations.title` a string (`MCP_TOOL_ANNOTATION_INVALID`), and a tool that declares an
+`outputSchema` commits its `tools/call` results to carry conforming `structuredContent`, so the
+schema must be a compilable object schema (`MCP_TOOL_OUTPUT_SCHEMA_INVALID` /
+`MCP_TOOL_OUTPUT_SCHEMA_NOT_VALIDATED`; schema-graph overflow surfaces as `MCP_SCHEMA_NOT_COMPILED`).
 
 ### Remaining protocol surfaces
 
@@ -117,6 +135,12 @@ HTTP↔grpc-status mapping and `grpc-message`/trailer metadata are not script-vi
 `grpc-request` items (the sandbox surface is `pm.response.code`/`status`/`json()` only), so they are
 out of scope for generated assertions. Shape recursion is bounded (depth 5, cycle-guarded); deeper nesting is asserted object-only
 with a `PROTO_NESTED_SHAPE_TRUNCATED` warning.
+
+A `grpc-status-details-bin` trailer, when a server surfaces one in script-visible trailers, is
+validated as a wire-conformant `google.rpc.Status`: the trailer value must be base64, decode as a
+protobuf message whose `code` (field 1) is a varint in the canonical 0-16 range consistent with the
+reported status, whose `message` (field 2) is length-delimited, and whose `details` entries
+(field 3) decode as `google.protobuf.Any` messages with a non-empty `type_url`.
 
 ## Write path: public v2.1.0 vs gateway EC
 

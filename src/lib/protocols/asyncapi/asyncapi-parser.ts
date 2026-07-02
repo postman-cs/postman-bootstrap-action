@@ -61,6 +61,9 @@ export interface AsyncApiMessageDescriptor {
   ackSchema?: JsonRecord;
   // How ackSchema was derived, for precise warnings/notes. undefined when no ack.
   ackSource?: 'x-ack' | 'reply';
+  // AsyncAPI correlationId runtime expression (the `location` field), captured
+  // verbatim so its grammar can be validated at instrumentation time.
+  correlationLocation?: string;
   // Concrete sample used as the generated message content. Derived from a spec
   // example when present (hasExample true), otherwise synthesized from the schema.
   sample: unknown;
@@ -83,6 +86,12 @@ export interface AsyncApiChannelDescriptor {
   socketioPath?: string;
   // MQTT binding material; present only when transport === 'mqtt'.
   mqtt?: AsyncApiMqttInfo;
+  // Parameter names declared in the channel's parameters object, for
+  // address-expression coverage validation at instrumentation time.
+  parameterNames?: string[];
+  // Raw ws channel binding object (headers/query/method), captured verbatim
+  // for binding-value validation at instrumentation time.
+  wsBinding?: JsonRecord;
   messages: AsyncApiMessageDescriptor[];
   warnings: string[];
 }
@@ -294,7 +303,7 @@ function detectTransport(
   return 'ws-raw';
 }
 
-function wsBindingKeyValues(channel: ChannelModel): { headers: AsyncApiKeyValue[]; queryParams: AsyncApiKeyValue[] } {
+function wsBindingKeyValues(channel: ChannelModel): { headers: AsyncApiKeyValue[]; queryParams: AsyncApiKeyValue[]; binding?: JsonRecord } {
   const wsBinding = channel.bindings().all().find((binding) => {
     const protocol = binding.protocol().toLowerCase();
     return protocol === 'ws' || protocol === 'wss' || protocol === 'websockets';
@@ -303,7 +312,8 @@ function wsBindingKeyValues(channel: ChannelModel): { headers: AsyncApiKeyValue[
   const value = asRecord(wsBinding.value()) ?? {};
   return {
     headers: bindingKeyValues(value.headers),
-    queryParams: bindingKeyValues(value.query)
+    queryParams: bindingKeyValues(value.query),
+    binding: value
   };
 }
 
@@ -410,6 +420,8 @@ function messageDescriptor(
   const replySchema = replyByMessageId.get(message.id());
   const ackSchema = xAckSchema ?? replySchema;
   const ackSource: AsyncApiMessageDescriptor['ackSource'] = xAckSchema ? 'x-ack' : replySchema ? 'reply' : undefined;
+  const correlationRaw = asRecord(rawMessage.correlationId)?.location;
+  const correlationLocation = typeof correlationRaw === 'string' ? correlationRaw : undefined;
 
   const examples = message.examples().all().filter((example) => example.hasPayload());
   const hasExample = examples.length > 0;
@@ -434,6 +446,7 @@ function messageDescriptor(
     payloadSchema,
     ackSchema,
     ackSource,
+    correlationLocation,
     sample,
     hasExample,
     contentKind,
@@ -455,6 +468,7 @@ function channelDescriptor(
   const messagesRaw = channel.messages().all();
 
   const transport = detectTransport(channel, servers, messagesRaw, documentJson, warnings);
+  const parameterNames = Object.keys(asRecord(channel.json().parameters) ?? {}).sort();
 
   const serverUrl = servers.find((server) => server.url())?.url() || options.endpointUrl?.trim() || '';
   if (!serverUrl) {
@@ -479,6 +493,7 @@ function channelDescriptor(
       headers: [],
       queryParams: [],
       mqtt: collectMqttInfo(channel, servers, messagesRaw, documentJson),
+      parameterNames,
       messages,
       warnings
     };
@@ -494,12 +509,13 @@ function channelDescriptor(
       queryParams: [],
       socketioNamespace: address.startsWith('/') ? address : `/${address}`,
       socketioPath: DEFAULT_SOCKETIO_PATH,
+      parameterNames,
       messages,
       warnings
     };
   }
 
-  const { headers, queryParams } = wsBindingKeyValues(channel);
+  const { headers, queryParams, binding } = wsBindingKeyValues(channel);
   return {
     id: channel.id(),
     address,
@@ -507,6 +523,8 @@ function channelDescriptor(
     url: joinUrl(serverUrl, address),
     headers,
     queryParams,
+    parameterNames,
+    wsBinding: binding,
     messages,
     warnings
   };

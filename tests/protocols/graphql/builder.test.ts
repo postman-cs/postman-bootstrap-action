@@ -36,10 +36,28 @@ describe('buildGraphQLCollection', () => {
     item: Item[];
   };
 
+  const operationItems = collection.item.filter((c) => !c.id.startsWith('__gql_probe_'));
+  const probeItems = collection.item.filter((c) => c.id.startsWith('__gql_probe_'));
+
+  it('appends transport/consistency probe items after the operation items', () => {
+    expect(probeItems.map((c) => c.id)).toEqual([
+      '__gql_probe_introspection_drift',
+      '__gql_probe_invalid_document',
+      '__gql_probe_malformed_json',
+      '__gql_probe_get_mutation'
+    ]);
+    const getProbe = probeItems.find((c) => c.id === '__gql_probe_get_mutation')!;
+    expect(getProbe.request.method).toBe('GET');
+    expect(String(getProbe.request.url.raw)).toContain('query=');
+    const malformed = probeItems.find((c) => c.id === '__gql_probe_malformed_json')! as unknown as { request: { body: { mode: string; raw: string } } };
+    expect(malformed.request.body.mode).toBe('raw');
+    expect(() => JSON.parse(malformed.request.body.raw)).toThrow();
+  });
+
   it('emits a v2.1.0 collection with one http graphql item per operation in index order', () => {
     expect(collection.info.schema).toBe(COLLECTION_V210_SCHEMA);
-    expect(collection.item.map((c) => c.id)).toEqual(index.operations.map((o) => o.id));
-    for (const item of collection.item) {
+    expect(operationItems.map((c) => c.id)).toEqual(index.operations.map((o) => o.id));
+    for (const item of operationItems) {
       expect(item.request.method).toBe('POST');
       expect(item.request.body.mode).toBe('graphql');
       expect(item.event).toEqual([]);

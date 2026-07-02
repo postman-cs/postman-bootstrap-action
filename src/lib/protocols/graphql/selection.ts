@@ -42,18 +42,65 @@ export function selectFields(
   if (typeRef.kind !== 'object' && typeRef.kind !== 'interface') return null;
   const shape = index.objectShapes[typeRef.name];
   if (!shape) return [];
+  // When the type itself is a Relay connection, pageInfo and edges { cursor }
+  // are selected past the depth cap so the runtime can assert the Relay Cursor
+  // Connections response contract, not only its schema shape.
+  const relay = relayConnectionSelection(typeRef, index);
   const selected: SelectedField[] = [];
   for (const field of shape.fields) {
-    if (field.type.kind === 'scalar' || field.type.kind === 'enum') {
+    const relayField = relay?.find((entry) => entry.name === field.name);
+    if (relayField) {
+      selected.push(relayField);
+    } else if (field.type.kind === 'scalar' || field.type.kind === 'enum') {
       selected.push({ name: field.name, type: field.type, selection: null });
     } else if (
       (field.type.kind === 'object' || field.type.kind === 'interface') &&
-      depth < SELECTION_DEPTH
+      (depth < SELECTION_DEPTH || isRelayConnection(field.type, index))
     ) {
       selected.push({ name: field.name, type: field.type, selection: selectFields(field.type, index, depth + 1) ?? [] });
     }
   }
   return selected;
+}
+
+// Relay Cursor Connections spec section 5.1: only these PageInfo fields are
+// selected, so an extended PageInfo never bloats the generated document.
+const RELAY_PAGE_INFO_FIELDS = new Set(['hasNextPage', 'hasPreviousPage', 'startCursor', 'endCursor']);
+
+/**
+ * Convention gate matching the schema lints: a *Connection object type with an
+ * object-typed pageInfo field and a list-typed edges field. Schemas that do not
+ * opt into the Relay pattern are never expanded or asserted against it.
+ */
+export function isRelayConnection(typeRef: GraphQLTypeRef, index: GraphQLContractIndex): boolean {
+  if (typeRef.kind !== 'object' || !typeRef.name.endsWith('Connection')) return false;
+  const shape = index.objectShapes[typeRef.name];
+  if (!shape) return false;
+  const pageInfo = shape.fields.find((field) => field.name === 'pageInfo');
+  const edges = shape.fields.find((field) => field.name === 'edges');
+  return Boolean(pageInfo && pageInfo.type.kind === 'object' && edges && edges.type.lists.length > 0);
+}
+
+/**
+ * The Relay selection for a connection type: pageInfo's spec-defined scalar
+ * leaves plus edges { cursor } (node stays unselected to bound document size).
+ * Returns null when the type is not a Relay connection.
+ */
+function relayConnectionSelection(typeRef: GraphQLTypeRef, index: GraphQLContractIndex): SelectedField[] | null {
+  if (!isRelayConnection(typeRef, index)) return null;
+  const shape = index.objectShapes[typeRef.name]!;
+  const pageInfo = shape.fields.find((field) => field.name === 'pageInfo')!;
+  const edges = shape.fields.find((field) => field.name === 'edges')!;
+  const pageInfoShape = index.objectShapes[pageInfo.type.name];
+  const pageInfoLeaves: SelectedField[] = (pageInfoShape?.fields ?? [])
+    .filter((field) => field.type.kind === 'scalar' && RELAY_PAGE_INFO_FIELDS.has(field.name))
+    .map((field) => ({ name: field.name, type: field.type, selection: null }));
+  const edgeShape = index.objectShapes[edges.type.name];
+  const cursor = edgeShape?.fields.find((field) => field.name === 'cursor' && field.type.kind === 'scalar');
+  return [
+    { name: 'pageInfo', type: pageInfo.type, selection: pageInfoLeaves },
+    { name: 'edges', type: edges.type, selection: cursor ? [{ name: 'cursor', type: cursor.type, selection: null }] : [] }
+  ];
 }
 
 function indent(depth: number): string {

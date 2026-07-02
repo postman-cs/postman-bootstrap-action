@@ -16,12 +16,21 @@ import {
 } from '../../src/lib/protocols/soap/index.js';
 import { convertV2CollectionToEc } from '../../src/lib/protocols/v2-to-ec.js';
 
+function countLeafItems(items: unknown): number {
+  if (!Array.isArray(items)) return 0;
+  return items.reduce((total: number, entry) => {
+    const record = entry as Record<string, unknown> | null;
+    if (record && Array.isArray(record.item)) return total + countLeafItems(record.item);
+    return total + 1;
+  }, 0);
+}
+
 /** Build the instrumented v2.1.0 graphql tree the dispatch transforms to EC. */
 function graphqlV2(content: string) {
   const index = parseGraphQLSchema(content, { service: 'T' });
   const collection = buildGraphQLCollection(index, { name: 'T Contract', url: '{{baseUrl}}/graphql' });
   const { collection: instrumented } = instrumentGraphQLCollection(collection, index);
-  return { collection: instrumented, operationCount: index.operations.length };
+  return { collection: instrumented, operationCount: countLeafItems(instrumented.item) };
 }
 
 /** Build the instrumented v2.1.0 soap tree the dispatch transforms to EC. */

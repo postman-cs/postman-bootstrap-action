@@ -110,3 +110,53 @@ describe('instrumentGraphQLCollection', () => {
     expect(a).toBe(b);
   });
 });
+
+describe('Relay connection selection expansion and runtime assertions', () => {
+  const relaySdl = "type Query {\n  users(first: Int, after: String): UserConnection!\n}\ntype UserConnection { edges: [UserEdge!]! pageInfo: PageInfo! totalCount: Int }\ntype UserEdge { node: User! cursor: String! }\ntype User { id: ID! name: String! }\ntype PageInfo { hasNextPage: Boolean! hasPreviousPage: Boolean! startCursor: String endCursor: String }\n";
+
+  function relayCollection() {
+    const index = parseGraphQLSchema(relaySdl, { service: 'Relay' });
+    const collection = buildGraphQLCollection(index, { url: '{{baseUrl}}/graphql' });
+    instrumentGraphQLCollection(collection, index);
+    return collection as unknown as { item: Item[] };
+  }
+
+  it('expands connection fields past the depth cap: pageInfo leaves and edges { cursor }', () => {
+    const item = relayCollection().item.find((entry) => entry.id === 'query.users')!;
+    const body = (item.request.body as unknown as { graphql: { query: string } }).graphql;
+    expect(body.query).toContain('pageInfo');
+    expect(body.query).toContain('hasNextPage');
+    expect(body.query).toContain('hasPreviousPage');
+    expect(body.query).toContain('endCursor');
+    expect(body.query).toContain('edges');
+    expect(body.query).toContain('cursor');
+    // node is intentionally not selected: the Relay expansion is bounded.
+    expect(body.query).not.toContain('node');
+  });
+
+  it('asserts the selected Relay contract at runtime through the shared selection', () => {
+    const collection = relayCollection();
+    const exec = execFor(collection, 'query.users');
+    expect(exec).toContain('pageInfo');
+    expect(exec).toContain('hasNextPage');
+    expect(exec).toContain('cursor');
+    // pageInfo is non-null in this schema, so its absence must fail closed.
+    expect(exec).toContain("missing non-null field 'pageInfo'");
+  });
+});
+
+describe('deprecated argument/input-field edition-drift lint', () => {
+  const deprecatedSdl = "type Query {\n  search(term: String @deprecated(reason: \"use query\"), query: String! @deprecated(reason: \"bad idea\"), limit: Int): [String!]\n}\ninput Filter { legacy: String @deprecated(reason: \"old\"), mode: String! @deprecated(reason: \"required but deprecated\") }\ntype Mutation { run(filter: Filter): Boolean }\n";
+
+  it('flags @deprecated on arguments and input fields as edition drift, and required ones as violations', () => {
+    const index = parseGraphQLSchema(deprecatedSdl, { service: 'Drift' });
+    const drift = index.warnings.filter((warning) => warning.startsWith('GQL_DEPRECATED_INPUT_EDITION_DRIFT'));
+    const required = index.warnings.filter((warning) => warning.startsWith('GQL_DEPRECATED_REQUIRED_INPUT'));
+    expect(drift.some((warning) => warning.includes('Query.search.term'))).toBe(true);
+    expect(drift.some((warning) => warning.includes('Filter.legacy'))).toBe(true);
+    expect(required.some((warning) => warning.includes('Query.search.query'))).toBe(true);
+    expect(required.some((warning) => warning.includes('Filter.mode'))).toBe(true);
+    expect(required.some((warning) => warning.includes('.term'))).toBe(false);
+    expect(required.some((warning) => warning.includes('legacy'))).toBe(false);
+  });
+});

@@ -16,6 +16,7 @@
 import { compileSchemaValidator } from '../../spec/schema-validator-code.js';
 import { packSchema, isSchemaGraphOverflow } from '../../spec/schema-pack.js';
 import type { McpContractIndex, McpServerDescriptor, McpToolDescriptor } from './mcp-parser.js';
+import { expectedRuntimeItemCount } from './mcp-collection-builder.js';
 import { toolsCallScript } from './mcp-runtime-scripts.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -246,8 +247,7 @@ export function instrumentMcpCollection(collection: JsonRecord, index: McpContra
       `MCP_ITEM_COVERAGE_FAILED: built collection has ${ids.length} mcp-request item(s) (${unique} distinct) but the MCP index requires ${expected}; generated contract collection is incomplete or duplicated`
     );
   }
-  const runtimeServers = index.servers.filter((server) => server.transport === 'sse' && !!server.url);
-  const expectedHttp = runtimeServers.length * (8 + index.tools.length);
+  const expectedHttp = index.servers.reduce((total, server) => total + expectedRuntimeItemCount(index, server), 0);
   const uniqueHttp = new Set(httpIds).size;
   if (httpIds.length !== expectedHttp || uniqueHttp !== expectedHttp) {
     throw new Error(

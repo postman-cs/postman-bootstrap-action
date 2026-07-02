@@ -30,6 +30,101 @@ export interface BuildGraphQLCollectionOptions {
 
 const DEFAULT_URL = '{{baseUrl}}/graphql';
 
+/**
+ * Stable ids for the negative/consistency probe items appended after the
+ * operation items. The instrumenter recognizes these ids and attaches the
+ * matching probe assertion script instead of operation assertions.
+ */
+export const GRAPHQL_PROBE_IDS = {
+  /** GET must not execute mutations (GraphQL-over-HTTP). */
+  getMutation: '__gql_probe_get_mutation',
+  /** Malformed JSON body must be rejected as a client error. */
+  malformedJson: '__gql_probe_malformed_json',
+  /** Document validation failure status discipline (422/400, never 2xx under graphql-response+json). */
+  invalidDocument: '__gql_probe_invalid_document',
+  /** Live introspection vs schema-of-record drift. */
+  introspectionDrift: '__gql_probe_introspection_drift',
+  /** Apollo Federation subgraph `_service { sdl }`. */
+  federationService: '__gql_probe_federation_service'
+} as const;
+
+/**
+ * Bounded introspection document for the drift probe: root operation type
+ * names, every named type with kind, field/enum-value names with deprecation
+ * flags (GraphQL spec section 4: servers with introspection enabled answer
+ * this without arguments beyond includeDeprecated).
+ */
+export const INTROSPECTION_DRIFT_QUERY =
+  'query PostmanContractIntrospectionProbe { __schema { queryType { name } mutationType { name } subscriptionType { name } types { name kind fields(includeDeprecated: true) { name isDeprecated } enumValues(includeDeprecated: true) { name isDeprecated } } } }';
+
+const PROBE_HEADERS = [
+  { key: 'Content-Type', value: 'application/json' },
+  { key: 'Accept', value: 'application/graphql-response+json, application/json;q=0.9' }
+];
+
+function rawJsonProbeItem(id: string, name: string, rawBody: string, url: string): JsonRecord {
+  return {
+    id,
+    name,
+    request: {
+      method: 'POST',
+      header: PROBE_HEADERS.map((entry) => ({ ...entry })),
+      body: { mode: 'raw', raw: rawBody, options: { raw: { language: 'json' } } },
+      url: buildUrlDescriptor(url)
+    },
+    event: [] as JsonRecord[]
+  };
+}
+
+function buildProbeItems(index: GraphQLContractIndex, opts: BuildGraphQLCollectionOptions): JsonRecord[] {
+  const url = opts.url?.trim() || DEFAULT_URL;
+  const probes: JsonRecord[] = [];
+
+  probes.push(rawJsonProbeItem(
+    GRAPHQL_PROBE_IDS.introspectionDrift,
+    'probe: introspection matches the schema of record',
+    JSON.stringify({ query: INTROSPECTION_DRIFT_QUERY }),
+    url
+  ));
+  probes.push(rawJsonProbeItem(
+    GRAPHQL_PROBE_IDS.invalidDocument,
+    'probe: validation failure uses request-error status rules',
+    JSON.stringify({ query: 'query PostmanContractInvalidDocumentProbe { __postmanContractUndefinedFieldProbe }' }),
+    url
+  ));
+  // Body is intentionally NOT valid JSON: the probe asserts parse-failure handling.
+  probes.push(rawJsonProbeItem(
+    GRAPHQL_PROBE_IDS.malformedJson,
+    'probe: malformed JSON body is rejected',
+    '{"query": "quer',
+    url
+  ));
+  if (index.operations.some((operation) => operation.kind === 'mutation')) {
+    const getUrl = buildUrlDescriptor(url);
+    getUrl.query = [{ key: 'query', value: 'mutation PostmanContractGetMutationProbe { __typename }' }];
+    getUrl.raw = `${String(getUrl.raw)}?query=${encodeURIComponent('mutation PostmanContractGetMutationProbe { __typename }')}`;
+    probes.push({
+      id: GRAPHQL_PROBE_IDS.getMutation,
+      name: 'probe: GET must not execute mutations',
+      request: {
+        method: 'GET',
+        header: [{ key: 'Accept', value: 'application/graphql-response+json, application/json;q=0.9' }],
+        url: getUrl
+      },
+      event: [] as JsonRecord[]
+    });
+  }
+  if (index.federated) {
+    probes.push(rawJsonProbeItem(
+      GRAPHQL_PROBE_IDS.federationService,
+      'probe: federation subgraph exposes _service.sdl',
+      JSON.stringify({ query: 'query PostmanContractFederationProbe { _service { sdl } }' }),
+      url
+    ));
+  }
+  return probes;
+}
+
 function argTypeSdl(arg: GraphQLArgumentDef): string {
   const ref = arg.type;
   // Wrap the named type by every list dimension (inner -> outer) so nested-list
@@ -137,7 +232,10 @@ export function buildGraphQLCollection(index: GraphQLContractIndex, opts: BuildG
       description: `GraphQL contract assertions generated from ${index.service} schema (${index.operations.length} operations).`,
       schema: COLLECTION_V210_SCHEMA
     },
-    item: index.operations.map((operation) => buildItem(operation, index, opts)),
+    item: [
+      ...index.operations.map((operation) => buildItem(operation, index, opts)),
+      ...buildProbeItems(index, opts)
+    ],
     variable: variables.map((entry) => ({ key: entry.key, value: entry.value ?? '' }))
   };
 }

@@ -1,3 +1,4 @@
+import { GRAPHQL_PROBE_IDS } from './builder.js';
 import type { GraphQLContractIndex, GraphQLOperationDef, GraphQLTypeRef } from './parser.js';
 import { selectFields, type SelectedField } from './selection.js';
 
@@ -196,6 +197,23 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   }
   lines.push('});');
 
+  // 3b. Null-propagation conformance (GraphQL spec 6.4.4): a null observed at
+  // a non-null root field must have propagated to a null data map accompanied
+  // by an errors entry; an interior null or an unexplained null data map is a
+  // server conformance defect, diagnosed separately from the fail-closed
+  // presence test above.
+  if (returns.nonNull) {
+    lines.push(
+      `pm.test(${JSON.stringify(`[${label}] non-null field errors propagate per the spec`)}, function () {`,
+      '    if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;',
+      '    var data = gqlBody.data;',
+      '    var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];',
+      `    if (data !== null && data && data[${JSON.stringify(field)}] === null) pm.expect.fail("data.${field} is declared non-null; a field error must propagate the null to the enclosing data map, not leave an interior null (GraphQL spec 6.4.4)");`,
+      '    if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");',
+      '});'
+    );
+  }
+
   // 4. Shape vs return type (only when the value is non-null at runtime).
   const shapeLines = buildShapeAssertions(operation, index, warnings);
   if (shapeLines.length > 0) {
@@ -369,6 +387,137 @@ function buildVariableScript(operation: GraphQLOperationDef): string[] {
   ];
 }
 
+// Introspection-drift payload budget: an expected-schema JSON above this size
+// falls back to roots+enums only (with a warning) so the generated script
+// stays far below the script-size hard cap.
+const INTROSPECTION_DRIFT_MAX_EXPECTED_BYTES = 250_000;
+
+const PROBE_JSON_PARSE_LINE = 'var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();';
+
+/**
+ * Build the assertion script for one probe item (see GRAPHQL_PROBE_IDS).
+ * Probes assert GraphQL-over-HTTP transport discipline and live-schema
+ * consistency; each is conditional-skip where the spec leaves server behavior
+ * optional (e.g. introspection disabled).
+ */
+function buildProbeScript(probeId: string, index: GraphQLContractIndex, warnings: string[]): string[] {
+  if (probeId === GRAPHQL_PROBE_IDS.getMutation) {
+    return [
+      PROBE_JSON_PARSE_LINE,
+      "pm.test('[probe] GET requests must not execute mutations (GraphQL-over-HTTP section 4.4)', function () {",
+      '    var code = pm.response.code;',
+      '    if (code < 200 || code >= 300) return;',
+      '    if (gqlBody.data !== undefined && gqlBody.data !== null) { pm.expect.fail("the server executed a mutation received via HTTP GET; GraphQL-over-HTTP forbids executing mutations over GET (respond 405 or a request error)"); return; }',
+      '    if (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0) pm.expect.fail("a 2xx response to a GET-transported mutation must carry a request error refusing execution (GraphQL-over-HTTP section 4.4)");',
+      '});'
+    ];
+  }
+  if (probeId === GRAPHQL_PROBE_IDS.malformedJson) {
+    return [
+      "pm.test('[probe] malformed JSON request bodies are rejected as a client error (GraphQL-over-HTTP 6.4)', function () {",
+      '    var code = pm.response.code;',
+      '    if (code >= 200 && code < 300) { pm.expect.fail("the server answered " + code + " to a syntactically invalid JSON body; a JSON parse failure is a request error (400 recommended; GraphQL-over-HTTP 6.4)"); return; }',
+      '    if (code >= 500) pm.expect.fail("a malformed JSON body is a client error (400 recommended), not HTTP " + code + " (GraphQL-over-HTTP 6.4)");',
+      '});'
+    ];
+  }
+  if (probeId === GRAPHQL_PROBE_IDS.invalidDocument) {
+    return [
+      PROBE_JSON_PARSE_LINE,
+      "pm.test('[probe] document validation failures follow request-error status rules (GraphQL-over-HTTP 6.4.2)', function () {",
+      '    var code = pm.response.code;',
+      '    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();',
+      '    var mediaType = contentType.split(";")[0].trim();',
+      '    if (code >= 500) { pm.expect.fail("a document validation failure is a client error (422 or 400 recommended), not HTTP " + code + " (GraphQL-over-HTTP 6.4.2)"); return; }',
+      '    if (mediaType === "application/graphql-response+json") {',
+      '      if (code >= 200 && code < 300) pm.expect.fail("under application/graphql-response+json a validation failure produces a request error with no data entry and must not use a 2xx status (422 or 400 recommended; GraphQL-over-HTTP 6.4.2)");',
+      '      return;',
+      '    }',
+      '    if (code >= 200 && code < 300) {',
+      '      if (gqlBody.data !== undefined && gqlBody.data !== null) { pm.expect.fail("the server executed a document that fails validation; validation errors must abort execution (GraphQL spec 5 / 6.1)"); return; }',
+      '      if (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0) pm.expect.fail("a 2xx legacy application/json response to an invalid document must carry a non-empty errors list (GraphQL-over-HTTP 6.4.1)");',
+      '    }',
+      '});'
+    ];
+  }
+  if (probeId === GRAPHQL_PROBE_IDS.federationService) {
+    return [
+      PROBE_JSON_PARSE_LINE,
+      "pm.test('[probe] federation subgraph answers _service { sdl } (Apollo Federation subgraph spec)', function () {",
+      '    var sdl = gqlBody.data && gqlBody.data._service && gqlBody.data._service.sdl;',
+      '    if (typeof sdl !== "string" || !sdl.trim()) pm.expect.fail("a federated subgraph must expose _service.sdl returning its schema SDL (Apollo Federation subgraph specification)");',
+      '});'
+    ];
+  }
+  // Introspection drift: bake the schema-of-record surface into the script and
+  // diff it against the live __schema result. Conditional-skip when the server
+  // has introspection disabled (no MUST in the October 2021 spec requires it).
+  const builtInScalars = ['String', 'Int', 'Float', 'Boolean', 'ID'];
+  let expected: JsonRecord = {
+    roots: index.rootTypes,
+    kinds: index.typeKinds,
+    fields: index.typeFields,
+    enums: index.enumValues,
+    deprecatedFields: index.deprecatedFields,
+    deprecatedEnumValues: index.deprecatedEnumValues
+  };
+  if (Buffer.byteLength(JSON.stringify(expected), 'utf8') > INTROSPECTION_DRIFT_MAX_EXPECTED_BYTES) {
+    warnings.push('GQL_INTROSPECTION_PROBE_TRUNCATED: the schema surface exceeds the drift-probe payload budget; the probe compares root types and enum value sets only');
+    expected = { roots: index.rootTypes, kinds: {}, fields: {}, enums: index.enumValues, deprecatedFields: {}, deprecatedEnumValues: {} };
+  }
+  return [
+    PROBE_JSON_PARSE_LINE,
+    `var gqlExpected = JSON.parse(${JSON.stringify(JSON.stringify(expected))});`,
+    `var gqlBuiltInScalars = ${JSON.stringify(builtInScalars)};`,
+    "pm.test('[probe] deployed schema matches the schema of record (GraphQL spec section 4: introspection)', function () {",
+    '    var live = gqlBody.data && gqlBody.data.__schema;',
+    '    if (!live) return;',
+    '    var drift = function (message) { pm.expect.fail("schema drift: " + message); };',
+    '    var kindMap = { SCALAR: "scalar", OBJECT: "object", INTERFACE: "interface", UNION: "union", ENUM: "enum", INPUT_OBJECT: "input" };',
+    '    ["query", "mutation", "subscription"].forEach(function (rootKind) {',
+    '      var expectedRoot = gqlExpected.roots[rootKind];',
+    '      var liveRoot = live[rootKind + "Type"] && live[rootKind + "Type"].name;',
+    '      if (expectedRoot && liveRoot !== expectedRoot) drift("the " + rootKind + " root type is " + JSON.stringify(liveRoot) + " but the schema of record declares " + JSON.stringify(expectedRoot));',
+    '      if (!expectedRoot && liveRoot) drift("the deployed schema declares a " + rootKind + " root type (" + liveRoot + ") the schema of record does not");',
+    '    });',
+    '    var liveTypes = {};',
+    '    (live.types || []).forEach(function (t) { if (t && t.name && t.name.indexOf("__") !== 0) liveTypes[t.name] = t; });',
+    '    Object.keys(gqlExpected.kinds).forEach(function (name) {',
+    '      if (gqlBuiltInScalars.indexOf(name) !== -1) return;',
+    '      var liveType = liveTypes[name];',
+    '      if (!liveType) { drift("type " + name + " is missing from the deployed schema"); return; }',
+    '      var liveKind = kindMap[String(liveType.kind)] || String(liveType.kind).toLowerCase();',
+    '      if (liveKind !== gqlExpected.kinds[name]) drift("type " + name + " is a " + liveKind + " on the server but a " + gqlExpected.kinds[name] + " in the schema of record");',
+    '    });',
+    '    if (Object.keys(gqlExpected.kinds).length > 0) {',
+    '      Object.keys(liveTypes).forEach(function (name) {',
+    '        if (gqlBuiltInScalars.indexOf(name) !== -1) return;',
+    '        if (!Object.prototype.hasOwnProperty.call(gqlExpected.kinds, name)) drift("the deployed schema declares type " + name + " which is absent from the schema of record");',
+    '      });',
+    '    }',
+    '    Object.keys(gqlExpected.fields).forEach(function (name) {',
+    '      var liveType = liveTypes[name];',
+    '      if (!liveType || !Array.isArray(liveType.fields)) return;',
+    '      var liveFieldNames = liveType.fields.map(function (f) { return f && f.name; }).sort();',
+    '      if (JSON.stringify(liveFieldNames) !== JSON.stringify(gqlExpected.fields[name])) drift("type " + name + " fields [" + liveFieldNames.join(", ") + "] do not match the schema of record [" + gqlExpected.fields[name].join(", ") + "]");',
+    '      var liveDeprecated = liveType.fields.filter(function (f) { return f && f.isDeprecated === true; }).map(function (f) { return f.name; }).sort();',
+    '      var expectedDeprecated = gqlExpected.deprecatedFields[name] || [];',
+    '      if (JSON.stringify(liveDeprecated) !== JSON.stringify(expectedDeprecated)) drift("type " + name + " deprecated fields [" + liveDeprecated.join(", ") + "] do not match the schema of record [" + expectedDeprecated.join(", ") + "] (@deprecated drift; GraphQL spec 4.2.3)");',
+    '    });',
+    '    Object.keys(gqlExpected.enums).forEach(function (name) {',
+    '      var liveType = liveTypes[name];',
+    '      if (!liveType) return;',
+    '      var liveValues = Array.isArray(liveType.enumValues) ? liveType.enumValues.map(function (v) { return v && v.name; }).sort() : [];',
+    '      var expectedValues = gqlExpected.enums[name].slice().sort();',
+    '      if (JSON.stringify(liveValues) !== JSON.stringify(expectedValues)) drift("enum " + name + " values [" + liveValues.join(", ") + "] do not match the schema of record [" + expectedValues.join(", ") + "]");',
+    '      var liveDeprecatedValues = Array.isArray(liveType.enumValues) ? liveType.enumValues.filter(function (v) { return v && v.isDeprecated === true; }).map(function (v) { return v.name; }).sort() : [];',
+    '      var expectedDeprecatedValues = gqlExpected.deprecatedEnumValues[name] || [];',
+    '      if (JSON.stringify(liveDeprecatedValues) !== JSON.stringify(expectedDeprecatedValues)) drift("enum " + name + " deprecated values [" + liveDeprecatedValues.join(", ") + "] do not match the schema of record [" + expectedDeprecatedValues.join(", ") + "] (@deprecated drift; GraphQL spec 4.2.3)");',
+    '    });',
+    '});'
+  ];
+}
+
 function isGraphQLHttpRequest(item: JsonRecord): boolean {
   const request = asRecord(item.request);
   if (!request) return false;
@@ -383,6 +532,14 @@ function injectItem(item: JsonRecord, index: GraphQLContractIndex, covered: Set<
       const childRecord = asRecord(child);
       if (childRecord) injectItem(childRecord, index, covered, warnings);
     }
+    return;
+  }
+
+  const itemId = String(item.id ?? '');
+  if (itemId.startsWith('__gql_probe_') && asRecord(item.request)) {
+    const exec = buildProbeScript(itemId, index, warnings);
+    const priorEvents = asArray(item.event).filter((entry) => asRecord(entry)?.listen !== 'test');
+    item.event = [...priorEvents, { listen: 'test', script: { type: 'text/javascript', exec } }];
     return;
   }
 

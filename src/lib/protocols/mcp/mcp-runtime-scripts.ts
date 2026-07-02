@@ -61,6 +61,19 @@ function mcpSaveSessionAndCapabilities(body) {
   if (session) pm.collectionVariables.set('mcp_session_id', session);
   if (body && body.result && body.result.capabilities) pm.collectionVariables.set('mcp_capabilities', JSON.stringify(body.result.capabilities));
 }
+function mcpAssertPostMediaType(label) {
+  var mediaType = String(pm.response.headers.get('Content-Type') || '');
+  if (!mediaType) return;
+  var media = mediaType.split(';')[0].trim().toLowerCase();
+  if (media !== 'application/json' && media !== 'text/event-stream') pm.expect.fail(label + ' response Content-Type must be application/json or text/event-stream (MCP 2025-06-18 Transports sec. 2.1); got ' + mediaType);
+  var charsetMatch = /;\\s*charset\\s*=\\s*"?([^";]+)"?/i.exec(mediaType);
+  if (charsetMatch && charsetMatch[1].trim().toLowerCase() !== 'utf-8') pm.expect.fail(label + ' response charset must be utf-8 when declared (MCP messages are UTF-8 JSON); got ' + charsetMatch[1].trim());
+}
+function mcpCapabilityDeclared(name) {
+  var raw = pm.collectionVariables.get('mcp_capabilities');
+  if (!raw) return null;
+  try { var caps = JSON.parse(raw); return Object.prototype.hasOwnProperty.call(caps, name); } catch (e) { return null; }
+}
 function mcpSessionHeader() {
   return pm.collectionVariables.get('mcp_session_id') || '';
 }
@@ -78,7 +91,7 @@ export function initializeScript(): string {
   return join([
     "var body;",
     `pm.test('MCP initialize transport is HTTP 2xx (MCP 2025-06-18 Streamable HTTP)', function () { pm.expect(pm.response.code).to.be.within(200, 299); });`,
-    `pm.test('MCP initialize Content-Type is JSON or SSE (MCP 2025-06-18 transports)', function () { pm.expect(pm.response.headers.get('Content-Type') || '').to.match(/application\\/json|text\\/event-stream/i); });`,
+    `pm.test('MCP initialize Content-Type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { pm.expect(pm.response.headers.get('Content-Type') || '').to.match(/application\\/json|text\\/event-stream/i); mcpAssertPostMediaType('initialize'); });`,
     `pm.test('MCP initialize response is a JSON-RPC object, not a batch (MCP 2025-06-18; JSON-RPC 2.0 §5)', function () { body = mcpResponseBody(); mcpAssertResponseObject('initialize', body, 1); pm.expect(body.result, 'initialize result').to.be.an('object'); });`,
     `pm.test('MCP initialize negotiates protocolVersion date (MCP 2025-06-18 initialize)', function () { pm.expect(body.result.protocolVersion).to.match(/^\\d{4}-\\d{2}-\\d{2}$/); if (['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].indexOf(body.result.protocolVersion) === -1) console.warn('MCP initialize protocolVersion is not in the known revision set: ' + body.result.protocolVersion); });`,
     `pm.test('MCP initialize capabilities have typed open sub-shapes (MCP 2025-06-18 capabilities)', function () { var caps = body.result.capabilities; pm.expect(caps).to.be.an('object'); ['tools','resources','prompts'].forEach(function (name) { if (caps[name]) Object.keys(caps[name]).filter(function (k) { return /^(listChanged|subscribe)$/.test(k); }).forEach(function (k) { pm.expect(caps[name][k], name + '.' + k).to.be.a('boolean'); }); }); ['logging','completions'].forEach(function (name) { if (caps[name] !== undefined) pm.expect(caps[name], name).to.be.an('object'); }); });`,
@@ -95,14 +108,18 @@ export function initializedNotificationScript(): string {
 
 export function pingScript(): string {
   return join([
-    `pm.test('MCP ping echoes string id and empty result (MCP 2025-06-18 utilities/ping; JSON-RPC 2.0 §4)', function () { var body = mcpResponseBody(); mcpAssertResponseObject('ping', body, 'pm-ping'); pm.expect(body.result).to.be.an('object'); var keys = Object.keys(body.result).filter(function (key) { return key !== '_meta'; }); pm.expect(keys, 'ping result keys other than _meta').to.eql([]); });`
+    `pm.test('MCP ping echoes string id and empty result (MCP 2025-06-18 utilities/ping; JSON-RPC 2.0 §4)', function () { var body = mcpResponseBody(); mcpAssertResponseObject('ping', body, 'pm-ping'); pm.expect(body.result).to.be.an('object'); var keys = Object.keys(body.result).filter(function (key) { return key !== '_meta'; }); pm.expect(keys, 'ping result keys other than _meta').to.eql([]); });`,
+    `pm.test('MCP ping response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('ping'); });`
   ]);
 }
 
 export function toolsListScript(toolNames: string[]): string {
   return join([
     `var declaredTools = ${json(toolNames)};`,
-    `pm.test('MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)', function () { var body = mcpResponseBody(); mcpAssertResponseObject('tools/list', body, 2); pm.expect(body.result).to.be.an('object'); pm.expect(body.result.tools).to.be.an('array'); var live = {}; body.result.tools.forEach(function (tool) { pm.expect(tool.name).to.be.a('string'); pm.expect(tool.inputSchema, 'tool inputSchema').to.be.an('object'); pm.expect(tool.inputSchema.type, 'tool inputSchema.type').to.eql('object'); if (tool.title !== undefined) pm.expect(tool.title).to.be.a('string'); if (tool.description !== undefined) pm.expect(tool.description).to.be.a('string'); pm.expect(live[tool.name], 'tool name unique within page').to.not.eql(true); live[tool.name] = true; }); declaredTools.forEach(function (name) { pm.expect(live[name], 'declared manifest tool is live: ' + name).to.eql(true); }); if (body.result.nextCursor) console.warn('MCP tools/list returned nextCursor; deterministic contract checks only the first page for manifest subset'); var bad = []; mcpWalkMeta(body, '$', bad); pm.expect(bad, 'MCP 2025-06-18 _meta key grammar').to.eql([]); });`
+    `pm.test('MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)', function () { var body = mcpResponseBody(); mcpAssertResponseObject('tools/list', body, 2); pm.expect(body.result).to.be.an('object'); pm.expect(body.result.tools).to.be.an('array'); var live = {}; body.result.tools.forEach(function (tool) { pm.expect(tool.name).to.be.a('string'); pm.expect(tool.inputSchema, 'tool inputSchema').to.be.an('object'); pm.expect(tool.inputSchema.type, 'tool inputSchema.type').to.eql('object'); if (tool.title !== undefined) pm.expect(tool.title).to.be.a('string'); if (tool.description !== undefined) pm.expect(tool.description).to.be.a('string'); pm.expect(live[tool.name], 'tool name unique within page').to.not.eql(true); live[tool.name] = true; }); declaredTools.forEach(function (name) { pm.expect(live[name], 'declared manifest tool is live: ' + name).to.eql(true); }); if (body.result.nextCursor) console.warn('MCP tools/list returned nextCursor; deterministic contract checks only the first page for manifest subset'); var bad = []; mcpWalkMeta(body, '$', bad); pm.expect(bad, 'MCP 2025-06-18 _meta key grammar').to.eql([]); });`,
+    `pm.test('MCP tools/list is served only when the tools capability was declared (MCP 2025-06-18 Tools sec. 1; Lifecycle sec. 1.2)', function () { var body = mcpResponseBody(); if (!body || body.error) return; var declared = mcpCapabilityDeclared('tools'); if (declared === null) return; pm.expect(declared, 'initialize declared capabilities.tools before serving tools/list').to.eql(true); });`,
+    `pm.test('MCP tools/list nextCursor is an opaque string, saved verbatim for the pagination probes (MCP 2025-06-18 pagination)', function () { var body = mcpResponseBody(); if (body && body.result && body.result.nextCursor !== undefined) { pm.expect(body.result.nextCursor, 'nextCursor').to.be.a('string'); pm.collectionVariables.set('mcp_next_cursor', body.result.nextCursor); } else { pm.collectionVariables.unset('mcp_next_cursor'); } });`,
+    `pm.test('MCP tools/list response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('tools/list'); });`
   ]);
 }
 
@@ -112,7 +129,9 @@ export function toolsCallScript(index: McpContractIndex, tool: McpToolDescriptor
     `var toolName = ${json(tool.name)};`,
     "var body = mcpResponseBody();",
     `pm.test('MCP tools/call returns JSON-RPC result for ${tool.name} (MCP 2025-06-18 tools/call; JSON-RPC 2.0 §5)', function () { mcpAssertResponseObject('tools/call ' + toolName, body, ${requestId}); pm.expect(body.result, 'tools/call result').to.be.an('object'); });`,
-    `pm.test('MCP tools/call content blocks are typed for ${tool.name} (MCP 2025-06-18 content blocks)', function () { if (body.result.isError) { pm.expect(body.result.isError).to.be.a('boolean'); console.warn('MCP tools/call returned tool-execution-error for ' + toolName + '; protocol envelope passed and content checks are skipped'); return; } if (body.result.isError !== undefined) pm.expect(body.result.isError).to.be.a('boolean'); pm.expect(body.result.content).to.be.an('array'); body.result.content.forEach(function (block) { pm.expect(block).to.be.an('object'); pm.expect(block.type).to.be.a('string'); if (block.type === 'text') pm.expect(block.text).to.be.a('string'); else if (block.type === 'image' || block.type === 'audio') { pm.expect(block.data).to.match(/^[A-Za-z0-9+/]+={0,2}$/); pm.expect(block.mimeType).to.be.a('string'); } else if (block.type === 'resource_link') { pm.expect(block.uri).to.be.a('string'); pm.expect(block.name).to.be.a('string'); } else if (block.type === 'resource') { pm.expect(block.resource).to.be.an('object'); pm.expect(block.resource.uri).to.be.a('string'); var hasText = typeof block.resource.text === 'string'; var hasBlob = typeof block.resource.blob === 'string'; pm.expect(hasText || hasBlob, 'resource has text or blob').to.eql(true); if (hasText && hasBlob) console.warn('MCP resource content block carries both text and blob for ' + toolName); } }); });`
+    `pm.test('MCP tools/call content blocks are typed for ${tool.name} (MCP 2025-06-18 content blocks)', function () { if (body.result.isError) { pm.expect(body.result.isError).to.be.a('boolean'); console.warn('MCP tools/call returned tool-execution-error for ' + toolName + '; protocol envelope passed and content checks are skipped'); return; } if (body.result.isError !== undefined) pm.expect(body.result.isError).to.be.a('boolean'); pm.expect(body.result.content).to.be.an('array'); body.result.content.forEach(function (block) { pm.expect(block).to.be.an('object'); pm.expect(block.type).to.be.a('string'); if (block.type === 'text') pm.expect(block.text).to.be.a('string'); else if (block.type === 'image' || block.type === 'audio') { pm.expect(block.data).to.match(/^[A-Za-z0-9+/]+={0,2}$/); pm.expect(block.mimeType).to.be.a('string'); } else if (block.type === 'resource_link') { pm.expect(block.uri).to.be.a('string'); pm.expect(block.name).to.be.a('string'); } else if (block.type === 'resource') { pm.expect(block.resource).to.be.an('object'); pm.expect(block.resource.uri).to.be.a('string'); var hasText = typeof block.resource.text === 'string'; var hasBlob = typeof block.resource.blob === 'string'; pm.expect(hasText || hasBlob, 'resource has text or blob').to.eql(true); if (hasText && hasBlob) console.warn('MCP resource content block carries both text and blob for ' + toolName); } }); });`,
+    `pm.test('MCP tools/call is served only when the tools capability was declared for ${tool.name} (MCP 2025-06-18 Tools sec. 1; Lifecycle sec. 1.2)', function () { if (!body || body.error) return; var declared = mcpCapabilityDeclared('tools'); if (declared === null) return; pm.expect(declared, 'initialize declared capabilities.tools before serving tools/call').to.eql(true); });`,
+    `pm.test('MCP tools/call response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('tools/call'); });`
   ];
   if (tool.outputSchema) {
     try {
@@ -139,6 +158,143 @@ export function badVersionScript(): string {
 export function invalidCursorScript(): string {
   return join([
     `pm.test('MCP tools/list invalid cursor returns JSON-RPC error (MCP 2025-06-18 pagination SHOULD; JSON-RPC 2.0 §5.1)', function () { var body = mcpResponseBody(); if (body && body.result && Array.isArray(body.result.tools)) pm.expect.fail('MCP tools/list invalid cursor returned a successful tools page'); mcpAssertErrorShape('tools/list invalid cursor', body, 4); if (body.error.code !== -32602) console.warn('MCP tools/list invalid cursor error.code should be -32602 but was ' + body.error.code); });`
+  ]);
+}
+
+export function resourceTemplatesScript(): string {
+  return join([
+    `pm.test('MCP resource templates compile under RFC 6570 (MCP 2025-06-18 resources; RFC 6570)', function () {`,
+    '  var body = mcpResponseBody();',
+    "  if (body && body.error) { mcpAssertErrorShape('resources/templates/list', body, 5); return; }",
+    "  mcpAssertResponseObject('resources/templates/list', body, 5);",
+    "  pm.expect(body.result, 'resources/templates/list result').to.be.an('object');",
+    '  var templates = body.result.resourceTemplates;',
+    '  if (templates === undefined) return;',
+    "  pm.expect(templates, 'resourceTemplates').to.be.an('array');",
+    '  var exprRe = /^\\{[+#./;?&]?[A-Za-z0-9_%.]+(?::[1-9][0-9]{0,3}|\\*)?(?:,[A-Za-z0-9_%.]+(?::[1-9][0-9]{0,3}|\\*)?)*\\}$/;',
+    '  templates.forEach(function (template) {',
+    "    pm.expect(template, 'resource template entry').to.be.an('object');",
+    "    pm.expect(template.name, 'resource template name').to.be.a('string');",
+    "    pm.expect(template.uriTemplate, 'resource template uriTemplate').to.be.a('string');",
+    '    var s = template.uriTemplate; var open = -1;',
+    '    for (var i = 0; i < s.length; i++) {',
+    "      var ch = s.charAt(i);",
+    "      if (ch === '{') { if (open !== -1) { pm.expect.fail('nested { in URI template ' + s + ' (RFC 6570 syntax)'); return; } open = i; }",
+    "      else if (ch === '}') { if (open === -1) { pm.expect.fail('unmatched } in URI template ' + s + ' (RFC 6570 syntax)'); return; } var expr = s.slice(open, i + 1); open = -1; if (!exprRe.test(expr)) { pm.expect.fail('expression ' + expr + ' in URI template ' + s + ' is not valid RFC 6570 (operator, varname list, optional :prefix or * modifier)'); return; } }",
+    '    }',
+    "    if (open !== -1) pm.expect.fail('unterminated { in URI template ' + s + ' (RFC 6570 syntax)');",
+    '  });',
+    '});',
+    `pm.test('MCP resources/templates/list is served only when the resources capability was declared (MCP 2025-06-18 Resources sec. 1; Lifecycle sec. 1.2)', function () { var body = mcpResponseBody(); if (!body || body.error) return; var declared = mcpCapabilityDeclared('resources'); if (declared === null) return; pm.expect(declared, 'initialize declared capabilities.resources before serving resources/templates/list').to.eql(true); });`,
+    `pm.test('MCP resources/templates/list response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('resources/templates/list'); });`
+  ]);
+}
+
+export function progressToolCallScript(toolName: string): string {
+  return join([
+    `var progressToolName = ${json(toolName)};`,
+    `pm.test('MCP progress notifications echo the token and increase for ' + progressToolName + ' (MCP 2025-06-18 utilities/progress)', function () {`,
+    '  var body = mcpResponseBody();',
+    '  var frames = Array.isArray(body) ? body : [body];',
+    '  var responseIndex = -1; var responseCount = 0;',
+    '  frames.forEach(function (frame, i) {',
+    "    pm.expect(frame, 'every SSE data payload is a JSON-RPC object (MCP 2025-06-18 transports)').to.be.an('object');",
+    "    pm.expect(frame.jsonrpc, 'SSE frame jsonrpc').to.eql('2.0');",
+    '    if (frame.method === undefined) {',
+    '      responseCount += 1; responseIndex = i;',
+    "      pm.expect(frame.id, 'the response id echoes the request id').to.eql('pm-progress-call');",
+    "    } else if (frame.id !== undefined) { pm.expect.fail('a notification must not carry an id (JSON-RPC 2.0 section 4.1); got ' + frame.method + ' with id ' + JSON.stringify(frame.id)); }",
+    '  });',
+    "  pm.expect(responseCount, 'exactly one JSON-RPC response per POST stream (MCP 2025-06-18 transports)').to.eql(1);",
+    '  var lastProgress = -Infinity;',
+    '  frames.forEach(function (frame, i) {',
+    "    if (frame.method !== 'notifications/progress') return;",
+    '    var params = frame.params || {};',
+    "    pm.expect(params.progressToken, 'progress notifications must echo the request progressToken (MCP 2025-06-18 utilities/progress)').to.eql('pm-progress');",
+    "    pm.expect(typeof params.progress, 'progress must be a number').to.eql('number');",
+    "    if (!(params.progress > lastProgress)) pm.expect.fail('progress values must increase with each notification (MCP 2025-06-18 utilities/progress); got ' + params.progress + ' after ' + lastProgress);",
+    '    lastProgress = params.progress;',
+    "    if (responseIndex !== -1 && i > responseIndex) pm.expect.fail('progress notifications must stop after the final response (MCP 2025-06-18 utilities/progress)');",
+    '  });',
+    '});'
+  ]);
+}
+
+export function unauthenticatedInitializeScript(): string {
+  return join([
+    `pm.test('MCP unauthenticated requests are rejected with 401 + WWW-Authenticate (MCP authorization; RFC 9728 section 5.1)', function () {`,
+    "  pm.expect(pm.response.code, 'a request without Authorization must yield HTTP 401').to.eql(401);",
+    "  var challenge = pm.response.headers.get('WWW-Authenticate') || '';",
+    "  if (!challenge) { pm.expect.fail('401 responses must carry a WWW-Authenticate challenge (MCP authorization spec; RFC 9110 section 15.5.2)'); return; }",
+    "  if (!/resource_metadata=/.test(challenge)) pm.expect.fail('the WWW-Authenticate challenge must advertise resource_metadata so clients can discover the authorization server (MCP authorization spec; RFC 9728 section 5.1); got: ' + challenge);",
+    '});'
+  ]);
+}
+
+export function bogusBearerScript(): string {
+  return join([
+    `pm.test('MCP rejects an invalid bearer token with HTTP 401 (MCP authorization; RFC 6750 section 3.1)', function () {`,
+    "  pm.expect(pm.response.code, 'an invalid access token must yield HTTP 401').to.eql(401);",
+    '});'
+  ]);
+}
+
+export function protectedResourceMetadataScript(): string {
+  return join([
+    `pm.test('MCP protected resource metadata lists authorization servers (MCP authorization; RFC 9728 sections 2-3)', function () {`,
+    "  pm.expect(pm.response.code, 'the protected-resource well-known document must be served (RFC 9728 section 3)').to.eql(200);",
+    '  var doc;',
+    "  try { doc = pm.response.json(); } catch (e) { pm.expect.fail('protected resource metadata must be a JSON document (RFC 9728 section 3.2)'); return; }",
+    "  pm.expect(doc, 'PRM document').to.be.an('object');",
+    "  pm.expect(doc.resource, 'PRM resource member (RFC 9728 section 2)').to.be.a('string');",
+    "  pm.expect(doc.authorization_servers, 'authorization_servers must be a non-empty list (MCP authorization spec; RFC 9728 section 2)').to.be.an('array').and.to.have.length.above(0);",
+    '});'
+  ]);
+}
+
+// A request deliberately sent WITHOUT Mcp-Session-Id after initialize: servers
+// that require the session id SHOULD reject it with HTTP 400 (MCP 2025-06-18
+// Transports sec. 2.5 Session Management); servers that never issued one make
+// the probe vacuous.
+export function sessionRequiredScript(): string {
+  return join([
+    `pm.test('MCP requests without Mcp-Session-Id succeed or fail with HTTP 400 (MCP 2025-06-18 session management)', function () {`,
+    "  if (!pm.collectionVariables.get('mcp_session_id')) return;",
+    "  if (pm.response.code >= 200 && pm.response.code < 300) { console.warn('MCP server accepted a session-less request after issuing Mcp-Session-Id; the session id is advisory for this server'); return; }",
+    "  pm.expect(pm.response.code, 'servers that require a session id respond 400 Bad Request to requests without one (MCP 2025-06-18 Transports sec. 2.5)').to.eql(400);",
+    '});'
+  ]);
+}
+
+// Pre-request guard shared by the pagination probes: without a saved
+// nextCursor there is nothing deterministic to follow, so the item is skipped.
+export function cursorProbePrerequest(): string {
+  return "if (!pm.collectionVariables.get('mcp_next_cursor') && pm.execution && typeof pm.execution.skipRequest === 'function') { console.log('MCP tools/list returned no nextCursor; skipping the pagination probe'); pm.execution.skipRequest(); }";
+}
+
+export function nextCursorScript(): string {
+  return join([
+    `pm.test('MCP tools/list follows nextCursor byte-for-byte to a valid page (MCP 2025-06-18 pagination)', function () {`,
+    "  if (!pm.collectionVariables.get('mcp_next_cursor')) return;",
+    '  var body = mcpResponseBody();',
+    "  if (body && body.error) { mcpAssertErrorShape('tools/list next page', body, 6); pm.expect.fail('a cursor copied verbatim from the previous nextCursor must be accepted (MCP 2025-06-18 pagination); got error ' + body.error.code); return; }",
+    "  mcpAssertResponseObject('tools/list next page', body, 6);",
+    "  pm.expect(body.result, 'next page result').to.be.an('object');",
+    "  pm.expect(body.result.tools, 'next page tools').to.be.an('array');",
+    "  if (body.result.nextCursor !== undefined) pm.expect(body.result.nextCursor, 'next page nextCursor').to.be.a('string');",
+    '});'
+  ]);
+}
+
+export function cursorReplayScript(): string {
+  return join([
+    `pm.test('MCP tools/list cursor replay serves a page or fails as invalid params (MCP 2025-06-18 pagination; JSON-RPC 2.0 sec. 5.1)', function () {`,
+    "  if (!pm.collectionVariables.get('mcp_next_cursor')) return;",
+    '  var body = mcpResponseBody();',
+    "  if (body && body.error) { mcpAssertErrorShape('tools/list cursor replay', body, 7); if (body.error.code !== -32602) pm.expect.fail('a replayed cursor must either serve a page or fail as invalid params (-32602); got error ' + body.error.code); console.warn('MCP server treats cursors as single-use; the replay was rejected with -32602'); return; }",
+    "  mcpAssertResponseObject('tools/list cursor replay', body, 7);",
+    "  pm.expect(body.result.tools, 'replayed page tools').to.be.an('array');",
+    '});'
   ]);
 }
 

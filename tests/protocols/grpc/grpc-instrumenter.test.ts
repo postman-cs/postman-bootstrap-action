@@ -45,7 +45,20 @@ interface TestResult { name: string; passed: boolean; error?: string; }
 // pm.response.json() to a crafted ProtoJSON message. This proves the embedded
 // validators actually accept/reject values at runtime, not merely that their
 // source text is present in the script.
-function runGrpcScript(source: string, message: unknown): TestResult[] {
+interface MetaPair { key: string; value: string; disabled?: boolean }
+interface ResponseExtras { code?: number; metadata?: MetaPair[]; trailers?: MetaPair[]; messages?: unknown[]; jsonUnavailable?: boolean }
+
+// Mirrors the sandbox Metadata PropertyList surface the generated script uses
+// (each/has/one, case-insensitive keys, one() returning the last match).
+function metaList(entries: MetaPair[]) {
+  return {
+    each: (cb: (entry: MetaPair) => void): void => entries.forEach(cb),
+    has: (key: string): boolean => entries.some((entry) => entry.key.toLowerCase() === key.toLowerCase()),
+    one: (key: string): MetaPair | undefined => entries.filter((entry) => entry.key.toLowerCase() === key.toLowerCase()).pop()
+  };
+}
+
+function runGrpcScript(source: string, message: unknown, extras: ResponseExtras = {}): TestResult[] {
   const results: TestResult[] = [];
   const expect = ((actual: unknown, msg?: string) => ({
     to: {
@@ -62,7 +75,14 @@ function runGrpcScript(source: string, message: unknown): TestResult[] {
   })) as ((actual: unknown, msg?: string) => unknown) & { fail: (m?: string) => never };
   expect.fail = (m?: string): never => { throw new Error(m ?? 'pm.expect.fail'); };
   const pm = {
-    response: { code: 0, status: 'OK', json: (): unknown => message },
+    response: {
+      code: extras.code ?? 0,
+      status: (extras.code ?? 0) === 0 ? 'OK' : undefined,
+      ...(extras.jsonUnavailable ? {} : { json: (): unknown => message }),
+      ...(extras.metadata ? { metadata: metaList(extras.metadata) } : {}),
+      ...(extras.trailers ? { trailers: metaList(extras.trailers) } : {}),
+      ...(extras.messages ? { messages: { each: (cb: (member: { data: unknown }) => void): void => (extras.messages as unknown[]).forEach((data) => cb({ data })) } } : {})
+    },
     expect,
     test: (name: string, fn: () => void): void => {
       try { fn(); results.push({ name, passed: true }); }
@@ -300,5 +320,79 @@ service Ops { rpc GetOp (OpResult) returns (OpResult); }
   it('matches the golden warnings snapshot', () => {
     const { warnings } = buildInstrumented();
     expect(warnings.slice().sort()).toMatchSnapshot();
+  });
+});
+
+// Runtime-behavior coverage for the wire-rule and streamed-message assertions
+// (sandbox surfaces: pm.response.metadata/.trailers/.messages PropertyLists).
+describe.skipIf(!HAS_PROTOBUF)('gRPC wire-rule and streamed-message assertions', () => {
+  const wireProto = [
+    'syntax = "proto3";',
+    'package wiredemo;',
+    'message GetReq { string user_id = 1; }',
+    'message GetResp { string user_id = 1; int32 count = 2; }',
+    'service Svc { rpc Get(GetReq) returns (GetResp); rpc List(GetReq) returns (stream GetResp); }'
+  ].join('\n');
+
+  function wireScripts(): { get: string; list: string } {
+    const index = parseProtoSchema(wireProto, deps);
+    const { collection } = buildGrpcCollection(index, { baseUrl: 'grpcs://h:443', idSeed: 'wire' });
+    instrumentGrpcCollection(collection, index);
+    const items = grpcItems(collection);
+    const get = items.find((item) => String((item.payload as JsonRecord).methodPath).endsWith('/Get'))!;
+    const list = items.find((item) => String((item.payload as JsonRecord).methodPath).endsWith('/List'))!;
+    return { get: testScript(get), list: testScript(list) };
+  }
+
+  const wireResult = (results: TestResult[]) => results.find((entry) => entry.name.startsWith('gRPC response metadata and trailers'));
+  const streamedResult = (results: TestResult[]) => results.find((entry) => entry.name.startsWith('gRPC streamed response messages'));
+  const valid = { userId: 'u1', count: 3 };
+
+  it('emits the wire-rules test on every RPC and the streamed-message test only on streams', () => {
+    const { get, list } = wireScripts();
+    expect(get).toContain('conform to gRPC wire rules');
+    expect(list).toContain('conform to gRPC wire rules');
+    expect(get).not.toContain('gRPC streamed response messages each match');
+    expect(list).toContain('gRPC streamed response messages each match');
+  });
+
+  it('passes conformant metadata/trailers and tolerates their absence', () => {
+    const { get } = wireScripts();
+    expect(wireResult(runGrpcScript(get, valid))?.passed).toBe(true);
+    const results = runGrpcScript(get, valid, {
+      metadata: [{ key: 'content-type', value: 'application/grpc+proto' }, { key: 'x-trace-bin', value: 'aGVsbG8=' }],
+      trailers: [{ key: 'grpc-status', value: '0' }, { key: 'x-info', value: 'ok' }]
+    });
+    expect(wireResult(results)?.passed).toBe(true);
+  });
+
+  it('rejects malformed keys, non-base64 -bin values, non-printable values, and a non-gRPC content-type', () => {
+    const { get } = wireScripts();
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'X-Upper', value: 'v' }] }))?.passed).toBe(false);
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'x-blob-bin', value: '%%%not-base64%%%' }] }))?.passed).toBe(false);
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'x-note', value: 'café' }] }))?.passed).toBe(false);
+    expect(wireResult(runGrpcScript(get, valid, { metadata: [{ key: 'content-type', value: 'text/html' }] }))?.passed).toBe(false);
+  });
+
+  it('checks an echoed grpc-status trailer against the reported code', () => {
+    const { get } = wireScripts();
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'grpc-status', value: '13' }] }))?.passed).toBe(false);
+    expect(wireResult(runGrpcScript(get, valid, { code: 5, trailers: [{ key: 'grpc-status', value: '5' }] }))?.passed).toBe(true);
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'grpc-status', value: '99' }] }))?.passed).toBe(false);
+  });
+
+  it('falls back to pm.response.messages when the sandbox has no json()', () => {
+    const { get } = wireScripts();
+    const results = runGrpcScript(get, valid, { jsonUnavailable: true, messages: [valid] });
+    expect(results.find((entry) => entry.name.startsWith('gRPC unary RPC returns'))?.passed).toBe(true);
+    expect(results.find((entry) => entry.name.startsWith('gRPC response message matches'))?.passed).toBe(true);
+  });
+
+  it('validates every streamed response message, not only the terminal one', () => {
+    const { list } = wireScripts();
+    expect(streamedResult(runGrpcScript(list, valid, { messages: [valid, { userId: 'u2', count: 4 }] }))?.passed).toBe(true);
+    expect(streamedResult(runGrpcScript(list, valid, { messages: [valid, { userId: 42, count: 4 }] }))?.passed).toBe(false);
+    expect(streamedResult(runGrpcScript(list, valid, { messages: [] }))?.passed).toBe(true);
+    expect(streamedResult(runGrpcScript(list, valid))?.passed).toBe(true);
   });
 });

@@ -81,6 +81,8 @@ Generated from a Protocol Buffers `.proto` file into v3 `grpc-request` items:
 | `gRPC status is OK for <method>` | The call completed with gRPC status `OK`. |
 | `gRPC <unary/streaming> RPC returns a terminal response message for <method>` | A terminal response message was received. |
 | `gRPC response message matches <Message>` | The response message shape validates field-by-field against the proto3 JSON mapping of the declared response type. `google.rpc.Status`-shaped fields (for example `google.longrunning.Operation.error`) additionally require `code` in the canonical 0–16 range, a string `message`, and `details` entries that are objects with a string `@type`. HTTP↔grpc-status mapping and `grpc-message` trailers are not script-visible in `grpc-request` items and are out of scope. |
+| `gRPC streamed response messages each match <Message>` | Server- and bidi-streaming RPCs shape-check every streamed response message via `pm.response.messages`, not only the terminal message `pm.response.json()` returns. |
+| `gRPC response metadata and trailers conform to gRPC wire rules for <method>` | Response metadata and trailer keys are lowercase `[0-9a-z_.-]` tokens, values are printable ASCII, `-bin` keys carry base64 payloads, `content-type` metadata (when present) is `application/grpc*`, and a `grpc-status` trailer (when a server echoes one) is a canonical 0–16 code that agrees with the reported status code. The client normally consumes `grpc-status`/`grpc-message` into the status itself, so trailer presence is never required. |
 
 Response validation follows the canonical proto3 JSON mapping (the protobuf.dev JSON specification).
 

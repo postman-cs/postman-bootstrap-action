@@ -96,6 +96,14 @@ integers), and `oneof` mutual exclusion. Per proto3 JSON, `float`/`double` field
 wrapper WKTs) additionally accept the `"NaN"`/`"Infinity"`/`"-Infinity"` string encodings and numeric
 strings.
 
+Server- and bidi-streaming RPCs additionally shape-check every streamed response message via
+`pm.response.messages` (not only the terminal message `pm.response.json()` returns). A separate
+wire-conformance test validates response metadata and trailers against the gRPC HTTP/2 protocol
+spec: lowercase `[0-9a-z_.-]` keys, printable-ASCII values, base64 payloads for `-bin` keys,
+`application/grpc*` `content-type`, and — when a server echoes a `grpc-status` trailer — a
+canonical 0–16 code agreeing with the reported status code (grpc-js normally consumes
+`grpc-status`/`grpc-message` into the status itself, so trailer presence is never required).
+
 Well-known and scalar ProtoJSON string encodings are lexically validated: `google.protobuf.Timestamp`
 requires an RFC 3339 timestamp with `Z` or numeric offset and 0-9 fractional digits,
 `google.protobuf.Duration` requires a seconds string with `s` suffix and nanosecond precision,

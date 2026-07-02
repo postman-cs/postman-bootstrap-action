@@ -12,6 +12,15 @@
 //      RPCs (exactly one message); server/bidi streaming may legitimately return
 //      zero messages on an OK stream, so no minimum is asserted for them (a >= 1
 //      assertion would false-fail a spec-legal empty stream).
+//   4. every streamed response message (server/bidi) is shape-checked via
+//      pm.response.messages, not only the terminal message that
+//      pm.response.json() returns.
+//   5. response metadata/trailer wire conformance per the gRPC HTTP/2 protocol
+//      spec: lowercase [0-9a-z_.-] keys, printable-ASCII values, base64 payloads
+//      for -bin keys, application/grpc* content-type, and a grpc-status trailer
+//      (when a server echoes one) agreeing with the reported code. grpc-js
+//      normally consumes grpc-status/grpc-message into the status itself, so
+//      trailer presence is never required and value checks are if-present.
 // The request side is validated statically at instrumentation time (the generated
 // request message content vs the request message definition), the gRPC analogue
 // of the OAS CONTRACT_REQUEST_BODY_INCOMPLETE check.
@@ -25,6 +34,13 @@
 //   - pm.response.code/status, .json() (last message for streaming): recon
 //     assertionSurface + grpc.ts:126,185-186.
 //   - responseTime from grpc:status timings: summary.ts:436.
+//   - pm.response.metadata/.trailers/.messages PropertyLists: runtime
+//     grpc-sandbox-template.ts (Metadata {key,value}, Message {data}); binary
+//     (-bin) metadata reaches scripts as base64 text via the platform's
+//     toItemMetadata (packages/platform/src/items/grpc/metadata.ts), and
+//     grpc:status carries the trailing metadata (grpc-platform.node.ts).
+//   - the unified runtime's GRPCResponse exposes no json(), so grpcMessage()
+//     falls back to the last member of pm.response.messages there.
 
 import type { GrpcContractIndex, GrpcMessageDescriptor, GrpcOperation, GrpcStreamKind } from './proto-parser.js';
 
@@ -219,7 +235,17 @@ function createGrpcScript(spec: OperationSpec): string[] {
     // reporters/cli/modules/grpc.ts:15-21.
     'var GRPC_STATUS = { 0: "OK", 1: "CANCELLED", 2: "UNKNOWN", 3: "INVALID_ARGUMENT", 4: "DEADLINE_EXCEEDED", 5: "NOT_FOUND", 6: "ALREADY_EXISTS", 7: "PERMISSION_DENIED", 8: "RESOURCE_EXHAUSTED", 9: "FAILED_PRECONDITION", 10: "ABORTED", 11: "OUT_OF_RANGE", 12: "UNIMPLEMENTED", 13: "INTERNAL", 14: "UNAVAILABLE", 15: "DATA_LOSS", 16: "UNAUTHENTICATED" };',
     'function grpcStatusName() { if (typeof pm.response.status === "string" && pm.response.status) return pm.response.status; return GRPC_STATUS[pm.response.code] || ("UNKNOWN(" + pm.response.code + ")"); }',
-    'function grpcMessage() { try { return pm.response.json(); } catch (error) { return undefined; } }',
+    // Terminal message: pm.response.json() where the sandbox provides it,
+    // falling back to the last received message in pm.response.messages (the
+    // unified runtime's GRPCResponse exposes messages but no json()).
+    'function grpcMessage() {',
+    '  try { if (pm.response && typeof pm.response.json === "function") { var viaJson = pm.response.json(); if (viaJson !== undefined && viaJson !== null) return viaJson; } } catch (error) { /* fall back to messages */ }',
+    '  try {',
+    '    var list = pm.response && pm.response.messages;',
+    '    if (list && typeof list.each === "function") { var last; list.each(function (member) { last = member && member.data !== undefined ? member.data : member; }); return last; }',
+    '  } catch (error) { return undefined; }',
+    '  return undefined;',
+    '}',
     'function jsonTypeOf(value) {',
     '  if (value === null || value === undefined) return "null";',
     '  if (Array.isArray(value)) return "array";',
@@ -370,8 +396,37 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '    if (set.length > 1) pm.expect.fail("gRPC response at " + path + " sets multiple members of a oneof: " + set.join(", "));',
     '  });',
     '}',
+    // Wire-conformance helpers for response metadata/trailers ({ key, value }
+    // PropertyLists; each/has/one guarded so the script stays inert on runtimes
+    // or harnesses that do not surface them).
+    'function grpcEachMeta(list, cb) { if (list && typeof list.each === "function") list.each(cb); }',
+    'function grpcMetaOne(list, key) { try { if (list && typeof list.has === "function" && list.has(key) && typeof list.one === "function") return list.one(key); } catch (error) { /* absent */ } return null; }',
+    'function grpcCheckMetaPairs(list, label) {',
+    '  grpcEachMeta(list, function (entry) {',
+    '    if (!entry || entry.disabled) return;',
+    '    var key = entry.key === undefined || entry.key === null ? "" : String(entry.key);',
+    '    var value = entry.value === undefined || entry.value === null ? "" : String(entry.value);',
+    '    if (!/^[0-9a-z_.-]+$/.test(key)) pm.expect.fail(label + " key " + JSON.stringify(key) + " must be a lowercase gRPC metadata key ([0-9a-z_.-])");',
+    '    if (/-bin$/.test(key)) { if (!/^[A-Za-z0-9+/=]*\\s*$/.test(value)) pm.expect.fail(label + " " + key + " must carry base64 data but was " + JSON.stringify(value)); }',
+    '    else if (!/^[\\x20-\\x7e]*$/.test(value)) pm.expect.fail(label + " " + key + " value must be printable ASCII (gRPC ASCII-Value)");',
+    '  });',
+    '}',
     `pm.test('gRPC status is OK for ' + grpcSpec.methodPath, function () {`,
     '  pm.expect(pm.response.code, "gRPC call for " + grpcSpec.methodPath + " returned " + grpcStatusName() + " (" + pm.response.code + ")").to.eql(0);',
+    '});',
+    // Metadata/trailer wire conformance runs on every terminal status (error
+    // statuses carry trailers too, so this is not gated on code === 0).
+    `pm.test('gRPC response metadata and trailers conform to gRPC wire rules for ' + grpcSpec.methodPath, function () {`,
+    '  grpcCheckMetaPairs(pm.response.metadata, "gRPC response metadata");',
+    '  grpcCheckMetaPairs(pm.response.trailers, "gRPC response trailer");',
+    '  var contentType = grpcMetaOne(pm.response.metadata, "content-type");',
+    '  if (contentType && contentType.value !== undefined && contentType.value !== null && !/^application\\/grpc/.test(String(contentType.value))) pm.expect.fail("gRPC response content-type metadata must be application/grpc[+proto|+json] but was " + contentType.value);',
+    '  var echoedStatus = grpcMetaOne(pm.response.trailers, "grpc-status");',
+    '  if (echoedStatus) {',
+    '    var echoedCode = Number(echoedStatus.value);',
+    '    if (!Number.isInteger(echoedCode) || echoedCode < 0 || echoedCode > 16) pm.expect.fail("grpc-status trailer must be a canonical gRPC code 0-16 but was " + JSON.stringify(echoedStatus.value));',
+    '    else if (echoedCode !== pm.response.code) pm.expect.fail("grpc-status trailer (" + echoedCode + ") disagrees with the reported status code (" + pm.response.code + ")");',
+    '  }',
     '});',
     // Terminal-response-message expectation. unary and client-streaming RPCs
     // return exactly one terminal response message; server/bidi streaming may
@@ -393,6 +448,26 @@ function createGrpcScript(spec: OperationSpec): string[] {
       '  pm.expect(message, "gRPC response for " + grpcSpec.methodPath + " is not a decodable message object").to.be.an("object");',
       '  if (grpcSpec.responseShape) grpcCheckShape(message, grpcSpec.responseShape, grpcSpec.responseType + ".");',
       '  if (grpcSpec.responseIsRpcStatus) grpcCheckRpcStatus(message, grpcSpec.responseType);',
+      '});'
+    ] : []),
+    // Every streamed message is validated, not only the terminal one that
+    // pm.response.json() returns; pm.response.messages is the full received
+    // stream. Server/bidi only: for unary/client the single terminal message
+    // is already covered above.
+    ...(((spec.stream === 'server' || spec.stream === 'bidi') && (spec.hasResponseShape || spec.responseIsRpcStatus)) ? [
+      `pm.test('gRPC streamed response messages each match ' + grpcSpec.responseType, function () {`,
+      '  if (pm.response.code !== 0) return;',
+      '  var list = pm.response.messages;',
+      '  if (!list || typeof list.each !== "function") return;',
+      '  var messageIndex = 0;',
+      '  list.each(function (member) {',
+      '    var data = member && member.data !== undefined ? member.data : member;',
+      '    var label = grpcSpec.responseType + "[message " + messageIndex + "]";',
+      '    messageIndex += 1;',
+      '    if (jsonTypeOf(data) !== "object") { pm.expect.fail("gRPC streamed response " + label + " is not a decodable message object but " + jsonTypeOf(data)); return; }',
+      '    if (grpcSpec.responseShape) grpcCheckShape(data, grpcSpec.responseShape, label + ".");',
+      '    if (grpcSpec.responseIsRpcStatus) grpcCheckRpcStatus(data, label);',
+      '  });',
       '});'
     ] : [])
   ];

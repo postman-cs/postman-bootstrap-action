@@ -262,6 +262,21 @@ function deepConformanceLines(operation: SoapOperation): string[] {
       );
     }
   }
+  const declaredOutputHeaders = (operation.outputHeaders ?? []).map((header) => header.element);
+  if (declaredOutputHeaders.length > 0) {
+    lines.push(
+      '',
+      "pm.test('Response carries the SOAP headers declared on the binding output (WSDL 1.1 section 3.7)', function () {",
+      '  var bodyInner = elementInner(cleanXml, "Body");',
+      '  if (bodyInner !== null && directChildNames(bodyInner).some(function (k) { return localPart(k) === "Fault"; })) return;',
+      '  var declared = ' + JSON.stringify(declaredOutputHeaders) + ';',
+      '  var inner = elementInner(cleanXml, "Header");',
+      '  if (inner === null) { pm.expect.fail("the binding declares output soap:header blocks (" + declared.join(", ") + ") but the response has no soap:Header"); }',
+      '  var kids = directChildNames(inner).map(localPart);',
+      '  for (var i = 0; i < declared.length; i++) { if (kids.indexOf(declared[i]) === -1) pm.expect.fail("declared output header " + declared[i] + " is missing from the response soap:Header"); }',
+      '});'
+    );
+  }
   if (operation.outputBodyPartCount === 0) {
     lines.push(
       '',
@@ -289,6 +304,8 @@ function deepConformanceLines(operation: SoapOperation): string[] {
       '  for (var i = 0; i < accessors.length; i++) { if (accessors[i].indexOf(":") !== -1) pm.expect.fail("rpc-literal part accessor " + accessors[i] + " must be unqualified (WS-I Basic Profile 1.1 R2735)"); }',
       '  var declared = ' + JSON.stringify(partNames) + ';',
       '  if (declared.length > 0) { for (var j = 0; j < accessors.length; j++) { if (declared.indexOf(localPart(accessors[j])) === -1) pm.expect.fail("accessor " + accessors[j] + " matches no wsdl:part of the output message"); } }',
+      '  var order = accessors.map(function (a) { return declared.indexOf(localPart(a)); }).filter(function (idx) { return idx !== -1; });',
+      '  for (var k = 1; k < order.length; k++) { if (order[k] < order[k - 1]) pm.expect.fail("rpc-literal part accessors must appear in the wsdl:part order of the output message (WS-I Basic Profile 1.1 R2729)"); }',
       '  if (/xsi:nil\\s*=\\s*["\'](?:1|true)["\']/.test(wrapInner)) pm.expect.fail("rpc-literal part accessors must not carry xsi:nil (WS-I Basic Profile 1.1)");',
       '});'
     );

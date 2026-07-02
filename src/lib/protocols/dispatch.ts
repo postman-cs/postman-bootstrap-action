@@ -52,6 +52,8 @@ export interface ProtocolBuildOptions {
   protobuf?: ProtoParseModule;
   /** gRPC service config JSON found alongside the proto, linted against it. */
   grpcServiceConfigJson?: string;
+  /** Resolves relative wsdl:import/xsd:import locations to sibling documents. */
+  wsdlImportResolver?: (location: string) => string | undefined;
 }
 
 export interface ProtocolCollectionResult {
@@ -144,7 +146,7 @@ export async function buildProtocolCollection(
       };
     }
     case 'soap': {
-      const index = parseWsdl(content);
+      const index = parseWsdl(content, { resolveImport: options.wsdlImportResolver });
       const collection = buildSoapCollection(index, {
         collectionName: options.name,
         schemaLocation: options.schemaLocation

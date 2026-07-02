@@ -1,4 +1,3 @@
-import { Kind, parse } from 'graphql';
 import { GRAPHQL_PROBE_IDS } from './builder.js';
 import type { GraphQLContractIndex, GraphQLOperationDef, GraphQLTypeRef } from './parser.js';
 import { selectFields, type SelectedField } from './selection.js';

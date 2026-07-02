@@ -1382,6 +1382,28 @@ async function runProtocolBootstrap(
     }
   }
 
+
+  // WSDL descriptions may split across files via wsdl:import/xsd:import with
+  // relative locations. When the spec came from disk, sibling documents are
+  // resolved from the spec's directory (never above it, never over the
+  // network) so import-scope conformance checks can run; absence of a file
+  // simply skips the resolution-dependent checks.
+  let wsdlImportResolver: ((location: string) => string | undefined) | undefined;
+  if (specType === 'soap' && inputs.specPath) {
+    const workspaceRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+    const specDir = path.dirname(path.resolve(workspaceRoot, inputs.specPath));
+    wsdlImportResolver = (location: string): string | undefined => {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(location)) return undefined;
+      const resolved = path.resolve(specDir, location);
+      if (!resolved.startsWith(specDir + path.sep)) return undefined;
+      try {
+        return readFileSync(resolved, 'utf8');
+      } catch {
+        return undefined;
+      }
+    };
+  }
+
   const built = await runGroup(
     dependencies.core,
     `Build ${specType.toUpperCase()} Contract Collection`,
@@ -1390,7 +1412,8 @@ async function runProtocolBootstrap(
         name: inputs.projectName,
         endpointUrl: inputs.protocolEndpointUrl,
         schemaLocation: inputs.specPath || inputs.specUrl,
-        grpcServiceConfigJson
+        grpcServiceConfigJson,
+        wsdlImportResolver
       })
   );
 

@@ -186,19 +186,23 @@ export function lintWsiConformance(text: string, resolveImport?: WsdlImportResol
 function lintWsdl11(defs: XNode, warnings: string[], resolveImport?: WsdlImportResolver): void {
   lintWsdl11Structure(defs, warnings);
   lintWsdl11Ordering(defs, warnings);
-  lintWsdl11Imports(defs, warnings);
-  const { elements, schemasComplete } = lintWsdl11Types(defs, warnings);
+  const imported = lintWsdl11Imports(defs, warnings, resolveImport);
+  const allImportsResolved = children(defs, 'import').length === imported.length;
+  lintWsdl11Types(defs, warnings);
+  const schemaTable = collectSchemaElementTable([defs, ...imported.map((entry) => entry.node)], warnings, resolveImport);
   const messages = collectMessages(defs, warnings);
   const portTypes = collectPortTypes(defs, messages, warnings);
   lintWsdl11Bindings(defs, messages, portTypes, warnings);
-  lintWsdl11PartElements(messages, elements, schemasComplete, warnings);
+  lintWsdl11PartElements(defs, schemaTable, schemaTable.complete && allImportsResolved, warnings);
+  // QName checks only run when every wsdl:import resolved (or none exist), so a
+  // split WSDL without a resolver never floods namespace-unknown warnings.
+  if (allImportsResolved) lintWsdl11QNames(defs, imported, warnings);
+  lintXsdImportPlacement(defs, warnings);
   lintWsdl11Services(defs, warnings);
   lintRequiredExtensions(defs, warnings);
 }
 
 const WSDL11_NS = 'http://schemas.xmlsoap.org/wsdl/';
-const SOAP11_EXT_NS = 'http://schemas.xmlsoap.org/wsdl/soap/';
-const SOAP12_EXT_NS = 'http://schemas.xmlsoap.org/wsdl/soap12/';
 const SOAP_HTTP_TRANSPORT_URI = 'http://schemas.xmlsoap.org/soap/http';
 
 // Element locals defined by the WS-I corrected WSDL 1.1 schema, plus the
@@ -264,7 +268,13 @@ function lintWsdl11Ordering(defs: XNode, warnings: string[]): void {
   }
 }
 
-function lintWsdl11Imports(defs: XNode, warnings: string[]): void {
+interface ImportedWsdl {
+  node: XNode;
+  label: string;
+}
+
+function lintWsdl11Imports(defs: XNode, warnings: string[], resolveImport?: WsdlImportResolver): ImportedWsdl[] {
+  const imported: ImportedWsdl[] = [];
   for (const imp of children(defs, 'import')) {
     const location = attr(imp, 'location');
     if (location === undefined || location === '') {
@@ -276,7 +286,26 @@ function lintWsdl11Imports(defs: XNode, warnings: string[]): void {
     if (namespace !== undefined && !isAbsoluteUri(namespace)) {
       warnings.push('SOAP_WSI_IMPORT_NAMESPACE_RELATIVE: wsdl:import namespace "' + namespace + '" is relative; WS-I Basic Profile 1.1 R2803 requires absolute namespace URIs');
     }
+    if (location === undefined || location === '' || !resolveImport) continue;
+    const content = resolveImport(location);
+    if (content === undefined) continue;
+    lintImportedXmlDeclaration(content, 'imported WSDL "' + location + '"', warnings);
+    const root = parseImported(content);
+    if (!root) {
+      warnings.push('SOAP_WSI_IMPORT_UNPARSEABLE: wsdl:import location "' + location + '" did not parse as XML (WS-I Basic Profile 1.1 R2007)');
+    } else if (local(root.tag) === 'schema') {
+      warnings.push('SOAP_WSI_IMPORT_TARGETS_SCHEMA: wsdl:import location "' + location + '" resolves to an XML Schema document; wsdl:import imports WSDL descriptions only (WS-I Basic Profile 1.1 R2001) -- use xsd:import inside wsdl:types');
+    } else if (local(root.tag) === 'definitions') {
+      const tns = attr(root, 'targetNamespace');
+      if (namespace !== undefined && tns !== undefined && namespace !== tns) {
+        warnings.push('SOAP_WSI_IMPORT_NAMESPACE_MISMATCH: wsdl:import declares namespace "' + namespace + '" but the WSDL at "' + location + '" declares targetNamespace "' + tns + '" (WSDL 1.1 section 2.1.1 / WS-I Basic Profile 1.1 R2005)');
+      }
+      imported.push({ node: root, label: location });
+    } else {
+      warnings.push('SOAP_WSI_IMPORT_ROOT_INVALID: wsdl:import location "' + location + '" resolves to a <' + root.tag + '> root, not a WSDL definitions document (WS-I Basic Profile 1.1 R2001)');
+    }
   }
+  return imported;
 }
 
 function lintWsdl11Types(defs: XNode, warnings: string[]): { elements: Set<string>; schemasComplete: boolean } {
@@ -447,6 +476,9 @@ function lintWsdl11BindingOperation(
   if (ptOp?.wsamAction !== undefined && ptOp.wsamAction !== '' && soapAction !== undefined && soapAction !== '' && ptOp.wsamAction !== soapAction) {
     warnings.push('SOAP_WSI_ACTION_MISMATCH: operation ' + opName + ' declares wsam:Action "' + ptOp.wsamAction + '" but soapAction "' + soapAction + '"; WS-Addressing Metadata section 4.4.1 requires them to be identical');
   }
+  if (soapAction !== undefined && transport !== undefined && transport !== '' && transport !== SOAP_HTTP_TRANSPORT_URI) {
+    warnings.push('SOAP_WSI_SOAPACTION_NON_HTTP: binding ' + bindingName + ' operation ' + opName + ' declares soapAction on a non-HTTP transport (' + transport + '); soapAction is defined only for the HTTP binding (WSDL 1.1 section 3.4)');
+  }
   for (const direction of ['input', 'output'] as const) {
     const dirNode = children(op, direction)[0];
     if (!dirNode) continue;
@@ -487,6 +519,9 @@ function lintWsdl11BindingOperation(
     if (attr(soapFault, 'use') === 'encoded') {
       warnings.push('SOAP_WSI_ENCODED_USE: binding ' + bindingName + ' operation ' + opName + ' soap:fault uses use="encoded"; WS-I Basic Profile 1.1 R2706 requires literal use');
     }
+    if (style === 'rpc' && attr(soapFault, 'namespace') !== undefined) {
+      warnings.push('SOAP_WSI_RPC_NAMESPACE_ATTR: binding ' + bindingName + ' operation ' + opName + ' soap:fault carries a namespace attribute; rpc-literal bindings must not set namespace on header/headerfault/fault (WS-I Basic Profile 1.1 R2726)');
+    }
     if (style === 'document' && attr(soapFault, 'namespace') !== undefined) {
       warnings.push('SOAP_WSI_LITERAL_NAMESPACE_ATTR: binding ' + bindingName + ' operation ' + opName + ' soap:fault carries a namespace attribute on a document-literal binding (WS-I Basic Profile 1.1 R2716)');
     }
@@ -513,6 +548,15 @@ function lintHeaderish(
   if (style === 'document' && attr(node, 'namespace') !== undefined) {
     warnings.push('SOAP_WSI_LITERAL_NAMESPACE_ATTR: binding ' + bindingName + ' operation ' + opName + ' ' + kind + ' carries a namespace attribute on a document-literal binding (WS-I Basic Profile 1.1 R2716)');
   }
+  if (style === 'rpc' && attr(node, 'namespace') !== undefined) {
+    warnings.push('SOAP_WSI_RPC_NAMESPACE_ATTR: binding ' + bindingName + ' operation ' + opName + ' ' + kind + ' carries a namespace attribute; rpc-literal bindings must not set namespace on header/headerfault/fault (WS-I Basic Profile 1.1 R2726)');
+  }
+  const declaredPart = attr(node, 'part');
+  if (declaredPart === undefined || declaredPart === '') {
+    warnings.push('SOAP_WSI_HEADER_PART_MISSING: binding ' + bindingName + ' operation ' + opName + ' ' + kind + ' omits its singular part attribute (WSDL 1.1 section 3.7)');
+  } else if (!/^[\w.:-]+$/.test(declaredPart)) {
+    warnings.push('SOAP_WSI_HEADER_PART_NMTOKEN: binding ' + bindingName + ' operation ' + opName + ' ' + kind + ' part "' + declaredPart + '" is not a single NMTOKEN (WSDL 1.1 section 3.7)');
+  }
   const headerMessage = local(attr(node, 'message') ?? '');
   const headerPart = attr(node, 'part');
   if (headerMessage && headerPart !== undefined && headerPart !== '') {
@@ -525,28 +569,208 @@ function lintHeaderish(
 }
 
 function lintWsdl11PartElements(
-  messages: Map<string, WsdlMessagePart[]>,
-  elements: Set<string>,
-  schemasComplete: boolean,
+  defs: XNode,
+  table: SchemaElementTable,
+  complete: boolean,
   warnings: string[]
 ): void {
-  if (!schemasComplete || elements.size === 0) return;
-  for (const [messageName, parts] of messages) {
-    for (const part of parts) {
-      if (part.element === undefined) continue;
-      if (!elements.has(local(part.element))) {
-        warnings.push('SOAP_WSI_PART_ELEMENT_UNRESOLVED: message ' + messageName + ' part "' + part.name + '" references element "' + part.element + '" which no inline schema declares as a global element (WSDL 1.1 section 2.3.1)');
+  if (!complete) return;
+  const base = xmlnsScope(defs, {});
+  for (const message of children(defs, 'message')) {
+    const messageName = attr(message, 'name') ?? '';
+    const msgScope = xmlnsScope(message, base);
+    for (const part of children(message, 'part')) {
+      const element = attr(part, 'element');
+      if (element === undefined) continue;
+      const scope = xmlnsScope(part, msgScope);
+      const ns = qnameNamespace(element, scope);
+      const names = table.byNamespace.get(ns);
+      if (!names || !names.has(qnameLocal(element))) {
+        warnings.push('SOAP_WSI_PART_ELEMENT_UNRESOLVED: message ' + messageName + ' part "' + (attr(part, 'name') ?? '') + '" references element "' + element + '" which no schema in scope declares as a global element (WSDL 1.1 section 2.3.1)');
       }
     }
   }
 }
 
+interface SchemaElementTable {
+  byNamespace: Map<string, Set<string>>;
+  complete: boolean;
+}
+
+/**
+ * Global element declarations by target namespace, from inline schemas plus
+ * resolver-supplied xsd:imports (followed recursively with cycle protection).
+ * `complete` is false whenever any import/include/redefine could not be
+ * resolved, which downgrades resolution checks rather than guessing.
+ */
+function collectSchemaElementTable(docs: XNode[], warnings: string[], resolveImport?: WsdlImportResolver): SchemaElementTable {
+  const byNamespace = new Map<string, Set<string>>();
+  let complete = true;
+  const seenLocations = new Set<string>();
+  const addElement = (ns: string, name: string): void => {
+    const bucket = byNamespace.get(ns);
+    if (bucket) bucket.add(name);
+    else byNamespace.set(ns, new Set([name]));
+  };
+  const visitSchema = (schema: XNode): void => {
+    const tns = attr(schema, 'targetNamespace') ?? '';
+    for (const el of children(schema, 'element')) {
+      const name = attr(el, 'name');
+      if (name) addElement(tns, name);
+    }
+    if (children(schema, 'include').length > 0 || children(schema, 'redefine').length > 0) complete = false;
+    for (const imp of children(schema, 'import')) {
+      const location = attr(imp, 'schemaLocation');
+      const namespace = attr(imp, 'namespace') ?? '';
+      if (location === undefined || !resolveImport) { complete = false; continue; }
+      if (seenLocations.has(location)) continue;
+      seenLocations.add(location);
+      const content = resolveImport(location);
+      if (content === undefined) { complete = false; continue; }
+      lintImportedXmlDeclaration(content, 'imported schema "' + location + '"', warnings);
+      const root = parseImported(content);
+      if (!root || local(root.tag) !== 'schema') {
+        warnings.push('SOAP_WSI_XSD_IMPORT_ROOT: xsd:import schemaLocation "' + location + '" does not resolve to a document with an xsd:schema root (XML Schema part 1 section 4.2.3)');
+        complete = false;
+        continue;
+      }
+      const importedTns = attr(root, 'targetNamespace') ?? '';
+      if (namespace !== importedTns) {
+        warnings.push('SOAP_WSI_XSD_IMPORT_TNS_MISMATCH: xsd:import declares namespace "' + namespace + '" but the schema at "' + location + '" declares targetNamespace "' + importedTns + '" (XML Schema part 1 section 4.2.3)');
+      }
+      visitSchema(root);
+    }
+  };
+  for (const doc of docs) {
+    for (const types of children(doc, 'types')) {
+      for (const child of types.children) {
+        if (local(child.tag) === 'schema') visitSchema(child);
+      }
+    }
+  }
+  return { byNamespace, complete };
+}
+
+function qnameLocal(qname: string): string {
+  return qname.includes(':') ? qname.slice(qname.indexOf(':') + 1) : qname;
+}
+
+/**
+ * Namespace-aware WSDL QName resolution (WSDL 1.1 section 2.1.1): binding/@type,
+ * port/@binding, portType message references, and soap:header/@message must
+ * resolve to symbols declared under the referenced targetNamespace, across the
+ * root document and every resolver-supplied wsdl:import.
+ */
+function lintWsdl11QNames(defs: XNode, imported: ImportedWsdl[], warnings: string[]): void {
+  const symbols: Record<'message' | 'portType' | 'binding', Map<string, Set<string>>> = {
+    message: new Map(),
+    portType: new Map(),
+    binding: new Map()
+  };
+  const knownNamespaces = new Set<string>();
+  for (const node of [defs, ...imported.map((entry) => entry.node)]) {
+    const tns = attr(node, 'targetNamespace') ?? '';
+    knownNamespaces.add(tns);
+    for (const kind of ['message', 'portType', 'binding'] as const) {
+      const bucket = symbols[kind].get(tns) ?? new Set<string>();
+      for (const child of children(node, kind)) {
+        const name = attr(child, 'name');
+        if (name) bucket.add(name);
+      }
+      symbols[kind].set(tns, bucket);
+    }
+  }
+  const check = (qname: string | undefined, kind: 'message' | 'portType' | 'binding', scope: Record<string, string>, context: string): void => {
+    if (qname === undefined || qname === '') return;
+    const ns = qnameNamespace(qname, scope);
+    const name = qnameLocal(qname);
+    if (!knownNamespaces.has(ns)) {
+      warnings.push('SOAP_WSI_QNAME_NAMESPACE_UNKNOWN: ' + context + ' references ' + kind + ' "' + qname + '" in namespace "' + ns + '", which no available WSDL document declares as its targetNamespace (WSDL 1.1 section 2.1.1)');
+      return;
+    }
+    if (!symbols[kind].get(ns)?.has(name)) {
+      warnings.push('SOAP_WSI_QNAME_UNRESOLVED: ' + context + ' references ' + kind + ' "' + qname + '" which is not declared in namespace "' + ns + '" (WSDL 1.1 section 2.1.1)');
+    }
+  };
+  const base = xmlnsScope(defs, {});
+  for (const portType of children(defs, 'portType')) {
+    const ptScope = xmlnsScope(portType, base);
+    const ptName = attr(portType, 'name') ?? '';
+    for (const op of children(portType, 'operation')) {
+      const opScope = xmlnsScope(op, ptScope);
+      for (const dir of ['input', 'output', 'fault'] as const) {
+        for (const dirNode of children(op, dir)) {
+          check(attr(dirNode, 'message'), 'message', xmlnsScope(dirNode, opScope), 'portType ' + ptName + ' operation ' + (attr(op, 'name') ?? '') + ' ' + dir);
+        }
+      }
+    }
+  }
+  for (const binding of children(defs, 'binding')) {
+    const bScope = xmlnsScope(binding, base);
+    const bName = attr(binding, 'name') ?? '';
+    check(attr(binding, 'type'), 'portType', bScope, 'binding ' + bName);
+    for (const op of children(binding, 'operation')) {
+      const oScope = xmlnsScope(op, bScope);
+      const oName = attr(op, 'name') ?? '';
+      for (const dir of ['input', 'output'] as const) {
+        const dirNode = children(op, dir)[0];
+        if (!dirNode) continue;
+        const dScope = xmlnsScope(dirNode, oScope);
+        for (const header of children(dirNode, 'header')) {
+          const hScope = xmlnsScope(header, dScope);
+          check(attr(header, 'message'), 'message', hScope, 'binding ' + bName + ' operation ' + oName + ' soap:header');
+          for (const hf of children(header, 'headerfault')) {
+            check(attr(hf, 'message'), 'message', xmlnsScope(hf, hScope), 'binding ' + bName + ' operation ' + oName + ' soap:headerfault');
+          }
+        }
+      }
+    }
+  }
+  for (const service of children(defs, 'service')) {
+    const sScope = xmlnsScope(service, base);
+    for (const port of children(service, 'port')) {
+      check(attr(port, 'binding'), 'binding', xmlnsScope(port, sScope), 'service ' + (attr(service, 'name') ?? '') + ' port ' + (attr(port, 'name') ?? ''));
+    }
+  }
+}
+
+// R2003: xsd:import belongs directly inside an xsd:schema. The types-level
+// check catches the direct-under-types case; this ancestor-aware pass catches
+// imports nested anywhere else (inside complexType, wsdl:message, ...).
+function lintXsdImportPlacement(defs: XNode, warnings: string[]): void {
+  const visit = (node: XNode, parentLocal: string): void => {
+    for (const child of node.children) {
+      const childLocal = local(child.tag);
+      if (childLocal === 'import' && parentLocal !== 'definitions' && parentLocal !== 'schema' && parentLocal !== 'types') {
+        warnings.push('SOAP_WSI_XSD_IMPORT_PLACEMENT: an import element appears under ' + parentLocal + '; xsd:import must be a direct child of xsd:schema (WS-I Basic Profile 1.1 R2003)');
+      }
+      visit(child, childLocal);
+    }
+  };
+  visit(defs, 'definitions');
+}
+
 function lintWsdl11Services(defs: XNode, warnings: string[]): void {
+  // binding local name -> declared soap:binding transport URI, for scheme
+  // correspondence between the port address and its binding transport.
+  const transports = new Map<string, string | undefined>();
+  for (const binding of children(defs, 'binding')) {
+    const soapBinding = children(binding, 'binding')[0];
+    transports.set(attr(binding, 'name') ?? '', soapBinding ? attr(soapBinding, 'transport') : undefined);
+  }
   for (const service of children(defs, 'service')) {
     for (const port of children(service, 'port')) {
+      const portName = attr(port, 'name') ?? '';
       const addresses = children(port, 'address');
-      if (addresses.length > 1) {
-        warnings.push('SOAP_WSI_PORT_ADDRESS_COUNT: port ' + (attr(port, 'name') ?? '') + ' declares ' + addresses.length + ' soap:address elements; exactly one is allowed (WSDL 1.1 section 3.8)');
+      if (addresses.length === 0) {
+        warnings.push('SOAP_WSI_PORT_ADDRESS_COUNT: port ' + portName + ' declares no soap:address element; a SOAP port carries exactly one (WSDL 1.1 section 3.8 / WS-I Basic Profile 1.1 R2711)');
+      } else if (addresses.length > 1) {
+        warnings.push('SOAP_WSI_PORT_ADDRESS_COUNT: port ' + portName + ' declares ' + addresses.length + ' soap:address elements; exactly one is allowed (WSDL 1.1 section 3.8)');
+      }
+      const transport = transports.get(local(attr(port, 'binding') ?? ''));
+      const location = addresses[0] ? attr(addresses[0], 'location') : undefined;
+      if (location !== undefined && transport === SOAP_HTTP_TRANSPORT_URI && !/^https?:\/\//i.test(location)) {
+        warnings.push('SOAP_WSI_ADDRESS_SCHEME: port ' + portName + ' soap:address location "' + location + '" does not use the http or https scheme required by the declared HTTP transport (WS-I Basic Profile 1.1 R2702)');
       }
     }
   }

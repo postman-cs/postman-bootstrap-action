@@ -1,6 +1,6 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 
-import { lintWsiConformance } from './wsi-lints.js';
+import { lintWsiConformance, type WsdlImportResolver } from './wsi-lints.js';
 import { buildXsdIndex, type XsdSchemaIndex } from './xsd-index.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -857,7 +857,7 @@ function lintWsdl11(definitions: JsonRecord, messages: Map<string, SoapMessage>,
  * Parse a WSDL 1.1 or 2.0 document into a typed SOAP contract index.
  * Deterministic: services and operations preserve document order.
  */
-export function parseWsdl(content: string): SoapContractIndex {
+export function parseWsdl(content: string, opts?: { resolveImport?: WsdlImportResolver }): SoapContractIndex {
   const text = asString(content).trim();
   if (!text) throw new Error('SOAP_EMPTY_WSDL: WSDL content is empty');
   // Well-formedness gate: malformed XML fails fast with a line number. Full
@@ -884,7 +884,7 @@ export function parseWsdl(content: string): SoapContractIndex {
 
   const wsdlVersion = detectWsdlVersion(definitions, description);
   const warnings: string[] = [];
-  warnings.push(...lintWsiConformance(text));
+  warnings.push(...lintWsiConformance(text, opts?.resolveImport));
   const docNode = (definitions ?? description) as JsonRecord;
   const targetNamespace = attr(docNode, 'targetNamespace');
   const declaresAddressing = detectAddressing(docNode);

@@ -155,6 +155,13 @@ pm.test("[query plans] data.plans is present", function () {
     pm.expect(gqlBody.data, "data is missing field 'plans'").to.have.property("plans");
     pm.expect(gqlBody.data["plans"], "plans is declared non-null but was null").to.not.be.null;
 });
+pm.test("[query plans] non-null field errors propagate per the spec", function () {
+    if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
+    var data = gqlBody.data;
+    var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
+    if (data !== null && data && data["plans"] === null) pm.expect.fail("data.plans is declared non-null; a field error must propagate the null to the enclosing data map, not leave an interior null (GraphQL spec 6.4.4)");
+    if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
+});
 pm.test("[query plans] data.plans matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["plans"];
     if (value === undefined || value === null) return;
@@ -336,6 +343,13 @@ pm.test("[query subscribers] data.subscribers is present", function () {
     pm.expect(gqlBody.data, "data is missing field 'subscribers'").to.have.property("subscribers");
     pm.expect(gqlBody.data["subscribers"], "subscribers is declared non-null but was null").to.not.be.null;
 });
+pm.test("[query subscribers] non-null field errors propagate per the spec", function () {
+    if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
+    var data = gqlBody.data;
+    var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
+    if (data !== null && data && data["subscribers"] === null) pm.expect.fail("data.subscribers is declared non-null; a field error must propagate the null to the enclosing data map, not leave an interior null (GraphQL spec 6.4.4)");
+    if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
+});
 pm.test("[query subscribers] data.subscribers matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["subscribers"];
     if (value === undefined || value === null) return;
@@ -418,6 +432,13 @@ pm.test("[mutation provisionLine] data.provisionLine is present", function () {
     pm.expect(gqlBody.data, "response has no data object").to.exist;
     pm.expect(gqlBody.data, "data is missing field 'provisionLine'").to.have.property("provisionLine");
     pm.expect(gqlBody.data["provisionLine"], "provisionLine is declared non-null but was null").to.not.be.null;
+});
+pm.test("[mutation provisionLine] non-null field errors propagate per the spec", function () {
+    if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
+    var data = gqlBody.data;
+    var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
+    if (data !== null && data && data["provisionLine"] === null) pm.expect.fail("data.provisionLine is declared non-null; a field error must propagate the null to the enclosing data map, not leave an interior null (GraphQL spec 6.4.4)");
+    if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
 });
 pm.test("[mutation provisionLine] data.provisionLine matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["provisionLine"];
@@ -514,6 +535,13 @@ pm.test("[mutation suspendLine] data.suspendLine is present", function () {
     pm.expect(gqlBody.data, "data is missing field 'suspendLine'").to.have.property("suspendLine");
     pm.expect(gqlBody.data["suspendLine"], "suspendLine is declared non-null but was null").to.not.be.null;
 });
+pm.test("[mutation suspendLine] non-null field errors propagate per the spec", function () {
+    if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
+    var data = gqlBody.data;
+    var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
+    if (data !== null && data && data["suspendLine"] === null) pm.expect.fail("data.suspendLine is declared non-null; a field error must propagate the null to the enclosing data map, not leave an interior null (GraphQL spec 6.4.4)");
+    if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
+});
 pm.test("[mutation suspendLine] data.suspendLine matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["suspendLine"];
     if (value === undefined || value === null) return;
@@ -609,6 +637,13 @@ pm.test("[subscription lineStatusChanged] data.lineStatusChanged is present", fu
     pm.expect(gqlBody.data, "data is missing field 'lineStatusChanged'").to.have.property("lineStatusChanged");
     pm.expect(gqlBody.data["lineStatusChanged"], "lineStatusChanged is declared non-null but was null").to.not.be.null;
 });
+pm.test("[subscription lineStatusChanged] non-null field errors propagate per the spec", function () {
+    if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) return;
+    var data = gqlBody.data;
+    var errors = Array.isArray(gqlBody.errors) ? gqlBody.errors : [];
+    if (data !== null && data && data["lineStatusChanged"] === null) pm.expect.fail("data.lineStatusChanged is declared non-null; a field error must propagate the null to the enclosing data map, not leave an interior null (GraphQL spec 6.4.4)");
+    if (data === null && errors.length === 0) pm.expect.fail("data is null but the errors list is empty; null propagation from a non-null field must be accompanied by a field error (GraphQL spec 6.4.4/7.1.2)");
+});
 pm.test("[subscription lineStatusChanged] data.lineStatusChanged matches schema return type", function () {
     var value = gqlBody.data && gqlBody.data["lineStatusChanged"];
     if (value === undefined || value === null) return;
@@ -644,6 +679,94 @@ pm.test("[subscription lineStatusChanged] required variables are supplied", func
     });
 });",
     "id": "subscription.lineStatusChanged",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+var gqlExpected = JSON.parse("{\\"roots\\":{\\"query\\":\\"Query\\",\\"mutation\\":\\"Mutation\\",\\"subscription\\":\\"Subscription\\"},\\"kinds\\":{\\"DateTime\\":\\"scalar\\",\\"LineStatus\\":\\"enum\\",\\"Plan\\":\\"object\\",\\"ID\\":\\"scalar\\",\\"String\\":\\"scalar\\",\\"Int\\":\\"scalar\\",\\"Line\\":\\"object\\",\\"Subscriber\\":\\"object\\",\\"ProvisionLineInput\\":\\"input\\",\\"Query\\":\\"object\\",\\"Mutation\\":\\"object\\",\\"Subscription\\":\\"object\\",\\"Boolean\\":\\"scalar\\"},\\"fields\\":{\\"Plan\\":[\\"dataCapGb\\",\\"id\\",\\"monthlyPriceCents\\",\\"name\\"],\\"Line\\":[\\"activatedAt\\",\\"id\\",\\"msisdn\\",\\"plan\\",\\"status\\"],\\"Subscriber\\":[\\"displayName\\",\\"email\\",\\"id\\",\\"lines\\"],\\"Query\\":[\\"lineByMsisdn\\",\\"plans\\",\\"subscriber\\",\\"subscribers\\"],\\"Mutation\\":[\\"provisionLine\\",\\"suspendLine\\"],\\"Subscription\\":[\\"lineStatusChanged\\"]},\\"enums\\":{\\"LineStatus\\":[\\"ACTIVE\\",\\"SUSPENDED\\",\\"PORTING\\"]},\\"deprecatedFields\\":{},\\"deprecatedEnumValues\\":{}}");
+var gqlBuiltInScalars = ["String","Int","Float","Boolean","ID"];
+pm.test('[probe] deployed schema matches the schema of record (GraphQL spec section 4: introspection)', function () {
+    var live = gqlBody.data && gqlBody.data.__schema;
+    if (!live) return;
+    var drift = function (message) { pm.expect.fail("schema drift: " + message); };
+    var kindMap = { SCALAR: "scalar", OBJECT: "object", INTERFACE: "interface", UNION: "union", ENUM: "enum", INPUT_OBJECT: "input" };
+    ["query", "mutation", "subscription"].forEach(function (rootKind) {
+      var expectedRoot = gqlExpected.roots[rootKind];
+      var liveRoot = live[rootKind + "Type"] && live[rootKind + "Type"].name;
+      if (expectedRoot && liveRoot !== expectedRoot) drift("the " + rootKind + " root type is " + JSON.stringify(liveRoot) + " but the schema of record declares " + JSON.stringify(expectedRoot));
+      if (!expectedRoot && liveRoot) drift("the deployed schema declares a " + rootKind + " root type (" + liveRoot + ") the schema of record does not");
+    });
+    var liveTypes = {};
+    (live.types || []).forEach(function (t) { if (t && t.name && t.name.indexOf("__") !== 0) liveTypes[t.name] = t; });
+    Object.keys(gqlExpected.kinds).forEach(function (name) {
+      if (gqlBuiltInScalars.indexOf(name) !== -1) return;
+      var liveType = liveTypes[name];
+      if (!liveType) { drift("type " + name + " is missing from the deployed schema"); return; }
+      var liveKind = kindMap[String(liveType.kind)] || String(liveType.kind).toLowerCase();
+      if (liveKind !== gqlExpected.kinds[name]) drift("type " + name + " is a " + liveKind + " on the server but a " + gqlExpected.kinds[name] + " in the schema of record");
+    });
+    if (Object.keys(gqlExpected.kinds).length > 0) {
+      Object.keys(liveTypes).forEach(function (name) {
+        if (gqlBuiltInScalars.indexOf(name) !== -1) return;
+        if (!Object.prototype.hasOwnProperty.call(gqlExpected.kinds, name)) drift("the deployed schema declares type " + name + " which is absent from the schema of record");
+      });
+    }
+    Object.keys(gqlExpected.fields).forEach(function (name) {
+      var liveType = liveTypes[name];
+      if (!liveType || !Array.isArray(liveType.fields)) return;
+      var liveFieldNames = liveType.fields.map(function (f) { return f && f.name; }).sort();
+      if (JSON.stringify(liveFieldNames) !== JSON.stringify(gqlExpected.fields[name])) drift("type " + name + " fields [" + liveFieldNames.join(", ") + "] do not match the schema of record [" + gqlExpected.fields[name].join(", ") + "]");
+      var liveDeprecated = liveType.fields.filter(function (f) { return f && f.isDeprecated === true; }).map(function (f) { return f.name; }).sort();
+      var expectedDeprecated = gqlExpected.deprecatedFields[name] || [];
+      if (JSON.stringify(liveDeprecated) !== JSON.stringify(expectedDeprecated)) drift("type " + name + " deprecated fields [" + liveDeprecated.join(", ") + "] do not match the schema of record [" + expectedDeprecated.join(", ") + "] (@deprecated drift; GraphQL spec 4.2.3)");
+    });
+    Object.keys(gqlExpected.enums).forEach(function (name) {
+      var liveType = liveTypes[name];
+      if (!liveType) return;
+      var liveValues = Array.isArray(liveType.enumValues) ? liveType.enumValues.map(function (v) { return v && v.name; }).sort() : [];
+      var expectedValues = gqlExpected.enums[name].slice().sort();
+      if (JSON.stringify(liveValues) !== JSON.stringify(expectedValues)) drift("enum " + name + " values [" + liveValues.join(", ") + "] do not match the schema of record [" + expectedValues.join(", ") + "]");
+      var liveDeprecatedValues = Array.isArray(liveType.enumValues) ? liveType.enumValues.filter(function (v) { return v && v.isDeprecated === true; }).map(function (v) { return v.name; }).sort() : [];
+      var expectedDeprecatedValues = gqlExpected.deprecatedEnumValues[name] || [];
+      if (JSON.stringify(liveDeprecatedValues) !== JSON.stringify(expectedDeprecatedValues)) drift("enum " + name + " deprecated values [" + liveDeprecatedValues.join(", ") + "] do not match the schema of record [" + expectedDeprecatedValues.join(", ") + "] (@deprecated drift; GraphQL spec 4.2.3)");
+    });
+});",
+    "id": "__gql_probe_introspection_drift",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test('[probe] document validation failures follow request-error status rules (GraphQL-over-HTTP 6.4.2)', function () {
+    var code = pm.response.code;
+    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+    var mediaType = contentType.split(";")[0].trim();
+    if (code >= 500) { pm.expect.fail("a document validation failure is a client error (422 or 400 recommended), not HTTP " + code + " (GraphQL-over-HTTP 6.4.2)"); return; }
+    if (mediaType === "application/graphql-response+json") {
+      if (code >= 200 && code < 300) pm.expect.fail("under application/graphql-response+json a validation failure produces a request error with no data entry and must not use a 2xx status (422 or 400 recommended; GraphQL-over-HTTP 6.4.2)");
+      return;
+    }
+    if (code >= 200 && code < 300) {
+      if (gqlBody.data !== undefined && gqlBody.data !== null) { pm.expect.fail("the server executed a document that fails validation; validation errors must abort execution (GraphQL spec 5 / 6.1)"); return; }
+      if (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0) pm.expect.fail("a 2xx legacy application/json response to an invalid document must carry a non-empty errors list (GraphQL-over-HTTP 6.4.1)");
+    }
+});",
+    "id": "__gql_probe_invalid_document",
+  },
+  {
+    "exec": "pm.test('[probe] malformed JSON request bodies are rejected as a client error (GraphQL-over-HTTP 6.4)', function () {
+    var code = pm.response.code;
+    if (code >= 200 && code < 300) { pm.expect.fail("the server answered " + code + " to a syntactically invalid JSON body; a JSON parse failure is a request error (400 recommended; GraphQL-over-HTTP 6.4)"); return; }
+    if (code >= 500) pm.expect.fail("a malformed JSON body is a client error (400 recommended), not HTTP " + code + " (GraphQL-over-HTTP 6.4)");
+});",
+    "id": "__gql_probe_malformed_json",
+  },
+  {
+    "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
+pm.test('[probe] GET requests must not execute mutations (GraphQL-over-HTTP section 4.4)', function () {
+    var code = pm.response.code;
+    if (code < 200 || code >= 300) return;
+    if (gqlBody.data !== undefined && gqlBody.data !== null) { pm.expect.fail("the server executed a mutation received via HTTP GET; GraphQL-over-HTTP forbids executing mutations over GET (respond 405 or a request error)"); return; }
+    if (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0) pm.expect.fail("a 2xx response to a GET-transported mutation must carry a request error refusing execution (GraphQL-over-HTTP section 4.4)");
+});",
+    "id": "__gql_probe_get_mutation",
   },
 ]
 `;

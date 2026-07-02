@@ -14,6 +14,11 @@
 import {
   DirectiveLocation,
   Kind,
+  getNamedType,
+  isInputObjectType,
+  isInterfaceType,
+  isNonNullType,
+  isObjectType,
   isScalarType,
   parse,
   specifiedScalarTypes,
@@ -61,6 +66,95 @@ export function lintGraphQLSchema(schema: GraphQLSchema): string[] {
       new URL(url);
     } catch {
       warnings.push('GQL_SPECIFIED_BY_URL_INVALID: scalar ' + named.name + ' @specifiedBy argument is not a valid URL: ' + url);
+    }
+  }
+  warnings.push(...lintRelayConnections(schema));
+  warnings.push(...lintDeprecatedArguments(schema));
+  return warnings;
+}
+
+/**
+ * @deprecated on arguments and input fields is defined by the September 2025
+ * edition (3.13.3), not October 2021, so its use is flagged as edition drift;
+ * the newer edition also forbids it outright on REQUIRED arguments and input
+ * fields, which is reported as its own violation.
+ */
+function lintDeprecatedArguments(schema: GraphQLSchema): string[] {
+  const warnings: string[] = [];
+  const flag = (kind: string, owner: string, name: string, type: unknown, hasDefault: boolean): void => {
+    warnings.push('GQL_DEPRECATED_INPUT_EDITION_DRIFT: ' + kind + ' ' + owner + '.' + name + ' uses @deprecated, which the October 2021 edition does not define for ' + kind + 's (September 2025 edition 3.13.3); October-2021 introspection clients will not see it');
+    if (isNonNullType(type) && !hasDefault) {
+      warnings.push('GQL_DEPRECATED_REQUIRED_INPUT: ' + kind + ' ' + owner + '.' + name + ' is required (non-null without default) and must not be @deprecated (GraphQL September 2025 edition 3.13.3)');
+    }
+  };
+  for (const named of Object.values(schema.getTypeMap())) {
+    if (named.name.startsWith('__')) continue;
+    if (isObjectType(named) || isInterfaceType(named)) {
+      for (const field of Object.values(named.getFields())) {
+        for (const arg of field.args) {
+          if (arg.deprecationReason == null) continue;
+          flag('argument', named.name + '.' + field.name, arg.name, arg.type, arg.defaultValue !== undefined);
+        }
+      }
+    } else if (isInputObjectType(named)) {
+      for (const inputField of Object.values(named.getFields())) {
+        if (inputField.deprecationReason == null) continue;
+        flag('input field', named.name, inputField.name, inputField.type, inputField.defaultValue !== undefined);
+      }
+    }
+  }
+  return warnings;
+}
+
+/**
+ * Relay Cursor Connections conformance for schemas that opt into the pattern
+ * (types named *Connection / the PageInfo type). Convention-gated: schemas
+ * without the naming pattern emit nothing. Relay spec sections 2 (connection
+ * types), 3 (edge types), and 5.1 (PageInfo) drive the shape requirements.
+ */
+function lintRelayConnections(schema: GraphQLSchema): string[] {
+  const warnings: string[] = [];
+  const typeMap = schema.getTypeMap();
+  for (const named of Object.values(typeMap)) {
+    if (named.name.startsWith('__') || !named.name.endsWith('Connection')) continue;
+    if (!isObjectType(named)) {
+      warnings.push('GQL_RELAY_CONNECTION_INVALID: ' + named.name + ' follows the *Connection naming pattern but is not an Object type (Relay Cursor Connections spec section 2)');
+      continue;
+    }
+    const fields = named.getFields();
+    if (!fields.edges) {
+      warnings.push('GQL_RELAY_CONNECTION_INVALID: connection type ' + named.name + ' must expose an edges field (Relay Cursor Connections spec section 2)');
+    } else {
+      const edgeType = getNamedType(fields.edges.type);
+      if (isObjectType(edgeType)) {
+        const edgeFields = edgeType.getFields();
+        if (!edgeFields.node) warnings.push('GQL_RELAY_EDGE_INVALID: edge type ' + edgeType.name + ' must expose a node field (Relay Cursor Connections spec section 3)');
+        if (!edgeFields.cursor) warnings.push('GQL_RELAY_EDGE_INVALID: edge type ' + edgeType.name + ' must expose a cursor field (Relay Cursor Connections spec section 3)');
+      }
+    }
+    if (!fields.pageInfo) {
+      warnings.push('GQL_RELAY_CONNECTION_INVALID: connection type ' + named.name + ' must expose a pageInfo field (Relay Cursor Connections spec section 2)');
+    } else {
+      if (!isNonNullType(fields.pageInfo.type)) {
+        warnings.push('GQL_RELAY_CONNECTION_INVALID: ' + named.name + '.pageInfo must be non-null (Relay Cursor Connections spec section 2)');
+      }
+      if (getNamedType(fields.pageInfo.type).name !== 'PageInfo') {
+        warnings.push('GQL_RELAY_CONNECTION_INVALID: ' + named.name + '.pageInfo must be the PageInfo type (Relay Cursor Connections spec section 2); got ' + getNamedType(fields.pageInfo.type).name);
+      }
+    }
+  }
+  const pageInfo = typeMap.PageInfo;
+  if (pageInfo && isObjectType(pageInfo)) {
+    const fields = pageInfo.getFields();
+    for (const required of ['hasNextPage', 'hasPreviousPage']) {
+      const field = fields[required];
+      if (!field) {
+        warnings.push('GQL_RELAY_PAGEINFO_INVALID: PageInfo must expose ' + required + ' (Relay Cursor Connections spec section 5.1)');
+        continue;
+      }
+      if (!isNonNullType(field.type) || getNamedType(field.type).name !== 'Boolean') {
+        warnings.push('GQL_RELAY_PAGEINFO_INVALID: PageInfo.' + required + ' must be a non-null Boolean (Relay Cursor Connections spec section 5.1)');
+      }
     }
   }
   return warnings;

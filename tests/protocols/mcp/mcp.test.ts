@@ -102,8 +102,9 @@ describe('mcp collection builder', () => {
     const collection = buildMcpCollection(index, { idSeed: 'test' });
     const items = collection.item as JsonRecord[];
     // 2 servers x (initialize + tools/list + 2 tools/call) mcp-request templates,
-    // plus 1 url-bearing server x (8 fixed HTTP probes + 2 tools/call probes).
-    expect(items).toHaveLength(18);
+    // plus 1 url-bearing server x (11 fixed HTTP probes + 2 tools/call probes +
+    // resources/templates/list + progress tools/call).
+    expect(items).toHaveLength(23);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -201,6 +202,35 @@ describe('mcp instrumenter (static validation)', () => {
 });
 
 describe('mcp runtime HTTP scripts', () => {
+  it('adds session-requirement and pagination probes with their runtime gates', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const httpItems = (collection.item as JsonRecord[]).filter((item) => item.type === 'http-request');
+
+    const noSession = httpItems.find((item) => String(item.title).endsWith('ping without session id'))!;
+    const noSessionHeaders = (((noSession.payload as JsonRecord).headers as JsonRecord[]) ?? []).map((h) => h.key);
+    expect(noSessionHeaders).not.toContain('Mcp-Session-Id');
+    const noSessionScript = String(((((noSession.extensions as JsonRecord).events as JsonRecord[])[0]).script as JsonRecord).exec);
+    expect(noSessionScript).toContain('respond 400 Bad Request');
+
+    const nextPage = httpItems.find((item) => String(item.title).endsWith('tools/list next page'))!;
+    const nextPageEvents = (nextPage.extensions as JsonRecord).events as JsonRecord[];
+    expect(nextPageEvents[0].listen).toBe('beforeRequest');
+    expect(String((nextPageEvents[0].script as JsonRecord).exec)).toContain('skipRequest');
+    const nextPageBody = JSON.parse(String(((nextPage.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
+    expect((nextPageBody.params as JsonRecord).cursor).toBe('{{mcp_next_cursor}}');
+    expect(String((nextPageEvents[1].script as JsonRecord).exec)).toContain('byte-for-byte');
+
+    const replay = httpItems.find((item) => String(item.title).endsWith('tools/list cursor replay'))!;
+    expect(String(((((replay.extensions as JsonRecord).events as JsonRecord[])[1]).script as JsonRecord).exec)).toContain('-32602');
+
+    const toolsList = httpItems.find((item) => String(item.title).endsWith('\u00b7 HTTP tools/list'))!;
+    const toolsListScriptText = String(((((toolsList.extensions as JsonRecord).events as JsonRecord[])[0]).script as JsonRecord).exec);
+    expect(toolsListScriptText).toContain('mcp_next_cursor');
+    expect(toolsListScriptText).toContain('capabilities.tools');
+    expect(toolsListScriptText).toContain('mcpAssertPostMediaType');
+  });
+
   it('emits deterministic HTTP runtime assertions with expected gates', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });
@@ -211,8 +241,13 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP notifications/initialized',
       'io.github.example/weather remote-1 · HTTP ping',
       'io.github.example/weather remote-1 · HTTP tools/list',
+      'io.github.example/weather remote-1 · HTTP ping without session id',
+      'io.github.example/weather remote-1 · HTTP tools/list next page',
+      'io.github.example/weather remote-1 · HTTP tools/list cursor replay',
       'io.github.example/weather remote-1 · HTTP tools/call get_forecast',
       'io.github.example/weather remote-1 · HTTP tools/call list_stations',
+      'io.github.example/weather remote-1 · HTTP resources/templates/list',
+      'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken',
       'io.github.example/weather remote-1 · HTTP negative bad protocol version',
       'io.github.example/weather remote-1 · HTTP tools/list invalid cursor',
       'io.github.example/weather remote-1 · HTTP session DELETE',
@@ -249,6 +284,46 @@ describe('mcp runtime HTTP scripts', () => {
       }
     }
     expect(new Set(messageIds).size).toBe(messageIds.length);
+  });
+
+  it('emits RFC 6570 template and progress-token probes with expected payloads', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const httpItems = (collection.item as JsonRecord[]).filter((item) => item.type === 'http-request');
+    const templates = httpItems.find((item) => String(item.title).endsWith('HTTP resources/templates/list'))!;
+    const templatesMessage = JSON.parse(String(((templates.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
+    expect(templatesMessage.method).toBe('resources/templates/list');
+    const templatesScript = (((templates.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
+    expect(templatesScript).toContain('RFC 6570');
+    const progress = httpItems.find((item) => String(item.title).includes('with progressToken'))!;
+    const progressMessage = JSON.parse(String(((progress.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
+    expect(progressMessage.id).toBe('pm-progress-call');
+    expect(((progressMessage.params as JsonRecord)._meta as JsonRecord).progressToken).toBe('pm-progress');
+    const progressScript = (((progress.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
+    expect(progressScript).toContain('progress notifications echo the token and increase');
+  });
+
+  it('emits authorization probes only for servers with a configured Authorization header', () => {
+    const withoutAuth = parseMcpServerSpec(read('server.json'));
+    const plainTitles = (buildMcpCollection(withoutAuth, { idSeed: 'test' }).item as JsonRecord[]).map((item) => String(item.title));
+    expect(plainTitles.some((title) => title.includes('unauthenticated') || title.includes('bearer') || title.includes('protected resource metadata'))).toBe(false);
+
+    const index = parseMcpServerSpec(clientConfig);
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentMcpCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('MCP_HTTP_ITEM_COVERAGE_FAILED'))).toBe(false);
+    const httpItems = (collection.item as JsonRecord[]).filter((item) => item.type === 'http-request');
+    const unauth = httpItems.find((item) => String(item.title).includes('unauthenticated initialize'))!;
+    const unauthHeaders = ((unauth.payload as JsonRecord).headers as JsonRecord[]).map((h) => String(h.key).toLowerCase());
+    expect(unauthHeaders).not.toContain('authorization');
+    const bogus = httpItems.find((item) => String(item.title).includes('invalid bearer token'))!;
+    const bogusAuth = ((bogus.payload as JsonRecord).headers as JsonRecord[]).find((h) => String(h.key).toLowerCase() === 'authorization');
+    expect(bogusAuth?.value).toBe('Bearer pm-invalid-token');
+    const prm = httpItems.find((item) => String(item.title).includes('protected resource metadata'))!;
+    expect((prm.payload as JsonRecord).url).toBe('https://mcp.example.com/.well-known/oauth-protected-resource/sse');
+    expect((prm.payload as JsonRecord).method).toBe('GET');
+    const prmScript = (((prm.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
+    expect(prmScript).toContain('authorization servers');
   });
 
   it('emits syntactically valid JavaScript runtime scripts', () => {

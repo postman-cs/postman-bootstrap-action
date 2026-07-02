@@ -395,4 +395,71 @@ describe.skipIf(!HAS_PROTOBUF)('gRPC wire-rule and streamed-message assertions',
     expect(streamedResult(runGrpcScript(list, valid, { messages: [] }))?.passed).toBe(true);
     expect(streamedResult(runGrpcScript(list, valid))?.passed).toBe(true);
   });
+
+  it('rejects reserved grpc-* custom metadata keys but accepts the known transport set', () => {
+    const { get } = wireScripts();
+    expect(wireResult(runGrpcScript(get, valid, { metadata: [{ key: 'grpc-encoding', value: 'gzip' }] }))?.passed).toBe(true);
+    expect(wireResult(runGrpcScript(get, valid, { metadata: [{ key: 'grpc-custom-key', value: 'x' }] }))?.passed).toBe(false);
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'grpc-retry-pushback-ms', value: '250' }] }))?.passed).toBe(true);
+  });
+
+  it('validates each comma-split -bin segment as strict base64 (padded or unpadded)', () => {
+    const { get } = wireScripts();
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'x-blob-bin', value: 'AAAA,AAA' }] }))?.passed).toBe(true);
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'x-blob-bin', value: 'AA==' }] }))?.passed).toBe(true);
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'x-blob-bin', value: 'AAAA,@@@@' }] }))?.passed).toBe(false);
+    // a padded segment must pad out to a multiple of four
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'x-blob-bin', value: 'AA=' }] }))?.passed).toBe(false);
+  });
+
+  it('rejects grpc-status trailers with leading zeros (decimal lexical form)', () => {
+    const { get } = wireScripts();
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'grpc-status', value: '00' }] }))?.passed).toBe(false);
+    expect(wireResult(runGrpcScript(get, valid, { code: 5, trailers: [{ key: 'grpc-status', value: '05' }] }))?.passed).toBe(false);
+    expect(wireResult(runGrpcScript(get, valid, { trailers: [{ key: 'grpc-status', value: '0' }] }))?.passed).toBe(true);
+  });
+});
+
+describe.skipIf(!HAS_PROTOBUF)('gRPC Any and FieldMask deep semantics', () => {
+  function scriptFor(proto: string, seed: string): string {
+    const index = parseProtoSchema(proto, deps);
+    const { collection } = buildGrpcCollection(index, { baseUrl: 'grpcs://host:443', idSeed: seed });
+    instrumentGrpcCollection(collection, index);
+    return testScript(grpcItems(collection)[0]!);
+  }
+  const shapeResult = (results: TestResult[]) => results.find((entry) => entry.name.startsWith('gRPC response message matches'));
+
+  it('validates google.protobuf.Any @type grammar, WKT value re-wrapping, and proto-local field keys', () => {
+    const script = scriptFor(`syntax = "proto3";
+package demo;
+import "google/protobuf/any.proto";
+message Payload { string title = 1; }
+message Holder { google.protobuf.Any body = 1; }
+service AnySvc { rpc GetHolder (Holder) returns (Holder); }
+`, 'anydeep');
+    const run = (message: unknown) => shapeResult(runGrpcScript(script, message));
+    expect(run({ body: { '@type': 'type.googleapis.com/demo.Payload', title: 'ok' } })?.passed).toBe(true);
+    expect(run({ body: { '@type': 'no-slash-url' } })?.passed).toBe(false);
+    expect(run({ body: { '@type': 'type.googleapis.com/.demo.Payload' } })?.passed).toBe(false);
+    expect(run({ body: { '@type': 'type.googleapis.com/demo.Payload', bogus: 1 } })?.passed).toBe(false);
+    expect(run({ body: { '@type': 'type.googleapis.com/google.protobuf.Timestamp', value: '2026-01-01T00:00:00Z' } })?.passed).toBe(true);
+    expect(run({ body: { '@type': 'type.googleapis.com/google.protobuf.Timestamp' } })?.passed).toBe(false);
+    expect(run({ body: { '@type': 'type.googleapis.com/google.protobuf.Duration', value: 'not-a-duration' } })?.passed).toBe(false);
+  });
+
+  it('validates FieldMask paths against the single message-typed sibling (AIP-134 update shape)', () => {
+    const script = scriptFor(`syntax = "proto3";
+package demo;
+import "google/protobuf/field_mask.proto";
+message Author { string name = 1; }
+message Book { string display_name = 1; repeated string tags = 2; Author author = 3; }
+message UpdateBookResponse { Book book = 1; google.protobuf.FieldMask update_mask = 2; }
+service Books { rpc UpdateBook (UpdateBookResponse) returns (UpdateBookResponse); }
+`, 'maskdeep');
+    const run = (message: unknown) => shapeResult(runGrpcScript(script, message));
+    expect(run({ update_mask: 'displayName,author.name' })?.passed).toBe(true);
+    expect(run({ update_mask: 'nonexistent' })?.passed).toBe(false);
+    expect(run({ update_mask: 'tags.name' })?.passed).toBe(false);
+    expect(run({ update_mask: 'displayName.deeper' })?.passed).toBe(false);
+  });
 });

@@ -1366,6 +1366,22 @@ async function runProtocolBootstrap(
     aboutText
   );
 
+  // gRPC service configs conventionally ship as a JSON file next to the proto
+  // (grpc_service_config.json). When present it is linted against the parsed
+  // contract (method selectors, retry/hedging policies, timeouts, LB policies);
+  // absence is not an error.
+  let grpcServiceConfigJson: string | undefined;
+  if (specType === 'grpc' && inputs.specPath) {
+    const workspaceRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+    const serviceConfigPath = path.join(path.dirname(path.resolve(workspaceRoot, inputs.specPath)), 'grpc_service_config.json');
+    try {
+      grpcServiceConfigJson = readFileSync(serviceConfigPath, 'utf8');
+      dependencies.core.info(`Found gRPC service config at ${serviceConfigPath}; validating it against the proto contract`);
+    } catch {
+      // No service config alongside the proto; nothing to lint.
+    }
+  }
+
   const built = await runGroup(
     dependencies.core,
     `Build ${specType.toUpperCase()} Contract Collection`,
@@ -1373,7 +1389,8 @@ async function runProtocolBootstrap(
       buildProtocolCollection(specType, rawSpecContent, {
         name: inputs.projectName,
         endpointUrl: inputs.protocolEndpointUrl,
-        schemaLocation: inputs.specPath || inputs.specUrl
+        schemaLocation: inputs.specPath || inputs.specUrl,
+        grpcServiceConfigJson
       })
   );
 

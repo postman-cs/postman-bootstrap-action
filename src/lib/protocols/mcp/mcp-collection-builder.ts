@@ -20,14 +20,23 @@
 import type { McpContractIndex, McpServerDescriptor, McpToolDescriptor } from './mcp-parser.js';
 import {
   badVersionScript,
+  bogusBearerScript,
   initializeScript,
   initializedNotificationScript,
+  cursorProbePrerequest,
+  cursorReplayScript,
   invalidCursorScript,
+  nextCursorScript,
   oldSessionPingScript,
+  sessionRequiredScript,
   pingScript,
+  progressToolCallScript,
+  protectedResourceMetadataScript,
+  resourceTemplatesScript,
   terminateScript,
   toolsCallScript,
-  toolsListScript
+  toolsListScript,
+  unauthenticatedInitializeScript
 } from './mcp-runtime-scripts.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -93,6 +102,43 @@ function toolsCallMessage(tool: McpToolDescriptor, id = 3): string {
   });
 }
 
+function toolsCallProgressMessage(tool: McpToolDescriptor): string {
+  return jsonRpcWithId('pm-progress-call', 'tools/call', {
+    name: tool.name,
+    arguments: (tool.sampleArguments as JsonRecord) ?? {},
+    _meta: { progressToken: 'pm-progress' }
+  });
+}
+
+function hasAuthorizationHeader(server: McpServerDescriptor): boolean {
+  return server.headers.some((entry) => entry.key.toLowerCase() === 'authorization');
+}
+
+// RFC 9728 §3: the protected-resource metadata well-known path is inserted
+// between the host and the resource's path component. Templated {{...}} urls
+// do not parse as URLs, so no PRM probe can be derived for them.
+function protectedResourceMetadataUrl(serverUrl: string): string | null {
+  try {
+    const url = new URL(serverUrl);
+    const path = url.pathname.replace(/\/$/, '');
+    return `${url.origin}/.well-known/oauth-protected-resource${path}`;
+  } catch {
+    return null;
+  }
+}
+
+// Shared with the instrumenter's coverage gate so builder drift fails closed.
+export function expectedRuntimeItemCount(index: McpContractIndex, server: McpServerDescriptor): number {
+  if (server.transport !== 'sse' || !server.url) return 0;
+  let count = 12 + index.tools.length;
+  if (index.tools.length > 0) count += 1;
+  if (hasAuthorizationHeader(server)) {
+    count += 2;
+    if (protectedResourceMetadataUrl(server.url)) count += 1;
+  }
+  return count;
+}
+
 function baseHeaders(server: McpServerDescriptor): Array<{ key: string; value: string }> {
   const headers = [
     { key: 'Content-Type', value: 'application/json' },
@@ -124,13 +170,16 @@ function event(script: string): JsonRecord {
   };
 }
 
-function httpItem(idSeed: string, key: string, title: string, url: string, method: string, headers: Array<{ key: string; value: string }>, content: string | undefined, script: string): JsonRecord {
+function httpItem(idSeed: string, key: string, title: string, url: string, method: string, headers: Array<{ key: string; value: string }>, content: string | undefined, script: string, prerequest?: string): JsonRecord {
   const payload: JsonRecord = {
     url,
     method,
     headers
   };
   if (content !== undefined) payload.body = body(content);
+  const events: JsonRecord[] = [];
+  if (prerequest !== undefined) events.push({ listen: 'beforeRequest', script: { exec: prerequest, type: 'text/javascript' } });
+  events.push(event(script));
   return {
     type: 'http-request',
     id: stableId(idSeed, key),
@@ -138,7 +187,7 @@ function httpItem(idSeed: string, key: string, title: string, url: string, metho
     name: title,
     createdAt: DEFAULT_CREATED_AT,
     payload,
-    extensions: { events: [event(script)] }
+    extensions: { events }
   };
 }
 
@@ -151,7 +200,14 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
     httpItem(seed, `srv:${server.id}:http:initialize`, `${server.id} · HTTP initialize`, server.url, 'POST', headers, initializeMessage(options), initializeScript()),
     httpItem(seed, `srv:${server.id}:http:initialized`, `${server.id} · HTTP notifications/initialized`, server.url, 'POST', sessionHeaders, jsonRpcNotification('notifications/initialized'), initializedNotificationScript()),
     httpItem(seed, `srv:${server.id}:http:ping`, `${server.id} · HTTP ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-ping', 'ping'), pingScript()),
-    httpItem(seed, `srv:${server.id}:http:tools/list`, `${server.id} · HTTP tools/list`, server.url, 'POST', sessionHeaders, toolsListMessage(), toolsListScript(index.tools.map((tool) => tool.name)))
+    httpItem(seed, `srv:${server.id}:http:tools/list`, `${server.id} · HTTP tools/list`, server.url, 'POST', sessionHeaders, toolsListMessage(), toolsListScript(index.tools.map((tool) => tool.name))),
+    // Session-requirement probe: same ping, deliberately without the session
+    // header (base headers), after initialize has had a chance to issue one.
+    httpItem(seed, `srv:${server.id}:http:no-session-ping`, `${server.id} · HTTP ping without session id`, server.url, 'POST', headers, jsonRpcWithId('pm-nosession', 'ping'), sessionRequiredScript()),
+    // Pagination probes: follow the saved nextCursor byte-for-byte, then
+    // replay it; both self-skip when tools/list returned no nextCursor.
+    httpItem(seed, `srv:${server.id}:http:tools/list:next-page`, `${server.id} · HTTP tools/list next page`, server.url, 'POST', sessionHeaders, jsonRpcWithId(6, 'tools/list', { cursor: '{{mcp_next_cursor}}' }), nextCursorScript(), cursorProbePrerequest()),
+    httpItem(seed, `srv:${server.id}:http:tools/list:cursor-replay`, `${server.id} · HTTP tools/list cursor replay`, server.url, 'POST', sessionHeaders, jsonRpcWithId(7, 'tools/list', { cursor: '{{mcp_next_cursor}}' }), cursorReplayScript(), cursorProbePrerequest())
   ];
   for (const [i, tool] of index.tools.entries()) {
     const requestId = 10 + i;
@@ -159,6 +215,29 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
     items.push(
       httpItem(seed, `srv:${server.id}:http:tools/call:${tool.name}`, `${server.id} · HTTP tools/call ${tool.name}`, server.url, 'POST', sessionHeaders, toolsCallMessage(tool, requestId), script)
     );
+  }
+  items.push(
+    httpItem(seed, `srv:${server.id}:http:resources/templates`, `${server.id} · HTTP resources/templates/list`, server.url, 'POST', sessionHeaders, jsonRpcWithId(5, 'resources/templates/list', {}), resourceTemplatesScript())
+  );
+  if (index.tools.length > 0) {
+    const progressTool = index.tools[0];
+    items.push(
+      httpItem(seed, `srv:${server.id}:http:progress:${progressTool.name}`, `${server.id} · HTTP tools/call ${progressTool.name} with progressToken`, server.url, 'POST', sessionHeaders, toolsCallProgressMessage(progressTool), progressToolCallScript(progressTool.name))
+    );
+  }
+  if (hasAuthorizationHeader(server)) {
+    const noAuthHeaders = headers.filter((entry) => entry.key.toLowerCase() !== 'authorization');
+    const bogusHeaders = headers.map((entry) => entry.key.toLowerCase() === 'authorization' ? { ...entry, value: 'Bearer pm-invalid-token' } : entry);
+    items.push(
+      httpItem(seed, `srv:${server.id}:http:auth:unauthenticated`, `${server.id} · HTTP negative unauthenticated initialize`, server.url, 'POST', noAuthHeaders, initializeMessage(options), unauthenticatedInitializeScript()),
+      httpItem(seed, `srv:${server.id}:http:auth:bogus-bearer`, `${server.id} · HTTP negative invalid bearer token`, server.url, 'POST', bogusHeaders, initializeMessage(options), bogusBearerScript())
+    );
+    const prmUrl = protectedResourceMetadataUrl(server.url);
+    if (prmUrl) {
+      items.push(
+        httpItem(seed, `srv:${server.id}:http:auth:prm`, `${server.id} · HTTP protected resource metadata`, prmUrl, 'GET', [{ key: 'Accept', value: 'application/json' }], undefined, protectedResourceMetadataScript())
+      );
+    }
   }
   items.push(
     httpItem(seed, `srv:${server.id}:http:bad-version`, `${server.id} · HTTP negative bad protocol version`, server.url, 'POST', sessionHeaders.map((entry) => entry.key === 'MCP-Protocol-Version' ? { ...entry, value: '1999-01-01' } : entry), jsonRpcWithId('pm-badver', 'ping'), badVersionScript()),

@@ -67,6 +67,14 @@ pm.test('SOAP Fault and HTTP status are consistent', function () {
   if (!faulted && code === 500) pm.expect.fail("HTTP 500 from a SOAP endpoint must carry a SOAP Fault in the body");
 });
 
+pm.test('A SOAP Fault is the only child of the SOAP Body (SOAP 1.1 section 4.4 / SOAP 1.2 Part 1 section 5.4)', function () {
+  if (!matchTag("Fault").test(bodyText)) return;
+  var faultBodyInner = elementInner(cleanXml, "Body");
+  if (faultBodyInner === null) return;
+  var faultKids = directChildNames(faultBodyInner);
+  if (faultKids.length !== 1 || localPart(faultKids[0]) !== "Fault") pm.expect.fail("a Fault must be the sole direct child of soap:Body; got [" + faultKids.join(", ") + "]");
+});
+
 pm.test('SOAP Fault is well-formed for SOAP 1.1', function () {
   if (!matchTag("Fault").test(bodyText)) return;
   if (!matchTag("faultcode").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultcode child (SOAP 1.1 section 4.4)");
@@ -78,6 +86,18 @@ pm.test('SOAP 1.1 faultactor value is a URI (SOAP 1.1 section 4.4)', function ()
   var actor = (cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?faultactor[^>]*>([\\s\\S]*?)<\\//) || [])[1];
   if (actor === undefined) return;
   if (!/^\\s*[A-Za-z][A-Za-z0-9+.-]*:/.test(actor)) pm.expect.fail("faultactor must carry a URI identifying the faulting node (SOAP 1.1 section 4.4); got " + actor.trim());
+});
+
+pm.test('SOAP 1.1 Fault children are the closed unqualified set (WS-I Basic Profile 1.1 R1000/R1001)', function () {
+  if (!matchTag("Fault").test(bodyText)) return;
+  var faultInner = elementInner(cleanXml, "Fault");
+  if (faultInner === null) return;
+  var faultAllowed = ["faultcode", "faultstring", "faultactor", "detail"];
+  directChildNames(faultInner).forEach(function (kid) {
+    if (kid.indexOf(":") !== -1) { pm.expect.fail("soap:Fault children must be namespace-unqualified (WS-I BP 1.1 R1001); got " + kid); return; }
+    if (kid === "Detail") { pm.expect.fail("the SOAP 1.1 fault detail element is lowercase detail, not Detail (SOAP 1.1 section 4.4)"); return; }
+    if (faultAllowed.indexOf(kid) === -1) pm.expect.fail("soap:Fault allows only faultcode, faultstring, faultactor, detail children (WS-I BP 1.1 R1000); got " + kid);
+  });
 });
 
 pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {
@@ -100,6 +120,18 @@ pm.test('SOAP response contains no DTD or processing instruction (WS-I Basic Pro
   if (!bodyText.trim()) return;
   if (/<!DOCTYPE/i.test(bodyText)) pm.expect.fail("SOAP messages must not contain a Document Type Declaration");
   if (/<\\?(?!xml[\\s?])/i.test(bodyText)) pm.expect.fail("SOAP messages must not contain processing instructions");
+});
+
+pm.test('SOAP response charset and XML declaration are UTF-8/UTF-16 and agree (WS-I Basic Profile 1.1 R1012/R1018)', function () {
+  if (!bodyText.trim()) return;
+  var respCt = header("Content-Type");
+  var charsetMatch = /;\\s*charset\\s*=\\s*"?([^";]+)"?/i.exec(respCt);
+  var respCharset = charsetMatch ? charsetMatch[1].trim().toLowerCase() : null;
+  if (respCharset && respCharset !== "utf-8" && respCharset !== "utf-16") pm.expect.fail("SOAP messages must be serialized as UTF-8 or UTF-16 (WS-I BP 1.1 R1012); Content-Type charset is " + respCharset);
+  var declMatch = /^\\s*<\\?xml[^>]*encoding\\s*=\\s*[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]/i.exec(bodyText);
+  var declEnc = declMatch ? declMatch[1].trim().toLowerCase() : null;
+  if (declEnc && declEnc !== "utf-8" && declEnc !== "utf-16") pm.expect.fail("the response XML declaration must declare UTF-8 or UTF-16 (WS-I BP 1.1 R1012); got " + declEnc);
+  if (respCharset && declEnc && respCharset !== declEnc) pm.expect.fail("the Content-Type charset (" + respCharset + ") must agree with the XML declaration encoding (" + declEnc + ") (WS-I BP 1.1 R1012/R1018)");
 });
 
 pm.test('No element trailers follow the SOAP Body (WS-I Basic Profile 1.1 R1011)', function () {
@@ -237,6 +269,14 @@ pm.test('SOAP Fault and HTTP status are consistent', function () {
   if (!faulted && code === 500) pm.expect.fail("HTTP 500 from a SOAP endpoint must carry a SOAP Fault in the body");
 });
 
+pm.test('A SOAP Fault is the only child of the SOAP Body (SOAP 1.1 section 4.4 / SOAP 1.2 Part 1 section 5.4)', function () {
+  if (!matchTag("Fault").test(bodyText)) return;
+  var faultBodyInner = elementInner(cleanXml, "Body");
+  if (faultBodyInner === null) return;
+  var faultKids = directChildNames(faultBodyInner);
+  if (faultKids.length !== 1 || localPart(faultKids[0]) !== "Fault") pm.expect.fail("a Fault must be the sole direct child of soap:Body; got [" + faultKids.join(", ") + "]");
+});
+
 pm.test('SOAP Fault is well-formed for SOAP 1.1', function () {
   if (!matchTag("Fault").test(bodyText)) return;
   if (!matchTag("faultcode").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultcode child (SOAP 1.1 section 4.4)");
@@ -248,6 +288,18 @@ pm.test('SOAP 1.1 faultactor value is a URI (SOAP 1.1 section 4.4)', function ()
   var actor = (cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?faultactor[^>]*>([\\s\\S]*?)<\\//) || [])[1];
   if (actor === undefined) return;
   if (!/^\\s*[A-Za-z][A-Za-z0-9+.-]*:/.test(actor)) pm.expect.fail("faultactor must carry a URI identifying the faulting node (SOAP 1.1 section 4.4); got " + actor.trim());
+});
+
+pm.test('SOAP 1.1 Fault children are the closed unqualified set (WS-I Basic Profile 1.1 R1000/R1001)', function () {
+  if (!matchTag("Fault").test(bodyText)) return;
+  var faultInner = elementInner(cleanXml, "Fault");
+  if (faultInner === null) return;
+  var faultAllowed = ["faultcode", "faultstring", "faultactor", "detail"];
+  directChildNames(faultInner).forEach(function (kid) {
+    if (kid.indexOf(":") !== -1) { pm.expect.fail("soap:Fault children must be namespace-unqualified (WS-I BP 1.1 R1001); got " + kid); return; }
+    if (kid === "Detail") { pm.expect.fail("the SOAP 1.1 fault detail element is lowercase detail, not Detail (SOAP 1.1 section 4.4)"); return; }
+    if (faultAllowed.indexOf(kid) === -1) pm.expect.fail("soap:Fault allows only faultcode, faultstring, faultactor, detail children (WS-I BP 1.1 R1000); got " + kid);
+  });
 });
 
 pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {
@@ -270,6 +322,18 @@ pm.test('SOAP response contains no DTD or processing instruction (WS-I Basic Pro
   if (!bodyText.trim()) return;
   if (/<!DOCTYPE/i.test(bodyText)) pm.expect.fail("SOAP messages must not contain a Document Type Declaration");
   if (/<\\?(?!xml[\\s?])/i.test(bodyText)) pm.expect.fail("SOAP messages must not contain processing instructions");
+});
+
+pm.test('SOAP response charset and XML declaration are UTF-8/UTF-16 and agree (WS-I Basic Profile 1.1 R1012/R1018)', function () {
+  if (!bodyText.trim()) return;
+  var respCt = header("Content-Type");
+  var charsetMatch = /;\\s*charset\\s*=\\s*"?([^";]+)"?/i.exec(respCt);
+  var respCharset = charsetMatch ? charsetMatch[1].trim().toLowerCase() : null;
+  if (respCharset && respCharset !== "utf-8" && respCharset !== "utf-16") pm.expect.fail("SOAP messages must be serialized as UTF-8 or UTF-16 (WS-I BP 1.1 R1012); Content-Type charset is " + respCharset);
+  var declMatch = /^\\s*<\\?xml[^>]*encoding\\s*=\\s*[\\x22\\x27]([^\\x22\\x27]+)[\\x22\\x27]/i.exec(bodyText);
+  var declEnc = declMatch ? declMatch[1].trim().toLowerCase() : null;
+  if (declEnc && declEnc !== "utf-8" && declEnc !== "utf-16") pm.expect.fail("the response XML declaration must declare UTF-8 or UTF-16 (WS-I BP 1.1 R1012); got " + declEnc);
+  if (respCharset && declEnc && respCharset !== declEnc) pm.expect.fail("the Content-Type charset (" + respCharset + ") must agree with the XML declaration encoding (" + declEnc + ") (WS-I BP 1.1 R1012/R1018)");
 });
 
 pm.test('No element trailers follow the SOAP Body (WS-I Basic Profile 1.1 R1011)', function () {

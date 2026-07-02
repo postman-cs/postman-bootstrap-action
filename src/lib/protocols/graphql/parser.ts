@@ -102,6 +102,18 @@ export interface GraphQLContractIndex {
   enumValues: Record<string, string[]>;
   /** Union member object-type names keyed by union type name, for runtime __typename membership assertions. */
   unionMembers: Record<string, string[]>;
+  /** Named type -> kind for every non-introspection schema type (introspection drift probe). */
+  typeKinds: Record<string, GraphQLTypeShapeKind>;
+  /** Sorted field names per object/interface type (introspection drift probe). */
+  typeFields: Record<string, string[]>;
+  /** Declared root operation type names (introspection drift probe). */
+  rootTypes: { query?: string; mutation?: string; subscription?: string };
+  /** Deprecated field names per object/interface type (introspection drift probe). */
+  deprecatedFields: Record<string, string[]>;
+  /** Deprecated value names per enum type (introspection drift probe). */
+  deprecatedEnumValues: Record<string, string[]>;
+  /** True when the schema carries Apollo Federation subgraph directives (_service probe gate). */
+  federated: boolean;
   warnings: string[];
 }
 
@@ -167,13 +179,23 @@ function collectObjectShape(returns: GraphQLTypeRef, schema: GraphQLSchema, shap
   const named = schema.getType(returns.name);
   if (!named || (!isObjectType(named) && !isInterfaceType(named))) return;
   const fieldMap = (named as GraphQLObjectType).getFields();
-  shapes[returns.name] = {
+  const shape: GraphQLObjectShape = {
     name: returns.name,
     kind: returns.kind,
     fields: Object.keys(fieldMap)
       .sort((a, b) => a.localeCompare(b))
       .map((key) => describeField(fieldMap[key] as GraphQLField<unknown, unknown>))
   };
+  shapes[returns.name] = shape;
+  // Relay connections are expanded past the selection depth cap, so the
+  // shapes their expansion selects into (the connection itself when it is a
+  // field, plus pageInfo and edge types) must be indexed too. Registering
+  // before recursing keeps cyclic schemas terminating.
+  for (const field of shape.fields) {
+    const isConnectionMember = returns.name.endsWith('Connection') && (field.name === 'pageInfo' || field.name === 'edges');
+    const isConnectionField = field.type.kind === 'object' && field.type.name.endsWith('Connection');
+    if (isConnectionMember || isConnectionField) collectObjectShape(field.type, schema, shapes);
+  }
 }
 
 function collectRootOperations(
@@ -294,13 +316,33 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
 
   const enumValues: Record<string, string[]> = {};
   const unionMembers: Record<string, string[]> = {};
+  const typeKinds: Record<string, GraphQLTypeShapeKind> = {};
+  const typeFields: Record<string, string[]> = {};
+  const deprecatedFields: Record<string, string[]> = {};
+  const deprecatedEnumValues: Record<string, string[]> = {};
   for (const namedType of Object.values(schema.getTypeMap())) {
+    if (namedType.name.startsWith('__')) continue;
+    typeKinds[namedType.name] = classifyNamedType(namedType);
     if (isEnumType(namedType)) {
       enumValues[namedType.name] = namedType.getValues().map((value) => value.name);
+      const deprecatedValues = namedType.getValues().filter((value) => value.deprecationReason != null).map((value) => value.name).sort((x, y) => x.localeCompare(y));
+      if (deprecatedValues.length > 0) deprecatedEnumValues[namedType.name] = deprecatedValues;
     } else if (isUnionType(namedType)) {
       unionMembers[namedType.name] = namedType.getTypes().map((member) => member.name).sort((x, y) => x.localeCompare(y));
+    } else if (isObjectType(namedType) || isInterfaceType(namedType)) {
+      typeFields[namedType.name] = Object.keys(namedType.getFields()).sort((x, y) => x.localeCompare(y));
+      const fieldNames = Object.values(namedType.getFields()).filter((fieldDef) => fieldDef.deprecationReason != null).map((fieldDef) => fieldDef.name).sort((x, y) => x.localeCompare(y));
+      if (fieldNames.length > 0) deprecatedFields[namedType.name] = fieldNames;
     }
   }
+  const rootTypes: GraphQLContractIndex['rootTypes'] = {};
+  if (schema.getQueryType()) rootTypes.query = schema.getQueryType()!.name;
+  if (schema.getMutationType()) rootTypes.mutation = schema.getMutationType()!.name;
+  if (schema.getSubscriptionType()) rootTypes.subscription = schema.getSubscriptionType()!.name;
+  // Apollo subgraph gate: federation directives on the schema or the _Service
+  // SDL type mean the endpoint must answer `query { _service { sdl } }`.
+  const federationDirectives = new Set(['key', 'external', 'requires', 'provides', 'shareable', 'override', 'interfaceObject']);
+  const federated = schema.getDirectives().some((directive) => federationDirectives.has(directive.name)) || '_Service' in schema.getTypeMap();
 
   const index: GraphQLContractIndex = {
     service: opts.service?.trim() || 'GraphQL',
@@ -308,6 +350,12 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
     objectShapes,
     enumValues,
     unionMembers,
+    typeKinds,
+    typeFields,
+    rootTypes,
+    deprecatedFields,
+    deprecatedEnumValues,
+    federated,
     warnings
   };
   // Self-check (GraphQL spec 5): every generated operation document must pass

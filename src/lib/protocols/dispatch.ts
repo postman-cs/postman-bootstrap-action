@@ -6,6 +6,7 @@ import {
 import {
   buildGrpcCollection,
   instrumentGrpcCollection,
+  lintGrpcServiceConfig,
   parseProtoSchema,
   type ProtoParseModule
 } from './grpc/index.js';
@@ -31,6 +32,15 @@ type JsonRecord = Record<string, unknown>;
 
 export type ProtocolSpecType = Exclude<SpecType, 'openapi'>;
 
+function countLeafItems(items: unknown): number {
+  if (!Array.isArray(items)) return 0;
+  return items.reduce((total: number, entry) => {
+    const record = entry as JsonRecord | null;
+    if (record && Array.isArray(record.item)) return total + countLeafItems(record.item);
+    return total + 1;
+  }, 0);
+}
+
 export interface ProtocolBuildOptions {
   /** Service/collection display name (defaults to the project name). */
   name?: string;
@@ -40,6 +50,8 @@ export interface ProtocolBuildOptions {
   schemaLocation?: string;
   /** Test-only protobufjs override; production uses the bundled module. */
   protobuf?: ProtoParseModule;
+  /** gRPC service config JSON found alongside the proto, linted against it. */
+  grpcServiceConfigJson?: string;
 }
 
 export interface ProtocolCollectionResult {
@@ -105,7 +117,7 @@ export async function buildProtocolCollection(
       });
       const { collection: instrumented, warnings } = instrumentMcpCollection(collection, index);
       const runtimeServerCount = index.servers.filter((server) => server.transport === 'sse' && !!server.url).length;
-      const operationCount = index.servers.length * (2 + index.tools.length) + runtimeServerCount * (8 + index.tools.length);
+      const operationCount = Array.isArray(collection.item) ? collection.item.length : 0;
       return {
         type,
         collection: instrumented,
@@ -128,7 +140,7 @@ export async function buildProtocolCollection(
         format: 'v3-ec',
         runnableInCi: true,
         warnings,
-        operationCount: index.operations.length
+        operationCount: countLeafItems(instrumented.item)
       };
     }
     case 'soap': {
@@ -150,6 +162,9 @@ export async function buildProtocolCollection(
     }
     case 'grpc': {
       const index = parseProtoSchema(content, options.protobuf ? { protobuf: options.protobuf } : undefined);
+      const serviceConfigWarnings = options.grpcServiceConfigJson !== undefined
+        ? lintGrpcServiceConfig(options.grpcServiceConfigJson, index)
+        : [];
       const built = buildGrpcCollection(index, {
         name: options.name ? `${options.name} Contract` : undefined,
         baseUrl: options.endpointUrl,
@@ -161,7 +176,7 @@ export async function buildProtocolCollection(
         collection: instrumented,
         format: 'v3-ec',
         runnableInCi: true,
-        warnings: [...built.warnings, ...warnings],
+        warnings: [...serviceConfigWarnings, ...built.warnings, ...warnings],
         operationCount: index.operations.length
       };
     }

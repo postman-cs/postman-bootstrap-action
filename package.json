@@ -46,7 +46,7 @@
     "@postman/runtime.models": "^1.11.1",
     "@readme/openapi-parser": "^6.1.2",
     "fast-xml-parser": "^5.7.0",
-    "graphql": "^16.9.0",
+    "graphql": "^17.0.1",
     "undici": "^6.27.0"
   },
   "overrides": {

@@ -179,7 +179,7 @@ export function lintWsiConformance(text: string, resolveImport?: WsdlImportResol
   const definitions = roots.find((r) => local(r.tag) === 'definitions');
   const description = roots.find((r) => local(r.tag) === 'description');
   if (definitions) lintWsdl11(definitions, warnings, resolveImport);
-  if (description) lintWsdl20(description, warnings);
+  if (description) lintWsdl20(description, warnings, resolveImport);
   return warnings;
 }
 
@@ -469,6 +469,12 @@ function lintWsdl11BindingOperation(
   const soapOp = children(op, 'operation')[0];
   const style = (soapOp ? attr(soapOp, 'style') : undefined) ?? bindingStyle;
   const soapAction = soapOp ? attr(soapOp, 'soapAction') : undefined;
+  const soapActionRequired = soapOp ? attr(soapOp, 'soapActionRequired') : undefined;
+  if (soapActionRequired !== undefined && !/^(true|false|1|0)$/.test(soapActionRequired)) {
+    warnings.push('SOAP_WSI_SOAPACTION_REQUIRED: binding ' + bindingName + ' operation ' + opName + ' soapActionRequired "' + soapActionRequired + '" is not a boolean (WSDL 1.1 section 3.4)');
+  } else if (/^(true|1)$/.test(soapActionRequired ?? '') && (soapAction === undefined || soapAction === '')) {
+    warnings.push('SOAP_WSI_SOAPACTION_REQUIRED: binding ' + bindingName + ' operation ' + opName + ' requires a SOAPAction (soapActionRequired=true) but declares none (WS-I Basic Profile 1.1 R2745)');
+  }
   if (soapAction === undefined && (transport === undefined || transport === 'http://schemas.xmlsoap.org/soap/http')) {
     warnings.push('SOAP_WSI_SOAPACTION_MISSING: binding ' + bindingName + ' operation ' + opName + ' omits soapAction; HTTP SOAP bindings should declare it, and the wire value must be quoted (WS-I Basic Profile 1.1 R2744/R2745)');
   }
@@ -826,13 +832,18 @@ function closureOf(map: Map<string, Set<string>>, extendsMap: Map<string, string
   return out;
 }
 
-function lintWsdl20(description: XNode, warnings: string[]): void {
+function lintWsdl20(description: XNode, warnings: string[], resolveImport?: WsdlImportResolver): void {
   const interfaces = children(description, 'interface');
   const bindings = children(description, 'binding');
   const services = children(description, 'service');
   dupCheck(interfaces, 'interface', warnings);
   dupCheck(bindings, 'binding', warnings);
   dupCheck(services, 'service', warnings);
+  lintWsdl20Structure(description, warnings);
+  lintWsdl20ImportsIncludes(description, warnings, resolveImport);
+  if (services.length === 0) {
+    warnings.push('SOAP_WSDL20_SERVICE: the description declares no service; operations are surfaced from a synthesized service and endpoint URLs stay placeholders (WSDL 2.0 section 2.14)');
+  }
 
   const extendsMap = new Map<string, string[]>();
   for (const iface of interfaces) {
@@ -893,10 +904,7 @@ function lintWsdl20(description: XNode, warnings: string[]): void {
           checkElementToken(attr(node, 'element'), 'interface ' + ifName + ' operation ' + opName + ' ' + io, 'SOAP_WSDL20_MESSAGE_CONTENT', warnings);
         }
       }
-      if (pattern !== undefined && /(robust-)?in-only$/.test(pattern) && children(op, 'output').length > 0) {
-        warnings.push('SOAP_WSDL20_MEP_SHAPE: interface ' + ifName + ' operation ' + opName + ' uses MEP ' + pattern + ' but declares an output; in-only and robust-in-only have no output placeholder (WSDL 2.0 Adjuncts section 2.2)');
-      }
-      for (const fr of [...children(op, 'infault'), ...children(op, 'outfault')]) {
+      lintWsdl20MepShape(op, ifName, opName, pattern, warnings);      for (const fr of [...children(op, 'infault'), ...children(op, 'outfault')]) {
         const ref = attr(fr, 'ref');
         if (ref !== undefined) pendingFaultRefs.push({ iface: ifName, op: opName, ref });
       }
@@ -911,8 +919,11 @@ function lintWsdl20(description: XNode, warnings: string[]): void {
     }
   }
 
-  lintWsdl20Bindings(bindings, interfaceOps, extendsMap, warnings);
-  lintWsdl20Services(services, interfaces, warnings);
+  lintWsdl20Bindings(bindings, interfaceOps, interfaceFaults, extendsMap, warnings);
+  lintWsdl20Services(services, interfaces, bindings, warnings);
+  lintWsdl20ElementResolution(description, collectSchemaElementTable([description], warnings, resolveImport), warnings);
+  lintWsdl20InheritedCollisions(interfaceOps, extendsMap, warnings);
+  lintWsdl20Policies(description, warnings);
   for (const iface of interfaces) {
     walk(iface, (node) => {
       if (local(node.tag) === 'Addressing') {
@@ -922,9 +933,238 @@ function lintWsdl20(description: XNode, warnings: string[]): void {
   }
 }
 
+const WSDL20_REQUIRED_ATTRS: Record<string, string[]> = {
+  interface: ['name'],
+  binding: ['name', 'type'],
+  service: ['name', 'interface']
+};
+
+// Pinned structural pass over the WSDL 2.0 content model: required attributes
+// on top-level components, pattern on interface operations, ref on binding
+// operations (WSDL 2.0 sections 2.2-2.15).
+function lintWsdl20Structure(description: XNode, warnings: string[]): void {
+  for (const [kind, attrs] of Object.entries(WSDL20_REQUIRED_ATTRS)) {
+    for (const node of children(description, kind)) {
+      for (const required of attrs) {
+        if (attr(node, required) === undefined) {
+          warnings.push('SOAP_WSDL20_STRUCTURE: a ' + kind + ' element omits its required ' + required + ' attribute (WSDL 2.0 component model)');
+        }
+      }
+    }
+  }
+  for (const service of children(description, 'service')) {
+    for (const endpoint of children(service, 'endpoint')) {
+      for (const required of ['name', 'binding']) {
+        if (attr(endpoint, required) === undefined) {
+          warnings.push('SOAP_WSDL20_STRUCTURE: service ' + (attr(service, 'name') ?? '') + ' has an endpoint omitting its required ' + required + ' attribute (WSDL 2.0 section 2.15.1)');
+        }
+      }
+    }
+  }
+  for (const iface of children(description, 'interface')) {
+    for (const op of children(iface, 'operation')) {
+      if (attr(op, 'pattern') === undefined) {
+        warnings.push('SOAP_WSDL20_STRUCTURE: interface ' + (attr(iface, 'name') ?? '') + ' operation ' + (attr(op, 'name') ?? '') + ' omits its required message exchange pattern attribute (WSDL 2.0 section 2.4.1)');
+      }
+    }
+  }
+  for (const binding of children(description, 'binding')) {
+    for (const op of children(binding, 'operation')) {
+      if (attr(op, 'ref') === undefined) {
+        warnings.push('SOAP_WSDL20_STRUCTURE: binding ' + (attr(binding, 'name') ?? '') + ' operation omits its required ref attribute (WSDL 2.0 section 2.10.1)');
+      }
+    }
+  }
+}
+
+function lintWsdl20ImportsIncludes(description: XNode, warnings: string[], resolveImport?: WsdlImportResolver): void {
+  const ownTns = attr(description, 'targetNamespace') ?? '';
+  for (const imp of children(description, 'import')) {
+    const namespace = attr(imp, 'namespace');
+    if (namespace === undefined || !isAbsoluteUri(namespace)) {
+      warnings.push('SOAP_WSDL20_IMPORT: wsdl:import requires an absolute namespace IRI (WSDL 2.0 section 4.2)');
+    } else if (namespace === ownTns) {
+      warnings.push('SOAP_WSDL20_IMPORT: wsdl:import namespace equals the importing targetNamespace; same-namespace components are combined with wsdl:include, not wsdl:import (WSDL 2.0 section 4.2)');
+    }
+    const location = attr(imp, 'location');
+    if (location === undefined || location === '' || !resolveImport) continue;
+    const content = resolveImport(location);
+    if (content === undefined) continue;
+    lintImportedXmlDeclaration(content, 'imported WSDL "' + location + '"', warnings);
+    const root = parseImported(content);
+    if (!root || local(root.tag) !== 'description') {
+      warnings.push('SOAP_WSDL20_IMPORT: wsdl:import location "' + location + '" does not resolve to a WSDL 2.0 description document (WSDL 2.0 section 4.2)');
+    } else if (namespace !== undefined && (attr(root, 'targetNamespace') ?? '') !== namespace) {
+      warnings.push('SOAP_WSDL20_IMPORT: wsdl:import declares namespace "' + namespace + '" but the description at "' + location + '" declares targetNamespace "' + (attr(root, 'targetNamespace') ?? '') + '" (WSDL 2.0 section 4.2)');
+    }
+  }
+  for (const inc of children(description, 'include')) {
+    const location = attr(inc, 'location');
+    if (location === undefined || location === '') {
+      warnings.push('SOAP_WSDL20_IMPORT: wsdl:include requires a location attribute (WSDL 2.0 section 4.1)');
+      continue;
+    }
+    if (!resolveImport) continue;
+    const content = resolveImport(location);
+    if (content === undefined) continue;
+    lintImportedXmlDeclaration(content, 'included WSDL "' + location + '"', warnings);
+    const root = parseImported(content);
+    if (!root || local(root.tag) !== 'description') {
+      warnings.push('SOAP_WSDL20_IMPORT: wsdl:include location "' + location + '" does not resolve to a WSDL 2.0 description document (WSDL 2.0 section 4.1)');
+    } else if ((attr(root, 'targetNamespace') ?? '') !== ownTns) {
+      warnings.push('SOAP_WSDL20_IMPORT: wsdl:include at "' + location + '" declares targetNamespace "' + (attr(root, 'targetNamespace') ?? '') + '"; include requires the including namespace "' + ownTns + '" (WSDL 2.0 section 4.1)');
+    }
+  }
+}
+
+const WSDL20_MEP_BASE = 'http://www.w3.org/ns/wsdl/';
+const WSDL20_MEP_RULES: Record<string, { input: [number, number]; output: [number, number]; infault: boolean; outfault: boolean }> = {
+  'in-only': { input: [1, 1], output: [0, 0], infault: false, outfault: false },
+  'robust-in-only': { input: [1, 1], output: [0, 0], infault: true, outfault: false },
+  'in-out': { input: [1, 1], output: [1, 1], infault: true, outfault: true },
+  'in-opt-out': { input: [1, 1], output: [0, 1], infault: true, outfault: true },
+  'out-only': { input: [0, 0], output: [1, 1], infault: false, outfault: false },
+  'robust-out-only': { input: [0, 0], output: [1, 1], infault: false, outfault: true },
+  'out-in': { input: [1, 1], output: [1, 1], infault: true, outfault: true },
+  'out-opt-in': { input: [0, 1], output: [1, 1], infault: true, outfault: true }
+};
+
+// MEP placeholder shape, message labels, fault propagation directions, and
+// style input constraints for one interface operation (WSDL 2.0 Adjuncts
+// sections 2 and 4-6).
+function lintWsdl20MepShape(op: XNode, ifName: string, opName: string, pattern: string | undefined, warnings: string[]): void {
+  const label = 'interface ' + ifName + ' operation ' + opName;
+  const inputs = children(op, 'input');
+  const outputs = children(op, 'output');
+  for (const [dir, nodes, expected] of [['input', inputs, 'In'], ['output', outputs, 'Out']] as const) {
+    for (const node of nodes) {
+      const messageLabel = attr(node, 'messageLabel');
+      if (messageLabel !== undefined && messageLabel !== expected) {
+        warnings.push('SOAP_WSDL20_MESSAGE_LABEL: ' + label + ' ' + dir + ' messageLabel "' + messageLabel + '" does not match the predefined placeholder label "' + expected + '" (WSDL 2.0 Adjuncts section 2.2)');
+      }
+    }
+  }
+  const seenFaultRefs = new Set<string>();
+  for (const dir of ['infault', 'outfault'] as const) {
+    for (const faultRef of children(op, dir)) {
+      const key = dir + '|' + (attr(faultRef, 'ref') ?? '') + '|' + (attr(faultRef, 'messageLabel') ?? '');
+      if (seenFaultRefs.has(key)) {
+        warnings.push('SOAP_WSDL20_FAULT_REF: ' + label + ' repeats ' + dir + ' "' + (attr(faultRef, 'ref') ?? '') + '" with the same messageLabel; (fault, messageLabel) pairs must be unique (WSDL 2.0 section 2.6.1)');
+      }
+      seenFaultRefs.add(key);
+    }
+  }
+  if (pattern !== undefined && pattern.startsWith(WSDL20_MEP_BASE)) {
+    const rule = WSDL20_MEP_RULES[pattern.slice(WSDL20_MEP_BASE.length)];
+    if (!rule) {
+      warnings.push('SOAP_WSDL20_MEP_SHAPE: ' + label + ' pattern "' + pattern + '" is not one of the eight predefined WSDL 2.0 MEPs; its placeholder shape is not asserted (WSDL 2.0 Adjuncts section 2.2)');
+    } else {
+      const within = (count: number, [lo, hi]: [number, number]) => count >= lo && count <= hi;
+      if (!within(inputs.length, rule.input)) {
+        warnings.push('SOAP_WSDL20_MEP_SHAPE: ' + label + ' declares ' + inputs.length + ' input placeholder(s) but MEP ' + pattern + ' allows between ' + rule.input[0] + ' and ' + rule.input[1] + ' (WSDL 2.0 Adjuncts section 2.2)');
+      }
+      if (!within(outputs.length, rule.output)) {
+        warnings.push('SOAP_WSDL20_MEP_SHAPE: ' + label + ' declares ' + outputs.length + ' output placeholder(s) but MEP ' + pattern + ' allows between ' + rule.output[0] + ' and ' + rule.output[1] + ' (WSDL 2.0 Adjuncts section 2.2)');
+      }
+      if (!rule.infault && children(op, 'infault').length > 0) {
+        warnings.push('SOAP_WSDL20_MEP_SHAPE: ' + label + ' declares an infault but MEP ' + pattern + ' propagates no fault in that direction (WSDL 2.0 Adjuncts section 2.1)');
+      }
+      if (!rule.outfault && children(op, 'outfault').length > 0) {
+        warnings.push('SOAP_WSDL20_MEP_SHAPE: ' + label + ' declares an outfault but MEP ' + pattern + ' propagates no fault in that direction (WSDL 2.0 Adjuncts section 2.1)');
+      }
+    }
+  }
+  for (const style of (attr(op, 'style') ?? '').split(/\s+/).filter(Boolean)) {
+    if (/\/wsdl\/style\/(rpc|iri|multipart)$/.test(style)) {
+      const inputWithoutElement = inputs.some((node) => {
+        const element = attr(node, 'element');
+        return element === undefined || element.startsWith('#');
+      });
+      if (inputWithoutElement) {
+        warnings.push('SOAP_WSDL20_STYLE_CONSTRAINT: ' + label + ' declares style ' + style + ' but an input carries no global element declaration; the RPC/IRI/Multipart styles constrain the input content model (WSDL 2.0 Adjuncts sections 4-6)');
+      }
+    }
+  }
+}
+
+function lintWsdl20ElementResolution(description: XNode, table: SchemaElementTable, warnings: string[]): void {
+  if (!table.complete) return;
+  const base = xmlnsScope(description, {});
+  const resolve = (value: string | undefined, scope: Record<string, string>, context: string): void => {
+    if (value === undefined || value === '' || value.startsWith('#')) return;
+    const ns = qnameNamespace(value, scope);
+    const bucket = table.byNamespace.get(ns);
+    if (!bucket || !bucket.has(qnameLocal(value))) {
+      warnings.push('SOAP_WSDL20_ELEMENT_UNRESOLVED: ' + context + ' references element "' + value + '" which no schema in scope declares as a global element (WSDL 2.0 section 3.1)');
+    }
+  };
+  for (const iface of children(description, 'interface')) {
+    const ifScope = xmlnsScope(iface, base);
+    const ifName = attr(iface, 'name') ?? '';
+    for (const fault of children(iface, 'fault')) {
+      resolve(attr(fault, 'element'), xmlnsScope(fault, ifScope), 'interface ' + ifName + ' fault ' + (attr(fault, 'name') ?? ''));
+    }
+    for (const op of children(iface, 'operation')) {
+      const opScope = xmlnsScope(op, ifScope);
+      for (const dir of ['input', 'output'] as const) {
+        for (const node of children(op, dir)) {
+          resolve(attr(node, 'element'), xmlnsScope(node, opScope), 'interface ' + ifName + ' operation ' + (attr(op, 'name') ?? '') + ' ' + dir);
+        }
+      }
+    }
+  }
+}
+
+// WSDL 2.0 section 2.2.1: an operation inherited through multiple extends
+// paths must be the equivalent component; equivalence cannot be proven from a
+// single document, so multi-parent collisions are surfaced for review.
+function lintWsdl20InheritedCollisions(interfaceOps: Map<string, Set<string>>, extendsMap: Map<string, string[]>, warnings: string[]): void {
+  for (const [ifName, ext] of extendsMap) {
+    if (ext.length === 0) continue;
+    const lineage = new Set<string>([ifName]);
+    const stack = [...ext];
+    while (stack.length > 0) {
+      const cur = stack.pop() as string;
+      if (lineage.has(cur)) continue;
+      lineage.add(cur);
+      stack.push(...(extendsMap.get(cur) ?? []));
+    }
+    const owners = new Map<string, string[]>();
+    for (const ancestor of lineage) {
+      for (const opName of interfaceOps.get(ancestor) ?? []) {
+        const list = owners.get(opName);
+        if (list) list.push(ancestor);
+        else owners.set(opName, [ancestor]);
+      }
+    }
+    for (const [opName, list] of owners) {
+      if (list.length > 1) {
+        warnings.push('SOAP_WSDL20_INHERITED_OP_COLLISION: interface ' + ifName + ' sees operation "' + opName + '" from multiple interfaces (' + list.sort().join(', ') + '); WSDL 2.0 section 2.2.1 requires colliding components to be equivalent, which cannot be proven from names alone');
+      }
+    }
+  }
+}
+
+function lintWsdl20Policies(description: XNode, warnings: string[]): void {
+  walk(description, (node) => {
+    const name = local(node.tag);
+    if (name === 'PolicyReference' && attr(node, 'URI') === undefined) {
+      warnings.push('SOAP_WSDL20_POLICY: wsp:PolicyReference omits its URI attribute (WS-Policy Attachment section 3.2)');
+    }
+    if (name === 'All' || name === 'Policy') {
+      const kids = node.children.map((child) => local(child.tag));
+      if (kids.includes('AnonymousResponses') && kids.includes('NonAnonymousResponses')) {
+        warnings.push('SOAP_WSDL20_POLICY: a policy alternative asserts both wsam:AnonymousResponses and wsam:NonAnonymousResponses; WS-Addressing Metadata section 3.2 makes them mutually exclusive within one alternative');
+      }
+    }
+  });
+}
+
+
 function lintWsdl20Bindings(
   bindings: XNode[],
   interfaceOps: Map<string, Set<string>>,
+  interfaceFaults: Map<string, Set<string>>,
   extendsMap: Map<string, string[]>,
   warnings: string[]
 ): void {
@@ -959,6 +1199,57 @@ function lintWsdl20Bindings(
       }
     }
     const scope = ifaceAttr !== undefined ? closureOf(interfaceOps, extendsMap, local(ifaceAttr)) : undefined;
+    const wsdl20SoapType = 'http://www.w3.org/ns/wsdl/soap';
+    if (type !== undefined && isAbsoluteUri(type) && type !== wsdl20SoapType && type !== 'http://www.w3.org/ns/wsdl/http') {
+      warnings.push('SOAP_WSDL20_BINDING_TYPE_UNSUPPORTED: binding ' + name + ' type "' + type + '" is neither the WSDL 2.0 SOAP nor HTTP binding; its extension rules are not asserted (WSDL 2.0 Adjuncts sections 5-6)');
+    }
+    const protocol = attr(binding, 'protocol');
+    if (protocol !== undefined && !isAbsoluteUri(protocol)) {
+      warnings.push('SOAP_WSDL20_IRI_RELATIVE: binding ' + name + ' wsoap:protocol "' + protocol + '" must be an absolute IRI (WSDL 2.0 Adjuncts section 5.10.1)');
+    } else if (protocol !== undefined && protocol !== 'http://www.w3.org/2003/05/soap/bindings/HTTP/') {
+      warnings.push('SOAP_WSDL20_PROTOCOL_NOT_HTTP: binding ' + name + ' wsoap:protocol "' + protocol + '" is not the SOAP 1.2 HTTP binding; the generated collection executes over HTTP only (WSDL 2.0 Adjuncts section 5.10.1)');
+    }
+    const faultScope = ifaceAttr !== undefined ? closureOf(interfaceFaults, extendsMap, local(ifaceAttr)) : undefined;
+    const qnameLexical = /^[\w.-]+(:[\w.-]+)?$/;
+    for (const boundFault of faultRefs) {
+      const ref = attr(boundFault, 'ref');
+      if (ref !== undefined && faultScope && !faultScope.has(local(ref))) {
+        warnings.push('SOAP_WSDL20_BINDING_FAULT_UNRESOLVED: binding ' + name + ' fault ref "' + ref + '" resolves to no fault on interface ' + ifaceAttr + ' or its ancestors (WSDL 2.0 section 2.11.1)');
+      }
+      const code = attr(boundFault, 'code');
+      if (code !== undefined && code !== '#any' && !qnameLexical.test(code)) {
+        warnings.push('SOAP_WSDL20_FAULT_CODE: binding ' + name + ' fault ' + (ref ?? '') + ' wsoap:code "' + code + '" must be "#any" or an xs:QName (WSDL 2.0 Adjuncts section 5.5.6)');
+      }
+      const subcodes = attr(boundFault, 'subcodes');
+      if (subcodes !== undefined && subcodes !== '#any' && subcodes.split(/\s+/).filter(Boolean).some((token) => !qnameLexical.test(token))) {
+        warnings.push('SOAP_WSDL20_FAULT_CODE: binding ' + name + ' fault ' + (ref ?? '') + ' wsoap:subcodes "' + subcodes + '" must be "#any" or a list of xs:QName (WSDL 2.0 Adjuncts section 5.5.7)');
+      }
+    }
+    for (const boundOp of opRefs) {
+      const opLabel = attr(boundOp, 'ref') ?? '';
+      for (const dir of ['input', 'output'] as const) {
+        const refs = children(boundOp, dir);
+        if (refs.length > 1) {
+          warnings.push('SOAP_WSDL20_BINDING_MESSAGE_REF: binding ' + name + ' operation "' + opLabel + '" declares ' + refs.length + ' ' + dir + ' message references; the predefined MEPs carry at most one per direction (WSDL 2.0 section 2.10.1)');
+        }
+      }
+      for (const dir of ['infault', 'outfault'] as const) {
+        for (const faultRef of children(boundOp, dir)) {
+          const ref = attr(faultRef, 'ref');
+          if (ref !== undefined && faultScope && !faultScope.has(local(ref))) {
+            warnings.push('SOAP_WSDL20_BINDING_FAULT_UNRESOLVED: binding ' + name + ' operation "' + opLabel + '" ' + dir + ' ref "' + ref + '" resolves to no interface fault (WSDL 2.0 section 2.12.1)');
+          }
+        }
+      }
+      for (const scopeNode of [...children(boundOp, 'input'), ...children(boundOp, 'output'), ...children(boundOp, 'infault'), ...children(boundOp, 'outfault')]) {
+        for (const mod of children(scopeNode, 'module')) {
+          const ref = attr(mod, 'ref');
+          if (ref === undefined || !isAbsoluteUri(ref)) {
+            warnings.push('SOAP_WSDL20_MODULE: binding ' + name + ' operation "' + opLabel + '" declares a wsoap:module without an absolute-IRI ref (WSDL 2.0 Adjuncts section 5.4.1)');
+          }
+        }
+      }
+    }
     const seenRefs = new Set<string>();
     for (const opRef of opRefs) {
       const ref = attr(opRef, 'ref');
@@ -981,8 +1272,12 @@ function lintWsdl20Bindings(
   }
 }
 
-function lintWsdl20Services(services: XNode[], interfaces: XNode[], warnings: string[]): void {
-  const interfaceNames = new Set(interfaces.map((i) => attr(i, 'name') ?? ''));
+function lintWsdl20Services(services: XNode[], interfaces: XNode[], bindings: XNode[], warnings: string[]): void {
+  const interfaceNames = new Set(interfaces.map((iface) => attr(iface, 'name') ?? ''));
+  const bindingInterfaces = new Map<string, string | undefined>();
+  for (const binding of bindings) {
+    bindingInterfaces.set(attr(binding, 'name') ?? '', attr(binding, 'interface'));
+  }
   for (const service of services) {
     const name = attr(service, 'name') ?? '';
     const ifaceAttr = attr(service, 'interface');
@@ -1003,6 +1298,17 @@ function lintWsdl20Services(services: XNode[], interfaces: XNode[], warnings: st
       const address = attr(endpoint, 'address');
       if (address !== undefined && !isAbsoluteUri(address)) {
         warnings.push('SOAP_WSDL20_ENDPOINT: service ' + name + ' endpoint "' + epName + '" address "' + address + '" must be an absolute IRI (WSDL 2.0 section 2.15.1)');
+      }
+      const bindingRef = attr(endpoint, 'binding');
+      if (bindingRef !== undefined) {
+        if (!bindingInterfaces.has(local(bindingRef))) {
+          warnings.push('SOAP_WSDL20_ENDPOINT: service ' + name + ' endpoint "' + epName + '" binding "' + bindingRef + '" resolves to no declared binding (WSDL 2.0 section 2.15.1)');
+        } else {
+          const boundInterface = bindingInterfaces.get(local(bindingRef));
+          if (boundInterface !== undefined && ifaceAttr !== undefined && local(boundInterface) !== local(ifaceAttr)) {
+            warnings.push('SOAP_WSDL20_ENDPOINT: service ' + name + ' endpoint "' + epName + '" binding "' + bindingRef + '" binds interface "' + boundInterface + '" but the service declares interface "' + ifaceAttr + '" (WSDL 2.0 section 2.15.1)');
+          }
+        }
       }
     }
   }

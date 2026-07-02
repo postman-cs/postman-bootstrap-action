@@ -23,6 +23,7 @@
 import { compileSchemaValidator } from '../../spec/schema-validator-code.js';
 import { packSchema, isSchemaGraphOverflow } from '../../spec/schema-pack.js';
 import { lintAsyncApiDocument } from './asyncapi-doc-lints.js';
+import { lintAsyncApiBindingSurfaces } from './asyncapi-binding-lints.js';
 import { WS_BINDING_VERSIONS, isAsyncApiRuntimeExpression } from './asyncapi-registries.js';
 import type { AsyncApiChannelDescriptor, AsyncApiContractIndex, AsyncApiMessageDescriptor } from './asyncapi-parser.js';
 
@@ -386,7 +387,8 @@ export function instrumentAsyncApiCollection(
   const warnings: string[] = [
     ...index.warnings,
     ...index.channels.flatMap((channel) => channel.warnings),
-    ...lintAsyncApiDocument(index)
+    ...lintAsyncApiDocument(index),
+    ...lintAsyncApiBindingSurfaces(index)
   ];
 
   for (const channel of index.channels) {

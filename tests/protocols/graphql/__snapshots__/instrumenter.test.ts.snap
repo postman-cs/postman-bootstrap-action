@@ -7,6 +7,15 @@ exports[`instrumentGraphQLCollection > matches the golden snapshot of generated 
 pm.test("[query lineByMsisdn] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
+pm.test("[query lineByMsisdn] GraphQL-over-HTTP media type and status are consistent", function () {
+    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+    var mediaType = contentType.split(";")[0].trim();
+    if (!mediaType) return;
+    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
+    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+});
 pm.test("[query lineByMsisdn] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
@@ -60,6 +69,15 @@ pm.test("[query lineByMsisdn] required variables are supplied", function () {
 pm.test("[query plans] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
+pm.test("[query plans] GraphQL-over-HTTP media type and status are consistent", function () {
+    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+    var mediaType = contentType.split(";")[0].trim();
+    if (!mediaType) return;
+    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
+    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+});
 pm.test("[query plans] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
@@ -108,6 +126,15 @@ pm.test("[query plans] data.plans matches schema return type", function () {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 pm.test("[query subscriber] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query subscriber] GraphQL-over-HTTP media type and status are consistent", function () {
+    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+    var mediaType = contentType.split(";")[0].trim();
+    if (!mediaType) return;
+    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
+    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[query subscriber] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
@@ -159,6 +186,15 @@ pm.test("[query subscriber] required variables are supplied", function () {
 pm.test("[query subscribers] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
+pm.test("[query subscribers] GraphQL-over-HTTP media type and status are consistent", function () {
+    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+    var mediaType = contentType.split(";")[0].trim();
+    if (!mediaType) return;
+    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
+    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+});
 pm.test("[query subscribers] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
@@ -200,6 +236,15 @@ pm.test("[query subscribers] data.subscribers matches schema return type", funct
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 pm.test("[mutation provisionLine] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[mutation provisionLine] GraphQL-over-HTTP media type and status are consistent", function () {
+    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+    var mediaType = contentType.split(";")[0].trim();
+    if (!mediaType) return;
+    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
+    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[mutation provisionLine] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
@@ -255,6 +300,15 @@ pm.test("[mutation provisionLine] required variables are supplied", function () 
 pm.test("[mutation suspendLine] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
 });
+pm.test("[mutation suspendLine] GraphQL-over-HTTP media type and status are consistent", function () {
+    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+    var mediaType = contentType.split(";")[0].trim();
+    if (!mediaType) return;
+    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
+    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
+});
 pm.test("[mutation suspendLine] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
@@ -308,6 +362,15 @@ pm.test("[mutation suspendLine] required variables are supplied", function () {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 pm.test("[subscription lineStatusChanged] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[subscription lineStatusChanged] GraphQL-over-HTTP media type and status are consistent", function () {
+    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
+    var mediaType = contentType.split(";")[0].trim();
+    if (!mediaType) return;
+    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
+    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
+    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[subscription lineStatusChanged] GraphQL errors are well-formed and not a total failure", function () {
     var errors = gqlBody.errors;

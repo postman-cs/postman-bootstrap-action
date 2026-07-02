@@ -101,6 +101,23 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
     '    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);',
     '});'
   );
+  // GraphQL-over-HTTP media type and per-media-type status discipline. The
+  // GraphQL-over-HTTP specification defines two response media types:
+  // application/graphql-response+json (a server MUST NOT use a 2xx status for
+  // a response that is not a well-formed GraphQL response) and legacy
+  // application/json (a well-formed response carrying non-null data rides 200).
+  // Content-Type-conditional: a response without a Content-Type is skipped.
+  lines.push(
+    'pm.test(' + JSON.stringify('[' + label + '] GraphQL-over-HTTP media type and status are consistent') + ', function () {',
+    '    var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();',
+    '    var mediaType = contentType.split(";")[0].trim();',
+    '    if (!mediaType) return;',
+    '    if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }',
+    '    var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);',
+    '    if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }',
+    '    if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }',
+    '});'
+  );
 
   // 2. Errors. GraphQL-over-HTTP returns 200 even for partial success, where a
   // response may legitimately carry BOTH `data` and field-level `errors`. Validate

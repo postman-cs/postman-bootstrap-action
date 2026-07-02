@@ -21,6 +21,8 @@ Each request in the generated `[Contract]` collection carries a test script buil
 | `Request body matches OpenAPI request schema` | The request body validates against the `requestBody` schema. |
 | `Content-Length is consistent with OpenAPI body expectations` | The `Content-Length` header agrees with the body the spec allows for the response. |
 | `OpenAPI schemas without a compilable runtime validator are documented` | Disclosure: enumerates any schema the generator could not compile into a runtime validator, so coverage gaps are visible inside the run instead of passing silently. |
+| `Response satisfies RFC 9110 status-code requirements` | Status-conditional MUSTs: `WWW-Authenticate` on 401 (with a Bearer challenge when the operation is bearer-secured, RFC 6750), `Allow` on 405 listing every method the path declares, no body on 304, a well-formed `Content-Range` on 206, `Retry-After` as delay-seconds or an HTTP-date on 3xx/429/503, and `Location` as a plausible URI-reference on 201/3xx (RFC 3986). |
+| `Error and encoding conventions match RFC 9457 / RFC 8259 / RFC 8288` | `application/problem+json` bodies must be objects with string `type`/`title`/`detail`/`instance` members and a numeric `status` matching the HTTP status code; JSON media types must not declare a non-UTF-8 charset; every `Link` header value carries a `<URI-reference>` and a `rel` parameter. |
 
 ## Standards the schema checks enforce
 
@@ -84,6 +86,7 @@ Generated from a WSDL 1.1 / 2.0 document into plain HTTP POST requests with XML 
 | `SOAP Body element is present` | The response contains a SOAP `Body`. |
 | `Response is not a SOAP Fault` | The `Body` carries a result rather than a `Fault`. |
 | `Expected response element <name>` | The operation's declared response element is present. |
+| `SOAP Fault and HTTP status are consistent` | A SOAP 1.1 Fault must ride HTTP 500; a SOAP 1.2 Fault rides HTTP 500, or 400 for `env:Sender` faults; an HTTP 500 from a SOAP endpoint must carry a Fault. |
 
 On the request side, generated SOAP 1.1 requests always carry the `SOAPAction` HTTP header (required by the WS-I Basic Profile), while SOAP 1.2 requests carry the action as the `action` parameter of the `application/soap+xml` Content-Type (RFC 3902).
 
@@ -98,6 +101,7 @@ Generated from a GraphQL SDL or introspection JSON. Beyond `GraphQL operation ma
 | `[<label>] data.<field> is present` | The selected root field is present in `data`. |
 | `[<label>] data.<field> matches schema return type` | The field's value matches the return type declared in the schema. |
 | `[<label>] required variables are supplied` | Every non-null operation variable has a value. |
+| `[<operation>] GraphQL-over-HTTP media type and status are consistent` | The response media type must be `application/graphql-response+json` or `application/json`; with `application/graphql-response+json` a 2xx response must be a well-formed GraphQL response; with `application/json` a response carrying data must be HTTP 200. Skipped when the response carries no `Content-Type`. |
 
 ## AsyncAPI (WebSocket / Socket.IO)
 

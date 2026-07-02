@@ -6,7 +6,7 @@ Provisions a [Postman workspace](https://learning.postman.com/docs/collaborating
 
 Part of the [Postman API Onboarding suite](https://github.com/postman-cs/postman-api-onboarding-action).
 
-> **Standards-grounded assertion generation.** Every collection this action generates ships with executable contract tests compiled from your spec: JSON Schema (draft-07 / 2020-12) body validation with RFC-checked formats (RFC 3339 timestamps, RFC 4122 UUIDs, RFC 3986 URIs, and more), RFC 9110 `Authorization` scheme checks, canonical proto3 JSON well-known-type validation for gRPC, and version-aware SOAP 1.1/1.2 media-type checks. The full test inventory and the standard behind each check: [Generated assertions](docs/generated-assertions.md).
+> **Standards-grounded assertion generation.** Every collection this action generates ships with executable contract tests compiled from your spec: JSON Schema (draft-07 / 2020-12) body validation with RFC-checked formats (RFC 3339 timestamps, RFC 4122 UUIDs, RFC 3986 URIs, and more), RFC 9110 `Authorization` scheme checks plus status-code requirement checks (`WWW-Authenticate` on 401, `Allow` on 405, no body on 304, `Content-Range` on 206), RFC 9457 `application/problem+json` error-body validation with RFC 8259 encoding and RFC 8288 `Link` checks, canonical proto3 JSON well-known-type validation for gRPC, version-aware SOAP 1.1/1.2 media-type and Fault-status checks, and GraphQL-over-HTTP media-type/status discipline. The full test inventory and the standard behind each check: [Generated assertions](docs/generated-assertions.md).
 
 ## Which action should I use?
 

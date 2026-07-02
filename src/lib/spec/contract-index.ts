@@ -78,6 +78,7 @@ export interface ContractOperation {
   parameterChecks?: ContractParameterCheck[];
   requestBody?: ContractRequestBodyRequirement;
   security?: ContractSecurityCheck[][];
+  pathMethods?: string[];
   warnings: string[];
 }
 
@@ -926,6 +927,7 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           parameterChecks,
           requestBody: collectRequestBody(root, operation, version, operationId, opWarnings),
           security: collectSecurityRuntimeChecks(root, operation),
+          pathMethods: Object.keys(pathItem).filter((key) => HTTP_METHODS.has(key)).map((key) => key.toUpperCase()),
           warnings: opWarnings
         });
       }

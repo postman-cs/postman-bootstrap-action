@@ -34,6 +34,13 @@ pm.test('Response is not a SOAP Fault', function () {
   }
 });
 
+pm.test('SOAP Fault and HTTP status are consistent', function () {
+  var faulted = matchTag("Fault").test(bodyText);
+  var code = pm.response.code;
+  if (faulted && code !== 500) pm.expect.fail("SOAP 1.1 Faults must ride HTTP 500 (WS-I Basic Profile R1126); got HTTP " + code);
+  if (!faulted && code === 500) pm.expect.fail("HTTP 500 from a SOAP endpoint must carry a SOAP Fault in the body");
+});
+
 pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {
   if (matchTag("Fault").test(bodyText)) return;
   pm.expect(bodyText, "expected SOAP response element <" + soap.expectedResponseElement + "> not found").to.match(new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?GetStockPriceResponse(?=[\\\\s/>])"));
@@ -69,6 +76,13 @@ pm.test('Response is not a SOAP Fault', function () {
     var detail = (bodyText.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:faultstring|Reason|Text)[^>]*>([\\s\\S]*?)<\\//) || [])[1] || "";
     pm.expect.fail("SOAP Fault returned for operation " + soap.name + (detail ? (": " + detail.trim()) : ""));
   }
+});
+
+pm.test('SOAP Fault and HTTP status are consistent', function () {
+  var faulted = matchTag("Fault").test(bodyText);
+  var code = pm.response.code;
+  if (faulted && code !== 500) pm.expect.fail("SOAP 1.1 Faults must ride HTTP 500 (WS-I Basic Profile R1126); got HTTP " + code);
+  if (!faulted && code === 500) pm.expect.fail("HTTP 500 from a SOAP endpoint must carry a SOAP Fault in the body");
 });
 
 pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {

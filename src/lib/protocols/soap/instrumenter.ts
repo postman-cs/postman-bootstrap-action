@@ -47,6 +47,12 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     ? elementPresenceRegex(operation.expectedResponseElement)
     : '';
   const mediaType = operation.soapVersion === '1.2' ? 'application/soap+xml' : 'text/xml';
+  // A Fault and the HTTP status must agree: SOAP 1.1 binds Faults to HTTP 500
+  // (WS-I Basic Profile R1126); SOAP 1.2 (Part 2, HTTP binding) maps env:Sender
+  // faults to 400 and all other faults to 500.
+  const faultStatusLine = operation.soapVersion === '1.2'
+    ? '  if (faulted && code !== 500 && code !== 400) pm.expect.fail("SOAP 1.2 Faults ride HTTP 500, or 400 for env:Sender faults (SOAP 1.2 Part 2 HTTP binding); got HTTP " + code);'
+    : '  if (faulted && code !== 500) pm.expect.fail("SOAP 1.1 Faults must ride HTTP 500 (WS-I Basic Profile R1126); got HTTP " + code);';
   const lines: string[] = [
     `var soap = JSON.parse(${JSON.stringify(JSON.stringify(meta))});`,
     'var bodyText = (pm.response.text && pm.response.text()) || "";',
@@ -78,6 +84,13 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     '    var detail = (bodyText.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:faultstring|Reason|Text)[^>]*>([\\s\\S]*?)<\\//) || [])[1] || "";',
     '    pm.expect.fail("SOAP Fault returned for operation " + soap.name + (detail ? (": " + detail.trim()) : ""));',
     '  }',
+    '});',
+    '',
+    "pm.test('SOAP Fault and HTTP status are consistent', function () {",
+    '  var faulted = matchTag("Fault").test(bodyText);',
+    '  var code = pm.response.code;',
+    faultStatusLine,
+    '  if (!faulted && code === 500) pm.expect.fail("HTTP 500 from a SOAP endpoint must carry a SOAP Fault in the body");',
     '});'
   ];
 

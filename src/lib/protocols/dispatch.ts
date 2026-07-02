@@ -104,12 +104,13 @@ export async function buildProtocolCollection(
         name: options.name ? `${options.name} Contract` : undefined
       });
       const { collection: instrumented, warnings } = instrumentMcpCollection(collection, index);
-      const operationCount = index.servers.length * (2 + index.tools.length);
+      const runtimeServerCount = index.servers.filter((server) => server.transport === 'sse' && !!server.url).length;
+      const operationCount = index.servers.length * (2 + index.tools.length) + runtimeServerCount * (8 + index.tools.length);
       return {
         type,
         collection: instrumented,
         format: 'v3-ec',
-        runnableInCi: false,
+        runnableInCi: runtimeServerCount > 0,
         warnings,
         operationCount
       };

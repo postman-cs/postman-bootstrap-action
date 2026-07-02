@@ -152,6 +152,26 @@ export const REFERRER_POLICY_VALUES: readonly string[] = [
 ];
 
 /**
+ * IANA "HTTP Content Coding Registry" snapshot, 2026-07. Values are matched
+ * case-insensitively by generated RFC 9110 Section 8.4 assertions.
+ */
+export const HTTP_CONTENT_CODINGS: readonly string[] = [
+  'aes128gcm',
+  'br',
+  'compress',
+  'dcb',
+  'dcz',
+  'deflate',
+  'exi',
+  'gzip',
+  'identity',
+  'pack200-gzip',
+  'x-compress',
+  'x-gzip',
+  'zstd'
+];
+
+/**
  * Fields that RFC 9110 Section 6.5.1 forbids in trailers: message framing,
  * routing, request modifiers (controls and conditionals), authentication,
  * response control data, and fields describing how to process the content.

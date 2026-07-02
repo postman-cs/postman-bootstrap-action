@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { localName, type SoapContractIndex, type SoapOperation, type SoapService, type SoapVersion } from './parser.js';
+import { defaultActionIri, localName, type SoapContractIndex, type SoapOperation, type SoapService, type SoapVersion } from './parser.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -37,6 +37,7 @@ const SOAP11_ENVELOPE_NS = 'http://schemas.xmlsoap.org/soap/envelope/';
 const SOAP12_ENVELOPE_NS = 'http://www.w3.org/2003/05/soap-envelope';
 const SOAP11_CONTENT_TYPE = 'text/xml; charset=UTF-8';
 const SOAP12_CONTENT_TYPE = 'application/soap+xml; charset=UTF-8';
+const WSA_NS = 'http://www.w3.org/2005/08/addressing';
 
 /** Stable hex id derived from the operation identity (deterministic builds). */
 function stableId(seed: string): string {
@@ -55,18 +56,39 @@ function contentType(version: SoapVersion): string {
  * Build a minimal, well-formed SOAP envelope for the operation request. The
  * request body wrapper is the input message's first element local name (or the
  * operation name) so the envelope is valid even before parameters are filled in.
+ * When the WSDL engages WS-Addressing the Header carries wsa:Action plus, for
+ * request-response operations, a wsa:MessageID ({{$guid}}, unique per send) and
+ * an anonymous wsa:ReplyTo, so a conformant server replies instead of faulting
+ * with MissingAddressInHeader (WS-Addressing 1.0 SOAP Binding section 6.4.2).
  */
-function buildEnvelope(operation: SoapOperation, targetNamespace: string): string {
+function buildEnvelope(operation: SoapOperation, targetNamespace: string, declaresAddressing: boolean): string {
   const version = operation.soapVersion;
   const envNs = envelopeNamespace(version);
   const part = operation.input?.parts[0];
   const wrapper = part?.element ? localName(part.element) : operation.name;
   const bodyNsAttr = targetNamespace ? ` xmlns:op="${targetNamespace}"` : '';
   const wrapperOpen = targetNamespace ? `op:${wrapper}` : wrapper;
+  const action = declaresAddressing ? requestActionIri(operation, targetNamespace) : '';
+  const wsaNsAttr = action ? ` xmlns:wsa="${WSA_NS}"` : '';
+  const headerLines = action
+    ? [
+        '  <soap:Header>',
+        `    <wsa:Action>${action}</wsa:Action>`,
+        ...(operation.output
+          ? [
+              '    <wsa:MessageID>urn:uuid:{{$guid}}</wsa:MessageID>',
+              '    <wsa:ReplyTo>',
+              `      <wsa:Address>${WSA_NS}/anonymous</wsa:Address>`,
+              '    </wsa:ReplyTo>'
+            ]
+          : []),
+        '  </soap:Header>'
+      ]
+    : ['  <soap:Header/>'];
   const lines = [
     '<?xml version="1.0" encoding="UTF-8"?>',
-    `<soap:Envelope xmlns:soap="${envNs}"${bodyNsAttr}>`,
-    '  <soap:Header/>',
+    `<soap:Envelope xmlns:soap="${envNs}"${wsaNsAttr}${bodyNsAttr}>`,
+    ...headerLines,
     '  <soap:Body>',
     `    <${wrapperOpen}>`,
     `      <!-- TODO: populate ${wrapper} parameters -->`,
@@ -75,6 +97,16 @@ function buildEnvelope(operation: SoapOperation, targetNamespace: string): strin
     '</soap:Envelope>'
   ];
   return lines.join('\n');
+}
+
+/**
+ * wsa:Action for the request message: an explicit wsaw:/wsam:Action wins, then
+ * a non-empty SOAPAction (the WS-A SOAP 1.1 binding default), then the WSDL
+ * default action pattern with the defaulted input name ([operation]Request,
+ * WSDL 1.1 section 2.4.5).
+ */
+function requestActionIri(operation: SoapOperation, targetNamespace: string): string {
+  return operation.inputAction || operation.soapAction || defaultActionIri(targetNamespace, operation.portTypeName, operation.inputName || `${operation.name}Request`);
 }
 
 function headersFor(operation: SoapOperation): Array<{ key: string; value: string }> {
@@ -115,7 +147,8 @@ function buildUrlDescriptor(raw: string): { raw: string; host?: string[]; path?:
 function buildItem(
   service: SoapService,
   operation: SoapOperation,
-  targetNamespace: string
+  targetNamespace: string,
+  declaresAddressing: boolean
 ): SoapHttpRequestItem {
   return {
     id: stableId(`${service.name}::${operation.name}`),
@@ -125,7 +158,38 @@ function buildItem(
       header: headersFor(operation),
       body: {
         mode: 'raw',
-        raw: buildEnvelope(operation, targetNamespace),
+        raw: buildEnvelope(operation, targetNamespace, declaresAddressing),
+        options: { raw: { language: 'xml' } }
+      },
+      url: buildUrlDescriptor(service.endpoint || '{{baseUrl}}'),
+      auth: { type: 'noauth' }
+    },
+    event: []
+  };
+}
+
+/**
+ * Negative-probe item name recognized by the instrumenter. SOAP 1.2 Part 2
+ * (section 7, HTTP binding) maps an unsupported request media type to HTTP
+ * 415, not a 500 or a silent 200: the probe sends a valid envelope mislabeled
+ * as text/plain and the instrumenter asserts the 415 classification.
+ */
+export const SOAP12_UNSUPPORTED_MEDIA_PROBE_NAME = 'Unsupported media type probe (SOAP 1.2)';
+
+function buildUnsupportedMediaProbeItem(
+  service: SoapService,
+  operation: SoapOperation,
+  targetNamespace: string
+): SoapHttpRequestItem {
+  return {
+    id: stableId(`${service.name}::${SOAP12_UNSUPPORTED_MEDIA_PROBE_NAME}`),
+    name: SOAP12_UNSUPPORTED_MEDIA_PROBE_NAME,
+    request: {
+      method: 'POST',
+      header: [{ key: 'Content-Type', value: 'text/plain; charset=UTF-8' }],
+      body: {
+        mode: 'raw',
+        raw: buildEnvelope(operation, targetNamespace, false),
         options: { raw: { language: 'xml' } }
       },
       url: buildUrlDescriptor(service.endpoint || '{{baseUrl}}'),
@@ -147,7 +211,11 @@ export function buildSoapCollection(index: SoapContractIndex, options: SoapBuild
   for (const service of index.services) {
     const items: SoapHttpRequestItem[] = [];
     for (const operation of service.operations) {
-      items.push(buildItem(service, operation, index.targetNamespace));
+      items.push(buildItem(service, operation, index.targetNamespace, index.declaresAddressing));
+    }
+    const probeOperation = service.operations.find((operation) => operation.soapVersion === '1.2');
+    if (probeOperation) {
+      items.push(buildUnsupportedMediaProbeItem(service, probeOperation, index.targetNamespace));
     }
     folders.push({
       id: stableId(`folder::${service.name}`),

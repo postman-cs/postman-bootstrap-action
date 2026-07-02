@@ -18,6 +18,17 @@
 // repeated builds and golden snapshots are stable.
 
 import type { McpContractIndex, McpServerDescriptor, McpToolDescriptor } from './mcp-parser.js';
+import {
+  badVersionScript,
+  initializeScript,
+  initializedNotificationScript,
+  invalidCursorScript,
+  oldSessionPingScript,
+  pingScript,
+  terminateScript,
+  toolsCallScript,
+  toolsListScript
+} from './mcp-runtime-scripts.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -53,6 +64,16 @@ function jsonRpc(id: number, method: string, params: JsonRecord): string {
   return JSON.stringify({ jsonrpc: '2.0', id, method, params }, null, 2);
 }
 
+function jsonRpcWithId(id: string | number, method: string, params?: JsonRecord): string {
+  const message: JsonRecord = { jsonrpc: '2.0', id, method };
+  if (params !== undefined) message.params = params;
+  return JSON.stringify(message, null, 2);
+}
+
+function jsonRpcNotification(method: string): string {
+  return JSON.stringify({ jsonrpc: '2.0', method }, null, 2);
+}
+
 function initializeMessage(options: McpCollectionOptions): string {
   return jsonRpc(1, 'initialize', {
     protocolVersion: options.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION,
@@ -65,11 +86,87 @@ function toolsListMessage(): string {
   return jsonRpc(2, 'tools/list', {});
 }
 
-function toolsCallMessage(tool: McpToolDescriptor): string {
-  return jsonRpc(3, 'tools/call', {
+function toolsCallMessage(tool: McpToolDescriptor, id = 3): string {
+  return jsonRpc(id, 'tools/call', {
     name: tool.name,
     arguments: (tool.sampleArguments as JsonRecord) ?? {}
   });
+}
+
+function baseHeaders(server: McpServerDescriptor): Array<{ key: string; value: string }> {
+  const headers = [
+    { key: 'Content-Type', value: 'application/json' },
+    { key: 'Accept', value: 'application/json, text/event-stream' },
+    { key: 'MCP-Protocol-Version', value: DEFAULT_MCP_PROTOCOL_VERSION },
+    ...server.headers.map((entry) => ({ key: entry.key, value: entry.value }))
+  ];
+  const seen = new Set<string>();
+  return headers.filter((entry) => {
+    const key = entry.key.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function withSession(headers: Array<{ key: string; value: string }>): Array<{ key: string; value: string }> {
+  return [...headers, { key: 'Mcp-Session-Id', value: '{{mcp_session_id}}' }];
+}
+
+function body(content: string): JsonRecord {
+  return { type: 'json', content };
+}
+
+function event(script: string): JsonRecord {
+  return {
+    listen: 'afterResponse',
+    script: { exec: script, type: 'text/javascript' }
+  };
+}
+
+function httpItem(idSeed: string, key: string, title: string, url: string, method: string, headers: Array<{ key: string; value: string }>, content: string | undefined, script: string): JsonRecord {
+  const payload: JsonRecord = {
+    url,
+    method,
+    headers
+  };
+  if (content !== undefined) payload.body = body(content);
+  return {
+    type: 'http-request',
+    id: stableId(idSeed, key),
+    title,
+    name: title,
+    createdAt: DEFAULT_CREATED_AT,
+    payload,
+    extensions: { events: [event(script)] }
+  };
+}
+
+function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, options: McpCollectionOptions): JsonRecord[] {
+  if (server.transport !== 'sse' || !server.url) return [];
+  const seed = options.idSeed ?? 'mcp';
+  const headers = baseHeaders(server);
+  const sessionHeaders = withSession(headers);
+  const items: JsonRecord[] = [
+    httpItem(seed, `srv:${server.id}:http:initialize`, `${server.id} · HTTP initialize`, server.url, 'POST', headers, initializeMessage(options), initializeScript()),
+    httpItem(seed, `srv:${server.id}:http:initialized`, `${server.id} · HTTP notifications/initialized`, server.url, 'POST', sessionHeaders, jsonRpcNotification('notifications/initialized'), initializedNotificationScript()),
+    httpItem(seed, `srv:${server.id}:http:ping`, `${server.id} · HTTP ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-ping', 'ping'), pingScript()),
+    httpItem(seed, `srv:${server.id}:http:tools/list`, `${server.id} · HTTP tools/list`, server.url, 'POST', sessionHeaders, toolsListMessage(), toolsListScript(index.tools.map((tool) => tool.name)))
+  ];
+  for (const [i, tool] of index.tools.entries()) {
+    const requestId = 10 + i;
+    const { script } = toolsCallScript(index, tool, requestId);
+    items.push(
+      httpItem(seed, `srv:${server.id}:http:tools/call:${tool.name}`, `${server.id} · HTTP tools/call ${tool.name}`, server.url, 'POST', sessionHeaders, toolsCallMessage(tool, requestId), script)
+    );
+  }
+  items.push(
+    httpItem(seed, `srv:${server.id}:http:bad-version`, `${server.id} · HTTP negative bad protocol version`, server.url, 'POST', sessionHeaders.map((entry) => entry.key === 'MCP-Protocol-Version' ? { ...entry, value: '1999-01-01' } : entry), jsonRpcWithId('pm-badver', 'ping'), badVersionScript()),
+    httpItem(seed, `srv:${server.id}:http:invalid-cursor`, `${server.id} · HTTP tools/list invalid cursor`, server.url, 'POST', sessionHeaders, jsonRpcWithId(4, 'tools/list', { cursor: 'pm-invalid-cursor-§' }), invalidCursorScript()),
+    httpItem(seed, `srv:${server.id}:http:terminate`, `${server.id} · HTTP session DELETE`, server.url, 'DELETE', sessionHeaders, undefined, terminateScript()),
+    httpItem(seed, `srv:${server.id}:http:old-session-ping`, `${server.id} · HTTP old session ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-old-session-ping', 'ping'), oldSessionPingScript())
+  );
+  return items;
 }
 
 function serverPayload(server: McpServerDescriptor, message: string): JsonRecord {
@@ -115,6 +212,7 @@ export function buildMcpCollection(index: McpContractIndex, options: McpCollecti
         buildItem(server, `srv:${server.id}:tools/call:${tool.name}`, `${server.id} · tools/call ${tool.name}`, toolsCallMessage(tool), options)
       );
     }
+    item.push(...runtimeItems(index, server, options));
   }
   return {
     $schema: 'https://schema.postman.com/json/draft-2020-12/collection/v3.0.0/',

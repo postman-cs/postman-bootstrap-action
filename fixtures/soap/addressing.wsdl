@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:wsaw="http://www.w3.org/2006/05/addressing/wsdl"
+             xmlns:tns="http://example.com/quote"
+             targetNamespace="http://example.com/quote" name="Quote">
+  <message name="GetQuoteIn"><part name="body" element="tns:GetQuote"/></message>
+  <message name="GetQuoteOut"><part name="body" element="tns:GetQuoteResponse"/></message>
+  <message name="ListQuotesIn"><part name="body" element="tns:ListQuotes"/></message>
+  <message name="ListQuotesOut"><part name="body" element="tns:ListQuotesResponse"/></message>
+  <portType name="QuotePort">
+    <operation name="GetQuote">
+      <input message="tns:GetQuoteIn" wsaw:Action="http://example.com/quote/GetQuote"/>
+      <output message="tns:GetQuoteOut" wsaw:Action="http://example.com/quote/GetQuoteReply"/>
+    </operation>
+    <operation name="ListQuotes">
+      <input message="tns:ListQuotesIn"/>
+      <output message="tns:ListQuotesOut"/>
+    </operation>
+  </portType>
+  <binding name="QuoteBinding" type="tns:QuotePort">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsaw:UsingAddressing/>
+    <operation name="GetQuote">
+      <soap:operation soapAction="http://example.com/quote/GetQuote"/>
+      <input><soap:body use="literal"/></input>
+      <output><soap:body use="literal"/></output>
+    </operation>
+    <operation name="ListQuotes">
+      <soap:operation soapAction=""/>
+      <input><soap:body use="literal"/></input>
+      <output><soap:body use="literal"/></output>
+    </operation>
+  </binding>
+  <service name="QuoteService">
+    <port name="QuotePortEndpoint" binding="tns:QuoteBinding">
+      <soap:address location="https://example.com/soap/quote"/>
+    </port>
+  </service>
+</definitions>

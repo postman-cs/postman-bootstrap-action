@@ -10,15 +10,17 @@ pm.test("[query lineByMsisdn] HTTP transport is ok", function () {
 pm.test("[query lineByMsisdn] GraphQL-over-HTTP media type and status are consistent", function () {
     var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
     var mediaType = contentType.split(";")[0].trim();
-    if (!mediaType) return;
+    if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[query lineByMsisdn] GraphQL response map follows the spec response format", function () {
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
+    if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
     if (Object.prototype.hasOwnProperty.call(gqlBody, "extensions") && (typeof gqlBody.extensions !== "object" || gqlBody.extensions === null || Array.isArray(gqlBody.extensions))) pm.expect.fail("the GraphQL extensions entry must be a map (GraphQL spec 7.1)");
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
@@ -26,6 +28,8 @@ pm.test("[query lineByMsisdn] GraphQL errors are well-formed and not a total fai
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    if (errors.length === 0) pm.expect.fail("the GraphQL errors entry must not be an empty list when present (GraphQL spec 7.1)");
+    var seenErrorPaths = {};
     errors.forEach(function (err, errIndex) {
       pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message");
       if (typeof err.message !== "string") pm.expect.fail("errors[" + errIndex + "].message must be a string (GraphQL spec 7.1.2)");
@@ -40,6 +44,12 @@ pm.test("[query lineByMsisdn] GraphQL errors are well-formed and not a total fai
       if (err.path !== undefined && err.path !== null) {
         if (!Array.isArray(err.path)) { pm.expect.fail("errors[" + errIndex + "].path must be a list of path segments (GraphQL spec 7.1.2)"); return; }
         err.path.forEach(function (segment, segIndex) { if (typeof segment !== "string" && !Number.isInteger(segment)) pm.expect.fail("errors[" + errIndex + "].path[" + segIndex + "] must be a string field name or an integer list index (GraphQL spec 7.1.2)"); });
+        if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) pm.expect.fail("errors[" + errIndex + "] carries a path (a field error), so the response must contain a data entry (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] !== "string") pm.expect.fail("errors[" + errIndex + "].path must begin with a response field name, not a list index (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] === "string" && err.path[0] !== "lineByMsisdn") pm.expect.fail("errors[" + errIndex + "].path names root response key " + JSON.stringify(err.path[0]) + " but the request selected only lineByMsisdn (GraphQL spec 7.1.2)");
+        var seenErrorPathKey = JSON.stringify(err.path);
+        if (seenErrorPaths[seenErrorPathKey]) pm.expect.fail("errors must contain at most one entry per unique response path (GraphQL spec 7.1.2); duplicate path: " + seenErrorPathKey);
+        seenErrorPaths[seenErrorPathKey] = true;
       }
       if (err.extensions !== undefined && err.extensions !== null && (typeof err.extensions !== "object" || Array.isArray(err.extensions))) pm.expect.fail("errors[" + errIndex + "].extensions must be a map (GraphQL spec 7.1.2)");
     });
@@ -94,15 +104,17 @@ pm.test("[query plans] HTTP transport is ok", function () {
 pm.test("[query plans] GraphQL-over-HTTP media type and status are consistent", function () {
     var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
     var mediaType = contentType.split(";")[0].trim();
-    if (!mediaType) return;
+    if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[query plans] GraphQL response map follows the spec response format", function () {
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
+    if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
     if (Object.prototype.hasOwnProperty.call(gqlBody, "extensions") && (typeof gqlBody.extensions !== "object" || gqlBody.extensions === null || Array.isArray(gqlBody.extensions))) pm.expect.fail("the GraphQL extensions entry must be a map (GraphQL spec 7.1)");
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
@@ -110,6 +122,8 @@ pm.test("[query plans] GraphQL errors are well-formed and not a total failure", 
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    if (errors.length === 0) pm.expect.fail("the GraphQL errors entry must not be an empty list when present (GraphQL spec 7.1)");
+    var seenErrorPaths = {};
     errors.forEach(function (err, errIndex) {
       pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message");
       if (typeof err.message !== "string") pm.expect.fail("errors[" + errIndex + "].message must be a string (GraphQL spec 7.1.2)");
@@ -124,6 +138,12 @@ pm.test("[query plans] GraphQL errors are well-formed and not a total failure", 
       if (err.path !== undefined && err.path !== null) {
         if (!Array.isArray(err.path)) { pm.expect.fail("errors[" + errIndex + "].path must be a list of path segments (GraphQL spec 7.1.2)"); return; }
         err.path.forEach(function (segment, segIndex) { if (typeof segment !== "string" && !Number.isInteger(segment)) pm.expect.fail("errors[" + errIndex + "].path[" + segIndex + "] must be a string field name or an integer list index (GraphQL spec 7.1.2)"); });
+        if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) pm.expect.fail("errors[" + errIndex + "] carries a path (a field error), so the response must contain a data entry (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] !== "string") pm.expect.fail("errors[" + errIndex + "].path must begin with a response field name, not a list index (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] === "string" && err.path[0] !== "plans") pm.expect.fail("errors[" + errIndex + "].path names root response key " + JSON.stringify(err.path[0]) + " but the request selected only plans (GraphQL spec 7.1.2)");
+        var seenErrorPathKey = JSON.stringify(err.path);
+        if (seenErrorPaths[seenErrorPathKey]) pm.expect.fail("errors must contain at most one entry per unique response path (GraphQL spec 7.1.2); duplicate path: " + seenErrorPathKey);
+        seenErrorPaths[seenErrorPathKey] = true;
       }
       if (err.extensions !== undefined && err.extensions !== null && (typeof err.extensions !== "object" || Array.isArray(err.extensions))) pm.expect.fail("errors[" + errIndex + "].extensions must be a map (GraphQL spec 7.1.2)");
     });
@@ -174,15 +194,17 @@ pm.test("[query subscriber] HTTP transport is ok", function () {
 pm.test("[query subscriber] GraphQL-over-HTTP media type and status are consistent", function () {
     var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
     var mediaType = contentType.split(";")[0].trim();
-    if (!mediaType) return;
+    if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[query subscriber] GraphQL response map follows the spec response format", function () {
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
+    if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
     if (Object.prototype.hasOwnProperty.call(gqlBody, "extensions") && (typeof gqlBody.extensions !== "object" || gqlBody.extensions === null || Array.isArray(gqlBody.extensions))) pm.expect.fail("the GraphQL extensions entry must be a map (GraphQL spec 7.1)");
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
@@ -190,6 +212,8 @@ pm.test("[query subscriber] GraphQL errors are well-formed and not a total failu
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    if (errors.length === 0) pm.expect.fail("the GraphQL errors entry must not be an empty list when present (GraphQL spec 7.1)");
+    var seenErrorPaths = {};
     errors.forEach(function (err, errIndex) {
       pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message");
       if (typeof err.message !== "string") pm.expect.fail("errors[" + errIndex + "].message must be a string (GraphQL spec 7.1.2)");
@@ -204,6 +228,12 @@ pm.test("[query subscriber] GraphQL errors are well-formed and not a total failu
       if (err.path !== undefined && err.path !== null) {
         if (!Array.isArray(err.path)) { pm.expect.fail("errors[" + errIndex + "].path must be a list of path segments (GraphQL spec 7.1.2)"); return; }
         err.path.forEach(function (segment, segIndex) { if (typeof segment !== "string" && !Number.isInteger(segment)) pm.expect.fail("errors[" + errIndex + "].path[" + segIndex + "] must be a string field name or an integer list index (GraphQL spec 7.1.2)"); });
+        if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) pm.expect.fail("errors[" + errIndex + "] carries a path (a field error), so the response must contain a data entry (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] !== "string") pm.expect.fail("errors[" + errIndex + "].path must begin with a response field name, not a list index (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] === "string" && err.path[0] !== "subscriber") pm.expect.fail("errors[" + errIndex + "].path names root response key " + JSON.stringify(err.path[0]) + " but the request selected only subscriber (GraphQL spec 7.1.2)");
+        var seenErrorPathKey = JSON.stringify(err.path);
+        if (seenErrorPaths[seenErrorPathKey]) pm.expect.fail("errors must contain at most one entry per unique response path (GraphQL spec 7.1.2); duplicate path: " + seenErrorPathKey);
+        seenErrorPaths[seenErrorPathKey] = true;
       }
       if (err.extensions !== undefined && err.extensions !== null && (typeof err.extensions !== "object" || Array.isArray(err.extensions))) pm.expect.fail("errors[" + errIndex + "].extensions must be a map (GraphQL spec 7.1.2)");
     });
@@ -255,15 +285,17 @@ pm.test("[query subscribers] HTTP transport is ok", function () {
 pm.test("[query subscribers] GraphQL-over-HTTP media type and status are consistent", function () {
     var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
     var mediaType = contentType.split(";")[0].trim();
-    if (!mediaType) return;
+    if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[query subscribers] GraphQL response map follows the spec response format", function () {
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
+    if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
     if (Object.prototype.hasOwnProperty.call(gqlBody, "extensions") && (typeof gqlBody.extensions !== "object" || gqlBody.extensions === null || Array.isArray(gqlBody.extensions))) pm.expect.fail("the GraphQL extensions entry must be a map (GraphQL spec 7.1)");
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
@@ -271,6 +303,8 @@ pm.test("[query subscribers] GraphQL errors are well-formed and not a total fail
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    if (errors.length === 0) pm.expect.fail("the GraphQL errors entry must not be an empty list when present (GraphQL spec 7.1)");
+    var seenErrorPaths = {};
     errors.forEach(function (err, errIndex) {
       pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message");
       if (typeof err.message !== "string") pm.expect.fail("errors[" + errIndex + "].message must be a string (GraphQL spec 7.1.2)");
@@ -285,6 +319,12 @@ pm.test("[query subscribers] GraphQL errors are well-formed and not a total fail
       if (err.path !== undefined && err.path !== null) {
         if (!Array.isArray(err.path)) { pm.expect.fail("errors[" + errIndex + "].path must be a list of path segments (GraphQL spec 7.1.2)"); return; }
         err.path.forEach(function (segment, segIndex) { if (typeof segment !== "string" && !Number.isInteger(segment)) pm.expect.fail("errors[" + errIndex + "].path[" + segIndex + "] must be a string field name or an integer list index (GraphQL spec 7.1.2)"); });
+        if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) pm.expect.fail("errors[" + errIndex + "] carries a path (a field error), so the response must contain a data entry (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] !== "string") pm.expect.fail("errors[" + errIndex + "].path must begin with a response field name, not a list index (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] === "string" && err.path[0] !== "subscribers") pm.expect.fail("errors[" + errIndex + "].path names root response key " + JSON.stringify(err.path[0]) + " but the request selected only subscribers (GraphQL spec 7.1.2)");
+        var seenErrorPathKey = JSON.stringify(err.path);
+        if (seenErrorPaths[seenErrorPathKey]) pm.expect.fail("errors must contain at most one entry per unique response path (GraphQL spec 7.1.2); duplicate path: " + seenErrorPathKey);
+        seenErrorPaths[seenErrorPathKey] = true;
       }
       if (err.extensions !== undefined && err.extensions !== null && (typeof err.extensions !== "object" || Array.isArray(err.extensions))) pm.expect.fail("errors[" + errIndex + "].extensions must be a map (GraphQL spec 7.1.2)");
     });
@@ -328,15 +368,17 @@ pm.test("[mutation provisionLine] HTTP transport is ok", function () {
 pm.test("[mutation provisionLine] GraphQL-over-HTTP media type and status are consistent", function () {
     var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
     var mediaType = contentType.split(";")[0].trim();
-    if (!mediaType) return;
+    if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[mutation provisionLine] GraphQL response map follows the spec response format", function () {
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
+    if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
     if (Object.prototype.hasOwnProperty.call(gqlBody, "extensions") && (typeof gqlBody.extensions !== "object" || gqlBody.extensions === null || Array.isArray(gqlBody.extensions))) pm.expect.fail("the GraphQL extensions entry must be a map (GraphQL spec 7.1)");
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
@@ -344,6 +386,8 @@ pm.test("[mutation provisionLine] GraphQL errors are well-formed and not a total
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    if (errors.length === 0) pm.expect.fail("the GraphQL errors entry must not be an empty list when present (GraphQL spec 7.1)");
+    var seenErrorPaths = {};
     errors.forEach(function (err, errIndex) {
       pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message");
       if (typeof err.message !== "string") pm.expect.fail("errors[" + errIndex + "].message must be a string (GraphQL spec 7.1.2)");
@@ -358,6 +402,12 @@ pm.test("[mutation provisionLine] GraphQL errors are well-formed and not a total
       if (err.path !== undefined && err.path !== null) {
         if (!Array.isArray(err.path)) { pm.expect.fail("errors[" + errIndex + "].path must be a list of path segments (GraphQL spec 7.1.2)"); return; }
         err.path.forEach(function (segment, segIndex) { if (typeof segment !== "string" && !Number.isInteger(segment)) pm.expect.fail("errors[" + errIndex + "].path[" + segIndex + "] must be a string field name or an integer list index (GraphQL spec 7.1.2)"); });
+        if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) pm.expect.fail("errors[" + errIndex + "] carries a path (a field error), so the response must contain a data entry (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] !== "string") pm.expect.fail("errors[" + errIndex + "].path must begin with a response field name, not a list index (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] === "string" && err.path[0] !== "provisionLine") pm.expect.fail("errors[" + errIndex + "].path names root response key " + JSON.stringify(err.path[0]) + " but the request selected only provisionLine (GraphQL spec 7.1.2)");
+        var seenErrorPathKey = JSON.stringify(err.path);
+        if (seenErrorPaths[seenErrorPathKey]) pm.expect.fail("errors must contain at most one entry per unique response path (GraphQL spec 7.1.2); duplicate path: " + seenErrorPathKey);
+        seenErrorPaths[seenErrorPathKey] = true;
       }
       if (err.extensions !== undefined && err.extensions !== null && (typeof err.extensions !== "object" || Array.isArray(err.extensions))) pm.expect.fail("errors[" + errIndex + "].extensions must be a map (GraphQL spec 7.1.2)");
     });
@@ -413,15 +463,17 @@ pm.test("[mutation suspendLine] HTTP transport is ok", function () {
 pm.test("[mutation suspendLine] GraphQL-over-HTTP media type and status are consistent", function () {
     var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
     var mediaType = contentType.split(";")[0].trim();
-    if (!mediaType) return;
+    if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[mutation suspendLine] GraphQL response map follows the spec response format", function () {
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
+    if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
     if (Object.prototype.hasOwnProperty.call(gqlBody, "extensions") && (typeof gqlBody.extensions !== "object" || gqlBody.extensions === null || Array.isArray(gqlBody.extensions))) pm.expect.fail("the GraphQL extensions entry must be a map (GraphQL spec 7.1)");
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
@@ -429,6 +481,8 @@ pm.test("[mutation suspendLine] GraphQL errors are well-formed and not a total f
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    if (errors.length === 0) pm.expect.fail("the GraphQL errors entry must not be an empty list when present (GraphQL spec 7.1)");
+    var seenErrorPaths = {};
     errors.forEach(function (err, errIndex) {
       pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message");
       if (typeof err.message !== "string") pm.expect.fail("errors[" + errIndex + "].message must be a string (GraphQL spec 7.1.2)");
@@ -443,6 +497,12 @@ pm.test("[mutation suspendLine] GraphQL errors are well-formed and not a total f
       if (err.path !== undefined && err.path !== null) {
         if (!Array.isArray(err.path)) { pm.expect.fail("errors[" + errIndex + "].path must be a list of path segments (GraphQL spec 7.1.2)"); return; }
         err.path.forEach(function (segment, segIndex) { if (typeof segment !== "string" && !Number.isInteger(segment)) pm.expect.fail("errors[" + errIndex + "].path[" + segIndex + "] must be a string field name or an integer list index (GraphQL spec 7.1.2)"); });
+        if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) pm.expect.fail("errors[" + errIndex + "] carries a path (a field error), so the response must contain a data entry (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] !== "string") pm.expect.fail("errors[" + errIndex + "].path must begin with a response field name, not a list index (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] === "string" && err.path[0] !== "suspendLine") pm.expect.fail("errors[" + errIndex + "].path names root response key " + JSON.stringify(err.path[0]) + " but the request selected only suspendLine (GraphQL spec 7.1.2)");
+        var seenErrorPathKey = JSON.stringify(err.path);
+        if (seenErrorPaths[seenErrorPathKey]) pm.expect.fail("errors must contain at most one entry per unique response path (GraphQL spec 7.1.2); duplicate path: " + seenErrorPathKey);
+        seenErrorPaths[seenErrorPathKey] = true;
       }
       if (err.extensions !== undefined && err.extensions !== null && (typeof err.extensions !== "object" || Array.isArray(err.extensions))) pm.expect.fail("errors[" + errIndex + "].extensions must be a map (GraphQL spec 7.1.2)");
     });
@@ -498,15 +558,17 @@ pm.test("[subscription lineStatusChanged] HTTP transport is ok", function () {
 pm.test("[subscription lineStatusChanged] GraphQL-over-HTTP media type and status are consistent", function () {
     var contentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
     var mediaType = contentType.split(";")[0].trim();
-    if (!mediaType) return;
+    if (!mediaType) { pm.expect.fail("GraphQL-over-HTTP responses must declare their media type in a Content-Type header (GraphQL-over-HTTP 6.4)"); }
     if (mediaType !== "application/graphql-response+json" && mediaType !== "application/json") { pm.expect.fail("GraphQL-over-HTTP responses use application/graphql-response+json or application/json; got: " + (mediaType || "<missing>")); }
     var wellFormed = gqlBody.data !== undefined || Array.isArray(gqlBody.errors);
     if (mediaType === "application/graphql-response+json" && pm.response.code >= 200 && pm.response.code < 300 && !wellFormed) { pm.expect.fail("application/graphql-response+json forbids a 2xx status when the body is not a well-formed GraphQL response"); }
+    if (mediaType === "application/graphql-response+json" && !Object.prototype.hasOwnProperty.call(gqlBody, "data") && pm.response.code >= 200 && pm.response.code < 300) { pm.expect.fail("application/graphql-response+json request-error results (no data entry) must use a non-2xx status (GraphQL-over-HTTP 6.4.2)"); }
     if (mediaType === "application/json" && gqlBody.data !== undefined && gqlBody.data !== null && pm.response.code !== 200) { pm.expect.fail("a GraphQL response carrying data over application/json must be HTTP 200; got " + pm.response.code); }
 });
 pm.test("[subscription lineStatusChanged] GraphQL response map follows the spec response format", function () {
     var extraKeys = Object.keys(gqlBody).filter(function (key) { return key !== "data" && key !== "errors" && key !== "extensions"; });
     if (extraKeys.length > 0) pm.expect.fail("the GraphQL response map must not contain entries other than data, errors, and extensions (GraphQL spec 7.1): " + extraKeys.join(", "));
+    if (Object.prototype.hasOwnProperty.call(gqlBody, "data") && gqlBody.data !== null && (typeof gqlBody.data !== "object" || Array.isArray(gqlBody.data))) pm.expect.fail("the GraphQL data entry must be null or a map of root fields (GraphQL spec 7.1)");
     if (Object.prototype.hasOwnProperty.call(gqlBody, "extensions") && (typeof gqlBody.extensions !== "object" || gqlBody.extensions === null || Array.isArray(gqlBody.extensions))) pm.expect.fail("the GraphQL extensions entry must be a map (GraphQL spec 7.1)");
     if (!Object.prototype.hasOwnProperty.call(gqlBody, "data") && (!Array.isArray(gqlBody.errors) || gqlBody.errors.length === 0)) pm.expect.fail("a GraphQL request-error result (no data entry) must carry a non-empty errors list (GraphQL spec 7.1)");
 });
@@ -514,6 +576,8 @@ pm.test("[subscription lineStatusChanged] GraphQL errors are well-formed and not
     var errors = gqlBody.errors;
     if (errors === undefined || errors === null) return;
     pm.expect(errors, "GraphQL 'errors' must be an array when present").to.be.an("array");
+    if (errors.length === 0) pm.expect.fail("the GraphQL errors entry must not be an empty list when present (GraphQL spec 7.1)");
+    var seenErrorPaths = {};
     errors.forEach(function (err, errIndex) {
       pm.expect(err, "each GraphQL error must carry a message").to.be.an("object").that.has.property("message");
       if (typeof err.message !== "string") pm.expect.fail("errors[" + errIndex + "].message must be a string (GraphQL spec 7.1.2)");
@@ -528,6 +592,12 @@ pm.test("[subscription lineStatusChanged] GraphQL errors are well-formed and not
       if (err.path !== undefined && err.path !== null) {
         if (!Array.isArray(err.path)) { pm.expect.fail("errors[" + errIndex + "].path must be a list of path segments (GraphQL spec 7.1.2)"); return; }
         err.path.forEach(function (segment, segIndex) { if (typeof segment !== "string" && !Number.isInteger(segment)) pm.expect.fail("errors[" + errIndex + "].path[" + segIndex + "] must be a string field name or an integer list index (GraphQL spec 7.1.2)"); });
+        if (!Object.prototype.hasOwnProperty.call(gqlBody, "data")) pm.expect.fail("errors[" + errIndex + "] carries a path (a field error), so the response must contain a data entry (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] !== "string") pm.expect.fail("errors[" + errIndex + "].path must begin with a response field name, not a list index (GraphQL spec 7.1.2)");
+        if (err.path.length > 0 && typeof err.path[0] === "string" && err.path[0] !== "lineStatusChanged") pm.expect.fail("errors[" + errIndex + "].path names root response key " + JSON.stringify(err.path[0]) + " but the request selected only lineStatusChanged (GraphQL spec 7.1.2)");
+        var seenErrorPathKey = JSON.stringify(err.path);
+        if (seenErrorPaths[seenErrorPathKey]) pm.expect.fail("errors must contain at most one entry per unique response path (GraphQL spec 7.1.2); duplicate path: " + seenErrorPathKey);
+        seenErrorPaths[seenErrorPathKey] = true;
       }
       if (err.extensions !== undefined && err.extensions !== null && (typeof err.extensions !== "object" || Array.isArray(err.extensions))) pm.expect.fail("errors[" + errIndex + "].extensions must be a map (GraphQL spec 7.1.2)");
     });

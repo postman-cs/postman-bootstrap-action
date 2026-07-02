@@ -248,7 +248,7 @@ function securityCheckFor(schemeName: string, scheme: JsonRecord | null): Contra
     return { scheme: schemeName, kind, checkable: true, in: 'header', name: 'Authorization' };
   }
   if (scheme?.type === 'oauth2' || scheme?.type === 'openIdConnect') {
-    return { scheme: schemeName, kind, checkable: true, in: 'header', name: 'Authorization' };
+    return { scheme: schemeName, kind, checkable: true, prefix: 'Bearer ' };
   }
   return { scheme: schemeName, kind, checkable: false };
 }
@@ -907,7 +907,10 @@ function collectSecurityStaticLints(root: JsonRecord, operation: JsonRecord): st
     for (const [schemeName, requiredScopes] of Object.entries(requirement)) {
       let scheme: JsonRecord | null;
       try { scheme = resolveInternalRef<JsonRecord>(root, securitySchemes?.[schemeName]); } catch { scheme = null; }
-      if (!scheme) continue;
+      if (!scheme) {
+        warnings.add(`CONTRACT_SECURITY_SCHEME_UNDECLARED: security requirement references undeclared scheme ${schemeName}`);
+        continue;
+      }
       if (scheme.type === 'http') {
         const httpScheme = String(scheme.scheme || '').toLowerCase();
         if (httpScheme && !IANA_HTTP_AUTH_SCHEMES.has(httpScheme)) {
@@ -934,6 +937,8 @@ function collectSecurityStaticLints(root: JsonRecord, operation: JsonRecord): st
           const urlFields: Array<[string, unknown]> = [['refreshUrl', flow.refreshUrl]];
           if (flowName === 'implicit' || flowName === 'authorizationCode') urlFields.push(['authorizationUrl', flow.authorizationUrl]);
           if (flowName === 'password' || flowName === 'clientCredentials' || flowName === 'authorizationCode') urlFields.push(['tokenUrl', flow.tokenUrl]);
+          if ((flowName === 'implicit' || flowName === 'authorizationCode') && typeof flow.authorizationUrl !== 'string') warnings.add(`CONTRACT_SECURITY_SCHEME_URL: security scheme ${schemeName} ${flowName} authorizationUrl is required`);
+          if ((flowName === 'password' || flowName === 'clientCredentials' || flowName === 'authorizationCode') && typeof flow.tokenUrl !== 'string') warnings.add(`CONTRACT_SECURITY_SCHEME_URL: security scheme ${schemeName} ${flowName} tokenUrl is required`);
           for (const [label, value] of urlFields) {
             const urlWarning = httpsUrlLint(value, `${flowName} ${label}`, schemeName);
             if (urlWarning) warnings.add(urlWarning);
@@ -1049,13 +1054,270 @@ function validateParameterExamples(root: JsonRecord, param: JsonRecord, packed: 
   }
 }
 
+function isAbsoluteUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || !value) return false;
+  try { return Boolean(new URL(value).protocol); } catch { return false; }
+}
+
+function schemaTypeNames(schema: JsonRecord): string[] {
+  return Array.isArray(schema.type) ? schema.type.map(String) : typeof schema.type === 'string' ? [schema.type] : [];
+}
+
+function collectSchemaStaticLints(root: JsonRecord, schema: unknown, version: OpenApiVersion, context: string, warnings: Set<string>, seen = new Set<unknown>()): void {
+  const rawRecord = asRecord(schema);
+  if (typeof rawRecord?.$ref === 'string' && version === '3.0' && Object.keys(rawRecord).some((key) => key !== '$ref' && key !== 'description' && key !== 'summary')) {
+    warnings.add(`CONTRACT_REF_SIBLING_INVALID: ${context} has sibling keywords beside $ref that OpenAPI 3.0 ignores`);
+  }
+  let record: JsonRecord | null;
+  try { record = resolveInternalRef<JsonRecord>(root, schema); } catch { record = asRecord(schema); }
+  if (!record || seen.has(record)) return;
+  seen.add(record);
+  const types = schemaTypeNames(record);
+  if (version === '3.0' && Array.isArray(record.type)) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses JSON Schema type arrays; OpenAPI 3.0 uses nullable instead`);
+  if (version === '3.1' && record.nullable !== undefined) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses nullable, which is not an OpenAPI 3.1 Schema keyword`);
+  if (version === '3.0') {
+    for (const key of ['$schema', '$id', 'prefixItems', 'unevaluatedProperties', 'unevaluatedItems', 'dependentSchemas', 'dependentRequired', 'if', 'then', 'else']) {
+      // OAS 3.0.3 Schema Object is an adjusted Draft Wright-00 subset; these
+      // draft-2019-09/2020-12 and conditional keywords are not listed there.
+      if (record[key] !== undefined) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses ${key}, which OpenAPI 3.0.3 schemas do not support`);
+    }
+  }
+  if (version === '3.0') {
+    if (typeof record.exclusiveMinimum === 'number' || typeof record.exclusiveMaximum === 'number') warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses numeric exclusiveMinimum/exclusiveMaximum, but OpenAPI 3.0 requires booleans`);
+  } else if (typeof record.exclusiveMinimum === 'boolean' || typeof record.exclusiveMaximum === 'boolean') {
+    warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses boolean exclusiveMinimum/exclusiveMaximum, but OpenAPI 3.1 requires numeric values`);
+  }
+  if (typeof record.$schema === 'string' && (!isAbsoluteUrl(record.$schema) || !/(2020-12|draft-07|json-schema.org)/i.test(record.$schema))) {
+    warnings.add(`CONTRACT_JSON_SCHEMA_DIALECT_UNSUPPORTED: ${context} declares unsupported or non-absolute $schema ${record.$schema}`);
+  }
+  if (typeof record.format === 'string' && !['date-time', 'date', 'time', 'duration', 'email', 'idn-email', 'hostname', 'idn-hostname', 'ipv4', 'ipv6', 'uri', 'uri-reference', 'iri', 'iri-reference', 'uuid', 'regex', 'binary', 'byte', 'password', 'int32', 'int64', 'float', 'double'].includes(record.format)) {
+    warnings.add(`CONTRACT_FORMAT_UNKNOWN: ${context} uses unknown format "${record.format}" as an annotation-only value`);
+  }
+  const enumValues = asArray(record.enum).map((entry) => JSON.stringify(entry));
+  for (const [label, value] of [['default', record.default], ['const', record.const]] as const) {
+    if (label === 'default' && value === undefined) continue;
+    if (enumValues.length > 0 && !enumValues.includes(JSON.stringify(value))) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} ${label} is not a member of enum`);
+    if (record.const !== undefined && label === 'default' && JSON.stringify(record.const) !== JSON.stringify(value)) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} default does not match const`);
+  }
+  if (record.discriminator !== undefined) {
+    const discriminator = asRecord(record.discriminator);
+    const propertyName = typeof discriminator?.propertyName === 'string' ? discriminator.propertyName : '';
+    const declaresDiscriminator = (value: unknown): boolean => {
+      const schema = asRecord(resolveInternalRef<JsonRecord>(root, value));
+      if (!schema) return false;
+      return asRecord(schema.properties)?.[propertyName] !== undefined || asArray(schema.required).map(String).includes(propertyName);
+    };
+    if (!propertyName) {
+      warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator must declare propertyName`);
+    } else if (record.oneOf !== undefined || record.anyOf !== undefined) {
+      const members = [...asArray(record.oneOf), ...asArray(record.anyOf)];
+      if (!members.every(declaresDiscriminator)) warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator propertyName must be listed by every oneOf/anyOf member schema`);
+    } else if (!(declaresDiscriminator(record) || asArray(record.allOf).some(declaresDiscriminator))) {
+      warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator propertyName must be declared in the base schema`);
+    }
+    if (record.oneOf === undefined && record.anyOf === undefined && record.allOf === undefined) warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator must appear beside oneOf, anyOf, or allOf`);
+    for (const value of Object.values(asRecord(discriminator?.mapping) ?? {})) {
+      if (typeof value === 'string' && value.startsWith('#/') && resolvePointer(root, value) === undefined) warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator mapping ${value} does not resolve`);
+    }
+  }
+  const variants = [...asArray(record.oneOf), ...asArray(record.anyOf)];
+  for (let i = 0; i < variants.length; i += 1) {
+    const left = asRecord(variants[i]);
+    const leftValues = new Set(asArray(left?.enum).concat(left?.const !== undefined ? [left.const] : []).map((entry) => JSON.stringify(entry)));
+    for (let j = i + 1; j < variants.length; j += 1) {
+      const right = asRecord(variants[j]);
+      const rightValues = new Set(asArray(right?.enum).concat(right?.const !== undefined ? [right.const] : []).map((entry) => JSON.stringify(entry)));
+      if (leftValues.size > 0 && [...leftValues].some((entry) => rightValues.has(entry))) warnings.add(`CONTRACT_ONEOF_OVERLAP: ${context} has finite oneOf/anyOf branches with overlapping const/enum values`);
+    }
+  }
+  for (const [key, value] of Object.entries(record)) {
+    if (key === '$ref') continue;
+    if (key === 'properties' && asRecord(value)) {
+      for (const [propName, propSchema] of Object.entries(asRecord(value)!)) collectSchemaStaticLints(root, propSchema, version, `${context}.properties.${propName}`, warnings, seen);
+    } else if (['items', 'additionalProperties', 'not'].includes(key) || key.endsWith('Schema')) {
+      collectSchemaStaticLints(root, value, version, `${context}.${key}`, warnings, seen);
+    } else if (['allOf', 'oneOf', 'anyOf', 'prefixItems'].includes(key)) {
+      asArray(value).forEach((entry, index) => collectSchemaStaticLints(root, entry, version, `${context}.${key}[${index}]`, warnings, seen));
+    }
+  }
+  void types;
+}
+
+function collectDocumentStaticLints(root: JsonRecord, version: OpenApiVersion): string[] {
+  const warnings = new Set<string>();
+  if (version === '3.0' && asRecord(root.webhooks)) warnings.add('CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD: OpenAPI 3.0 documents cannot use top-level webhooks');
+  if (version === '3.0' && asRecord(asRecord(root.components)?.pathItems)) warnings.add('CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD: OpenAPI 3.0 documents cannot use components.pathItems');
+  const dialect = root.jsonSchemaDialect;
+  if (dialect !== undefined && (!isAbsoluteUrl(dialect) || !/2020-12|draft-07|json-schema.org/i.test(String(dialect)))) warnings.add(`CONTRACT_JSON_SCHEMA_DIALECT_UNSUPPORTED: jsonSchemaDialect must be an absolute supported JSON Schema dialect URI: ${String(dialect)}`);
+  const operationIds = new Map<string, string>();
+  const linkOperationIds: Array<{ context: string; operationId: string }> = [];
+  const tags = new Set(asArray(root.tags).map((entry) => String(asRecord(entry)?.name || '')).filter(Boolean));
+  const usedTags = new Set<string>();
+  const templates = new Map<string, string>();
+  const checkServers = (rawServers: unknown, context: string) => {
+    for (const server of asArray(rawServers).map((entry) => asRecord(entry)).filter((entry): entry is JsonRecord => Boolean(entry))) {
+      const url = typeof server.url === 'string' ? server.url : '';
+      const urlVars = new Set([...url.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]!));
+      const variables = asRecord(server.variables) ?? {};
+      for (const variable of urlVars) {
+        const definition = asRecord(variables[variable]);
+        if (!definition) warnings.add(`CONTRACT_SERVER_VARIABLE_INVALID: ${context} server URL variable {${variable}} has no variables entry`);
+        else {
+          if (definition.default === undefined) warnings.add(`CONTRACT_SERVER_VARIABLE_INVALID: ${context} server variable ${variable} must declare a default`);
+          const enumValues = asArray(definition.enum);
+          if (definition.enum !== undefined && enumValues.length === 0) warnings.add(`CONTRACT_SERVER_VARIABLE_INVALID: ${context} server variable ${variable} enum must not be empty`);
+          if (enumValues.length > 0 && !enumValues.map(String).includes(String(definition.default))) warnings.add(`CONTRACT_SERVER_VARIABLE_INVALID: ${context} server variable ${variable} default must be a member of enum`);
+        }
+      }
+      for (const variable of Object.keys(variables)) if (!urlVars.has(variable)) warnings.add(`CONTRACT_SERVER_VARIABLE_INVALID: ${context} server variable ${variable} is not used by the URL template`);
+    }
+  };
+  checkServers(root.servers, 'root');
+  for (const [path, rawPathItem] of Object.entries(asRecord(root.paths) ?? {})) {
+    const skeleton = normalizePath(path).replace(/\{[^}]+\}/g, '{}');
+    const previous = templates.get(skeleton);
+    if (previous && previous !== path) warnings.add(`CONTRACT_TEMPLATED_PATH_COLLISION: paths ${previous} and ${path} have identical hierarchy after template names are erased`);
+    templates.set(skeleton, path);
+    const pathItem = resolveInternalRef<JsonRecord>(root, rawPathItem);
+    if (!pathItem) continue;
+    checkServers(pathItem.servers, `path ${path}`);
+    for (const [method, rawOperation] of Object.entries(pathItem)) {
+      if (!HTTP_METHODS.has(method)) continue;
+      const operation = resolveInternalRef<JsonRecord>(root, rawOperation);
+      if (!operation) continue;
+      checkServers(operation.servers, `${method.toUpperCase()} ${path}`);
+      const operationId = typeof operation.operationId === 'string' ? operation.operationId : '';
+      if (operationId) {
+        const previousOperation = operationIds.get(operationId);
+        if (previousOperation) warnings.add(`CONTRACT_OPERATION_ID_DUPLICATE: operationId ${operationId} is used by both ${previousOperation} and ${method.toUpperCase()} ${path}`);
+        operationIds.set(operationId, `${method.toUpperCase()} ${path}`);
+      }
+      for (const tag of asArray(operation.tags).map(String)) {
+        usedTags.add(tag);
+        if (tags.size > 0 && !tags.has(tag)) warnings.add(`CONTRACT_TAG_UNDECLARED: ${method.toUpperCase()} ${path} uses undeclared top-level tag ${tag}`);
+      }
+      for (const rawResponse of Object.values(asRecord(operation.responses) ?? {})) {
+        const response = resolveInternalRef<JsonRecord>(root, rawResponse);
+        for (const [linkName, rawLink] of Object.entries(asRecord(response?.links) ?? {})) {
+          const link = resolveInternalRef<JsonRecord>(root, rawLink);
+          if (typeof link?.operationId === 'string') linkOperationIds.push({ context: `${method.toUpperCase()} ${path} link ${linkName}`, operationId: link.operationId });
+        }
+      }
+    }
+  }
+  for (const link of linkOperationIds) {
+    if (!operationIds.has(link.operationId)) warnings.add(`CONTRACT_LINK_TARGET_INVALID: ${link.context} references unresolved operationId ${link.operationId}`);
+  }
+  for (const tag of tags) if (!usedTags.has(tag)) warnings.add(`CONTRACT_TAG_UNUSED: top-level tag ${tag} is not used by any operation`);
+  for (const [name, schema] of Object.entries(asRecord(asRecord(root.components)?.schemas) ?? {})) collectSchemaStaticLints(root, schema, version, `components.schemas.${name}`, warnings);
+  return [...warnings];
+}
+
+function collectOperationStaticLints(root: JsonRecord, version: OpenApiVersion, path: string, pathItem: JsonRecord, operation: JsonRecord, responses: JsonRecord, operationId: string): string[] {
+  const warnings = new Set<string>();
+  const parameters = resolvedParameters(root, pathItem, operation);
+  const seenParameters = new Set<string>();
+  const templateVars = new Set([...path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]!));
+  const pathParams = new Set<string>();
+  for (const param of parameters) {
+    const location = String(param.in || '');
+    const name = String(param.name || '');
+    const key = `${location}:${name.toLowerCase()}`;
+    if (seenParameters.has(key)) warnings.add(`CONTRACT_PARAMETER_DUPLICATE: ${operationId} repeats parameter ${location}:${name} after merging path and operation parameters`);
+    seenParameters.add(key);
+    if (location === 'path') {
+      pathParams.add(name);
+      if (param.required !== true) warnings.add(`CONTRACT_PATH_PARAMETER_INVALID: ${operationId} path parameter ${name} must declare required: true`);
+    }
+    const style = typeof param.style === 'string' ? param.style : DEFAULT_PARAM_STYLES[location];
+    const validStyle = (location === 'path' && ['matrix', 'label', 'simple'].includes(String(style))) || (location === 'query' && ['form', 'spaceDelimited', 'pipeDelimited', 'deepObject'].includes(String(style))) || (location === 'header' && style === 'simple') || (location === 'cookie' && style === 'form');
+    if (!validStyle) warnings.add(`CONTRACT_PARAMETER_STYLE_INVALID: ${operationId} parameter ${location}:${name} uses style ${String(style)} invalid for its location`);
+    if (param.allowReserved === true && location !== 'query') warnings.add(`CONTRACT_PARAMETER_ALLOW_RESERVED_INVALID: ${operationId} parameter ${location}:${name} uses allowReserved outside query`);
+    if (style === 'deepObject') {
+      const schema = asRecord(param.schema);
+      if (location !== 'query' || !schemaTypeNames(schema ?? {}).includes('object')) warnings.add(`CONTRACT_PARAMETER_DEEPOBJECT_INVALID: ${operationId} parameter ${location}:${name} uses deepObject without a query object schema`);
+      if (asRecord(schema?.properties) && Object.values(asRecord(schema?.properties)!).some((prop) => schemaTypeNames(asRecord(prop) ?? {}).includes('object'))) warnings.add(`CONTRACT_PARAMETER_DEEPOBJECT_NESTED: ${operationId} parameter query:${name} uses nested deepObject properties that are not interoperably defined`);
+    }
+    if (param.schema !== undefined && param.content !== undefined) warnings.add(`CONTRACT_PARAMETER_SCHEMA_CONTENT_XOR: ${operationId} parameter ${location}:${name} declares both schema and content`);
+    const content = asRecord(param.content);
+    if (content && Object.keys(content).length !== 1) warnings.add(`CONTRACT_PARAMETER_CONTENT_INVALID: ${operationId} parameter ${location}:${name} content must contain exactly one media type`);
+    if (param.schema !== undefined) collectSchemaStaticLints(root, param.schema, version, `${operationId} parameter ${location}:${name}`, warnings);
+  }
+  for (const variable of templateVars) if (!pathParams.has(variable)) warnings.add(`CONTRACT_PATH_PARAMETER_BIJECTION: ${operationId} template variable {${variable}} has no matching in:path parameter`);
+  for (const paramName of pathParams) if (!templateVars.has(paramName)) warnings.add(`CONTRACT_PATH_PARAMETER_BIJECTION: ${operationId} in:path parameter ${paramName} has no matching path template variable`);
+  if (Object.keys(responses).length === 0) warnings.add(`CONTRACT_RESPONSES_INVALID: ${operationId} responses must not be empty`);
+  for (const status of Object.keys(responses)) if (status !== 'default' && !/^[1-5](?:[0-9][0-9]|XX)$/i.test(status)) warnings.add(`CONTRACT_RESPONSES_INVALID: ${operationId} response key ${status} is not a valid status-code, range, or default`);
+  const responseHeaders = new Set<string>();
+  for (const rawResponse of Object.values(responses)) {
+    const response = resolveInternalRef<JsonRecord>(root, rawResponse);
+    for (const headerName of Object.keys(asRecord(response?.headers) ?? {})) responseHeaders.add(headerName.toLowerCase());
+    const plainJsonMedia: Array<[string, unknown]> = [];
+    const suffixJsonMedia: Array<[string, unknown]> = [];
+    const shadowWarn = (left: [string, unknown], right: [string, unknown]): void => {
+      if (JSON.stringify(asRecord(left[1])?.schema ?? {}) !== JSON.stringify(asRecord(right[1])?.schema ?? {})) {
+        warnings.add(`CONTRACT_MEDIA_RANGE_SHADOWING: ${operationId} response declares ${left[0]} and ${right[0]} with different schemas`);
+      }
+    };
+    for (const mediaEntry of Object.entries(asRecord(response?.content) ?? {})) {
+      const mediaBase = mediaEntry[0].toLowerCase().split(';')[0] ?? '';
+      if (mediaBase === 'application/json') {
+        for (const prior of suffixJsonMedia) shadowWarn(prior, mediaEntry);
+        plainJsonMedia.push(mediaEntry);
+      } else if (mediaBase === 'application/*+json') {
+        for (const prior of plainJsonMedia) shadowWarn(prior, mediaEntry);
+        suffixJsonMedia.push(mediaEntry);
+      }
+    }
+    for (const [contentType, mediaObject] of Object.entries(asRecord(response?.content) ?? {})) {
+      const media = asRecord(mediaObject);
+      if (media?.schema !== undefined) collectSchemaStaticLints(root, media.schema, version, `${operationId} response ${contentType}`, warnings);
+      const schema = asRecord(media?.schema);
+      const properties = asRecord(schema?.properties) ?? {};
+      const required = new Set(asArray(schema?.required).map(String));
+      const writeOnlyRequired = Object.entries(properties).filter(([name, prop]) => required.has(name) && asRecord(prop)?.writeOnly === true).map(([name]) => name);
+      if (writeOnlyRequired.length > 0) warnings.add(`CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE: ${operationId} response ${contentType} requires writeOnly-only properties: ${writeOnlyRequired.join(', ')}`);
+    }
+    for (const rawLink of Object.values(asRecord(response?.links) ?? {})) {
+      const link = resolveInternalRef<JsonRecord>(root, rawLink);
+      if (!link) continue;
+      if ((link.operationId === undefined) === (link.operationRef === undefined)) warnings.add(`CONTRACT_LINK_TARGET_INVALID: ${operationId} link must declare exactly one of operationId or operationRef`);
+      if (typeof link.operationRef === 'string' && link.operationRef.startsWith('#/') && resolvePointer(root, link.operationRef) === undefined) warnings.add(`CONTRACT_LINK_TARGET_INVALID: ${operationId} link operationRef ${link.operationRef} does not resolve`);
+    }
+  }
+  const requestContent = asRecord(asRecord(resolveInternalRef<JsonRecord>(root, operation.requestBody))?.content) ?? {};
+  for (const [contentType, mediaObject] of Object.entries(requestContent)) {
+    const media = asRecord(mediaObject);
+    const schema = asRecord(media?.schema);
+    const properties = asRecord(schema?.properties) ?? {};
+    const required = new Set(asArray(schema?.required).map(String));
+    const readOnlyRequired = Object.entries(properties).filter(([name, prop]) => required.has(name) && asRecord(prop)?.readOnly === true).map(([name]) => name);
+    if (readOnlyRequired.length > 0) warnings.add(`CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE: ${operationId} request ${contentType} requires readOnly-only properties: ${readOnlyRequired.join(', ')}`);
+    const encoding = asRecord(media?.encoding) ?? {};
+    for (const [field, rawEncoding] of Object.entries(encoding)) {
+      if (!Object.prototype.hasOwnProperty.call(properties, field)) warnings.add(`CONTRACT_ENCODING_FIELD_UNKNOWN: ${operationId} encoding key ${field} is not a schema property`);
+      if (asRecord(rawEncoding)?.headers && Object.keys(asRecord(rawEncoding)?.headers ?? {}).some((name) => name.toLowerCase() === 'content-type')) warnings.add(`CONTRACT_ENCODING_HEADER_INVALID: ${operationId} encoding ${field} headers must not include Content-Type`);
+    }
+  }
+  for (const [name, rawCallback] of Object.entries(asRecord(operation.callbacks) ?? {})) {
+    if (!/^(\$url|\$method|\$statusCode|\$request\.|\$response\.)/.test(name) && !/^https?:\/\//.test(name)) warnings.add(`CONTRACT_CALLBACK_EXPRESSION_INVALID: ${operationId} callback key ${name} is not a valid runtime expression`);
+    const bodyMatch = name.match(/^\$request\.body#(\/.*)$/);
+    if (bodyMatch) {
+      const requestSchemas = Object.values(requestContent).map((media) => asRecord(asRecord(media)?.schema)).filter(Boolean);
+      if (!requestSchemas.some((schema) => resolvePointer(schema!, `#${bodyMatch[1]}`) !== undefined)) warnings.add(`CONTRACT_CALLBACK_EXPRESSION_INVALID: ${operationId} callback key ${name} references a request body pointer that does not resolve`);
+    }
+    void rawCallback;
+  }
+  if (operation.deprecated === true && !responseHeaders.has('deprecation') && !responseHeaders.has('sunset')) warnings.add(`CONTRACT_DEPRECATED_HEADERS_ADVISORY: ${operationId} is deprecated but declares neither Deprecation nor Sunset response headers`);
+  return [...warnings];
+}
+
 export function buildContractIndex(root: JsonRecord): ContractIndex {
   if (root.swagger === '2.0') throw new Error('CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (found swagger 2.0)');
   if (!('openapi' in root)) throw new Error('CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (missing openapi)');
   const version = detectOpenApiVersion(root);
   const paths = asRecord(root.paths);
   const operations: ContractOperation[] = [];
-  const warnings: string[] = [];
+  const warnings: string[] = collectDocumentStaticLints(root, version);
 
   if (asRecord(root.webhooks)) warnings.push('CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests');
 
@@ -1128,6 +1390,7 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
         }
         opWarnings.push(...collectSecurityStaticLints(root, operation));
         opWarnings.push(...collectSecurityResponseLints(root, operation, responses, operationId));
+        opWarnings.push(...collectOperationStaticLints(root, version, path, pathItem, operation, responses, operationId));
         const requiredParameters = collectParameters(root, pathItem, operation);
         for (const parameter of requiredParameters.filter((entry) => entry.securityDerived)) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);
@@ -1163,7 +1426,7 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           pathMethods: Object.keys(pathItem).filter((key) => HTTP_METHODS.has(key)).map((key) => key.toUpperCase()),
           deprecated: operation.deprecated === true || undefined,
           servers: serverAdvisoryPatterns(root, pathItem, operation),
-          warnings: opWarnings
+          warnings: [...new Set(opWarnings)].sort()
         });
       }
     }
@@ -1183,5 +1446,5 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
     }
   }
 
-  return { operations, version, warnings };
+  return { operations, version, warnings: [...new Set(warnings)].sort() };
 }

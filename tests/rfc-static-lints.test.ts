@@ -224,4 +224,163 @@ paths:
 `);
     expect(index.operations[0]!.servers).toEqual(['^https://(us|eu)\\.api\\.example\\.com/v1']);
   });
+
+  it('flags OpenAPI version-specific schema and document constructs', () => {
+    const v30 = indexFrom(`openapi: 3.0.3
+info: { title: T, version: 1 }
+webhooks: { created: {} }
+components:
+  pathItems: { Reusable: {} }
+  schemas:
+    Thing:
+      type: [string, 'null']
+      exclusiveMinimum: 1
+      prefixItems: []
+      if: { type: string }
+    RefSibling:
+      $ref: '#/components/schemas/Thing'
+      type: string
+paths:
+  /a:
+    get:
+      responses:
+        '200': { description: OK }
+`);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD') && w.includes('webhooks'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD') && w.includes('components.pathItems'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('type arrays'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('exclusiveMinimum'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('prefixItems'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_REF_SIBLING_INVALID'))).toBe(true);
+    const v31 = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+jsonSchemaDialect: not-a-uri
+components:
+  schemas:
+    Thing:
+      type: string
+      nullable: true
+      exclusiveMinimum: true
+      format: made-up
+      enum: [ok]
+      default: bad
+paths:
+  /a:
+    get:
+      responses:
+        '200': { description: OK }
+`);
+    expect(v31.warnings.some((w) => w.startsWith('CONTRACT_JSON_SCHEMA_DIALECT_UNSUPPORTED'))).toBe(true);
+    expect(v31.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('nullable'))).toBe(true);
+    expect(v31.warnings.some((w) => w.startsWith('CONTRACT_FORMAT_UNKNOWN'))).toBe(true);
+    expect(v31.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VALUE_MISMATCH'))).toBe(true);
+  });
+
+  it('flags parameter, path, operationId, server, and response-shape lints', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+servers:
+  - url: 'https://{region}.example.com/{unused}'
+    variables:
+      region: { enum: [] }
+      ghost: { default: x }
+tags:
+  - { name: declared }
+  - { name: unused }
+paths:
+  /pets/{id}:
+    get:
+      operationId: dup
+      tags: [missing]
+      parameters:
+        - { name: id, in: path, required: false, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: token, in: header, allowReserved: true, style: form, schema: { type: string } }
+        - { name: f, in: query, style: deepObject, schema: { type: string } }
+        - { name: c, in: query, schema: { type: string }, content: { application/json: { schema: { type: object } } } }
+      responses:
+        '200': { description: OK }
+    post:
+      operationId: dup
+      parameters:
+        - { name: other, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+  /pets/{petId}:
+    get:
+      responses:
+        '200': { description: OK }
+`);
+    const warnings = [...index.warnings, ...index.operations.flatMap((op) => op.warnings)];
+    expect(warnings.some((w) => w.startsWith('CONTRACT_OPERATION_ID_DUPLICATE'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_TAG_UNDECLARED'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_TAG_UNUSED'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_SERVER_VARIABLE_INVALID') && w.includes('default'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_TEMPLATED_PATH_COLLISION'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_PARAMETER_DUPLICATE'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_PATH_PARAMETER_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_PATH_PARAMETER_BIJECTION'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_PARAMETER_STYLE_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_PARAMETER_ALLOW_RESERVED_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_PARAMETER_DEEPOBJECT_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_PARAMETER_SCHEMA_CONTENT_XOR'))).toBe(true);
+  });
+
+  it('flags encoding, discriminator, impossible-message, link, callback, and media-range lints', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+components:
+  schemas:
+    BadDiscriminator:
+      type: object
+      discriminator: { propertyName: kind, mapping: { a: '#/components/schemas/Missing' } }
+    Overlap:
+      oneOf:
+        - { enum: [a, b] }
+        - { enum: [b, c] }
+paths:
+  /a:
+    post:
+      deprecated: true
+      callbacks:
+        '$request.body#/missing': {}
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [ro]
+              properties:
+                ro: { type: string, readOnly: true }
+                file: { type: string }
+            encoding:
+              ghost: { contentType: application/json }
+              file:
+                headers:
+                  Content-Type: { schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, required: [secret], properties: { secret: { type: string, writeOnly: true } } }
+            application/*+json:
+              schema: { type: object, properties: { id: { type: string } } }
+          links:
+            bad:
+              operationId: getA
+              operationRef: '#/paths/~1missing/get'
+`);
+    const warnings = [...index.warnings, ...index.operations.flatMap((op) => op.warnings)];
+    expect(warnings.some((w) => w.startsWith('CONTRACT_DISCRIMINATOR_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_ONEOF_OVERLAP'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_ENCODING_FIELD_UNKNOWN'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_ENCODING_HEADER_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE') && w.includes('request'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE') && w.includes('response'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_LINK_TARGET_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_CALLBACK_EXPRESSION_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_MEDIA_RANGE_SHADOWING'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_DEPRECATED_HEADERS_ADVISORY'))).toBe(true);
+  });
 });

@@ -16,6 +16,7 @@
 import { compileSchemaValidator } from '../../spec/schema-validator-code.js';
 import { packSchema, isSchemaGraphOverflow } from '../../spec/schema-pack.js';
 import type { McpContractIndex, McpServerDescriptor, McpToolDescriptor } from './mcp-parser.js';
+import { toolsCallScript } from './mcp-runtime-scripts.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -32,6 +33,10 @@ export const MCP_INSTRUMENT_LIMITS = {
 // identifier; anything outside this set still works on the wire but is flagged
 // for auditability.
 const TOOL_NAME_RE = /^[A-Za-z0-9_./-]{1,128}$/;
+const META_KEY_RE = /^(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?\/)?[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$/;
+const RESERVED_META_PREFIX_RE = /^(?:.*\.)?(?:modelcontextprotocol|mcp)\//i;
+const MIME_TYPE_RE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*(?:\s*;\s*[A-Za-z0-9!#$&^_.+-]+=(?:"[^"]*"|[A-Za-z0-9!#$&^_.+-]+))*$/;
+const TOOL_FIELDS_2025_06_18 = new Set(['name', 'title', 'description', 'inputSchema', 'outputSchema', 'annotations', '_meta']);
 
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -40,6 +45,59 @@ function asRecord(value: unknown): JsonRecord | null {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function walkManifest(value: unknown, path: string, warnings: string[]): void {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((entry, i) => walkManifest(entry, `${path}[${i}]`, warnings));
+    return;
+  }
+  const record = value as JsonRecord;
+  const meta = asRecord(record._meta);
+  if (meta) {
+    for (const key of Object.keys(meta)) {
+      if (!META_KEY_RE.test(key)) {
+        warnings.push(`MCP_META_KEY_INVALID: ${path}._meta key "${key}" does not match the MCP 2025-06-18 _meta key grammar`);
+      } else if (RESERVED_META_PREFIX_RE.test(key)) {
+        warnings.push(`MCP_META_KEY_RESERVED_PREFIX: ${path}._meta key "${key}" uses the reserved modelcontextprotocol/mcp prefix`);
+      }
+    }
+  }
+  for (const [key, child] of Object.entries(record)) {
+    if (/mimeType$/i.test(key) && typeof child === 'string' && !MIME_TYPE_RE.test(child)) {
+      warnings.push(`MCP_MIME_TYPE_INVALID: ${path}.${key} value "${child}" is not an RFC 6838 type/subtype media type`);
+    }
+    walkManifest(child, `${path}.${key}`, warnings);
+  }
+}
+
+function validateManifestDocument(index: McpContractIndex, warnings: string[]): void {
+  walkManifest(index.documentJson, '$', warnings);
+  const tools = asArray(index.documentJson.tools).map((entry) => asRecord(entry)).filter((entry): entry is JsonRecord => entry !== null);
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    const name = typeof tool.name === 'string' ? tool.name : '<unnamed>';
+    if (typeof tool.name === 'string') {
+      if (seen.has(tool.name)) warnings.push(`MCP_TOOL_NAME_DUPLICATE: tool name "${tool.name}" is declared more than once; tools/list requires unique tool names`);
+      seen.add(tool.name);
+    }
+    if (tool.title !== undefined && typeof tool.title !== 'string') {
+      warnings.push(`MCP_TOOL_BASE_METADATA_INVALID: tool ${name} title must be a string when present (MCP 2025-06-18 BaseMetadata)`);
+    }
+    if (tool.description !== undefined && typeof tool.description !== 'string') {
+      warnings.push(`MCP_TOOL_BASE_METADATA_INVALID: tool ${name} description must be a string when present (MCP 2025-06-18 BaseMetadata)`);
+    }
+    for (const field of Object.keys(tool)) {
+      if (!TOOL_FIELDS_2025_06_18.has(field)) {
+        warnings.push(`MCP_TOOL_FIELD_UNKNOWN_2025_06_18: tool ${name} field "${field}" is not part of the MCP 2025-06-18 Tool object`);
+      }
+    }
+    const annotations = asRecord(tool.annotations);
+    if (typeof tool.title === 'string' && typeof annotations?.title === 'string') {
+      warnings.push(`MCP_TOOL_TITLE_PRECEDENCE: tool ${name} declares both title and annotations.title; clients should prefer title for MCP 2025-06-18 display metadata`);
+    }
+  }
 }
 
 // JSON-RPC 2.0 request well-formedness (jsonrpc === '2.0', string method,
@@ -164,16 +222,22 @@ export function instrumentMcpCollection(collection: JsonRecord, index: McpContra
   for (const server of index.servers) validateServer(server, warnings);
 
   for (const tool of index.tools) validateTool(index, tool, warnings);
+  validateManifestDocument(index, warnings);
+  for (const tool of index.tools) warnings.push(...toolsCallScript(index, tool).warnings);
 
   // Coverage + message well-formedness over the built items: every server must
   // materialize initialize + tools/list + one tools/call per tool, each with a
   // distinct id and a well-formed JSON-RPC message. Fail closed on drift.
   const items = asArray(collection.item).map((entry) => asRecord(entry)).filter((entry): entry is JsonRecord => entry !== null);
   const ids: string[] = [];
+  const httpIds: string[] = [];
   for (const item of items) {
-    if (String(item.type) !== 'mcp-request') continue;
-    ids.push(typeof item.id === 'string' && item.id ? item.id : `#${ids.length}`);
-    assertJsonRpcRequest(asRecord(item.payload)?.message, String(item.title ?? item.id ?? 'mcp-request'));
+    if (String(item.type) === 'mcp-request') {
+      ids.push(typeof item.id === 'string' && item.id ? item.id : `#${ids.length}`);
+      assertJsonRpcRequest(asRecord(item.payload)?.message, String(item.title ?? item.id ?? 'mcp-request'));
+    } else if (String(item.type) === 'http-request' && String(item.title ?? '').includes('HTTP')) {
+      httpIds.push(typeof item.id === 'string' && item.id ? item.id : `#${httpIds.length}`);
+    }
   }
   const expected = index.servers.length * (2 + index.tools.length);
   const unique = new Set(ids).size;
@@ -181,6 +245,19 @@ export function instrumentMcpCollection(collection: JsonRecord, index: McpContra
     throw new Error(
       `MCP_ITEM_COVERAGE_FAILED: built collection has ${ids.length} mcp-request item(s) (${unique} distinct) but the MCP index requires ${expected}; generated contract collection is incomplete or duplicated`
     );
+  }
+  const runtimeServers = index.servers.filter((server) => server.transport === 'sse' && !!server.url);
+  const expectedHttp = runtimeServers.length * (8 + index.tools.length);
+  const uniqueHttp = new Set(httpIds).size;
+  if (httpIds.length !== expectedHttp || uniqueHttp !== expectedHttp) {
+    throw new Error(
+      `MCP_HTTP_ITEM_COVERAGE_FAILED: built collection has ${httpIds.length} MCP http-request item(s) (${uniqueHttp} distinct) but the MCP index requires ${expectedHttp}; generated runtime contract surface is incomplete or duplicated`
+    );
+  }
+  for (const server of index.servers) {
+    if (server.transport === 'stdio' || !server.url) {
+      warnings.push(`MCP_RUNTIME_SURFACE_UNAVAILABLE: server ${server.id} has no Streamable HTTP/SSE url; only static mcp-request templates are generated`);
+    }
   }
 
   const bytes = Buffer.byteLength(JSON.stringify(collection), 'utf8');

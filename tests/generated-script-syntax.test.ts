@@ -20,6 +20,9 @@ import { instrumentSoapCollection } from '../src/lib/protocols/soap/instrumenter
 import { parseProtoSchema } from '../src/lib/protocols/grpc/proto-parser.js';
 import { buildGrpcCollection } from '../src/lib/protocols/grpc/grpc-collection-builder.js';
 import { instrumentGrpcCollection } from '../src/lib/protocols/grpc/grpc-instrumenter.js';
+import { parseMcpServerSpec } from '../src/lib/protocols/mcp/mcp-parser.js';
+import { buildMcpCollection } from '../src/lib/protocols/mcp/mcp-collection-builder.js';
+import { instrumentMcpCollection } from '../src/lib/protocols/mcp/mcp-instrumenter.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
 import type { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
 import { HAS_PROTOBUF, PROTOBUF, readFixture } from './protocols/grpc/helpers.js';
@@ -66,6 +69,21 @@ function collectV2Scripts(node: unknown, out: Array<{ label: string; source: str
   for (const child of Array.isArray(record.item) ? record.item : []) {
     collectV2Scripts(child, out, name);
   }
+}
+
+function collectEcScripts(node: unknown, out: Array<{ label: string; source: string }>, path = 'root'): void {
+  if (!node || typeof node !== 'object') return;
+  const record = node as JsonRecord;
+  const name = typeof record.title === 'string' ? record.title : path;
+  const events = (record.extensions as JsonRecord | undefined)?.events;
+  for (const raw of Array.isArray(events) ? events : []) {
+    const event = raw as JsonRecord;
+    const script = event.script as JsonRecord | undefined;
+    const source = typeof script?.exec === 'string' ? script.exec : '';
+    if (source.trim().length > 0) out.push({ label: `${name}#${String(event.listen)}`, source });
+  }
+  for (const child of Array.isArray(record.children) ? record.children : []) collectEcScripts(child, out, name);
+  for (const child of Array.isArray(record.item) ? record.item : []) collectEcScripts(child, out, name);
 }
 
 const OPENAPI_SPEC = `openapi: 3.0.3
@@ -189,5 +207,14 @@ describe('generated assertion scripts are syntactically valid JavaScript', () =>
       expect(scripts.length).toBeGreaterThan(0);
       for (const { label, source } of scripts) assertParses(`grpc:${label}`, source);
     });
+  });
+
+  it('MCP HTTP runtime contract scripts parse', () => {
+    const index = parseMcpServerSpec(fixture('mcp/server.json'));
+    const { collection } = instrumentMcpCollection(buildMcpCollection(index), index);
+    const scripts: Array<{ label: string; source: string }> = [];
+    collectEcScripts(collection, scripts);
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const { label, source } of scripts) assertParses(`mcp:${label}`, source);
   });
 });

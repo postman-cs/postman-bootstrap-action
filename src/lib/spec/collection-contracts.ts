@@ -1,5 +1,5 @@
 import { normalizePath, type ContractBodyFieldRules, type ContractHeader, type ContractIndex, type ContractMedia, type ContractOperation } from './contract-index.js';
-import { FORBIDDEN_TRAILER_FIELDS, PROXY_STATUS_ERROR_TYPES, REFERRER_POLICY_VALUES } from './iana-registries.js';
+import { FORBIDDEN_TRAILER_FIELDS, HTTP_CONTENT_CODINGS, PROXY_STATUS_ERROR_TYPES, REFERRER_POLICY_VALUES } from './iana-registries.js';
 import { compileSchemaValidator, compileSchemaValidatorCode } from './schema-validator-code.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -212,7 +212,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
   const contract = { method: operation.method, path: operation.path, responses: operation.responses, security: operation.security, parameters: operation.parameterChecks, pathMethods: operation.pathMethods, deprecated: operation.deprecated, servers: operation.servers, multipartFields };
   const skipped: string[] = [];
   const validatorLines = buildValidatorAssignments(operation, warnings, skipped);
-  const registries = { proxyStatusErrors: PROXY_STATUS_ERROR_TYPES, referrerPolicies: REFERRER_POLICY_VALUES, forbiddenTrailers: FORBIDDEN_TRAILER_FIELDS };
+  const registries = { proxyStatusErrors: PROXY_STATUS_ERROR_TYPES, referrerPolicies: REFERRER_POLICY_VALUES, forbiddenTrailers: FORBIDDEN_TRAILER_FIELDS, contentCodings: HTTP_CONTENT_CODINGS };
   return [
     `var contract = JSON.parse(${JSON.stringify(JSON.stringify(contract))});`,
     `var rfcRegistries = JSON.parse(${JSON.stringify(JSON.stringify(registries))});`,
@@ -328,8 +328,9 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '  if (code === 401) {',
     '    var challenge = respHeader("WWW-Authenticate");',
     '    if (!challenge) pm.expect.fail("RFC 9110 requires WWW-Authenticate on 401 responses");',
-    '    var wantsBearer = (contract.security || []).some(function (alternative) { return alternative.some(function (check) { return check.prefix && check.prefix.toLowerCase().indexOf("bearer") === 0; }); });',
-    '    if (wantsBearer && challenge && challenge.toLowerCase().indexOf("bearer") === -1) pm.expect.fail("RFC 6750 expects a Bearer challenge on 401 for bearer-secured operations; got: " + challenge);',
+    '    var expectedSchemes = [];',
+    '    (contract.security || []).forEach(function (alternative) { alternative.forEach(function (check) { if (check.prefix) { var scheme = String(check.prefix).trim().split(/\\s+/)[0]; if (scheme && expectedSchemes.indexOf(scheme) === -1) expectedSchemes.push(scheme); } }); });',
+    '    expectedSchemes.forEach(function (scheme) { if (challenge && !new RegExp("(^|,)\\\\s*" + scheme + "\\\\b", "i").test(challenge)) pm.expect.fail("RFC 9110 15.5.2 and OAS 4.8.27 require a WWW-Authenticate " + scheme + " challenge for the declared security scheme; got: " + challenge); });',
     '    if (challenge && /\\bbasic\\b/i.test(challenge) && !/realm\\s*=/i.test(challenge)) pm.expect.fail("RFC 7617 requires a realm parameter on Basic challenges: " + challenge);',
     '    if (challenge && /\\bdigest\\b/i.test(challenge) && (!/realm\\s*=/i.test(challenge) || !/nonce\\s*=/i.test(challenge))) pm.expect.fail("RFC 7616 requires realm and nonce on Digest challenges: " + challenge);',
     '  }',
@@ -347,7 +348,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '  if (code === 304 && responseText().trim().length > 0) pm.expect.fail("RFC 9110 forbids content in a 304 response");',
     // RFC 9110 15.4.5: a 304 MUST carry these fields when they would have
     // been sent on the 200; enforce for fields the spec declares on the 200.
-    '  if (code === 304) {',
+    '  if (code === 304 && contract.responses["200"] && contract.responses["304"]) {',
     '    var okDeclared = (contract.responses["200"] && contract.responses["200"].headers) || [];',
     '    ["Cache-Control", "Content-Location", "Date", "ETag", "Expires", "Vary"].forEach(function (name) {',
     '      var declared = okDeclared.some(function (header) { return String(header.name).toLowerCase() === name.toLowerCase(); });',
@@ -356,7 +357,9 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '  }',
     '  var retryAfter = respHeader("Retry-After");',
     '  if (retryAfter && (code === 429 || code === 503 || (code >= 300 && code < 400))) {',
-    '    if (!/^\\d+$/.test(retryAfter.trim()) && isNaN(Date.parse(retryAfter))) pm.expect.fail("Retry-After must be delay-seconds or an HTTP-date (RFC 9110): " + retryAfter);',
+    '    if (!/^\\d+$/.test(retryAfter.trim()) && isNaN(Date.parse(retryAfter))) pm.expect.fail("Retry-After must be delay-seconds or an HTTP-date (RFC 9110 10.2.3): " + retryAfter);',
+    '    var retryDate = Date.parse(retryAfter); var responseDate = Date.parse(respHeader("Date"));',
+    '    if (!isNaN(retryDate) && !isNaN(responseDate) && retryDate < responseDate) pm.expect.fail("Retry-After HTTP-date must not be earlier than Date (RFC 9110 10.2.3 and 6.6.1): " + retryAfter + " < " + respHeader("Date"));',
     '  }',
     '  var location = respHeader("Location");',
     '  if (location && (code === 201 || (code >= 300 && code < 400))) {',
@@ -371,7 +374,12 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '    try { problem = pm.response.json(); } catch (error) { pm.expect.fail("application/problem+json body is not valid JSON (RFC 9457): " + error); }',
     '    if (!problem || typeof problem !== "object" || Array.isArray(problem)) pm.expect.fail("problem details must be a JSON object (RFC 9457)");',
     '    ["type", "title", "detail", "instance"].forEach(function (member) { if (problem[member] !== undefined && typeof problem[member] !== "string") pm.expect.fail("RFC 9457 " + member + " member must be a string; got " + typeof problem[member]); });',
-    '    ["type", "instance"].forEach(function (member) { if (typeof problem[member] === "string" && /\\s/.test(problem[member].trim())) pm.expect.fail("RFC 9457 " + member + " member must be a URI-reference (RFC 3986): " + problem[member]); });',
+    '    ["type", "instance"].forEach(function (member) {',
+    '      if (typeof problem[member] !== "string") return;',
+    '      var uriRef = problem[member];',
+    '      if (/[\\s\\x00-\\x1f\\x7f]/.test(uriRef)) pm.expect.fail("RFC 9457 3.1.1/3.1.5 " + member + " member must be a URI-reference without whitespace/control characters (RFC 3986): " + uriRef);',
+    '      if (!/^(?:[A-Za-z][A-Za-z0-9+.-]*:[^\\s<>"]*|\\/[^\\s<>"]*|\\.\\.?\\/[^\\s<>"]*|#[^\\s<>"]*|[^\\s<>"]*)$/.test(uriRef)) pm.expect.fail("RFC 9457 3.1.1/3.1.5 " + member + " member must be a parseable URI-reference (RFC 3986): " + uriRef);',
+    '    });',
     '    if (problem.status !== undefined) {',
     '      if (typeof problem.status !== "number") pm.expect.fail("RFC 9457 status member must be a number; got " + typeof problem.status);',
     '      else if (problem.status !== pm.response.code) pm.expect.fail("RFC 9457 status member (" + problem.status + ") must match the HTTP status code (" + pm.response.code + ")");',
@@ -395,6 +403,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     'function rfcHeaderAll(name) { var out = []; pm.response.headers.each(function (header) { if (header && String(header.key).toLowerCase() === String(name).toLowerCase()) out.push(String(header.value)); }); return out; }',
     'function rfcIsHttpDate(value) { return /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-3][0-9] (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-2][0-9]:[0-5][0-9]:[0-5][0-9] GMT$/.test(String(value).trim()) && !isNaN(Date.parse(value)); }',
     'function rfcIsToken(value) { return /^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/.test(String(value)); }',
+    'function rfcResponseDeclaresHeader(name) { if (!selected) return false; return ((selected.value && selected.value.headers) || []).some(function (header) { return String(header.name).toLowerCase() === String(name).toLowerCase(); }); }',
     'function rfcIsEntityTag(value) { return /^(W\\/)?"[\\x21\\x23-\\x7e\\x80-\\xff]*"$/.test(String(value).trim()); }',
     'function rfcIsFieldContent(value) { return /^[\\t \\x21-\\x7e\\x80-\\xff]*$/.test(String(value)); }',
     'function rfcTokenList(value) { var parts = String(value).split(","); for (var i = 0; i < parts.length; i += 1) { if (!rfcIsToken(parts[i].trim())) return false; } return true; }',
@@ -485,6 +494,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '    var varyMembers = vary.split(",").map(function (entry) { return entry.trim(); });',
     '    if (varyMembers.indexOf("*") !== -1 && varyMembers.length > 1) pm.expect.fail("Vary: * must not be combined with other members (RFC 9110): " + vary);',
     '    varyMembers.forEach(function (member) { if (member !== "*" && !rfcIsToken(member)) pm.expect.fail("Vary member is not a field-name token (RFC 9110): " + member); });',
+    '    if (varyMembers.indexOf("*") !== -1 && /\\b(max-age|s-maxage|public)\\b/i.test(rfcRespHeader("Cache-Control"))) rfcAdvise("RFC 9110 12.5.5: Vary: * conflicts with cacheable response directives");',
     '  }',
     '  var contentLocation = rfcRespHeader("Content-Location");',
     '  if (contentLocation && (/\\s/.test(contentLocation.trim()) || contentLocation.trim().length === 0)) pm.expect.fail("Content-Location must be a valid URI-reference (RFC 9110): " + contentLocation);',
@@ -502,6 +512,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '  if (age && !/^[0-9]+$/.test(age.trim())) pm.expect.fail("Age must be a non-negative integer of delta-seconds (RFC 9111): " + age);',
     '  var expires = rfcRespHeader("Expires");',
     '  if (expires && !rfcIsHttpDate(expires)) rfcAdvise("RFC 9111: Expires is not a valid HTTP-date and will be treated as already expired: " + expires);',
+    '  if (expires && rfcIsHttpDate(expires) && date && rfcIsHttpDate(date) && Date.parse(expires) < Date.parse(date) && !/\\b(max-age|s-maxage|no-cache|no-store)\\b/i.test(rfcRespHeader("Cache-Control"))) rfcAdvise("RFC 9111 5.3: Expires is earlier than Date without an explicit staleness directive");',
     '  if (rfcHeaderAll("warning").length > 0) rfcAdvise("RFC 9111 obsoleted the Warning header; the server still emits it");',
     '  var cacheControl = rfcRespHeader("Cache-Control");',
     '  if (cacheControl) {',
@@ -519,6 +530,28 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '      if (["immutable", "no-store", "public", "must-revalidate", "proxy-revalidate", "must-understand", "no-transform", "only-if-cached"].indexOf(name) !== -1 && argument !== undefined) pm.expect.fail("Cache-Control " + name + " takes no argument (RFC 9111/8246): " + directive);',
     '    });',
     '    if (seenDirectives["no-store"] && seenDirectives["max-age"] !== undefined) pm.expect.fail("Cache-Control combines no-store with max-age; the directives contradict (RFC 9111): " + cacheControl);',
+    '    if (seenDirectives["s-maxage"] !== undefined && seenDirectives.private !== undefined) rfcAdvise("RFC 9111 5.2.2: Cache-Control combines s-maxage with private directives");',
+    '  }',
+    '  var contentEncoding = rfcRespHeader("Content-Encoding");',
+    '  if (contentEncoding) rfcSplitList(contentEncoding).forEach(function (entry) { var coding = entry.trim().toLowerCase(); if (!coding || rfcRegistries.contentCodings.indexOf(coding) === -1) pm.expect.fail("Content-Encoding member is not in the vendored IANA HTTP content-coding registry snapshot (RFC 9110 8.4): " + entry.trim()); });',
+    '  var contentDisposition = rfcRespHeader("Content-Disposition");',
+    '  if (contentDisposition && rfcResponseDeclaresHeader("Content-Disposition")) {',
+    '    var cdParts = contentDisposition.split(";");',
+    '    var dispositionType = cdParts.shift().trim();',
+    '    var cdParams = {};',
+    '    if (!rfcIsToken(dispositionType)) pm.expect.fail("Content-Disposition disposition-type must be a token (RFC 6266 4.1): " + dispositionType);',
+    '    cdParts.forEach(function (entry) {',
+    '      var param = entry.trim(); if (!param) return;',
+    '      var eq = param.indexOf("=");',
+    '      if (eq <= 0) { pm.expect.fail("Content-Disposition parameters must use name=value syntax (RFC 6266 4.1): " + param); return; }',
+    '      var paramName = param.slice(0, eq).trim().toLowerCase();',
+    '      var paramValue = param.slice(eq + 1).trim();',
+    '      if (!rfcIsToken(paramName)) pm.expect.fail("Content-Disposition parameter name must be a token (RFC 6266 4.1): " + param);',
+    '      if (Object.prototype.hasOwnProperty.call(cdParams, paramName)) pm.expect.fail("Content-Disposition must not repeat parameter " + paramName + " (RFC 6266 4.1): " + contentDisposition);',
+    '      cdParams[paramName] = true;',
+    '      if (!/^"(?:[^"\\\\]|\\\\.)*"$|^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/.test(paramValue)) pm.expect.fail("Content-Disposition parameter value is malformed (RFC 6266 4.1): " + param);',
+    "      if (paramName === \"filename*\" && !/^[A-Za-z0-9!#$&+.^_`{}~-]+'[A-Za-z0-9!#$&+.^_`{}~-]*'[^\\s]*$/.test(paramValue)) pm.expect.fail(\"Content-Disposition filename* must use RFC 5987 charset''value syntax (RFC 6266 4.1): \" + param);",
+    '    });',
     '  }',
     '  var acceptPatch = rfcRespHeader("Accept-Patch");',
     '  if (acceptPatch) acceptPatch.split(",").forEach(function (entry) { var parts = mediaParts(entry); if (!parts.type || !parts.subtype) pm.expect.fail("Accept-Patch must be a list of media types (RFC 5789): " + entry.trim()); });',
@@ -660,7 +693,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '  if (code === 416) {',
     '    var unsatisfiedRange = rfcRespHeader("Content-Range");',
     '    if (!unsatisfiedRange) pm.expect.fail("RFC 9110 requires Content-Range (unsatisfied-range form) on 416 responses");',
-    '    else if (!/^\\S+ \\*\\/[0-9]+$/.test(unsatisfiedRange.trim())) pm.expect.fail("Content-Range on 416 must use the unsatisfied-range form <unit> */<complete-length> (RFC 9110): " + unsatisfiedRange);',
+    '    else if (!/^bytes \\*\\/[0-9]+$/.test(unsatisfiedRange.trim())) pm.expect.fail("Content-Range on 416 must use the unsatisfied-range form bytes */<complete-length> (RFC 9110 15.5.17): " + unsatisfiedRange);',
     '  }',
     '  if (code === 206) {',
     '    var contentRange = rfcRespHeader("Content-Range");',
@@ -668,6 +701,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '    var isByteranges = responseMedia.type === "multipart" && responseMedia.subtype === "byteranges";',
     '    if (!contentRange && !isByteranges) pm.expect.fail("RFC 9110 requires Content-Range on a single-part 206 response (or multipart/byteranges for multi-range)");',
     '    if (contentRange && isByteranges) pm.expect.fail("RFC 9110 forbids Content-Range on a multipart/byteranges 206 response");',
+    '    if (rfcRespHeader("Accept-Ranges").trim().toLowerCase() === "none") pm.expect.fail("206 responses must not carry Accept-Ranges: none (RFC 9110 14.3)");',
     '    if (contentRange) {',
     '      var rangeParts = contentRange.trim().match(/^(\\S+) (?:([0-9]+)-([0-9]+)|\\*)\\/([0-9]+|\\*)$/);',
     '      if (!rangeParts) pm.expect.fail("Content-Range is not a valid RFC 9110 range: " + contentRange);',
@@ -676,6 +710,9 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '        if (rangeParts[2] !== undefined) {',
     '          if (Number(rangeParts[2]) > Number(rangeParts[3])) pm.expect.fail("Content-Range first-byte-pos must be <= last-byte-pos (RFC 9110): " + contentRange);',
     '          if (rangeParts[4] !== "*" && Number(rangeParts[3]) >= Number(rangeParts[4])) pm.expect.fail("Content-Range last-byte-pos must be < complete-length (RFC 9110): " + contentRange);',
+    '          var rangeLength = Number(rangeParts[3]) - Number(rangeParts[2]) + 1;',
+    '          var contentLength = rfcRespHeader("Content-Length");',
+    '          if (contentLength && /^[0-9]+$/.test(contentLength.trim()) && Number(contentLength.trim()) !== rangeLength) pm.expect.fail("Content-Length must equal the selected byte-range length (RFC 9110 14.4): " + contentLength + " !== " + rangeLength);',
     '        }',
     '      }',
     '    }',
@@ -1122,8 +1159,10 @@ export function createContractScript(operation: ContractOperation, warnings: str
     // syntax check on purpose: RFC 9110 tolerates identical repeats, but a
     // contract test surfacing them is strict by design.
     '  if (!/^[0-9]+$/.test(String(raw).trim())) pm.expect.fail("Content-Length header is not a non-negative integer: " + raw);',
+    '  if (pm.response.headers.get("Content-Encoding") || pm.response.headers.get("Transfer-Encoding")) return;',
     '  if (contract.method === "HEAD" || pm.response.code === 304) return;',
-    '  if (pm.response.headers.get("Content-Encoding")) return;',
+    '  var actualBytes = unescape(encodeURIComponent(responseText())).length;',
+    '  if (Number(String(raw).trim()) !== actualBytes) pm.expect.fail("Content-Length must equal the response body byte length when Content-Encoding and Transfer-Encoding are absent (RFC 9110 8.6): " + raw + " !== " + actualBytes);',
     '  var mustBeEmpty = isBodyless() || (selected && Object.keys(selected.value.content || {}).length === 0);',
     '  if (mustBeEmpty && Number(String(raw).trim()) !== 0) pm.expect.fail("OpenAPI defines no response body for " + contract.method + " " + contract.path + " status " + pm.response.code + " but Content-Length was " + raw);',
     '});',

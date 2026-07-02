@@ -8,6 +8,7 @@ import { createSoapScript, instrumentSoapCollection } from '../../../src/lib/pro
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wsdl = readFileSync(resolve(here, '../../../fixtures/soap/stockquote.wsdl'), 'utf8');
+const addressingWsdl = readFileSync(resolve(here, '../../../fixtures/soap/addressing.wsdl'), 'utf8');
 
 type AnyRec = Record<string, unknown>;
 function items(collection: AnyRec): AnyRec[] {
@@ -83,6 +84,43 @@ describe('instrumentSoapCollection', () => {
     expect(code).toContain('SOAP response Content-Type matches the SOAP 1.2 binding');
     expect(code).toContain('to.include("application/soap+xml")');
     expect(code).not.toContain('to.include("text/xml")');
+  });
+
+  it('emits WS-Addressing response assertions when the WSDL engages addressing', () => {
+    const index = parseWsdl(addressingWsdl);
+    const { collection } = instrumentSoapCollection(buildSoapCollection(index), index);
+    const code = scriptCode(items(collection)[0]!);
+    expect(code).toContain('WS-Addressing response headers are present');
+    expect(code).toContain('wsa:Action matches the WSDL output action');
+    expect(code).toContain('wsa:RelatesTo echoes the request wsa:MessageID');
+    expect(code).toContain('wsaAction');
+    expect(code).toContain('http://example.com/quote/GetQuoteReply');
+    expect(() => new Function('pm', code)).not.toThrow();
+  });
+
+  it('derives the reply action from the WSDL default pattern when none is declared', () => {
+    const index = parseWsdl(addressingWsdl);
+    const { collection } = instrumentSoapCollection(buildSoapCollection(index), index);
+    const listQuotes = items(collection).find((item) => item.name === 'ListQuotes')!;
+    expect(scriptCode(listQuotes)).toContain('http://example.com/quote/QuotePort/ListQuotesResponse');
+  });
+
+  it('omits WS-Addressing assertions when the WSDL does not engage addressing', () => {
+    const index = parseWsdl(wsdl);
+    const { collection } = instrumentSoapCollection(buildSoapCollection(index), index);
+    expect(scriptCode(items(collection)[0]!)).not.toContain('WS-Addressing');
+  });
+
+  it('warns SOAP_ADDRESSING_ACTION_UNDERIVABLE when no output action is derivable', () => {
+    const warnings: string[] = [];
+    const code = createSoapScript(
+      { name: 'Op', soapAction: '', soapVersion: '1.1', warnings: [], input: { name: 'In', parts: [] }, output: { name: 'Out', parts: [] } },
+      warnings,
+      { declaresAddressing: true }
+    );
+    expect(warnings.join('\n')).toMatch(/SOAP_ADDRESSING_ACTION_UNDERIVABLE/);
+    expect(code).toContain('WS-Addressing response headers are present');
+    expect(code).not.toContain('wsa:Action matches the WSDL output action');
   });
 
   it('golden snapshot: generated assertions for the stockquote service', () => {

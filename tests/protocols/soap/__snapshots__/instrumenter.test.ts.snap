@@ -8,6 +8,27 @@ exports[`instrumentSoapCollection > golden snapshot: generated assertions for th
 var bodyText = (pm.response.text && pm.response.text()) || "";
 function header(name) { return (pm.response.headers.get(name) || ""); }
 function matchTag(local) { return new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?" + local + "(?=[\\\\s/>])"); }
+var cleanXml = bodyText.replace(/<!--[\\s\\S]*?-->/g, "").replace(/<!\\[CDATA\\[[\\s\\S]*?\\]\\]>/g, "");
+function localPart(name) { var i = name.indexOf(":"); return i === -1 ? name : name.slice(i + 1); }
+function elementInner(xml, local) {
+  var open = xml.match(new RegExp("<(?:[A-Za-z_][\\\\w.-]*:)?" + local + "(?=[\\\\s/>])[^>]*>"));
+  if (!open) return null;
+  if (/\\/>$/.test(open[0])) return "";
+  var start = open.index + open[0].length;
+  var rest = xml.slice(start);
+  var close = rest.search(new RegExp("</(?:[A-Za-z_][\\\\w.-]*:)?" + local + "\\\\s*>"));
+  return close === -1 ? null : rest.slice(0, close);
+}
+function directChildNames(inner) {
+  var names = []; var depth = 0; var m;
+  var re = /<(\\/?)([A-Za-z_][\\w.-]*(?::[A-Za-z_][\\w.-]*)?)([^>]*?)(\\/?)>/g;
+  while ((m = re.exec(inner))) {
+    if (m[1]) { depth -= 1; continue; }
+    if (depth === 0) names.push(m[2]);
+    if (!m[4]) depth += 1;
+  }
+  return names;
+}
 
 pm.test('SOAP transport returned HTTP 200', function () {
   pm.response.to.have.status(200);
@@ -52,9 +73,103 @@ pm.test('SOAP Fault is well-formed for SOAP 1.1', function () {
   if (!matchTag("faultstring").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultstring child (SOAP 1.1 section 4.4)");
 });
 
+pm.test('SOAP 1.1 faultactor value is a URI (SOAP 1.1 section 4.4)', function () {
+  if (!matchTag("Fault").test(bodyText)) return;
+  var actor = (cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?faultactor[^>]*>([\\s\\S]*?)<\\//) || [])[1];
+  if (actor === undefined) return;
+  if (!/^\\s*[A-Za-z][A-Za-z0-9+.-]*:/.test(actor)) pm.expect.fail("faultactor must carry a URI identifying the faulting node (SOAP 1.1 section 4.4); got " + actor.trim());
+});
+
 pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {
   if (matchTag("Fault").test(bodyText)) return;
   pm.expect(bodyText, "expected SOAP response element <" + soap.expectedResponseElement + "> not found").to.match(new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?GetStockPriceResponse(?=[\\\\s/>])"));
+});
+
+pm.test('SOAP request uses HTTP POST (WS-I Basic Profile 1.1 R1141)', function () {
+  pm.expect(pm.request.method, "SOAP over HTTP binds operations to POST").to.eql("POST");
+});
+
+pm.test('SOAPAction request header is present and quoted (WS-I Basic Profile 1.1 R2744/R2745)', function () {
+  var sa = pm.request.headers.get("SOAPAction");
+  if (sa === null || sa === undefined) { pm.expect.fail("SOAP 1.1 HTTP requests carry a SOAPAction header, quoted, even when empty"); return; }
+  if (!/^"[\\s\\S]*"$/.test(sa)) pm.expect.fail("SOAPAction must be quoted on the wire (got: " + sa + ")");
+  if (sa.slice(1, -1) !== "http://example.com/stockquote/GetStockPrice") pm.expect.fail("SOAPAction " + sa + " does not match the WSDL soapAction value");
+});
+
+pm.test('SOAP response contains no DTD or processing instruction (WS-I Basic Profile 1.1 R1008/R1009)', function () {
+  if (!bodyText.trim()) return;
+  if (/<!DOCTYPE/i.test(bodyText)) pm.expect.fail("SOAP messages must not contain a Document Type Declaration");
+  if (/<\\?(?!xml[\\s?])/i.test(bodyText)) pm.expect.fail("SOAP messages must not contain processing instructions");
+});
+
+pm.test('No element trailers follow the SOAP Body (WS-I Basic Profile 1.1 R1011)', function () {
+  var m = /<\\/(?:[A-Za-z_][\\w.-]*:)?Body\\s*>([\\s\\S]*?)<\\/(?:[A-Za-z_][\\w.-]*:)?Envelope\\s*>/.exec(cleanXml);
+  if (m && /<[A-Za-z_]/.test(m[1])) pm.expect.fail("the SOAP Envelope must not contain element children after soap:Body");
+});
+
+pm.test('SOAP Body has at most one direct child element (WS-I Basic Profile 1.1 R2201)', function () {
+  var inner = elementInner(cleanXml, "Body");
+  if (inner === null) return;
+  var kids = directChildNames(inner);
+  if (kids.length > 1) pm.expect.fail("the response soap:Body carries " + kids.length + " direct children (" + kids.join(", ") + "); literal responses bind at most one body element");
+});
+
+pm.test('HTTP 202 responses carry no SOAP envelope (SOAP 1.2 Part 2 section 6.3)', function () {
+  if (pm.response.code !== 202) return;
+  if (/<(?:[A-Za-z_][\\w.-]*:)?Envelope[\\s/>]/.test(bodyText)) pm.expect.fail("a 202 acceptance acknowledgement must not carry a SOAP envelope");
+});
+
+pm.test('soap:mustUnderstand values use only 0 or 1 (SOAP 1.1 section 4.2.3 / WS-I Basic Profile 1.1 R1013)', function () {
+  var re = /mustUnderstand\\s*=\\s*["']([^"']*)["']/g; var m;
+  while ((m = re.exec(cleanXml))) { if (m[1] !== "0" && m[1] !== "1") pm.expect.fail("mustUnderstand must be exactly 0 or 1 (got " + m[1] + ")"); }
+});
+
+pm.test('SOAP Header children are namespace-qualified (WS-I Basic Profile 1.1 R1027)', function () {
+  var inner = elementInner(cleanXml, "Header");
+  if (!inner || !inner.trim()) return;
+  if (inner.indexOf("xmlns=") !== -1) return;
+  var kids = directChildNames(inner);
+  for (var i = 0; i < kids.length; i++) { if (kids[i].indexOf(":") === -1) pm.expect.fail("header block " + kids[i] + " is unqualified; SOAP header blocks must be namespace-qualified"); }
+});
+
+pm.test('SOAP actor attributes are URIs (SOAP 1.1 section 4.2.2)', function () {
+  var re = /(?:actor|role)\\s*=\\s*["']([^"']*)["']/g; var m;
+  while ((m = re.exec(cleanXml))) {
+    var v = m[1];
+    if (v === "http://schemas.xmlsoap.org/soap/actor/next") continue;
+    if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(v)) pm.expect.fail("actor/role value " + v + " is not an absolute URI");
+  }
+});
+
+pm.test('Literal response carries no encodingStyle on SOAP structural elements (WS-I Basic Profile 1.1 R1005 / SOAP 1.2 Part 1 section 5.1.1)', function () {
+  if (cleanXml.indexOf("encodingStyle") === -1) return;
+  var core = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault)[^>]*>/g) || [];
+  for (var i = 0; i < core.length; i++) { if (core[i].indexOf("encodingStyle") !== -1) pm.expect.fail("encodingStyle must not appear on " + core[i].replace(/[<>]/g, "").split(/\\s/)[0]); }
+  var re = /encodingStyle\\s*=\\s*["']([^"']*)["']/g; var m; while ((m = re.exec(cleanXml))) { var toks = m[1].split(/\\s+/).filter(Boolean); for (var j = 0; j < toks.length; j++) { if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(toks[j])) pm.expect.fail("encodingStyle token " + toks[j] + " is not an absolute URI"); } }
+});
+
+pm.test('Expected response element is the direct child of soap:Body (WS-I Basic Profile 1.1 R2201)', function () {
+  var inner = elementInner(cleanXml, "Body");
+  if (inner === null) return;
+  var kids = directChildNames(inner);
+  if (kids.length === 0) return;
+  if (kids.some(function (k) { return localPart(k) === "Fault"; })) return;
+  if (!kids.some(function (k) { return localPart(k) === "GetStockPriceResponse"; })) pm.expect.fail("the WSDL output element " + "GetStockPriceResponse" + " must be the direct child of soap:Body (got: " + kids.join(", ") + ")");
+});
+
+pm.test('Response element namespace matches the WSDL schema declaration (WS-I Basic Profile 1.1 R2712)', function () {
+  var open = cleanXml.match(new RegExp("<([A-Za-z_][\\\\w.-]*):GetStockPriceResponse[\\\\s/>]"));
+  if (!open) return;
+  var decl = new RegExp("xmlns:" + open[1] + "\\\\s*=\\\\s*[\\"']([^\\"']*)[\\"']").exec(cleanXml);
+  if (decl && decl[1] !== "http://example.com/stockquote") pm.expect.fail("response element is bound to namespace " + decl[1] + " but the WSDL schema declares " + "http://example.com/stockquote");
+});
+
+pm.test('SOAP Body children are namespace-qualified (WS-I Basic Profile 1.1 R1014)', function () {
+  var inner = elementInner(cleanXml, "Body");
+  if (!inner || !inner.trim()) return;
+  if (inner.indexOf("xmlns=") !== -1) return;
+  var kids = directChildNames(inner);
+  for (var i = 0; i < kids.length; i++) { if (kids[i].indexOf(":") === -1) pm.expect.fail("Body child " + kids[i] + " is unqualified; literal body elements come from a schema targetNamespace"); }
 });",
       "name": "GetStockPrice",
     },
@@ -63,6 +178,27 @@ pm.test('Expected response element ' + soap.expectedResponseElement + ' is prese
 var bodyText = (pm.response.text && pm.response.text()) || "";
 function header(name) { return (pm.response.headers.get(name) || ""); }
 function matchTag(local) { return new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?" + local + "(?=[\\\\s/>])"); }
+var cleanXml = bodyText.replace(/<!--[\\s\\S]*?-->/g, "").replace(/<!\\[CDATA\\[[\\s\\S]*?\\]\\]>/g, "");
+function localPart(name) { var i = name.indexOf(":"); return i === -1 ? name : name.slice(i + 1); }
+function elementInner(xml, local) {
+  var open = xml.match(new RegExp("<(?:[A-Za-z_][\\\\w.-]*:)?" + local + "(?=[\\\\s/>])[^>]*>"));
+  if (!open) return null;
+  if (/\\/>$/.test(open[0])) return "";
+  var start = open.index + open[0].length;
+  var rest = xml.slice(start);
+  var close = rest.search(new RegExp("</(?:[A-Za-z_][\\\\w.-]*:)?" + local + "\\\\s*>"));
+  return close === -1 ? null : rest.slice(0, close);
+}
+function directChildNames(inner) {
+  var names = []; var depth = 0; var m;
+  var re = /<(\\/?)([A-Za-z_][\\w.-]*(?::[A-Za-z_][\\w.-]*)?)([^>]*?)(\\/?)>/g;
+  while ((m = re.exec(inner))) {
+    if (m[1]) { depth -= 1; continue; }
+    if (depth === 0) names.push(m[2]);
+    if (!m[4]) depth += 1;
+  }
+  return names;
+}
 
 pm.test('SOAP transport returned HTTP 200', function () {
   pm.response.to.have.status(200);
@@ -107,14 +243,110 @@ pm.test('SOAP Fault is well-formed for SOAP 1.1', function () {
   if (!matchTag("faultstring").test(bodyText)) pm.expect.fail("a SOAP 1.1 Fault must carry a faultstring child (SOAP 1.1 section 4.4)");
 });
 
+pm.test('SOAP 1.1 faultactor value is a URI (SOAP 1.1 section 4.4)', function () {
+  if (!matchTag("Fault").test(bodyText)) return;
+  var actor = (cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?faultactor[^>]*>([\\s\\S]*?)<\\//) || [])[1];
+  if (actor === undefined) return;
+  if (!/^\\s*[A-Za-z][A-Za-z0-9+.-]*:/.test(actor)) pm.expect.fail("faultactor must carry a URI identifying the faulting node (SOAP 1.1 section 4.4); got " + actor.trim());
+});
+
 pm.test('Expected response element ' + soap.expectedResponseElement + ' is present', function () {
   if (matchTag("Fault").test(bodyText)) return;
   pm.expect(bodyText, "expected SOAP response element <" + soap.expectedResponseElement + "> not found").to.match(new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?ListSymbolsResponse(?=[\\\\s/>])"));
+});
+
+pm.test('SOAP request uses HTTP POST (WS-I Basic Profile 1.1 R1141)', function () {
+  pm.expect(pm.request.method, "SOAP over HTTP binds operations to POST").to.eql("POST");
+});
+
+pm.test('SOAPAction request header is present and quoted (WS-I Basic Profile 1.1 R2744/R2745)', function () {
+  var sa = pm.request.headers.get("SOAPAction");
+  if (sa === null || sa === undefined) { pm.expect.fail("SOAP 1.1 HTTP requests carry a SOAPAction header, quoted, even when empty"); return; }
+  if (!/^"[\\s\\S]*"$/.test(sa)) pm.expect.fail("SOAPAction must be quoted on the wire (got: " + sa + ")");
+  if (sa.slice(1, -1) !== "http://example.com/stockquote/ListSymbols") pm.expect.fail("SOAPAction " + sa + " does not match the WSDL soapAction value");
+});
+
+pm.test('SOAP response contains no DTD or processing instruction (WS-I Basic Profile 1.1 R1008/R1009)', function () {
+  if (!bodyText.trim()) return;
+  if (/<!DOCTYPE/i.test(bodyText)) pm.expect.fail("SOAP messages must not contain a Document Type Declaration");
+  if (/<\\?(?!xml[\\s?])/i.test(bodyText)) pm.expect.fail("SOAP messages must not contain processing instructions");
+});
+
+pm.test('No element trailers follow the SOAP Body (WS-I Basic Profile 1.1 R1011)', function () {
+  var m = /<\\/(?:[A-Za-z_][\\w.-]*:)?Body\\s*>([\\s\\S]*?)<\\/(?:[A-Za-z_][\\w.-]*:)?Envelope\\s*>/.exec(cleanXml);
+  if (m && /<[A-Za-z_]/.test(m[1])) pm.expect.fail("the SOAP Envelope must not contain element children after soap:Body");
+});
+
+pm.test('SOAP Body has at most one direct child element (WS-I Basic Profile 1.1 R2201)', function () {
+  var inner = elementInner(cleanXml, "Body");
+  if (inner === null) return;
+  var kids = directChildNames(inner);
+  if (kids.length > 1) pm.expect.fail("the response soap:Body carries " + kids.length + " direct children (" + kids.join(", ") + "); literal responses bind at most one body element");
+});
+
+pm.test('HTTP 202 responses carry no SOAP envelope (SOAP 1.2 Part 2 section 6.3)', function () {
+  if (pm.response.code !== 202) return;
+  if (/<(?:[A-Za-z_][\\w.-]*:)?Envelope[\\s/>]/.test(bodyText)) pm.expect.fail("a 202 acceptance acknowledgement must not carry a SOAP envelope");
+});
+
+pm.test('soap:mustUnderstand values use only 0 or 1 (SOAP 1.1 section 4.2.3 / WS-I Basic Profile 1.1 R1013)', function () {
+  var re = /mustUnderstand\\s*=\\s*["']([^"']*)["']/g; var m;
+  while ((m = re.exec(cleanXml))) { if (m[1] !== "0" && m[1] !== "1") pm.expect.fail("mustUnderstand must be exactly 0 or 1 (got " + m[1] + ")"); }
+});
+
+pm.test('SOAP Header children are namespace-qualified (WS-I Basic Profile 1.1 R1027)', function () {
+  var inner = elementInner(cleanXml, "Header");
+  if (!inner || !inner.trim()) return;
+  if (inner.indexOf("xmlns=") !== -1) return;
+  var kids = directChildNames(inner);
+  for (var i = 0; i < kids.length; i++) { if (kids[i].indexOf(":") === -1) pm.expect.fail("header block " + kids[i] + " is unqualified; SOAP header blocks must be namespace-qualified"); }
+});
+
+pm.test('SOAP actor attributes are URIs (SOAP 1.1 section 4.2.2)', function () {
+  var re = /(?:actor|role)\\s*=\\s*["']([^"']*)["']/g; var m;
+  while ((m = re.exec(cleanXml))) {
+    var v = m[1];
+    if (v === "http://schemas.xmlsoap.org/soap/actor/next") continue;
+    if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(v)) pm.expect.fail("actor/role value " + v + " is not an absolute URI");
+  }
+});
+
+pm.test('Literal response carries no encodingStyle on SOAP structural elements (WS-I Basic Profile 1.1 R1005 / SOAP 1.2 Part 1 section 5.1.1)', function () {
+  if (cleanXml.indexOf("encodingStyle") === -1) return;
+  var core = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault)[^>]*>/g) || [];
+  for (var i = 0; i < core.length; i++) { if (core[i].indexOf("encodingStyle") !== -1) pm.expect.fail("encodingStyle must not appear on " + core[i].replace(/[<>]/g, "").split(/\\s/)[0]); }
+  var re = /encodingStyle\\s*=\\s*["']([^"']*)["']/g; var m; while ((m = re.exec(cleanXml))) { var toks = m[1].split(/\\s+/).filter(Boolean); for (var j = 0; j < toks.length; j++) { if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(toks[j])) pm.expect.fail("encodingStyle token " + toks[j] + " is not an absolute URI"); } }
+});
+
+pm.test('Expected response element is the direct child of soap:Body (WS-I Basic Profile 1.1 R2201)', function () {
+  var inner = elementInner(cleanXml, "Body");
+  if (inner === null) return;
+  var kids = directChildNames(inner);
+  if (kids.length === 0) return;
+  if (kids.some(function (k) { return localPart(k) === "Fault"; })) return;
+  if (!kids.some(function (k) { return localPart(k) === "ListSymbolsResponse"; })) pm.expect.fail("the WSDL output element " + "ListSymbolsResponse" + " must be the direct child of soap:Body (got: " + kids.join(", ") + ")");
+});
+
+pm.test('Response element namespace matches the WSDL schema declaration (WS-I Basic Profile 1.1 R2712)', function () {
+  var open = cleanXml.match(new RegExp("<([A-Za-z_][\\\\w.-]*):ListSymbolsResponse[\\\\s/>]"));
+  if (!open) return;
+  var decl = new RegExp("xmlns:" + open[1] + "\\\\s*=\\\\s*[\\"']([^\\"']*)[\\"']").exec(cleanXml);
+  if (decl && decl[1] !== "http://example.com/stockquote") pm.expect.fail("response element is bound to namespace " + decl[1] + " but the WSDL schema declares " + "http://example.com/stockquote");
+});
+
+pm.test('SOAP Body children are namespace-qualified (WS-I Basic Profile 1.1 R1014)', function () {
+  var inner = elementInner(cleanXml, "Body");
+  if (!inner || !inner.trim()) return;
+  if (inner.indexOf("xmlns=") !== -1) return;
+  var kids = directChildNames(inner);
+  for (var i = 0; i < kids.length; i++) { if (kids[i].indexOf(":") === -1) pm.expect.fail("Body child " + kids[i] + " is unqualified; literal body elements come from a schema targetNamespace"); }
 });",
       "name": "ListSymbols",
     },
   ],
   "warnings": [
+    "SOAP_LINT_DOC_LITERAL_WRAPPED: operation GetStockPrice follows the doc-literal-wrapped convention (input wrapper element <GetStockPrice> is named after the operation); advisory only -- convention-based detection, not a WS-I requirement",
+    "SOAP_LINT_DOC_LITERAL_WRAPPED: operation ListSymbols follows the doc-literal-wrapped convention (input wrapper element <ListSymbols> is named after the operation); advisory only -- convention-based detection, not a WS-I requirement",
     "SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation GetStockPrice asserts the SOAP envelope/body/fault and the top-level response element <GetStockPriceResponse> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)",
     "SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation ListSymbols asserts the SOAP envelope/body/fault and the top-level response element <ListSymbolsResponse> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)",
   ],

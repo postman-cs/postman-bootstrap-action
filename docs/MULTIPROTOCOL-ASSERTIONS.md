@@ -15,7 +15,7 @@ types are supported, the spec each is derived from, and where that support is gr
 | WebSocket | `ws-raw-request` | No (pruned by the unified runner) | AsyncAPI 2.0-2.6 / 3.0 | AsyncAPI document |
 | Socket.IO | `ws-socketio-request` | No (pruned) | AsyncAPI 2.0-2.6 / 3.0 | AsyncAPI document |
 | MQTT | `mqtt-request` (v3 EC) | No (pruned) | AsyncAPI 2.0-2.6 / 3.0 with MQTT servers/bindings | AsyncAPI document |
-| MCP | `mcp-request` (v3 EC) | No (pruned) | MCP registry `server.json` / `mcpServers` client config | MCP server manifest |
+| MCP | `mcp-request` (v3 EC) + `http-request` (Streamable HTTP lane) | Partially — `mcp-request` is pruned, but the Streamable HTTP `http-request` lane runs | MCP registry `server.json` / `mcpServers` client config | MCP server manifest |
 | LLM | `llm-request` | No (label-only) | Required future protocol spec | Required future protocol spec |
 
 GraphQL-over-HTTP and SOAP-over-HTTP are emitted as ordinary v2 `http` requests, so they run in the
@@ -28,6 +28,10 @@ schema/example validation applied statically at generation time. The unified run
 `ws-*` item types, so they carry `runnableInCi: false`: the assertions are persisted for authoring
 and structural validation but are not executed in CI. This runner limitation is upstream, not in this
 action.
+
+### Severity model
+
+Checks are tiered by the requirement level of their normative source (RFC 2119/8174). MUST-level wire and document rules fail: at runtime as failing `pm.test` assertions, and at generation time as fail-closed errors when collection integrity is at stake (item coverage, script/collection size gates, unparseable specs, secret material). SHOULD/MAY-level rules and convention- or registry-sourced checks (naming conventions, unregistered IANA values, interop advisories, doc-literal-wrapped detection) surface as coded warnings that never fail a run. Document lints over the spec artifact itself are warnings across the board, because the author of the spec being linted is not necessarily the operator of the server under test.
 
 ### AsyncAPI contract coverage
 
@@ -70,6 +74,8 @@ must use `method` GET or POST with `query`/`headers` as object Schema Objects
 (`connect`, `connect_error`, `disconnect`, `disconnecting`, `newListener`, `removeListener` —
 `ASYNCAPI_SOCKETIO_RESERVED_EVENT`).
 
+A document-wide lint pass covers the rest of the AsyncAPI object model in the same phase: servers must declare a `protocol` that agrees with the URL scheme, a 3.x `host` must not embed a scheme, and server variables must be declared, defaulted, and enum-consistent (`ASYNCAPI_SERVER_*`); security requirements must name declared schemes of valid type, with scopes only where OAuth2/OpenID Connect allows them (`ASYNCAPI_SECURITY_*`); `contentType`/`defaultContentType` must be RFC 6838 `type/subtype` media types, with unregistered top-level types advisory (`ASYNCAPI_CONTENT_TYPE_INVALID` / `_UNREGISTERED`); `schemaFormat` must belong to a known format family (`ASYNCAPI_SCHEMA_FORMAT_*`); message and operation traits must not define `payload` (`ASYNCAPI_TRAIT_PAYLOAD_FORBIDDEN`); message `headers` must be object schemas, header examples are validated against them, and 2.x message-example keys are restricted to the Example Object shape (`ASYNCAPI_MESSAGE_HEADERS_*`, `ASYNCAPI_MESSAGE_EXAMPLE_UNKNOWN_KEY`); `messageId`/`operationId`/channel-address/tag uniqueness is enforced (`ASYNCAPI_MESSAGE_ID_DUPLICATE`, `ASYNCAPI_OPERATION_ID_DUPLICATE`, `ASYNCAPI_CHANNEL_ADDRESS_DUPLICATE`, `ASYNCAPI_TAGS_DUPLICATE`); components keys must match the AsyncAPI key grammar (`ASYNCAPI_COMPONENT_KEY_INVALID`); parameter objects are checked for `location` grammar and enum/default/example consistency (`ASYNCAPI_PARAMETER_*`); a 3.0 operation `action` must be `send` or `receive` (`ASYNCAPI_OPERATION_ACTION_INVALID`); HTTP, Kafka, AMQP, and WS binding values are type- and range-checked per their binding documents (`ASYNCAPI_HTTP_BINDING_INVALID`, `ASYNCAPI_KAFKA_BINDING_INVALID` / `ASYNCAPI_KAFKA_TOPIC_INVALID`, `ASYNCAPI_AMQP_BINDING_INVALID`, `ASYNCAPI_WS_BINDING_VERSION_UNKNOWN`); WebSocket subprotocols are checked against the IANA registry (`ASYNCAPI_WS_SUBPROTOCOL_UNREGISTERED`); `externalDocs` URLs must parse (`ASYNCAPI_EXTERNAL_DOCS_URL_INVALID`); and any local `$ref` that survives dereferencing unresolved is reported (`ASYNCAPI_REF_UNRESOLVED`).
+
 Runtime message-exchange execution in CI remains blocked by the upstream Postman CLI limitation that
 prunes `ws-*` item types (issues #10640, #11252, #12316); the generation-time validation above is the
 enforceable contract surface until that runner path exists.
@@ -81,6 +87,7 @@ AsyncAPI documents whose servers declare `mqtt`, `mqtts`, or `secure-mqtt` (or w
 - Channel addresses must satisfy the MQTT 3.1.1/5.0 topic grammar (non-empty, no U+0000, at most 65535 UTF-8 bytes). A concrete publish topic must not contain `+`/`#`; violations raise `ASYNCAPI_MQTT_TOPIC_INVALID`.
 - A wildcard address is treated as a subscription topic filter: `#` only in the final level, `+` occupying a whole level, flagged with `ASYNCAPI_MQTT_TOPIC_FILTER` so the publish/subscribe asymmetry is auditable.
 - MQTT binding values are range-checked (`qos` 0-2, `retain` boolean, `keepAlive`/`messageExpiryInterval` non-negative integers, `payloadFormatIndicator` 0 or 1, `responseTopic` and `lastWill.topic` concrete topics, `lastWill.qos`/`lastWill.retain` typed); violations raise `ASYNCAPI_MQTT_BINDING_INVALID`.
+- Client identifiers must be well-formed UTF-8 without unpaired surrogates (`ASYNCAPI_MQTT_CLIENTID_INVALID`), with the 1–23-character `[0-9A-Za-z]` interop guidance advisory (`ASYNCAPI_MQTT_CLIENTID_INTEROP`), and `$share/{ShareName}/{filter}` shared subscriptions must follow the MQTT 5.0 grammar (`ASYNCAPI_MQTT_SHARED_SUBSCRIPTION_INVALID`).
 
 The unified runner prunes `mqtt-request` like the `ws-*` types, so these collections are `runnableInCi: false` with the generation-time validation as the enforceable contract surface.
 
@@ -98,6 +105,10 @@ Tool metadata is validated against MCP 2025-06-18: `annotations` behavior hints
 `outputSchema` commits its `tools/call` results to carry conforming `structuredContent`, so the
 schema must be a compilable object schema (`MCP_TOOL_OUTPUT_SCHEMA_INVALID` /
 `MCP_TOOL_OUTPUT_SCHEMA_NOT_VALIDATED`; schema-graph overflow surfaces as `MCP_SCHEMA_NOT_COMPILED`).
+
+Additional 2025-06-18 schema discipline runs in the same pass: tool names must be unique across the manifest (`MCP_TOOL_NAME_DUPLICATE`), `title`/`description` metadata is type-checked with `title`-vs-`annotations.title` precedence advisories (`MCP_TOOL_BASE_METADATA_INVALID`, `MCP_TOOL_TITLE_PRECEDENCE`), unknown tool fields are flagged against the 2025-06-18 Tool shape (`MCP_TOOL_FIELD_UNKNOWN_2025_06_18`), `_meta` keys must follow the MCP key grammar outside the reserved `modelcontextprotocol`/`mcp` prefixes (`MCP_META_KEY_INVALID` / `MCP_META_KEY_RESERVED_PREFIX`), and declared `mimeType` values must be RFC 6838 `type/subtype` (`MCP_MIME_TYPE_INVALID`).
+
+Servers that expose a Streamable HTTP endpoint additionally get a runnable `http-request` lane that exercises the MCP 2025-06-18 HTTP transport live in the Postman CLI: `initialize` (HTTP 2xx; JSON or SSE `Content-Type`; a single JSON-RPC response object, never a batch; a date-format negotiated `protocolVersion`; typed `capabilities` sub-shapes; `serverInfo` shape; visible-ASCII `Mcp-Session-Id`), `notifications/initialized` (HTTP 202 with an empty body), `ping` (string-id echo with an empty result), `tools/list` (result shape, with the manifest’s declared tools present as a subset), one `tools/call` per tool (JSON-RPC result envelope, typed content blocks, `structuredContent` validated against the tool’s declared `outputSchema`), and negative probes: an unsupported `MCP-Protocol-Version` header must draw HTTP 400, an invalid `tools/list` cursor must draw a JSON-RPC error, session `DELETE` must terminate the session or answer 405, and the terminated session id must be rejected afterwards. A server with no HTTP URL records `MCP_RUNTIME_SURFACE_UNAVAILABLE`; lane coverage fails closed with `MCP_HTTP_ITEM_COVERAGE_FAILED`.
 
 ### Remaining protocol surfaces
 
@@ -141,6 +152,8 @@ validated as a wire-conformant `google.rpc.Status`: the trailer value must be ba
 protobuf message whose `code` (field 1) is a varint in the canonical 0-16 range consistent with the
 reported status, whose `message` (field 2) is length-delimited, and whose `details` entries
 (field 3) decode as `google.protobuf.Any` messages with a non-empty `type_url`.
+
+Generation-time `.proto` lints run before instrumentation and surface as `GRPC_*` warnings: field numbers must sit in protoc’s legal range (1–536,870,911, excluding the 19000–19999 implementation-reserved block — `GRPC_FIELD_NUMBER_INVALID`) and must not reuse `reserved` numbers (`GRPC_RESERVED_FIELD_NUMBER_REUSED`); a proto3 enum’s first value must be 0 (`GRPC_ENUM_FIRST_VALUE_NOT_ZERO`) and its zero value is conventionally `*_UNSPECIFIED` (`GRPC_ENUM_ZERO_NAME_CONVENTION`); a missing `package` declaration is flagged per buf’s PACKAGE_DEFINED lint (`GRPC_FILE_PACKAGE_CONVENTION`); `rpc` request/response types must resolve to messages in the parsed set (`GRPC_RPC_TYPE_UNRESOLVED`); deprecated RPCs, messages, fields, and enums are surfaced (`GRPC_DEPRECATED`); and `google.api.http` transcoding annotations are cross-checked against the request message: path template variables must reference request fields (`GRPC_HTTP_PATH_VARIABLE_UNKNOWN`), `body` must be `*` or a request field (`GRPC_HTTP_BODY_FIELD_UNKNOWN`), and `additional_bindings` must not nest (`GRPC_HTTP_NESTED_ADDITIONAL_BINDINGS`).
 
 ## Write path: public v2.1.0 vs gateway EC
 

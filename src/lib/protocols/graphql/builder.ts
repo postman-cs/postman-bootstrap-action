@@ -98,6 +98,9 @@ function buildItem(
 ): JsonRecord {
   const header = [
     { key: 'Content-Type', value: 'application/json' },
+    // GraphQL-over-HTTP: clients MUST include Accept; prefer the modern media
+    // type while keeping legacy application/json acceptable.
+    { key: 'Accept', value: 'application/graphql-response+json, application/json;q=0.9' },
     ...(opts.headers ?? []).map((entry) => ({ ...entry }))
   ];
   return {

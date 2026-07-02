@@ -106,6 +106,30 @@ describe('protocol dispatch format discriminant', () => {
     expect(items.every((item) => item.type === 'ws-raw-request')).toBe(true);
   });
 
+  it('mcp builds a v3-ec collection runnable when HTTP contract items exist', async () => {
+    const result = await buildProtocolCollection('mcp', read('mcp/server.json'), {
+      name: 'T'
+    });
+    expect(result.type).toBe('mcp');
+    expect(result.format).toBe('v3-ec');
+    expect(result.runnableInCi).toBe(true);
+    expect(result.operationCount).toBe(18);
+    const items = (result.collection.item as Array<Record<string, unknown>>) ?? [];
+    expect(items.filter((item) => item.type === 'mcp-request')).toHaveLength(8);
+    expect(items.filter((item) => item.type === 'http-request')).toHaveLength(10);
+  });
+
+  it('mcp stdio-only collections stay static and are not runnable in CI', async () => {
+    const result = await buildProtocolCollection('mcp', JSON.stringify({
+      mcpServers: { local: { command: 'run-mcp' } }
+    }), {
+      name: 'T'
+    });
+    expect(result.runnableInCi).toBe(false);
+    expect(result.operationCount).toBe(2);
+    expect(result.warnings.some((w) => w.startsWith('MCP_RUNTIME_SURFACE_UNAVAILABLE'))).toBe(true);
+  });
+
   it.skipIf(!HAS_PROTOBUF)('all executable protocols emit v3-ec and are runnable in CI', async () => {
     const graphql = await buildProtocolCollection('graphql', read('graphql/telecom.graphql'), {
       name: 'T',

@@ -7,6 +7,7 @@ import { buildSoapCollection, COLLECTION_V210_SCHEMA } from '../../../src/lib/pr
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wsdl = readFileSync(resolve(here, '../../../fixtures/soap/stockquote.wsdl'), 'utf8');
+const addressingWsdl = readFileSync(resolve(here, '../../../fixtures/soap/addressing.wsdl'), 'utf8');
 
 type AnyRec = Record<string, unknown>;
 function items(collection: AnyRec): AnyRec[] {
@@ -80,5 +81,29 @@ describe('buildSoapCollection', () => {
     expect(String(header(first, 'Content-Type'))).toMatch(/application\/soap\+xml/);
     expect(String(header(first, 'Content-Type'))).toMatch(/action="http:\/\/example.com\/stockquote\/GetStockPrice"/);
     expect(header(first, 'SOAPAction')).toBeUndefined();
+  });
+
+  it('injects wsa:Action, wsa:MessageID and anonymous wsa:ReplyTo when addressing is engaged', () => {
+    const index = parseWsdl(addressingWsdl);
+    const first = items(buildSoapCollection(index) as AnyRec)[0]!;
+    const raw = String(((first.request as AnyRec).body as AnyRec).raw);
+    expect(raw).toContain('xmlns:wsa="http://www.w3.org/2005/08/addressing"');
+    expect(raw).toContain('<wsa:Action>http://example.com/quote/GetQuote</wsa:Action>');
+    expect(raw).toContain('<wsa:MessageID>urn:uuid:{{$guid}}</wsa:MessageID>');
+    expect(raw).toContain('<wsa:Address>http://www.w3.org/2005/08/addressing/anonymous</wsa:Address>');
+  });
+
+  it('derives the request action from the WSDL default pattern when none is declared', () => {
+    const index = parseWsdl(addressingWsdl);
+    const listQuotes = items(buildSoapCollection(index) as AnyRec).find((item) => item.name === 'ListQuotes')!;
+    const raw = String(((listQuotes.request as AnyRec).body as AnyRec).raw);
+    expect(raw).toContain('<wsa:Action>http://example.com/quote/QuotePort/ListQuotesRequest</wsa:Action>');
+  });
+
+  it('emits no wsa headers when the WSDL does not engage addressing', () => {
+    const index = parseWsdl(wsdl);
+    const raw = String(((items(buildSoapCollection(index) as AnyRec)[0]!.request as AnyRec).body as AnyRec).raw);
+    expect(raw).not.toContain('wsa:');
+    expect(raw).toContain('<soap:Header/>');
   });
 });

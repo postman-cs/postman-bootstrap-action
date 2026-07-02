@@ -365,10 +365,10 @@ describe('GraphQL 200-with-errors partial success vs total failure', () => {
     return item.event.find((event) => event.listen === 'test')!.script.exec.join('\n');
   }
   it('does not false-fail a legitimate partial success (data + errors)', () => {
-    expect(anyFail(runScript(pingScript(), { code: 200, json: { data: { ping: 'ok' }, errors: [{ message: 'deprecated field' }] } }))).toBe(false);
+    expect(anyFail(runScript(pingScript(), { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { ping: 'ok' }, errors: [{ message: 'deprecated field' }] } }))).toBe(false);
   });
   it('fails a total failure (errors present, no data)', () => {
-    expect(anyFail(runScript(pingScript(), { code: 200, json: { data: null, errors: [{ message: 'boom' }] } }))).toBe(true);
+    expect(anyFail(runScript(pingScript(), { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: null, errors: [{ message: 'boom' }] } }))).toBe(true);
   });
 });
 
@@ -395,11 +395,11 @@ describe('GraphQL selection-aligned field assertions', () => {
   });
   it('does not false-fail a valid response that omits the unselected composite', () => {
     const { exec } = meScript();
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { me: { id: 'x' } } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { me: { id: 'x' } } } }))).toBe(false);
   });
   it('fails when a selected non-null scalar field is missing', () => {
     const { exec } = meScript();
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { me: {} } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { me: {} } } }))).toBe(true);
   });
 });
 
@@ -429,24 +429,24 @@ describe('GraphQL union return runtime validation', () => {
   });
   it('accepts a union object carrying a declared member __typename', () => {
     const { pet } = unionScripts();
-    expect(anyFail(runScript(pet, { code: 200, json: { data: { pet: { __typename: 'Cat' } } } }))).toBe(false);
+    expect(anyFail(runScript(pet, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { pet: { __typename: 'Cat' } } } }))).toBe(false);
   });
   it('fails a scalar union value (not an object)', () => {
     const { pet } = unionScripts();
-    expect(anyFail(runScript(pet, { code: 200, json: { data: { pet: 'Cat' } } }))).toBe(true);
+    expect(anyFail(runScript(pet, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { pet: 'Cat' } } }))).toBe(true);
   });
   it('fails a union object missing __typename', () => {
     const { pet } = unionScripts();
-    expect(anyFail(runScript(pet, { code: 200, json: { data: { pet: {} } } }))).toBe(true);
+    expect(anyFail(runScript(pet, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { pet: {} } } }))).toBe(true);
   });
   it('fails a __typename outside the union member set', () => {
     const { pet } = unionScripts();
-    expect(anyFail(runScript(pet, { code: 200, json: { data: { pet: { __typename: 'Fish' } } } }))).toBe(true);
+    expect(anyFail(runScript(pet, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { pet: { __typename: 'Fish' } } } }))).toBe(true);
   });
   it('validates every element of a list-of-union return', () => {
     const { pets } = unionScripts();
-    expect(anyFail(runScript(pets, { code: 200, json: { data: { pets: [{ __typename: 'Cat' }, { __typename: 'Dog' }] } } }))).toBe(false);
-    expect(anyFail(runScript(pets, { code: 200, json: { data: { pets: ['Cat', {}] } } }))).toBe(true);
+    expect(anyFail(runScript(pets, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { pets: [{ __typename: 'Cat' }, { __typename: 'Dog' }] } } }))).toBe(false);
+    expect(anyFail(runScript(pets, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { pets: ['Cat', {}] } } }))).toBe(true);
   });
 });
 
@@ -466,18 +466,18 @@ describe('GraphQL scalar/enum/list runtime validation', () => {
 
   it('passes a valid enum member and fails a value outside the enum set', () => {
     const exec = scriptFor(rowSdl, 'query.row');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { row: { id: 'x', count: 1, state: 'ACTIVE' } } } }))).toBe(false);
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { row: { id: 'x', count: 1, state: 'BOGUS' } } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { row: { id: 'x', count: 1, state: 'ACTIVE' } } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { row: { id: 'x', count: 1, state: 'BOGUS' } } } }))).toBe(true);
   });
   it('fails an Int outside the signed 32-bit range and a fractional Int', () => {
     const exec = scriptFor(rowSdl, 'query.row');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { row: { id: 'x', count: 4294967296, state: 'ACTIVE' } } } }))).toBe(true);
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { row: { id: 'x', count: 1.5, state: 'ACTIVE' } } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { row: { id: 'x', count: 4294967296, state: 'ACTIVE' } } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { row: { id: 'x', count: 1.5, state: 'ACTIVE' } } } }))).toBe(true);
   });
   it('validates every list element, not only the first', () => {
     const exec = scriptFor('type Plan { id: ID! } type Query { plans: [Plan!]! }', 'query.plans');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { plans: [{ id: 'a' }, { id: 'b' }] } } }))).toBe(false);
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { plans: [{ id: 'a' }, {}] } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { plans: [{ id: 'a' }, { id: 'b' }] } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { plans: [{ id: 'a' }, {}] } } }))).toBe(true);
   });
 });
 
@@ -598,27 +598,27 @@ describe('GraphQL nullability: list elements and selected non-null fields', () =
   }
   it('accepts a null element in a nullable scalar list [String]', () => {
     const exec = gqlScript('type Query { tags: [String] }', 'query.tags');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { tags: ['a', null] } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { tags: ['a', null] } } }))).toBe(false);
   });
   it('fails a null element in a non-null scalar list [String!]', () => {
     const exec = gqlScript('type Query { tags: [String!] }', 'query.tags');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { tags: ['a', null] } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { tags: ['a', null] } } }))).toBe(true);
   });
   it('accepts a null element in a nullable object list [Thing]', () => {
     const exec = gqlScript('type Thing { id: ID! } type Query { things: [Thing] }', 'query.things');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { things: [{ id: 'a' }, null] } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { things: [{ id: 'a' }, null] } } }))).toBe(false);
   });
   it('fails a null element in a non-null object list [Thing!]', () => {
     const exec = gqlScript('type Thing { id: ID! } type Query { things: [Thing!] }', 'query.things');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { things: [{ id: 'a' }, null] } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { things: [{ id: 'a' }, null] } } }))).toBe(true);
   });
   it('fails a selected non-null field that is present but explicitly null', () => {
     const exec = gqlScript('type User { id: ID! } type Query { me: User }', 'query.me');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { me: { id: null } } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { me: { id: null } } } }))).toBe(true);
   });
   it('accepts a selected non-null field with a valid value', () => {
     const exec = gqlScript('type User { id: ID! } type Query { me: User }', 'query.me');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { me: { id: 'x' } } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { me: { id: 'x' } } } }))).toBe(false);
   });
 });
 
@@ -733,26 +733,26 @@ describe('GraphQL nested-list validation (round 5)', () => {
   }
   it('accepts a legal [[Int]] matrix (does not false-fail the nested list)', () => {
     const exec = nestedScript('type Query { grid: [[Int]] }', 'query.grid');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { grid: [[1, 2], [3, 4]] } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { grid: [[1, 2], [3, 4]] } } }))).toBe(false);
   });
   it('fails a [[Int]] with a non-integer inner element', () => {
     const exec = nestedScript('type Query { grid: [[Int]] }', 'query.grid');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { grid: [[1, 'x']] } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { grid: [[1, 'x']] } } }))).toBe(true);
   });
   it('fails a [[Int]] whose outer element is not itself a list', () => {
     const exec = nestedScript('type Query { grid: [[Int]] }', 'query.grid');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { grid: [1, 2] } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { grid: [1, 2] } } }))).toBe(true);
   });
   it('accepts a null inner element in a nullable inner list [[Int]]', () => {
     const exec = nestedScript('type Query { grid: [[Int]] }', 'query.grid');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { grid: [[1, null]] } } }))).toBe(false);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { grid: [[1, null]] } } }))).toBe(false);
   });
   it('fails a null inner element when the inner list is [[Int!]!]', () => {
     const exec = nestedScript('type Query { rows: [[Int!]!] }', 'query.rows');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { rows: [[1, null]] } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { rows: [[1, null]] } } }))).toBe(true);
   });
   it('fails a null outer element when the outer items are non-null [[Int!]!]', () => {
     const exec = nestedScript('type Query { rows: [[Int!]!] }', 'query.rows');
-    expect(anyFail(runScript(exec, { code: 200, json: { data: { rows: [null] } } }))).toBe(true);
+    expect(anyFail(runScript(exec, { code: 200, headers: { 'Content-Type': 'application/json' }, json: { data: { rows: [null] } } }))).toBe(true);
   });
 });

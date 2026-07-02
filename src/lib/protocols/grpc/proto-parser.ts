@@ -55,8 +55,13 @@ interface ProtoReflectionObject {
   // Type (message)
   fieldsArray?: ProtoField[];
   oneofsArray?: ProtoOneof[];
+  // reserved ranges ([lo, hi]) and names on a Type. protobufjs rejects reserved
+  // NAME reuse at parse time but silently accepts reserved NUMBER reuse, so the
+  // number check is a post-parse lint here.
+  reserved?: Array<[number, number] | string>;
   // Enum
   values?: Record<string, number>;
+  options?: Record<string, unknown> | null;
   comment?: string | null;
 }
 
@@ -69,6 +74,10 @@ interface ProtoMethod {
   responseStream?: boolean;
   resolvedRequestType?: ProtoReflectionObject | null;
   resolvedResponseType?: ProtoReflectionObject | null;
+  options?: Record<string, unknown> | null;
+  // Aggregate option values as parsed structures (protobufjs `parsedOptions`),
+  // e.g. [{ "(google.api.http)": { post, body, additional_bindings } }].
+  parsedOptions?: Array<Record<string, unknown>> | null;
   comment?: string | null;
   resolve?(): ProtoMethod;
 }
@@ -99,7 +108,9 @@ export type GrpcStreamKind = 'unary' | 'server' | 'client' | 'bidi';
 // `double` distinguishes float/double from integer scalars: proto3-JSON encodes
 // non-finite doubles as the strings "NaN"/"Infinity"/"-Infinity", and all
 // numeric fields may also carry numeric strings.
-export type GrpcJsonType = 'number' | 'double' | 'string' | 'boolean' | 'object' | 'array' | 'enum' | 'any' | 'unknown';
+// `null` is google.protobuf.NullValue: ProtoJSON encodes it as JSON null, so a
+// present value must be exactly null.
+export type GrpcJsonType = 'number' | 'double' | 'string' | 'boolean' | 'object' | 'array' | 'enum' | 'any' | 'null' | 'unknown';
 export type GrpcJsonFormat = 'proto-bytes' | 'proto-timestamp' | 'proto-duration' | 'proto-field-mask' | 'proto-float32';
 
 export interface GrpcFieldDescriptor {
@@ -123,6 +134,13 @@ export interface GrpcFieldDescriptor {
   // shape reference); undefined for scalars/enums/well-known scalar mappings.
   messageType?: string;
   enumType?: string;
+  // google.protobuf.Any: JSON object carrying a string "@type" URL; when the
+  // trailing type name resolves in the parsed proto set, the remaining keys
+  // are shape-checked against that message.
+  anyType?: boolean;
+  // google.api.field_behavior = REQUIRED: the field must be populated in
+  // requests (AIP-203); enforced on generated request bodies at build time.
+  requiredBehavior?: boolean;
   // The exact protobuf integer scalar type (e.g. `int32`, `uint64`) when this
   // field is an integer scalar; drives runtime range/sign validation.
   intType?: string;
@@ -136,6 +154,8 @@ export interface GrpcFieldDescriptor {
   mapValueEnumType?: string;
   // The exact protobuf integer scalar type of an integer-typed map value.
   mapValueIntType?: string;
+  // map<K, google.protobuf.Any> values get the Any grammar/shape check.
+  mapValueAnyType?: boolean;
   // For map<K,V> fields whose value is a message, the value message name (for
   // nested shape reference).
   mapValueMessageType?: string;
@@ -212,7 +232,7 @@ const SCALAR_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; jsonFormat?: Gr
 // nullable scalar. Struct/Empty/Any encode as objects but carry no fixed field
 // shape, so they map to `object` with no nested descent (messageType undefined).
 // grounding: https://protobuf.dev/programming-guides/json/
-const WELL_KNOWN_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; jsonFormat?: GrpcJsonFormat; nullable?: boolean; intType?: string }> = {
+const WELL_KNOWN_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; jsonFormat?: GrpcJsonFormat; nullable?: boolean; intType?: string; anyType?: boolean }> = {
   'google.protobuf.Timestamp': { jsonType: 'string', jsonFormat: 'proto-timestamp' },
   'google.protobuf.Duration': { jsonType: 'string', jsonFormat: 'proto-duration' },
   'google.protobuf.FieldMask': { jsonType: 'string', jsonFormat: 'proto-field-mask' },
@@ -227,9 +247,11 @@ const WELL_KNOWN_JSON_TYPE: Record<string, { jsonType: GrpcJsonType; jsonFormat?
   'google.protobuf.BytesValue': { jsonType: 'string', jsonFormat: 'proto-bytes', nullable: true },
   'google.protobuf.Struct': { jsonType: 'object' },
   'google.protobuf.Empty': { jsonType: 'object' },
-  'google.protobuf.Any': { jsonType: 'object' },
+  'google.protobuf.Any': { jsonType: 'object', anyType: true },
   'google.protobuf.Value': { jsonType: 'any' },
-  'google.protobuf.ListValue': { jsonType: 'array' }
+  'google.protobuf.ListValue': { jsonType: 'array' },
+  // NullValue is an enum whose only ProtoJSON encoding is JSON null.
+  'google.protobuf.NullValue': { jsonType: 'null' }
 };
 
 function streamKind(requestStream: boolean, responseStream: boolean): GrpcStreamKind {
@@ -289,14 +311,14 @@ function stripLeadingDot(name: string): string {
 function classifyValueType(
   protoType: string,
   resolved: ProtoReflectionObject | null | undefined
-): { jsonType: GrpcJsonType; jsonFormat?: GrpcJsonFormat; nullable?: boolean; messageType?: string; enumType?: string; intType?: string } {
+): { jsonType: GrpcJsonType; jsonFormat?: GrpcJsonFormat; nullable?: boolean; messageType?: string; enumType?: string; intType?: string; anyType?: boolean } {
   // Well-known types are keyed by their raw proto type name: a standalone
   // protobufjs parse does not bundle google/protobuf/*.proto, so a WKT field
   // never resolves to a reflection object (resolvedType stays null). The type
   // string (e.g. `google.protobuf.Timestamp`) is preserved verbatim whether or
   // not the reference resolves, so it is the reliable classifier.
   const wkt = WELL_KNOWN_JSON_TYPE[stripLeadingDot(protoType)];
-  if (wkt) return { jsonType: wkt.jsonType, jsonFormat: wkt.jsonFormat, nullable: wkt.nullable, intType: wkt.intType };
+  if (wkt) return { jsonType: wkt.jsonType, jsonFormat: wkt.jsonFormat, nullable: wkt.nullable, intType: wkt.intType, anyType: wkt.anyType };
   // google.rpc.Status rides the same name-keyed path as the WKTs: its
   // google/rpc/status.proto import is never bundled by a standalone parse, and
   // the instrumenter carries a canonical built-in shape for it.
@@ -346,6 +368,15 @@ function protoJsonName(field: ProtoField): string {
   return toLowerCamelCase(String(field.name));
 }
 
+// google.api.field_behavior REQUIRED on a field. protobufjs surfaces custom
+// field options under the parenthesized extension key; a repeated option can
+// surface as an array.
+function hasRequiredBehavior(field: ProtoField): boolean {
+  const value = field.options?.['(google.api.field_behavior)'];
+  if (typeof value === 'string') return value === 'REQUIRED';
+  return Array.isArray(value) && value.includes('REQUIRED');
+}
+
 function fieldDescriptor(field: ProtoField, warnings: string[], context: string): GrpcFieldDescriptor {
   if (typeof field.resolve === 'function') {
     try { field.resolve(); } catch { /* unresolved type left as raw name below */ }
@@ -377,7 +408,9 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
       ...(value.jsonFormat ? { mapValueFormat: value.jsonFormat } : {}),
       ...(value.intType ? { mapValueIntType: value.intType } : {}),
       ...(value.enumType ? { mapValueEnumType: value.enumType } : {}),
-      ...(value.messageType ? { mapValueMessageType: value.messageType } : {})
+      ...(value.messageType ? { mapValueMessageType: value.messageType } : {}),
+      ...(value.anyType ? { mapValueAnyType: true } : {}),
+      ...(hasRequiredBehavior(field) ? { requiredBehavior: true } : {})
     };
   }
 
@@ -401,7 +434,9 @@ function fieldDescriptor(field: ProtoField, warnings: string[], context: string)
     ...(classified.nullable ? { nullable: true } : {}),
     ...(classified.intType ? { intType: classified.intType } : {}),
     ...(classified.messageType ? { messageType: classified.messageType } : {}),
-    ...(classified.enumType ? { enumType: classified.enumType } : {})
+    ...(classified.enumType ? { enumType: classified.enumType } : {}),
+    ...(classified.anyType ? { anyType: true } : {}),
+    ...(hasRequiredBehavior(field) ? { requiredBehavior: true } : {})
   };
 }
 
@@ -422,6 +457,118 @@ function messageDescriptor(message: ProtoReflectionObject, warnings: string[]): 
     .sort((a, b) => (a.id - b.id) || a.name.localeCompare(b.name))
     .map((field) => fieldDescriptor(field, warnings, fullName));
   return { name: message.name, fullName, fields, oneofs: collectOneofs(message) };
+}
+
+// --- Generation-time lints ---------------------------------------------------
+// protoc-level structural rules that the protobufjs textual parser accepts
+// silently, surfaced as GRPC_* warnings so generation stays resilient while the
+// defect is still reported (no silent drops). Rules protobufjs itself already
+// hard-rejects at parse time (duplicate field numbers, reserved NAME reuse,
+// duplicate enum values without allow_alias, repeated/map fields in a oneof)
+// surface as PROTO_PARSE_FAILED and need no lint here.
+
+const FIELD_NUMBER_MAX = 536870911;
+const FIELD_NUMBER_RESERVED_LO = 19000;
+const FIELD_NUMBER_RESERVED_HI = 19999;
+
+function lintMessage(message: ProtoReflectionObject, warnings: string[]): void {
+  const fullName = stripLeadingDot(message.fullName);
+  const reservedRanges = asArray<[number, number] | string>(message.reserved).filter(
+    (entry): entry is [number, number] => Array.isArray(entry)
+  );
+  for (const field of asArray<ProtoField>(message.fieldsArray)) {
+    const id = field.id;
+    if (id < 1 || id > FIELD_NUMBER_MAX || (id >= FIELD_NUMBER_RESERVED_LO && id <= FIELD_NUMBER_RESERVED_HI)) {
+      warnings.push(`GRPC_FIELD_NUMBER_INVALID: field ${fullName}.${field.name} uses field number ${id}; protoc requires [1, ${FIELD_NUMBER_MAX}] excluding the implementation-reserved block [${FIELD_NUMBER_RESERVED_LO}, ${FIELD_NUMBER_RESERVED_HI}]`);
+    }
+    if (reservedRanges.some(([lo, hi]) => id >= lo && id <= hi)) {
+      warnings.push(`GRPC_RESERVED_FIELD_NUMBER_REUSED: field ${fullName}.${field.name} reuses reserved field number ${id}; protoc rejects reserved-number reuse`);
+    }
+    if (field.options?.deprecated === true) {
+      warnings.push(`GRPC_DEPRECATED: field ${fullName}.${field.name} is marked deprecated`);
+    }
+  }
+  if (asRecord(message.options)?.deprecated === true) {
+    warnings.push(`GRPC_DEPRECATED: message ${fullName} is marked deprecated`);
+  }
+}
+
+function lintEnum(enumObj: ProtoReflectionObject, warnings: string[], proto3: boolean, conventions: boolean): void {
+  const fullName = stripLeadingDot(enumObj.fullName);
+  const entries = Object.entries(asRecord(enumObj.values) ?? {});
+  if (proto3 && entries.length > 0 && entries[0][1] !== 0) {
+    warnings.push(`GRPC_ENUM_FIRST_VALUE_NOT_ZERO: enum ${fullName} declares ${entries[0][0]} = ${entries[0][1]} first; proto3 requires the first enum value to be 0 (protoc rejects this)`);
+  }
+  if (conventions) {
+    const zero = entries.find(([, value]) => value === 0);
+    if (zero && !zero[0].endsWith('_UNSPECIFIED')) {
+      warnings.push(`GRPC_ENUM_ZERO_NAME_CONVENTION: enum ${fullName} zero value ${zero[0]} is conventionally named *_UNSPECIFIED (buf/AIP enum conventions)`);
+    }
+  }
+  if (asRecord(enumObj.options)?.deprecated === true) {
+    warnings.push(`GRPC_DEPRECATED: enum ${fullName} is marked deprecated`);
+  }
+}
+
+// google.api.http annotation statics (linted only when protobufjs surfaces the
+// aggregate option via parsedOptions): path template variables and body must
+// reference request fields; additional_bindings must not nest further.
+function lintHttpRule(
+  rule: JsonRecord,
+  requestFieldNames: Set<string> | null,
+  warnings: string[],
+  operationId: string,
+  nested: boolean
+): void {
+  const paths: string[] = [];
+  for (const verb of ['get', 'put', 'post', 'delete', 'patch'] as const) {
+    if (typeof rule[verb] === 'string') paths.push(rule[verb] as string);
+  }
+  const custom = asRecord(rule.custom);
+  if (custom && typeof custom.path === 'string') paths.push(custom.path);
+  for (const path of paths) {
+    for (const match of path.matchAll(/\{([^}=]+)(?:=[^}]*)?\}/g)) {
+      const rootSegment = match[1].trim().split('.')[0];
+      if (requestFieldNames && !requestFieldNames.has(rootSegment)) {
+        warnings.push(`GRPC_HTTP_PATH_VARIABLE_UNKNOWN: ${operationId} google.api.http path template variable {${match[1]}} does not reference a request message field`);
+      }
+    }
+  }
+  const body = rule.body;
+  if (typeof body === 'string' && body !== '' && body !== '*' && requestFieldNames && !requestFieldNames.has(body.split('.')[0])) {
+    warnings.push(`GRPC_HTTP_BODY_FIELD_UNKNOWN: ${operationId} google.api.http body "${body}" is neither "*" nor a request message field`);
+  }
+  const bindings = rule.additional_bindings;
+  const bindingList: unknown[] = Array.isArray(bindings) ? bindings : bindings ? [bindings] : [];
+  if (nested && bindingList.length > 0) {
+    warnings.push(`GRPC_HTTP_NESTED_ADDITIONAL_BINDINGS: ${operationId} google.api.http additional_bindings must not themselves carry additional_bindings`);
+    return;
+  }
+  for (const binding of bindingList) {
+    const record = asRecord(binding);
+    if (record) lintHttpRule(record, requestFieldNames, warnings, operationId, true);
+  }
+}
+
+function lintMethodOptions(method: ProtoMethod, operationId: string, warnings: string[]): void {
+  const requestFieldNames = method.resolvedRequestType
+    ? new Set(asArray<ProtoField>(method.resolvedRequestType.fieldsArray).map((field) => String(field.name)))
+    : null;
+  for (const entry of asArray<Record<string, unknown>>(method.parsedOptions)) {
+    const http = asRecord(asRecord(entry)?.['(google.api.http)']);
+    if (http) lintHttpRule(http, requestFieldNames, warnings, operationId, false);
+  }
+  if (asRecord(method.options)?.deprecated === true) {
+    warnings.push(`GRPC_DEPRECATED: rpc ${operationId} is marked deprecated`);
+  }
+}
+
+// A type name the parser classifies without reflection resolution (well-known
+// types and google.rpc.Status are name-keyed; their imports are never bundled
+// by a standalone parse).
+function isNameKeyedType(typeName: string): boolean {
+  const stripped = stripLeadingDot(typeName);
+  return Boolean(WELL_KNOWN_JSON_TYPE[stripped]) || stripped === 'google.rpc.Status';
 }
 
 function methodPath(serviceFullName: string, methodName: string): string {
@@ -450,8 +597,17 @@ function operationFrom(service: ProtoReflectionObject, method: ProtoMethod): Grp
     warnings.push(`PROTO_STREAMING_METHOD: ${serviceFullName}/${method.name} is a ${stream}-streaming RPC; assertions cover terminal status and (for the final response message) field shape, plus message-count expectations, but per-message ordering and intermediate frames are not asserted`);
   }
 
+  const operationId = `${serviceFullName}/${method.name}`;
+  if (!method.resolvedRequestType && !isNameKeyedType(requestType)) {
+    warnings.push(`GRPC_RPC_TYPE_UNRESOLVED: ${operationId} request type ${requestType} does not resolve to a message in the parsed proto set (protoc rejects unresolved rpc types)`);
+  }
+  if (!method.resolvedResponseType && !isNameKeyedType(responseType)) {
+    warnings.push(`GRPC_RPC_TYPE_UNRESOLVED: ${operationId} response type ${responseType} does not resolve to a message in the parsed proto set (protoc rejects unresolved rpc types)`);
+  }
+  lintMethodOptions(method, operationId, warnings);
+
   return {
-    id: `${serviceFullName}/${method.name}`,
+    id: operationId,
     service: service.name,
     serviceFullName,
     method: method.name,
@@ -477,7 +633,15 @@ export function loadProtoModule(custom?: ProtoParseModule): ProtoParseModule {
   throw new Error('PROTO_PARSER_UNAVAILABLE: protobufjs could not be loaded; add the dependency to run gRPC contract generation');
 }
 
-export function parseProtoSchema(content: string, deps?: { protobuf?: ProtoParseModule }): GrpcContractIndex {
+export interface ProtoParseDeps {
+  protobuf?: ProtoParseModule;
+  // Opt-in style lints (GRPC_*_CONVENTION warnings): enum zero value named
+  // *_UNSPECIFIED, file declares a package. Off by default so structural
+  // warnings stay actionable.
+  conventionWarnings?: boolean;
+}
+
+export function parseProtoSchema(content: string, deps?: ProtoParseDeps): GrpcContractIndex {
   if (typeof content !== 'string' || content.trim().length === 0) {
     throw new Error('PROTO_EMPTY_INPUT: .proto source is empty');
   }
@@ -501,16 +665,27 @@ export function parseProtoSchema(content: string, deps?: { protobuf?: ProtoParse
   const warnings: string[] = [];
   const { services, messages, enums } = collectObjects(root);
 
+  // The fork's parse result does not surface `syntax`, so proto3-only lints key
+  // off the source declaration directly (protobufjs defaults to proto2 without one).
+  const proto3 = /^\s*syntax\s*=\s*["']proto3["']\s*;/m.test(content);
+  const conventions = deps?.conventionWarnings === true;
+
   const messageIndex: Record<string, GrpcMessageDescriptor> = {};
   for (const message of messages) {
     const descriptor = messageDescriptor(message, warnings);
     messageIndex[descriptor.fullName] = descriptor;
+    lintMessage(message, warnings);
   }
 
   const enumIndex: Record<string, string[]> = {};
   for (const enumObj of enums) {
     const values = Object.keys(asRecord(enumObj.values) ?? {}).sort();
     enumIndex[stripLeadingDot(enumObj.fullName)] = values;
+    lintEnum(enumObj, warnings, proto3, conventions);
+  }
+
+  if (conventions && !parsed.package) {
+    warnings.push('GRPC_FILE_PACKAGE_CONVENTION: .proto declares no package; a package is conventionally required (buf lint PACKAGE_DEFINED)');
   }
 
   const operations: GrpcOperation[] = [];

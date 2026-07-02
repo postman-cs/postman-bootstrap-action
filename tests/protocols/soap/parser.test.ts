@@ -2,10 +2,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseWsdl } from '../../../src/lib/protocols/soap/parser.js';
+import { defaultActionIri, parseWsdl } from '../../../src/lib/protocols/soap/parser.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const wsdl = readFileSync(resolve(here, '../../../fixtures/soap/stockquote.wsdl'), 'utf8');
+const addressingWsdl = readFileSync(resolve(here, '../../../fixtures/soap/addressing.wsdl'), 'utf8');
 
 describe('parseWsdl', () => {
   it('parses a WSDL 1.1 document into services and operations', () => {
@@ -91,5 +92,33 @@ describe('parseWsdl', () => {
 </definitions>`;
     const index = parseWsdl(soap12);
     expect(index.services[0]!.operations[0]!.soapVersion).toBe('1.2');
+  });
+
+  it('detects WS-Addressing engagement and captures explicit action IRIs', () => {
+    const index = parseWsdl(addressingWsdl);
+    expect(index.declaresAddressing).toBe(true);
+    const op = index.services[0]!.operations[0]!;
+    expect(op.inputAction).toBe('http://example.com/quote/GetQuote');
+    expect(op.outputAction).toBe('http://example.com/quote/GetQuoteReply');
+  });
+
+  it('reports declaresAddressing false when the WSDL never engages WS-Addressing', () => {
+    expect(parseWsdl(wsdl).declaresAddressing).toBe(false);
+  });
+});
+
+describe('defaultActionIri', () => {
+  it('joins with "/" for hierarchical target namespaces, trimming trailing slashes', () => {
+    expect(defaultActionIri('http://example.com/quote/', 'QuotePort', 'GetQuoteResponse')).toBe('http://example.com/quote/QuotePort/GetQuoteResponse');
+  });
+
+  it('joins with ":" for URN target namespaces', () => {
+    expect(defaultActionIri('urn:example:quote', 'QuotePort', 'GetQuoteResponse')).toBe('urn:example:quote:QuotePort:GetQuoteResponse');
+  });
+
+  it('returns "" when any component is missing', () => {
+    expect(defaultActionIri('', 'QuotePort', 'M')).toBe('');
+    expect(defaultActionIri('urn:x', undefined, 'M')).toBe('');
+    expect(defaultActionIri('urn:x', 'QuotePort', '')).toBe('');
   });
 });

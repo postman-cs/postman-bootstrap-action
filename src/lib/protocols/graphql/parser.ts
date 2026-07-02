@@ -18,6 +18,8 @@ import {
   type GraphQLSchema,
   type GraphQLType
 } from 'graphql';
+import { buildOperationDocument } from './builder.js';
+import { lintGeneratedDocument, lintGraphQLSchema, lintIntrospectionJson, lintSdlDocument } from './schema-lints.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -199,6 +201,11 @@ function collectRootOperations(
           `GQL_UNION_MEMBER_FIELDS_NOT_EXPANDED: ${kind}.${fieldName} returns union ${returns.name}; its __typename is validated (object + declared member name) but member-specific fields are not expanded or asserted`
         );
       }
+      if (field.deprecationReason !== undefined && field.deprecationReason !== null) {
+        opWarnings.push(
+          'GQL_DEPRECATED_FIELD_SELECTED: ' + kind + '.' + fieldName + ' is deprecated (' + (field.deprecationReason || 'no reason given') + '); the generated operation still exercises it'
+        );
+      }
       if (returns.kind === 'unknown') {
         opWarnings.push(
           `GQL_UNKNOWN_RETURN_TYPE: ${kind}.${fieldName} return type ${returns.name} could not be classified; only data.${fieldName} presence is asserted`
@@ -264,6 +271,14 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
   }
 
   const warnings: string[] = [];
+  // Full type-system validation (graphql-js validateSchema) plus input-format
+  // lints beyond what buildSchema/buildClientSchema enforce during construction.
+  warnings.push(...lintGraphQLSchema(schema));
+  if (parsedJson !== undefined) {
+    warnings.push(...lintIntrospectionJson(parsedJson));
+  } else {
+    warnings.push(...lintSdlDocument(trimmed));
+  }
   const objectShapes: Record<string, GraphQLObjectShape> = {};
   const operations: GraphQLOperationDef[] = [
     ...collectRootOperations(schema.getQueryType(), 'query', schema, objectShapes),
@@ -287,7 +302,7 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
     }
   }
 
-  return {
+  const index: GraphQLContractIndex = {
     service: opts.service?.trim() || 'GraphQL',
     operations,
     objectShapes,
@@ -295,4 +310,11 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
     unionMembers,
     warnings
   };
+  // Self-check (GraphQL spec 5): every generated operation document must pass
+  // validation against the schema it was derived from; a failure here is a
+  // generator defect surfaced as a warning, never silently shipped.
+  for (const operation of operations) {
+    warnings.push(...lintGeneratedDocument(schema, operation.id, buildOperationDocument(operation, index)));
+  }
+  return index;
 }

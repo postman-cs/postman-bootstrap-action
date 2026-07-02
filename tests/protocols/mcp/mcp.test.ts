@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Script } from 'node:vm';
 
 import { itemsByType } from '@postman/runtime.models/extensible';
 import { describe, expect, it } from 'vitest';
@@ -100,11 +101,11 @@ describe('mcp collection builder', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });
     const items = collection.item as JsonRecord[];
-    // 2 servers x (initialize + tools/list + 2 tools/call) = 8 items.
-    expect(items).toHaveLength(8);
+    // 2 servers x (initialize + tools/list + 2 tools/call) mcp-request templates,
+    // plus 1 url-bearing server x (8 fixed HTTP probes + 2 tools/call probes).
+    expect(items).toHaveLength(18);
     for (const item of items) {
-      expect(item.type).toBe('mcp-request');
-      expect(ecIssues(item)).toBeFalsy();
+      if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
     const initialize = items.find((i) => String(i.title).endsWith('initialize') && (i.payload as JsonRecord).transport === 'sse')!;
     const initMessage = JSON.parse(String((initialize.payload as JsonRecord).message)) as JsonRecord;
@@ -116,6 +117,12 @@ describe('mcp collection builder', () => {
     expect(callMessage.method).toBe('tools/call');
     expect((callMessage.params as JsonRecord).name).toBe('get_forecast');
     expect(((callMessage.params as JsonRecord).arguments as JsonRecord).city).toBe('string');
+    const httpInitialize = items.find((i) => i.type === 'http-request' && String(i.title).endsWith('HTTP initialize'))!;
+    expect(httpInitialize.id).toBe('8855b5e4-0000-4000-8000-000000000036');
+    const headers = (((httpInitialize.payload as JsonRecord).headers as JsonRecord[]) ?? []).map((h) => h.key);
+    expect(headers).toEqual(['Content-Type', 'Accept', 'MCP-Protocol-Version', 'X-API-Key']);
+    const script = (((httpInitialize.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
+    expect(script).toContain('MCP initialize response is a JSON-RPC object, not a batch');
   });
 
   it('is deterministic across builds', () => {
@@ -135,6 +142,7 @@ describe('mcp instrumenter (static validation)', () => {
     // Placeholder-only secrets and self-consistent samples raise nothing.
     expect(warnings.some((w) => w.startsWith('MCP_SECRET_VALUE_PRESENT'))).toBe(false);
     expect(warnings.some((w) => w.startsWith('MCP_TOOL_SAMPLE_MISMATCH'))).toBe(false);
+    expect(warnings.some((w) => w.startsWith('MCP_RUNTIME_SURFACE_UNAVAILABLE'))).toBe(true);
   });
 
   it('flags synthesized arguments that violate the tool inputSchema', () => {
@@ -173,8 +181,15 @@ describe('mcp instrumenter (static validation)', () => {
   it('fails closed when the built collection drops an item', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });
-    (collection.item as JsonRecord[]).pop();
+    collection.item = (collection.item as JsonRecord[]).filter((item, i) => item.type !== 'mcp-request' || i !== 0);
     expect(() => instrumentMcpCollection(collection, index)).toThrow(/MCP_ITEM_COVERAGE_FAILED/);
+  });
+
+  it('fails closed when the built runtime HTTP surface drops an item', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    collection.item = (collection.item as JsonRecord[]).filter((item) => item.type !== 'http-request' || !String(item.title).includes('invalid cursor'));
+    expect(() => instrumentMcpCollection(collection, index)).toThrow(/MCP_HTTP_ITEM_COVERAGE_FAILED/);
   });
 
   it('fails closed on a malformed generated JSON-RPC message', () => {
@@ -182,6 +197,101 @@ describe('mcp instrumenter (static validation)', () => {
     const collection = buildMcpCollection(index, { idSeed: 'test' });
     ((collection.item as JsonRecord[])[0].payload as JsonRecord).message = '{"jsonrpc":"1.0"}';
     expect(() => instrumentMcpCollection(collection, index)).toThrow(/MCP_MESSAGE_INVALID/);
+  });
+});
+
+describe('mcp runtime HTTP scripts', () => {
+  it('emits deterministic HTTP runtime assertions with expected gates', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const items = collection.item as JsonRecord[];
+    const httpItems = items.filter((item) => item.type === 'http-request');
+    expect(httpItems.map((item) => item.title)).toEqual([
+      'io.github.example/weather remote-1 · HTTP initialize',
+      'io.github.example/weather remote-1 · HTTP notifications/initialized',
+      'io.github.example/weather remote-1 · HTTP ping',
+      'io.github.example/weather remote-1 · HTTP tools/list',
+      'io.github.example/weather remote-1 · HTTP tools/call get_forecast',
+      'io.github.example/weather remote-1 · HTTP tools/call list_stations',
+      'io.github.example/weather remote-1 · HTTP negative bad protocol version',
+      'io.github.example/weather remote-1 · HTTP tools/list invalid cursor',
+      'io.github.example/weather remote-1 · HTTP session DELETE',
+      'io.github.example/weather remote-1 · HTTP old session ping'
+    ]);
+    const ping = httpItems.find((item) => String(item.title).endsWith('HTTP ping'))!;
+    const pingHeaders = ((ping.payload as JsonRecord).headers as JsonRecord[]).map((h) => h.key);
+    expect(pingHeaders).toContain('Mcp-Session-Id');
+    const pingScript = (((ping.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
+    expect(pingScript).toContain('MCP ping echoes string id and empty result');
+    const badVersion = httpItems.find((item) => String(item.title).includes('bad protocol version'))!;
+    expect(((badVersion.payload as JsonRecord).headers as JsonRecord[]).find((h) => h.key === 'MCP-Protocol-Version')?.value).toBe('1999-01-01');
+  });
+
+  it('self-conforms generated runtime messages and headers', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const httpItems = (collection.item as JsonRecord[]).filter((item) => item.type === 'http-request');
+    const messageIds: unknown[] = [];
+    for (const item of httpItems) {
+      const payload = item.payload as JsonRecord;
+      const headers = (payload.headers as JsonRecord[]) ?? [];
+      expect(String(payload.url)).not.toMatch(/[?&]Authorization=/i);
+      expect(headers.some((header) => header.key === 'Accept')).toBe(true);
+      if (!String(item.title).includes('initialize')) {
+        expect(headers.some((header) => header.key === 'MCP-Protocol-Version')).toBe(true);
+      }
+      if (payload.body) {
+        const parsed = JSON.parse(String((payload.body as JsonRecord).content)) as JsonRecord;
+        if (parsed.id !== undefined) {
+          expect(parsed.id).not.toBeNull();
+          messageIds.push(parsed.id);
+        }
+      }
+    }
+    expect(new Set(messageIds).size).toBe(messageIds.length);
+  });
+
+  it('emits syntactically valid JavaScript runtime scripts', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const scripts = (collection.item as JsonRecord[])
+      .filter((item) => item.type === 'http-request')
+      .map((item) => {
+        const events = ((item.extensions as JsonRecord).events as JsonRecord[]) ?? [];
+        return String((events[0].script as JsonRecord).exec ?? '');
+      });
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const source of scripts) {
+      expect(() => new Script(`;(async () => {;\n${source}\n;})();`)).not.toThrow();
+    }
+  });
+});
+
+describe('mcp manifest static additions', () => {
+  it('flags metadata typing, _meta grammar, reserved prefixes, unknown fields, title precedence, and mime types', () => {
+    const doc = JSON.stringify({
+      mcpServers: { s: { type: 'sse', url: 'https://mcp.example.com/mcp' } },
+      tools: [
+        {
+          name: 'display',
+          title: 'Display',
+          description: 42,
+          icons: [],
+          mimeType: 'not-a-media-type',
+          _meta: { 'bad key': true, 'mcp/reserved': true },
+          annotations: { title: 'Annotation title' },
+          inputSchema: { type: 'object' }
+        }
+      ]
+    });
+    const index = parseMcpServerSpec(doc);
+    const { warnings } = instrumentMcpCollection(buildMcpCollection(index, { idSeed: 'test' }), index);
+    expect(warnings.some((w) => w.startsWith('MCP_TOOL_BASE_METADATA_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_META_KEY_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_META_KEY_RESERVED_PREFIX'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_TOOL_FIELD_UNKNOWN_2025_06_18') && w.includes('icons'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_TOOL_TITLE_PRECEDENCE'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_MIME_TYPE_INVALID'))).toBe(true);
   });
 });
 

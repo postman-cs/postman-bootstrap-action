@@ -120,6 +120,32 @@ describe('RFC 9110 status-code requirement assertions', () => {
     expect(runScript(script, { code: 401, headers: { 'WWW-Authenticate': 'Basic realm="api"' } })[RFC9110]).toBe('fail');
   });
 
+  it('maps oauth2 and openIdConnect security schemes to Bearer 401 challenges', () => {
+    const oauthSpec = [
+      'openapi: 3.1.0',
+      'info: { title: T, version: 1 }',
+      'paths:',
+      '  /secure:',
+      '    get:',
+      '      security:',
+      '        - oauth: []',
+      '      responses:',
+      "        '200': { description: OK }",
+      'components:',
+      '  securitySchemes:',
+      '    oauth:',
+      '      type: oauth2',
+      '      flows:',
+      '        clientCredentials:',
+      "          tokenUrl: 'https://auth.example.com/token'",
+      '          scopes: {}',
+      ''
+    ].join('\n');
+    const oauthScript = createContractScript(indexFrom(oauthSpec).operations[0]!).join('\n');
+    expect(runScript(oauthScript, { code: 401, headers: { 'WWW-Authenticate': 'Bearer realm="api"' } })[RFC9110]).toBe('pass');
+    expect(runScript(oauthScript, { code: 401, headers: { 'WWW-Authenticate': 'Basic realm="api"' } })[RFC9110]).toBe('fail');
+  });
+
   it('405 must carry Allow listing every declared path method', () => {
     expect(runScript(script, { code: 405 })[RFC9110]).toBe('fail');
     expect(runScript(script, { code: 405, headers: { Allow: 'GET, DELETE' } })[RFC9110]).toBe('pass');
@@ -134,6 +160,9 @@ describe('RFC 9110 status-code requirement assertions', () => {
   it('206 must carry a well-formed Content-Range', () => {
     expect(runScript(script, { code: 206 })[FRAMING]).toBe('fail');
     expect(runScript(script, { code: 206, headers: { 'Content-Range': 'bytes 0-99/200' } })[FRAMING]).toBe('pass');
+    expect(runScript(script, { code: 206, headers: { 'Content-Range': 'bytes 0-99/200', 'Content-Length': '100' } })[FRAMING]).toBe('pass');
+    expect(runScript(script, { code: 206, headers: { 'Content-Range': 'bytes 0-99/200', 'Content-Length': '99' } })[FRAMING]).toBe('fail');
+    expect(runScript(script, { code: 206, headers: { 'Content-Range': 'bytes 0-99/200', 'Accept-Ranges': 'none' } })[FRAMING]).toBe('fail');
     expect(runScript(script, { code: 206, headers: { 'Content-Range': 'banana' } })[FRAMING]).toBe('fail');
     expect(runScript(script, { code: 206, headers: { 'Content-Range': 'bytes 99-0/200' } })[FRAMING]).toBe('fail');
     expect(runScript(script, { code: 206, headers: { 'Content-Range': 'bytes 0-299/200' } })[FRAMING]).toBe('fail');
@@ -164,6 +193,8 @@ describe('RFC 9457 / 8259 / 8288 convention assertions', () => {
     expect(runScript(script, { code: 500, headers: { 'Content-Type': 'application/problem+json' }, body: '{"status":400,"title":"x"}' })[CONVENTIONS]).toBe('fail');
     expect(runScript(script, { code: 400, headers: { 'Content-Type': 'application/problem+json' }, body: '{"status":400,"title":"Bad Request"}' })[CONVENTIONS]).toBe('pass');
     expect(runScript(script, { code: 400, headers: { 'Content-Type': 'application/problem+json' }, body: '{"title":42}' })[CONVENTIONS]).toBe('fail');
+    expect(runScript(script, { code: 400, headers: { 'Content-Type': 'application/problem+json' }, body: '{"type":"/problems/bad","instance":"urn:problem:1"}' })[CONVENTIONS]).toBe('pass');
+    expect(runScript(script, { code: 400, headers: { 'Content-Type': 'application/problem+json' }, body: '{"type":"bad uri"}' })[CONVENTIONS]).toBe('fail');
     expect(runScript(script, { code: 400, headers: { 'Content-Type': 'application/problem+json' }, body: 'not json' })[CONVENTIONS]).toBe('fail');
   });
 
@@ -192,6 +223,7 @@ describe('RFC message-mechanics assertions', () => {
     expect(runScript(script, { code: 302, headers: { Location: '/next' } })[FRAMING]).toBe('pass');
     expect(runScript(script, { code: 416 })[FRAMING]).toBe('fail');
     expect(runScript(script, { code: 416, headers: { 'Content-Range': 'bytes */200' } })[FRAMING]).toBe('pass');
+    expect(runScript(script, { code: 416, headers: { 'Content-Range': 'items */200' } })[FRAMING]).toBe('fail');
     expect(runScript(script, { code: 416, headers: { 'Content-Range': 'bytes 0-99/200' } })[FRAMING]).toBe('fail');
     expect(runScript(script, { code: 407 })[FRAMING]).toBe('fail');
     expect(runScript(script, { code: 407, headers: { 'Proxy-Authenticate': 'Basic realm="proxy"' } })[FRAMING]).toBe('pass');
@@ -427,6 +459,33 @@ describe('RFC message-mechanics assertions', () => {
     expect(runScript(scriptNoAuth, { code: 401, headers: { 'WWW-Authenticate': 'Digest realm="r", nonce="n"' } })[RFC9110]).toBe('pass');
     expect(runScript(script, { code: 403, headers: { 'WWW-Authenticate': 'Bearer error="expired"' } })[RFC9110]).toBe('fail');
     expect(runScript(script, { code: 403, headers: { 'WWW-Authenticate': 'Bearer error="invalid_token"' } })[RFC9110]).toBe('pass');
+  });
+
+  it('validates content codings, declared Content-Disposition, Retry-After ordering, and Content-Length bytes', () => {
+    const dispositionSpec = [
+      'openapi: 3.1.0',
+      'info: { title: T, version: 1 }',
+      'paths:',
+      '  /download:',
+      '    get:',
+      '      responses:',
+      "        '200':",
+      '          description: OK',
+      '          headers:',
+      '            Content-Disposition: { schema: { type: string } }',
+      '          content:',
+      '            text/plain:',
+      '              schema: { type: string }',
+      ''
+    ].join('\n');
+    const dispositionScript = createContractScript(indexFrom(dispositionSpec).operations[0]!).join('\n');
+    expect(runScript(script, { code: 200, headers: { 'Content-Encoding': 'gzip' } })[GRAMMARS]).toBe('pass');
+    expect(runScript(script, { code: 200, headers: { 'Content-Encoding': 'madeup' } })[GRAMMARS]).toBe('fail');
+    expect(runScript(dispositionScript, { code: 200, headers: { 'Content-Type': 'text/plain', 'Content-Disposition': 'attachment; filename="x.txt"; filename*=UTF-8\'\'x.txt', 'Content-Length': '2' }, body: 'ok' })[GRAMMARS]).toBe('pass');
+    expect(runScript(dispositionScript, { code: 200, headers: { 'Content-Type': 'text/plain', 'Content-Disposition': 'attachment; filename=x; filename=y', 'Content-Length': '2' }, body: 'ok' })[GRAMMARS]).toBe('fail');
+    expect(runScript(script, { code: 503, headers: { Date: 'Wed, 21 Oct 2026 07:28:00 GMT', 'Retry-After': 'Wed, 21 Oct 2025 07:28:00 GMT' } })[RFC9110]).toBe('fail');
+    expect(runScript(dispositionScript, { code: 200, headers: { 'Content-Type': 'text/plain', 'Content-Length': '3' }, body: 'ok' })['Content-Length is consistent with OpenAPI body expectations']).toBe('fail');
+    expect(runScript(dispositionScript, { code: 200, headers: { 'Content-Type': 'text/plain', 'Content-Length': '3', 'Content-Encoding': 'gzip' }, body: 'ok' })['Content-Length is consistent with OpenAPI body expectations']).toBe('pass');
   });
 
   it('preconditions, preferences, and patch bodies', () => {

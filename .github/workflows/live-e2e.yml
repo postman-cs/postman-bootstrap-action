@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   live-e2e:
+    if: github.actor != 'dependabot[bot]'
     name: live e2e gate
     runs-on: ubuntu-latest
     timeout-minutes: 240

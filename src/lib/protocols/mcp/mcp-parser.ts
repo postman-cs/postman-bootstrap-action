@@ -68,6 +68,7 @@ export interface McpResourceDescriptor {
   uri: string;
   mimeType?: string;
   meta?: JsonRecord;
+  annotations?: JsonRecord;
   warnings: string[];
 }
 
@@ -78,6 +79,7 @@ export interface McpResourceTemplateDescriptor {
   uriTemplate: string;
   mimeType?: string;
   meta?: JsonRecord;
+  annotations?: JsonRecord;
   variables: string[];
   warnings: string[];
 }
@@ -93,6 +95,7 @@ export interface McpPromptDescriptor {
   title?: string;
   description?: string;
   meta?: JsonRecord;
+  annotations?: JsonRecord;
   arguments: McpPromptArgumentDescriptor[];
   warnings: string[];
 }
@@ -641,6 +644,9 @@ function resourceDescriptor(resource: JsonRecord, warnings: string[]): McpResour
   if (resource.mimeType !== undefined && typeof resource.mimeType !== 'string') {
     resourceWarnings.push(`MCP_RESOURCE_FIELD_INVALID: resource ${name} mimeType must be a string when present`);
   }
+  if (resource.annotations !== undefined && !asRecord(resource.annotations)) {
+    resourceWarnings.push(`MCP_RESOURCE_ANNOTATIONS_INVALID: resource ${name} annotations must be an object when present`);
+  }
   return {
     name,
     title: asOptionalString(resource.title),
@@ -648,6 +654,7 @@ function resourceDescriptor(resource: JsonRecord, warnings: string[]): McpResour
     uri,
     mimeType: asOptionalString(resource.mimeType),
     meta: asRecord(resource._meta) ?? undefined,
+    annotations: asRecord(resource.annotations) ?? undefined,
     warnings: resourceWarnings
   };
 }
@@ -677,6 +684,9 @@ function resourceTemplateDescriptor(template: JsonRecord, warnings: string[]): M
   if (template.mimeType !== undefined && typeof template.mimeType !== 'string') {
     templateWarnings.push(`MCP_RESOURCE_TEMPLATE_FIELD_INVALID: resource template ${name} mimeType must be a string when present`);
   }
+  if (template.annotations !== undefined && !asRecord(template.annotations)) {
+    templateWarnings.push(`MCP_RESOURCE_TEMPLATE_ANNOTATIONS_INVALID: resource template ${name} annotations must be an object when present`);
+  }
   return {
     name,
     title: asOptionalString(template.title),
@@ -684,6 +694,7 @@ function resourceTemplateDescriptor(template: JsonRecord, warnings: string[]): M
     uriTemplate,
     mimeType: asOptionalString(template.mimeType),
     meta: asRecord(template._meta) ?? undefined,
+    annotations: asRecord(template.annotations) ?? undefined,
     variables: inspectedTemplate.variables,
     warnings: templateWarnings
   };
@@ -730,6 +741,9 @@ function promptDescriptor(prompt: JsonRecord, warnings: string[]): McpPromptDesc
   if (prompt.arguments !== undefined && !Array.isArray(prompt.arguments)) {
     promptWarnings.push(`MCP_PROMPT_ARGUMENTS_INVALID: prompt ${name} arguments must be an array when present`);
   }
+  if (prompt.annotations !== undefined && !asRecord(prompt.annotations)) {
+    promptWarnings.push(`MCP_PROMPT_ANNOTATIONS_INVALID: prompt ${name} annotations must be an object when present`);
+  }
   const seenArgumentNames = new Set<string>();
   const argumentsList: McpPromptArgumentDescriptor[] = [];
   asArray(prompt.arguments).forEach((argument, index) => {
@@ -747,6 +761,7 @@ function promptDescriptor(prompt: JsonRecord, warnings: string[]): McpPromptDesc
     title: asOptionalString(prompt.title),
     description: asOptionalString(prompt.description),
     meta: asRecord(prompt._meta) ?? undefined,
+    annotations: asRecord(prompt.annotations) ?? undefined,
     arguments: argumentsList,
     warnings: promptWarnings
   };

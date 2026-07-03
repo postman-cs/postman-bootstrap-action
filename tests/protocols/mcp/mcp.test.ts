@@ -440,13 +440,14 @@ describe('mcp instrumenter (static validation)', () => {
     const doc = JSON.stringify({
       mcpServers: { weather: { command: 'npx weather-server' } },
       resources: [
-        { name: 'Broken Resource', uri: 'not a uri', mimeType: 42 },
+        { name: 'Broken Resource', uri: 'not a uri', mimeType: 42, annotations: { audience: ['bot'], priority: 2 } },
         { uri: 'resource://missing-name' }
       ],
-      resourceTemplates: [{ name: 'Broken Template', uriTemplate: 'resource://forecast/{city', mimeType: 'application/json' }],
+      resourceTemplates: [{ name: 'Broken Template', uriTemplate: 'resource://forecast/{city', mimeType: 'application/json', annotations: [] }],
       prompts: [
         {
           name: 'forecast_prompt',
+          annotations: { lastModified: 123 },
           arguments: [{ name: 'city', required: 'yes' }, { description: 'missing name' }, { name: 'city' }]
         }
       ],
@@ -459,6 +460,9 @@ describe('mcp instrumenter (static validation)', () => {
     expect(warnings.some((w) => w.startsWith('MCP_RESOURCE_FIELD_INVALID') && w.includes('Broken Resource') && w.includes('mimeType'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_RESOURCE_NAME_MISSING'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_RESOURCE_TEMPLATE_INVALID') && w.includes('Broken Template'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_RESOURCE_TEMPLATE_ANNOTATIONS_INVALID') && w.includes('Broken Template'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_ANNOTATIONS_INVALID') && w.includes('Broken Resource') && w.includes('audience'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_ANNOTATIONS_INVALID') && w.includes('forecast_prompt') && w.includes('lastModified'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_PROMPT_ARGUMENT_INVALID') && w.includes('forecast_prompt') && w.includes('required'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_PROMPT_ARGUMENT_NAME_MISSING') && w.includes('forecast_prompt'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_PROMPT_ARGUMENT_DUPLICATE') && w.includes('forecast_prompt'))).toBe(true);

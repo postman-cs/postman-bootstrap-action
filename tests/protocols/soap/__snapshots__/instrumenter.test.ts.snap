@@ -30,16 +30,20 @@ function directChildNames(inner) {
   return names;
 }
 
-pm.test('SOAP transport returned HTTP 200', function () {
+var accepted202 = pm.response.code === 202 && !bodyText.trim();
+pm.test('SOAP transport returned HTTP 200 (or an empty 202 acceptance)', function () {
+  if (accepted202) { console.warn("HTTP 202 with an empty body: the request was accepted for asynchronous processing (SOAP 1.2 Part 2 section 6.3); response body assertions are skipped"); return; }
   pm.response.to.have.status(200);
 });
 
 pm.test('SOAP response Content-Type matches the SOAP 1.1 binding', function () {
+  if (accepted202) return;
   var ct = header("Content-Type").toLowerCase();
   pm.expect(ct, "SOAP 1.1 responses use text/xml (got: " + (ct || "<missing>") + ")").to.include("text/xml");
 });
 
 pm.test('SOAP Envelope element is present', function () {
+  if (accepted202) return;
   pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));
 });
 
@@ -49,6 +53,7 @@ pm.test('SOAP Envelope namespace matches SOAP 1.1', function () {
 });
 
 pm.test('SOAP Body element is present', function () {
+  if (accepted202) return;
   pm.expect(bodyText, "SOAP envelope has no Body element").to.match(matchTag("Body"));
 });
 
@@ -173,9 +178,9 @@ pm.test('SOAP actor attributes are URIs (SOAP 1.1 section 4.2.2)', function () {
   }
 });
 
-pm.test('Literal response carries no encodingStyle on SOAP structural elements (WS-I Basic Profile 1.1 R1005 / SOAP 1.2 Part 1 section 5.1.1)', function () {
+pm.test('Response carries no encodingStyle on SOAP structural elements (WS-I Basic Profile 1.1 R1005 / SOAP 1.2 Part 1 section 5.1.1)', function () {
   if (cleanXml.indexOf("encodingStyle") === -1) return;
-  var core = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault)[^>]*>/g) || [];
+  var core = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault|Upgrade|NotUnderstood)[^>]*>/g) || [];
   for (var i = 0; i < core.length; i++) { if (core[i].indexOf("encodingStyle") !== -1) pm.expect.fail("encodingStyle must not appear on " + core[i].replace(/[<>]/g, "").split(/\\s/)[0]); }
   var re = /encodingStyle\\s*=\\s*["']([^"']*)["']/g; var m; while ((m = re.exec(cleanXml))) { var toks = m[1].split(/\\s+/).filter(Boolean); for (var j = 0; j < toks.length; j++) { if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(toks[j])) pm.expect.fail("encodingStyle token " + toks[j] + " is not an absolute URI"); } }
 });
@@ -202,6 +207,13 @@ pm.test('SOAP Body children are namespace-qualified (WS-I Basic Profile 1.1 R101
   if (inner.indexOf("xmlns=") !== -1) return;
   var kids = directChildNames(inner);
   for (var i = 0; i < kids.length; i++) { if (kids[i].indexOf(":") === -1) pm.expect.fail("Body child " + kids[i] + " is unqualified; literal body elements come from a schema targetNamespace"); }
+});
+
+pm.test('SOAP 1.1 MustUnderstand faults carry no Body detail (SOAP 1.1 section 4.4)', function () {
+  var fc = /<(?:[A-Za-z_][\\w.-]*:)?faultcode[^>]*>([^<]*)</.exec(cleanXml);
+  if (!fc || localPart(fc[1].trim()) !== "MustUnderstand") return;
+  var muDetail = elementInner(cleanXml, "detail");
+  if (muDetail !== null && muDetail.trim()) pm.expect.fail("a MustUnderstand fault reports a header processing error; error details belong in header blocks, not soap:detail (SOAP 1.1 section 4.4)");
 });",
       "name": "GetStockPrice",
     },
@@ -232,16 +244,20 @@ function directChildNames(inner) {
   return names;
 }
 
-pm.test('SOAP transport returned HTTP 200', function () {
+var accepted202 = pm.response.code === 202 && !bodyText.trim();
+pm.test('SOAP transport returned HTTP 200 (or an empty 202 acceptance)', function () {
+  if (accepted202) { console.warn("HTTP 202 with an empty body: the request was accepted for asynchronous processing (SOAP 1.2 Part 2 section 6.3); response body assertions are skipped"); return; }
   pm.response.to.have.status(200);
 });
 
 pm.test('SOAP response Content-Type matches the SOAP 1.1 binding', function () {
+  if (accepted202) return;
   var ct = header("Content-Type").toLowerCase();
   pm.expect(ct, "SOAP 1.1 responses use text/xml (got: " + (ct || "<missing>") + ")").to.include("text/xml");
 });
 
 pm.test('SOAP Envelope element is present', function () {
+  if (accepted202) return;
   pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));
 });
 
@@ -251,6 +267,7 @@ pm.test('SOAP Envelope namespace matches SOAP 1.1', function () {
 });
 
 pm.test('SOAP Body element is present', function () {
+  if (accepted202) return;
   pm.expect(bodyText, "SOAP envelope has no Body element").to.match(matchTag("Body"));
 });
 
@@ -375,9 +392,9 @@ pm.test('SOAP actor attributes are URIs (SOAP 1.1 section 4.2.2)', function () {
   }
 });
 
-pm.test('Literal response carries no encodingStyle on SOAP structural elements (WS-I Basic Profile 1.1 R1005 / SOAP 1.2 Part 1 section 5.1.1)', function () {
+pm.test('Response carries no encodingStyle on SOAP structural elements (WS-I Basic Profile 1.1 R1005 / SOAP 1.2 Part 1 section 5.1.1)', function () {
   if (cleanXml.indexOf("encodingStyle") === -1) return;
-  var core = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault)[^>]*>/g) || [];
+  var core = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault|Upgrade|NotUnderstood)[^>]*>/g) || [];
   for (var i = 0; i < core.length; i++) { if (core[i].indexOf("encodingStyle") !== -1) pm.expect.fail("encodingStyle must not appear on " + core[i].replace(/[<>]/g, "").split(/\\s/)[0]); }
   var re = /encodingStyle\\s*=\\s*["']([^"']*)["']/g; var m; while ((m = re.exec(cleanXml))) { var toks = m[1].split(/\\s+/).filter(Boolean); for (var j = 0; j < toks.length; j++) { if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(toks[j])) pm.expect.fail("encodingStyle token " + toks[j] + " is not an absolute URI"); } }
 });
@@ -404,6 +421,13 @@ pm.test('SOAP Body children are namespace-qualified (WS-I Basic Profile 1.1 R101
   if (inner.indexOf("xmlns=") !== -1) return;
   var kids = directChildNames(inner);
   for (var i = 0; i < kids.length; i++) { if (kids[i].indexOf(":") === -1) pm.expect.fail("Body child " + kids[i] + " is unqualified; literal body elements come from a schema targetNamespace"); }
+});
+
+pm.test('SOAP 1.1 MustUnderstand faults carry no Body detail (SOAP 1.1 section 4.4)', function () {
+  var fc = /<(?:[A-Za-z_][\\w.-]*:)?faultcode[^>]*>([^<]*)</.exec(cleanXml);
+  if (!fc || localPart(fc[1].trim()) !== "MustUnderstand") return;
+  var muDetail = elementInner(cleanXml, "detail");
+  if (muDetail !== null && muDetail.trim()) pm.expect.fail("a MustUnderstand fault reports a header processing error; error details belong in header blocks, not soap:detail (SOAP 1.1 section 4.4)");
 });",
       "name": "ListSymbols",
     },

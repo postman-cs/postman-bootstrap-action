@@ -128,6 +128,28 @@ function requestDisciplineLines(operation: SoapOperation): string[] {
         ? '  if (action && action[1] !== ' + jsString(operation.soapAction) + ') pm.expect.fail("the action parameter " + action[1] + " does not match the WSDL soapAction value");'
         : '',
       '});',
+    ...(operation.soapVersion === '1.2'
+      ? [
+          '',
+          "pm.test('SOAP 1.2 response Content-Type action parameter is well-formed (RFC 3902 section 2)', function () {",
+          '  if (accepted202) return;',
+          '  var ctFull = header("Content-Type");',
+          '  var am = /;\\s*action\\s*=\\s*("([^"]*)"|[^;\\s]*)/i.exec(ctFull);',
+          '  if (!am) return;',
+          '  var actionValue = am[2] !== undefined ? am[2] : am[1];',
+          '  if (!actionValue) pm.expect.fail("the action media-type parameter must not be empty (RFC 3902)");',
+          '  else if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(actionValue)) pm.expect.fail("the action parameter must be an absolute URI (RFC 3902); got " + actionValue);',
+          '});'
+        ]
+      : []),
+    '',
+    "pm.test('SOAP special attributes appear only on header blocks (SOAP 1.1 section 4.2 / SOAP 1.2 Part 1 section 5.2)', function () {",
+    '  var coreTags = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault|Upgrade|NotUnderstood)\\b[^>]*>/g) || [];',
+    '  for (var ci = 0; ci < coreTags.length; ci++) {',
+    '    var coreAttrs = coreTags[ci].replace(/^<[^\\s>]*/, "");',
+    '    if (/(?:^|\\s)(?:[\\w.-]+:)?(?:mustUnderstand|actor|role|relay)\\s*=/.test(coreAttrs)) pm.expect.fail("mustUnderstand/actor/role/relay must not appear on " + coreTags[ci].split(/[\\s>]/)[0].replace("<", "") + "; they belong on header blocks only");',
+    '  }',
+    '});',
       '',
       "pm.test('SOAP 1.2 request Accept header, when present, admits application/soap+xml (SOAP 1.2 Part 2 section 7)', function () {",
       '  var accept = String(pm.request.headers.get("Accept") || "");',
@@ -224,12 +246,12 @@ function deepConformanceLines(operation: SoapOperation): string[] {
     '  }',
     '});'
   );
-  if (operation.use !== 'encoded') {
+  {
     lines.push(
       '',
-      "pm.test('Literal response carries no encodingStyle on SOAP structural elements (WS-I Basic Profile 1.1 R1005 / SOAP 1.2 Part 1 section 5.1.1)', function () {",
+      "pm.test('Response carries no encodingStyle on SOAP structural elements (WS-I Basic Profile 1.1 R1005 / SOAP 1.2 Part 1 section 5.1.1)', function () {",
       '  if (cleanXml.indexOf("encodingStyle") === -1) return;',
-      '  var core = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault)[^>]*>/g) || [];',
+      '  var core = cleanXml.match(/<(?:[A-Za-z_][\\w.-]*:)?(?:Envelope|Header|Body|Fault|Upgrade|NotUnderstood)[^>]*>/g) || [];',
       '  for (var i = 0; i < core.length; i++) { if (core[i].indexOf("encodingStyle") !== -1) pm.expect.fail("encodingStyle must not appear on " + core[i].replace(/[<>]/g, "").split(/\\s/)[0]); }',
       is12
         ? '  var re = /encodingStyle\\s*=\\s*["\']([^"\']*)["\']/g; var m; while ((m = re.exec(cleanXml))) { if (/\\s/.test(m[1].trim())) pm.expect.fail("SOAP 1.2 encodingStyle is a single xs:anyURI value (got " + m[1] + ")"); }'
@@ -327,11 +349,37 @@ function deepConformanceLines(operation: SoapOperation): string[] {
       "pm.test('MustUnderstand/VersionMismatch fault diagnostics are well-formed (SOAP 1.2 Part 1 section 5.4.8)', function () {",
       '  if (cleanXml.indexOf("MustUnderstand") !== -1) {',
       '    var re = /<(?:[A-Za-z_][\\w.-]*:)?NotUnderstood\\b([^>]*)>/g; var m;',
-      '    while ((m = re.exec(cleanXml))) { if (m[1].indexOf("qname") === -1) pm.expect.fail("NotUnderstood header blocks must carry a qname attribute"); }',
+      '    while ((m = re.exec(cleanXml))) {',
+      '      var nuAttrs = m[1];',
+      '      var qm = /qname\\s*=\\s*["\']([^"\']*)["\']/.exec(nuAttrs);',
+      '      if (!qm) { pm.expect.fail("NotUnderstood header blocks must carry a qname attribute (SOAP 1.2 Part 1 section 5.4.8)"); continue; }',
+      '      var qp = qm[1].indexOf(":") === -1 ? "" : qm[1].split(":")[0];',
+      '      if (qp && cleanXml.indexOf("xmlns:" + qp) === -1) pm.expect.fail("NotUnderstood qname prefix " + qp + " is not bound to a namespace in the response");',
+      '      if (/(?:^|\\s)(?:[\\w.-]+:)?encodingStyle\\s*=/.test(nuAttrs)) pm.expect.fail("NotUnderstood must not carry encodingStyle (SOAP 1.2 Part 1 section 5.1.1)");',
+      '    }',
       '  }',
       '  if (cleanXml.indexOf("VersionMismatch") !== -1 && /<(?:[A-Za-z_][\\w.-]*:)?Upgrade[\\s/>]/.test(cleanXml)) {',
-      '    if (!/<(?:[A-Za-z_][\\w.-]*:)?SupportedEnvelope[\\s/>]/.test(cleanXml)) pm.expect.fail("an Upgrade header block must list SupportedEnvelope entries");',
+      '    var seRe = /<(?:[A-Za-z_][\\w.-]*:)?SupportedEnvelope\\b([^>]*)>/g; var se; var seenSe = false;',
+      '    while ((se = seRe.exec(cleanXml))) {',
+      '      seenSe = true;',
+      '      var sq = /qname\\s*=\\s*["\']([^"\']*)["\']/.exec(se[1]);',
+      '      if (!sq || !sq[1]) { pm.expect.fail("each SupportedEnvelope entry carries a qname attribute naming an envelope (SOAP 1.2 Part 1 section 5.4.8)"); continue; }',
+      '      var sp = sq[1].indexOf(":") === -1 ? "" : sq[1].split(":")[0];',
+      '      if (sp && cleanXml.indexOf("xmlns:" + sp) === -1) pm.expect.fail("SupportedEnvelope qname prefix " + sp + " is not bound to a namespace");',
+      '    }',
+      '    if (!seenSe) pm.expect.fail("an Upgrade header block must list SupportedEnvelope entries");',
       '  }',
+      '});'
+    );
+  }
+  if (!is12) {
+    lines.push(
+      '',
+      "pm.test('SOAP 1.1 MustUnderstand faults carry no Body detail (SOAP 1.1 section 4.4)', function () {",
+      '  var fc = /<(?:[A-Za-z_][\\w.-]*:)?faultcode[^>]*>([^<]*)</.exec(cleanXml);',
+      '  if (!fc || localPart(fc[1].trim()) !== "MustUnderstand") return;',
+      '  var muDetail = elementInner(cleanXml, "detail");',
+      '  if (muDetail !== null && muDetail.trim()) pm.expect.fail("a MustUnderstand fault reports a header processing error; error details belong in header blocks, not soap:detail (SOAP 1.1 section 4.4)");',
       '});'
     );
   }
@@ -340,19 +388,48 @@ function deepConformanceLines(operation: SoapOperation): string[] {
 
 function createOneWayScript(operation: SoapOperation): string {
   const meta = { name: operation.name, soapVersion: operation.soapVersion, oneWay: true };
+  const mepKey = operation.mepPattern && operation.mepPattern.startsWith('http://www.w3.org/ns/wsdl/')
+    ? operation.mepPattern.slice('http://www.w3.org/ns/wsdl/'.length)
+    : undefined;
+  // WSDL 2.0 in-only propagates no fault, so SOAP 1.2 Part 2 section 6.3 maps
+  // it to a bare 202/204 acknowledgement; robust-in-only and WSDL 1.1 one-way
+  // operations may report processing errors as an HTTP 500 SOAP Fault.
+  const allowFault = mepKey !== 'in-only';
+  const statusTest = mepKey === 'in-only'
+    ? [
+        "pm.test('In-only SOAP response status is 202 or 204 (WSDL 2.0 Adjuncts / SOAP 1.2 Part 2 section 6.3)', function () {",
+        '  var code = pm.response.code;',
+        '  if (code !== 202 && code !== 204) pm.expect.fail("in-only operations acknowledge with 202 or 204 and no envelope; got HTTP " + code);',
+        '});'
+      ]
+    : [
+        "pm.test('One-way SOAP response status is an empty 2xx (or a 500 SOAP Fault for processing errors)', function () {",
+        '  var code = pm.response.code;',
+        '  if (oneWayFaulted) return;',
+        '  if (code < 200 || code > 299) pm.expect.fail("one-way operations respond 2xx with no envelope (SOAP 1.2 Part 2 section 6.3; WS-I Basic Profile 1.1 R2714); got HTTP " + code);',
+        '});'
+      ];
   const lines: string[] = [
     `var soap = JSON.parse(${JSON.stringify(JSON.stringify(meta))});`,
     'var bodyText = (pm.response.text && pm.response.text()) || "";',
     'function header(name) { return (pm.response.headers.get(name) || ""); }',
+    ...(allowFault ? ['var oneWayFaulted = pm.response.code === 500 && /(?:^|<)(?:[A-Za-z_][\\w.-]*:)?Fault[\\s/>]/.test(bodyText);'] : []),
     '',
     "pm.test('One-way SOAP response body is empty (WS-I BP 1.1 R2714)', function () {",
+    ...(allowFault ? ['  if (oneWayFaulted) return;'] : []),
     '  if (bodyText.replace(/\\s+/g, "") !== "") pm.expect.fail("a one-way operation response MUST NOT carry a SOAP envelope; the HTTP entity body must be empty (WS-I Basic Profile 1.1 R2714)");',
     '});',
     '',
-    "pm.test('One-way SOAP response status is 200, 202 or 204 (SOAP 1.2 Part 2 section 6.3)', function () {",
-    '  var code = pm.response.code;',
-    '  if (code !== 200 && code !== 202 && code !== 204) pm.expect.fail("one-way operations respond 2xx with no envelope -- 200, 202 or 204 (SOAP 1.2 Part 2 section 6.3; WS-I Basic Profile 1.1 R2714); got HTTP " + code);',
-    '});',
+    ...statusTest,
+    ...(allowFault
+      ? [
+          '',
+          "pm.test('A one-way HTTP 500 carries a SOAP Fault (SOAP over HTTP)', function () {",
+          '  if (pm.response.code !== 500) return;',
+          '  if (!oneWayFaulted) pm.expect.fail("HTTP 500 from a one-way operation must carry a SOAP Fault describing the processing error");',
+          '});'
+        ]
+      : []),
     ...requestDisciplineLines(operation),
     ...ALLOW_405_LINES
   ];
@@ -404,18 +481,22 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     'function matchTag(local) { return new RegExp("(?:^|<)(?:[A-Za-z_][\\\\w.-]*:)?" + local + "(?=[\\\\s/>])"); }',
     ...XML_HELPER_LINES,
     '',
-    "pm.test('SOAP transport returned HTTP 200', function () {",
+    'var accepted202 = pm.response.code === 202 && !bodyText.trim();',
+    "pm.test('SOAP transport returned HTTP 200 (or an empty 202 acceptance)', function () {",
+    '  if (accepted202) { console.warn("HTTP 202 with an empty body: the request was accepted for asynchronous processing (SOAP 1.2 Part 2 section 6.3); response body assertions are skipped"); return; }',
     '  pm.response.to.have.status(200);',
     '});',
     '',
     // SOAP 1.1 responses bind to text/xml (SOAP 1.1 HTTP binding, WS-I Basic
     // Profile); SOAP 1.2 responses bind to application/soap+xml (RFC 3902).
     `pm.test('SOAP response Content-Type matches the SOAP ${operation.soapVersion} binding', function () {`,
+    '  if (accepted202) return;',
     '  var ct = header("Content-Type").toLowerCase();',
     `  pm.expect(ct, "SOAP ${operation.soapVersion} responses use ${mediaType} (got: " + (ct || "<missing>") + ")").to.include("${mediaType}");`,
     '});',
     '',
     "pm.test('SOAP Envelope element is present', function () {",
+    '  if (accepted202) return;',
     '  pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));',
     '});',
     '',
@@ -425,6 +506,7 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
     '});',
     '',
     "pm.test('SOAP Body element is present', function () {",
+    '  if (accepted202) return;',
     '  pm.expect(bodyText, "SOAP envelope has no Body element").to.match(matchTag("Body"));',
     '});',
     '',

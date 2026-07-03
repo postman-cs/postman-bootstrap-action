@@ -143,7 +143,31 @@ Generated from a WSDL 1.1 / 2.0 document into plain HTTP POST requests with XML 
 
 On the request side, generated SOAP 1.1 requests always carry the `SOAPAction` HTTP header (required by the WS-I Basic Profile), while SOAP 1.2 requests carry the action as the `action` parameter of the `application/soap+xml` Content-Type (RFC 3902).
 
-A WS-I Basic Profile 1.1 document lint pass also runs at generation time over the WSDL itself, surfacing `SOAP_LINT_*` warnings: bindings must mirror their portType’s operations one-to-one (R2718, `SOAP_LINT_BINDING_PORTTYPE_MISMATCH`) and resolve (`SOAP_LINT_PORTTYPE_UNRESOLVED`); a binding uses a single style (R2705, `SOAP_LINT_MIXED_STYLES`) with `use="literal"` (R2706, `SOAP_LINT_USE_NOT_LITERAL`) over the HTTP transport (`SOAP_LINT_TRANSPORT_NOT_HTTP`); document-literal bodies bind at most one part (`SOAP_LINT_DOC_LITERAL_MULTIPART`) defined as an `element` (`SOAP_LINT_DOC_LITERAL_PART_TYPE`) with no `namespace` attribute on the `soap:body` (`SOAP_LINT_DOC_LITERAL_BODY_NAMESPACE`), while rpc-literal parts use `type` (`SOAP_LINT_RPC_LITERAL_PART_ELEMENT`) and declare an absolute body `namespace` (`SOAP_LINT_RPC_LITERAL_BODY_NAMESPACE`); operations in one binding must not produce identical top-level Body QNames on the wire (`SOAP_LINT_DUPLICATE_WIRE_SIGNATURE`); `soap:fault` names must match the enclosing `wsdl:fault` (`SOAP_LINT_FAULT_NAME_MISMATCH`); part names are unique per message (`SOAP_LINT_DUPLICATE_PART_NAME`); ports should not share a `soap:address` (R2711, `SOAP_LINT_DUPLICATE_ADDRESS`) and addresses must be http(s) URLs (`SOAP_LINT_ADDRESS_NOT_HTTP`); `wsdl:import` must point at a WSDL document, not an XML Schema (`SOAP_LINT_IMPORT_NON_WSDL`); the `targetNamespace` must be present and absolute (`SOAP_LINT_TARGET_NAMESPACE_MISSING` / `_RELATIVE`); one-way operations must not bind an output (`SOAP_LINT_ONE_WAY_OUTPUT_MISMATCH`); and the doc-literal-wrapped convention is detected and recorded (`SOAP_LINT_DOC_LITERAL_WRAPPED`). Parse-level degradations surface as `SOAP_BINDING_STYLE_UNPARSEABLE`, `SOAP_BODY_USE_UNPARSEABLE`, `SOAP_MESSAGE_UNRESOLVED`, `SOAP_OPERATION_ONE_WAY`, `SOAP_ADDRESSING_ACTION_UNDERIVABLE`, and `SOAP_NO_OPERATIONS`.
+A WS-I Basic Profile 1.1 document lint pass also runs at generation time over the WSDL itself, surfacing `SOAP_LINT_*` warnings:
+
+| Code | What it checks |
+| --- | --- |
+| `SOAP_LINT_BINDING_PORTTYPE_MISMATCH` | Bindings mirror their portType's operations one-to-one (R2718). |
+| `SOAP_LINT_PORTTYPE_UNRESOLVED` | The binding's portType resolves. |
+| `SOAP_LINT_MIXED_STYLES` | A binding uses a single style, not a mix (R2705). |
+| `SOAP_LINT_USE_NOT_LITERAL` | Bindings use `use="literal"` (R2706). |
+| `SOAP_LINT_TRANSPORT_NOT_HTTP` | The binding transport is HTTP. |
+| `SOAP_LINT_DOC_LITERAL_MULTIPART` | Document-literal bodies bind at most one part. |
+| `SOAP_LINT_DOC_LITERAL_PART_TYPE` | The document-literal part is defined as an `element`. |
+| `SOAP_LINT_DOC_LITERAL_BODY_NAMESPACE` | No `namespace` attribute on the document-literal `soap:body`. |
+| `SOAP_LINT_RPC_LITERAL_PART_ELEMENT` | RPC-literal parts use `type`, not `element`. |
+| `SOAP_LINT_RPC_LITERAL_BODY_NAMESPACE` | RPC-literal bodies declare an absolute `namespace`. |
+| `SOAP_LINT_DUPLICATE_WIRE_SIGNATURE` | No two operations in one binding produce identical top-level Body QNames on the wire. |
+| `SOAP_LINT_FAULT_NAME_MISMATCH` | A `soap:fault` name matches its enclosing `wsdl:fault`. |
+| `SOAP_LINT_DUPLICATE_PART_NAME` | Part names are unique per message. |
+| `SOAP_LINT_DUPLICATE_ADDRESS` | Ports do not share a `soap:address` (R2711). |
+| `SOAP_LINT_ADDRESS_NOT_HTTP` | Addresses are http(s) URLs. |
+| `SOAP_LINT_IMPORT_NON_WSDL` | `wsdl:import` points at a WSDL document, not an XML Schema. |
+| `SOAP_LINT_TARGET_NAMESPACE_MISSING` / `_RELATIVE` | `targetNamespace` is present and absolute. |
+| `SOAP_LINT_ONE_WAY_OUTPUT_MISMATCH` | One-way operations do not bind an output. |
+| `SOAP_LINT_DOC_LITERAL_WRAPPED` | The doc-literal-wrapped convention is detected and recorded. |
+
+Parse-level degradations (the lint pass could not fully parse the WSDL) surface as `SOAP_BINDING_STYLE_UNPARSEABLE`, `SOAP_BODY_USE_UNPARSEABLE`, `SOAP_MESSAGE_UNRESOLVED`, `SOAP_OPERATION_ONE_WAY`, `SOAP_ADDRESSING_ACTION_UNDERIVABLE`, and `SOAP_NO_OPERATIONS`.
 
 ## GraphQL
 
@@ -161,19 +185,70 @@ Generated from a GraphQL SDL or introspection JSON. Beyond `GraphQL operation ma
 
 Generated requests send `Accept: application/graphql-response+json, application/json;q=0.9` alongside the JSON `Content-Type` (GraphQL-over-HTTP requires clients to indicate the media types they accept).
 
-Generation-time schema lints run before instrumentation. Full type-system validation (graphql-js `validateSchema`) surfaces every violation — root operation object-ness, interface satisfaction, input-object cycle nullability, reserved `__` names, union member object-ness, directive argument validity — as `GQL_SCHEMA_INVALID` warnings. SDL that explicitly redefines a built-in scalar is flagged (`GQL_BUILT_IN_SCALAR_REDEFINED`); `@specifiedBy` must carry a parseable URL and never sit on a built-in scalar (`GQL_SPECIFIED_BY_URL_INVALID` / `GQL_SPECIFIED_BY_ON_BUILT_IN`); introspection JSON gets raw-shape lints for violations `buildClientSchema` silently tolerates — duplicate type names, unknown `__TypeKind` values, `NON_NULL` directly wrapping `NON_NULL`, non-boolean `isDeprecated` / malformed `deprecationReason`, non-OBJECT `possibleTypes`, unknown directive locations (`GQL_INTROSPECTION_*`). A deprecated root field exercised by a generated operation is called out (`GQL_DEPRECATED_FIELD_SELECTED`), and every generated operation document is re-validated against the schema it was derived from (GraphQL spec section 5), so a generator defect surfaces as `GQL_GENERATED_DOCUMENT_INVALID` instead of shipping silently.
+Generation-time schema lints run before instrumentation and surface as `GQL_*` warnings:
+
+| Code | What it checks |
+| --- | --- |
+| `GQL_SCHEMA_INVALID` | Full type-system validation (graphql-js `validateSchema`): root operation object-ness, interface satisfaction, input-object cycle nullability, reserved `__` names, union member object-ness, directive argument validity. |
+| `GQL_BUILT_IN_SCALAR_REDEFINED` | SDL does not explicitly redefine a built-in scalar. |
+| `GQL_SPECIFIED_BY_URL_INVALID` / `GQL_SPECIFIED_BY_ON_BUILT_IN` | `@specifiedBy` carries a parseable URL and never sits on a built-in scalar. |
+| `GQL_INTROSPECTION_*` | Raw-shape lints over introspection JSON for violations `buildClientSchema` silently tolerates: duplicate type names, unknown `__TypeKind` values, `NON_NULL` directly wrapping `NON_NULL`, non-boolean `isDeprecated` / malformed `deprecationReason`, non-OBJECT `possibleTypes`, unknown directive locations. |
+| `GQL_DEPRECATED_FIELD_SELECTED` | A deprecated root field is exercised by a generated operation. |
+| `GQL_GENERATED_DOCUMENT_INVALID` | Every generated operation document re-validates against the schema it was derived from (GraphQL spec section 5), so a generator defect surfaces here instead of shipping silently. |
 
 ## AsyncAPI (WebSocket / Socket.IO / MQTT)
 
-AsyncAPI 2.0-2.6 and 3.0 documents generate native `ws-raw-request` / `ws-socketio-request` items, and documents with `mqtt`/`mqtts`/`secure-mqtt` servers or MQTT bindings generate native `mqtt-request` items. Contract enforcement here is static, at generation time: every message payload example is validated against its AsyncAPI payload schema, acknowledgement / 3.x reply schemas are compiled, and channel-to-message coverage is enforced against the built collection. For MQTT channels the same generation-time pass checks topic-name grammar, wildcard-filter placement, and MQTT binding value ranges (`ASYNCAPI_MQTT_*` warnings). The same pass also enforces channel-parameter coverage (every `{name}` expression in a channel address must be declared in the channel `parameters` object and vice versa — `ASYNCAPI_CHANNEL_PARAMETER_*`), correlationId `location` runtime-expression grammar (`ASYNCAPI_CORRELATION_LOCATION_INVALID`), AsyncAPI WebSockets channel-binding value ranges (`method` GET/POST and object `query`/`headers` schemas — `ASYNCAPI_WS_BINDING_INVALID`), and reserved Socket.IO lifecycle event names (`ASYNCAPI_SOCKETIO_RESERVED_EVENT`). The Postman CLI runner prunes `ws-*` and `mqtt-request` item types, so these items carry `runnableInCi: false` and their validation happens during generation rather than in a CI run. A document-wide lint pass in the same phase covers servers, security schemes, content types, schema formats, traits, message headers and examples, id/address/tag uniqueness, parameter objects, HTTP/Kafka/AMQP/WS bindings, IANA WebSocket subprotocols, external-docs URLs, and unresolved `$ref`s (`ASYNCAPI_*` warnings). Per-check detail and the warning codes involved are in [Multi-Protocol Contract Assertions](MULTIPROTOCOL-ASSERTIONS.md).
+AsyncAPI 2.0-2.6 and 3.0 documents generate native `ws-raw-request` / `ws-socketio-request` items, and documents with `mqtt`/`mqtts`/`secure-mqtt` servers or MQTT bindings generate native `mqtt-request` items. Contract enforcement here is static, at generation time, since the Postman CLI runner prunes `ws-*` and `mqtt-request` item types (they carry `runnableInCi: false`):
+
+| Code | What it checks |
+| --- | --- |
+| (payload/reply validation, no dedicated code) | Every message payload example validates against its AsyncAPI payload schema; acknowledgement / 3.x reply schemas are compiled; channel-to-message coverage is enforced against the built collection. |
+| `ASYNCAPI_MQTT_*` | MQTT topic-name grammar, wildcard-filter placement, and binding value ranges. |
+| `ASYNCAPI_CHANNEL_PARAMETER_*` | Every `{name}` expression in a channel address is declared in the channel `parameters` object and vice versa. |
+| `ASYNCAPI_CORRELATION_LOCATION_INVALID` | correlationId `location` runtime-expression grammar. |
+| `ASYNCAPI_WS_BINDING_INVALID` | AsyncAPI WebSockets channel-binding value ranges (`method` GET/POST, object `query`/`headers` schemas). |
+| `ASYNCAPI_SOCKETIO_RESERVED_EVENT` | Reserved Socket.IO lifecycle event names are not reused. |
+| `ASYNCAPI_*` (document-wide) | Servers, security schemes, content types, schema formats, traits, message headers and examples, id/address/tag uniqueness, parameter objects, HTTP/Kafka/AMQP/WS bindings, IANA WebSocket subprotocols, external-docs URLs, and unresolved `$ref`s. |
+
+Per-check detail and the full warning-code list are in [Multi-Protocol Contract Assertions](MULTIPROTOCOL-ASSERTIONS.md).
 
 ## MCP
 
 MCP server manifests — a registry `server.json` or an `mcpServers` client configuration — generate native `mcp-request` items: per server an `initialize`, `notifications/initialized`, and `tools/list` JSON-RPC 2.0 template, plus one `tools/call` per declared tool with arguments synthesized from the tool’s `inputSchema`. Registry remote URL/header `{variable}` placeholders are resolved from `remotes[].variables`, with secret inputs kept as `{{variable}}` placeholders and unresolved references surfaced as `MCP_REMOTE_VARIABLE_UNRESOLVED`. Remote `mcp-request` payloads include `MCP-Protocol-Version` metadata alongside manifest headers. Secret header and environment values are replaced with `{{variable}}` placeholders and never persisted into the collection.
 
-`mcp-request` items expose no test-script slot and the Postman CLI runner prunes them, so their contract enforcement is static, at generation time: every generated JSON-RPC message must be a well-formed JSON-RPC 2.0 request, synthesized `tools/call` arguments are validated against the tool’s compiled `inputSchema`, server transport material is checked (URL scheme, stdio command presence, no concrete secret values), tool `annotations` behavior hints are type-checked (`MCP_TOOL_ANNOTATION_INVALID`), resource/template/prompt common annotations are checked (`MCP_*_ANNOTATIONS_INVALID`, `MCP_ANNOTATIONS_INVALID`), static JSON-RPC error/list-result/initialize fixtures and prompt/content examples are walked for error-code, `nextCursor`, initialize-result, content-union, and strict base64 payload validity (`MCP_STATIC_*`), a declared tool `outputSchema` must be a compilable object schema — the MCP 2025-06-18 `structuredContent` commitment (`MCP_TOOL_OUTPUT_SCHEMA_*`) — tool names must be unique with type-checked `title`/`description` metadata and `title`-precedence advisories (`MCP_TOOL_NAME_DUPLICATE`, `MCP_TOOL_BASE_METADATA_INVALID`, `MCP_TOOL_TITLE_PRECEDENCE`, `MCP_TOOL_FIELD_UNKNOWN_2025_06_18`), `_meta` keys must follow the MCP key grammar outside the reserved `modelcontextprotocol`/`mcp` prefixes (`MCP_META_KEY_INVALID` / `MCP_META_KEY_RESERVED_PREFIX`), declared `mimeType` values must be RFC 6838 `type/subtype` (`MCP_MIME_TYPE_INVALID`), static ServerCapabilities sub-shapes and feature alignment are checked (`MCP_CAPABILITIES_INVALID`, `MCP_CAPABILITY_*`), and item coverage and a collection size gate are enforced. Findings surface as `MCP_*` warnings; per-check detail is in [Multi-Protocol Contract Assertions](MULTIPROTOCOL-ASSERTIONS.md).
+`mcp-request` items expose no test-script slot and the Postman CLI runner prunes them, so their contract enforcement is static, at generation time, and surfaces as `MCP_*` warnings:
 
-Servers that expose a Streamable HTTP endpoint additionally get a runnable `http-request` lane that exercises the MCP 2025-06-18 HTTP transport live in the Postman CLI: `initialize` (HTTP 2xx; JSON or SSE `Content-Type`; a single JSON-RPC response object, never a batch; a negotiated `protocolVersion` from the supported revision set saved for later requests; typed `capabilities` sub-shapes; `serverInfo` shape; visible-ASCII `Mcp-Session-Id`; audits any pre-response SSE server messages as id-less advisory notifications; sets the initialize-success guard), `notifications/initialized` (skipped unless initialize passed; HTTP 202 with an empty body; sets the post-initialize guard), `GET listen` (text/event-stream or 405; preserves SSE event/id/retry fields; rejects duplicate event ids and JSON-RPC responses on non-resumable streams; validates `resources/list_changed`, `resources/updated`, `tools/list_changed`, and `prompts/list_changed` notification envelopes against advertised capabilities), `ping` (string-id echo with an empty result), `tools/list` (result shape, live annotations/outputSchema typing, manifest subset accumulated across cursor pages, cross-page tool-name uniqueness, capability gate, `nextCursor` string capture, and bounded termination), `resources/list`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`, `prompts/list`, `prompts/get`, one `tools/call` per tool (request JSON-RPC and argument conformance when `pm.request` is available, JSON-RPC result envelope, required typed content blocks, strict base64/media-type/absolute-URI validation for image/audio/resource content, annotations and `_meta` grammar/reserved-prefix checks, `structuredContent` validated against the tool’s declared `outputSchema`, and a JSON text mirror for `structuredContent` compatibility), resource URI/template grammar checks, progress-stream probes (two unique request ids/tokens, token echo, `total`/`message` typing, plus monotonic progress before the terminal response), `notifications/cancelled` (id-less request, target request id, optional reason, and id-less response/rejection), and negative probes: all normal post-initialize calls self-skip unless the initialized notification passed; id-less notification/client-response POSTs must be accepted as 202 empty or rejected with id-less JSON-RPC error bodies; POST SSE streams must contain exactly one terminal JSON-RPC response and no data after it; an unsupported `MCP-Protocol-Version` header must draw HTTP 400, an invalid `tools/list` cursor must draw a JSON-RPC error, session `DELETE` must terminate the session or answer 405, and the terminated session id must be rejected afterwards. A server with no HTTP URL records `MCP_RUNTIME_SURFACE_UNAVAILABLE`; lane coverage fails closed with `MCP_HTTP_ITEM_COVERAGE_FAILED`.
+| Code | What it checks |
+| --- | --- |
+| (JSON-RPC / schema validation, no dedicated code) | Every generated JSON-RPC message is a well-formed JSON-RPC 2.0 request; synthesized `tools/call` arguments validate against the tool's compiled `inputSchema`; server transport material is checked (URL scheme, stdio command presence, no concrete secret values). |
+| `MCP_TOOL_ANNOTATION_INVALID` | Tool `annotations` behavior hints are type-checked. |
+| `MCP_*_ANNOTATIONS_INVALID`, `MCP_ANNOTATIONS_INVALID` | Resource/template/prompt common annotations. |
+| `MCP_STATIC_*` | Static JSON-RPC error/list-result/initialize fixtures and prompt/content examples: error-code, `nextCursor`, initialize-result, content-union, and strict base64 payload validity. |
+| `MCP_TOOL_OUTPUT_SCHEMA_*` | A declared tool `outputSchema` is a compilable object schema (the MCP 2025-06-18 `structuredContent` commitment). |
+| `MCP_TOOL_NAME_DUPLICATE`, `MCP_TOOL_BASE_METADATA_INVALID`, `MCP_TOOL_TITLE_PRECEDENCE`, `MCP_TOOL_FIELD_UNKNOWN_2025_06_18` | Tool names are unique with type-checked `title`/`description` metadata and `title`-precedence advisories. |
+| `MCP_META_KEY_INVALID` / `MCP_META_KEY_RESERVED_PREFIX` | `_meta` keys follow the MCP key grammar outside the reserved `modelcontextprotocol`/`mcp` prefixes. |
+| `MCP_MIME_TYPE_INVALID` | Declared `mimeType` values are RFC 6838 `type/subtype`. |
+| `MCP_CAPABILITIES_INVALID`, `MCP_CAPABILITY_*` | Static ServerCapabilities sub-shapes and feature alignment. |
+| (coverage gate, no dedicated code) | Item coverage and a collection size gate are enforced. |
+
+Per-check detail is in [Multi-Protocol Contract Assertions](MULTIPROTOCOL-ASSERTIONS.md).
+
+Servers that expose a Streamable HTTP endpoint additionally get a runnable `http-request` lane that exercises the MCP 2025-06-18 HTTP transport live in the Postman CLI:
+
+| Request | What it checks |
+| --- | --- |
+| `initialize` | HTTP 2xx; JSON or SSE `Content-Type`; a single JSON-RPC response object, never a batch; a negotiated `protocolVersion` from the supported revision set saved for later requests; typed `capabilities` sub-shapes; `serverInfo` shape; visible-ASCII `Mcp-Session-Id`; audits any pre-response SSE server messages as id-less advisory notifications; sets the initialize-success guard. |
+| `notifications/initialized` | Skipped unless initialize passed; HTTP 202 with an empty body; sets the post-initialize guard. |
+| `GET` listen | `text/event-stream` or 405; preserves SSE event/id/retry fields; rejects duplicate event ids and JSON-RPC responses on non-resumable streams; validates `resources/list_changed`, `resources/updated`, `tools/list_changed`, and `prompts/list_changed` notification envelopes against advertised capabilities. |
+| `ping` | String-id echo with an empty result. |
+| `tools/list` | Result shape, live annotations/outputSchema typing, manifest subset accumulated across cursor pages, cross-page tool-name uniqueness, capability gate, `nextCursor` string capture, and bounded termination. |
+| `resources/list`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`, `prompts/list`, `prompts/get` | Result shape per method; resource URI/template grammar checks. |
+| One `tools/call` per tool | Request JSON-RPC and argument conformance when `pm.request` is available; JSON-RPC result envelope; required typed content blocks; strict base64/media-type/absolute-URI validation for image/audio/resource content; annotations and `_meta` grammar/reserved-prefix checks; `structuredContent` validated against the tool's declared `outputSchema`; a JSON text mirror for `structuredContent` compatibility. |
+| Progress-stream probes | Two unique request ids/tokens, token echo, `total`/`message` typing, plus monotonic progress before the terminal response. |
+| `notifications/cancelled` | Id-less request, target request id, optional reason, and id-less response/rejection. |
+| Negative probes | All normal post-initialize calls self-skip unless the initialized notification passed; id-less notification/client-response POSTs must be accepted as 202 empty or rejected with id-less JSON-RPC error bodies; POST SSE streams must contain exactly one terminal JSON-RPC response and no data after it; an unsupported `MCP-Protocol-Version` header must draw HTTP 400; an invalid `tools/list` cursor must draw a JSON-RPC error; session `DELETE` must terminate the session or answer 405, and the terminated session id must be rejected afterwards. |
+
+A server with no HTTP URL records `MCP_RUNTIME_SURFACE_UNAVAILABLE`; lane coverage fails closed with `MCP_HTTP_ITEM_COVERAGE_FAILED`.
 
 ## When something fails
 

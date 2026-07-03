@@ -394,6 +394,30 @@ describe('mcp instrumenter (static validation)', () => {
     expect(warnings.some((w) => w.startsWith('MCP_SECRET_VALUE_PRESENT') && w.includes('API_TOKEN'))).toBe(true);
   });
 
+  it('parses static capabilities and cross-checks them against declared features', () => {
+    const index = parseMcpServerSpec(JSON.stringify({
+      mcpServers: { s: { command: 'run-server' } },
+      capabilities: {
+        tools: { listChanged: true },
+        resources: { subscribe: 'yes' }
+      },
+      tools: [{ name: 'forecast', inputSchema: { type: 'object' } }],
+      prompts: [{ name: 'forecast_prompt', arguments: [] }]
+    }));
+    expect(index.capabilities?.tools).toEqual({ listChanged: true });
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentMcpCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('MCP_CAPABILITY_FIELD_INVALID') && w.includes('resources.subscribe'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_CAPABILITY_WITHOUT_DECLARATIONS') && w.includes('capabilities.resources'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_CAPABILITY_DECLARED_FEATURE_MISSING') && w.includes('capabilities.prompts'))).toBe(true);
+
+    const invalid = parseMcpServerSpec(JSON.stringify({
+      mcpServers: { s: { command: 'run-server' } },
+      capabilities: []
+    }));
+    expect(invalid.warnings.some((w) => w.startsWith('MCP_CAPABILITIES_INVALID'))).toBe(true);
+  });
+
   it('flags duplicate tool names (deduped at parse) and non-object input schemas', () => {
     const doc = JSON.stringify({
       mcpServers: { s: { command: 'run-server' } },

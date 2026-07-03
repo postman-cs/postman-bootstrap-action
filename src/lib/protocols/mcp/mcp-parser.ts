@@ -101,6 +101,7 @@ export interface McpContractIndex {
   title: string;
   version?: string;
   servers: McpServerDescriptor[];
+  capabilities?: JsonRecord;
   tools: McpToolDescriptor[];
   resources: McpResourceDescriptor[];
   resourceTemplates: McpResourceTemplateDescriptor[];
@@ -886,11 +887,16 @@ export function parseMcpServerSpec(content: string): McpContractIndex {
         : undefined;
 
   servers.sort((a, b) => a.id.localeCompare(b.id));
+  const capabilities = asRecord(documentJson.capabilities);
+  if (documentJson.capabilities !== undefined && !capabilities) {
+    warnings.push(`MCP_CAPABILITIES_INVALID: top-level capabilities must be an object when present; got ${JSON.stringify(documentJson.capabilities)}`);
+  }
 
   return {
     title: registryName || (typeof documentJson.title === 'string' ? documentJson.title : '') || 'MCP Server',
     version,
     servers,
+    ...(capabilities ? { capabilities } : {}),
     tools,
     resources,
     resourceTemplates,

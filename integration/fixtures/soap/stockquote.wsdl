@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:soap12="http://schemas.xmlsoap.org/wsdl/soap12/"
+    xmlns:tns="http://example.com/stockquote"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    name="StockQuote"
+    targetNamespace="http://example.com/stockquote">
+
+  <wsdl:types>
+    <xsd:schema targetNamespace="http://example.com/stockquote">
+      <xsd:element name="GetStockPrice">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="symbol" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+      <xsd:element name="GetStockPriceResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="price" type="xsd:double"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+      <xsd:element name="ListSymbols">
+        <xsd:complexType><xsd:sequence/></xsd:complexType>
+      </xsd:element>
+      <xsd:element name="ListSymbolsResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="symbol" type="xsd:string" maxOccurs="unbounded"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+    </xsd:schema>
+  </wsdl:types>
+
+  <wsdl:message name="GetStockPriceRequest">
+    <wsdl:part name="parameters" element="tns:GetStockPrice"/>
+  </wsdl:message>
+  <wsdl:message name="GetStockPriceResponse">
+    <wsdl:part name="parameters" element="tns:GetStockPriceResponse"/>
+  </wsdl:message>
+  <wsdl:message name="ListSymbolsRequest">
+    <wsdl:part name="parameters" element="tns:ListSymbols"/>
+  </wsdl:message>
+  <wsdl:message name="ListSymbolsResponse">
+    <wsdl:part name="parameters" element="tns:ListSymbolsResponse"/>
+  </wsdl:message>
+
+  <wsdl:portType name="StockQuotePortType">
+    <wsdl:operation name="GetStockPrice">
+      <wsdl:input message="tns:GetStockPriceRequest"/>
+      <wsdl:output message="tns:GetStockPriceResponse"/>
+    </wsdl:operation>
+    <wsdl:operation name="ListSymbols">
+      <wsdl:input message="tns:ListSymbolsRequest"/>
+      <wsdl:output message="tns:ListSymbolsResponse"/>
+    </wsdl:operation>
+  </wsdl:portType>
+
+  <wsdl:binding name="StockQuoteBinding" type="tns:StockQuotePortType">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="GetStockPrice">
+      <soap:operation soapAction="http://example.com/stockquote/GetStockPrice"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="ListSymbols">
+      <soap:operation soapAction="http://example.com/stockquote/ListSymbols"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="StockQuoteService">
+    <wsdl:port name="StockQuotePort" binding="tns:StockQuoteBinding">
+      <soap:address location="https://example.com/soap/stockquote"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>

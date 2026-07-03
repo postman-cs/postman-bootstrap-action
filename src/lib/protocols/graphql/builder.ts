@@ -2,7 +2,8 @@ import type {
   GraphQLArgumentDef,
   GraphQLContractIndex,
   GraphQLObjectShape,
-  GraphQLOperationDef
+  GraphQLOperationDef,
+  GraphQLTypeRef
 } from './parser.js';
 import { renderSelection, selectFields } from './selection.js';
 
@@ -155,17 +156,43 @@ export function buildOperationDocument(operation: GraphQLOperationDef, index: Gr
 }
 
 /**
+ * Built-in scalars whose JSON representation is NOT a string, so the Postman
+ * placeholder must be emitted unquoted to survive substitution as valid JSON.
+ * `String` and `ID` stay quoted; custom scalars default to quoted (safe fallback).
+ */
+const UNQUOTED_SCALARS = new Set(['Int', 'Float', 'Boolean']);
+
+/**
+ * Whether a variable placeholder for the given type ref should be emitted
+ * unquoted in the variables JSON template. Non-scalar types (input objects,
+ * lists) and numeric/boolean scalars produce non-string JSON values; quoting
+ * them would yield malformed JSON after Postman substitution.
+ */
+function shouldEmitUnquoted(ref: GraphQLTypeRef): boolean {
+  if (ref.lists.length > 0) return true;
+  if (ref.kind === 'input' || ref.kind === 'object') return true;
+  if (ref.kind === 'scalar' && UNQUOTED_SCALARS.has(ref.name)) return true;
+  return false;
+}
+
+/**
  * Build the `variables` JSON string for an operation document: a placeholder
  * object keyed by each required argument, using a Postman variable reference so
- * the operator can fill values without editing the query. Empty string when the
- * operation has no required arguments.
+ * the operator can fill values without editing the query. Non-scalar and
+ * numeric/boolean scalars are emitted unquoted so a JSON-object or JSON-number
+ * variable value substitutes cleanly. Empty string when the operation has no
+ * required arguments.
  */
 export function buildVariablesJson(operation: GraphQLOperationDef): string {
   const declaredVars = operation.args.filter((arg) => arg.required);
   if (declaredVars.length === 0) return '';
-  const obj: JsonRecord = {};
-  for (const arg of declaredVars) obj[arg.name] = `{{${operation.field}_${arg.name}}}`;
-  return JSON.stringify(obj);
+  const placeholder = (arg: GraphQLArgumentDef): string => `{{${operation.field}_${arg.name}}}`;
+  const entries = declaredVars.map((arg) => {
+    const key = JSON.stringify(arg.name);
+    const val = shouldEmitUnquoted(arg.type) ? placeholder(arg) : JSON.stringify(placeholder(arg));
+    return `${key}:${val}`;
+  });
+  return `{${entries.join(',')}}`;
 }
 
 /**

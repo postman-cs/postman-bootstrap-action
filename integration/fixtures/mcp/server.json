@@ -1,0 +1,95 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.json",
+  "name": "io.github.example/weather",
+  "description": "Weather data MCP server",
+  "version": "1.2.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": [
+        { "name": "X-API-Key", "is_required": true, "is_secret": true }
+      ]
+    }
+  ],
+  "packages": [
+    {
+      "registry_type": "npm",
+      "identifier": "@example/weather-mcp",
+      "version": "1.2.0",
+      "runtime_hint": "npx",
+      "environment_variables": [
+        { "name": "WEATHER_API_KEY", "is_required": true, "is_secret": true }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_forecast",
+      "description": "Get the weather forecast for a city",
+      "inputSchema": {
+        "type": "object",
+        "required": ["city"],
+        "properties": {
+          "city": { "type": "string" },
+          "days": { "type": "integer", "default": 3 }
+        }
+      }
+    },
+    {
+      "name": "list_stations",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "resource://forecast-index",
+      "name": "Forecast Index",
+      "description": "Static weather index resource",
+      "mimeType": "application/json",
+      "_meta": {
+        "io.github.example/weather/cacheable": true
+      }
+    },
+    {
+      "uri": "resource://station-directory",
+      "name": "Station Directory",
+      "title": "Station Directory",
+      "mimeType": "text/plain"
+    }
+  ],
+  "resourceTemplates": [
+    {
+      "uriTemplate": "resource://forecast/{city}?days={days}",
+      "name": "Forecast Template",
+      "description": "Fetch a forecast resource by city and day count",
+      "mimeType": "application/json"
+    },
+    {
+      "uriTemplate": "resource://stations/{stationId}",
+      "name": "Station Template",
+      "mimeType": "text/plain"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "forecast_summary",
+      "title": "Forecast Summary",
+      "description": "Summarize the requested city forecast",
+      "arguments": [
+        {
+          "name": "city",
+          "description": "City to summarize",
+          "required": true
+        },
+        {
+          "name": "tone",
+          "description": "Optional response tone"
+        }
+      ]
+    }
+  ]
+}

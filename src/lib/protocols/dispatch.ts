@@ -82,10 +82,12 @@ export interface ProtocolCollectionResult {
  * (`convertV2CollectionToEc`) so the emitted collection is native EC with
  * `http-request` leaves that run in the Postman CLI / Newman HTTP path. gRPC
  * builds EC natively and runs as `grpc-request`. AsyncAPI builds EC `ws-raw-request`
- * / `ws-socketio-request` / `mqtt-request` items natively, and MCP builds EC
- * `mcp-request` items; those item types are pruned by the Postman CLI runner
- * and carry no test-script slot, so their contract check is
- * generation-time/static and they are `runnableInCi:false`.
+ * / `ws-socketio-request` / `mqtt-request` items natively, and those item types
+ * are pruned by the Postman CLI runner and carry no test-script slot, so they
+ * are `runnableInCi:false` (generation-time-only). MCP builds EC `mcp-request`
+ * items (also pruned) but additionally emits `http-request` leaves for SSE
+ * remotes, so MCP is `runnableInCi:true` when the spec declares at least one
+ * SSE server with a URL.
  *
  * Async because the AsyncAPI parser is async; the other branches resolve
  * synchronously.

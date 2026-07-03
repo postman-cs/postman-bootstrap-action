@@ -83,6 +83,40 @@ describe('buildGraphQLCollection', () => {
     expect(buildVariablesJson(subscriber)).toBe(JSON.stringify({ id: '{{subscriber_id}}' }));
   });
 
+  it('emits unquoted placeholders for input-object typed variables', () => {
+    const provisionLine = index.operations.find((o) => o.id === 'mutation.provisionLine')!;
+    const vars = buildVariablesJson(provisionLine);
+    expect(vars).toBe('{"input":{{provisionLine_input}}}');
+    const substituted = vars.replace('{{provisionLine_input}}', '{"subscriberId":"sub-1","planId":"plan-1","msisdn":"+15551230009"}');
+    const parsed = JSON.parse(substituted) as { input: Record<string, string> };
+    expect(parsed.input.subscriberId).toBe('sub-1');
+  });
+
+  it('emits unquoted placeholders for Int/Float/Boolean scalar variables', () => {
+    const sdl = 'type Query { a(n: Int!): String b(f: Float!): String c(flag: Boolean!): String s(id: ID!): String t(v: String!): String }';
+    const idx = parseGraphQLSchema(sdl, { service: 'Scalars' });
+    const n = idx.operations.find((o) => o.field === 'a')!;
+    const f = idx.operations.find((o) => o.field === 'b')!;
+    const flag = idx.operations.find((o) => o.field === 'c')!;
+    const id = idx.operations.find((o) => o.field === 's')!;
+    const str = idx.operations.find((o) => o.field === 't')!;
+    expect(buildVariablesJson(n)).toBe('{"n":{{a_n}}}');
+    expect(buildVariablesJson(f)).toBe('{"f":{{b_f}}}');
+    expect(buildVariablesJson(flag)).toBe('{"flag":{{c_flag}}}');
+    expect(buildVariablesJson(id)).toBe(JSON.stringify({ id: '{{s_id}}' }));
+    expect(buildVariablesJson(str)).toBe(JSON.stringify({ v: '{{t_v}}' }));
+  });
+
+  it('emits unquoted placeholders for list-typed variables', () => {
+    const sdl = 'type Query { items(ids: [ID!]!): String }';
+    const idx = parseGraphQLSchema(sdl, { service: 'Lists' });
+    const op = idx.operations.find((o) => o.field === 'items')!;
+    const vars = buildVariablesJson(op);
+    expect(vars).toBe('{"ids":{{items_ids}}}');
+    const substituted = vars.replace('{{items_ids}}', '["a","b"]');
+    expect(JSON.parse(substituted).ids).toEqual(['a', 'b']);
+  });
+
   it('produces valid documents with empty variables for arg-less operations', () => {
     const plans = index.operations.find((o) => o.id === 'query.plans')!;
     const doc = buildOperationDocument(plans, index);

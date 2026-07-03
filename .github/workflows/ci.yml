@@ -12,10 +12,16 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history so commitlint can lint the PR commit range.
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
@@ -24,55 +30,45 @@ jobs:
       - run: npm ci
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: npm run lint
-      - run: npm test
-      - run: npm run typecheck
+      - name: Install Postman CLI
+        run: curl -o- "https://dl-cli.pstmn.io/install/unix.sh" | sh
+      - run: postman --version
+      - name: Install actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.11 "$RUNNER_TEMP"
+          echo "ACTIONLINT_BIN=$RUNNER_TEMP/actionlint" >> "$GITHUB_ENV"
+      # One runner, all checks in parallel via shell job control: wall-clock is
+      # max(gate), not sum. Every gate reports; failures aggregate so one pass
+      # surfaces them all under ::group:: logs, so one pass shows every result.
+      - name: Run gates
+        run: |
+          set -uo pipefail
+          declare -A pid
+          run() { local n=$1; shift; ( "$@" ) >"$n.log" 2>&1 & pid[$n]=$!; }
 
-  check-dist:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: npm
-          registry-url: 'https://registry.npmjs.org'
-      - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: rm -rf dist && npm run build
-      - name: Compare committed dist
-        id: diff
-        run: git diff --ignore-space-at-eol --text --exit-code -- dist
+          run lint       npm run lint
+          run test       npm test
+          run typecheck  npm run typecheck
+          run dist       npm run verify:dist
+          run integ      npm run test:integration
+          run actionlint "$ACTIONLINT_BIN"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            run commitlint npx commitlint \
+              --from "${{ github.event.pull_request.base.sha }}" \
+              --to "${{ github.event.pull_request.head.sha }}"
+          fi
+
+          fail=0
+          for n in "${!pid[@]}"; do
+            if wait "${pid[$n]}"; then echo "gate:$n=pass"; else echo "gate:$n=fail"; fail=1; fi
+          done
+          for n in "${!pid[@]}"; do
+            echo "::group::$n"; cat "$n.log"; echo "::endgroup::"
+          done
+          exit $fail
       - name: Upload expected dist on mismatch
-        if: ${{ failure() && steps.diff.outcome == 'failure' }}
+        if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: expected-dist
           path: dist/
-
-  actionlint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.24'
-      - name: Install actionlint
-        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
-      - name: Run actionlint
-        run: |
-          ACTIONLINT_BIN="$(go env GOPATH)/bin/actionlint"
-          "$ACTIONLINT_BIN"
-
-  commitlint:
-    if: github.event_name == 'pull_request'
-    permissions:
-      contents: read
-      pull-requests: read
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6.2.1

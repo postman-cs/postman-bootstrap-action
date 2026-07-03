@@ -6,9 +6,10 @@ import { parseGraphQLSchema } from '../../../src/lib/protocols/graphql/parser.js
 
 const SDL = [
   'type Query { user(id: ID!): User old: String @deprecated(reason: "gone") }',
-  'type Mutation { addPlan(name: String!): Plan }',
+  'type Mutation { addPlan(name: String!): Plan createBatch(input: BatchInput!): Plan }',
   'type User { id: ID! legacy: String @deprecated(reason: "old field") }',
-  'type Plan { id: ID! name: String! }'
+  'type Plan { id: ID! name: String! }',
+  'input BatchInput { name: String! count: Int! }'
 ].join('\n');
 
 describe('GraphQL generation documents-static (graphql_generation_documents_static)', () => {
@@ -25,10 +26,19 @@ describe('GraphQL generation documents-static (graphql_generation_documents_stat
   });
 
   it('row 35: generated variable values are Postman placeholders (no concrete coercion needed)', () => {
-    const withArgs = index.operations.find((o) => o.args.some((a) => a.required));
+    const withArgs = index.operations.find((o) => o.field === 'user')!;
     expect(withArgs).toBeTruthy();
     const vars = JSON.parse(buildVariablesJson(withArgs!)) as Record<string, string>;
     for (const value of Object.values(vars)) expect(value).toMatch(/^\{\{.+\}\}$/);
+  });
+
+  it('row 35: input-object variables substitute cleanly to valid JSON', () => {
+    const batch = index.operations.find((o) => o.field === 'createBatch')!;
+    const template = buildVariablesJson(batch);
+    const substituted = template.replace('{{createBatch_input}}', '{"name":"x","count":3}');
+    const parsed = JSON.parse(substituted) as { input: { name: string; count: number } };
+    expect(parsed.input.name).toBe('x');
+    expect(parsed.input.count).toBe(3);
   });
 
   it('row 36: warns on a deprecated nested field the generated document selects', () => {

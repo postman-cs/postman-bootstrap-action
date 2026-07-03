@@ -5,3 +5,4 @@ coverage/
 !.env.example
 .unifusion-question.md
 .unifusion-*.md
+integration/.work/

@@ -113,10 +113,10 @@ describe('protocol dispatch format discriminant', () => {
     expect(result.type).toBe('mcp');
     expect(result.format).toBe('v3-ec');
     expect(result.runnableInCi).toBe(true);
-    expect(result.operationCount).toBe(49);
+    expect(result.operationCount).toBe(51);
     const items = (result.collection.item as Array<Record<string, unknown>>) ?? [];
     expect(items.filter((item) => item.type === 'mcp-request')).toHaveLength(20);
-    expect(items.filter((item) => item.type === 'http-request')).toHaveLength(29);
+    expect(items.filter((item) => item.type === 'http-request')).toHaveLength(31);
   });
 
   it('mcp stdio-only collections stay static and are not runnable in CI', async () => {

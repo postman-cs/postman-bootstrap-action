@@ -351,8 +351,8 @@ describe('mcp collection builder', () => {
     const items = collection.item as JsonRecord[];
     // 2 servers x (initialize + initialized + tools/list + resources/list + prompts/list +
     // 2 tools/call + 2 resources/read + 1 prompts/get) mcp-request templates,
-    // plus 1 url-bearing server x (29 HTTP runtime probes/items).
-    expect(items).toHaveLength(49);
+    // plus 1 url-bearing server x (31 HTTP runtime probes/items).
+    expect(items).toHaveLength(51);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -692,6 +692,8 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP resources/read Station Directory',
       'io.github.example/weather remote-1 · HTTP prompts/get forecast_summary',
       'io.github.example/weather remote-1 · HTTP resources/templates/list',
+      'io.github.example/weather remote-1 · HTTP resources/subscribe Forecast Index',
+      'io.github.example/weather remote-1 · HTTP resources/unsubscribe Forecast Index',
       'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken pm-progress',
       'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken pm-progress-secondary',
       'io.github.example/weather remote-1 · HTTP notifications/cancelled get_forecast',
@@ -772,6 +774,38 @@ describe('mcp runtime HTTP scripts', () => {
     expect(progressTokens).toEqual(['pm-progress', 'pm-progress-secondary']);
     expect(new Set(progressTokens).size).toBe(progressTokens.length);
     expect(progressItems.map((item) => runtimeEventScript(item))).toEqual(expect.arrayContaining([expect.stringContaining('pm-progress'), expect.stringContaining('pm-progress-secondary')]));
+  });
+
+  it('emits resource subscribe/unsubscribe probes with stateful assertions', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const httpItems = (collection.item as JsonRecord[]).filter((item) => item.type === 'http-request');
+    const subscribe = httpItems.find((item) => String(item.title).endsWith('HTTP resources/subscribe Forecast Index'))!;
+    const unsubscribe = httpItems.find((item) => String(item.title).endsWith('HTTP resources/unsubscribe Forecast Index'))!;
+    const subscribeBody = JSON.parse(String(((subscribe.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
+    const unsubscribeBody = JSON.parse(String(((unsubscribe.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
+    expect(subscribeBody).toMatchObject({ id: 'pm-resource-subscribe:Forecast Index', method: 'resources/subscribe', params: { uri: 'resource://forecast-index' } });
+    expect(unsubscribeBody).toMatchObject({ id: 'pm-resource-unsubscribe:Forecast Index', method: 'resources/unsubscribe', params: { uri: 'resource://forecast-index' } });
+
+    const vars = new Map<string, string>([['mcp_capabilities', JSON.stringify({ resources: { subscribe: true } })]]);
+    const subscribed = runMcpScript(runtimeEventScript(subscribe), { jsonrpc: '2.0', id: 'pm-resource-subscribe:Forecast Index', result: {} }, vars, {
+      requestBody: String(((subscribe.payload as JsonRecord).body as JsonRecord).content)
+    });
+    expect(runtimeTestResult(subscribed.results, 'MCP resources/subscribe request targets the declared resource (MCP 2025-06-18 resources)')?.passed).toBe(true);
+    expect(runtimeTestResult(subscribed.results, 'MCP resources/subscribe result and capability gate (MCP 2025-06-18 resources)')?.passed).toBe(true);
+    expect(subscribed.vars.get('mcp_resource_subscription_uri')).toBe('resource://forecast-index');
+
+    const unsubscribed = runMcpScript(runtimeEventScript(unsubscribe), { jsonrpc: '2.0', id: 'pm-resource-unsubscribe:Forecast Index', result: {} }, subscribed.vars, {
+      requestBody: String(((unsubscribe.payload as JsonRecord).body as JsonRecord).content)
+    });
+    expect(runtimeTestResult(unsubscribed.results, 'MCP resources/unsubscribe request targets the subscribed resource (MCP 2025-06-18 resources)')?.passed).toBe(true);
+    expect(runtimeTestResult(unsubscribed.results, 'MCP resources/unsubscribe result and subscription state (MCP 2025-06-18 resources)')?.passed).toBe(true);
+    expect(unsubscribed.vars.get('mcp_resource_subscription_uri')).toBeUndefined();
+
+    const unsupported = runMcpScript(runtimeEventScript(subscribe), { jsonrpc: '2.0', id: 'pm-resource-subscribe:Forecast Index', error: { code: -32601, message: 'unsupported' } }, new Map([['mcp_capabilities', JSON.stringify({ resources: { subscribe: true } })]]), {
+      requestBody: String(((subscribe.payload as JsonRecord).body as JsonRecord).content)
+    });
+    expect(runtimeTestResult(unsupported.results, 'MCP resources/subscribe result and capability gate (MCP 2025-06-18 resources)')?.passed).toBe(false);
   });
 
   it('validates optional progress notification total and message fields', () => {
@@ -891,17 +925,21 @@ describe('mcp runtime HTTP scripts', () => {
     ).toBe(true);
   });
 
-  it('validates GET listen tool and prompt list_changed notifications', () => {
+  it('validates GET listen resource, tool, and prompt notifications', () => {
     const testName = 'MCP GET listen returns an SSE stream or HTTP 405 (MCP 2025-06-18 Streamable HTTP)';
     const valid = runMcpScript(
       getListenScript(),
       undefined,
       new Map([
-        ['mcp_capabilities', JSON.stringify({ tools: { listChanged: true }, prompts: { listChanged: true } })]
+        ['mcp_capabilities', JSON.stringify({ resources: { listChanged: true, subscribe: true }, tools: { listChanged: true }, prompts: { listChanged: true } })]
       ]),
       {
         contentType: 'text/event-stream; charset=utf-8',
         text: [
+          'data: {"jsonrpc":"2.0","method":"notifications/resources/list_changed"}',
+          '',
+          'data: {"jsonrpc":"2.0","method":"notifications/resources/updated","params":{"uri":"resource://forecast-index"}}',
+          '',
           'data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"_meta":{"pm-cse/change":"tool"}}}',
           '',
           'data: {"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}',

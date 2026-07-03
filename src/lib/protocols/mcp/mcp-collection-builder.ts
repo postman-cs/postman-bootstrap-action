@@ -47,6 +47,8 @@ import {
   progressToolCallScript,
   protectedResourceMetadataScript,
   readResourceScript,
+  resourceSubscribeScript,
+  resourceUnsubscribeScript,
   resourcesListScript,
   resourceTemplatesScript,
   terminateScript,
@@ -162,6 +164,18 @@ function readResourceMessage(resource: McpResourceDescriptor, id: string | numbe
   });
 }
 
+function resourceSubscribeMessage(resource: McpResourceDescriptor, id: string | number): string {
+  return jsonRpcWithId(id, 'resources/subscribe', {
+    uri: resource.uri
+  });
+}
+
+function resourceUnsubscribeMessage(resource: McpResourceDescriptor, id: string | number): string {
+  return jsonRpcWithId(id, 'resources/unsubscribe', {
+    uri: resource.uri
+  });
+}
+
 function getPromptMessage(prompt: McpPromptDescriptor, id: string | number): string {
   return jsonRpcWithId(id, 'prompts/get', {
     name: prompt.name,
@@ -199,6 +213,7 @@ export function expectedRuntimeItemCount(index: McpContractIndex, server: McpSer
   if (server.transport !== 'sse' || !server.url) return 0;
   let count = 21 + index.tools.length + index.resources.length + index.prompts.length;
   if (index.tools.length > 0) count += 3;
+  if (index.resources.length > 0) count += 2;
   if (hasAuthorizationHeader(server)) {
     count += 2;
     if (protectedResourceMetadataUrl(server.url)) count += 1;
@@ -339,6 +354,15 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
   items.push(
     httpItem(seed, `srv:${server.id}:http:resources/templates`, `${server.id} · HTTP resources/templates/list`, server.url, 'POST', sessionHeaders, jsonRpcWithId(5, 'resources/templates/list', {}), resourceTemplatesScript(), postInitializeGuard)
   );
+  if (index.resources.length > 0) {
+    const subscriptionResource = index.resources[0];
+    const subscribeRequestId = `pm-resource-subscribe:${subscriptionResource.name}`;
+    const unsubscribeRequestId = `pm-resource-unsubscribe:${subscriptionResource.name}`;
+    items.push(
+      httpItem(seed, `srv:${server.id}:http:resources/subscribe:${subscriptionResource.name}`, `${server.id} · HTTP resources/subscribe ${subscriptionResource.name}`, server.url, 'POST', sessionHeaders, resourceSubscribeMessage(subscriptionResource, subscribeRequestId), resourceSubscribeScript(subscriptionResource.uri, subscribeRequestId), postInitializeGuard),
+      httpItem(seed, `srv:${server.id}:http:resources/unsubscribe:${subscriptionResource.name}`, `${server.id} · HTTP resources/unsubscribe ${subscriptionResource.name}`, server.url, 'POST', sessionHeaders, resourceUnsubscribeMessage(subscriptionResource, unsubscribeRequestId), resourceUnsubscribeScript(subscriptionResource.uri, unsubscribeRequestId), postInitializeGuard)
+    );
+  }
   if (index.tools.length > 0) {
     const progressTool = index.tools[0];
     const progressProbes = [

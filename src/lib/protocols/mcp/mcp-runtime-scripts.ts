@@ -321,6 +321,19 @@ function mcpAssertListChangedNotification(message, label, capabilityName) {
   var advertised = mcpCapabilityFlag(capabilityName, 'listChanged');
   if (advertised !== null) pm.expect(advertised, label + ' requires initialize capabilities.' + capabilityName + '.listChanged=true').to.eql(true);
 }
+function mcpAssertResourceUpdatedNotification(message, label) {
+  pm.expect(message.jsonrpc, label + ' JSON-RPC version').to.eql('2.0');
+  pm.expect(message.method, label + ' method').to.eql('notifications/resources/updated');
+  if (message.id !== undefined) pm.expect.fail(label + ' must be an id-less JSON-RPC notification; got id ' + JSON.stringify(message.id));
+  pm.expect(message.params, label + ' params').to.be.an('object').and.not.an('array');
+  pm.expect(message.params.uri, label + ' params.uri').to.be.a('string');
+  if (!mcpAbsoluteUriOk(message.params.uri)) pm.expect.fail(label + ' params.uri must be absolute; got ' + message.params.uri);
+  mcpAssertMetaKeys(message, label);
+  var subscribedUri = pm.collectionVariables.get('mcp_resource_subscription_uri');
+  if (subscribedUri && message.params.uri !== subscribedUri) console.warn(label + ' updated URI did not match the subscribed probe URI ' + subscribedUri + ': ' + message.params.uri);
+  var advertised = mcpCapabilityFlag('resources', 'subscribe');
+  if (advertised !== null) pm.expect(advertised, label + ' requires initialize capabilities.resources.subscribe=true').to.eql(true);
+}
 function mcpSessionHeader() {
   return pm.collectionVariables.get('mcp_session_id') || '';
 }
@@ -529,6 +542,59 @@ export function resourceTemplatesScript(): string {
   ]);
 }
 
+export function resourceSubscribeScript(resourceUri: string, requestId: string): string {
+  return join([
+    `var expectedResourceSubscribeUri = ${json(resourceUri)};`,
+    `var expectedResourceSubscribeRequestId = ${json(requestId)};`,
+    "pm.test('MCP resources/subscribe request targets the declared resource (MCP 2025-06-18 resources)', function () {",
+    "  if (!pm.request || !pm.request.body || typeof pm.request.body.raw !== 'string') return;",
+    '  var sent = JSON.parse(pm.request.body.raw);',
+    "  pm.expect(sent.jsonrpc, 'resources/subscribe request JSON-RPC version').to.eql('2.0');",
+    "  pm.expect(sent.id, 'resources/subscribe request id').to.eql(expectedResourceSubscribeRequestId);",
+    "  pm.expect(sent.method, 'resources/subscribe method').to.eql('resources/subscribe');",
+    "  pm.expect(sent.params, 'resources/subscribe params').to.be.an('object').and.not.an('array');",
+    "  pm.expect(sent.params.uri, 'resources/subscribe uri').to.eql(expectedResourceSubscribeUri);",
+    "  mcpAssertMetaKeys(sent, 'resources/subscribe request');",
+    '});',
+    "pm.test('MCP resources/subscribe result and capability gate (MCP 2025-06-18 resources)', function () {",
+    '  var body = mcpResponseBody();',
+    "  var advertised = mcpCapabilityFlag('resources', 'subscribe');",
+    "  if (body && body.error) { pm.collectionVariables.unset('mcp_resource_subscription_uri'); mcpAssertErrorShape('resources/subscribe', body, expectedResourceSubscribeRequestId); if (advertised === true) pm.expect.fail('resources/subscribe failed even though initialize advertised resources.subscribe=true'); return; }",
+    "  mcpAssertResponseObject('resources/subscribe', body, expectedResourceSubscribeRequestId);",
+    "  pm.expect(body.result, 'resources/subscribe result').to.be.an('object');",
+    "  if (advertised !== null) pm.expect(advertised, 'initialize advertised capabilities.resources.subscribe before resources/subscribe succeeded').to.eql(true);",
+    "  pm.collectionVariables.set('mcp_resource_subscription_uri', expectedResourceSubscribeUri);",
+    '});',
+    `pm.test('MCP resources/subscribe response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('resources/subscribe'); });`
+  ]);
+}
+
+export function resourceUnsubscribeScript(resourceUri: string, requestId: string): string {
+  return join([
+    `var expectedResourceUnsubscribeUri = ${json(resourceUri)};`,
+    `var expectedResourceUnsubscribeRequestId = ${json(requestId)};`,
+    "pm.test('MCP resources/unsubscribe request targets the subscribed resource (MCP 2025-06-18 resources)', function () {",
+    "  if (!pm.request || !pm.request.body || typeof pm.request.body.raw !== 'string') return;",
+    '  var sent = JSON.parse(pm.request.body.raw);',
+    "  pm.expect(sent.jsonrpc, 'resources/unsubscribe request JSON-RPC version').to.eql('2.0');",
+    "  pm.expect(sent.id, 'resources/unsubscribe request id').to.eql(expectedResourceUnsubscribeRequestId);",
+    "  pm.expect(sent.method, 'resources/unsubscribe method').to.eql('resources/unsubscribe');",
+    "  pm.expect(sent.params, 'resources/unsubscribe params').to.be.an('object').and.not.an('array');",
+    "  pm.expect(sent.params.uri, 'resources/unsubscribe uri').to.eql(expectedResourceUnsubscribeUri);",
+    "  mcpAssertMetaKeys(sent, 'resources/unsubscribe request');",
+    '});',
+    "pm.test('MCP resources/unsubscribe result and subscription state (MCP 2025-06-18 resources)', function () {",
+    '  var body = mcpResponseBody();',
+    "  var hadSubscription = pm.collectionVariables.get('mcp_resource_subscription_uri') === expectedResourceUnsubscribeUri;",
+    "  if (body && body.error) { mcpAssertErrorShape('resources/unsubscribe', body, expectedResourceUnsubscribeRequestId); if (hadSubscription) pm.expect.fail('resources/unsubscribe failed after a successful subscribe probe'); return; }",
+    "  mcpAssertResponseObject('resources/unsubscribe', body, expectedResourceUnsubscribeRequestId);",
+    "  pm.expect(body.result, 'resources/unsubscribe result').to.be.an('object');",
+    "  pm.collectionVariables.unset('mcp_resource_subscription_uri');",
+    '});',
+    `pm.test('MCP resources/unsubscribe response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('resources/unsubscribe'); });`
+  ]);
+}
+
 export function progressToolCallScript(toolName: string, requestId = 'pm-progress-call', progressToken = 'pm-progress'): string {
   return join([
     `var progressToolName = ${json(toolName)};`,
@@ -578,6 +644,8 @@ export function getListenScript(): string {
     "    if (message.jsonrpc !== undefined) pm.expect(message.jsonrpc, 'GET listen JSON-RPC version at frame ' + i).to.eql('2.0');",
     "    var isResponse = message.id !== undefined && message.method === undefined && (message.result !== undefined || message.error !== undefined);",
     "    if (isResponse) pm.expect.fail('GET listen non-resumable stream must not carry JSON-RPC responses; frame ' + i + ' had id ' + JSON.stringify(message.id));",
+    "    if (message.method === 'notifications/resources/list_changed') mcpAssertListChangedNotification(message, 'GET listen resources/list_changed frame ' + i, 'resources');",
+    "    if (message.method === 'notifications/resources/updated') mcpAssertResourceUpdatedNotification(message, 'GET listen resources/updated frame ' + i);",
     "    if (message.method === 'notifications/tools/list_changed') mcpAssertListChangedNotification(message, 'GET listen tools/list_changed frame ' + i, 'tools');",
     "    if (message.method === 'notifications/prompts/list_changed') mcpAssertListChangedNotification(message, 'GET listen prompts/list_changed frame ' + i, 'prompts');",
     '  });',

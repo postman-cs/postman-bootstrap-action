@@ -41,6 +41,11 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 
+function asRecord(value: unknown): JsonRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as JsonRecord;
+}
+
 export interface McpCollectionOptions {
   // Collection display name. Defaults to `<title> Contract`.
   name?: string;
@@ -95,17 +100,21 @@ function toolsListMessage(): string {
   return jsonRpc(2, 'tools/list', {});
 }
 
-function toolsCallMessage(tool: McpToolDescriptor, id = 3): string {
-  return jsonRpc(id, 'tools/call', {
+function toolArguments(tool: McpToolDescriptor): JsonRecord {
+  return (asRecord(tool.sampleArguments) ?? {}) as JsonRecord;
+}
+
+function toolsCallMessage(tool: McpToolDescriptor, id: string | number = 3): string {
+  return jsonRpcWithId(id, 'tools/call', {
     name: tool.name,
-    arguments: (tool.sampleArguments as JsonRecord) ?? {}
+    arguments: toolArguments(tool)
   });
 }
 
 function toolsCallProgressMessage(tool: McpToolDescriptor): string {
   return jsonRpcWithId('pm-progress-call', 'tools/call', {
     name: tool.name,
-    arguments: (tool.sampleArguments as JsonRecord) ?? {},
+    arguments: toolArguments(tool),
     _meta: { progressToken: 'pm-progress' }
   });
 }
@@ -286,9 +295,9 @@ export function buildMcpCollection(index: McpContractIndex, options: McpCollecti
   for (const server of index.servers) {
     item.push(buildItem(server, `srv:${server.id}:initialize`, `${server.id} · initialize`, initializeMessage(options), options));
     item.push(buildItem(server, `srv:${server.id}:tools/list`, `${server.id} · tools/list`, toolsListMessage(), options));
-    for (const tool of index.tools) {
+    for (const [i, tool] of index.tools.entries()) {
       item.push(
-        buildItem(server, `srv:${server.id}:tools/call:${tool.name}`, `${server.id} · tools/call ${tool.name}`, toolsCallMessage(tool), options)
+        buildItem(server, `srv:${server.id}:tools/call:${tool.name}`, `${server.id} · tools/call ${tool.name}`, toolsCallMessage(tool, 3 + i), options)
       );
     }
     item.push(...runtimeItems(index, server, options));

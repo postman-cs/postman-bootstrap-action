@@ -118,6 +118,10 @@ describe('mcp collection builder', () => {
     expect(callMessage.method).toBe('tools/call');
     expect((callMessage.params as JsonRecord).name).toBe('get_forecast');
     expect(((callMessage.params as JsonRecord).arguments as JsonRecord).city).toBe('string');
+    const remoteToolCallIds = items
+      .filter((i) => i.type === 'mcp-request' && String(i.title).startsWith('io.github.example/weather remote-1 · tools/call'))
+      .map((i) => JSON.parse(String((i.payload as JsonRecord).message)).id);
+    expect(remoteToolCallIds).toEqual([3, 4]);
     const httpInitialize = items.find((i) => i.type === 'http-request' && String(i.title).endsWith('HTTP initialize'))!;
     expect(httpInitialize.id).toBe('8855b5e4-0000-4000-8000-000000000036');
     const headers = (((httpInitialize.payload as JsonRecord).headers as JsonRecord[]) ?? []).map((h) => h.key);
@@ -198,6 +202,27 @@ describe('mcp instrumenter (static validation)', () => {
     const collection = buildMcpCollection(index, { idSeed: 'test' });
     ((collection.item as JsonRecord[])[0].payload as JsonRecord).message = '{"jsonrpc":"1.0"}';
     expect(() => instrumentMcpCollection(collection, index)).toThrow(/MCP_MESSAGE_INVALID/);
+  });
+
+  it('fails closed when a generated request uses array params or a fractional id', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const arrayParamsCollection = buildMcpCollection(index, { idSeed: 'test' });
+    ((arrayParamsCollection.item as JsonRecord[])[1].payload as JsonRecord).message = '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":[]}';
+    expect(() => instrumentMcpCollection(arrayParamsCollection, index)).toThrow(/MCP_MESSAGE_INVALID/);
+
+    const fractionalIdCollection = buildMcpCollection(index, { idSeed: 'test' });
+    ((fractionalIdCollection.item as JsonRecord[])[1].payload as JsonRecord).message = '{"jsonrpc":"2.0","id":2.5,"method":"tools/list","params":{}}';
+    expect(() => instrumentMcpCollection(fractionalIdCollection, index)).toThrow(/MCP_MESSAGE_INVALID/);
+  });
+
+  it('fails closed when one server reuses a JSON-RPC request id across mcp-request items', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const duplicateTarget = (collection.item as JsonRecord[]).find(
+      (item) => item.type === 'mcp-request' && String(item.title) === 'io.github.example/weather remote-1 · tools/call list_stations'
+    )!;
+    ((duplicateTarget.payload as JsonRecord).message as string) = '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_stations","arguments":{}}}';
+    expect(() => instrumentMcpCollection(collection, index)).toThrow(/MCP_REQUEST_ID_DUPLICATE/);
   });
 });
 
@@ -394,4 +419,3 @@ describe('mcp tool annotations and outputSchema static checks', () => {
     expect(warnings.some((w) => w.startsWith('MCP_TOOL_ANNOTATION_INVALID') || w.startsWith('MCP_TOOL_OUTPUT_SCHEMA'))).toBe(false);
   });
 });
-

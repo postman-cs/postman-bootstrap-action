@@ -216,6 +216,22 @@ pm.test('SOAP 1.1 MustUnderstand faults carry no Body detail (SOAP 1.1 section 4
   if (muDetail !== null && muDetail.trim()) pm.expect.fail("a MustUnderstand fault reports a header processing error; error details belong in header blocks, not soap:detail (SOAP 1.1 section 4.4)");
 });
 
+pm.test('SOAP header attributes sit only on immediate Header children (SOAP 1.1 section 4.2.1 / SOAP 1.2 Part 1 section 5.2)', function () {
+  var q = String.fromCharCode(34); var sqm = String.fromCharCode(39);
+  var envNs = "http://schemas.xmlsoap.org/soap/envelope/";
+  var headerInner = elementInner(cleanXml, "Header");
+  var headTags = [];
+  if (headerInner) { var hDepth = 0; var hre = /<(\\/?)([A-Za-z_][\\w.-]*(?::[A-Za-z_][\\w.-]*)?)([^>]*?)(\\/?)>/g; var hm; while ((hm = hre.exec(headerInner))) { if (hm[1]) { hDepth -= 1; continue; } if (hDepth === 0) headTags.push(hm[0]); if (!hm[4]) hDepth += 1; } }
+  var tags = cleanXml.match(/<[A-Za-z_][^>]*>/g) || [];
+  for (var ti = 0; ti < tags.length; ti++) {
+    var sm = /([A-Za-z_][\\w.-]*):(mustUnderstand|actor|role|relay)\\s*=/.exec(tags[ti]);
+    if (!sm) continue;
+    var bound = cleanXml.indexOf("xmlns:" + sm[1] + "=" + q + envNs + q) !== -1 || cleanXml.indexOf("xmlns:" + sm[1] + "=" + sqm + envNs + sqm) !== -1;
+    if (!bound) continue;
+    if (headTags.indexOf(tags[ti]) === -1) pm.expect.fail("SOAP " + sm[2] + " must appear only on immediate soap:Header children (SOAP 1.1 section 4.2.1 / SOAP 1.2 Part 1 section 5.2); got " + tags[ti]);
+  }
+});
+
 var xsd = JSON.parse("{\\"wrapper\\":\\"GetStockPriceResponse\\",\\"complete\\":true,\\"qualified\\":false,\\"nillable\\":false,\\"childrenKnown\\":true,\\"children\\":[{\\"name\\":\\"price\\",\\"min\\":1,\\"max\\":1,\\"nillable\\":false,\\"builtin\\":\\"double\\",\\"lex\\":\\"^([+-]?(\\\\\\\\d+(\\\\\\\\.\\\\\\\\d*)?|\\\\\\\\.\\\\\\\\d+)([eE][+-]?\\\\\\\\d+)?|-?INF|NaN)$\\"}],\\"attrs\\":[],\\"typeNames\\":[],\\"builtins\\":[\\"anyType\\",\\"anySimpleType\\",\\"string\\",\\"boolean\\",\\"decimal\\",\\"float\\",\\"double\\",\\"duration\\",\\"dateTime\\",\\"time\\",\\"date\\",\\"gYearMonth\\",\\"gYear\\",\\"gMonthDay\\",\\"gDay\\",\\"gMonth\\",\\"hexBinary\\",\\"base64Binary\\",\\"anyURI\\",\\"QName\\",\\"NOTATION\\",\\"normalizedString\\",\\"token\\",\\"language\\",\\"NMTOKEN\\",\\"NMTOKENS\\",\\"Name\\",\\"NCName\\",\\"ID\\",\\"IDREF\\",\\"IDREFS\\",\\"ENTITY\\",\\"ENTITIES\\",\\"integer\\",\\"nonPositiveInteger\\",\\"negativeInteger\\",\\"long\\",\\"int\\",\\"short\\",\\"byte\\",\\"nonNegativeInteger\\",\\"unsignedLong\\",\\"unsignedInt\\",\\"unsignedShort\\",\\"unsignedByte\\",\\"positiveInteger\\"],\\"envNs\\":\\"http://schemas.xmlsoap.org/soap/envelope/\\"}");
 function directChildEls(inner) {
   var out = []; var depth = 0; var m; var start = -1; var name = ""; var tag = "";
@@ -538,6 +554,22 @@ pm.test('SOAP 1.1 MustUnderstand faults carry no Body detail (SOAP 1.1 section 4
   if (!fc || localPart(fc[1].trim()) !== "MustUnderstand") return;
   var muDetail = elementInner(cleanXml, "detail");
   if (muDetail !== null && muDetail.trim()) pm.expect.fail("a MustUnderstand fault reports a header processing error; error details belong in header blocks, not soap:detail (SOAP 1.1 section 4.4)");
+});
+
+pm.test('SOAP header attributes sit only on immediate Header children (SOAP 1.1 section 4.2.1 / SOAP 1.2 Part 1 section 5.2)', function () {
+  var q = String.fromCharCode(34); var sqm = String.fromCharCode(39);
+  var envNs = "http://schemas.xmlsoap.org/soap/envelope/";
+  var headerInner = elementInner(cleanXml, "Header");
+  var headTags = [];
+  if (headerInner) { var hDepth = 0; var hre = /<(\\/?)([A-Za-z_][\\w.-]*(?::[A-Za-z_][\\w.-]*)?)([^>]*?)(\\/?)>/g; var hm; while ((hm = hre.exec(headerInner))) { if (hm[1]) { hDepth -= 1; continue; } if (hDepth === 0) headTags.push(hm[0]); if (!hm[4]) hDepth += 1; } }
+  var tags = cleanXml.match(/<[A-Za-z_][^>]*>/g) || [];
+  for (var ti = 0; ti < tags.length; ti++) {
+    var sm = /([A-Za-z_][\\w.-]*):(mustUnderstand|actor|role|relay)\\s*=/.exec(tags[ti]);
+    if (!sm) continue;
+    var bound = cleanXml.indexOf("xmlns:" + sm[1] + "=" + q + envNs + q) !== -1 || cleanXml.indexOf("xmlns:" + sm[1] + "=" + sqm + envNs + sqm) !== -1;
+    if (!bound) continue;
+    if (headTags.indexOf(tags[ti]) === -1) pm.expect.fail("SOAP " + sm[2] + " must appear only on immediate soap:Header children (SOAP 1.1 section 4.2.1 / SOAP 1.2 Part 1 section 5.2); got " + tags[ti]);
+  }
 });
 
 var xsd = JSON.parse("{\\"wrapper\\":\\"ListSymbolsResponse\\",\\"complete\\":true,\\"qualified\\":false,\\"nillable\\":false,\\"childrenKnown\\":true,\\"children\\":[{\\"name\\":\\"symbol\\",\\"min\\":1,\\"max\\":-1,\\"nillable\\":false,\\"builtin\\":\\"string\\"}],\\"attrs\\":[],\\"typeNames\\":[],\\"builtins\\":[\\"anyType\\",\\"anySimpleType\\",\\"string\\",\\"boolean\\",\\"decimal\\",\\"float\\",\\"double\\",\\"duration\\",\\"dateTime\\",\\"time\\",\\"date\\",\\"gYearMonth\\",\\"gYear\\",\\"gMonthDay\\",\\"gDay\\",\\"gMonth\\",\\"hexBinary\\",\\"base64Binary\\",\\"anyURI\\",\\"QName\\",\\"NOTATION\\",\\"normalizedString\\",\\"token\\",\\"language\\",\\"NMTOKEN\\",\\"NMTOKENS\\",\\"Name\\",\\"NCName\\",\\"ID\\",\\"IDREF\\",\\"IDREFS\\",\\"ENTITY\\",\\"ENTITIES\\",\\"integer\\",\\"nonPositiveInteger\\",\\"negativeInteger\\",\\"long\\",\\"int\\",\\"short\\",\\"byte\\",\\"nonNegativeInteger\\",\\"unsignedLong\\",\\"unsignedInt\\",\\"unsignedShort\\",\\"unsignedByte\\",\\"positiveInteger\\"],\\"envNs\\":\\"http://schemas.xmlsoap.org/soap/envelope/\\"}");

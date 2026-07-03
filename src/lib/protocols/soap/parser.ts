@@ -58,6 +58,12 @@ export interface SoapOperation {
   inputHeaders?: SoapHeaderDecl[];
   /** Binding soap:header blocks declared for the response (WSDL 1.1 section 3.7). */
   outputHeaders?: SoapHeaderDecl[];
+  /** Binding soap:headerfault declarations (WSDL 1.1 section 3.7) for header-fault placement checks. */
+  headerFaults?: SoapHeaderDecl[];
+  /** Required HTTP header field names from WSDL 2.0 whttp:header on the output. */
+  outputHttpHeaders?: string[];
+  /** soapbind:body encodingStyle declared for encoded operations (output preferred). */
+  encodingStyle?: string;
   /** Name of the portType/interface declaring this operation. */
   portTypeName?: string;
   /** Name attribute of the portType wsdl:input element, when present. */
@@ -238,6 +244,8 @@ interface BindingOp11 {
   outputBodyParts?: string;
   inputHeaders?: SoapHeaderDecl[];
   outputHeaders?: SoapHeaderDecl[];
+  headerFaults?: SoapHeaderDecl[];
+  encodingStyle?: string;
 }
 
 /** First soapbind:body marker child of a wsdl:input/wsdl:output record. */
@@ -266,6 +274,28 @@ function headerDecls(
       element: localName(part.element),
       namespace: namespaceForPrefix(scopes, prefixOf(part.element)) || undefined
     });
+  }
+  return out;
+}
+
+/** Binding soap:headerfault declarations nested under soap:header (WSDL 1.1 section 3.7). */
+function headerFaultDecls(
+  direction: JsonRecord | null,
+  messages: Map<string, SoapMessage>,
+  scopes: JsonRecord[]
+): SoapHeaderDecl[] {
+  const out: SoapHeaderDecl[] = [];
+  if (!direction) return out;
+  for (const header of children(direction, 'header')) {
+    for (const hf of children(header, 'headerfault')) {
+      const message = messages.get(localName(attr(hf, 'message')));
+      const part = message?.parts.find((candidate) => candidate.name === attr(hf, 'part'));
+      if (!part?.element) continue;
+      out.push({
+        element: localName(part.element),
+        namespace: namespaceForPrefix(scopes, prefixOf(part.element)) || undefined
+      });
+    }
   }
   return out;
 }
@@ -328,6 +358,11 @@ function parseSoapBindings11(
       // WS-I Basic Profile 1.1 R2706: an omitted soap:body use defaults to literal.
       else if (inputBody || outputBody) use = 'literal';
       const bodyNamespace = attr(outputBody, 'namespace') || attr(inputBody, 'namespace') || undefined;
+      const encodingStyle = attr(outputBody, 'encodingStyle') || attr(inputBody, 'encodingStyle') || undefined;
+      const headerFaults = [
+        ...headerFaultDecls(inputDirection, messages, [definitions, binding, operation]),
+        ...headerFaultDecls(outputDirection, messages, [definitions, binding, operation])
+      ];
       const outputBodyParts = hasLocalAttr(outputBody, 'parts') ? attr(outputBody, 'parts') : undefined;
       const inputHeaders = headerDecls(inputDirection, messages, [definitions, binding]);
       const outputHeaders = headerDecls(outputDirection, messages, [definitions, binding]);
@@ -339,7 +374,9 @@ function parseSoapBindings11(
         bodyNamespace,
         outputBodyParts,
         inputHeaders: inputHeaders.length > 0 ? inputHeaders : undefined,
-        outputHeaders: outputHeaders.length > 0 ? outputHeaders : undefined
+        outputHeaders: outputHeaders.length > 0 ? outputHeaders : undefined,
+        headerFaults: headerFaults.length > 0 ? headerFaults : undefined,
+        encodingStyle
       });
     }
     out.set(bindingName, ops);
@@ -444,6 +481,8 @@ function parseServices11(
         outputBodyPartCount,
         inputHeaders: bindingOp?.inputHeaders,
         outputHeaders: bindingOp?.outputHeaders,
+        headerFaults: bindingOp?.headerFaults,
+        encodingStyle: bindingOp?.encodingStyle,
         portTypeName,
         inputName: attr(inputRecord, 'name') || undefined,
         inputAction: attr(inputRecord, 'Action') || undefined,
@@ -497,6 +536,7 @@ const WSDL20_SOAP_BINDING_TYPE = 'http://www.w3.org/ns/wsdl/soap';
 interface BindingOp20 {
   action?: string;
   mep?: string;
+  outputHttpHeaders?: string[];
   inputHeaders?: SoapHeaderDecl[];
   outputHeaders?: SoapHeaderDecl[];
 }
@@ -538,11 +578,21 @@ function parseBindings20(description: JsonRecord, warnings: string[]): Map<strin
       };
       const inputHeaders20 = headerDecls20('input');
       const outputHeaders20 = headerDecls20('output');
+      // whttp:header shares the local name with wsoap:header but carries a
+      // name attribute (HTTP field) instead of element (WSDL 2.0 Adjuncts 6.9).
+      const outputHttpHeaders20: string[] = [];
+      for (const dirNode of children(operation, 'output')) {
+        for (const header of children(dirNode, 'header')) {
+          const fieldName = attr(header, 'name');
+          if (fieldName && /^(true|1)$/.test(attr(header, 'required'))) outputHttpHeaders20.push(fieldName);
+        }
+      }
       ops.set(ref, {
         action: attr(operation, 'action') || undefined,
         mep: attr(operation, 'mep') || undefined,
         inputHeaders: inputHeaders20.length > 0 ? inputHeaders20 : undefined,
-        outputHeaders: outputHeaders20.length > 0 ? outputHeaders20 : undefined
+        outputHeaders: outputHeaders20.length > 0 ? outputHeaders20 : undefined,
+        outputHttpHeaders: outputHttpHeaders20.length > 0 ? outputHttpHeaders20 : undefined
       });
     }
     const faultCodes: string[] = [];
@@ -611,6 +661,7 @@ function parseServices20(description: JsonRecord, warnings: string[]): SoapServi
         inputAction,
         inputHeaders: bindingOp?.inputHeaders,
         outputHeaders: bindingOp?.outputHeaders,
+        outputHttpHeaders: bindingOp?.outputHttpHeaders,
         faultElements: faultElements.length > 0 ? faultElements : undefined,
         faultCodes: binding?.faultCodes,
         portTypeName: attr(iface, 'name') || undefined,

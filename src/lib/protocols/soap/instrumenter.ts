@@ -1,5 +1,5 @@
 import { SOAP12_UNSUPPORTED_MEDIA_PROBE_NAME } from './builder.js';
-import { defaultActionIri, localName, type SoapContractIndex, type SoapOperation } from './parser.js';
+import { defaultActionIri, localName, SOAP_RESPONSE_MEP, type SoapContractIndex, type SoapOperation } from './parser.js';
 import { resolveResponseDecl, xsdPayloadLines } from './xsd-payload.js';
 import type { XsdSchemaIndex } from './xsd-index.js';
 
@@ -104,6 +104,24 @@ function jsString(value: string): string {
 // reference only pm.request, so both one-way and request-response scripts can
 // carry them.
 function requestDisciplineLines(operation: SoapOperation): string[] {
+  // WSDL 2.0 SOAP-response MEP (Adjuncts section 5.10.3): the request is a
+  // plain HTTP GET without an envelope, so POST/SOAPAction/Content-Type
+  // discipline does not apply.
+  if (operation.soapMep === SOAP_RESPONSE_MEP) {
+    return [
+      '',
+      "pm.test('SOAP-response MEP request is a plain HTTP GET with no envelope (WSDL 2.0 Adjuncts section 5.10.3)', function () {",
+      '  pm.expect(pm.request.method, "the SOAP-response MEP binds the request to HTTP GET").to.eql("GET");',
+      '  var rawReq = (pm.request.body && pm.request.body.raw) || "";',
+      '  if (rawReq.indexOf("Envelope") !== -1) pm.expect.fail("a SOAP-response MEP request carries no SOAP envelope; only the response is a SOAP message (WSDL 2.0 Adjuncts section 5.10.3)");',
+      '});',
+      '',
+      "pm.test('SOAP-response MEP request Accept admits application/soap+xml (SOAP 1.2 Part 2 section 6.3)', function () {",
+      '  var accept = String(pm.request.headers.get("Accept") || "");',
+      '  if (accept && accept.indexOf("application/soap+xml") === -1 && accept.indexOf("*/*") === -1 && accept.indexOf("application/*") === -1) pm.expect.fail("Accept " + accept + " excludes application/soap+xml, the SOAP response media type");',
+      '});'
+    ];
+  }
   const lines: string[] = [
     '',
     "pm.test('SOAP request uses HTTP POST (WS-I Basic Profile 1.1 R1141)', function () {",
@@ -127,6 +145,7 @@ function requestDisciplineLines(operation: SoapOperation): string[] {
       '  var ct = String(pm.request.headers.get("Content-Type") || "");',
       '  pm.expect(ct.toLowerCase(), "SOAP 1.2 requests use application/soap+xml").to.include("application/soap+xml");',
       '  var action = /action="([^"]*)"/.exec(ct);',
+      '  if (action && !action[1]) pm.expect.fail("the action media-type parameter must not be empty (RFC 3902)");',
       '  if (action && action[1] && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(action[1])) pm.expect.fail("the action media-type parameter must be an absolute URI (RFC 3902); got " + action[1]);',
       operation.soapAction
         ? '  if (action && action[1] !== ' + jsString(operation.soapAction) + ') pm.expect.fail("the action parameter " + action[1] + " does not match the WSDL soapAction value");'
@@ -385,6 +404,63 @@ function deepConformanceLines(operation: SoapOperation): string[] {
       '  if (!fc || localPart(fc[1].trim()) !== "MustUnderstand") return;',
       '  var muDetail = elementInner(cleanXml, "detail");',
       '  if (muDetail !== null && muDetail.trim()) pm.expect.fail("a MustUnderstand fault reports a header processing error; error details belong in header blocks, not soap:detail (SOAP 1.1 section 4.4)");',
+      '});'
+    );
+  }
+  {
+    const envNsForPlacement = is12 ? 'http://www.w3.org/2003/05/soap-envelope' : 'http://schemas.xmlsoap.org/soap/envelope/';
+    lines.push(
+      '',
+      "pm.test('SOAP header attributes sit only on immediate Header children (SOAP 1.1 section 4.2.1 / SOAP 1.2 Part 1 section 5.2)', function () {",
+      '  var q = String.fromCharCode(34); var sqm = String.fromCharCode(39);',
+      '  var envNs = ' + jsString(envNsForPlacement) + ';',
+      '  var headerInner = elementInner(cleanXml, "Header");',
+      '  var headTags = [];',
+      '  if (headerInner) { var hDepth = 0; var hre = /<(\\/?)([A-Za-z_][\\w.-]*(?::[A-Za-z_][\\w.-]*)?)([^>]*?)(\\/?)>/g; var hm; while ((hm = hre.exec(headerInner))) { if (hm[1]) { hDepth -= 1; continue; } if (hDepth === 0) headTags.push(hm[0]); if (!hm[4]) hDepth += 1; } }',
+      '  var tags = cleanXml.match(/<[A-Za-z_][^>]*>/g) || [];',
+      '  for (var ti = 0; ti < tags.length; ti++) {',
+      '    var sm = /([A-Za-z_][\\w.-]*):(mustUnderstand|actor|role|relay)\\s*=/.exec(tags[ti]);',
+      '    if (!sm) continue;',
+      '    var bound = cleanXml.indexOf("xmlns:" + sm[1] + "=" + q + envNs + q) !== -1 || cleanXml.indexOf("xmlns:" + sm[1] + "=" + sqm + envNs + sqm) !== -1;',
+      '    if (!bound) continue;',
+      '    if (headTags.indexOf(tags[ti]) === -1) pm.expect.fail("SOAP " + sm[2] + " must appear only on immediate soap:Header children (SOAP 1.1 section 4.2.1 / SOAP 1.2 Part 1 section 5.2); got " + tags[ti]);',
+      '  }',
+      '});'
+    );
+  }
+  if (operation.headerFaults && operation.headerFaults.length > 0) {
+    lines.push(
+      '',
+      "pm.test('Declared soap:headerfault blocks ride the SOAP Header, not Body detail (WSDL 1.1 section 3.7)', function () {",
+      '  if (!matchTag("Fault").test(bodyText)) return;',
+      '  var hfNames = ' + JSON.stringify(operation.headerFaults.map((decl) => decl.element)) + ';',
+      '  var hfHeader = elementInner(cleanXml, "Header") || "";',
+      '  var hfDetail = (elementInner(cleanXml, "detail") || "") + (elementInner(cleanXml, "Detail") || "");',
+      '  for (var i = 0; i < hfNames.length; i++) {',
+      '    var hfRe = new RegExp("<(?:[A-Za-z_][\\w.-]*:)?" + hfNames[i] + "(?=[\\s/>])");',
+      '    if (hfRe.test(hfDetail)) pm.expect.fail("header fault block " + hfNames[i] + " must be returned in the SOAP Header, not in the Body fault detail (WSDL 1.1 section 3.7)");',
+      '    if (hfRe.test(cleanXml) && !hfRe.test(hfHeader)) pm.expect.fail("header fault block " + hfNames[i] + " appears outside the SOAP Header (WSDL 1.1 section 3.7)");',
+      '  }',
+      '});'
+    );
+  }
+  if (operation.outputHttpHeaders && operation.outputHttpHeaders.length > 0) {
+    lines.push(
+      '',
+      "pm.test('Required whttp:header fields are present on the response (WSDL 2.0 Adjuncts section 6.9)', function () {",
+      '  if (accepted202) return;',
+      '  var requiredHeaders = ' + JSON.stringify(operation.outputHttpHeaders) + ';',
+      '  for (var i = 0; i < requiredHeaders.length; i++) { if (!header(requiredHeaders[i])) pm.expect.fail("HTTP header " + requiredHeaders[i] + " is declared required (whttp:header) but missing on the response"); }',
+      '});'
+    );
+  }
+  if (operation.use === 'encoded' && operation.encodingStyle) {
+    lines.push(
+      '',
+      "pm.test('Encoded response encodingStyle includes the WSDL-declared encoding (SOAP 1.1 section 4.1.1 / WSDL 1.1 section 3.5)', function () {",
+      '  var declaredEnc = ' + jsString(operation.encodingStyle) + ';',
+      '  var encRe = /encodingStyle\\s*=\\s*["' + String.fromCharCode(39) + ']([^"' + String.fromCharCode(39) + ']*)["' + String.fromCharCode(39) + ']/g; var em;',
+      '  while ((em = encRe.exec(cleanXml))) { var toks = em[1].split(/\\s+/).filter(Boolean); if (toks.length > 0 && toks.indexOf(declaredEnc) === -1) pm.expect.fail("encodingStyle " + em[1] + " does not include the WSDL-declared encoding " + declaredEnc); }',
       '});'
     );
   }

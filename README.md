@@ -442,6 +442,19 @@ Dynamic contract failures and warnings use `CONTRACT_` error codes. Remediation 
 | `CONTRACT_OAUTH_TOKEN_IN_QUERY` | A query parameter carries a bearer/OAuth token in the URI. | Move the token to the Authorization request header. |
 | `CONTRACT_STANDARD_HEADER_GRAMMAR_NOT_VALIDATED` | A structured standard header's RFC field grammar is not statically literal-validated. | Review the header value grammar manually. |
 | `CONTRACT_451_BLOCKED_BY_LINK` | A 451 Unavailable For Legal Reasons response omits a blocking-authority Link header. | Declare a Link header with rel=blocked-by. |
+| `CONTRACT_XML_OBJECT_INVALID` | An XML Object is misused (non-absolute namespace, prefix without namespace, non-NCName name/prefix, wrapped on a non-array, attribute on an object/array, or advisory array item naming). | Correct the XML Object per the OpenAPI XML modeling rules. |
+| `CONTRACT_SCHEMA_ID_INVALID` | A schema $id is not a valid URI reference. | Set $id to a valid absolute or relative URI reference. |
+| `CONTRACT_CONTENT_MEDIA_TYPE_INVALID` | contentMediaType or contentEncoding is declared on a non-string schema. | Apply contentMediaType/contentEncoding only to string-typed schemas. |
+| `CONTRACT_ENCODING_APPLICABILITY_INVALID` | An encoding map is declared outside a request-body multipart or urlencoded media type. | Remove the encoding map or move it to a form/multipart request body. |
+| `CONTRACT_ENCODING_CONTENT_TYPE_INVALID` | An encoding contentType is not a valid media type. | Use a valid type/subtype media type in encoding.contentType. |
+| `CONTRACT_ENCODING_FIELD_IGNORED` | An encoding style/explode/allowReserved (outside urlencoded) or headers (outside multipart) field is ignored. | Remove the ignored encoding fields for this media type. |
+| `CONTRACT_ENCODING_CONTENT_TYPE_PRECEDENCE` | In OpenAPI 3.1 an encoding sets both contentType and style/explode; contentType wins and RFC 6570 serialization is ignored. | Drop style/explode when encoding.contentType is set. |
+| `CONTRACT_MULTIPART_SERIALIZATION_ADVISORY` | RFC 6570 serialization on multipart parts is advisory and not runtime-validated. | Verify multipart part serialization manually. |
+| `CONTRACT_PARAMETER_STYLE_TYPE_INVALID` | A parameter style does not apply to the parameter's declared type. | Use a style compatible with the parameter type. |
+| `CONTRACT_HEADER_STYLE_INVALID` | A header parameter uses a style other than simple. | Set header parameter style to simple. |
+| `CONTRACT_PARAMETER_EXAMPLE_NOT_VALIDATED` | A parameter example is a raw value whose serialized form is not statically validated. | Verify the serialized example form manually. |
+| `CONTRACT_EXAMPLE_OBJECT_INVALID` | An Example Object sets both value and externalValue, or externalValue is not a valid URI reference. | Set exactly one of value/externalValue and use a valid URI. |
+| `CONTRACT_MEDIA_EXAMPLE_ENCODING_NOT_VALIDATED` | A media example is not statically validated against its encoding map. | Verify the example against the encoding map manually. |
 
 ## Resources
 

@@ -1,5 +1,6 @@
 import { WELL_KNOWN_URI_SUFFIXES } from './iana-registries.js';
 import { collectHttpSemanticStaticLints } from './http-semantic-lints.js';
+import { collectSchemaObjectLints, collectMediaParamLints } from './oas-schema-object-lints.js';
 import { isSchemaGraphOverflow, packSchema, resolvePointer, type OpenApiVersion, type PackedSchema } from './schema-pack.js';
 import { compileSchemaValidator } from './schema-validator-code.js';
 
@@ -1064,6 +1065,44 @@ function schemaTypeNames(schema: JsonRecord): string[] {
   return Array.isArray(schema.type) ? schema.type.map(String) : typeof schema.type === 'string' ? [schema.type] : [];
 }
 
+function stableValueKey(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (Array.isArray(value)) return '[' + value.map((entry) => stableValueKey(entry)).join(',') + ']';
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value as JsonRecord).sort().map((key) => `${JSON.stringify(key)}:${stableValueKey((value as JsonRecord)[key])}`).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+function matchesSchemaType(type: string, value: unknown): boolean {
+  switch (type) {
+    case 'array': return Array.isArray(value);
+    case 'boolean': return typeof value === 'boolean';
+    case 'integer': return typeof value === 'number' && Number.isInteger(value);
+    case 'null': return value === null;
+    case 'number': return typeof value === 'number';
+    case 'object': return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+    case 'string': return typeof value === 'string';
+    default: return true;
+  }
+}
+
+function requiresProperty(root: JsonRecord, schema: unknown, propertyName: string, seen = new Set<unknown>()): boolean {
+  const record = resolveInternalRef<JsonRecord>(root, schema) ?? asRecord(schema);
+  if (!record || seen.has(record)) return false;
+  seen.add(record);
+  if (asArray(record.required).map(String).includes(propertyName)) return true;
+  return asArray(record.allOf).some((entry) => requiresProperty(root, entry, propertyName, seen));
+}
+
+function defaultMatchesPackedSchema(root: JsonRecord, schema: unknown, version: OpenApiVersion, value: unknown): boolean | null {
+  const packed = packSchema(root, schema, version);
+  if (packed.unsupported || packed.schema === undefined) return null;
+  const validate = compileSchemaValidator(packed.schema);
+  if (!validate) return null;
+  return validate(value);
+}
+
 function collectSchemaStaticLints(root: JsonRecord, schema: unknown, version: OpenApiVersion, context: string, warnings: Set<string>, seen = new Set<unknown>()): void {
   const rawRecord = asRecord(schema);
   if (typeof rawRecord?.$ref === 'string' && version === '3.0' && Object.keys(rawRecord).some((key) => key !== '$ref' && key !== 'description' && key !== 'summary')) {
@@ -1073,15 +1112,17 @@ function collectSchemaStaticLints(root: JsonRecord, schema: unknown, version: Op
   try { record = resolveInternalRef<JsonRecord>(root, schema); } catch { record = asRecord(schema); }
   if (!record || seen.has(record)) return;
   seen.add(record);
+  for (const w of collectSchemaObjectLints(root, record, version, context)) warnings.add(w);
   const types = schemaTypeNames(record);
   if (version === '3.0' && Array.isArray(record.type)) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses JSON Schema type arrays; OpenAPI 3.0 uses nullable instead`);
   if (version === '3.1' && record.nullable !== undefined) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses nullable, which is not an OpenAPI 3.1 Schema keyword`);
   if (version === '3.0') {
-    for (const key of ['$schema', '$id', 'prefixItems', 'unevaluatedProperties', 'unevaluatedItems', 'dependentSchemas', 'dependentRequired', 'if', 'then', 'else']) {
+    for (const key of ['$schema', '$id', '$defs', 'prefixItems', 'unevaluatedProperties', 'unevaluatedItems', 'dependentSchemas', 'dependentRequired', 'if', 'then', 'else', 'const', 'contains', 'minContains', 'maxContains', 'contentEncoding', 'contentMediaType', 'contentSchema', 'patternProperties', 'propertyNames']) {
       // OAS 3.0.3 Schema Object is an adjusted Draft Wright-00 subset; these
       // draft-2019-09/2020-12 and conditional keywords are not listed there.
       if (record[key] !== undefined) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses ${key}, which OpenAPI 3.0.3 schemas do not support`);
     }
+    if (types.includes('null')) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses type "null", which OpenAPI 3.0 expresses via nullable`);
   }
   if (version === '3.0') {
     if (typeof record.exclusiveMinimum === 'number' || typeof record.exclusiveMaximum === 'number') warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses numeric exclusiveMinimum/exclusiveMaximum, but OpenAPI 3.0 requires booleans`);
@@ -1094,12 +1135,32 @@ function collectSchemaStaticLints(root: JsonRecord, schema: unknown, version: Op
   if (typeof record.format === 'string' && !['date-time', 'date', 'time', 'duration', 'email', 'idn-email', 'hostname', 'idn-hostname', 'ipv4', 'ipv6', 'uri', 'uri-reference', 'iri', 'iri-reference', 'uuid', 'regex', 'binary', 'byte', 'password', 'int32', 'int64', 'float', 'double'].includes(record.format)) {
     warnings.add(`CONTRACT_FORMAT_UNKNOWN: ${context} uses unknown format "${record.format}" as an annotation-only value`);
   }
-  const enumValues = asArray(record.enum).map((entry) => JSON.stringify(entry));
+  const enumEntries = asArray(record.enum);
+  if (record.enum !== undefined && enumEntries.length === 0) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} enum must not be empty`);
+  const enumValues = enumEntries.map((entry) => stableValueKey(entry));
+  const uniqueEnumValues = new Set(enumValues);
+  if (uniqueEnumValues.size !== enumValues.length) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} enum contains duplicate values`);
   for (const [label, value] of [['default', record.default], ['const', record.const]] as const) {
     if (label === 'default' && value === undefined) continue;
-    if (enumValues.length > 0 && !enumValues.includes(JSON.stringify(value))) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} ${label} is not a member of enum`);
-    if (record.const !== undefined && label === 'default' && JSON.stringify(record.const) !== JSON.stringify(value)) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} default does not match const`);
+    if (label === 'const' && value === undefined) continue;
+    const stableValue = stableValueKey(value);
+    const enumMismatch = enumValues.length > 0 && !enumValues.includes(stableValue);
+    if (enumMismatch) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} ${label} is not a member of enum`);
+    const constMismatch = record.const !== undefined && label === 'default' && stableValueKey(record.const) !== stableValue;
+    if (constMismatch) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} default does not match const`);
+    const typeMismatch = label === 'default' && types.length > 0 && !types.some((type) => matchesSchemaType(type, value));
+    if (typeMismatch) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} default does not match declared type`);
+    if (version === '3.1' && label === 'default' && !enumMismatch && !constMismatch && !typeMismatch) {
+      const valid = defaultMatchesPackedSchema(root, schema, version, value);
+      if (valid === false) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} default does not validate against its schema`);
+    }
   }
+  if (version === '3.0' && record.nullable === true) {
+    if (types.length === 0) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} sets nullable: true without a sibling type`);
+    if (record.const !== undefined && record.const !== null) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} sets nullable: true but const excludes null`);
+    if (enumValues.length > 0 && !enumValues.includes('null')) warnings.add(`CONTRACT_SCHEMA_VALUE_MISMATCH: ${context} sets nullable: true but enum excludes null`);
+  }
+  if (record.readOnly === true && record.writeOnly === true) warnings.add(`CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE: ${context} cannot be both readOnly and writeOnly`);
   if (record.discriminator !== undefined) {
     const discriminator = asRecord(record.discriminator);
     const propertyName = typeof discriminator?.propertyName === 'string' ? discriminator.propertyName : '';
@@ -1115,6 +1176,9 @@ function collectSchemaStaticLints(root: JsonRecord, schema: unknown, version: Op
       if (!members.every(declaresDiscriminator)) warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator propertyName must be listed by every oneOf/anyOf member schema`);
     } else if (!(declaresDiscriminator(record) || asArray(record.allOf).some(declaresDiscriminator))) {
       warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator propertyName must be declared in the base schema`);
+    }
+    if (propertyName && record.oneOf === undefined && record.anyOf === undefined && !(requiresProperty(root, record, propertyName) || asArray(record.allOf).some((entry) => requiresProperty(root, entry, propertyName)))) {
+      warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator propertyName must be required by the base schema`);
     }
     if (record.oneOf === undefined && record.anyOf === undefined && record.allOf === undefined) warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator must appear beside oneOf, anyOf, or allOf`);
     for (const value of Object.values(asRecord(discriminator?.mapping) ?? {})) {
@@ -1393,6 +1457,7 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
         opWarnings.push(...collectSecurityResponseLints(root, operation, responses, operationId));
         opWarnings.push(...collectOperationStaticLints(root, version, path, pathItem, operation, responses, operationId));
         opWarnings.push(...collectHttpSemanticStaticLints(root, lowerMethod, path, pathItem, operation, responses));
+        opWarnings.push(...collectMediaParamLints(root, version, pathItem, operation, operationId));
         const requiredParameters = collectParameters(root, pathItem, operation);
         for (const parameter of requiredParameters.filter((entry) => entry.securityDerived)) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);

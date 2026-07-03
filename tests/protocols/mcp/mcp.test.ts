@@ -143,7 +143,7 @@ function runMcpScript(
   script: string,
   responseBody: unknown,
   vars = new Map<string, string>(),
-  responseOptions: { code?: number; contentType?: string; text?: string } = {}
+  responseOptions: { code?: number; contentType?: string; text?: string; requestBody?: string } = {}
 ): { results: RuntimeTestResult[]; warnings: string[]; vars: Map<string, string> } {
   const results: RuntimeTestResult[] = [];
   const warnings: string[] = [];
@@ -153,6 +153,7 @@ function runMcpScript(
       headers: headerList([{ key: 'Content-Type', value: responseOptions.contentType ?? 'application/json; charset=utf-8' }]),
       text: (): string => responseOptions.text ?? JSON.stringify(responseBody)
     },
+    request: responseOptions.requestBody === undefined ? undefined : { body: { raw: responseOptions.requestBody } },
     collectionVariables: {
       get(key: string): string | undefined {
         return vars.get(key);
@@ -970,6 +971,33 @@ describe('mcp runtime HTTP scripts', () => {
 });
 
 describe('mcp tools/call runtime structuredContent assertions', () => {
+  it('validates generated tools/call request bodies when Postman exposes pm.request', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools.find((entry) => entry.name === 'list_stations')!;
+    const { script, warnings } = toolsCallScript(index, tool, 10);
+    expect(warnings).toEqual([]);
+    const responseBody = { jsonrpc: '2.0', id: 10, result: { content: [] } };
+    const valid = runMcpScript(script, responseBody, new Map(), {
+      requestBody: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'list_stations', arguments: {} } })
+    });
+    expect(
+      runtimeTestResult(
+        valid.results,
+        'MCP tools/call request body conforms for list_stations (MCP 2025-06-18 tools/call; JSON-RPC 2.0 §4)'
+      )?.passed
+    ).toBe(true);
+
+    const invalid = runMcpScript(script, responseBody, new Map(), {
+      requestBody: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/call', params: { name: 'list_stations', arguments: { unexpected: true } } })
+    });
+    expect(
+      runtimeTestResult(
+        invalid.results,
+        'MCP tools/call request body conforms for list_stations (MCP 2025-06-18 tools/call; JSON-RPC 2.0 §4)'
+      )?.passed
+    ).toBe(false);
+  });
+
   it('fails when structuredContent is present but not object-valued', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const tool = index.tools.find((entry) => entry.name === 'list_stations')!;

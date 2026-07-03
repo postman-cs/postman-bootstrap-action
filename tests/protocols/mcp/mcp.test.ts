@@ -816,6 +816,43 @@ describe('mcp runtime HTTP scripts', () => {
     ).toBe(true);
   });
 
+  it('audits POST SSE streams and returns the terminal JSON-RPC response to normal assertions', () => {
+    const vars = new Map<string, string>([['mcp_capabilities', JSON.stringify({ tools: {} })]]);
+    const valid = runMcpScript(toolsListScript([]), undefined, vars, {
+      contentType: 'text/event-stream; charset=utf-8',
+      text: [
+        'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}',
+        '',
+        'data: {"jsonrpc":"2.0","id":2,"result":{"tools":[]}}',
+        '',
+        ''
+      ].join('\n')
+    });
+    expect(
+      runtimeTestResult(
+        valid.results,
+        'MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)'
+      )?.passed
+    ).toBe(true);
+
+    const trailing = runMcpScript(toolsListScript([]), undefined, vars, {
+      contentType: 'text/event-stream; charset=utf-8',
+      text: [
+        'data: {"jsonrpc":"2.0","id":2,"result":{"tools":[]}}',
+        '',
+        'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}',
+        '',
+        ''
+      ].join('\n')
+    });
+    expect(
+      runtimeTestResult(
+        trailing.results,
+        'MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)'
+      )?.passed
+    ).toBe(false);
+  });
+
   it('emits authorization probes only for servers with a configured Authorization header', () => {
     const withoutAuth = parseMcpServerSpec(read('server.json'));
     const plainTitles = (buildMcpCollection(withoutAuth, { idSeed: 'test' }).item as JsonRecord[]).map((item) => String(item.title));

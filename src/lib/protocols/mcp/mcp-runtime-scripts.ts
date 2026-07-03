@@ -13,10 +13,19 @@ function mcpResponseBody() {
   var raw = pm.response.text();
   if (!raw) return undefined;
   if (/text\\/event-stream/i.test(contentType)) {
-    var frames = mcpSseFrames();
-    mcpAssertSseEventIdsUnique(frames, 'MCP SSE response');
-    var payloads = frames.filter(function (frame) { return Object.prototype.hasOwnProperty.call(frame, 'json'); }).map(function (frame) { return frame.json; });
-    return payloads.length === 1 ? payloads[0] : payloads;
+    var payloads = mcpSseJsonPayloads('MCP SSE response');
+    var terminal; var terminalIndex = -1; var responseCount = 0;
+    payloads.forEach(function (message, i) {
+      pm.expect(message, 'SSE JSON-RPC payload ' + i).to.be.an('object').and.not.an('array');
+      if (message.jsonrpc !== undefined) pm.expect(message.jsonrpc, 'SSE JSON-RPC version at payload ' + i).to.eql('2.0');
+      var isResponse = message.id !== undefined && message.method === undefined && (message.result !== undefined || message.error !== undefined);
+      if (isResponse) { terminal = message; terminalIndex = i; responseCount += 1; }
+    });
+    pm.expect(responseCount, 'exactly one terminal JSON-RPC response per POST stream (MCP 2025-06-18 transports)').to.eql(1);
+    payloads.forEach(function (_message, i) {
+      if (terminalIndex !== -1 && i > terminalIndex) pm.expect.fail('SSE POST stream must not continue after the terminal JSON-RPC response (MCP 2025-06-18 transports)');
+    });
+    return terminal;
   }
   return JSON.parse(raw);
 }
@@ -52,6 +61,17 @@ function mcpAssertSseEventIdsUnique(frames, label) {
     pm.expect(seen[frame.id], label + ' duplicate SSE event id at frame ' + i + ': ' + frame.id).to.not.eql(true);
     seen[frame.id] = true;
   });
+}
+function mcpSseJsonPayloads(label) {
+  var frames = mcpSseFrames();
+  mcpAssertSseEventIdsUnique(frames, label);
+  return frames.filter(function (frame) { return Object.prototype.hasOwnProperty.call(frame, 'json'); }).map(function (frame) { return frame.json; });
+}
+function mcpResponseMessages(label) {
+  var contentType = pm.response.headers.get('Content-Type') || '';
+  if (/text\\/event-stream/i.test(contentType)) return mcpSseJsonPayloads(label);
+  var body = mcpResponseBody();
+  return Array.isArray(body) ? body : [body];
 }
 function mcpAssertErrorShape(message, body, expectedId) {
   pm.expect(body, message + ' body is object').to.be.an('object').and.not.an('array');
@@ -414,8 +434,7 @@ export function progressToolCallScript(toolName: string): string {
   return join([
     `var progressToolName = ${json(toolName)};`,
     `pm.test('MCP progress notifications echo the token and increase for ' + progressToolName + ' (MCP 2025-06-18 utilities/progress)', function () {`,
-    '  var body = mcpResponseBody();',
-    '  var frames = Array.isArray(body) ? body : [body];',
+    "  var frames = mcpResponseMessages('MCP progress stream');",
     '  var responseIndex = -1; var responseCount = 0;',
     '  frames.forEach(function (frame, i) {',
     "    pm.expect(frame, 'every SSE data payload is a JSON-RPC object (MCP 2025-06-18 transports)').to.be.an('object');",

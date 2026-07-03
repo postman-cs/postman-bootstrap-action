@@ -354,6 +354,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '  if (expected === "boolean") return typeof value === "boolean";',
     '  if (expected === "object") return value !== null && typeof value === "object" && !Array.isArray(value);',
     '  if (expected === "array") return Array.isArray(value);',
+    '  if (expected === "null") return value === null;',
     '  if (expected === "enum") return typeof value === "string" || typeof value === "number";',
     '  if (expected === "any") return true;',
     '  return true;',
@@ -365,7 +366,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     'function matchesInt(intType, value) {',
     '  var spec = GRPC_INT_SPECS[intType]; if (!spec) return true;',
     '  var num, canonical;',
-    '  if (typeof value === "number") { if (!Number.isFinite(value) || !Number.isInteger(value)) return false; num = value; canonical = grpcDecStr(value); }',
+    '  if (typeof value === "number") { if (spec.b === 64) return false; if (!Number.isFinite(value) || !Number.isInteger(value)) return false; num = value; canonical = grpcDecStr(value); }',
     '  else if (typeof value === "string") { if (!/^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(value)) return false; canonical = grpcNormIntStr(value); if (canonical === null) return false; num = Number(value); }',
     '  else { return false; }',
     '  if (canonical === "-0") canonical = "0";',
@@ -474,7 +475,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '  if (field.required && !present) { pm.expect.fail("gRPC response is missing required field " + label); return; }',
     '  if (!present) return;',
     '  var value = obj[key];',
-    '  if (value === null) return;',
+    '  if (value === null) { if (field.nullable || field.jsonType === "any" || field.jsonType === "null") return; pm.expect.fail("gRPC field " + label + " is null; ProtoJSON serializers omit unset fields and emit null only for google.protobuf.Value/NullValue (proto3 JSON)"); return; }',
     '  if (field.repeated) {',
     '    if (!matchesScalar("array", value)) { pm.expect.fail("gRPC field " + label + " must be a repeated (array) value but was " + jsonTypeOf(value)); return; }',
     '    for (var i = 0; i < value.length; i++) {',
@@ -533,6 +534,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     // or harnesses that do not surface them).
     'function grpcEachMeta(list, cb) { if (list && typeof list.each === "function") list.each(cb); }',
     'function grpcMetaOne(list, key) { try { if (list && typeof list.has === "function" && list.has(key) && typeof list.one === "function") return list.one(key); } catch (error) { /* absent */ } return null; }',
+    'function grpcMetaCount(list, key) { var n = 0; grpcEachMeta(list, function (entry) { if (entry && !entry.disabled && String(entry.key).toLowerCase() === key) n += 1; }); return n; }',
     // Custom-Metadata names must not begin with grpc- (reserved for gRPC
     // itself), so a grpc-* key outside the known transport set is a defect.
     'var GRPC_RESERVED_KEYS = ["grpc-status", "grpc-message", "grpc-encoding", "grpc-accept-encoding", "grpc-timeout", "grpc-status-details-bin", "grpc-retry-pushback-ms", "grpc-previous-rpc-attempts", "grpc-trace-bin", "grpc-tags-bin"];',
@@ -547,6 +549,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     // independently be strict RFC 4648 base64 (padded or unpadded).
     '    if (/-bin$/.test(key)) { String(value).split(",").forEach(function (binSeg) { var seg = binSeg.trim(); if (seg.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(seg) || (seg.indexOf("=") !== -1 && seg.length % 4 !== 0)) pm.expect.fail(label + " " + key + " must carry strict base64 (comma-split duplicate values; gRPC PROTOCOL-HTTP2 Binary-Header) but was " + JSON.stringify(value)); }); }',
     '    else if (!/^[\\x20-\\x7e]*$/.test(value)) pm.expect.fail(label + " " + key + " value must be printable ASCII (gRPC ASCII-Value)");',
+    '    else { if (/^[ \\t]|[ \\t]$/.test(value)) pm.expect.fail(label + " " + key + " value must not carry leading or trailing whitespace (gRPC ASCII-Value)"); if (key === "grpc-message" && !/^(?:[\\x20-\\x24\\x26-\\x7e]|%[0-9A-Fa-f]{2})*$/.test(value)) pm.expect.fail(label + " grpc-message must be percent-encoded (gRPC Status message grammar: percent must start a two-hex-digit escape) but was " + JSON.stringify(value)); }',
     '  });',
     '}',
     // grpc-status-details-bin carries a base64-encoded google.rpc.Status protobuf
@@ -683,6 +686,10 @@ function createGrpcScript(spec: OperationSpec): string[] {
     `pm.test('gRPC response metadata and trailers conform to gRPC wire rules for ' + grpcSpec.methodPath, function () {`,
     '  grpcCheckMetaPairs(pm.response.metadata, "gRPC response metadata");',
     '  grpcCheckMetaPairs(pm.response.trailers, "gRPC response trailer");',
+    // Standard transport fields are singletons (gRPC PROTOCOL-HTTP2); duplicates
+    // indicate a broken proxy or server metadata bug.
+    '  var grpcSingletons = ["content-type", "grpc-status", "grpc-message", "grpc-encoding", "grpc-timeout", "grpc-status-details-bin"];',
+    '  for (var gi = 0; gi < grpcSingletons.length; gi++) { if (grpcMetaCount(pm.response.metadata, grpcSingletons[gi]) > 1) pm.expect.fail("gRPC response metadata carries duplicate " + grpcSingletons[gi] + " entries; standard fields are singletons (gRPC PROTOCOL-HTTP2)"); if (grpcMetaCount(pm.response.trailers, grpcSingletons[gi]) > 1) pm.expect.fail("gRPC response trailers carry duplicate " + grpcSingletons[gi] + " entries; standard fields are singletons (gRPC PROTOCOL-HTTP2)"); }',
     '  var contentType = grpcMetaOne(pm.response.metadata, "content-type");',
     '  if (contentType && contentType.value !== undefined && contentType.value !== null && !/^application\\/grpc/.test(String(contentType.value))) pm.expect.fail("gRPC response content-type metadata must be application/grpc[+proto|+json] but was " + contentType.value);',
     // Message-Encoding conformance (gRPC PROTOCOL-HTTP2): grpc-encoding, when
@@ -700,6 +707,15 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '    var echoedCode = Number(echoedStatus.value);',
     '    if (!Number.isInteger(echoedCode) || echoedCode < 0 || echoedCode > 16) pm.expect.fail("grpc-status trailer must be a canonical gRPC code 0-16 but was " + JSON.stringify(echoedStatus.value));',
     '    else if (echoedCode !== pm.response.code) pm.expect.fail("grpc-status trailer (" + echoedCode + ") disagrees with the reported status code (" + pm.response.code + ")");',
+    '  }',
+    // Trailers-only responses (gRPC PROTOCOL-HTTP2): some runtimes surface the
+    // status in metadata; when visible there it obeys the same grammar/agreement.
+    '  var headerStatus = grpcMetaOne(pm.response.metadata, "grpc-status");',
+    '  if (headerStatus) {',
+    '    if (!/^(0|[1-9][0-9]*)$/.test(String(headerStatus.value))) pm.expect.fail("grpc-status surfaced in metadata must be a decimal integer with no leading zeros (gRPC PROTOCOL-HTTP2) but was " + JSON.stringify(headerStatus.value));',
+    '    var headerCode = Number(headerStatus.value);',
+    '    if (!Number.isInteger(headerCode) || headerCode < 0 || headerCode > 16) pm.expect.fail("grpc-status surfaced in metadata must be a canonical gRPC code 0-16 but was " + JSON.stringify(headerStatus.value));',
+    '    else if (headerCode !== pm.response.code) pm.expect.fail("grpc-status surfaced in metadata (trailers-only response, " + headerCode + ") disagrees with the reported status code (" + pm.response.code + ")");',
     '  }',
     '  grpcCheckStatusDetailsBin(grpcMetaOne(pm.response.trailers, "grpc-status-details-bin"));',
     '});',

@@ -295,16 +295,18 @@ describe.skipIf(!HAS_PROTOBUF)('gRPC repeated-element + ProtoJSON-name runtime v
     expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '1e100' } }))).toBe(true);
     expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, big: '1e-100' } }))).toBe(true);
   });
-  // Round-9 (gRPC null = default/unset): Go protojson accepts JSON null for a WHOLE
-  // singular/repeated/map field (interpreted as the field's default), but rejects
-  // null as an array ELEMENT or a map VALUE.
-  it('accepts JSON null for a whole field, rejecting null array elements and map values', () => {
+  // Round-9, revised by the ProtoJSON null-emission policy (catalog 1381): Go
+  // protojson PARSING accepts whole-field null as unset, but serializer output
+  // never emits null for plain fields, so a response carrying one is a contract
+  // defect. Wrapper/Value/NullValue fields keep their null acceptance; null
+  // array elements and map values stay rejected.
+  it('rejects JSON null on plain whole fields, null array elements, and null map values', () => {
     const script = grpcScriptFor('/Get');
     const ok = { userId: 'u1', tags: [], qualities: [] };
-    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, count: null } }))).toBe(false);
-    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, state: null } }))).toBe(false);
-    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, qualities: null } }))).toBe(false);
-    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, tagQuality: null } }))).toBe(false);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, count: null } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, state: null } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, qualities: null } }))).toBe(true);
+    expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, tagQuality: null } }))).toBe(true);
     expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, qualities: [null] } }))).toBe(true);
     expect(anyFail(runScript(script, { code: 0, status: 'OK', json: { ...ok, tagQuality: { a: null } } }))).toBe(true);
   });

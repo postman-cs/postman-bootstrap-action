@@ -51,6 +51,8 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 
+const MCP_TOOLS_LIST_PAGINATION_PROBE_COUNT = 5;
+
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as JsonRecord;
@@ -181,7 +183,7 @@ function protectedResourceMetadataUrl(serverUrl: string): string | null {
 // Shared with the instrumenter's coverage gate so builder drift fails closed.
 export function expectedRuntimeItemCount(index: McpContractIndex, server: McpServerDescriptor): number {
   if (server.transport !== 'sse' || !server.url) return 0;
-  let count = 14 + index.tools.length + index.resources.length + index.prompts.length;
+  let count = 18 + index.tools.length + index.resources.length + index.prompts.length;
   if (index.tools.length > 0) count += 1;
   if (hasAuthorizationHeader(server)) {
     count += 2;
@@ -264,11 +266,19 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
     // Session-requirement probe: same ping, deliberately without the session
     // header (base headers), after initialize has had a chance to issue one.
     httpItem(seed, `srv:${server.id}:http:no-session-ping`, `${server.id} · HTTP ping without session id`, server.url, 'POST', headers, jsonRpcWithId('pm-nosession', 'ping'), sessionRequiredScript()),
-    // Pagination probes: follow the saved nextCursor byte-for-byte, then
-    // replay it; both self-skip when tools/list returned no nextCursor.
-    httpItem(seed, `srv:${server.id}:http:tools/list:next-page`, `${server.id} · HTTP tools/list next page`, server.url, 'POST', sessionHeaders, jsonRpcWithId(6, 'tools/list', { cursor: '{{mcp_next_cursor}}' }), nextCursorScript(), cursorProbePrerequest()),
-    httpItem(seed, `srv:${server.id}:http:tools/list:cursor-replay`, `${server.id} · HTTP tools/list cursor replay`, server.url, 'POST', sessionHeaders, jsonRpcWithId(7, 'tools/list', { cursor: '{{mcp_next_cursor}}' }), cursorReplayScript(), cursorProbePrerequest())
+    // Pagination probes self-skip when the previous page exposed no nextCursor.
+    // The bounded chain accumulates tool names across pages and fails if the
+    // server has not reached an end condition by the final probe.
   ];
+  for (let page = 1; page <= MCP_TOOLS_LIST_PAGINATION_PROBE_COUNT; page += 1) {
+    const requestId = `pm-tools-list-page:${page}`;
+    items.push(
+      httpItem(seed, `srv:${server.id}:http:tools/list:page:${page}`, `${server.id} · HTTP tools/list page ${page}`, server.url, 'POST', sessionHeaders, jsonRpcWithId(requestId, 'tools/list', { cursor: '{{mcp_next_cursor}}' }), nextCursorScript(page, requestId, MCP_TOOLS_LIST_PAGINATION_PROBE_COUNT), cursorProbePrerequest())
+    );
+  }
+  items.push(
+    httpItem(seed, `srv:${server.id}:http:tools/list:cursor-replay`, `${server.id} · HTTP tools/list cursor replay`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-tools-list-cursor-replay', 'tools/list', { cursor: '{{mcp_first_cursor}}' }), cursorReplayScript(), cursorProbePrerequest('mcp_first_cursor'))
+  );
   for (const [i, tool] of index.tools.entries()) {
     const requestId = 10 + i;
     const { script } = toolsCallScript(index, tool, requestId);

@@ -138,6 +138,68 @@ function mcpAssertContentBlock(block, label) {
     pm.expect.fail(label + ' content block type "' + block.type + '" is not a known MCP 2025-06-18 content discriminator');
   }
 }
+function mcpReadJsonVar(name, fallback) {
+  var raw = pm.collectionVariables.get(name);
+  if (!raw) return fallback;
+  try { return JSON.parse(raw); } catch (e) { return fallback; }
+}
+function mcpWriteJsonVar(name, value) {
+  pm.collectionVariables.set(name, JSON.stringify(value));
+}
+function mcpAssertToolDescriptor(tool, label) {
+  var toolAnnotationBooleanHints = ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'];
+  pm.expect(tool.name, label + ' name').to.be.a('string');
+  pm.expect(tool.inputSchema, label + ' inputSchema').to.be.an('object');
+  pm.expect(tool.inputSchema.type, label + ' inputSchema.type').to.eql('object');
+  if (tool.title !== undefined) pm.expect(tool.title, label + ' title').to.be.a('string');
+  if (tool.description !== undefined) pm.expect(tool.description, label + ' description').to.be.a('string');
+  if (tool.annotations !== undefined) {
+    pm.expect(tool.annotations, label + ' annotations').to.be.an('object');
+    toolAnnotationBooleanHints.forEach(function (hint) { if (tool.annotations[hint] !== undefined) pm.expect(typeof tool.annotations[hint], label + ' annotations.' + hint).to.eql('boolean'); });
+    if (tool.annotations.title !== undefined) pm.expect(tool.annotations.title, label + ' annotations.title').to.be.a('string');
+  }
+  if (tool.outputSchema !== undefined) {
+    pm.expect(tool.outputSchema, label + ' outputSchema').to.be.an('object');
+    if (tool.outputSchema.type !== undefined) pm.expect(tool.outputSchema.type, label + ' outputSchema.type').to.eql('object');
+  }
+}
+function mcpResetToolPagination(declaredTools) {
+  var missing = {};
+  declaredTools.forEach(function (name) { missing[name] = true; });
+  mcpWriteJsonVar('mcp_seen_tool_names', {});
+  mcpWriteJsonVar('mcp_missing_tool_names', missing);
+  pm.collectionVariables.set('mcp_cursor_depth', '0');
+  pm.collectionVariables.unset('mcp_first_cursor');
+}
+function mcpRecordToolPage(tools, label) {
+  var seen = mcpReadJsonVar('mcp_seen_tool_names', {});
+  var missing = mcpReadJsonVar('mcp_missing_tool_names', {});
+  var page = {};
+  tools.forEach(function (tool, i) {
+    mcpAssertToolDescriptor(tool, label + ' tool[' + i + ']');
+    pm.expect(page[tool.name], label + ' tool name unique within page').to.not.eql(true);
+    pm.expect(seen[tool.name], label + ' tool name unique across paginated tools/list responses').to.not.eql(true);
+    page[tool.name] = true;
+    seen[tool.name] = true;
+    if (Object.prototype.hasOwnProperty.call(missing, tool.name)) delete missing[tool.name];
+  });
+  mcpWriteJsonVar('mcp_seen_tool_names', seen);
+  mcpWriteJsonVar('mcp_missing_tool_names', missing);
+}
+function mcpAssertToolPaginationComplete(label) {
+  var missing = Object.keys(mcpReadJsonVar('mcp_missing_tool_names', {}));
+  pm.expect(missing.length, label + ' declared manifest tools seen across paginated tools/list responses: ' + missing.join(', ')).to.eql(0);
+}
+function mcpSaveToolNextCursor(cursor, label) {
+  if (cursor !== undefined) {
+    pm.expect(cursor, label + ' nextCursor').to.be.a('string');
+    if (!pm.collectionVariables.get('mcp_first_cursor')) pm.collectionVariables.set('mcp_first_cursor', cursor);
+    pm.collectionVariables.set('mcp_next_cursor', cursor);
+  } else {
+    pm.collectionVariables.unset('mcp_next_cursor');
+    mcpAssertToolPaginationComplete(label);
+  }
+}
 function mcpSaveSessionAndCapabilities(body) {
   var session = pm.response.headers.get('Mcp-Session-Id');
   if (session) pm.collectionVariables.set('mcp_session_id', session);
@@ -199,10 +261,9 @@ export function pingScript(): string {
 export function toolsListScript(toolNames: string[]): string {
   return join([
     `var declaredTools = ${json(toolNames)};`,
-    `var toolAnnotationBooleanHints = ${json(['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'])};`,
-    `pm.test('MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)', function () { var body = mcpResponseBody(); mcpAssertResponseObject('tools/list', body, 2); pm.expect(body.result).to.be.an('object'); pm.expect(body.result.tools).to.be.an('array'); var live = {}; body.result.tools.forEach(function (tool) { pm.expect(tool.name).to.be.a('string'); pm.expect(tool.inputSchema, 'tool inputSchema').to.be.an('object'); pm.expect(tool.inputSchema.type, 'tool inputSchema.type').to.eql('object'); if (tool.title !== undefined) pm.expect(tool.title).to.be.a('string'); if (tool.description !== undefined) pm.expect(tool.description).to.be.a('string'); if (tool.annotations !== undefined) { pm.expect(tool.annotations, 'tool annotations').to.be.an('object'); toolAnnotationBooleanHints.forEach(function (hint) { if (tool.annotations[hint] !== undefined) pm.expect(typeof tool.annotations[hint], 'tool annotations.' + hint).to.eql('boolean'); }); if (tool.annotations.title !== undefined) pm.expect(tool.annotations.title, 'tool annotations.title').to.be.a('string'); } if (tool.outputSchema !== undefined) { pm.expect(tool.outputSchema, 'tool outputSchema').to.be.an('object'); if (tool.outputSchema.type !== undefined) pm.expect(tool.outputSchema.type, 'tool outputSchema.type').to.eql('object'); } pm.expect(live[tool.name], 'tool name unique within page').to.not.eql(true); live[tool.name] = true; }); declaredTools.forEach(function (name) { pm.expect(live[name], 'declared manifest tool is live: ' + name).to.eql(true); }); if (body.result.nextCursor) console.warn('MCP tools/list returned nextCursor; deterministic contract checks only the first page for manifest subset'); mcpAssertMetaKeys(body, 'tools/list'); });`,
+    `pm.test('MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)', function () { var body = mcpResponseBody(); mcpAssertResponseObject('tools/list', body, 2); pm.expect(body.result).to.be.an('object'); pm.expect(body.result.tools).to.be.an('array'); mcpResetToolPagination(declaredTools); mcpRecordToolPage(body.result.tools, 'tools/list first page'); mcpAssertMetaKeys(body, 'tools/list'); });`,
     `pm.test('MCP tools/list is served only when the tools capability was declared (MCP 2025-06-18 Tools sec. 1; Lifecycle sec. 1.2)', function () { var body = mcpResponseBody(); if (!body || body.error) return; var declared = mcpCapabilityDeclared('tools'); if (declared === null) return; pm.expect(declared, 'initialize declared capabilities.tools before serving tools/list').to.eql(true); });`,
-    `pm.test('MCP tools/list nextCursor is an opaque string, saved verbatim for the pagination probes (MCP 2025-06-18 pagination)', function () { var body = mcpResponseBody(); if (body && body.result && body.result.nextCursor !== undefined) { pm.expect(body.result.nextCursor, 'nextCursor').to.be.a('string'); pm.collectionVariables.set('mcp_next_cursor', body.result.nextCursor); } else { pm.collectionVariables.unset('mcp_next_cursor'); } });`,
+    `pm.test('MCP tools/list nextCursor is an opaque string, saved verbatim for the pagination probes (MCP 2025-06-18 pagination)', function () { var body = mcpResponseBody(); if (!body || body.error) return; mcpSaveToolNextCursor(body.result.nextCursor, 'tools/list first page'); });`,
     `pm.test('MCP tools/list response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('tools/list'); });`
   ]);
 }
@@ -394,31 +455,37 @@ export function sessionRequiredScript(): string {
 
 // Pre-request guard shared by the pagination probes: without a saved
 // nextCursor there is nothing deterministic to follow, so the item is skipped.
-export function cursorProbePrerequest(): string {
-  return "if (!pm.collectionVariables.get('mcp_next_cursor') && pm.execution && typeof pm.execution.skipRequest === 'function') { console.log('MCP tools/list returned no nextCursor; skipping the pagination probe'); pm.execution.skipRequest(); }";
+export function cursorProbePrerequest(variableName = 'mcp_next_cursor'): string {
+  return `if (!pm.collectionVariables.get('${variableName}') && pm.execution && typeof pm.execution.skipRequest === 'function') { console.log('MCP tools/list returned no saved cursor; skipping the pagination probe'); pm.execution.skipRequest(); }`;
 }
 
-export function nextCursorScript(): string {
+export function nextCursorScript(pageNumber = 1, requestId: string | number = `pm-tools-list-page:${pageNumber}`, maxPages = 5): string {
   return join([
-    `pm.test('MCP tools/list follows nextCursor byte-for-byte to a valid page (MCP 2025-06-18 pagination)', function () {`,
+    `pm.test('MCP tools/list follows nextCursor byte-for-byte to page ${pageNumber} and accumulates until termination (MCP 2025-06-18 pagination)', function () {`,
     "  if (!pm.collectionVariables.get('mcp_next_cursor')) return;",
+    "  var previousCursor = pm.collectionVariables.get('mcp_next_cursor');",
     '  var body = mcpResponseBody();',
-    "  if (body && body.error) { mcpAssertErrorShape('tools/list next page', body, 6); pm.expect.fail('a cursor copied verbatim from the previous nextCursor must be accepted (MCP 2025-06-18 pagination); got error ' + body.error.code); return; }",
-    "  mcpAssertResponseObject('tools/list next page', body, 6);",
+    `  if (body && body.error) { mcpAssertErrorShape('tools/list page ${pageNumber}', body, ${json(requestId)}); pm.expect.fail('a cursor copied verbatim from the previous nextCursor must be accepted (MCP 2025-06-18 pagination); got error ' + body.error.code); return; }`,
+    `  mcpAssertResponseObject('tools/list page ${pageNumber}', body, ${json(requestId)});`,
     "  pm.expect(body.result, 'next page result').to.be.an('object');",
     "  pm.expect(body.result.tools, 'next page tools').to.be.an('array');",
-    "  if (body.result.nextCursor !== undefined) pm.expect(body.result.nextCursor, 'next page nextCursor').to.be.a('string');",
+    `  mcpRecordToolPage(body.result.tools, 'tools/list page ${pageNumber}');`,
+    "  var depth = Number(pm.collectionVariables.get('mcp_cursor_depth') || '0') + 1;",
+    "  pm.collectionVariables.set('mcp_cursor_depth', String(depth));",
+    "  if (body.result.nextCursor !== undefined && body.result.nextCursor === previousCursor) pm.expect.fail('tools/list nextCursor must advance between pages');",
+    `  mcpSaveToolNextCursor(body.result.nextCursor, 'tools/list page ${pageNumber}');`,
+    `  if (pm.collectionVariables.get('mcp_next_cursor') && depth >= ${maxPages}) pm.expect.fail('tools/list pagination did not terminate within ${maxPages} cursor pages');`,
     '});'
   ]);
 }
 
-export function cursorReplayScript(): string {
+export function cursorReplayScript(requestId: string | number = 'pm-tools-list-cursor-replay'): string {
   return join([
     `pm.test('MCP tools/list cursor replay serves a page or fails as invalid params (MCP 2025-06-18 pagination; JSON-RPC 2.0 sec. 5.1)', function () {`,
-    "  if (!pm.collectionVariables.get('mcp_next_cursor')) return;",
+    "  if (!pm.collectionVariables.get('mcp_first_cursor')) return;",
     '  var body = mcpResponseBody();',
-    "  if (body && body.error) { mcpAssertErrorShape('tools/list cursor replay', body, 7); if (body.error.code !== -32602) pm.expect.fail('a replayed cursor must either serve a page or fail as invalid params (-32602); got error ' + body.error.code); console.warn('MCP server treats cursors as single-use; the replay was rejected with -32602'); return; }",
-    "  mcpAssertResponseObject('tools/list cursor replay', body, 7);",
+    `  if (body && body.error) { mcpAssertErrorShape('tools/list cursor replay', body, ${json(requestId)}); if (body.error.code !== -32602) pm.expect.fail('a replayed cursor must either serve a page or fail as invalid params (-32602); got error ' + body.error.code); console.warn('MCP server treats cursors as single-use; the replay was rejected with -32602'); return; }`,
+    `  mcpAssertResponseObject('tools/list cursor replay', body, ${json(requestId)});`,
     "  pm.expect(body.result.tools, 'replayed page tools').to.be.an('array');",
     '});'
   ]);

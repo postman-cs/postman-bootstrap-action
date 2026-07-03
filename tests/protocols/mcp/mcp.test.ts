@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { parseMcpServerSpec } from '../../../src/lib/protocols/mcp/mcp-parser.js';
 import { buildMcpCollection } from '../../../src/lib/protocols/mcp/mcp-collection-builder.js';
 import { instrumentMcpCollection } from '../../../src/lib/protocols/mcp/mcp-instrumenter.js';
-import { getPromptScript, initializeScript, progressToolCallScript, readResourceScript, resourceTemplatesScript, resourcesListScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
+import { getPromptScript, initializeScript, nextCursorScript, progressToolCallScript, readResourceScript, resourceTemplatesScript, resourcesListScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
 import { detectSpecType } from '../../../src/lib/spec/detect-spec-type.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -139,10 +139,9 @@ function createPmExpect() {
   return expectFn;
 }
 
-function runMcpScript(script: string, responseBody: unknown): { results: RuntimeTestResult[]; warnings: string[] } {
+function runMcpScript(script: string, responseBody: unknown, vars = new Map<string, string>()): { results: RuntimeTestResult[]; warnings: string[]; vars: Map<string, string> } {
   const results: RuntimeTestResult[] = [];
   const warnings: string[] = [];
-  const vars = new Map<string, string>();
   const pm = {
     response: {
       code: 200,
@@ -171,7 +170,7 @@ function runMcpScript(script: string, responseBody: unknown): { results: Runtime
     }
   };
   new Script(script).runInContext(createContext({ pm, console: { warn: (...parts: unknown[]) => warnings.push(parts.map((part) => String(part)).join(' ')) }, JSON, Array, Object, Number, String, RegExp, Math, Boolean }));
-  return { results, warnings };
+  return { results, warnings, vars };
 }
 
 function runtimeTestResult(results: RuntimeTestResult[], name: string): RuntimeTestResult | undefined {
@@ -314,8 +313,8 @@ describe('mcp collection builder', () => {
     const items = collection.item as JsonRecord[];
     // 2 servers x (initialize + tools/list + resources/list + prompts/list +
     // 2 tools/call + 2 resources/read + 1 prompts/get) mcp-request templates,
-    // plus 1 url-bearing server x (20 HTTP runtime probes/items).
-    expect(items).toHaveLength(38);
+    // plus 1 url-bearing server x (24 HTTP runtime probes/items).
+    expect(items).toHaveLength(42);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -509,15 +508,21 @@ describe('mcp runtime HTTP scripts', () => {
     const noSessionScript = String(((((noSession.extensions as JsonRecord).events as JsonRecord[])[0]).script as JsonRecord).exec);
     expect(noSessionScript).toContain('respond 400 Bad Request');
 
-    const nextPage = httpItems.find((item) => String(item.title).endsWith('tools/list next page'))!;
+    const pageItems = httpItems.filter((item) => /tools\/list page \d+$/.test(String(item.title)));
+    expect(pageItems).toHaveLength(5);
+    const nextPage = pageItems[0];
     const nextPageEvents = (nextPage.extensions as JsonRecord).events as JsonRecord[];
     expect(nextPageEvents[0].listen).toBe('beforeRequest');
     expect(String((nextPageEvents[0].script as JsonRecord).exec)).toContain('skipRequest');
     const nextPageBody = JSON.parse(String(((nextPage.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
+    expect(nextPageBody.id).toBe('pm-tools-list-page:1');
     expect((nextPageBody.params as JsonRecord).cursor).toBe('{{mcp_next_cursor}}');
     expect(String((nextPageEvents[1].script as JsonRecord).exec)).toContain('byte-for-byte');
+    expect(String((nextPageEvents[1].script as JsonRecord).exec)).toContain('did not terminate within 5 cursor pages');
 
     const replay = httpItems.find((item) => String(item.title).endsWith('tools/list cursor replay'))!;
+    const replayBody = JSON.parse(String(((replay.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
+    expect((replayBody.params as JsonRecord).cursor).toBe('{{mcp_first_cursor}}');
     expect(String(((((replay.extensions as JsonRecord).events as JsonRecord[])[1]).script as JsonRecord).exec)).toContain('-32602');
 
     const toolsList = httpItems.find((item) => String(item.title).endsWith('\u00b7 HTTP tools/list'))!;
@@ -540,7 +545,11 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP resources/list',
       'io.github.example/weather remote-1 · HTTP prompts/list',
       'io.github.example/weather remote-1 · HTTP ping without session id',
-      'io.github.example/weather remote-1 · HTTP tools/list next page',
+      'io.github.example/weather remote-1 · HTTP tools/list page 1',
+      'io.github.example/weather remote-1 · HTTP tools/list page 2',
+      'io.github.example/weather remote-1 · HTTP tools/list page 3',
+      'io.github.example/weather remote-1 · HTTP tools/list page 4',
+      'io.github.example/weather remote-1 · HTTP tools/list page 5',
       'io.github.example/weather remote-1 · HTTP tools/list cursor replay',
       'io.github.example/weather remote-1 · HTTP tools/call get_forecast',
       'io.github.example/weather remote-1 · HTTP tools/call list_stations',
@@ -942,6 +951,66 @@ describe('mcp tools/list runtime descriptor assertions', () => {
         'MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)'
       )?.passed
     ).toBe(true);
+  });
+
+  it('accumulates declared tools across pages and rejects cross-page duplicate tool names', () => {
+    const tool = (name: string) => ({ name, inputSchema: { type: 'object' } });
+    const vars = new Map<string, string>();
+    const first = runMcpScript(toolsListScript(['first', 'second']), {
+      jsonrpc: '2.0',
+      id: 2,
+      result: {
+        tools: [tool('first')],
+        nextCursor: 'cursor-1'
+      }
+    }, vars);
+    expect(runtimeTestResult(first.results, 'MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)')?.passed).toBe(true);
+    expect(runtimeTestResult(first.results, 'MCP tools/list nextCursor is an opaque string, saved verbatim for the pagination probes (MCP 2025-06-18 pagination)')?.passed).toBe(true);
+    expect(vars.get('mcp_first_cursor')).toBe('cursor-1');
+    expect(vars.get('mcp_next_cursor')).toBe('cursor-1');
+
+    const duplicate = runMcpScript(nextCursorScript(1, 'pm-tools-list-page:1', 5), {
+      jsonrpc: '2.0',
+      id: 'pm-tools-list-page:1',
+      result: {
+        tools: [tool('first')],
+        nextCursor: 'cursor-2'
+      }
+    }, vars);
+    expect(
+      runtimeTestResult(
+        duplicate.results,
+        'MCP tools/list follows nextCursor byte-for-byte to page 1 and accumulates until termination (MCP 2025-06-18 pagination)'
+      )?.passed
+    ).toBe(false);
+  });
+
+  it('passes when pagination terminates after all declared tools are seen', () => {
+    const tool = (name: string) => ({ name, inputSchema: { type: 'object' } });
+    const vars = new Map<string, string>();
+    runMcpScript(toolsListScript(['first', 'second']), {
+      jsonrpc: '2.0',
+      id: 2,
+      result: {
+        tools: [tool('first')],
+        nextCursor: 'cursor-1'
+      }
+    }, vars);
+
+    const second = runMcpScript(nextCursorScript(1, 'pm-tools-list-page:1', 5), {
+      jsonrpc: '2.0',
+      id: 'pm-tools-list-page:1',
+      result: {
+        tools: [tool('second')]
+      }
+    }, vars);
+    expect(
+      runtimeTestResult(
+        second.results,
+        'MCP tools/list follows nextCursor byte-for-byte to page 1 and accumulates until termination (MCP 2025-06-18 pagination)'
+      )?.passed
+    ).toBe(true);
+    expect(vars.get('mcp_next_cursor')).toBeUndefined();
   });
 });
 

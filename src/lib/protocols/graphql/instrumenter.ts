@@ -96,6 +96,49 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
     'var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();',
     'var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();',
     'var gqlMediaType = gqlContentType.split(";")[0].trim();',
+    'var gqlHasRequestSurface = !!(pm.request && pm.request.body && pm.request.headers && typeof pm.request.headers.get === "function");',
+    'var gqlRequestContentType = gqlHasRequestSurface ? ((pm.request.headers && pm.request.headers.get && pm.request.headers.get("Content-Type")) || "").toLowerCase() : "";',
+    'var gqlRequestMediaType = gqlRequestContentType.split(";")[0].trim();',
+    'var gqlRequestNormalizeMap = function (value, label) {',
+    '    if (value === undefined) return { ok: true, value: undefined };',
+    '    if (value === null) return { ok: true, value: null };',
+    '    if (typeof value === "string") {',
+    '        if (!value.trim()) return { ok: true, value: {} };',
+    '        try { value = JSON.parse(value); }',
+    '        catch (e) { return { ok: false, error: label + " must be valid JSON when supplied as a string: " + String((e && e.message) || e || "invalid JSON") }; }',
+    '    }',
+    '    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: label + " must be a JSON object map when present" };',
+    '    return { ok: true, value: value };',
+    '};',
+    'var gqlRequestParsed = (function () {',
+    '    if (!gqlHasRequestSurface) return { payload: null, error: "", unavailable: true };',
+    '    var body = (pm.request && pm.request.body) || {};',
+    '    var payload = null;',
+    '    if (body && typeof body === "object" && body.graphql && typeof body.graphql === "object" && !Array.isArray(body.graphql)) {',
+    '        payload = {};',
+    '        Object.keys(body.graphql).forEach(function (key) { payload[key] = body.graphql[key]; });',
+    '    } else if (typeof body.raw === "string") {',
+    '        if (!body.raw.trim()) return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };',
+    '        try { payload = JSON.parse(body.raw); }',
+    '        catch (e) { return { payload: null, error: "GraphQL POST requests must carry valid JSON: " + String((e && e.message) || e || "invalid JSON") }; }',
+    '    } else if (body && typeof body.raw === "object" && body.raw !== null && !Array.isArray(body.raw)) {',
+    '        payload = body.raw;',
+    '    } else {',
+    '        return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };',
+    '    }',
+    '    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { payload: null, error: "GraphQL POST request body must be a JSON object" };',
+    '    var vars = gqlRequestNormalizeMap(payload.variables, "GraphQL request variables");',
+    '    if (!vars.ok) return { payload: null, error: vars.error };',
+    '    if (vars.value !== undefined) payload.variables = vars.value;',
+    '    var extensions = gqlRequestNormalizeMap(payload.extensions, "GraphQL request extensions");',
+    '    if (!extensions.ok) return { payload: null, error: extensions.error };',
+    '    if (extensions.value !== undefined) payload.extensions = extensions.value;',
+    '    return { payload: payload, error: "", unavailable: false };',
+    '})();',
+    'var gqlRequestPayload = gqlRequestParsed.payload;',
+    'var gqlRequestPayloadError = gqlRequestParsed.error;',
+    'var gqlRequestPayloadUnavailable = !!gqlRequestParsed.unavailable;',
+    'var gqlRequestVariables = (gqlRequestPayload && gqlRequestPayload.variables && typeof gqlRequestPayload.variables === "object" && !Array.isArray(gqlRequestPayload.variables)) ? gqlRequestPayload.variables : {};',
     // Legacy application/json responses outside HTTP 200 are not GraphQL
     // responses the client may rely on (GraphQL-over-HTTP 6.3.1): the body
     // assertions below skip them and a dedicated trust-boundary test fails
@@ -107,6 +150,28 @@ function buildOperationScript(operation: GraphQLOperationDef, index: GraphQLCont
   lines.push(
     `pm.test(${JSON.stringify(`[${label}] HTTP transport is ok`)}, function () {`,
     '    pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);',
+    '});'
+  );
+  lines.push(
+    'pm.test(' + JSON.stringify('[' + label + '] GraphQL POST request uses application/json') + ', function () {',
+    '    if (gqlRequestPayloadUnavailable) return;',
+    '    if (String((pm.request && pm.request.method) || "").toUpperCase() !== "POST") pm.expect.fail("generated GraphQL operation items must use HTTP POST");',
+    '    if (gqlRequestMediaType !== "application/json") pm.expect.fail("GraphQL POST requests must use Content-Type application/json; got " + (gqlRequestMediaType || "<missing>"));',
+    '    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlRequestContentType);',
+    '    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") pm.expect.fail("GraphQL POST requests must use UTF-8 when a charset is declared; got " + charsetMatch[1]);',
+    '});'
+  );
+  lines.push(
+    'pm.test(' + JSON.stringify('[' + label + '] GraphQL POST request body matches the JSON request shape') + ', function () {',
+    '    if (gqlRequestPayloadUnavailable) return;',
+    '    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);',
+    '    var payload = gqlRequestPayload;',
+    '    var extraKeys = Object.keys(payload).filter(function (key) { return key !== "query" && key !== "operationName" && key !== "variables" && key !== "extensions"; });',
+    '    if (extraKeys.length > 0) pm.expect.fail("GraphQL POST request JSON may only contain query, operationName, variables, and extensions; got extra keys: " + extraKeys.join(", "));',
+    '    if (typeof payload.query !== "string" || !payload.query.trim()) pm.expect.fail("GraphQL POST request JSON must contain a non-empty string query");',
+    '    if (payload.operationName !== undefined && payload.operationName !== null && typeof payload.operationName !== "string") pm.expect.fail("GraphQL request operationName must be a string when present");',
+    '    if (payload.variables !== undefined && payload.variables !== null && (typeof payload.variables !== "object" || Array.isArray(payload.variables))) pm.expect.fail("GraphQL request variables must be a JSON object map when present");',
+    '    if (payload.extensions !== undefined && payload.extensions !== null && (typeof payload.extensions !== "object" || Array.isArray(payload.extensions))) pm.expect.fail("GraphQL request extensions must be a JSON object map when present");',
     '});'
   );
   // GraphQL-over-HTTP media type and per-media-type status discipline. The
@@ -280,6 +345,24 @@ function buildShapeAssertions(operation: GraphQLOperationDef, index: GraphQLCont
   return emitValueAssertions('value', operation.returns, selection, operation.id, index, warnings);
 }
 
+function selectedResponseKeys(selection: SelectedField[] | null): string[] {
+  if (selection === null) return [];
+  const keys = selection.length === 0 ? ['__typename'] : selection.map((field) => field.name);
+  return [...new Set(keys)];
+}
+
+function exactSelectedKeyAssertions(accessor: string, selection: SelectedField[] | null, ctx: string): string[] {
+  const expectedKeys = selectedResponseKeys(selection).slice().sort((a, b) => a.localeCompare(b));
+  if (expectedKeys.length === 0) return [];
+  return [
+    '(function () {',
+    `  var gqlActualKeys = Object.keys(${accessor}).slice().sort();`,
+    `  var gqlExpectedKeys = ${JSON.stringify(expectedKeys)};`,
+    `  if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail(${JSON.stringify(`${ctx}: response object must contain exactly the selected fields`)} + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));`,
+    '})();'
+  ];
+}
+
 /**
  * Emit assertions for a value of type `ref`. `selection` carries the selected
  * sub-fields when `ref` is an expanded object/interface (null for scalars,
@@ -332,8 +415,17 @@ function emitValueAssertions(
   if (ref.kind === 'object' || ref.kind === 'interface') {
     const lines = [`pm.expect(${accessor}, ${JSON.stringify(`${ctx}: expected ${ref.name} object`)}).to.be.an("object");`];
     const fields = selection ?? [];
+    lines.push(...exactSelectedKeyAssertions(accessor, fields, `${ctx} (${ref.name})`));
+    if (ref.kind === 'interface') {
+      const possibleTypes = index.interfacePossibleTypes[ref.name];
+      if (possibleTypes && possibleTypes.length > 0) {
+        lines.push(`pm.expect(${accessor} && ${accessor}.__typename, ${JSON.stringify(`${ctx}: __typename is not a declared implementor of interface ${ref.name}`)}).to.be.oneOf(${JSON.stringify(possibleTypes)});`);
+      } else {
+        warnings.push(`GQL_INTERFACE_POSSIBLE_TYPES_UNKNOWN: ${ctx} interface ${ref.name} implementor set was not resolved; only object shape and __typename string are asserted`);
+      }
+    }
     if (fields.length === 0) {
-      warnings.push(`GQL_NO_SELECTED_FIELDS_TO_ASSERT: ${ctx} object ${ref.name} exposes no selected scalar/enum fields; only object-ness is asserted`);
+      warnings.push(`GQL_NO_SELECTED_FIELDS_TO_ASSERT: ${ctx} object ${ref.name} exposes no selected scalar/enum fields; only object-ness and __typename are asserted`);
     }
     for (const field of fields) {
       lines.push(...emitFieldAssertions(accessor, ref.name, field, ctx, index, warnings));
@@ -410,13 +502,9 @@ function buildVariableScript(operation: GraphQLOperationDef): string[] {
   const names = required.map((arg) => arg.name);
   return [
     `pm.test(${JSON.stringify(`[${label}] required variables are supplied`)}, function () {`,
-    '    var body = (pm.request && pm.request.body) || {};',
-    '    var raw = (body.graphql && body.graphql.variables) || body.raw || {};',
-    '    var vars = {};',
-    '    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }',
-    '    catch (e) { vars = {}; }',
-    '    if (vars && vars.variables !== undefined) { vars = vars.variables; }',
-    '    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }',
+    '    if (gqlRequestPayloadUnavailable) return;',
+    '    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);',
+    '    var vars = gqlRequestVariables;',
     `    var required = ${JSON.stringify(names)};`,
     '    required.forEach(function (name) {',
     '        pm.expect(vars, "required GraphQL variable \'" + name + "\' was not supplied in the request").to.have.property(name);',
@@ -495,13 +583,15 @@ function buildProbeScript(probeId: string, index: GraphQLContractIndex, warnings
     roots: index.rootTypes,
     kinds: index.typeKinds,
     fields: index.typeFields,
+    fieldTypeSignatures: index.typeFieldTypeSignatures,
     enums: index.enumValues,
+    possibleTypes: { ...index.unionMembers, ...index.interfacePossibleTypes },
     deprecatedFields: index.deprecatedFields,
     deprecatedEnumValues: index.deprecatedEnumValues
   };
   if (Buffer.byteLength(JSON.stringify(expected), 'utf8') > INTROSPECTION_DRIFT_MAX_EXPECTED_BYTES) {
     warnings.push('GQL_INTROSPECTION_PROBE_TRUNCATED: the schema surface exceeds the drift-probe payload budget; the probe compares root types and enum value sets only');
-    expected = { roots: index.rootTypes, kinds: {}, fields: {}, enums: index.enumValues, deprecatedFields: {}, deprecatedEnumValues: {} };
+    expected = { roots: index.rootTypes, kinds: {}, fields: {}, fieldTypeSignatures: {}, enums: index.enumValues, possibleTypes: {}, deprecatedFields: {}, deprecatedEnumValues: {} };
   }
   return [
     PROBE_JSON_PARSE_LINE,
@@ -512,6 +602,12 @@ function buildProbeScript(probeId: string, index: GraphQLContractIndex, warnings
     '    if (!live) return;',
     '    var drift = function (message) { pm.expect.fail("schema drift: " + message); };',
     '    var kindMap = { SCALAR: "scalar", OBJECT: "object", INTERFACE: "interface", UNION: "union", ENUM: "enum", INPUT_OBJECT: "input" };',
+    '    var renderLiveType = function (node) {',
+    '      if (!node || typeof node !== "object") return "";',
+    '      if (node.kind === "NON_NULL") return renderLiveType(node.ofType) + "!";',
+    '      if (node.kind === "LIST") return "[" + renderLiveType(node.ofType) + "]";',
+    '      return typeof node.name === "string" ? node.name : "";',
+    '    };',
     '    ["query", "mutation", "subscription"].forEach(function (rootKind) {',
     '      var expectedRoot = gqlExpected.roots[rootKind];',
     '      var liveRoot = live[rootKind + "Type"] && live[rootKind + "Type"].name;',
@@ -538,6 +634,13 @@ function buildProbeScript(probeId: string, index: GraphQLContractIndex, warnings
     '      if (!liveType || !Array.isArray(liveType.fields)) return;',
     '      var liveFieldNames = liveType.fields.map(function (f) { return f && f.name; }).sort();',
     '      if (JSON.stringify(liveFieldNames) !== JSON.stringify(gqlExpected.fields[name])) drift("type " + name + " fields [" + liveFieldNames.join(", ") + "] do not match the schema of record [" + gqlExpected.fields[name].join(", ") + "]");',
+    '      var expectedFieldTypes = gqlExpected.fieldTypeSignatures[name] || {};',
+    '      Object.keys(expectedFieldTypes).forEach(function (fieldName) {',
+    '        var liveField = liveType.fields.find(function (f) { return f && f.name === fieldName; });',
+    '        if (!liveField) return;',
+    '        var liveSignature = renderLiveType(liveField.type);',
+    '        if (liveSignature !== expectedFieldTypes[fieldName]) drift("type " + name + " field " + fieldName + " has live type " + liveSignature + " but the schema of record declares " + expectedFieldTypes[fieldName]);',
+    '      });',
     '      var liveDeprecated = liveType.fields.filter(function (f) { return f && f.isDeprecated === true; }).map(function (f) { return f.name; }).sort();',
     '      var expectedDeprecated = gqlExpected.deprecatedFields[name] || [];',
     '      if (JSON.stringify(liveDeprecated) !== JSON.stringify(expectedDeprecated)) drift("type " + name + " deprecated fields [" + liveDeprecated.join(", ") + "] do not match the schema of record [" + expectedDeprecated.join(", ") + "] (@deprecated drift; GraphQL spec 4.2.3)");',
@@ -551,6 +654,13 @@ function buildProbeScript(probeId: string, index: GraphQLContractIndex, warnings
     '      var liveDeprecatedValues = Array.isArray(liveType.enumValues) ? liveType.enumValues.filter(function (v) { return v && v.isDeprecated === true; }).map(function (v) { return v.name; }).sort() : [];',
     '      var expectedDeprecatedValues = gqlExpected.deprecatedEnumValues[name] || [];',
     '      if (JSON.stringify(liveDeprecatedValues) !== JSON.stringify(expectedDeprecatedValues)) drift("enum " + name + " deprecated values [" + liveDeprecatedValues.join(", ") + "] do not match the schema of record [" + expectedDeprecatedValues.join(", ") + "] (@deprecated drift; GraphQL spec 4.2.3)");',
+    '    });',
+    '    Object.keys(gqlExpected.possibleTypes || {}).forEach(function (name) {',
+    '      var liveType = liveTypes[name];',
+    '      if (!liveType) return;',
+    '      var livePossibleTypes = Array.isArray(liveType.possibleTypes) ? liveType.possibleTypes.map(function (t) { return t && t.name; }).sort() : [];',
+    '      var expectedPossibleTypes = (gqlExpected.possibleTypes[name] || []).slice().sort();',
+    '      if (JSON.stringify(livePossibleTypes) !== JSON.stringify(expectedPossibleTypes)) drift("type " + name + " possibleTypes [" + livePossibleTypes.join(", ") + "] do not match the schema of record [" + expectedPossibleTypes.join(", ") + "]");',
     '    });',
     '});'
   ];

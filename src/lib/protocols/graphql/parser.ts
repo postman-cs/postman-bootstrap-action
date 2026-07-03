@@ -288,6 +288,10 @@ function buildSchemaFromIntrospection(value: JsonRecord): GraphQLSchema {
   return buildClientSchema(introspection as Parameters<typeof buildClientSchema>[0]);
 }
 
+function selectIntrospectionRootWarnings(warnings: string[]): string[] {
+  return warnings.filter((warning) => warning.startsWith('GQL_INTROSPECTION_ROOT_INVALID:') || warning.startsWith('GQL_INTROSPECTION_ROOTS_NOT_DISTINCT:'));
+}
+
 /**
  * Parse a GraphQL contract from either SDL text or an introspection JSON
  * document into a flat, deterministic contract index. SDL is parsed with
@@ -301,6 +305,7 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
 
   let schema: GraphQLSchema;
   let parsedJson: unknown;
+  let introspectionWarnings: string[] | null = null;
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
       parsedJson = JSON.parse(trimmed);
@@ -310,13 +315,21 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
   }
   try {
     if (parsedJson !== undefined && looksLikeIntrospection(parsedJson)) {
-      schema = buildSchemaFromIntrospection(asRecord(parsedJson) as JsonRecord);
+      introspectionWarnings = lintIntrospectionJson(parsedJson);
+      try {
+        schema = buildSchemaFromIntrospection(asRecord(parsedJson) as JsonRecord);
+      } catch (error) {
+        const rootWarnings = selectIntrospectionRootWarnings(introspectionWarnings);
+        const rootDiagnostics = rootWarnings.length > 0 ? ' ' + rootWarnings.join(' ') : '';
+        throw new Error(`GQL_PARSE_FAILED: ${error instanceof Error ? error.message : String(error)}${rootDiagnostics}`, { cause: error });
+      }
     } else if (parsedJson !== undefined) {
       throw new Error('JSON content is not a GraphQL introspection document (missing __schema)');
     } else {
       schema = buildSchema(trimmed, { assumeValidSDL: false });
     }
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith('GQL_PARSE_FAILED:')) throw error;
     throw new Error(`GQL_PARSE_FAILED: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 
@@ -325,7 +338,7 @@ export function parseGraphQLSchema(content: string, opts: { service?: string } =
   // lints beyond what buildSchema/buildClientSchema enforce during construction.
   warnings.push(...lintGraphQLSchema(schema));
   if (parsedJson !== undefined) {
-    warnings.push(...lintIntrospectionJson(parsedJson));
+    warnings.push(...(introspectionWarnings ?? lintIntrospectionJson(parsedJson)));
   } else {
     warnings.push(...lintSdlDocument(trimmed));
   }

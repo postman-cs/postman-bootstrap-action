@@ -43,5 +43,53 @@
         "properties": {}
       }
     }
+  ],
+  "resources": [
+    {
+      "uri": "resource://forecast-index",
+      "name": "Forecast Index",
+      "description": "Static weather index resource",
+      "mimeType": "application/json",
+      "_meta": {
+        "io.github.example/weather/cacheable": true
+      }
+    },
+    {
+      "uri": "resource://station-directory",
+      "name": "Station Directory",
+      "title": "Station Directory",
+      "mimeType": "text/plain"
+    }
+  ],
+  "resourceTemplates": [
+    {
+      "uriTemplate": "resource://forecast/{city}?days={days}",
+      "name": "Forecast Template",
+      "description": "Fetch a forecast resource by city and day count",
+      "mimeType": "application/json"
+    },
+    {
+      "uriTemplate": "resource://stations/{stationId}",
+      "name": "Station Template",
+      "mimeType": "text/plain"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "forecast_summary",
+      "title": "Forecast Summary",
+      "description": "Summarize the requested city forecast",
+      "arguments": [
+        {
+          "name": "city",
+          "description": "City to summarize",
+          "required": true
+        },
+        {
+          "name": "tone",
+          "description": "Optional response tone"
+        }
+      ]
+    }
   ]
 }

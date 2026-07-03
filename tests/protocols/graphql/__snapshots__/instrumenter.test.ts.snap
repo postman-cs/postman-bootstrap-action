@@ -6,9 +6,70 @@ exports[`instrumentGraphQLCollection > matches the golden snapshot of generated 
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
 var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlHasRequestSurface = !!(pm.request && pm.request.body && pm.request.headers && typeof pm.request.headers.get === "function");
+var gqlRequestContentType = gqlHasRequestSurface ? ((pm.request.headers && pm.request.headers.get && pm.request.headers.get("Content-Type")) || "").toLowerCase() : "";
+var gqlRequestMediaType = gqlRequestContentType.split(";")[0].trim();
+var gqlRequestNormalizeMap = function (value, label) {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (value === null) return { ok: true, value: null };
+    if (typeof value === "string") {
+        if (!value.trim()) return { ok: true, value: {} };
+        try { value = JSON.parse(value); }
+        catch (e) { return { ok: false, error: label + " must be valid JSON when supplied as a string: " + String((e && e.message) || e || "invalid JSON") }; }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: label + " must be a JSON object map when present" };
+    return { ok: true, value: value };
+};
+var gqlRequestParsed = (function () {
+    if (!gqlHasRequestSurface) return { payload: null, error: "", unavailable: true };
+    var body = (pm.request && pm.request.body) || {};
+    var payload = null;
+    if (body && typeof body === "object" && body.graphql && typeof body.graphql === "object" && !Array.isArray(body.graphql)) {
+        payload = {};
+        Object.keys(body.graphql).forEach(function (key) { payload[key] = body.graphql[key]; });
+    } else if (typeof body.raw === "string") {
+        if (!body.raw.trim()) return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+        try { payload = JSON.parse(body.raw); }
+        catch (e) { return { payload: null, error: "GraphQL POST requests must carry valid JSON: " + String((e && e.message) || e || "invalid JSON") }; }
+    } else if (body && typeof body.raw === "object" && body.raw !== null && !Array.isArray(body.raw)) {
+        payload = body.raw;
+    } else {
+        return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { payload: null, error: "GraphQL POST request body must be a JSON object" };
+    var vars = gqlRequestNormalizeMap(payload.variables, "GraphQL request variables");
+    if (!vars.ok) return { payload: null, error: vars.error };
+    if (vars.value !== undefined) payload.variables = vars.value;
+    var extensions = gqlRequestNormalizeMap(payload.extensions, "GraphQL request extensions");
+    if (!extensions.ok) return { payload: null, error: extensions.error };
+    if (extensions.value !== undefined) payload.extensions = extensions.value;
+    return { payload: payload, error: "", unavailable: false };
+})();
+var gqlRequestPayload = gqlRequestParsed.payload;
+var gqlRequestPayloadError = gqlRequestParsed.error;
+var gqlRequestPayloadUnavailable = !!gqlRequestParsed.unavailable;
+var gqlRequestVariables = (gqlRequestPayload && gqlRequestPayload.variables && typeof gqlRequestPayload.variables === "object" && !Array.isArray(gqlRequestPayload.variables)) ? gqlRequestPayload.variables : {};
 var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[query lineByMsisdn] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query lineByMsisdn] GraphQL POST request uses application/json", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (String((pm.request && pm.request.method) || "").toUpperCase() !== "POST") pm.expect.fail("generated GraphQL operation items must use HTTP POST");
+    if (gqlRequestMediaType !== "application/json") pm.expect.fail("GraphQL POST requests must use Content-Type application/json; got " + (gqlRequestMediaType || "<missing>"));
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlRequestContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") pm.expect.fail("GraphQL POST requests must use UTF-8 when a charset is declared; got " + charsetMatch[1]);
+});
+pm.test("[query lineByMsisdn] GraphQL POST request body matches the JSON request shape", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var payload = gqlRequestPayload;
+    var extraKeys = Object.keys(payload).filter(function (key) { return key !== "query" && key !== "operationName" && key !== "variables" && key !== "extensions"; });
+    if (extraKeys.length > 0) pm.expect.fail("GraphQL POST request JSON may only contain query, operationName, variables, and extensions; got extra keys: " + extraKeys.join(", "));
+    if (typeof payload.query !== "string" || !payload.query.trim()) pm.expect.fail("GraphQL POST request JSON must contain a non-empty string query");
+    if (payload.operationName !== undefined && payload.operationName !== null && typeof payload.operationName !== "string") pm.expect.fail("GraphQL request operationName must be a string when present");
+    if (payload.variables !== undefined && payload.variables !== null && (typeof payload.variables !== "object" || Array.isArray(payload.variables))) pm.expect.fail("GraphQL request variables must be a JSON object map when present");
+    if (payload.extensions !== undefined && payload.extensions !== null && (typeof payload.extensions !== "object" || Array.isArray(payload.extensions))) pm.expect.fail("GraphQL request extensions must be a JSON object map when present");
 });
 pm.test("[query lineByMsisdn] GraphQL-over-HTTP media type and status are consistent", function () {
     var mediaType = gqlMediaType;
@@ -90,6 +151,11 @@ pm.test("[query lineByMsisdn] data.lineByMsisdn matches schema return type", fun
     var value = gqlBody.data && gqlBody.data["lineByMsisdn"];
     if (value === undefined || value === null) return;
     pm.expect(value, "query.lineByMsisdn: expected Line object").to.be.an("object");
+    (function () {
+      var gqlActualKeys = Object.keys(value).slice().sort();
+      var gqlExpectedKeys = ["activatedAt","id","msisdn","status"];
+      if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("query.lineByMsisdn (Line): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+    })();
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value["id"], "Line.id is declared non-null but was null").to.not.be.null;
     if (value["id"] !== undefined && value["id"] !== null) {
@@ -108,13 +174,9 @@ pm.test("[query lineByMsisdn] data.lineByMsisdn matches schema return type", fun
     }
 });
 pm.test("[query lineByMsisdn] required variables are supplied", function () {
-    var body = (pm.request && pm.request.body) || {};
-    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
-    var vars = {};
-    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
-    catch (e) { vars = {}; }
-    if (vars && vars.variables !== undefined) { vars = vars.variables; }
-    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var vars = gqlRequestVariables;
     var required = ["msisdn"];
     required.forEach(function (name) {
         pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
@@ -126,9 +188,70 @@ pm.test("[query lineByMsisdn] required variables are supplied", function () {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
 var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlHasRequestSurface = !!(pm.request && pm.request.body && pm.request.headers && typeof pm.request.headers.get === "function");
+var gqlRequestContentType = gqlHasRequestSurface ? ((pm.request.headers && pm.request.headers.get && pm.request.headers.get("Content-Type")) || "").toLowerCase() : "";
+var gqlRequestMediaType = gqlRequestContentType.split(";")[0].trim();
+var gqlRequestNormalizeMap = function (value, label) {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (value === null) return { ok: true, value: null };
+    if (typeof value === "string") {
+        if (!value.trim()) return { ok: true, value: {} };
+        try { value = JSON.parse(value); }
+        catch (e) { return { ok: false, error: label + " must be valid JSON when supplied as a string: " + String((e && e.message) || e || "invalid JSON") }; }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: label + " must be a JSON object map when present" };
+    return { ok: true, value: value };
+};
+var gqlRequestParsed = (function () {
+    if (!gqlHasRequestSurface) return { payload: null, error: "", unavailable: true };
+    var body = (pm.request && pm.request.body) || {};
+    var payload = null;
+    if (body && typeof body === "object" && body.graphql && typeof body.graphql === "object" && !Array.isArray(body.graphql)) {
+        payload = {};
+        Object.keys(body.graphql).forEach(function (key) { payload[key] = body.graphql[key]; });
+    } else if (typeof body.raw === "string") {
+        if (!body.raw.trim()) return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+        try { payload = JSON.parse(body.raw); }
+        catch (e) { return { payload: null, error: "GraphQL POST requests must carry valid JSON: " + String((e && e.message) || e || "invalid JSON") }; }
+    } else if (body && typeof body.raw === "object" && body.raw !== null && !Array.isArray(body.raw)) {
+        payload = body.raw;
+    } else {
+        return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { payload: null, error: "GraphQL POST request body must be a JSON object" };
+    var vars = gqlRequestNormalizeMap(payload.variables, "GraphQL request variables");
+    if (!vars.ok) return { payload: null, error: vars.error };
+    if (vars.value !== undefined) payload.variables = vars.value;
+    var extensions = gqlRequestNormalizeMap(payload.extensions, "GraphQL request extensions");
+    if (!extensions.ok) return { payload: null, error: extensions.error };
+    if (extensions.value !== undefined) payload.extensions = extensions.value;
+    return { payload: payload, error: "", unavailable: false };
+})();
+var gqlRequestPayload = gqlRequestParsed.payload;
+var gqlRequestPayloadError = gqlRequestParsed.error;
+var gqlRequestPayloadUnavailable = !!gqlRequestParsed.unavailable;
+var gqlRequestVariables = (gqlRequestPayload && gqlRequestPayload.variables && typeof gqlRequestPayload.variables === "object" && !Array.isArray(gqlRequestPayload.variables)) ? gqlRequestPayload.variables : {};
 var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[query plans] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query plans] GraphQL POST request uses application/json", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (String((pm.request && pm.request.method) || "").toUpperCase() !== "POST") pm.expect.fail("generated GraphQL operation items must use HTTP POST");
+    if (gqlRequestMediaType !== "application/json") pm.expect.fail("GraphQL POST requests must use Content-Type application/json; got " + (gqlRequestMediaType || "<missing>"));
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlRequestContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") pm.expect.fail("GraphQL POST requests must use UTF-8 when a charset is declared; got " + charsetMatch[1]);
+});
+pm.test("[query plans] GraphQL POST request body matches the JSON request shape", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var payload = gqlRequestPayload;
+    var extraKeys = Object.keys(payload).filter(function (key) { return key !== "query" && key !== "operationName" && key !== "variables" && key !== "extensions"; });
+    if (extraKeys.length > 0) pm.expect.fail("GraphQL POST request JSON may only contain query, operationName, variables, and extensions; got extra keys: " + extraKeys.join(", "));
+    if (typeof payload.query !== "string" || !payload.query.trim()) pm.expect.fail("GraphQL POST request JSON must contain a non-empty string query");
+    if (payload.operationName !== undefined && payload.operationName !== null && typeof payload.operationName !== "string") pm.expect.fail("GraphQL request operationName must be a string when present");
+    if (payload.variables !== undefined && payload.variables !== null && (typeof payload.variables !== "object" || Array.isArray(payload.variables))) pm.expect.fail("GraphQL request variables must be a JSON object map when present");
+    if (payload.extensions !== undefined && payload.extensions !== null && (typeof payload.extensions !== "object" || Array.isArray(payload.extensions))) pm.expect.fail("GraphQL request extensions must be a JSON object map when present");
 });
 pm.test("[query plans] GraphQL-over-HTTP media type and status are consistent", function () {
     var mediaType = gqlMediaType;
@@ -222,6 +345,11 @@ pm.test("[query plans] data.plans matches schema return type", function () {
     value.forEach(function (__el) {
         pm.expect(__el, "query.plans (list element): a non-null list item ([T!]) was null").to.not.be.null;
         pm.expect(__el, "query.plans (list element): expected Plan object").to.be.an("object");
+        (function () {
+          var gqlActualKeys = Object.keys(__el).slice().sort();
+          var gqlExpectedKeys = ["dataCapGb","id","monthlyPriceCents","name"];
+          if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("query.plans (list element) (Plan): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+        })();
         if (__el["dataCapGb"] !== undefined && __el["dataCapGb"] !== null) {
             pm.expect(__el["dataCapGb"], "query.plans (list element).dataCapGb: expected Int scalar").to.be.a("number");
             pm.expect(Number.isInteger(__el["dataCapGb"]) && __el["dataCapGb"] >= -2147483648 && __el["dataCapGb"] <= 2147483647, "query.plans (list element).dataCapGb: Int must be a signed 32-bit integer").to.equal(true);
@@ -250,9 +378,70 @@ pm.test("[query plans] data.plans matches schema return type", function () {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
 var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlHasRequestSurface = !!(pm.request && pm.request.body && pm.request.headers && typeof pm.request.headers.get === "function");
+var gqlRequestContentType = gqlHasRequestSurface ? ((pm.request.headers && pm.request.headers.get && pm.request.headers.get("Content-Type")) || "").toLowerCase() : "";
+var gqlRequestMediaType = gqlRequestContentType.split(";")[0].trim();
+var gqlRequestNormalizeMap = function (value, label) {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (value === null) return { ok: true, value: null };
+    if (typeof value === "string") {
+        if (!value.trim()) return { ok: true, value: {} };
+        try { value = JSON.parse(value); }
+        catch (e) { return { ok: false, error: label + " must be valid JSON when supplied as a string: " + String((e && e.message) || e || "invalid JSON") }; }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: label + " must be a JSON object map when present" };
+    return { ok: true, value: value };
+};
+var gqlRequestParsed = (function () {
+    if (!gqlHasRequestSurface) return { payload: null, error: "", unavailable: true };
+    var body = (pm.request && pm.request.body) || {};
+    var payload = null;
+    if (body && typeof body === "object" && body.graphql && typeof body.graphql === "object" && !Array.isArray(body.graphql)) {
+        payload = {};
+        Object.keys(body.graphql).forEach(function (key) { payload[key] = body.graphql[key]; });
+    } else if (typeof body.raw === "string") {
+        if (!body.raw.trim()) return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+        try { payload = JSON.parse(body.raw); }
+        catch (e) { return { payload: null, error: "GraphQL POST requests must carry valid JSON: " + String((e && e.message) || e || "invalid JSON") }; }
+    } else if (body && typeof body.raw === "object" && body.raw !== null && !Array.isArray(body.raw)) {
+        payload = body.raw;
+    } else {
+        return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { payload: null, error: "GraphQL POST request body must be a JSON object" };
+    var vars = gqlRequestNormalizeMap(payload.variables, "GraphQL request variables");
+    if (!vars.ok) return { payload: null, error: vars.error };
+    if (vars.value !== undefined) payload.variables = vars.value;
+    var extensions = gqlRequestNormalizeMap(payload.extensions, "GraphQL request extensions");
+    if (!extensions.ok) return { payload: null, error: extensions.error };
+    if (extensions.value !== undefined) payload.extensions = extensions.value;
+    return { payload: payload, error: "", unavailable: false };
+})();
+var gqlRequestPayload = gqlRequestParsed.payload;
+var gqlRequestPayloadError = gqlRequestParsed.error;
+var gqlRequestPayloadUnavailable = !!gqlRequestParsed.unavailable;
+var gqlRequestVariables = (gqlRequestPayload && gqlRequestPayload.variables && typeof gqlRequestPayload.variables === "object" && !Array.isArray(gqlRequestPayload.variables)) ? gqlRequestPayload.variables : {};
 var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[query subscriber] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query subscriber] GraphQL POST request uses application/json", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (String((pm.request && pm.request.method) || "").toUpperCase() !== "POST") pm.expect.fail("generated GraphQL operation items must use HTTP POST");
+    if (gqlRequestMediaType !== "application/json") pm.expect.fail("GraphQL POST requests must use Content-Type application/json; got " + (gqlRequestMediaType || "<missing>"));
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlRequestContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") pm.expect.fail("GraphQL POST requests must use UTF-8 when a charset is declared; got " + charsetMatch[1]);
+});
+pm.test("[query subscriber] GraphQL POST request body matches the JSON request shape", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var payload = gqlRequestPayload;
+    var extraKeys = Object.keys(payload).filter(function (key) { return key !== "query" && key !== "operationName" && key !== "variables" && key !== "extensions"; });
+    if (extraKeys.length > 0) pm.expect.fail("GraphQL POST request JSON may only contain query, operationName, variables, and extensions; got extra keys: " + extraKeys.join(", "));
+    if (typeof payload.query !== "string" || !payload.query.trim()) pm.expect.fail("GraphQL POST request JSON must contain a non-empty string query");
+    if (payload.operationName !== undefined && payload.operationName !== null && typeof payload.operationName !== "string") pm.expect.fail("GraphQL request operationName must be a string when present");
+    if (payload.variables !== undefined && payload.variables !== null && (typeof payload.variables !== "object" || Array.isArray(payload.variables))) pm.expect.fail("GraphQL request variables must be a JSON object map when present");
+    if (payload.extensions !== undefined && payload.extensions !== null && (typeof payload.extensions !== "object" || Array.isArray(payload.extensions))) pm.expect.fail("GraphQL request extensions must be a JSON object map when present");
 });
 pm.test("[query subscriber] GraphQL-over-HTTP media type and status are consistent", function () {
     var mediaType = gqlMediaType;
@@ -334,6 +523,11 @@ pm.test("[query subscriber] data.subscriber matches schema return type", functio
     var value = gqlBody.data && gqlBody.data["subscriber"];
     if (value === undefined || value === null) return;
     pm.expect(value, "query.subscriber: expected Subscriber object").to.be.an("object");
+    (function () {
+      var gqlActualKeys = Object.keys(value).slice().sort();
+      var gqlExpectedKeys = ["displayName","email","id"];
+      if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("query.subscriber (Subscriber): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+    })();
     pm.expect(value, "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
     pm.expect(value["displayName"], "Subscriber.displayName is declared non-null but was null").to.not.be.null;
     if (value["displayName"] !== undefined && value["displayName"] !== null) {
@@ -349,13 +543,9 @@ pm.test("[query subscriber] data.subscriber matches schema return type", functio
     }
 });
 pm.test("[query subscriber] required variables are supplied", function () {
-    var body = (pm.request && pm.request.body) || {};
-    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
-    var vars = {};
-    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
-    catch (e) { vars = {}; }
-    if (vars && vars.variables !== undefined) { vars = vars.variables; }
-    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var vars = gqlRequestVariables;
     var required = ["id"];
     required.forEach(function (name) {
         pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
@@ -367,9 +557,70 @@ pm.test("[query subscriber] required variables are supplied", function () {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
 var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlHasRequestSurface = !!(pm.request && pm.request.body && pm.request.headers && typeof pm.request.headers.get === "function");
+var gqlRequestContentType = gqlHasRequestSurface ? ((pm.request.headers && pm.request.headers.get && pm.request.headers.get("Content-Type")) || "").toLowerCase() : "";
+var gqlRequestMediaType = gqlRequestContentType.split(";")[0].trim();
+var gqlRequestNormalizeMap = function (value, label) {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (value === null) return { ok: true, value: null };
+    if (typeof value === "string") {
+        if (!value.trim()) return { ok: true, value: {} };
+        try { value = JSON.parse(value); }
+        catch (e) { return { ok: false, error: label + " must be valid JSON when supplied as a string: " + String((e && e.message) || e || "invalid JSON") }; }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: label + " must be a JSON object map when present" };
+    return { ok: true, value: value };
+};
+var gqlRequestParsed = (function () {
+    if (!gqlHasRequestSurface) return { payload: null, error: "", unavailable: true };
+    var body = (pm.request && pm.request.body) || {};
+    var payload = null;
+    if (body && typeof body === "object" && body.graphql && typeof body.graphql === "object" && !Array.isArray(body.graphql)) {
+        payload = {};
+        Object.keys(body.graphql).forEach(function (key) { payload[key] = body.graphql[key]; });
+    } else if (typeof body.raw === "string") {
+        if (!body.raw.trim()) return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+        try { payload = JSON.parse(body.raw); }
+        catch (e) { return { payload: null, error: "GraphQL POST requests must carry valid JSON: " + String((e && e.message) || e || "invalid JSON") }; }
+    } else if (body && typeof body.raw === "object" && body.raw !== null && !Array.isArray(body.raw)) {
+        payload = body.raw;
+    } else {
+        return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { payload: null, error: "GraphQL POST request body must be a JSON object" };
+    var vars = gqlRequestNormalizeMap(payload.variables, "GraphQL request variables");
+    if (!vars.ok) return { payload: null, error: vars.error };
+    if (vars.value !== undefined) payload.variables = vars.value;
+    var extensions = gqlRequestNormalizeMap(payload.extensions, "GraphQL request extensions");
+    if (!extensions.ok) return { payload: null, error: extensions.error };
+    if (extensions.value !== undefined) payload.extensions = extensions.value;
+    return { payload: payload, error: "", unavailable: false };
+})();
+var gqlRequestPayload = gqlRequestParsed.payload;
+var gqlRequestPayloadError = gqlRequestParsed.error;
+var gqlRequestPayloadUnavailable = !!gqlRequestParsed.unavailable;
+var gqlRequestVariables = (gqlRequestPayload && gqlRequestPayload.variables && typeof gqlRequestPayload.variables === "object" && !Array.isArray(gqlRequestPayload.variables)) ? gqlRequestPayload.variables : {};
 var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[query subscribers] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[query subscribers] GraphQL POST request uses application/json", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (String((pm.request && pm.request.method) || "").toUpperCase() !== "POST") pm.expect.fail("generated GraphQL operation items must use HTTP POST");
+    if (gqlRequestMediaType !== "application/json") pm.expect.fail("GraphQL POST requests must use Content-Type application/json; got " + (gqlRequestMediaType || "<missing>"));
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlRequestContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") pm.expect.fail("GraphQL POST requests must use UTF-8 when a charset is declared; got " + charsetMatch[1]);
+});
+pm.test("[query subscribers] GraphQL POST request body matches the JSON request shape", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var payload = gqlRequestPayload;
+    var extraKeys = Object.keys(payload).filter(function (key) { return key !== "query" && key !== "operationName" && key !== "variables" && key !== "extensions"; });
+    if (extraKeys.length > 0) pm.expect.fail("GraphQL POST request JSON may only contain query, operationName, variables, and extensions; got extra keys: " + extraKeys.join(", "));
+    if (typeof payload.query !== "string" || !payload.query.trim()) pm.expect.fail("GraphQL POST request JSON must contain a non-empty string query");
+    if (payload.operationName !== undefined && payload.operationName !== null && typeof payload.operationName !== "string") pm.expect.fail("GraphQL request operationName must be a string when present");
+    if (payload.variables !== undefined && payload.variables !== null && (typeof payload.variables !== "object" || Array.isArray(payload.variables))) pm.expect.fail("GraphQL request variables must be a JSON object map when present");
+    if (payload.extensions !== undefined && payload.extensions !== null && (typeof payload.extensions !== "object" || Array.isArray(payload.extensions))) pm.expect.fail("GraphQL request extensions must be a JSON object map when present");
 });
 pm.test("[query subscribers] GraphQL-over-HTTP media type and status are consistent", function () {
     var mediaType = gqlMediaType;
@@ -463,6 +714,11 @@ pm.test("[query subscribers] data.subscribers matches schema return type", funct
     value.forEach(function (__el) {
         pm.expect(__el, "query.subscribers (list element): a non-null list item ([T!]) was null").to.not.be.null;
         pm.expect(__el, "query.subscribers (list element): expected Subscriber object").to.be.an("object");
+        (function () {
+          var gqlActualKeys = Object.keys(__el).slice().sort();
+          var gqlExpectedKeys = ["displayName","email","id"];
+          if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("query.subscribers (list element) (Subscriber): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+        })();
         pm.expect(__el, "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
         pm.expect(__el["displayName"], "Subscriber.displayName is declared non-null but was null").to.not.be.null;
         if (__el["displayName"] !== undefined && __el["displayName"] !== null) {
@@ -484,9 +740,70 @@ pm.test("[query subscribers] data.subscribers matches schema return type", funct
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
 var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlHasRequestSurface = !!(pm.request && pm.request.body && pm.request.headers && typeof pm.request.headers.get === "function");
+var gqlRequestContentType = gqlHasRequestSurface ? ((pm.request.headers && pm.request.headers.get && pm.request.headers.get("Content-Type")) || "").toLowerCase() : "";
+var gqlRequestMediaType = gqlRequestContentType.split(";")[0].trim();
+var gqlRequestNormalizeMap = function (value, label) {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (value === null) return { ok: true, value: null };
+    if (typeof value === "string") {
+        if (!value.trim()) return { ok: true, value: {} };
+        try { value = JSON.parse(value); }
+        catch (e) { return { ok: false, error: label + " must be valid JSON when supplied as a string: " + String((e && e.message) || e || "invalid JSON") }; }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: label + " must be a JSON object map when present" };
+    return { ok: true, value: value };
+};
+var gqlRequestParsed = (function () {
+    if (!gqlHasRequestSurface) return { payload: null, error: "", unavailable: true };
+    var body = (pm.request && pm.request.body) || {};
+    var payload = null;
+    if (body && typeof body === "object" && body.graphql && typeof body.graphql === "object" && !Array.isArray(body.graphql)) {
+        payload = {};
+        Object.keys(body.graphql).forEach(function (key) { payload[key] = body.graphql[key]; });
+    } else if (typeof body.raw === "string") {
+        if (!body.raw.trim()) return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+        try { payload = JSON.parse(body.raw); }
+        catch (e) { return { payload: null, error: "GraphQL POST requests must carry valid JSON: " + String((e && e.message) || e || "invalid JSON") }; }
+    } else if (body && typeof body.raw === "object" && body.raw !== null && !Array.isArray(body.raw)) {
+        payload = body.raw;
+    } else {
+        return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { payload: null, error: "GraphQL POST request body must be a JSON object" };
+    var vars = gqlRequestNormalizeMap(payload.variables, "GraphQL request variables");
+    if (!vars.ok) return { payload: null, error: vars.error };
+    if (vars.value !== undefined) payload.variables = vars.value;
+    var extensions = gqlRequestNormalizeMap(payload.extensions, "GraphQL request extensions");
+    if (!extensions.ok) return { payload: null, error: extensions.error };
+    if (extensions.value !== undefined) payload.extensions = extensions.value;
+    return { payload: payload, error: "", unavailable: false };
+})();
+var gqlRequestPayload = gqlRequestParsed.payload;
+var gqlRequestPayloadError = gqlRequestParsed.error;
+var gqlRequestPayloadUnavailable = !!gqlRequestParsed.unavailable;
+var gqlRequestVariables = (gqlRequestPayload && gqlRequestPayload.variables && typeof gqlRequestPayload.variables === "object" && !Array.isArray(gqlRequestPayload.variables)) ? gqlRequestPayload.variables : {};
 var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[mutation provisionLine] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[mutation provisionLine] GraphQL POST request uses application/json", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (String((pm.request && pm.request.method) || "").toUpperCase() !== "POST") pm.expect.fail("generated GraphQL operation items must use HTTP POST");
+    if (gqlRequestMediaType !== "application/json") pm.expect.fail("GraphQL POST requests must use Content-Type application/json; got " + (gqlRequestMediaType || "<missing>"));
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlRequestContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") pm.expect.fail("GraphQL POST requests must use UTF-8 when a charset is declared; got " + charsetMatch[1]);
+});
+pm.test("[mutation provisionLine] GraphQL POST request body matches the JSON request shape", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var payload = gqlRequestPayload;
+    var extraKeys = Object.keys(payload).filter(function (key) { return key !== "query" && key !== "operationName" && key !== "variables" && key !== "extensions"; });
+    if (extraKeys.length > 0) pm.expect.fail("GraphQL POST request JSON may only contain query, operationName, variables, and extensions; got extra keys: " + extraKeys.join(", "));
+    if (typeof payload.query !== "string" || !payload.query.trim()) pm.expect.fail("GraphQL POST request JSON must contain a non-empty string query");
+    if (payload.operationName !== undefined && payload.operationName !== null && typeof payload.operationName !== "string") pm.expect.fail("GraphQL request operationName must be a string when present");
+    if (payload.variables !== undefined && payload.variables !== null && (typeof payload.variables !== "object" || Array.isArray(payload.variables))) pm.expect.fail("GraphQL request variables must be a JSON object map when present");
+    if (payload.extensions !== undefined && payload.extensions !== null && (typeof payload.extensions !== "object" || Array.isArray(payload.extensions))) pm.expect.fail("GraphQL request extensions must be a JSON object map when present");
 });
 pm.test("[mutation provisionLine] GraphQL-over-HTTP media type and status are consistent", function () {
     var mediaType = gqlMediaType;
@@ -577,6 +894,11 @@ pm.test("[mutation provisionLine] data.provisionLine matches schema return type"
     var value = gqlBody.data && gqlBody.data["provisionLine"];
     if (value === undefined || value === null) return;
     pm.expect(value, "mutation.provisionLine: expected Line object").to.be.an("object");
+    (function () {
+      var gqlActualKeys = Object.keys(value).slice().sort();
+      var gqlExpectedKeys = ["activatedAt","id","msisdn","status"];
+      if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("mutation.provisionLine (Line): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+    })();
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value["id"], "Line.id is declared non-null but was null").to.not.be.null;
     if (value["id"] !== undefined && value["id"] !== null) {
@@ -595,13 +917,9 @@ pm.test("[mutation provisionLine] data.provisionLine matches schema return type"
     }
 });
 pm.test("[mutation provisionLine] required variables are supplied", function () {
-    var body = (pm.request && pm.request.body) || {};
-    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
-    var vars = {};
-    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
-    catch (e) { vars = {}; }
-    if (vars && vars.variables !== undefined) { vars = vars.variables; }
-    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var vars = gqlRequestVariables;
     var required = ["input"];
     required.forEach(function (name) {
         pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
@@ -613,9 +931,70 @@ pm.test("[mutation provisionLine] required variables are supplied", function () 
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
 var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlHasRequestSurface = !!(pm.request && pm.request.body && pm.request.headers && typeof pm.request.headers.get === "function");
+var gqlRequestContentType = gqlHasRequestSurface ? ((pm.request.headers && pm.request.headers.get && pm.request.headers.get("Content-Type")) || "").toLowerCase() : "";
+var gqlRequestMediaType = gqlRequestContentType.split(";")[0].trim();
+var gqlRequestNormalizeMap = function (value, label) {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (value === null) return { ok: true, value: null };
+    if (typeof value === "string") {
+        if (!value.trim()) return { ok: true, value: {} };
+        try { value = JSON.parse(value); }
+        catch (e) { return { ok: false, error: label + " must be valid JSON when supplied as a string: " + String((e && e.message) || e || "invalid JSON") }; }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: label + " must be a JSON object map when present" };
+    return { ok: true, value: value };
+};
+var gqlRequestParsed = (function () {
+    if (!gqlHasRequestSurface) return { payload: null, error: "", unavailable: true };
+    var body = (pm.request && pm.request.body) || {};
+    var payload = null;
+    if (body && typeof body === "object" && body.graphql && typeof body.graphql === "object" && !Array.isArray(body.graphql)) {
+        payload = {};
+        Object.keys(body.graphql).forEach(function (key) { payload[key] = body.graphql[key]; });
+    } else if (typeof body.raw === "string") {
+        if (!body.raw.trim()) return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+        try { payload = JSON.parse(body.raw); }
+        catch (e) { return { payload: null, error: "GraphQL POST requests must carry valid JSON: " + String((e && e.message) || e || "invalid JSON") }; }
+    } else if (body && typeof body.raw === "object" && body.raw !== null && !Array.isArray(body.raw)) {
+        payload = body.raw;
+    } else {
+        return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { payload: null, error: "GraphQL POST request body must be a JSON object" };
+    var vars = gqlRequestNormalizeMap(payload.variables, "GraphQL request variables");
+    if (!vars.ok) return { payload: null, error: vars.error };
+    if (vars.value !== undefined) payload.variables = vars.value;
+    var extensions = gqlRequestNormalizeMap(payload.extensions, "GraphQL request extensions");
+    if (!extensions.ok) return { payload: null, error: extensions.error };
+    if (extensions.value !== undefined) payload.extensions = extensions.value;
+    return { payload: payload, error: "", unavailable: false };
+})();
+var gqlRequestPayload = gqlRequestParsed.payload;
+var gqlRequestPayloadError = gqlRequestParsed.error;
+var gqlRequestPayloadUnavailable = !!gqlRequestParsed.unavailable;
+var gqlRequestVariables = (gqlRequestPayload && gqlRequestPayload.variables && typeof gqlRequestPayload.variables === "object" && !Array.isArray(gqlRequestPayload.variables)) ? gqlRequestPayload.variables : {};
 var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[mutation suspendLine] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[mutation suspendLine] GraphQL POST request uses application/json", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (String((pm.request && pm.request.method) || "").toUpperCase() !== "POST") pm.expect.fail("generated GraphQL operation items must use HTTP POST");
+    if (gqlRequestMediaType !== "application/json") pm.expect.fail("GraphQL POST requests must use Content-Type application/json; got " + (gqlRequestMediaType || "<missing>"));
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlRequestContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") pm.expect.fail("GraphQL POST requests must use UTF-8 when a charset is declared; got " + charsetMatch[1]);
+});
+pm.test("[mutation suspendLine] GraphQL POST request body matches the JSON request shape", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var payload = gqlRequestPayload;
+    var extraKeys = Object.keys(payload).filter(function (key) { return key !== "query" && key !== "operationName" && key !== "variables" && key !== "extensions"; });
+    if (extraKeys.length > 0) pm.expect.fail("GraphQL POST request JSON may only contain query, operationName, variables, and extensions; got extra keys: " + extraKeys.join(", "));
+    if (typeof payload.query !== "string" || !payload.query.trim()) pm.expect.fail("GraphQL POST request JSON must contain a non-empty string query");
+    if (payload.operationName !== undefined && payload.operationName !== null && typeof payload.operationName !== "string") pm.expect.fail("GraphQL request operationName must be a string when present");
+    if (payload.variables !== undefined && payload.variables !== null && (typeof payload.variables !== "object" || Array.isArray(payload.variables))) pm.expect.fail("GraphQL request variables must be a JSON object map when present");
+    if (payload.extensions !== undefined && payload.extensions !== null && (typeof payload.extensions !== "object" || Array.isArray(payload.extensions))) pm.expect.fail("GraphQL request extensions must be a JSON object map when present");
 });
 pm.test("[mutation suspendLine] GraphQL-over-HTTP media type and status are consistent", function () {
     var mediaType = gqlMediaType;
@@ -706,6 +1085,11 @@ pm.test("[mutation suspendLine] data.suspendLine matches schema return type", fu
     var value = gqlBody.data && gqlBody.data["suspendLine"];
     if (value === undefined || value === null) return;
     pm.expect(value, "mutation.suspendLine: expected Line object").to.be.an("object");
+    (function () {
+      var gqlActualKeys = Object.keys(value).slice().sort();
+      var gqlExpectedKeys = ["activatedAt","id","msisdn","status"];
+      if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("mutation.suspendLine (Line): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+    })();
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value["id"], "Line.id is declared non-null but was null").to.not.be.null;
     if (value["id"] !== undefined && value["id"] !== null) {
@@ -724,13 +1108,9 @@ pm.test("[mutation suspendLine] data.suspendLine matches schema return type", fu
     }
 });
 pm.test("[mutation suspendLine] required variables are supplied", function () {
-    var body = (pm.request && pm.request.body) || {};
-    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
-    var vars = {};
-    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
-    catch (e) { vars = {}; }
-    if (vars && vars.variables !== undefined) { vars = vars.variables; }
-    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var vars = gqlRequestVariables;
     var required = ["id"];
     required.forEach(function (name) {
         pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
@@ -742,9 +1122,70 @@ pm.test("[mutation suspendLine] required variables are supplied", function () {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
 var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();
 var gqlMediaType = gqlContentType.split(";")[0].trim();
+var gqlHasRequestSurface = !!(pm.request && pm.request.body && pm.request.headers && typeof pm.request.headers.get === "function");
+var gqlRequestContentType = gqlHasRequestSurface ? ((pm.request.headers && pm.request.headers.get && pm.request.headers.get("Content-Type")) || "").toLowerCase() : "";
+var gqlRequestMediaType = gqlRequestContentType.split(";")[0].trim();
+var gqlRequestNormalizeMap = function (value, label) {
+    if (value === undefined) return { ok: true, value: undefined };
+    if (value === null) return { ok: true, value: null };
+    if (typeof value === "string") {
+        if (!value.trim()) return { ok: true, value: {} };
+        try { value = JSON.parse(value); }
+        catch (e) { return { ok: false, error: label + " must be valid JSON when supplied as a string: " + String((e && e.message) || e || "invalid JSON") }; }
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: label + " must be a JSON object map when present" };
+    return { ok: true, value: value };
+};
+var gqlRequestParsed = (function () {
+    if (!gqlHasRequestSurface) return { payload: null, error: "", unavailable: true };
+    var body = (pm.request && pm.request.body) || {};
+    var payload = null;
+    if (body && typeof body === "object" && body.graphql && typeof body.graphql === "object" && !Array.isArray(body.graphql)) {
+        payload = {};
+        Object.keys(body.graphql).forEach(function (key) { payload[key] = body.graphql[key]; });
+    } else if (typeof body.raw === "string") {
+        if (!body.raw.trim()) return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+        try { payload = JSON.parse(body.raw); }
+        catch (e) { return { payload: null, error: "GraphQL POST requests must carry valid JSON: " + String((e && e.message) || e || "invalid JSON") }; }
+    } else if (body && typeof body.raw === "object" && body.raw !== null && !Array.isArray(body.raw)) {
+        payload = body.raw;
+    } else {
+        return { payload: null, error: "GraphQL POST requests must carry a JSON object request body" };
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { payload: null, error: "GraphQL POST request body must be a JSON object" };
+    var vars = gqlRequestNormalizeMap(payload.variables, "GraphQL request variables");
+    if (!vars.ok) return { payload: null, error: vars.error };
+    if (vars.value !== undefined) payload.variables = vars.value;
+    var extensions = gqlRequestNormalizeMap(payload.extensions, "GraphQL request extensions");
+    if (!extensions.ok) return { payload: null, error: extensions.error };
+    if (extensions.value !== undefined) payload.extensions = extensions.value;
+    return { payload: payload, error: "", unavailable: false };
+})();
+var gqlRequestPayload = gqlRequestParsed.payload;
+var gqlRequestPayloadError = gqlRequestParsed.error;
+var gqlRequestPayloadUnavailable = !!gqlRequestParsed.unavailable;
+var gqlRequestVariables = (gqlRequestPayload && gqlRequestPayload.variables && typeof gqlRequestPayload.variables === "object" && !Array.isArray(gqlRequestPayload.variables)) ? gqlRequestPayload.variables : {};
 var gqlLegacyUntrusted = gqlMediaType === "application/json" && pm.response.code !== 200;
 pm.test("[subscription lineStatusChanged] HTTP transport is ok", function () {
     pm.expect(pm.response.code, "GraphQL responses are HTTP 200 even when the data field carries errors").to.be.below(500);
+});
+pm.test("[subscription lineStatusChanged] GraphQL POST request uses application/json", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (String((pm.request && pm.request.method) || "").toUpperCase() !== "POST") pm.expect.fail("generated GraphQL operation items must use HTTP POST");
+    if (gqlRequestMediaType !== "application/json") pm.expect.fail("GraphQL POST requests must use Content-Type application/json; got " + (gqlRequestMediaType || "<missing>"));
+    var charsetMatch = /charset=\\s*"?([^;"\\s]+)/.exec(gqlRequestContentType);
+    if (charsetMatch && charsetMatch[1] !== "utf-8" && charsetMatch[1] !== "utf8") pm.expect.fail("GraphQL POST requests must use UTF-8 when a charset is declared; got " + charsetMatch[1]);
+});
+pm.test("[subscription lineStatusChanged] GraphQL POST request body matches the JSON request shape", function () {
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var payload = gqlRequestPayload;
+    var extraKeys = Object.keys(payload).filter(function (key) { return key !== "query" && key !== "operationName" && key !== "variables" && key !== "extensions"; });
+    if (extraKeys.length > 0) pm.expect.fail("GraphQL POST request JSON may only contain query, operationName, variables, and extensions; got extra keys: " + extraKeys.join(", "));
+    if (typeof payload.query !== "string" || !payload.query.trim()) pm.expect.fail("GraphQL POST request JSON must contain a non-empty string query");
+    if (payload.operationName !== undefined && payload.operationName !== null && typeof payload.operationName !== "string") pm.expect.fail("GraphQL request operationName must be a string when present");
+    if (payload.variables !== undefined && payload.variables !== null && (typeof payload.variables !== "object" || Array.isArray(payload.variables))) pm.expect.fail("GraphQL request variables must be a JSON object map when present");
+    if (payload.extensions !== undefined && payload.extensions !== null && (typeof payload.extensions !== "object" || Array.isArray(payload.extensions))) pm.expect.fail("GraphQL request extensions must be a JSON object map when present");
 });
 pm.test("[subscription lineStatusChanged] GraphQL-over-HTTP media type and status are consistent", function () {
     var mediaType = gqlMediaType;
@@ -835,6 +1276,11 @@ pm.test("[subscription lineStatusChanged] data.lineStatusChanged matches schema 
     var value = gqlBody.data && gqlBody.data["lineStatusChanged"];
     if (value === undefined || value === null) return;
     pm.expect(value, "subscription.lineStatusChanged: expected Line object").to.be.an("object");
+    (function () {
+      var gqlActualKeys = Object.keys(value).slice().sort();
+      var gqlExpectedKeys = ["activatedAt","id","msisdn","status"];
+      if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("subscription.lineStatusChanged (Line): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+    })();
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value["id"], "Line.id is declared non-null but was null").to.not.be.null;
     if (value["id"] !== undefined && value["id"] !== null) {
@@ -853,13 +1299,9 @@ pm.test("[subscription lineStatusChanged] data.lineStatusChanged matches schema 
     }
 });
 pm.test("[subscription lineStatusChanged] required variables are supplied", function () {
-    var body = (pm.request && pm.request.body) || {};
-    var raw = (body.graphql && body.graphql.variables) || body.raw || {};
-    var vars = {};
-    try { vars = typeof raw === "string" ? (raw ? JSON.parse(raw) : {}) : raw; }
-    catch (e) { vars = {}; }
-    if (vars && vars.variables !== undefined) { vars = vars.variables; }
-    if (typeof vars === "string") { try { vars = JSON.parse(vars); } catch (e2) { vars = {}; } }
+    if (gqlRequestPayloadUnavailable) return;
+    if (gqlRequestPayloadError) pm.expect.fail(gqlRequestPayloadError);
+    var vars = gqlRequestVariables;
     var required = ["subscriberId"];
     required.forEach(function (name) {
         pm.expect(vars, "required GraphQL variable '" + name + "' was not supplied in the request").to.have.property(name);
@@ -869,13 +1311,19 @@ pm.test("[subscription lineStatusChanged] required variables are supplied", func
   },
   {
     "exec": "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();
-var gqlExpected = JSON.parse("{\\"roots\\":{\\"query\\":\\"Query\\",\\"mutation\\":\\"Mutation\\",\\"subscription\\":\\"Subscription\\"},\\"kinds\\":{\\"DateTime\\":\\"scalar\\",\\"LineStatus\\":\\"enum\\",\\"Plan\\":\\"object\\",\\"ID\\":\\"scalar\\",\\"String\\":\\"scalar\\",\\"Int\\":\\"scalar\\",\\"Line\\":\\"object\\",\\"Subscriber\\":\\"object\\",\\"ProvisionLineInput\\":\\"input\\",\\"Query\\":\\"object\\",\\"Mutation\\":\\"object\\",\\"Subscription\\":\\"object\\",\\"Boolean\\":\\"scalar\\"},\\"fields\\":{\\"Plan\\":[\\"dataCapGb\\",\\"id\\",\\"monthlyPriceCents\\",\\"name\\"],\\"Line\\":[\\"activatedAt\\",\\"id\\",\\"msisdn\\",\\"plan\\",\\"status\\"],\\"Subscriber\\":[\\"displayName\\",\\"email\\",\\"id\\",\\"lines\\"],\\"Query\\":[\\"lineByMsisdn\\",\\"plans\\",\\"subscriber\\",\\"subscribers\\"],\\"Mutation\\":[\\"provisionLine\\",\\"suspendLine\\"],\\"Subscription\\":[\\"lineStatusChanged\\"]},\\"enums\\":{\\"LineStatus\\":[\\"ACTIVE\\",\\"SUSPENDED\\",\\"PORTING\\"]},\\"deprecatedFields\\":{},\\"deprecatedEnumValues\\":{}}");
+var gqlExpected = JSON.parse("{\\"roots\\":{\\"query\\":\\"Query\\",\\"mutation\\":\\"Mutation\\",\\"subscription\\":\\"Subscription\\"},\\"kinds\\":{\\"DateTime\\":\\"scalar\\",\\"LineStatus\\":\\"enum\\",\\"Plan\\":\\"object\\",\\"ID\\":\\"scalar\\",\\"String\\":\\"scalar\\",\\"Int\\":\\"scalar\\",\\"Line\\":\\"object\\",\\"Subscriber\\":\\"object\\",\\"ProvisionLineInput\\":\\"input\\",\\"Query\\":\\"object\\",\\"Mutation\\":\\"object\\",\\"Subscription\\":\\"object\\",\\"Boolean\\":\\"scalar\\"},\\"fields\\":{\\"Plan\\":[\\"dataCapGb\\",\\"id\\",\\"monthlyPriceCents\\",\\"name\\"],\\"Line\\":[\\"activatedAt\\",\\"id\\",\\"msisdn\\",\\"plan\\",\\"status\\"],\\"Subscriber\\":[\\"displayName\\",\\"email\\",\\"id\\",\\"lines\\"],\\"Query\\":[\\"lineByMsisdn\\",\\"plans\\",\\"subscriber\\",\\"subscribers\\"],\\"Mutation\\":[\\"provisionLine\\",\\"suspendLine\\"],\\"Subscription\\":[\\"lineStatusChanged\\"]},\\"fieldTypeSignatures\\":{\\"Plan\\":{\\"dataCapGb\\":\\"Int\\",\\"id\\":\\"ID!\\",\\"monthlyPriceCents\\":\\"Int!\\",\\"name\\":\\"String!\\"},\\"Line\\":{\\"activatedAt\\":\\"DateTime\\",\\"id\\":\\"ID!\\",\\"msisdn\\":\\"String!\\",\\"plan\\":\\"Plan!\\",\\"status\\":\\"LineStatus!\\"},\\"Subscriber\\":{\\"displayName\\":\\"String!\\",\\"email\\":\\"String\\",\\"id\\":\\"ID!\\",\\"lines\\":\\"[Line!]!\\"},\\"Query\\":{\\"lineByMsisdn\\":\\"Line\\",\\"plans\\":\\"[Plan!]!\\",\\"subscriber\\":\\"Subscriber\\",\\"subscribers\\":\\"[Subscriber!]!\\"},\\"Mutation\\":{\\"provisionLine\\":\\"Line!\\",\\"suspendLine\\":\\"Line!\\"},\\"Subscription\\":{\\"lineStatusChanged\\":\\"Line!\\"}},\\"enums\\":{\\"LineStatus\\":[\\"ACTIVE\\",\\"SUSPENDED\\",\\"PORTING\\"]},\\"possibleTypes\\":{},\\"deprecatedFields\\":{},\\"deprecatedEnumValues\\":{}}");
 var gqlBuiltInScalars = ["String","Int","Float","Boolean","ID"];
 pm.test('[probe] deployed schema matches the schema of record (GraphQL spec section 4: introspection)', function () {
     var live = gqlBody.data && gqlBody.data.__schema;
     if (!live) return;
     var drift = function (message) { pm.expect.fail("schema drift: " + message); };
     var kindMap = { SCALAR: "scalar", OBJECT: "object", INTERFACE: "interface", UNION: "union", ENUM: "enum", INPUT_OBJECT: "input" };
+    var renderLiveType = function (node) {
+      if (!node || typeof node !== "object") return "";
+      if (node.kind === "NON_NULL") return renderLiveType(node.ofType) + "!";
+      if (node.kind === "LIST") return "[" + renderLiveType(node.ofType) + "]";
+      return typeof node.name === "string" ? node.name : "";
+    };
     ["query", "mutation", "subscription"].forEach(function (rootKind) {
       var expectedRoot = gqlExpected.roots[rootKind];
       var liveRoot = live[rootKind + "Type"] && live[rootKind + "Type"].name;
@@ -902,6 +1350,13 @@ pm.test('[probe] deployed schema matches the schema of record (GraphQL spec sect
       if (!liveType || !Array.isArray(liveType.fields)) return;
       var liveFieldNames = liveType.fields.map(function (f) { return f && f.name; }).sort();
       if (JSON.stringify(liveFieldNames) !== JSON.stringify(gqlExpected.fields[name])) drift("type " + name + " fields [" + liveFieldNames.join(", ") + "] do not match the schema of record [" + gqlExpected.fields[name].join(", ") + "]");
+      var expectedFieldTypes = gqlExpected.fieldTypeSignatures[name] || {};
+      Object.keys(expectedFieldTypes).forEach(function (fieldName) {
+        var liveField = liveType.fields.find(function (f) { return f && f.name === fieldName; });
+        if (!liveField) return;
+        var liveSignature = renderLiveType(liveField.type);
+        if (liveSignature !== expectedFieldTypes[fieldName]) drift("type " + name + " field " + fieldName + " has live type " + liveSignature + " but the schema of record declares " + expectedFieldTypes[fieldName]);
+      });
       var liveDeprecated = liveType.fields.filter(function (f) { return f && f.isDeprecated === true; }).map(function (f) { return f.name; }).sort();
       var expectedDeprecated = gqlExpected.deprecatedFields[name] || [];
       if (JSON.stringify(liveDeprecated) !== JSON.stringify(expectedDeprecated)) drift("type " + name + " deprecated fields [" + liveDeprecated.join(", ") + "] do not match the schema of record [" + expectedDeprecated.join(", ") + "] (@deprecated drift; GraphQL spec 4.2.3)");
@@ -915,6 +1370,13 @@ pm.test('[probe] deployed schema matches the schema of record (GraphQL spec sect
       var liveDeprecatedValues = Array.isArray(liveType.enumValues) ? liveType.enumValues.filter(function (v) { return v && v.isDeprecated === true; }).map(function (v) { return v.name; }).sort() : [];
       var expectedDeprecatedValues = gqlExpected.deprecatedEnumValues[name] || [];
       if (JSON.stringify(liveDeprecatedValues) !== JSON.stringify(expectedDeprecatedValues)) drift("enum " + name + " deprecated values [" + liveDeprecatedValues.join(", ") + "] do not match the schema of record [" + expectedDeprecatedValues.join(", ") + "] (@deprecated drift; GraphQL spec 4.2.3)");
+    });
+    Object.keys(gqlExpected.possibleTypes || {}).forEach(function (name) {
+      var liveType = liveTypes[name];
+      if (!liveType) return;
+      var livePossibleTypes = Array.isArray(liveType.possibleTypes) ? liveType.possibleTypes.map(function (t) { return t && t.name; }).sort() : [];
+      var expectedPossibleTypes = (gqlExpected.possibleTypes[name] || []).slice().sort();
+      if (JSON.stringify(livePossibleTypes) !== JSON.stringify(expectedPossibleTypes)) drift("type " + name + " possibleTypes [" + livePossibleTypes.join(", ") + "] do not match the schema of record [" + expectedPossibleTypes.join(", ") + "]");
     });
 });",
     "id": "__gql_probe_introspection_drift",

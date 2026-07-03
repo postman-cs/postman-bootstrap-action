@@ -23,11 +23,23 @@ export interface ContractLinkExpression {
   header?: string;
 }
 
+export interface ContractCallbackExpression {
+  callback: string;
+  expression: string;
+}
+
+export interface ContractCallbackRequestSources {
+  path: string[];
+  query: string[];
+  header: string[];
+}
+
 export interface ContractResponse {
   content: Record<string, ContractMedia>;
   hasBody: boolean;
   headers: ContractHeader[];
   links?: ContractLinkExpression[];
+  writeOnlyProperties?: string[];
 }
 
 export interface ContractParameterRequirement {
@@ -94,6 +106,8 @@ export interface ContractOperation {
   pathMethods?: string[];
   deprecated?: boolean;
   servers?: string[];
+  callbacks?: ContractCallbackExpression[];
+  callbackRequestSources?: ContractCallbackRequestSources;
   warnings: string[];
 }
 
@@ -1012,6 +1026,76 @@ function collectLinkExpressions(root: JsonRecord, response: JsonRecord, operatio
   return expressions;
 }
 
+// Collect top-level property names that OpenAPI marks writeOnly across every
+// response content schema (resolving internal $refs and allOf/anyOf/oneOf
+// members). Names that also appear as non-writeOnly properties anywhere in the
+// same response schema are excluded to avoid runtime false positives.
+function collectResponseWriteOnlyNames(root: JsonRecord, response: JsonRecord): string[] {
+  const writeOnly = new Set<string>();
+  const plain = new Set<string>();
+  const visit = (raw: unknown, depth: number): void => {
+    if (depth > 8) return;
+    let schema: JsonRecord | null;
+    try { schema = resolveInternalRef<JsonRecord>(root, raw); } catch { schema = null; }
+    if (!schema) return;
+    const properties = asRecord(schema.properties);
+    if (properties) {
+      for (const [name, rawProp] of Object.entries(properties)) {
+        let prop: JsonRecord | null;
+        try { prop = resolveInternalRef<JsonRecord>(root, rawProp); } catch { prop = null; }
+        if (prop?.writeOnly === true) writeOnly.add(name); else plain.add(name);
+      }
+    }
+    for (const key of ['allOf', 'anyOf', 'oneOf']) {
+      for (const member of asArray(schema[key])) visit(member, depth + 1);
+    }
+  };
+  for (const mediaObject of Object.values(asRecord(response.content) ?? {})) {
+    const media = asRecord(mediaObject);
+    if (media?.schema !== undefined) visit(media.schema, 0);
+  }
+  return [...writeOnly].filter((name) => !plain.has(name));
+}
+
+function collectCallbackExpressions(root: JsonRecord, operation: JsonRecord): ContractCallbackExpression[] | undefined {
+  const callbacks = asRecord(operation.callbacks);
+  if (!callbacks) return undefined;
+  const expressions: ContractCallbackExpression[] = [];
+  for (const [callbackName, rawCallback] of Object.entries(callbacks)) {
+    let callback: JsonRecord | null;
+    try {
+      callback = resolveInternalRef<JsonRecord>(root, rawCallback);
+    } catch {
+      callback = null;
+    }
+    if (!callback) continue;
+    for (const expression of Object.keys(callback)) {
+      if (/^x-/i.test(expression)) continue;
+      expressions.push({ callback: callbackName, expression });
+    }
+  }
+  return expressions.length > 0 ? expressions : undefined;
+}
+
+function collectCallbackRequestSources(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): ContractCallbackRequestSources {
+  const path = new Set<string>();
+  const query = new Set<string>();
+  const header = new Set<string>();
+  for (const param of resolvedParameters(root, pathItem, operation)) {
+    const location = String(param.in || '').toLowerCase();
+    const name = String(param.name || '');
+    if (!name) continue;
+    if (location === 'path') path.add(name);
+    else if (location === 'query') query.add(name.toLowerCase());
+    else if (location === 'header') header.add(name.toLowerCase());
+  }
+  return {
+    path: [...path],
+    query: [...query],
+    header: [...header]
+  };
+}
+
 function escapeRegExpLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -1049,7 +1133,42 @@ function validateParameterExamples(root: JsonRecord, param: JsonRecord, packed: 
   if (candidates.length === 0) return;
   const validate = compileSchemaValidator(packed.schema);
   if (!validate) return;
+  const location = String(param.in || '').toLowerCase();
+  const defaultStyle = DEFAULT_PARAM_STYLES[location];
+  const style = typeof param.style === 'string' ? param.style : defaultStyle;
+  const defaultExplode = style === 'form';
+  const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
+  const itemsSchema = packedArrayItemsSchema(packed);
+  const itemType = asRecord(itemsSchema)?.type;
+  const serializedArrayDecode =
+    location === 'query'
+      ? QUERY_ARRAY_DECODES[`${style}:${explode}`]
+      : location === 'header' && style === 'simple' && !explode
+        ? 'csv'
+        : undefined;
   for (const candidate of candidates) {
+    const decodedItems = typeof candidate.value === 'string' && serializedArrayDecode && itemsSchema !== undefined
+      ? (
+          serializedArrayDecode === 'ssv'
+            ? candidate.value.split(' ')
+            : serializedArrayDecode === 'pipes'
+              ? candidate.value.split('|')
+              : candidate.value.split(',')
+        ).map((entry) => {
+          const trimmed = entry.trim();
+          if (itemType === 'integer' || itemType === 'number') {
+            const num = Number(trimmed);
+            return Number.isFinite(num) ? num : trimmed;
+          }
+          if (itemType === 'boolean') {
+            if (trimmed === 'true') return true;
+            if (trimmed === 'false') return false;
+          }
+          if (itemType === 'null' && trimmed === 'null') return null;
+          return trimmed;
+        })
+      : null;
+    if (decodedItems && validate(decodedItems)) continue;
     if (!validate(candidate.value)) {
       warnings.push(`CONTRACT_EXAMPLE_SCHEMA_MISMATCH: ${candidate.label} for parameter ${context} does not match its schema`);
     }
@@ -1431,17 +1550,20 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
             }
           }
           const headers = responseHeaders(root, version, response, responseContext, responseWarnings);
+          const writeOnlyProperties = collectResponseWriteOnlyNames(root, response);
           contractResponses[normalizeResponseKey(status)] = {
             content,
             hasBody: Object.keys(content).length > 0,
             headers,
-            ...(linkExpressions.length > 0 ? { links: linkExpressions } : {})
+            ...(linkExpressions.length > 0 ? { links: linkExpressions } : {}),
+            ...(writeOnlyProperties.length > 0 ? { writeOnlyProperties } : {})
           };
         }
         const candidates = [...new Set([
           path,
           ...operationServers(root, pathItem, operation).map((server) => joinPaths(serverPathPrefix(server), path))
         ].map(normalizePath))];
+        const callbackExpressions = collectCallbackExpressions(root, operation);
         const operationId = `${lowerMethod.toUpperCase()} ${path}`;
         const opWarnings: string[] = [];
         opWarnings.push(...responseWarnings);
@@ -1493,6 +1615,8 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           pathMethods: Object.keys(pathItem).filter((key) => HTTP_METHODS.has(key)).map((key) => key.toUpperCase()),
           deprecated: operation.deprecated === true || undefined,
           servers: serverAdvisoryPatterns(root, pathItem, operation),
+          callbacks: callbackExpressions,
+          callbackRequestSources: callbackExpressions ? collectCallbackRequestSources(root, pathItem, operation) : undefined,
           warnings: [...new Set(opWarnings)].sort()
         });
       }

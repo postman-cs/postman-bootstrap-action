@@ -1,5 +1,7 @@
+import { Script, createContext } from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { buildSchema, introspectionFromSchema } from 'graphql';
 import { describe, expect, it } from 'vitest';
 
 import { parseGraphQLSchema } from '../../../src/lib/protocols/graphql/parser.js';
@@ -13,9 +15,15 @@ const fixtureSdl = readFileSync(
 
 type Item = {
   id: string;
-  request: { body: { mode: string } };
+  request: {
+    method: string;
+    header: Array<{ key: string; value: string }>;
+    body: Record<string, unknown>;
+  };
   event: Array<{ listen: string; script: { exec: string[] } }>;
 };
+
+type TestResult = { name: string; passed: boolean; error?: string };
 
 function buildInstrumented() {
   const index = parseGraphQLSchema(fixtureSdl, { service: 'Telecom' });
@@ -27,6 +35,119 @@ function execFor(collection: { item: Item[] }, id: string): string {
   const item = collection.item.find((c) => c.id === id)!;
   const event = item.event.find((e) => e.listen === 'test')!;
   return event.script.exec.join('\n');
+}
+
+function headerList(entries: Array<{ key: string; value: string }>) {
+  return {
+    get(key: string): string {
+      const match = [...entries].reverse().find((entry) => entry.key.toLowerCase() === key.toLowerCase());
+      return match?.value ?? '';
+    }
+  };
+}
+
+function createExpect() {
+  const expectFn = ((actual: unknown, msg?: string) => {
+    const fail = (fallback: string): never => {
+      throw new Error(msg ?? fallback);
+    };
+    const checkType = (type: string): void => {
+      const ok = type === 'array'
+        ? Array.isArray(actual)
+        : type === 'object'
+          ? actual !== null && typeof actual === 'object' && !Array.isArray(actual)
+          : typeof actual === type;
+      if (!ok) fail(`expected ${type}`);
+    };
+    const to: Record<string, unknown> = {};
+    const be: Record<string, unknown> = {
+      a: checkType,
+      an: checkType,
+      below(limit: number): void {
+        if (typeof actual !== 'number' || !(actual < limit)) fail(`expected ${String(actual)} to be below ${limit}`);
+      },
+      oneOf(values: unknown[]): void {
+        if (!values.includes(actual)) fail(`expected ${String(actual)} to be one of ${JSON.stringify(values)}`);
+      }
+    };
+    const notBe: Record<string, unknown> = {};
+    Object.defineProperty(notBe, 'null', {
+      get() {
+        if (actual === null) fail('expected value not to be null');
+        return true;
+      }
+    });
+    Object.defineProperty(to, 'exist', {
+      get() {
+        if (actual === null || actual === undefined) fail('expected value to exist');
+        return true;
+      }
+    });
+    Object.assign(to, {
+      be,
+      equal(expected: unknown): void {
+        if (actual !== expected) fail(`expected ${String(actual)} to equal ${String(expected)}`);
+      },
+      eql(expected: unknown): void {
+        if (actual !== expected) fail(`expected ${String(actual)} to equal ${String(expected)}`);
+      },
+      have: {
+        property(name: string): void {
+          if (!actual || typeof actual !== 'object' || !Object.prototype.hasOwnProperty.call(actual, name)) {
+            fail(`expected property ${name}`);
+          }
+        }
+      },
+      not: { be: notBe }
+    });
+    return { to };
+  }) as ((actual: unknown, msg?: string) => { to: Record<string, unknown> }) & { fail: (message?: string) => never };
+  expectFn.fail = (message?: string): never => {
+    throw new Error(message ?? 'pm.expect.fail');
+  };
+  return expectFn;
+}
+
+function runGraphQLScript(
+  item: Item,
+  responseJson: unknown,
+  overrides: {
+    requestMethod?: string;
+    requestHeaders?: Array<{ key: string; value: string }>;
+    requestBody?: Record<string, unknown>;
+    responseCode?: number;
+    responseHeaders?: Array<{ key: string; value: string }>;
+  } = {}
+): TestResult[] {
+  const results: TestResult[] = [];
+  const script = execFor({ item: [item] }, item.id);
+  const pm = {
+    request: {
+      method: overrides.requestMethod ?? item.request.method,
+      headers: headerList(overrides.requestHeaders ?? item.request.header),
+      body: overrides.requestBody ?? item.request.body
+    },
+    response: {
+      code: overrides.responseCode ?? 200,
+      headers: headerList(overrides.responseHeaders ?? [{ key: 'Content-Type', value: 'application/graphql-response+json; charset=utf-8' }]),
+      json: (): unknown => responseJson
+    },
+    expect: createExpect(),
+    test(name: string, fn: () => void): void {
+      try {
+        fn();
+        results.push({ name, passed: true });
+      } catch (error) {
+        results.push({ name, passed: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  };
+  new Script(script).runInContext(createContext({ pm, console: { warn() {} }, JSON, Array, Object, Number, String, RegExp }));
+  return results;
+}
+
+function testResult(results: TestResult[], name: string): TestResult | undefined {
+  return results.find((entry) => entry.name === name);
 }
 
 describe('instrumentGraphQLCollection', () => {
@@ -65,6 +186,35 @@ describe('instrumentGraphQLCollection', () => {
     expect(exec).toContain("is missing non-null field 'name'");
   });
 
+  it('fails when data contains any root key other than the requested field', () => {
+    const { collection } = buildInstrumented();
+    const subscriber = (collection as unknown as { item: Item[] }).item.find((entry) => entry.id === 'query.subscriber')!;
+    const results = runGraphQLScript(subscriber, {
+      data: {
+        subscriber: { id: 'sub_1', displayName: 'Alice', email: null },
+        debug: true
+      }
+    });
+    expect(testResult(results, '[query subscriber] data.subscriber is present')?.passed).toBe(false);
+  });
+
+  it('fails when an object payload omits or adds keys beyond the generated selection', () => {
+    const { collection } = buildInstrumented();
+    const subscriber = (collection as unknown as { item: Item[] }).item.find((entry) => entry.id === 'query.subscriber')!;
+
+    const missingNullableField = runGraphQLScript(subscriber, {
+      data: { subscriber: { id: 'sub_1', displayName: 'Alice' } }
+    });
+    expect(testResult(missingNullableField, '[query subscriber] data.subscriber matches schema return type')?.passed).toBe(false);
+
+    const extraField = runGraphQLScript(subscriber, {
+      data: {
+        subscriber: { id: 'sub_1', displayName: 'Alice', email: null, extra: 'unexpected' }
+      }
+    });
+    expect(testResult(extraField, '[query subscriber] data.subscriber matches schema return type')?.passed).toBe(false);
+  });
+
   it('asserts required variables were supplied for operations with required args', () => {
     const { collection } = buildInstrumented();
     const exec = execFor(collection as unknown as { item: Item[] }, 'query.subscriber');
@@ -73,6 +223,71 @@ describe('instrumentGraphQLCollection', () => {
     // plans has no required args -> no variable assertion.
     const plansExec = execFor(collection as unknown as { item: Item[] }, 'query.plans');
     expect(plansExec).not.toContain('required variables are supplied');
+  });
+
+  it('emits request-side GraphQL-over-HTTP body and content-type assertions', () => {
+    const { collection } = buildInstrumented();
+    const exec = execFor(collection as unknown as { item: Item[] }, 'query.subscriber');
+    expect(exec).toContain('GraphQL POST request uses application/json');
+    expect(exec).toContain('GraphQL POST request body matches the JSON request shape');
+    expect(exec).toContain('may only contain query, operationName, variables, and extensions');
+    expect(exec).toContain('request variables must be a JSON object map when present');
+  });
+
+  it('accepts generated graphql-mode requests and normalizes empty variables strings', () => {
+    const { collection } = buildInstrumented();
+    const subscriber = (collection as unknown as { item: Item[] }).item.find((entry) => entry.id === 'query.subscriber')!;
+    const subscriberResults = runGraphQLScript(subscriber, {
+      data: { subscriber: { id: 'sub_1', displayName: 'Alice', email: 'alice@example.com' } }
+    });
+    expect(testResult(subscriberResults, '[query subscriber] GraphQL POST request uses application/json')?.passed).toBe(true);
+    expect(testResult(subscriberResults, '[query subscriber] GraphQL POST request body matches the JSON request shape')?.passed).toBe(true);
+    expect(testResult(subscriberResults, '[query subscriber] required variables are supplied')?.passed).toBe(true);
+
+    const plans = (collection as unknown as { item: Item[] }).item.find((entry) => entry.id === 'query.plans')!;
+    const plansResults = runGraphQLScript(plans, {
+      data: { plans: [{ id: 'plan_1', name: 'Starter', monthlyPriceCents: 2500, dataCapGb: 10 }] }
+    });
+    expect(testResult(plansResults, '[query plans] GraphQL POST request body matches the JSON request shape')?.passed).toBe(true);
+  });
+
+  it('rejects edited request content types and malformed GraphQL JSON payloads', () => {
+    const { collection } = buildInstrumented();
+    const subscriber = (collection as unknown as { item: Item[] }).item.find((entry) => entry.id === 'query.subscriber')!;
+    const responseJson = {
+      data: { subscriber: { id: 'sub_1', displayName: 'Alice', email: 'alice@example.com' } }
+    };
+
+    const wrongContentType = runGraphQLScript(subscriber, responseJson, {
+      requestHeaders: [
+        { key: 'Content-Type', value: 'text/plain; charset=utf-16' },
+        { key: 'Accept', value: 'application/graphql-response+json, application/json;q=0.9' }
+      ]
+    });
+    expect(testResult(wrongContentType, '[query subscriber] GraphQL POST request uses application/json')?.passed).toBe(false);
+
+    const extraKey = runGraphQLScript(subscriber, responseJson, {
+      requestBody: {
+        mode: 'raw',
+        raw: JSON.stringify({
+          query: 'query Subscriber($id: ID!) { subscriber(id: $id) { id displayName email } }',
+          variables: { id: '{{subscriber_id}}' },
+          persistedQuery: { sha256Hash: 'abc' }
+        })
+      }
+    });
+    expect(testResult(extraKey, '[query subscriber] GraphQL POST request body matches the JSON request shape')?.passed).toBe(false);
+
+    const badVariables = runGraphQLScript(subscriber, responseJson, {
+      requestBody: {
+        mode: 'raw',
+        raw: JSON.stringify({
+          query: 'query Subscriber($id: ID!) { subscriber(id: $id) { id displayName email } }',
+          variables: 'not-json'
+        })
+      }
+    });
+    expect(testResult(badVariables, '[query subscriber] GraphQL POST request body matches the JSON request shape')?.passed).toBe(false);
   });
 
   it('warns on subscriptions (non-executable) and custom scalars', () => {
@@ -111,6 +326,46 @@ describe('instrumentGraphQLCollection', () => {
   });
 });
 
+describe('interface selection exact-key assertions', () => {
+  const interfaceSdl = "interface Node { id: ID! }\ntype User implements Node { id: ID! name: String! }\ntype Query { node: Node! }\n";
+
+  function interfaceCollection() {
+    const index = parseGraphQLSchema(interfaceSdl, { service: 'Interface' });
+    const collection = buildGraphQLCollection(index, { url: '{{baseUrl}}/graphql' });
+    instrumentGraphQLCollection(collection, index);
+    return collection as unknown as { item: Item[] };
+  }
+
+  it('treats __typename as part of the exact selected key set for interfaces', () => {
+    const collection = interfaceCollection();
+    const item = collection.item.find((entry) => entry.id === 'query.node')!;
+    const exec = execFor(collection, 'query.node');
+    expect(exec).toContain('__typename');
+    expect(exec).toContain('exactly the selected fields');
+    expect(exec).toContain('declared implementor of interface Node');
+
+    const valid = runGraphQLScript(item, {
+      data: { node: { __typename: 'User', id: 'user_1' } }
+    });
+    expect(testResult(valid, '[query node] data.node matches schema return type')?.passed).toBe(true);
+
+    const missingTypename = runGraphQLScript(item, {
+      data: { node: { id: 'user_1' } }
+    });
+    expect(testResult(missingTypename, '[query node] data.node matches schema return type')?.passed).toBe(false);
+
+    const extraImplementorField = runGraphQLScript(item, {
+      data: { node: { __typename: 'User', id: 'user_1', name: 'Alice' } }
+    });
+    expect(testResult(extraImplementorField, '[query node] data.node matches schema return type')?.passed).toBe(false);
+
+    const invalidImplementor = runGraphQLScript(item, {
+      data: { node: { __typename: 'Robot', id: 'user_1' } }
+    });
+    expect(testResult(invalidImplementor, '[query node] data.node matches schema return type')?.passed).toBe(false);
+  });
+});
+
 describe('Relay connection selection expansion and runtime assertions', () => {
   const relaySdl = "type Query {\n  users(first: Int, after: String): UserConnection!\n}\ntype UserConnection { edges: [UserEdge!]! pageInfo: PageInfo! totalCount: Int }\ntype UserEdge { node: User! cursor: String! }\ntype User { id: ID! name: String! }\ntype PageInfo { hasNextPage: Boolean! hasPreviousPage: Boolean! startCursor: String endCursor: String }\n";
 
@@ -142,6 +397,53 @@ describe('Relay connection selection expansion and runtime assertions', () => {
     expect(exec).toContain('cursor');
     // pageInfo is non-null in this schema, so its absence must fail closed.
     expect(exec).toContain("missing non-null field 'pageInfo'");
+  });
+});
+
+describe('introspection drift probe parity', () => {
+  const paritySdl = [
+    'interface Node { id: ID! }',
+    'type User implements Node { id: ID! friends: [User!]! }',
+    'type Org implements Node { id: ID! }',
+    'union SearchResult = User | Org',
+    'type Query { node: Node! search: SearchResult }'
+  ].join('\n');
+
+  function introspectionProbeCollection() {
+    const index = parseGraphQLSchema(paritySdl, { service: 'Parity' });
+    const collection = buildGraphQLCollection(index, { url: '{{baseUrl}}/graphql' });
+    instrumentGraphQLCollection(collection, index);
+    return collection as unknown as { item: Item[] };
+  }
+
+  it('checks possibleTypes and field wrapper signatures against live introspection', () => {
+    const collection = introspectionProbeCollection();
+    const probe = collection.item.find((entry) => entry.id === '__gql_probe_introspection_drift')!;
+    const exec = execFor(collection, '__gql_probe_introspection_drift');
+    expect(exec).toContain('possibleTypes');
+    expect(exec).toContain('fieldTypeSignatures');
+    expect(exec).toContain('renderLiveType');
+
+    const schema = buildSchema(paritySdl);
+    const matching = runGraphQLScript(probe, { data: introspectionFromSchema(schema) });
+    expect(testResult(matching, '[probe] deployed schema matches the schema of record (GraphQL spec section 4: introspection)')?.passed).toBe(true);
+
+    const wrapperDrift = JSON.parse(JSON.stringify(introspectionFromSchema(schema))) as {
+      __schema: { types: Array<{ name?: string; fields?: Array<{ name?: string; type?: Record<string, unknown> }> }> };
+    };
+    const liveQuery = wrapperDrift.__schema.types.find((type) => type.name === 'Query')!;
+    const liveNode = liveQuery.fields!.find((field) => field.name === 'node')!;
+    liveNode.type = { kind: 'INTERFACE', name: 'Node', ofType: null } as unknown as Record<string, unknown>;
+    const wrapperResults = runGraphQLScript(probe, { data: wrapperDrift });
+    expect(testResult(wrapperResults, '[probe] deployed schema matches the schema of record (GraphQL spec section 4: introspection)')?.passed).toBe(false);
+
+    const possibleTypesDrift = JSON.parse(JSON.stringify(introspectionFromSchema(schema))) as {
+      __schema: { types: Array<{ name?: string; possibleTypes?: Array<{ name?: string }> }> };
+    };
+    const liveNodeType = possibleTypesDrift.__schema.types.find((type) => type.name === 'Node')!;
+    liveNodeType.possibleTypes = [{ name: 'User' }];
+    const possibleTypesResults = runGraphQLScript(probe, { data: possibleTypesDrift });
+    expect(testResult(possibleTypesResults, '[probe] deployed schema matches the schema of record (GraphQL spec section 4: introspection)')?.passed).toBe(false);
   });
 });
 

@@ -2918,15 +2918,18 @@ paths:
     expect(run([{ key: 'tag', value: '' }])).toBe('pass');
   });
 
-  it('documents dynamic contract tests and every emitted CONTRACT code in the README', () => {
+  it('documents dynamic contract tests and every emitted CONTRACT code in the error-code catalog', () => {
     const readme = readFileSync(resolve(import.meta.dirname, '..', 'README.md'), 'utf8');
     expect(readme).toContain('## Dynamic contract tests');
-    expect(readme).toContain('| Error code | Meaning | Remediation |');
+    expect(readme).toContain('docs/contract-error-codes.md');
+    expect(readme).toContain('docs/contract-enforcement-layers.md');
+    const catalog = readFileSync(resolve(import.meta.dirname, '..', 'docs', 'contract-error-codes.md'), 'utf8');
+    expect(catalog).toContain('| Error code | Meaning | Remediation |');
     const source = sourceFiles(resolve(import.meta.dirname, '..', 'src'))
       .map((file) => readFileSync(file, 'utf8'))
       .join('\n');
     const emittedCodes = [...new Set([...source.matchAll(/['"`](CONTRACT_[A-Z0-9_]+)(?::|['"`])/g)].map((match) => match[1]))].sort();
-    const documentedCodes = [...new Set([...readme.matchAll(/`(CONTRACT_[A-Z0-9_]+)`/g)].map((match) => match[1]))].sort();
+    const documentedCodes = [...new Set([...catalog.matchAll(/`(CONTRACT_[A-Z0-9_]+)`/g)].map((match) => match[1]))].sort();
     expect(documentedCodes).toEqual(expect.arrayContaining(emittedCodes));
   });
 });

@@ -12,10 +12,13 @@ interface Stub { code: number; headers?: Record<string, string>; requestHeaders?
 function run(script: string, response: Stub): { results: Record<string, string>; messages: string[] } {
   const results: Record<string, string> = {};
   const messages: string[] = [];
+  // The Proxy-backed Chai stub is intentionally dynamic in this harness.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const permissive: any = new Proxy(function () {}, {
     get: (_t, p) => (p === 'fail' ? (m: string) => { throw new Error(m); } : permissive),
     apply: () => permissive
   });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const expectFn: any = function (_value: unknown, message?: unknown) { if (message !== undefined) messages.push(String(message)); return permissive; };
   expectFn.fail = (m: string) => { throw new Error(m); };
   const headerEntries = Object.entries(response.headers ?? {});
@@ -138,4 +141,3 @@ describe('rest_runtime_http_core range/negotiation/cache (advisories)', () => {
     expect(msgs(spec, 'OPTIONS', { code: 200 })).toContain('supports PATCH SHOULD list Accept-Patch');
   });
 });
-

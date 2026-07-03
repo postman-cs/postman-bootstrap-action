@@ -113,10 +113,10 @@ describe('protocol dispatch format discriminant', () => {
     expect(result.type).toBe('mcp');
     expect(result.format).toBe('v3-ec');
     expect(result.runnableInCi).toBe(true);
-    expect(result.operationCount).toBe(23);
+    expect(result.operationCount).toBe(38);
     const items = (result.collection.item as Array<Record<string, unknown>>) ?? [];
-    expect(items.filter((item) => item.type === 'mcp-request')).toHaveLength(8);
-    expect(items.filter((item) => item.type === 'http-request')).toHaveLength(15);
+    expect(items.filter((item) => item.type === 'mcp-request')).toHaveLength(18);
+    expect(items.filter((item) => item.type === 'http-request')).toHaveLength(20);
   });
 
   it('mcp stdio-only collections stay static and are not runnable in CI', async () => {
@@ -126,7 +126,7 @@ describe('protocol dispatch format discriminant', () => {
       name: 'T'
     });
     expect(result.runnableInCi).toBe(false);
-    expect(result.operationCount).toBe(2);
+    expect(result.operationCount).toBe(4);
     expect(result.warnings.some((w) => w.startsWith('MCP_RUNTIME_SURFACE_UNAVAILABLE'))).toBe(true);
   });
 

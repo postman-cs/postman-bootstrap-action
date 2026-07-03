@@ -55,6 +55,9 @@ function walkManifest(value: unknown, path: string, warnings: string[]): void {
     return;
   }
   const record = value as JsonRecord;
+  if (Object.prototype.hasOwnProperty.call(record, '_meta') && asRecord(record._meta) === null) {
+    warnings.push(`MCP_META_OBJECT_INVALID: ${path}._meta must be an object when present (MCP 2025-06-18 BaseMetadata)`);
+  }
   const meta = asRecord(record._meta);
   if (meta) {
     for (const key of Object.keys(meta)) {
@@ -161,6 +164,23 @@ function assertJsonRpcRequest(message: unknown, itemTitle: string): JsonRecord {
     case 'tools/list': {
       const params = assertOptionalObjectParams(record, 'tools/list', fail);
       if (params?.cursor !== undefined && typeof params.cursor !== 'string') fail('tools/list params.cursor must be a string when present');
+      break;
+    }
+    case 'resources/list':
+    case 'prompts/list': {
+      const params = assertOptionalObjectParams(record, record.method, fail);
+      if (params?.cursor !== undefined && typeof params.cursor !== 'string') fail(record.method + ' params.cursor must be a string when present');
+      break;
+    }
+    case 'resources/read': {
+      const params = assertObjectParams(record, 'resources/read', fail);
+      if (typeof params.uri !== 'string' || !params.uri) fail('resources/read params.uri must be a non-empty string');
+      break;
+    }
+    case 'prompts/get': {
+      const params = assertObjectParams(record, 'prompts/get', fail);
+      if (typeof params.name !== 'string' || !params.name) fail('prompts/get params.name must be a non-empty string');
+      if (params.arguments !== undefined && asRecord(params.arguments) === null) fail('prompts/get params.arguments must be an object when present');
       break;
     }
     case 'tools/call': {
@@ -273,7 +293,10 @@ export function instrumentMcpCollection(collection: JsonRecord, index: McpContra
   const warnings: string[] = [
     ...index.warnings,
     ...index.servers.flatMap((server) => server.warnings),
-    ...index.tools.flatMap((tool) => tool.warnings)
+    ...index.tools.flatMap((tool) => tool.warnings),
+    ...index.resources.flatMap((resource) => resource.warnings),
+    ...index.resourceTemplates.flatMap((template) => template.warnings),
+    ...index.prompts.flatMap((prompt) => prompt.warnings)
   ];
 
   for (const server of index.servers) validateServer(server, warnings);
@@ -305,7 +328,7 @@ export function instrumentMcpCollection(collection: JsonRecord, index: McpContra
       httpIds.push(typeof item.id === 'string' && item.id ? item.id : `#${httpIds.length}`);
     }
   }
-  const expected = index.servers.length * (2 + index.tools.length);
+  const expected = index.servers.length * (4 + index.tools.length + index.resources.length + index.prompts.length);
   const unique = new Set(ids).size;
   if (ids.length !== expected || unique !== expected) {
     throw new Error(

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Script } from 'node:vm';
+import { Script, createContext } from 'node:vm';
 
 import { itemsByType } from '@postman/runtime.models/extensible';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { parseMcpServerSpec } from '../../../src/lib/protocols/mcp/mcp-parser.js';
 import { buildMcpCollection } from '../../../src/lib/protocols/mcp/mcp-collection-builder.js';
 import { instrumentMcpCollection } from '../../../src/lib/protocols/mcp/mcp-instrumenter.js';
+import { resourceTemplatesScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
 import { detectSpecType } from '../../../src/lib/spec/detect-spec-type.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,26 @@ const clientConfig = JSON.stringify({
   }
 });
 
+const registryPackageWithTransport = JSON.stringify({
+  name: 'io.github.example/weather',
+  version: '1.2.0',
+  packages: [
+    {
+      registryType: 'npm',
+      identifier: '@example/weather-mcp',
+      version: '1.2.0',
+      runtimeHint: 'npx',
+      runtimeArguments: [{ type: 'named', name: '-y' }],
+      packageArguments: [
+        { type: 'named', name: '--port', value: '9090' },
+        { type: 'positional', valueHint: 'tenant' }
+      ],
+      environmentVariables: [{ name: 'WEATHER_API_KEY', isSecret: true }],
+      transport: { type: 'stdio' }
+    }
+  ]
+});
+
 // Validate a built EC node against the official runtime.models item schema for
 // its type (the binding authority; the published v3.0.0 JSON Schema is 403).
 function ecIssues(node: JsonRecord): unknown {
@@ -43,6 +64,118 @@ function ecIssues(node: JsonRecord): unknown {
   if (!model?.validate) return undefined;
   const logical = { type: node.type, title: node.title, payload: node.payload, extensions: node.extensions ?? {} };
   return model.validate(logical)?.issues;
+}
+
+type RuntimeTestResult = { name: string; passed: boolean; error?: string };
+
+function headerList(entries: Array<{ key: string; value: string }>) {
+  return {
+    get(key: string): string {
+      const match = [...entries].reverse().find((entry) => entry.key.toLowerCase() === key.toLowerCase());
+      return match?.value ?? '';
+    }
+  };
+}
+
+function createPmExpect() {
+  const expectFn = ((actual: unknown, message?: string) => {
+    const fail = (fallback: string): never => {
+      throw new Error(message ?? fallback);
+    };
+    const matchesType = (type: string): boolean => {
+      if (type === 'array') return Array.isArray(actual);
+      if (type === 'object') return actual !== null && typeof actual === 'object' && !Array.isArray(actual);
+      return typeof actual === type;
+    };
+    const chain = (negated = false): Record<string, unknown> => ({
+      get to() {
+        return this;
+      },
+      get be() {
+        return this;
+      },
+      get and() {
+        return this;
+      },
+      get not() {
+        return chain(!negated);
+      },
+      a(type: string) {
+        const ok = matchesType(type);
+        if (negated ? ok : !ok) fail(`expected ${JSON.stringify(actual)} ${negated ? 'not ' : ''}to be a ${type}`);
+        return chain();
+      },
+      an(type: string) {
+        const ok = matchesType(type);
+        if (negated ? ok : !ok) fail(`expected ${JSON.stringify(actual)} ${negated ? 'not ' : ''}to be an ${type}`);
+        return chain();
+      },
+      eql(expected: unknown) {
+        const ok = Object.is(actual, expected);
+        if (negated ? ok : !ok) fail(`expected ${JSON.stringify(actual)} ${negated ? 'not ' : ''}to equal ${JSON.stringify(expected)}`);
+        return chain();
+      },
+      match(pattern: RegExp) {
+        const ok = typeof actual === 'string' && pattern.test(actual);
+        if (negated ? ok : !ok) fail(`expected ${JSON.stringify(actual)} ${negated ? 'not ' : ''}to match ${String(pattern)}`);
+        return chain();
+      },
+      satisfy(predicate: (value: unknown) => boolean) {
+        const ok = Boolean(predicate(actual));
+        if (negated ? ok : !ok) fail(`expected predicate ${negated ? 'not ' : ''}to accept ${JSON.stringify(actual)}`);
+        return chain();
+      },
+      within(min: number, max: number) {
+        const ok = typeof actual === 'number' && actual >= min && actual <= max;
+        if (negated ? ok : !ok) fail(`expected ${JSON.stringify(actual)} ${negated ? 'not ' : ''}to be within ${min}..${max}`);
+        return chain();
+      }
+    });
+    return chain();
+  }) as ((actual: unknown, message?: string) => Record<string, unknown>) & { fail: (message?: string) => never };
+  expectFn.fail = (message?: string): never => {
+    throw new Error(message ?? 'pm.expect.fail');
+  };
+  return expectFn;
+}
+
+function runMcpScript(script: string, responseBody: unknown): { results: RuntimeTestResult[]; warnings: string[] } {
+  const results: RuntimeTestResult[] = [];
+  const warnings: string[] = [];
+  const vars = new Map<string, string>();
+  const pm = {
+    response: {
+      code: 200,
+      headers: headerList([{ key: 'Content-Type', value: 'application/json; charset=utf-8' }]),
+      text: (): string => JSON.stringify(responseBody)
+    },
+    collectionVariables: {
+      get(key: string): string | undefined {
+        return vars.get(key);
+      },
+      set(key: string, value: unknown): void {
+        vars.set(key, String(value));
+      },
+      unset(key: string): void {
+        vars.delete(key);
+      }
+    },
+    expect: createPmExpect(),
+    test(name: string, fn: () => void): void {
+      try {
+        fn();
+        results.push({ name, passed: true });
+      } catch (error) {
+        results.push({ name, passed: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  };
+  new Script(script).runInContext(createContext({ pm, console: { warn: (...parts: unknown[]) => warnings.push(parts.map((part) => String(part)).join(' ')) }, JSON, Array, Object, Number, String, RegExp, Math, Boolean }));
+  return { results, warnings };
+}
+
+function runtimeTestResult(results: RuntimeTestResult[], name: string): RuntimeTestResult | undefined {
+  return results.find((entry) => entry.name === name);
 }
 
 describe('mcp detection', () => {
@@ -63,6 +196,7 @@ describe('mcp parser', () => {
     expect(index.title).toBe('io.github.example/weather');
     expect(index.version).toBe('1.2.0');
     expect(index.servers).toHaveLength(2);
+    expect(index.warnings.filter((warning) => warning.startsWith('MCP_REGISTRY_SCHEMA_INVALID'))).toEqual([]);
     const remote = index.servers.find((s) => s.transport === 'sse')!;
     expect(remote.url).toBe('https://mcp.example.com/mcp');
     // Secret header values are never persisted; they become {{variable}} placeholders.
@@ -74,6 +208,18 @@ describe('mcp parser', () => {
     expect(index.tools.map((t) => t.name)).toEqual(['get_forecast', 'list_stations']);
     // Sample arguments are synthesized from the inputSchema (required + defaults).
     expect(index.tools[0].sampleArguments).toEqual({ city: 'string', days: 3 });
+    expect(index.resources.map((resource) => resource.name)).toEqual(['Forecast Index', 'Station Directory']);
+    expect(index.resourceTemplates.map((template) => template.name)).toEqual(['Forecast Template', 'Station Template']);
+    expect(index.resourceTemplates[0]?.variables).toEqual(['city', 'days']);
+    expect(index.prompts).toHaveLength(1);
+    expect(index.prompts[0]).toMatchObject({
+      name: 'forecast_summary',
+      title: 'Forecast Summary',
+      arguments: [
+        { name: 'city', description: 'City to summarize', required: true },
+        { name: 'tone', description: 'Optional response tone', required: false }
+      ]
+    });
   });
 
   it('parses an mcpServers client config into stdio and sse servers', () => {
@@ -89,6 +235,71 @@ describe('mcp parser', () => {
     expect(sse.headers).toEqual([{ key: 'Authorization', value: '{{MCP_AUTH}}' }]);
   });
 
+  it('parses a registry package transport using the nested camelCase schema fields', () => {
+    const index = parseMcpServerSpec(registryPackageWithTransport);
+    expect(index.servers).toHaveLength(1);
+    expect(index.warnings).toEqual([]);
+    const pkg = index.servers[0]!;
+    expect(pkg.transport).toBe('stdio');
+    expect(pkg.command).toBe('npx -y @example/weather-mcp --port=9090 <tenant>');
+    expect(pkg.env).toEqual([{ key: 'WEATHER_API_KEY', value: '{{WEATHER_API_KEY}}' }]);
+    expect(pkg.warnings).toEqual([]);
+  });
+
+  it('skips non-stdio package transports instead of inferring stdio from package fields', () => {
+    const doc = JSON.stringify({
+      name: 'io.github.example/weather',
+      remotes: [{ type: 'sse', url: 'https://mcp.example.com/sse' }],
+      packages: [
+        {
+          registryType: 'npm',
+          identifier: '@example/weather-mcp',
+          transport: { type: 'sse', url: 'https://127.0.0.1:3000/sse' }
+        }
+      ]
+    });
+    const index = parseMcpServerSpec(doc);
+    expect(index.servers).toHaveLength(1);
+    expect(index.servers[0]?.transport).toBe('sse');
+    expect(index.warnings.some((w) => w.startsWith('MCP_PACKAGE_TRANSPORT_UNSUPPORTED') && w.includes('"sse"'))).toBe(true);
+  });
+
+  it('warns when a registry server.json with $schema violates required schema fields', () => {
+    const doc = JSON.stringify({
+      $schema: 'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json',
+      name: 'io.github.example/weather',
+      version: '1.0.0',
+      remotes: [{ type: 'streamable-http' }]
+    });
+    const index = parseMcpServerSpec(doc);
+    expect(index.warnings.some((warning) => warning.startsWith('MCP_REGISTRY_SCHEMA_INVALID') && warning.includes('#/description'))).toBe(true);
+    expect(index.warnings.some((warning) => warning.startsWith('MCP_REGISTRY_SCHEMA_INVALID') && warning.includes('#/remotes/0/url'))).toBe(true);
+  });
+
+  it('parses prompt/resource declarations but keeps invalid entries auditable with warnings', () => {
+    const doc = JSON.stringify({
+      mcpServers: { weather: { command: 'npx weather-server' } },
+      resources: [
+        { name: 'Broken Resource', uri: 'not a uri', mimeType: 42 },
+        { uri: 'resource://missing-name' }
+      ],
+      resourceTemplates: [
+        { name: 'Broken Template', uriTemplate: 'resource://forecast/{city', mimeType: 'application/json' }
+      ],
+      prompts: [
+        {
+          name: 'forecast_prompt',
+          arguments: [{ name: 'city', required: 'yes' }, { description: 'missing name' }, { name: 'city' }]
+        }
+      ],
+      _meta: 'invalid'
+    });
+    const index = parseMcpServerSpec(doc);
+    expect(index.resources.map((resource) => resource.name)).toEqual(['Broken Resource']);
+    expect(index.resourceTemplates[0]?.name).toBe('Broken Template');
+    expect(index.prompts[0]?.arguments).toEqual([{ name: 'city', required: false }]);
+  });
+
   it('rejects empty input, invalid JSON, and serverless documents', () => {
     expect(() => parseMcpServerSpec('   ')).toThrow(/MCP_EMPTY_INPUT/);
     expect(() => parseMcpServerSpec('not json')).toThrow(/MCP_PARSE_FAILED/);
@@ -101,10 +312,10 @@ describe('mcp collection builder', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });
     const items = collection.item as JsonRecord[];
-    // 2 servers x (initialize + tools/list + 2 tools/call) mcp-request templates,
-    // plus 1 url-bearing server x (11 fixed HTTP probes + 2 tools/call probes +
-    // resources/templates/list + progress tools/call).
-    expect(items).toHaveLength(23);
+    // 2 servers x (initialize + tools/list + resources/list + prompts/list +
+    // 2 tools/call + 2 resources/read + 1 prompts/get) mcp-request templates,
+    // plus 1 url-bearing server x (20 HTTP runtime probes/items).
+    expect(items).toHaveLength(38);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -135,6 +346,19 @@ describe('mcp collection builder', () => {
     const a = JSON.stringify(buildMcpCollection(index, { idSeed: 's' }));
     const b = JSON.stringify(buildMcpCollection(index, { idSeed: 's' }));
     expect(a).toBe(b);
+  });
+
+  it('emits compact stdio JSON-RPC payloads with no embedded newlines', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const stdioMessages = (collection.item as JsonRecord[])
+      .filter((item) => item.type === 'mcp-request' && (item.payload as JsonRecord).transport === 'stdio')
+      .map((item) => String((item.payload as JsonRecord).message));
+    expect(stdioMessages).toHaveLength(9);
+    for (const message of stdioMessages) {
+      expect(message).not.toContain('\n');
+      expect(message).toBe(JSON.stringify(JSON.parse(message)));
+    }
   });
 });
 
@@ -181,6 +405,35 @@ describe('mcp instrumenter (static validation)', () => {
     const { warnings } = instrumentMcpCollection(collection, index);
     expect(warnings.some((w) => w.startsWith('MCP_TOOL_NAME_DUPLICATE'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_TOOL_SCHEMA_INVALID') && w.includes('scalar_tool'))).toBe(true);
+  });
+
+  it('surfaces invalid resource/template/prompt declarations during generation-time validation', () => {
+    const doc = JSON.stringify({
+      mcpServers: { weather: { command: 'npx weather-server' } },
+      resources: [
+        { name: 'Broken Resource', uri: 'not a uri', mimeType: 42 },
+        { uri: 'resource://missing-name' }
+      ],
+      resourceTemplates: [{ name: 'Broken Template', uriTemplate: 'resource://forecast/{city', mimeType: 'application/json' }],
+      prompts: [
+        {
+          name: 'forecast_prompt',
+          arguments: [{ name: 'city', required: 'yes' }, { description: 'missing name' }, { name: 'city' }]
+        }
+      ],
+      _meta: 'invalid'
+    });
+    const index = parseMcpServerSpec(doc);
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentMcpCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('MCP_RESOURCE_URI_INVALID') && w.includes('Broken Resource'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_RESOURCE_FIELD_INVALID') && w.includes('Broken Resource') && w.includes('mimeType'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_RESOURCE_NAME_MISSING'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_RESOURCE_TEMPLATE_INVALID') && w.includes('Broken Template'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_PROMPT_ARGUMENT_INVALID') && w.includes('forecast_prompt') && w.includes('required'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_PROMPT_ARGUMENT_NAME_MISSING') && w.includes('forecast_prompt'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_PROMPT_ARGUMENT_DUPLICATE') && w.includes('forecast_prompt'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_META_OBJECT_INVALID') && w.includes('$._meta'))).toBe(true);
   });
 
   it('fails closed when the built collection drops an item', () => {
@@ -266,11 +519,16 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP notifications/initialized',
       'io.github.example/weather remote-1 · HTTP ping',
       'io.github.example/weather remote-1 · HTTP tools/list',
+      'io.github.example/weather remote-1 · HTTP resources/list',
+      'io.github.example/weather remote-1 · HTTP prompts/list',
       'io.github.example/weather remote-1 · HTTP ping without session id',
       'io.github.example/weather remote-1 · HTTP tools/list next page',
       'io.github.example/weather remote-1 · HTTP tools/list cursor replay',
       'io.github.example/weather remote-1 · HTTP tools/call get_forecast',
       'io.github.example/weather remote-1 · HTTP tools/call list_stations',
+      'io.github.example/weather remote-1 · HTTP resources/read Forecast Index',
+      'io.github.example/weather remote-1 · HTTP resources/read Station Directory',
+      'io.github.example/weather remote-1 · HTTP prompts/get forecast_summary',
       'io.github.example/weather remote-1 · HTTP resources/templates/list',
       'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken',
       'io.github.example/weather remote-1 · HTTP negative bad protocol version',
@@ -367,6 +625,172 @@ describe('mcp runtime HTTP scripts', () => {
   });
 });
 
+describe('mcp tools/call runtime structuredContent assertions', () => {
+  it('fails when structuredContent is present but not object-valued', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools.find((entry) => entry.name === 'list_stations')!;
+    const { script, warnings } = toolsCallScript(index, tool, 10);
+    expect(warnings).toEqual([]);
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        content: [],
+        structuredContent: []
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP tools/call structuredContent is object-valued when present for list_stations (MCP 2025-06-18 structured content)'
+      )?.passed
+    ).toBe(false);
+  });
+
+  it('fails when an outputSchema tool omits required structuredContent', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools.find((entry) => entry.name === 'get_forecast')!;
+    tool.outputSchema = {
+      type: 'object',
+      required: ['temperature'],
+      properties: {
+        temperature: { type: 'number' }
+      }
+    };
+    const { script, warnings } = toolsCallScript(index, tool, 10);
+    expect(warnings).toEqual([]);
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        content: [{ type: 'text', text: '{}' }]
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP tools/call structuredContent is required and matches outputSchema for get_forecast (MCP 2025-06-18 structured content)'
+      )?.passed
+    ).toBe(false);
+  });
+
+  it('fails invalid outputSchema structuredContent and accepts a conforming object', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools.find((entry) => entry.name === 'get_forecast')!;
+    tool.outputSchema = {
+      type: 'object',
+      required: ['temperature'],
+      properties: {
+        temperature: { type: 'number' }
+      }
+    };
+    const { script, warnings } = toolsCallScript(index, tool, 10);
+    expect(warnings).toEqual([]);
+
+    const invalid = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        content: [{ type: 'text', text: JSON.stringify({ temperature: 'hot' }) }],
+        structuredContent: { temperature: 'hot' }
+      }
+    });
+    expect(
+      runtimeTestResult(
+        invalid.results,
+        'MCP tools/call structuredContent is required and matches outputSchema for get_forecast (MCP 2025-06-18 structured content)'
+      )?.passed
+    ).toBe(false);
+
+    const validBody = {
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        content: [{ type: 'text', text: JSON.stringify({ temperature: 72 }) }],
+        structuredContent: { temperature: 72 }
+      }
+    };
+    const valid = runMcpScript(script, validBody);
+    expect(
+      runtimeTestResult(
+        valid.results,
+        'MCP tools/call structuredContent is required and matches outputSchema for get_forecast (MCP 2025-06-18 structured content)'
+      )?.passed
+    ).toBe(true);
+    expect(valid.warnings).toEqual([]);
+  });
+
+  it('requires content blocks even on tool-execution-error results', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools.find((entry) => entry.name === 'list_stations')!;
+    const { script, warnings } = toolsCallScript(index, tool, 10);
+    expect(warnings).toEqual([]);
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        isError: true
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP tools/call content blocks are typed for list_stations (MCP 2025-06-18 content blocks)'
+      )?.passed
+    ).toBe(false);
+  });
+});
+
+describe('mcp tools/list runtime descriptor assertions', () => {
+  it('fails when a live tool descriptor has invalid annotations or outputSchema typing', () => {
+    const script = toolsListScript(['get_forecast']);
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 2,
+      result: {
+        tools: [
+          {
+            name: 'get_forecast',
+            inputSchema: { type: 'object' },
+            annotations: { readOnlyHint: 'yes' },
+            outputSchema: { type: 'string' }
+          }
+        ]
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)'
+      )?.passed
+    ).toBe(false);
+  });
+
+  it('accepts typed annotations and object outputSchema in live tool descriptors', () => {
+    const script = toolsListScript(['get_forecast']);
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 2,
+      result: {
+        tools: [
+          {
+            name: 'get_forecast',
+            inputSchema: { type: 'object' },
+            annotations: { readOnlyHint: true, title: 'Forecast' },
+            outputSchema: { type: 'object', properties: { temperature: { type: 'number' } } }
+          }
+        ]
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP tools/list result shape and manifest subset (MCP 2025-06-18 tools/list)'
+      )?.passed
+    ).toBe(true);
+  });
+});
+
 describe('mcp manifest static additions', () => {
   it('flags metadata typing, _meta grammar, reserved prefixes, unknown fields, title precedence, and mime types', () => {
     const doc = JSON.stringify({
@@ -392,6 +816,26 @@ describe('mcp manifest static additions', () => {
     expect(warnings.some((w) => w.startsWith('MCP_TOOL_FIELD_UNKNOWN_2025_06_18') && w.includes('icons'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_TOOL_TITLE_PRECEDENCE'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_MIME_TYPE_INVALID'))).toBe(true);
+  });
+});
+
+describe('mcp resource template runtime checks', () => {
+  it('fails when resources/templates/list nextCursor is not a string', () => {
+    const script = resourceTemplatesScript();
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 5,
+      result: {
+        nextCursor: 42,
+        resourceTemplates: []
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP resource templates compile under RFC 6570 (MCP 2025-06-18 resources; RFC 6570)'
+      )?.passed
+    ).toBe(false);
   });
 });
 

@@ -20,6 +20,19 @@ function isValidMediaType(t: string): boolean {
   if (token.endsWith('/*') || token === '*/*') return true;
   return /^[!#$%&'*+.^_|~0-9A-Za-z-]+\/[!#$%&'*+.^_|~0-9A-Za-z-]+$/.test(token);
 }
+function isJsonMediaType(t: string): boolean {
+  const base = mediaBase(t);
+  return base === 'application/json' || base.endsWith('+json');
+}
+function mediaExampleCandidates(root: Rec, media: Rec): Array<{ label: string; value: unknown }> {
+  const out: Array<{ label: string; value: unknown }> = [];
+  if (Object.prototype.hasOwnProperty.call(media, 'example')) out.push({ label: 'example', value: media.example });
+  for (const [name, rawEx] of Object.entries(asRecord(media.examples) ?? {})) {
+    const ex = resolveInternalRef(root, rawEx) ?? asRecord(rawEx);
+    if (ex && Object.prototype.hasOwnProperty.call(ex, 'value')) out.push({ label: `examples.${name}`, value: (ex as Rec).value });
+  }
+  return out;
+}
 function mergedParams(root: Rec, pathItem: Rec, operation: Rec): Rec[] {
   const seen = new Map<string, Rec>();
   const collect = (arr: unknown): void => {
@@ -147,7 +160,7 @@ export function collectMediaParamLints(root: Rec, version: string, pathItem: Rec
         if ((enc.style !== undefined || enc.explode !== undefined || enc.allowReserved !== undefined) && !isForm) out.push('CONTRACT_ENCODING_FIELD_IGNORED: ' + ctx + ' encoding.' + field + ' style/explode/allowReserved are ignored outside application/x-www-form-urlencoded');
         if (asRecord(enc.headers) && !isMultipart) out.push('CONTRACT_ENCODING_FIELD_IGNORED: ' + ctx + ' encoding.' + field + '.headers are ignored outside multipart media');
         // row 18: 3.1 contentType precedence
-        if (version === '3.1' && typeof enc.contentType === 'string' && (enc.style !== undefined || enc.explode !== undefined)) out.push('CONTRACT_ENCODING_CONTENT_TYPE_PRECEDENCE: ' + ctx + ' encoding.' + field + ' sets contentType and style/explode; OpenAPI 3.1 gives contentType precedence and ignores RFC 6570 serialization');
+        if (version === '3.1' && typeof enc.contentType === 'string' && (enc.style !== undefined || enc.explode !== undefined || enc.allowReserved !== undefined)) out.push('CONTRACT_ENCODING_CONTENT_TYPE_PRECEDENCE: ' + ctx + ' encoding.' + field + ' sets contentType and style/explode/allowReserved; OpenAPI 3.1 gives contentType precedence and ignores RFC 6570 serialization');
         // row 19: multipart RFC6570 advisory
         if (isMultipart && (enc.style !== undefined || enc.explode !== undefined || enc.allowReserved !== undefined)) out.push('CONTRACT_MULTIPART_SERIALIZATION_ADVISORY: ' + ctx + ' encoding.' + field + ' RFC 6570 serialization on multipart parts is advisory and not runtime-validated');
       }
@@ -162,8 +175,32 @@ export function collectMediaParamLints(root: Rec, version: string, pathItem: Rec
       if (typeof ev === 'string' && !isUriRef(ev)) out.push('CONTRACT_EXAMPLE_OBJECT_INVALID: ' + ctx + ' example ' + en + ' externalValue ' + ev + ' is not a valid URI reference');
     }
     // row 24: media examples vs encoding advisory
-    if (encoding && (media.example !== undefined || examples)) out.push('CONTRACT_MEDIA_EXAMPLE_ENCODING_NOT_VALIDATED: ' + ctx + ' ' + ct + ' media example is not statically validated against the encoding map');
+    if (encoding && (media.example !== undefined || examples)) {
+      const candidates = mediaExampleCandidates(root, media);
+      let fullyUnvalidated = candidates.length > 0;
+      for (const candidate of candidates) {
+        const candidateRecord = asRecord(candidate.value);
+        if (!candidateRecord) continue;
+        let checkedField = false;
+        let invalidField = false;
+        for (const [field, rawEnc] of Object.entries(encoding)) {
+          const enc = asRecord(rawEnc);
+          const encodedValue = candidateRecord[field];
+          if (!enc || encodedValue === undefined || typeof enc.contentType !== 'string' || !isJsonMediaType(enc.contentType)) continue;
+          checkedField = true;
+          if (typeof encodedValue === 'string') {
+            try {
+              JSON.parse(encodedValue);
+            } catch {
+              out.push('CONTRACT_EXAMPLE_SCHEMA_MISMATCH: ' + ctx + ' ' + ct + ' ' + candidate.label + ' field ' + field + ' is not valid JSON for encoding.contentType ' + enc.contentType);
+              invalidField = true;
+            }
+          }
+        }
+        if (checkedField && !invalidField) fullyUnvalidated = false;
+      }
+      if (fullyUnvalidated) out.push('CONTRACT_MEDIA_EXAMPLE_ENCODING_NOT_VALIDATED: ' + ctx + ' ' + ct + ' media example is not statically validated against the encoding map');
+    }
   }
   return out;
 }
-

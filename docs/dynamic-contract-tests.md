@@ -2,6 +2,8 @@
 
 Dynamic contract tests turn the generated `[Contract]` Postman collection into executable checks derived from the resolved OpenAPI document. The goal is to catch drift between generated requests, live responses, and the OpenAPI contract before the collection becomes the durable tracked contract collection.
 
+This page documents the runtime layer: the `pm.test()` scripts that execute against live responses on every CI collection run. The bootstrap-time static document lints are a separate, warning-only layer built from the same contract index; the split, and every `CONTRACT_*` code's layer and effect, are documented in [Contract Enforcement Layers](contract-enforcement-layers.md) and [Contract Error Codes](contract-error-codes.md).
+
 ## Pipeline
 
 1. **Fetch and parse the OpenAPI document**
@@ -123,7 +125,7 @@ Supported:
 - Response schemas and header schemas backed by compatible JSON Schema dialects.
 - OpenAPI 3.0 `nullable`.
 - OpenAPI 3.1 `$ref` siblings, modeled as an `allOf` wrapper.
-- `writeOnly` response properties are removed from generated response validators.
+- `writeOnly` response properties are removed from generated response validators, and a dedicated runtime assertion additionally fails when a top-level `writeOnly` property (write-only across every response content-type schema and its `allOf`/`anyOf`/`oneOf` members) actually appears in the JSON response body.
 
 Fail-closed or warning behavior:
 
@@ -138,7 +140,7 @@ Fail-closed or warning behavior:
 - Security requirements are warned as not runtime-proven beyond credential presence.
 - Required cookie parameters are warned as not includable in generated requests; the runtime presence assertion fails until the cookie is supplied at send time.
 - Deprecated operations are warned with `CONTRACT_OPERATION_DEPRECATED`.
-- Response link expressions of the form `$response.body#/...` and `$response.header....` are evaluated at runtime against the response the link is declared on; links with no evaluable expression are warned with `CONTRACT_LINKS_NOT_VALIDATED`, and mixed links with `CONTRACT_LINKS_PARTIALLY_VALIDATED`.
+- Response link expressions of the form `$response.body#/...` and `$response.header....` are evaluated at runtime against the response the link is declared on; a `$response.header....` expression additionally fails when the response carries more than one header field of that name, because the runtime expression cannot resolve to a single value; links with no evaluable expression are warned with `CONTRACT_LINKS_NOT_VALIDATED`, and mixed links with `CONTRACT_LINKS_PARTIALLY_VALIDATED`.
 - Parameters with non-default `style`, `explode`, or `allowReserved` are warned with `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`. Parameters declared through `content` with a single JSON media type carry literal JSON values, so they are parsed and validated against their schema at runtime (placeholder values skip; unparseable values fail); other `content` shapes warn.
 - Query parameters with `allowEmptyValue: true` skip value validation for empty sent values.
 - Parameter schemas that fail to pack are warned with `CONTRACT_SCHEMA_NOT_COMPILED`; object parameter schemas and undecodable array forms (tuple schemas, `$ref` or non-scalar items) are a documented skip.

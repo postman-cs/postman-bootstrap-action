@@ -77,8 +77,14 @@ describe('OAS media and parameter static lints (operation warnings)', () => {
   it('17 flags ignored encoding style fields', () => {
     expect(opHas(mk('    post:\n      requestBody: {content: {multipart/form-data: {schema: {type: object, properties: {f: {type: string}}}, encoding: {f: {style: form}}}}}\n      responses: {"200": {description: ok}}'), 'CONTRACT_ENCODING_FIELD_IGNORED')).toBe(true);
   });
+  it('17 flags ignored encoding headers outside multipart', () => {
+    expect(opHas(mk('    post:\n      requestBody: {content: {application/x-www-form-urlencoded: {schema: {type: object, properties: {f: {type: string}}}, encoding: {f: {headers: {X-Part: {schema: {type: string}}}}}}}}\n      responses: {"200": {description: ok}}'), 'CONTRACT_ENCODING_FIELD_IGNORED')).toBe(true);
+  });
   it('18 flags encoding contentType precedence over style in 3.1', () => {
     expect(opHas(mk('    post:\n      requestBody: {content: {application/x-www-form-urlencoded: {schema: {type: object, properties: {f: {type: string}}}, encoding: {f: {contentType: text/plain, style: form}}}}}\n      responses: {"200": {description: ok}}'), 'CONTRACT_ENCODING_CONTENT_TYPE_PRECEDENCE')).toBe(true);
+  });
+  it('18 flags encoding contentType precedence over allowReserved in 3.1', () => {
+    expect(opHas(mk('    post:\n      requestBody: {content: {application/x-www-form-urlencoded: {schema: {type: object, properties: {f: {type: string}}}, encoding: {f: {contentType: text/plain, allowReserved: true}}}}}\n      responses: {"200": {description: ok}}'), 'CONTRACT_ENCODING_CONTENT_TYPE_PRECEDENCE')).toBe(true);
   });
   it('19 flags multipart RFC6570 serialization as advisory', () => {
     expect(opHas(mk('    post:\n      requestBody: {content: {multipart/form-data: {schema: {type: object, properties: {f: {type: string}}}, encoding: {f: {explode: true}}}}}\n      responses: {"200": {description: ok}}'), 'CONTRACT_MULTIPART_SERIALIZATION_ADVISORY')).toBe(true);
@@ -98,8 +104,18 @@ describe('OAS media and parameter static lints (operation warnings)', () => {
   it('23 flags Example Object with both value and externalValue', () => {
     expect(opHas(mk('    get:\n      responses:\n        "200": {description: ok, content: {application/json: {schema: {type: object}, examples: {e: {value: {a: 1}, externalValue: "https://x/e.json"}}}}}'), 'CONTRACT_EXAMPLE_OBJECT_INVALID')).toBe(true);
   });
+  it('23 flags Example Object with an invalid externalValue URI reference', () => {
+    expect(opHas(mk('    get:\n      parameters: [{name: q, in: query, schema: {type: string}, examples: {bad: {externalValue: "http://["}}}]\n      responses: {"200": {description: ok}}'), 'CONTRACT_EXAMPLE_OBJECT_INVALID')).toBe(true);
+  });
   it('24 flags media example not validated against encoding', () => {
     expect(opHas(mk('    post:\n      requestBody: {content: {application/x-www-form-urlencoded: {schema: {type: object, properties: {f: {type: string}}}, example: {f: x}, encoding: {f: {contentType: text/plain}}}}}\n      responses: {"200": {description: ok}}'), 'CONTRACT_MEDIA_EXAMPLE_ENCODING_NOT_VALIDATED')).toBe(true);
   });
+  it('24 flags invalid JSON field content against encoding expectations', () => {
+    expect(opHas(mk('    post:\n      requestBody: {content: {application/x-www-form-urlencoded: {schema: {type: object, properties: {f: {type: string}}}, example: {f: "{bad"}, encoding: {f: {contentType: application/json}}}}}\n      responses: {"200": {description: ok}}'), 'CONTRACT_EXAMPLE_SCHEMA_MISMATCH')).toBe(true);
+  });
+  it('24 accepts valid JSON field content against encoding expectations without the advisory', () => {
+    const warnings = opWarns(mk('    post:\n      requestBody: {content: {application/x-www-form-urlencoded: {schema: {type: object, properties: {f: {type: string}}}, example: {f: "{\\"ok\\":true}"}, encoding: {f: {contentType: application/json}}}}}\n      responses: {"200": {description: ok}}'));
+    expect(warnings.some((warning) => warning.startsWith('CONTRACT_EXAMPLE_SCHEMA_MISMATCH'))).toBe(false);
+    expect(warnings.some((warning) => warning.startsWith('CONTRACT_MEDIA_EXAMPLE_ENCODING_NOT_VALIDATED'))).toBe(false);
+  });
 });
-

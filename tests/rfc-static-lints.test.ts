@@ -165,6 +165,21 @@ paths:
     expect(index.operations[0]!.warnings.some((w) => w.startsWith('CONTRACT_EXAMPLE_SCHEMA_MISMATCH') && w.includes('query:n'))).toBe(true);
   });
 
+  it('accepts serialized array examples for decodable query and header parameter styles', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /a:
+    get:
+      parameters:
+        - { name: q, in: query, style: spaceDelimited, explode: false, schema: { type: array, items: { type: string } }, example: "a b" }
+        - { name: X-Ids, in: header, style: simple, schema: { type: array, items: { type: integer } }, example: "1,2,3" }
+      responses:
+        '200': { description: OK }
+`);
+    expect(index.operations[0]!.warnings.some((w) => w.startsWith('CONTRACT_EXAMPLE_SCHEMA_MISMATCH') && w.includes('header:X-Ids'))).toBe(false);
+  });
+
   it('flags unregistered /.well-known/ suffixes against the IANA snapshot', () => {
     const index = indexFrom(`openapi: 3.1.0
 info: { title: T, version: 1 }
@@ -220,7 +235,12 @@ paths:
   /a:
     get:
       responses:
-        '200': { description: OK }
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefaultedThing'
 `);
     expect(index.operations[0]!.servers).toEqual(['^https://(us|eu)\\.api\\.example\\.com/v1']);
   });
@@ -234,9 +254,29 @@ components:
   schemas:
     Thing:
       type: [string, 'null']
+      const: a
+      contains: { type: string }
+      minContains: 1
+      maxContains: 2
       exclusiveMinimum: 1
       prefixItems: []
       if: { type: string }
+      default: 7
+    NullOnly:
+      type: 'null'
+    NullableWithoutType:
+      nullable: true
+      enum: [x]
+    EmptyEnum:
+      type: string
+      enum: []
+    DuplicateEnum:
+      type: string
+      enum: [a, a]
+    BothDirections:
+      type: string
+      readOnly: true
+      writeOnly: true
     RefSibling:
       $ref: '#/components/schemas/Thing'
       type: string
@@ -249,9 +289,20 @@ paths:
     expect(v30.warnings.some((w) => w.startsWith('CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD') && w.includes('webhooks'))).toBe(true);
     expect(v30.warnings.some((w) => w.startsWith('CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD') && w.includes('components.pathItems'))).toBe(true);
     expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('type arrays'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('const'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('contains'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('minContains'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('maxContains'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('type "null"'))).toBe(true);
     expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('exclusiveMinimum'))).toBe(true);
     expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('prefixItems'))).toBe(true);
     expect(v30.warnings.some((w) => w.startsWith('CONTRACT_REF_SIBLING_INVALID'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VALUE_MISMATCH') && w.includes('default does not match declared type'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('without a sibling type'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VALUE_MISMATCH') && w.includes('enum excludes null'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VALUE_MISMATCH') && w.includes('must not be empty'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VALUE_MISMATCH') && w.includes('duplicate values'))).toBe(true);
+    expect(v30.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE') && w.includes('both readOnly and writeOnly'))).toBe(true);
     const v31 = indexFrom(`openapi: 3.1.0
 info: { title: T, version: 1 }
 jsonSchemaDialect: not-a-uri
@@ -262,8 +313,11 @@ components:
       nullable: true
       exclusiveMinimum: true
       format: made-up
-      enum: [ok]
-      default: bad
+      default: ok
+    DefaultedThing:
+      type: integer
+      minimum: 10
+      default: 7
 paths:
   /a:
     get:
@@ -273,7 +327,26 @@ paths:
     expect(v31.warnings.some((w) => w.startsWith('CONTRACT_JSON_SCHEMA_DIALECT_UNSUPPORTED'))).toBe(true);
     expect(v31.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VERSION_MISMATCH') && w.includes('nullable'))).toBe(true);
     expect(v31.warnings.some((w) => w.startsWith('CONTRACT_FORMAT_UNKNOWN'))).toBe(true);
-    expect(v31.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VALUE_MISMATCH'))).toBe(true);
+    const v31Default = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+components:
+  schemas:
+    DefaultedThing:
+      type: integer
+      minimum: 10
+      default: 7
+paths:
+  /a:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DefaultedThing'
+`);
+    expect(v31Default.warnings.some((w) => w.startsWith('CONTRACT_SCHEMA_VALUE_MISMATCH') && w.includes('default does not validate against its schema'))).toBe(true);
   });
 
   it('flags parameter, path, operationId, server, and response-shape lints', () => {
@@ -334,6 +407,8 @@ components:
     BadDiscriminator:
       type: object
       discriminator: { propertyName: kind, mapping: { a: '#/components/schemas/Missing' } }
+      properties:
+        kind: { type: string }
     Overlap:
       oneOf:
         - { enum: [a, b] }
@@ -373,6 +448,7 @@ paths:
 `);
     const warnings = [...index.warnings, ...index.operations.flatMap((op) => op.warnings)];
     expect(warnings.some((w) => w.startsWith('CONTRACT_DISCRIMINATOR_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('CONTRACT_DISCRIMINATOR_INVALID') && w.includes('must be required by the base schema'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('CONTRACT_ONEOF_OVERLAP'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('CONTRACT_ENCODING_FIELD_UNKNOWN'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('CONTRACT_ENCODING_HEADER_INVALID'))).toBe(true);

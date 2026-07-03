@@ -3,6 +3,10 @@ export type {
   McpContractIndex,
   McpServerDescriptor,
   McpToolDescriptor,
+  McpResourceDescriptor,
+  McpResourceTemplateDescriptor,
+  McpPromptArgumentDescriptor,
+  McpPromptDescriptor,
   McpKeyValue,
   McpTransport
 } from './mcp-parser.js';

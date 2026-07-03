@@ -4,6 +4,8 @@
 
 Engineering-level pipeline detail lives in [Dynamic Contract Tests](dynamic-contract-tests.md); protocol write-path detail lives in [Multi-Protocol Contract Assertions](MULTIPROTOCOL-ASSERTIONS.md).
 
+Every test on this page runs at collection-run time against a live response. A separate warning-only layer of static document lints runs once at bootstrap time against the spec itself; that split is documented in [Contract Enforcement Layers](contract-enforcement-layers.md), and the full `CONTRACT_*` code catalog (which codes fail the run, which are advisory) is in [Contract Error Codes](contract-error-codes.md).
+
 ## OpenAPI (REST) contract tests
 
 Each request in the generated `[Contract]` collection carries a test script built from its OpenAPI 3.0 / 3.1 operation. The assertions appear under these names:
@@ -40,7 +42,8 @@ Each request in the generated `[Contract]` collection carries a test script buil
 | `Request preconditions, preferences, and patch bodies follow their RFCs` | `If-Match`/`If-None-Match` are `*` or entity-tag lists; `Prefer` names are tokens (RFC 7240); `application/json-patch+json` bodies are RFC 6902 operation arrays with RFC 6901 pointers; `application/merge-patch+json` bodies parse as JSON (RFC 7386). |
 | `Request multipart bodies and Idempotency-Key follow their specifications` | A sent or spec-declared `Idempotency-Key` is a non-empty structured-field string; a `multipart/form-data` request `Content-Type` carries an RFC 2046-valid `boundary` (1–70 characters, no trailing space); raw-mode multipart bodies give every part a `Content-Disposition: form-data` with a `name`, cross-checked against the request body schema’s declared fields (RFC 7578; formdata-mode bodies are checked by field name only — Postman generates the boundary). |
 | `Deprecated operation signals deprecation in the response` | Operations marked `deprecated: true` advise when the response carries neither `Deprecation` (RFC 9745) nor `Sunset` (RFC 8594). |
-| `OpenAPI link expressions resolve against the response` | Declared link `$response.body#/...` pointers resolve in the response body and `$response.header....` references exist. |
+| `OpenAPI link expressions resolve against the response` | Declared link `$response.body#/...` pointers resolve in the response body and `$response.header....` references exist and are unambiguous — a duplicated response header field named by a `$response.header....` expression fails, since the runtime expression cannot select one value. |
+| `Response body does not leak writeOnly properties` | No top-level property the OpenAPI response schema marks `writeOnly: true` (write-only across every content-type schema and its `allOf`/`anyOf`/`oneOf` members) appears in the JSON response body (OAS Schema Object `writeOnly`). |
 | `Request URL conforms to an OpenAPI servers entry` | Advisory: the request URL matches a declared `servers` entry, with server variables constrained to their enum values. |
 | `RFC SHOULD-level advisories are documented` | Disclosure channel: always passes and lists SHOULD-level findings (missing `Date`, charset parameters on JSON, the obsolete `Warning` header, a past `Sunset`, tokens in the query string, server mismatches) in the run report. |
 

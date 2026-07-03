@@ -59,6 +59,17 @@ describe('GraphQL introspection-shape lints', () => {
     return JSON.parse(JSON.stringify(introspectionFromSchema(buildSchema(sdl)))) as Record<string, unknown>;
   }
 
+  function clone<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
+
+  function directiveByName(doc: Record<string, unknown>, name: string): Record<string, unknown> {
+    const directives = (doc.__schema as { directives?: Array<Record<string, unknown>> }).directives ?? [];
+    const directive = directives.find((entry) => entry.name === name);
+    if (!directive) throw new Error('missing directive @' + name);
+    return directive;
+  }
+
   it('flags duplicate type names', () => {
     const doc = introspectionOf(VALID_SDL) as { __schema: { types: unknown[] } };
     const plan = doc.__schema.types.find((t) => (t as { name?: string }).name === 'Plan');
@@ -84,6 +95,76 @@ describe('GraphQL introspection-shape lints', () => {
     const warnings = lintIntrospectionJson(doc);
     expect(warnings.some((w) => w.startsWith('GQL_INTROSPECTION_DIRECTIVE_INVALID:') && w.includes('@odd'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('GQL_INTROSPECTION_KIND_INVALID:') && w.includes('DECORATOR'))).toBe(true);
+  });
+
+  it('flags raw built-in directive shape drift in introspection JSON', () => {
+    const doc = introspectionOf(VALID_SDL) as { __schema: { directives: Array<Record<string, unknown>> } };
+    directiveByName(doc, 'skip').args = [{ name: 'if', type: { kind: 'SCALAR', name: 'String', ofType: null }, defaultValue: null }];
+    directiveByName(doc, 'include').isRepeatable = true;
+    directiveByName(doc, 'deprecated').args = [
+      {
+        name: 'reason',
+        type: { kind: 'NON_NULL', name: null, ofType: { kind: 'SCALAR', name: 'String', ofType: null } },
+        defaultValue: '"retired"'
+      }
+    ];
+    directiveByName(doc, 'specifiedBy').locations = ['SCALAR', 'FIELD_DEFINITION'];
+    doc.__schema.directives = doc.__schema.directives.filter((directive) => directive.name !== 'oneOf');
+
+    const warnings = lintIntrospectionJson(doc);
+    expect(
+      warnings.some((w) => w.startsWith('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @skip argument if must be Boolean!'))
+    ).toBe(true);
+    expect(
+      warnings.some((w) => w.startsWith('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @include isRepeatable must be false'))
+    ).toBe(true);
+    expect(
+      warnings.some((w) => w.startsWith('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @deprecated argument reason defaultValue must be'))
+    ).toBe(true);
+    expect(
+      warnings.some((w) => w.startsWith('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @specifiedBy declares location FIELD_DEFINITION'))
+    ).toBe(true);
+    expect(warnings).toContain(
+      'GQL_INTROSPECTION_DIRECTIVE_MISSING_BUILTIN: @oneOf is missing from __schema.directives; implementations must support @oneOf (GraphQL spec 3.13)'
+    );
+  });
+
+  it('flags root-map shape violations with an explicit root map diagnostic', () => {
+    const doc = introspectionOf(['type Query { user(id: ID!): User }', 'type Mutation { ping: String }', 'type User { id: ID! }'].join('\n')) as {
+      __schema: { queryType?: Record<string, unknown>; mutationType?: Record<string, unknown> };
+    };
+
+    const missingQuery = clone(doc);
+    delete missingQuery.__schema.queryType;
+    expect(
+      lintIntrospectionJson(missingQuery).some(
+        (w) => w.startsWith('GQL_INTROSPECTION_ROOT_INVALID: __schema.queryType must record') && w.includes('Root map: query=<missing>, mutation=Mutation, subscription=<missing>')
+      )
+    ).toBe(true);
+
+    const unknownRoot = clone(doc);
+    unknownRoot.__schema.queryType = { name: 'Ghost' };
+    expect(
+      lintIntrospectionJson(unknownRoot).some(
+        (w) => w.startsWith('GQL_INTROSPECTION_ROOT_INVALID: query root operation type Ghost must name a type present in __schema.types') && w.includes('Root map: query=Ghost, mutation=Mutation, subscription=<missing>')
+      )
+    ).toBe(true);
+
+    const scalarRoot = clone(doc);
+    scalarRoot.__schema.queryType = { name: 'String' };
+    expect(
+      lintIntrospectionJson(scalarRoot).some(
+        (w) => w.startsWith('GQL_INTROSPECTION_ROOT_INVALID: query root operation type String must be an OBJECT type') && w.includes('Root map: query=String, mutation=Mutation, subscription=<missing>')
+      )
+    ).toBe(true);
+
+    const duplicateRoots = clone(doc);
+    duplicateRoots.__schema.mutationType = { ...(duplicateRoots.__schema.queryType as Record<string, unknown>) };
+    expect(
+      lintIntrospectionJson(duplicateRoots).some(
+        (w) => w.startsWith('GQL_INTROSPECTION_ROOTS_NOT_DISTINCT:') && w.includes('Root map: query=Query, mutation=Query, subscription=<missing>')
+      )
+    ).toBe(true);
   });
 });
 

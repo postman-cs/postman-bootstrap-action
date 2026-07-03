@@ -59,6 +59,11 @@ describe('parseGraphQLSchema', () => {
     expect(index.warnings.some((w) => w.startsWith('GQL_SUBSCRIPTION_NOT_EXECUTABLE'))).toBe(true);
   });
 
+  it('warns when SDL root operation types are not distinct and includes the root map', () => {
+    const index = parseGraphQLSchema(['schema { query: Root mutation: Root }', 'type Root { read: String write: String }'].join('\n'));
+    expect(index.warnings.some((w) => w.startsWith('GQL_ROOT_TYPES_NOT_DISTINCT:') && w.includes('Root map: query=Root, mutation=Root'))).toBe(true);
+  });
+
   it('parses an introspection JSON document (buildClientSchema path)', () => {
     const schema = buildSchema(fixtureSdl);
     const introspection = introspectionFromSchema(schema);
@@ -72,6 +77,35 @@ describe('parseGraphQLSchema', () => {
     const introspection = introspectionFromSchema(schema);
     const enveloped = parseGraphQLSchema(JSON.stringify({ data: introspection }));
     expect(enveloped.operations.length).toBeGreaterThan(0);
+  });
+
+  it('surfaces raw built-in directive shape drift when parsing introspection JSON', () => {
+    const schema = buildSchema('type Query { a: String }');
+    const introspection = JSON.parse(JSON.stringify(introspectionFromSchema(schema))) as { __schema: { directives: Array<Record<string, unknown>> } };
+    const skip = introspection.__schema.directives.find((directive) => directive.name === 'skip');
+    if (!skip) throw new Error('missing @skip');
+    skip.args = [{ name: 'if', type: { kind: 'SCALAR', name: 'String', ofType: null }, defaultValue: null }];
+
+    const index = parseGraphQLSchema(JSON.stringify(introspection));
+    expect(
+      index.warnings.some((warning) => warning.startsWith('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @skip argument if must be Boolean!'))
+    ).toBe(true);
+  });
+
+  it('surfaces introspection root-map diagnostics before buildClientSchema rejects the root map', () => {
+    const schema = buildSchema('type Query { a: String }');
+    const introspection = introspectionFromSchema(schema) as { __schema: { queryType: { name: string } } };
+    introspection.__schema.queryType = { name: 'String' };
+
+    let message = '';
+    try {
+      parseGraphQLSchema(JSON.stringify(introspection));
+    } catch (error) {
+      message = String(error);
+    }
+
+    expect(message).toMatch(/GQL_INTROSPECTION_ROOT_INVALID: query root operation type String must be an OBJECT type/);
+    expect(message).toMatch(/Root map: query=String, mutation=<missing>, subscription=<missing>/);
   });
 
   it('throws GQL_PARSE_FAILED on empty or unparseable content', () => {

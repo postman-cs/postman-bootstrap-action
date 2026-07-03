@@ -153,8 +153,8 @@ describe('RFC 9110 status-code requirement assertions', () => {
   });
 
   it('304 must not carry content', () => {
-    expect(runScript(script, { code: 304, body: 'stale' })[RFC9110]).toBe('fail');
-    expect(runScript(script, { code: 304 })[RFC9110]).toBe('pass');
+    expect(runScript(script, { code: 304, body: 'stale', requestHeaders: { 'If-None-Match': '"v1"' } })[RFC9110]).toBe('fail');
+    expect(runScript(script, { code: 304, requestHeaders: { 'If-None-Match': '"v1"' } })[RFC9110]).toBe('pass');
   });
 
   it('206 must carry a well-formed Content-Range', () => {
@@ -501,6 +501,15 @@ describe('RFC message-mechanics assertions', () => {
     expect(runScript(script, { code: 200, requestHeaders: { 'Content-Type': 'application/merge-patch+json' }, requestBody: { mode: 'raw', raw: '{bad' } })[PRECOND_TEST]).toBe('fail');
   });
 
+  it('validates visible date-based preconditions', () => {
+    expect(runScript(script, { code: 200, requestHeaders: { 'If-Modified-Since': 'yesterday' } })[PRECOND_TEST]).toBe('fail');
+    expect(runScript(script, { code: 200, requestHeaders: { 'If-Modified-Since': 'Wed, 21 Oct 2026 07:28:00 GMT' } })[PRECOND_TEST]).toBe('pass');
+    expect(runScript(scriptNoAuth, { code: 204, requestHeaders: { 'If-Modified-Since': 'Wed, 21 Oct 2026 07:28:00 GMT' } })[PRECOND_TEST]).toBe('fail');
+    expect(runScript(scriptNoAuth, { code: 204, requestHeaders: { 'If-Modified-Since': '{{since}}' } })[PRECOND_TEST]).toBe('pass');
+    expect(runScript(scriptNoAuth, { code: 204, requestHeaders: { 'If-Unmodified-Since': 'soon' } })[PRECOND_TEST]).toBe('fail');
+    expect(runScript(scriptNoAuth, { code: 204, requestHeaders: { 'If-Unmodified-Since': 'Wed, 21 Oct 2026 07:28:00 GMT' } })[PRECOND_TEST]).toBe('pass');
+  });
+
   it('advisory channel always passes', () => {
     expect(runScript(script, { code: 200 })[ADVISORY_TEST]).toBe('pass');
   });
@@ -532,14 +541,63 @@ describe('RFC 9110 15.4.5 304 header consistency', () => {
   const script = createContractScript(indexFrom(SPEC_304).operations[0]!).join('\n');
 
   it('requires 304 responses to carry the headers the spec declares on the 200', () => {
-    expect(runScript(script, { code: 304 })[RFC9110]).toBe('fail');
-    expect(runScript(script, { code: 304, headers: { ETag: '"v1"' } })[RFC9110]).toBe('fail');
-    expect(runScript(script, { code: 304, headers: { ETag: '"v1"', 'Cache-Control': 'max-age=60' } })[RFC9110]).toBe('pass');
+    expect(runScript(script, { code: 304, requestHeaders: { 'If-None-Match': '"v1"' } })[RFC9110]).toBe('fail');
+    expect(runScript(script, { code: 304, requestHeaders: { 'If-None-Match': '"v1"' }, headers: { ETag: '"v1"' } })[RFC9110]).toBe('fail');
+    expect(runScript(script, { code: 304, requestHeaders: { 'If-None-Match': '"v1"' }, headers: { ETag: '"v1"', 'Cache-Control': 'max-age=60' } })[RFC9110]).toBe('pass');
   });
 
   it('does not demand undeclared headers on a 304', () => {
     const plain = createContractScript(indexFrom(SPEC).operations.find((op) => op.method === 'GET')!).join('\n');
-    expect(runScript(plain, { code: 304 })[RFC9110]).toBe('pass');
+    expect(runScript(plain, { code: 304, requestHeaders: { 'If-Modified-Since': 'Wed, 21 Oct 2026 07:28:00 GMT' } })[RFC9110]).toBe('pass');
+  });
+});
+
+describe('RFC conditional response semantics', () => {
+  const CONDITIONAL_SPEC = [
+    'openapi: 3.1.0',
+    'info:',
+    '  title: T',
+    '  version: 1.0.0',
+    'paths:',
+    '  /cached:',
+    '    get:',
+    '      responses:',
+    "        '200': { description: OK }",
+    "        '304': { description: Not Modified }",
+    "        '412': { description: Precondition Failed }",
+    '    head:',
+    '      responses:',
+    "        '200': { description: OK }",
+    "        '304': { description: Not Modified }",
+    "        '412': { description: Precondition Failed }",
+    '    put:',
+    '      responses:',
+    "        '200': { description: OK }",
+    "        '304': { description: Not Modified }",
+    "        '412': { description: Precondition Failed }",
+    ''
+  ].join('\n');
+  const conditionalIndex = indexFrom(CONDITIONAL_SPEC);
+  const getScript = createContractScript(conditionalIndex.operations.find((op) => op.method === 'GET')!).join('\n');
+  const headScript = createContractScript(conditionalIndex.operations.find((op) => op.method === 'HEAD')!).join('\n');
+  const putScript = createContractScript(conditionalIndex.operations.find((op) => op.method === 'PUT')!).join('\n');
+
+  it('limits 304 to conditional GET/HEAD requests with visible validators', () => {
+    expect(runScript(getScript, { code: 304 })[RFC9110]).toBe('fail');
+    expect(runScript(getScript, { code: 304, requestHeaders: { 'If-None-Match': '{{etag}}' } })[RFC9110]).toBe('fail');
+    expect(runScript(getScript, { code: 304, requestHeaders: { 'If-None-Match': '"v1"' } })[RFC9110]).toBe('pass');
+    expect(runScript(headScript, { code: 304, requestHeaders: { 'If-Modified-Since': 'Wed, 21 Oct 2026 07:28:00 GMT' } })[RFC9110]).toBe('pass');
+    expect(runScript(putScript, { code: 304, requestHeaders: { 'If-None-Match': '"v1"' } })[RFC9110]).toBe('fail');
+  });
+
+  it('requires a visible 412 precondition and picks the If-None-Match branch when it is sole-causal', () => {
+    expect(runScript(getScript, { code: 412 })[RFC9110]).toBe('fail');
+    expect(runScript(getScript, { code: 412, requestHeaders: { 'If-Match': '{{etag}}' } })[RFC9110]).toBe('fail');
+    expect(runScript(getScript, { code: 412, requestHeaders: { 'If-Match': '"v1"' } })[RFC9110]).toBe('pass');
+    expect(runScript(getScript, { code: 412, requestHeaders: { 'If-Modified-Since': 'Wed, 21 Oct 2026 07:28:00 GMT' } })[RFC9110]).toBe('fail');
+    expect(runScript(getScript, { code: 412, requestHeaders: { 'If-None-Match': '"v1"' } })[RFC9110]).toBe('fail');
+    expect(runScript(getScript, { code: 412, requestHeaders: { 'If-None-Match': '"v1"', 'If-Match': '"v2"' } })[RFC9110]).toBe('pass');
+    expect(runScript(putScript, { code: 412, requestHeaders: { 'If-None-Match': '"v1"' } })[RFC9110]).toBe('pass');
   });
 });
 

@@ -17,10 +17,17 @@
 // Output ordering is deterministic (servers/tools already sorted upstream) so
 // repeated builds and golden snapshots are stable.
 
-import type { McpContractIndex, McpServerDescriptor, McpToolDescriptor } from './mcp-parser.js';
+import type {
+  McpContractIndex,
+  McpPromptDescriptor,
+  McpResourceDescriptor,
+  McpServerDescriptor,
+  McpToolDescriptor
+} from './mcp-parser.js';
 import {
   badVersionScript,
   bogusBearerScript,
+  getPromptScript,
   initializeScript,
   initializedNotificationScript,
   cursorProbePrerequest,
@@ -28,10 +35,13 @@ import {
   invalidCursorScript,
   nextCursorScript,
   oldSessionPingScript,
+  promptsListScript,
   sessionRequiredScript,
   pingScript,
   progressToolCallScript,
   protectedResourceMetadataScript,
+  readResourceScript,
+  resourcesListScript,
   resourceTemplatesScript,
   terminateScript,
   toolsCallScript,
@@ -100,14 +110,41 @@ function toolsListMessage(): string {
   return jsonRpc(2, 'tools/list', {});
 }
 
+function resourcesListMessage(): string {
+  return jsonRpc(8, 'resources/list', {});
+}
+
+function promptsListMessage(): string {
+  return jsonRpc(9, 'prompts/list', {});
+}
+
 function toolArguments(tool: McpToolDescriptor): JsonRecord {
   return (asRecord(tool.sampleArguments) ?? {}) as JsonRecord;
+}
+
+function promptArguments(prompt: McpPromptDescriptor): JsonRecord {
+  const out: JsonRecord = {};
+  for (const argument of prompt.arguments) out[argument.name] = 'string';
+  return out;
 }
 
 function toolsCallMessage(tool: McpToolDescriptor, id: string | number = 3): string {
   return jsonRpcWithId(id, 'tools/call', {
     name: tool.name,
     arguments: toolArguments(tool)
+  });
+}
+
+function readResourceMessage(resource: McpResourceDescriptor, id: string | number): string {
+  return jsonRpcWithId(id, 'resources/read', {
+    uri: resource.uri
+  });
+}
+
+function getPromptMessage(prompt: McpPromptDescriptor, id: string | number): string {
+  return jsonRpcWithId(id, 'prompts/get', {
+    name: prompt.name,
+    arguments: promptArguments(prompt)
   });
 }
 
@@ -139,7 +176,7 @@ function protectedResourceMetadataUrl(serverUrl: string): string | null {
 // Shared with the instrumenter's coverage gate so builder drift fails closed.
 export function expectedRuntimeItemCount(index: McpContractIndex, server: McpServerDescriptor): number {
   if (server.transport !== 'sse' || !server.url) return 0;
-  let count = 12 + index.tools.length;
+  let count = 14 + index.tools.length + index.resources.length + index.prompts.length;
   if (index.tools.length > 0) count += 1;
   if (hasAuthorizationHeader(server)) {
     count += 2;
@@ -170,6 +207,10 @@ function withSession(headers: Array<{ key: string; value: string }>): Array<{ ke
 
 function body(content: string): JsonRecord {
   return { type: 'json', content };
+}
+
+function compactJsonMessage(message: string): string {
+  return JSON.stringify(JSON.parse(message));
 }
 
 function event(script: string): JsonRecord {
@@ -210,6 +251,8 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
     httpItem(seed, `srv:${server.id}:http:initialized`, `${server.id} · HTTP notifications/initialized`, server.url, 'POST', sessionHeaders, jsonRpcNotification('notifications/initialized'), initializedNotificationScript()),
     httpItem(seed, `srv:${server.id}:http:ping`, `${server.id} · HTTP ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-ping', 'ping'), pingScript()),
     httpItem(seed, `srv:${server.id}:http:tools/list`, `${server.id} · HTTP tools/list`, server.url, 'POST', sessionHeaders, toolsListMessage(), toolsListScript(index.tools.map((tool) => tool.name))),
+    httpItem(seed, `srv:${server.id}:http:resources/list`, `${server.id} · HTTP resources/list`, server.url, 'POST', sessionHeaders, resourcesListMessage(), resourcesListScript(index.resources.map((resource) => resource.name))),
+    httpItem(seed, `srv:${server.id}:http:prompts/list`, `${server.id} · HTTP prompts/list`, server.url, 'POST', sessionHeaders, promptsListMessage(), promptsListScript(index.prompts.map((prompt) => prompt.name))),
     // Session-requirement probe: same ping, deliberately without the session
     // header (base headers), after initialize has had a chance to issue one.
     httpItem(seed, `srv:${server.id}:http:no-session-ping`, `${server.id} · HTTP ping without session id`, server.url, 'POST', headers, jsonRpcWithId('pm-nosession', 'ping'), sessionRequiredScript()),
@@ -223,6 +266,18 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
     const { script } = toolsCallScript(index, tool, requestId);
     items.push(
       httpItem(seed, `srv:${server.id}:http:tools/call:${tool.name}`, `${server.id} · HTTP tools/call ${tool.name}`, server.url, 'POST', sessionHeaders, toolsCallMessage(tool, requestId), script)
+    );
+  }
+  for (const resource of index.resources) {
+    const requestId = `pm-resource-read:${resource.name}`;
+    items.push(
+      httpItem(seed, `srv:${server.id}:http:resources/read:${resource.name}`, `${server.id} · HTTP resources/read ${resource.name}`, server.url, 'POST', sessionHeaders, readResourceMessage(resource, requestId), readResourceScript(resource.uri))
+    );
+  }
+  for (const prompt of index.prompts) {
+    const requestId = `pm-prompt-get:${prompt.name}`;
+    items.push(
+      httpItem(seed, `srv:${server.id}:http:prompts/get:${prompt.name}`, `${server.id} · HTTP prompts/get ${prompt.name}`, server.url, 'POST', sessionHeaders, getPromptMessage(prompt, requestId), getPromptScript(prompt.name))
     );
   }
   items.push(
@@ -259,7 +314,7 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
 
 function serverPayload(server: McpServerDescriptor, message: string): JsonRecord {
   if (server.transport === 'stdio') {
-    const payload: JsonRecord = { transport: 'stdio', message };
+    const payload: JsonRecord = { transport: 'stdio', message: compactJsonMessage(message) };
     if (server.command) payload.command = server.command;
     if (server.env.length > 0) payload.env = server.env.map((entry) => ({ key: entry.key, value: entry.value }));
     return payload;
@@ -295,9 +350,21 @@ export function buildMcpCollection(index: McpContractIndex, options: McpCollecti
   for (const server of index.servers) {
     item.push(buildItem(server, `srv:${server.id}:initialize`, `${server.id} · initialize`, initializeMessage(options), options));
     item.push(buildItem(server, `srv:${server.id}:tools/list`, `${server.id} · tools/list`, toolsListMessage(), options));
+    item.push(buildItem(server, `srv:${server.id}:resources/list`, `${server.id} · resources/list`, resourcesListMessage(), options));
+    item.push(buildItem(server, `srv:${server.id}:prompts/list`, `${server.id} · prompts/list`, promptsListMessage(), options));
     for (const [i, tool] of index.tools.entries()) {
       item.push(
         buildItem(server, `srv:${server.id}:tools/call:${tool.name}`, `${server.id} · tools/call ${tool.name}`, toolsCallMessage(tool, 3 + i), options)
+      );
+    }
+    for (const resource of index.resources) {
+      item.push(
+        buildItem(server, `srv:${server.id}:resources/read:${resource.name}`, `${server.id} · resources/read ${resource.name}`, readResourceMessage(resource, `pm-resource-read:${resource.name}`), options)
+      );
+    }
+    for (const prompt of index.prompts) {
+      item.push(
+        buildItem(server, `srv:${server.id}:prompts/get:${prompt.name}`, `${server.id} · prompts/get ${prompt.name}`, getPromptMessage(prompt, `pm-prompt-get:${prompt.name}`), options)
       );
     }
     item.push(...runtimeItems(index, server, options));

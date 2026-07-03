@@ -10,11 +10,13 @@
 // JSON additionally gets raw-shape lints for violations buildClientSchema
 // silently tolerates (duplicate type names, NON_NULL directly wrapping
 // NON_NULL, non-boolean isDeprecated, non-OBJECT possibleTypes, unknown
-// directive locations).
+// directive locations, and built-in directive shape drift).
 import {
   DirectiveLocation,
   Kind,
+  buildSchema,
   getNamedType,
+  introspectionFromSchema,
   isEnumType,
   isInputObjectType,
   isInterfaceType,
@@ -44,6 +46,63 @@ function asArray(value: unknown): unknown[] {
 const BUILT_IN_SCALAR_NAMES = new Set(specifiedScalarTypes.map((scalar) => scalar.name));
 const VALID_TYPE_KINDS = new Set(['SCALAR', 'OBJECT', 'INTERFACE', 'UNION', 'ENUM', 'INPUT_OBJECT', 'LIST', 'NON_NULL']);
 const VALID_DIRECTIVE_LOCATIONS = new Set<string>(Object.values(DirectiveLocation));
+
+interface IntrospectionDirectiveArgShape {
+  name: string;
+  type: string | null;
+  defaultValue: unknown;
+}
+
+interface IntrospectionDirectiveShape {
+  isRepeatable: boolean;
+  locations: string[];
+  args: IntrospectionDirectiveArgShape[];
+}
+
+function renderIntrospectionTypeRef(ref: unknown, depth = 0): string | null {
+  const current = asRecord(ref);
+  if (!current || depth > 32 || typeof current.kind !== 'string') return null;
+  if (current.kind === 'NON_NULL') {
+    const inner = renderIntrospectionTypeRef(current.ofType, depth + 1);
+    return inner ? inner + '!' : null;
+  }
+  if (current.kind === 'LIST') {
+    const inner = renderIntrospectionTypeRef(current.ofType, depth + 1);
+    return inner ? '[' + inner + ']' : null;
+  }
+  return typeof current.name === 'string' && current.name.length > 0 ? current.name : null;
+}
+
+function readIntrospectionDirectiveShape(value: unknown): IntrospectionDirectiveShape | null {
+  const directive = asRecord(value);
+  if (!directive || typeof directive.isRepeatable !== 'boolean') return null;
+  return {
+    isRepeatable: directive.isRepeatable,
+    locations: asArray(directive.locations).filter((entry): entry is string => typeof entry === 'string'),
+    args: asArray(directive.args)
+      .map(asRecord)
+      .filter((entry): entry is JsonRecord => entry !== null && typeof entry.name === 'string')
+      .map((arg) => ({
+        name: arg.name as string,
+        type: renderIntrospectionTypeRef(arg.type),
+        defaultValue: Object.prototype.hasOwnProperty.call(arg, 'defaultValue') ? arg.defaultValue : undefined
+      }))
+  };
+}
+
+const BUILT_IN_INTROSPECTION_DIRECTIVE_SHAPES = (() => {
+  const shapes = new Map<string, IntrospectionDirectiveShape>();
+  const reference = introspectionFromSchema(buildSchema('type Query { _: Boolean }')) as unknown;
+  const schemaRecord = asRecord(asRecord(reference)?.__schema);
+  if (!schemaRecord) return shapes;
+  for (const entry of asArray(schemaRecord.directives)) {
+    const directive = asRecord(entry);
+    if (!directive || typeof directive.name !== 'string') continue;
+    const shape = readIntrospectionDirectiveShape(directive);
+    if (shape) shapes.set(directive.name, shape);
+  }
+  return shapes;
+})();
 
 /**
  * Full type-system validation of a constructed schema (GraphQL spec 3: Type
@@ -385,12 +444,85 @@ function lintDeprecationFlags(entries: unknown[], context: string, warnings: str
   }
 }
 
+function formatIntrospectionValue(value: unknown): string {
+  return value === undefined ? '<missing>' : JSON.stringify(value);
+}
+
+function lintIntrospectionBuiltInDirectiveShapes(schemaRecord: JsonRecord): string[] {
+  const warnings: string[] = [];
+  const directives = new Map<string, JsonRecord>();
+  for (const entry of asArray(schemaRecord.directives)) {
+    const directive = asRecord(entry);
+    if (directive && typeof directive.name === 'string' && !directives.has(directive.name)) {
+      directives.set(directive.name, directive);
+    }
+  }
+
+  for (const [name, expected] of BUILT_IN_INTROSPECTION_DIRECTIVE_SHAPES) {
+    const actual = directives.get(name);
+    if (!actual) {
+      warnings.push('GQL_INTROSPECTION_DIRECTIVE_MISSING_BUILTIN: @' + name + ' is missing from __schema.directives; implementations must support @' + name + ' (GraphQL spec 3.13)');
+      continue;
+    }
+    if (typeof actual.isRepeatable === 'boolean' && actual.isRepeatable !== expected.isRepeatable) {
+      warnings.push('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @' + name + ' isRepeatable must be ' + String(expected.isRepeatable) + ' (GraphQL spec 3.13); got ' + String(actual.isRepeatable));
+    }
+
+    const actualLocations = new Set(asArray(actual.locations).filter((entry): entry is string => typeof entry === 'string'));
+    for (const location of BUILT_IN_DIRECTIVE_REQUIRED_LOCATIONS[name] ?? expected.locations) {
+      if (!actualLocations.has(location)) {
+        warnings.push('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @' + name + ' must be valid on ' + location + ' (GraphQL spec 3.13); the introspection definition omits it');
+      }
+    }
+    const expectedLocations = new Set(expected.locations);
+    for (const location of actualLocations) {
+      if (!expectedLocations.has(location)) {
+        warnings.push('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @' + name + ' declares location ' + location + ' beyond its spec definition (GraphQL spec 3.13)');
+      }
+    }
+
+    const actualShape = readIntrospectionDirectiveShape(actual);
+    const actualArgs = new Map((actualShape?.args ?? []).map((arg) => [arg.name, arg]));
+    const expectedArgs = new Map(expected.args.map((arg) => [arg.name, arg]));
+    for (const [argName, argShape] of expectedArgs) {
+      const actualArg = actualArgs.get(argName);
+      if (!actualArg) {
+        warnings.push('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @' + name + ' must declare argument ' + argName + ': ' + (argShape.type ?? '<invalid>') + ' (GraphQL spec 3.13)');
+        continue;
+      }
+      if (actualArg.type !== argShape.type) {
+        warnings.push('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @' + name + ' argument ' + argName + ' must be ' + (argShape.type ?? '<invalid>') + ' (GraphQL spec 3.13); got ' + (actualArg.type ?? '<invalid>'));
+      }
+      if (actualArg.defaultValue !== undefined && actualArg.defaultValue !== argShape.defaultValue) {
+        warnings.push(
+          'GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @' +
+            name +
+            ' argument ' +
+            argName +
+            ' defaultValue must be ' +
+            formatIntrospectionValue(argShape.defaultValue) +
+            ' (GraphQL spec 3.13); got ' +
+            formatIntrospectionValue(actualArg.defaultValue)
+        );
+      }
+    }
+    for (const argName of actualArgs.keys()) {
+      if (!expectedArgs.has(argName)) {
+        warnings.push('GQL_INTROSPECTION_BUILTIN_DIRECTIVE_SHAPE_DRIFT: @' + name + ' declares argument ' + argName + ' beyond its spec definition (GraphQL spec 3.13)');
+      }
+    }
+  }
+
+  return warnings;
+}
+
 /**
  * Raw-shape lints over an introspection JSON document, covering introspection
  * contract violations that buildClientSchema tolerates: duplicate type names
  * (last-one-wins in the constructed schema), unknown __TypeKind values,
  * non-OBJECT possibleTypes members, NON_NULL-in-NON_NULL wrappers, malformed
- * deprecation flags, and unknown directive locations.
+ * deprecation flags, unknown directive locations, and built-in directive
+ * shape drift.
  */
 export function lintIntrospectionJson(introspection: unknown): string[] {
   const warnings: string[] = [];
@@ -467,13 +599,7 @@ export function lintIntrospectionJson(introspection: unknown): string[] {
       warnings.push('GQL_INTROSPECTION_DIRECTIVE_DUPLICATE: directive @' + name + ' appears ' + count + ' times in __schema.directives; directive names must be unique (GraphQL spec 3.13)');
     }
   }
-  if (Array.isArray(schemaRecord.directives)) {
-    for (const required of ['skip', 'include']) {
-      if (!directiveNameCounts.has(required)) {
-        warnings.push('GQL_INTROSPECTION_DIRECTIVE_MISSING_BUILTIN: @' + required + ' is missing from __schema.directives; implementations must support @skip and @include (GraphQL spec 3.13)');
-      }
-    }
-  }
+  warnings.push(...lintIntrospectionBuiltInDirectiveShapes(schemaRecord));
   warnings.push(...lintIntrospectionRootMap(schemaRecord));
   warnings.push(...lintIntrospectionTypeMatrix(schemaRecord));
   warnings.push(...lintIntrospectionReferenceGraph(schemaRecord));
@@ -494,6 +620,19 @@ function introspectionTypesByName(entries: JsonRecord[]): Map<string, JsonRecord
   return byName;
 }
 
+function describeIntrospectionRootRecord(value: unknown): string {
+  if (value === undefined || value === null) return '<missing>';
+  const record = asRecord(value);
+  if (!record) return '<invalid>';
+  return typeof record.name === 'string' && record.name.length > 0 ? record.name : '<unnamed>';
+}
+
+function formatIntrospectionRootMap(schemaRecord: JsonRecord): string {
+  return ['query', 'mutation', 'subscription']
+    .map((rootKind) => rootKind + '=' + describeIntrospectionRootRecord(schemaRecord[rootKind + 'Type']))
+    .join(', ');
+}
+
 /**
  * Raw pre-build checks over the __schema root operation records: queryType must
  * name a type, every present root must name an OBJECT type, and the roots must
@@ -503,24 +642,56 @@ function lintIntrospectionRootMap(schemaRecord: JsonRecord): string[] {
   const warnings: string[] = [];
   const byName = introspectionTypesByName(introspectionTypeEntries(schemaRecord));
   const seen = new Map<string, string>();
+  const rootMap = formatIntrospectionRootMap(schemaRecord);
   for (const rootKind of ['query', 'mutation', 'subscription']) {
     const value = schemaRecord[rootKind + 'Type'];
     if (value === undefined || value === null) {
-      if (rootKind === 'query') warnings.push('GQL_INTROSPECTION_ROOT_INVALID: __schema.queryType must record the query root operation type (GraphQL spec 3.3)');
+      if (rootKind === 'query') {
+        warnings.push('GQL_INTROSPECTION_ROOT_INVALID: __schema.queryType must record the query root operation type (GraphQL spec 3.3). Root map: ' + rootMap);
+      }
       continue;
     }
     const record = asRecord(value);
     if (!record || typeof record.name !== 'string' || record.name.length === 0) {
-      warnings.push('GQL_INTROSPECTION_ROOT_INVALID: __schema.' + rootKind + 'Type must name the ' + rootKind + ' root operation type (GraphQL spec 3.3)');
+      warnings.push('GQL_INTROSPECTION_ROOT_INVALID: __schema.' + rootKind + 'Type must name the ' + rootKind + ' root operation type (GraphQL spec 3.3). Root map: ' + rootMap);
       continue;
     }
     const target = byName.get(record.name);
+    if (!target) {
+      warnings.push(
+        'GQL_INTROSPECTION_ROOT_INVALID: ' +
+          rootKind +
+          ' root operation type ' +
+          record.name +
+          ' must name a type present in __schema.types (GraphQL spec 3.3). Root map: ' +
+          rootMap
+      );
+      continue;
+    }
     if (target && typeof target.kind === 'string' && target.kind !== 'OBJECT') {
-      warnings.push('GQL_INTROSPECTION_ROOT_INVALID: ' + rootKind + ' root operation type ' + record.name + ' must be an OBJECT type (GraphQL spec 3.3); got ' + target.kind);
+      warnings.push(
+        'GQL_INTROSPECTION_ROOT_INVALID: ' +
+          rootKind +
+          ' root operation type ' +
+          record.name +
+          ' must be an OBJECT type (GraphQL spec 3.3); got ' +
+          target.kind +
+          '. Root map: ' +
+          rootMap
+      );
     }
     const prior = seen.get(record.name);
     if (prior) {
-      warnings.push('GQL_INTROSPECTION_ROOTS_NOT_DISTINCT: the ' + prior + ' and ' + rootKind + ' root operation types are both ' + record.name + '; root operation types must be distinct (GraphQL September 2025 edition 3.3)');
+      warnings.push(
+        'GQL_INTROSPECTION_ROOTS_NOT_DISTINCT: the ' +
+          prior +
+          ' and ' +
+          rootKind +
+          ' root operation types are both ' +
+          record.name +
+          '; root operation types must be distinct (GraphQL September 2025 edition 3.3). Root map: ' +
+          rootMap
+      );
     } else {
       seen.set(record.name, rootKind);
     }

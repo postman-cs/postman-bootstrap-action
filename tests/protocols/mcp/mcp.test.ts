@@ -350,8 +350,8 @@ describe('mcp collection builder', () => {
     const items = collection.item as JsonRecord[];
     // 2 servers x (initialize + initialized + tools/list + resources/list + prompts/list +
     // 2 tools/call + 2 resources/read + 1 prompts/get) mcp-request templates,
-    // plus 1 url-bearing server x (25 HTTP runtime probes/items).
-    expect(items).toHaveLength(45);
+    // plus 1 url-bearing server x (27 HTTP runtime probes/items).
+    expect(items).toHaveLength(47);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -672,6 +672,8 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP initialize',
       'io.github.example/weather remote-1 · HTTP notifications/initialized',
       'io.github.example/weather remote-1 · HTTP GET listen stream',
+      'io.github.example/weather remote-1 · HTTP notification framing',
+      'io.github.example/weather remote-1 · HTTP client response framing',
       'io.github.example/weather remote-1 · HTTP ping',
       'io.github.example/weather remote-1 · HTTP tools/list',
       'io.github.example/weather remote-1 · HTTP resources/list',
@@ -704,6 +706,12 @@ describe('mcp runtime HTTP scripts', () => {
     expect(((listen.payload as JsonRecord).headers as JsonRecord[]).find((h) => h.key === 'Accept')?.value).toBe('text/event-stream');
     expect(runtimeEventScript(listen, 'beforeRequest')).toContain('mcp_initialized_ok');
     expect(runtimeEventScript(listen)).toContain('must not carry JSON-RPC responses');
+    const notificationFraming = httpItems.find((item) => String(item.title).endsWith('HTTP notification framing'))!;
+    expect(JSON.parse(String(((notificationFraming.payload as JsonRecord).body as JsonRecord).content))).toMatchObject({ method: 'notifications/cancelled' });
+    expect(runtimeEventScript(notificationFraming)).toContain('without a response id');
+    const clientResponseFraming = httpItems.find((item) => String(item.title).endsWith('HTTP client response framing'))!;
+    expect(JSON.parse(String(((clientResponseFraming.payload as JsonRecord).body as JsonRecord).content))).toMatchObject({ result: {} });
+    expect(runtimeEventScript(clientResponseFraming)).toContain('without a response id');
     const ping = httpItems.find((item) => String(item.title).endsWith('HTTP ping'))!;
     const pingHeaders = ((ping.payload as JsonRecord).headers as JsonRecord[]);
     expect(pingHeaders.map((h) => h.key)).toContain('Mcp-Session-Id');
@@ -851,6 +859,38 @@ describe('mcp runtime HTTP scripts', () => {
         'MCP GET listen returns an SSE stream or HTTP 405 (MCP 2025-06-18 Streamable HTTP)'
       )?.passed
     ).toBe(true);
+  });
+
+  it('validates id-less notification and client-response POST rejection framing', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const httpItems = (collection.item as JsonRecord[]).filter((item) => item.type === 'http-request');
+    const notification = httpItems.find((item) => String(item.title).endsWith('HTTP notification framing'))!;
+    const script = runtimeEventScript(notification);
+
+    const accepted = runMcpScript(script, undefined, new Map(), { code: 202, text: '' });
+    expect(
+      runtimeTestResult(
+        accepted.results,
+        'MCP notification/client notification POST is accepted or rejected without a response id (MCP 2025-06-18 Streamable HTTP; JSON-RPC 2.0 notifications)'
+      )?.passed
+    ).toBe(true);
+
+    const idlessError = runMcpScript(script, { jsonrpc: '2.0', error: { code: -32600, message: 'bad notification' } }, new Map(), { code: 400 });
+    expect(
+      runtimeTestResult(
+        idlessError.results,
+        'MCP notification/client notification POST is accepted or rejected without a response id (MCP 2025-06-18 Streamable HTTP; JSON-RPC 2.0 notifications)'
+      )?.passed
+    ).toBe(true);
+
+    const badError = runMcpScript(script, { jsonrpc: '2.0', id: 'pm-contract-probe', error: { code: -32600, message: 'bad notification' } }, new Map(), { code: 400 });
+    expect(
+      runtimeTestResult(
+        badError.results,
+        'MCP notification/client notification POST is accepted or rejected without a response id (MCP 2025-06-18 Streamable HTTP; JSON-RPC 2.0 notifications)'
+      )?.passed
+    ).toBe(false);
   });
 
   it('audits POST SSE streams and returns the terminal JSON-RPC response to normal assertions', () => {

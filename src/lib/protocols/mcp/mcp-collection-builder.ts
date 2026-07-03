@@ -27,6 +27,7 @@ import type {
 import {
   badVersionScript,
   bogusBearerScript,
+  clientResponsePostFramingScript,
   getListenScript,
   getPromptScript,
   initializeScript,
@@ -38,6 +39,7 @@ import {
   invalidCursorScript,
   nextCursorScript,
   oldSessionPingScript,
+  notificationPostFramingScript,
   promptsListScript,
   sessionRequiredScript,
   pingScript,
@@ -102,6 +104,14 @@ function jsonRpcWithId(id: string | number, method: string, params?: JsonRecord)
 
 function jsonRpcNotification(method: string): string {
   return JSON.stringify({ jsonrpc: '2.0', method }, null, 2);
+}
+
+function jsonRpcNotificationWithParams(method: string, params: JsonRecord): string {
+  return JSON.stringify({ jsonrpc: '2.0', method, params }, null, 2);
+}
+
+function jsonRpcClientResponse(id: string | number): string {
+  return JSON.stringify({ jsonrpc: '2.0', id, result: {} }, null, 2);
 }
 
 function initializeMessage(options: McpCollectionOptions): string {
@@ -186,7 +196,7 @@ function protectedResourceMetadataUrl(serverUrl: string): string | null {
 // Shared with the instrumenter's coverage gate so builder drift fails closed.
 export function expectedRuntimeItemCount(index: McpContractIndex, server: McpServerDescriptor): number {
   if (server.transport !== 'sse' || !server.url) return 0;
-  let count = 19 + index.tools.length + index.resources.length + index.prompts.length;
+  let count = 21 + index.tools.length + index.resources.length + index.prompts.length;
   if (index.tools.length > 0) count += 1;
   if (hasAuthorizationHeader(server)) {
     count += 2;
@@ -284,6 +294,8 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
     httpItem(seed, `srv:${server.id}:http:initialize`, `${server.id} · HTTP initialize`, server.url, 'POST', headers, initializeMessage(options), initializeScript()),
     httpItem(seed, `srv:${server.id}:http:initialized`, `${server.id} · HTTP notifications/initialized`, server.url, 'POST', sessionHeaders, jsonRpcNotification('notifications/initialized'), initializedNotificationScript(), initializeSucceededPrerequest()),
     httpItem(seed, `srv:${server.id}:http:get-listen`, `${server.id} · HTTP GET listen stream`, server.url, 'GET', listenHeaders(headers), undefined, getListenScript(), postInitializeGuard),
+    httpItem(seed, `srv:${server.id}:http:notification-framing`, `${server.id} · HTTP notification framing`, server.url, 'POST', sessionHeaders, jsonRpcNotificationWithParams('notifications/cancelled', { requestId: 'pm-contract-probe', reason: 'postman-contract-probe' }), notificationPostFramingScript(), postInitializeGuard),
+    httpItem(seed, `srv:${server.id}:http:client-response-framing`, `${server.id} · HTTP client response framing`, server.url, 'POST', sessionHeaders, jsonRpcClientResponse('pm-server-request'), clientResponsePostFramingScript(), postInitializeGuard),
     httpItem(seed, `srv:${server.id}:http:ping`, `${server.id} · HTTP ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-ping', 'ping'), pingScript(), postInitializeGuard),
     httpItem(seed, `srv:${server.id}:http:tools/list`, `${server.id} · HTTP tools/list`, server.url, 'POST', sessionHeaders, toolsListMessage(), toolsListScript(index.tools.map((tool) => tool.name)), postInitializeGuard),
     httpItem(seed, `srv:${server.id}:http:resources/list`, `${server.id} · HTTP resources/list`, server.url, 'POST', sessionHeaders, resourcesListMessage(), resourcesListScript(index.resources.map((resource) => resource.name)), postInitializeGuard),

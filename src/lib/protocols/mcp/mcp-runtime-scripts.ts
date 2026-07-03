@@ -73,6 +73,17 @@ function mcpResponseMessages(label) {
   var body = mcpResponseBody();
   return Array.isArray(body) ? body : [body];
 }
+function mcpIdlessPostErrorBody(label) {
+  var raw = pm.response.text();
+  if (!raw) return undefined;
+  var contentType = pm.response.headers.get('Content-Type') || '';
+  if (/text\\/event-stream/i.test(contentType)) {
+    var payloads = mcpSseJsonPayloads(label);
+    pm.expect(payloads.length, label + ' rejection stream contains exactly one JSON-RPC error payload').to.eql(1);
+    return payloads[0];
+  }
+  return JSON.parse(raw);
+}
 function mcpAssertPreInitializedSseMessages() {
   var contentType = pm.response.headers.get('Content-Type') || '';
   if (!/text\\/event-stream/i.test(contentType)) return;
@@ -323,6 +334,28 @@ export function initializedNotificationScript(): string {
     "pm.collectionVariables.unset('mcp_initialized_ok');",
     `pm.test('MCP initialized notification returns HTTP 202 with empty body (MCP 2025-06-18 transports)', function () { pm.expect(pm.response.code).to.eql(202); pm.expect(pm.response.text()).to.eql(''); pm.collectionVariables.set('mcp_initialized_ok', 'true'); });`
   ]);
+}
+
+function idlessPostFramingScript(label: string): string {
+  return join([
+    `var idlessPostLabel = ${json(label)};`,
+    "pm.test('MCP ' + idlessPostLabel + ' POST is accepted or rejected without a response id (MCP 2025-06-18 Streamable HTTP; JSON-RPC 2.0 notifications)', function () {",
+    '  if (pm.response.code === 202) { pm.expect(pm.response.text()).to.eql(\'\'); return; }',
+    "  pm.expect(pm.response.code, idlessPostLabel + ' rejection status').to.be.within(400, 499);",
+    '  var body = mcpIdlessPostErrorBody(idlessPostLabel);',
+    "  if (body === undefined) return;",
+    '  mcpAssertErrorShape(idlessPostLabel, body);',
+    "  if (Object.prototype.hasOwnProperty.call(body, 'id')) pm.expect.fail(idlessPostLabel + ' rejection body must not include id for an id-less notification/client response POST; got ' + JSON.stringify(body.id));",
+    '});'
+  ]);
+}
+
+export function notificationPostFramingScript(): string {
+  return idlessPostFramingScript('notification/client notification');
+}
+
+export function clientResponsePostFramingScript(): string {
+  return idlessPostFramingScript('client response');
 }
 
 export function pingScript(): string {

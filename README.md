@@ -4,25 +4,17 @@
 
 Provisions a [Postman workspace](https://learning.postman.com/docs/collaborating-in-postman/using-workspaces/overview/) from an OpenAPI spec, generating baseline, smoke, and contract collections in one step.
 
-Part of the [Postman API Onboarding suite](https://github.com/postman-cs/postman-api-onboarding-action).
+Every generated collection ships with executable contract tests compiled from your spec: OpenAPI request, response, schema, and security checks grounded in the governing RFCs, plus dedicated gRPC, SOAP, GraphQL, AsyncAPI, and MCP lanes. The full test inventory and the standard behind each check: [Generated assertions](docs/generated-assertions.md) and [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
 
-> **Standards-grounded assertion generation.** Every collection this action generates ships with executable contract tests compiled from your spec. For OpenAPI: operation mapping, status-code, `Content-Type`, response-header, request/response body, parameter, security-credential, and `Content-Length` checks, with JSON Schema (draft-07 / 2020-12) body validation, dialect-exclusive keyword rejection, and RFC-checked formats (RFC 3339 timestamps, RFC 4122 UUIDs, RFC 3986 URIs, and more). Layered on top: RFC 9110 status-code, framing, and field-syntax requirements, RFC 9457 `application/problem+json` error bodies with RFC 8259 encoding and RFC 8288 `Link` checks, RFC 6265 `Set-Cookie`, RFC 6797 HSTS and security headers, WHATWG Fetch CORS, RFC 9651 structured fields, RFC 9209 typed `Proxy-Status`, RFC 9421 message signatures, RFC 9530 body digests, `Accept` negotiation, media-type conventions (NDJSON, multipart boundaries, HAL, JSON:API), authentication-scheme credential grammar, preconditions and RFC 6902 / RFC 7386 patch bodies, `Deprecation`/`Sunset` advisories, and OpenAPI links/servers resolution. Beyond REST: canonical proto3 JSON well-known-type validation for gRPC with per-streamed-message shape checks, metadata/trailer wire-conformance, and generation-time `.proto` lints; version-aware SOAP 1.1/1.2 media-type and Fault-status checks plus WS-I Basic Profile 1.1 runtime and WSDL document conformance; GraphQL-over-HTTP media-type/status discipline with full type-system schema validation and generated-document self-checks; static AsyncAPI WebSocket / Socket.IO / MQTT message validation with document-wide object-model lints; and MCP server-manifest contract checks with a runnable MCP 2025-06-18 Streamable HTTP transport lane. The full test inventory and the standard behind each check: [Generated assertions](docs/generated-assertions.md) and [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
+Part of the [Postman API Onboarding suite](https://github.com/postman-cs/postman-api-onboarding-action); the composite action's README has the full [action-picker table](https://github.com/postman-cs/postman-api-onboarding-action#which-action-should-i-use).
 
-## Which action should I use?
-
-| Need | Use |
-| --- | --- |
-| Full API onboarding pipeline | [`postman-cs/postman-api-onboarding-action`](https://github.com/postman-cs/postman-api-onboarding-action) |
-| Mint a service-account access token for the pipeline | [`postman-cs/postman-resolve-service-token-action`](https://github.com/postman-cs/postman-resolve-service-token-action) |
-| Create or refresh Postman workspaces, specs, and generated collections | This bootstrap action |
-| Discover OpenAPI specs from AWS services | [`postman-cs/postman-aws-spec-discovery-action`](https://github.com/postman-cs/postman-aws-spec-discovery-action) |
-| Apply a curated flow.yaml to the Smoke collection | [`postman-cs/postman-smoke-flow-action`](https://github.com/postman-cs/postman-smoke-flow-action) |
-| Sync generated Postman artifacts back to the repo | [`postman-cs/postman-repo-sync-action`](https://github.com/postman-cs/postman-repo-sync-action) |
-| Link Insights discovered services to the workspace | [`postman-cs/postman-insights-onboarding-action`](https://github.com/postman-cs/postman-insights-onboarding-action) |
-
-## Region
-
-The action defaults to the US production region (`postman-region: us`). [EU data residency](https://learning.postman.com/docs/administration/enterprise/about-eu-data-residency/) teams should set `postman-region: eu` on this action and on the service-token step that feeds it.
+- [Usage](#usage)
+- [Common scenarios](#common-scenarios)
+- [Inputs](#inputs) / [Outputs](#outputs)
+- [CLI usage (non-GitHub CI)](#cli-usage-non-github-ci)
+- [How it works](#how-it-works)
+- [Dynamic contract tests](#dynamic-contract-tests)
+- [Enforcement layers and error codes](#enforcement-layers-and-error-codes)
 
 ## Usage
 
@@ -52,13 +44,18 @@ jobs:
           credential-preflight: enforce
 ```
 
-Provide either `spec-url` (public HTTPS) or `spec-path` (a file in the checked-out repo) for the [Spec Hub import](https://learning.postman.com/docs/design-apis/specifications/import-a-specification/) path. Mint the `postman-access-token` with the [service-token action](https://github.com/postman-cs/postman-resolve-service-token-action): it is the primary credential and carries every Postman asset operation (workspace, spec, collection generation and mutation, tagging, team scope) over the access-token gateway. A [Postman service account](https://learning.postman.com/docs/administration/service-accounts/) PMAK for `postman-api-key` is optional — it mints and re-mints that access token and logs the Postman CLI in for `spec lint`. See [Obtaining Credentials](docs/credentials.md) for the credential matrix and legacy fallback.
+Provide either `spec-url` (public HTTPS) or `spec-path` (a file in the checked-out repo) for the [Spec Hub import](https://learning.postman.com/docs/design-apis/specifications/import-a-specification/) path.
+
+Mint the `postman-access-token` with the [service-token action](https://github.com/postman-cs/postman-resolve-service-token-action): it is the primary credential and carries every Postman asset operation. A [service account](https://learning.postman.com/docs/administration/service-accounts/) PMAK for `postman-api-key` is optional; it mints and re-mints that access token and logs the Postman CLI in for `spec lint`. See [Obtaining Credentials](docs/credentials.md) for the credential matrix and legacy fallback.
+
+> [!NOTE]
+> The action defaults to the US production region (`postman-region: us`). [EU data residency](https://learning.postman.com/docs/administration/enterprise/about-eu-data-residency/) teams should set `postman-region: eu` on this action and on the service-token step that feeds it.
 
 ## Common scenarios
 
 ### Git-first spec from the repository
 
-For Git-first workflows, read the OpenAPI document directly from the checked-out workspace instead of hosting it over HTTPS:
+Read the OpenAPI document directly from the checked-out workspace instead of hosting it over HTTPS:
 
 ```yaml
 - uses: actions/checkout@v5
@@ -224,6 +221,8 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `breaking-change-summary-json` | JSON summary of the OpenAPI breaking-change check | n/a | n/a |
 <!-- outputs-table:end -->
 
+Regenerate both tables from `action.yml` with `npm run docs:tables`.
+
 ## CLI usage (non-GitHub CI)
 
 The same bootstrap is available as a CLI for GitLab CI, Bitbucket Pipelines, Azure DevOps, and other CI systems. GitHub Actions users should continue using the `action.yml` interface.
@@ -256,60 +255,29 @@ bootstrap:
       - bootstrap.env
 ```
 
-Example Bitbucket Pipelines step:
-
-```yaml
-pipelines:
-  default:
-    - step:
-        image: node:24
-        script:
-          - npm install -g @postman-cse/onboarding-bootstrap
-          - postman-bootstrap --project-name core-payments --spec-url "https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
-        artifacts:
-          - bootstrap-result.json
-          - bootstrap.env
-```
-
-Example Azure DevOps job:
-
-```yaml
-steps:
-  - task: NodeTool@0
-    inputs:
-      versionSpec: '24.x'
-  - script: |
-      npm install -g @postman-cse/onboarding-bootstrap
-      postman-bootstrap --project-name core-payments --spec-url "https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml" --postman-api-key "$(POSTMAN_API_KEY)" --postman-access-token "$(POSTMAN_ACCESS_TOKEN)" --result-json bootstrap-result.json --dotenv-path bootstrap.env
-    displayName: Bootstrap Postman assets
-  - publish: bootstrap-result.json
-  - publish: bootstrap.env
-```
+The same command works verbatim on any Node 24 runner: Bitbucket Pipelines with a `node:24` image, or Azure DevOps after a `NodeTool@0` step with `versionSpec: '24.x'`.
 
 ## How it works
 
 The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), generate or reuse baseline, smoke, and contract collections, inject generated tests, apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
 
-- **Phase independence:** bootstrap succeeds on its own even when later pipeline stages (repo sync, Insights) fail, and reruns reuse existing assets. See [Bootstrap Phase Independence](docs/bootstrap-phase-independence.md).
-- **Team identity:** the team ID is resolved from the access-token session identity; org-mode tenants pass `workspace-team-id` for the sub-team that should own the workspace. See [Team Identity](docs/team-identity.md).
+- **Phase independence:** bootstrap succeeds on its own even when later pipeline stages fail, and reruns reuse existing assets. See [Bootstrap Phase Independence](docs/bootstrap-phase-independence.md).
+- **Team identity:** the team ID is resolved from the access-token session identity; org-mode tenants pass `workspace-team-id`. See [Team Identity](docs/team-identity.md).
 - **Git providers:** workspace-to-repository linking supports GitHub and GitLab, cloud and self-hosted. See [Git Provider Support](docs/git-provider-support.md).
 - **Spec handling:** operation summaries are normalized before upload, `spec-url` fetches are SSRF-hardened HTTPS with pinned DNS, and breaking-change comparison runs before any Postman mutation when enabled. See [OpenAPI Spec Handling](docs/spec-handling.md).
 - **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, cloud spec-to-collection syncing, and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
-- **Credentials:** `postman-access-token` is the primary credential and carries every asset operation over the gateway; the optional `postman-api-key` powers access-token minting and the Postman CLI `spec lint` login. See [Obtaining Credentials](docs/credentials.md).
-- **Protocol write split:** GraphQL and SOAP build v2.1.0 collections created through the public collections API with `postman-api-key`. gRPC builds a v3/Extensible Collection (the only schema with the `grpc-request` item type) and is created through the gateway EC API, which is access-token only — so gRPC **hard-requires** `postman-access-token` and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when it is absent (`resolve-service-token` mints one). See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
-- **Required protocol coverage:** WebSocket / Socket.IO via AsyncAPI, AsyncAPI non-JSON payload validation, AsyncAPI 3.x, and MQTT / LLM / MCP all need production-grade contract assertion generation. Current gaps and required end state are tracked in [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md#required-production-grade-coverage).
+- **Credentials:** `postman-access-token` is the primary credential for every asset operation; the optional `postman-api-key` powers access-token minting and the Postman CLI `spec lint` login. See [Obtaining Credentials](docs/credentials.md).
+- **Protocol write split:** GraphQL and SOAP build v2.1.0 collections through the public collections API with `postman-api-key`. gRPC builds a v3/Extensible Collection through the gateway EC API, which is access-token only — so gRPC **hard-requires** `postman-access-token` and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when it is absent. See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
 
 ## Dynamic contract tests
 
 Before any durable contract collection is overwritten, the action hardens the generated `[Contract]` collection against the resolved OpenAPI 3.0/3.1 document: it bundles and validates the spec, requires exactly one generated request per eligible operation, instruments each request with OpenAPI-derived runtime checks (status codes, headers, body presence, `Content-Type`, JSON schemas, security credential presence, request parameter and body values), and enforces script safety and size gates. Spec updates capture the previous content hash so failed runs can roll back, and refresh mode stages generated collections before touching durable ones.
 
-Full pipeline, validation scope, OpenAPI semantics, limits, and rollback behavior are documented in [Dynamic Contract Tests](docs/dynamic-contract-tests.md).
-
-The user-facing inventory of everything above — the exact test names per protocol, the RFC or specification each check enforces, and what to do when one fails — is in [Generated Assertions](docs/generated-assertions.md). How these runtime tests relate to the bootstrap-time static lints (two enforcement layers over the same contract, neither subsuming the other) is in [Contract Enforcement Layers](docs/contract-enforcement-layers.md).
+Full pipeline, validation scope, OpenAPI semantics, limits, and rollback behavior: [Dynamic Contract Tests](docs/dynamic-contract-tests.md). The user-facing inventory — exact test names per protocol, the RFC each check enforces, and what to do when one fails — is in [Generated Assertions](docs/generated-assertions.md).
 
 ## Enforcement layers and error codes
 
-The action enforces the OpenAPI contract at three points with three failure modes. The full architecture -- what runs at bootstrap time versus inside the CI collection run, and why the same RFC rule appears in more than one layer -- is in [Contract Enforcement Layers](docs/contract-enforcement-layers.md).
+The action enforces the OpenAPI contract at three points with three failure modes. The full architecture — what runs at bootstrap time versus inside the CI collection run, and why the same RFC rule appears in more than one layer — is in [Contract Enforcement Layers](docs/contract-enforcement-layers.md).
 
 | Layer | When | Effect |
 | --- | --- | --- |
@@ -335,93 +303,25 @@ Representative codes:
 
 | Error code | Layer | Effect | Meaning |
 | --- | --- | --- | --- |
-| `CONTRACT_SPEC_FETCH_BLOCKED` | Spec loading | Fails the run | Spec/ref URL resolved to a blocked destination (SSRF policy) |
 | `CONTRACT_SPEC_VALIDATION_FAILED` | Spec loading | Fails the run | The bundled document failed OpenAPI validation |
 | `CONTRACT_OPERATION_COVERAGE_FAILED` | Instrumentation | Fails the run | Generated collection did not cover every eligible operation |
-| `CONTRACT_STATIC_REQUEST_CHECK_FAILED` | Instrumentation | Fails the run | A generated request misses a required parameter or body |
 | `CONTRACT_HEAD_RESPONSE_BODY` | Static lint | Warning | A HEAD operation declares response content (RFC 9110) |
-| `CONTRACT_304_METHOD` | Static lint | Warning | A 304 is declared on a method other than GET or HEAD |
-| `CONTRACT_OAUTH_TOKEN_IN_QUERY` | Static lint | Warning | A bearer/OAuth token is modeled in the query string |
 | `CONTRACT_SCHEMA_NOT_COMPILED` | Disclosure | Warning | One schema could not be compiled; its runtime check is skipped and disclosed |
-| `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED` | Disclosure | Warning | A non-JSON response schema is not runtime-validated |
-| `CONTRACT_SPEC_ROLLBACK_FAILED` | Orchestration | Fails the run | Previous spec restoration failed; the emitted SHA-256 enables manual restore |
 
 The complete catalog of all 142 codes, grouped by layer with per-code remediation, is in [Contract Error Codes](docs/contract-error-codes.md).
 
 ## Resources
 
-### The suite
-
-| Action | Role |
-| --- | --- |
-| [Postman API Onboarding](https://github.com/postman-cs/postman-api-onboarding-action) | Entry point: chains workspace bootstrap, repo sync, and optional Insights linking |
-| [Postman Onboarding: Service Token](https://github.com/postman-cs/postman-resolve-service-token-action) | Mints the service-account access token and team ID |
-| [Postman Onboarding: AWS Spec Discovery](https://github.com/postman-cs/postman-aws-spec-discovery-action) | Discovers and exports API specs from AWS services |
-| [Postman Onboarding: Workspace Bootstrap](https://github.com/postman-cs/postman-bootstrap-action) | Creates the workspace, uploads the spec, generates collections |
-| [Postman Onboarding: Smoke Flow](https://github.com/postman-cs/postman-smoke-flow-action) | Applies a curated flow.yaml to the Smoke collection |
-| [Postman Onboarding: Repo Sync](https://github.com/postman-cs/postman-repo-sync-action) | Exports artifacts into the repo and wires CI, mocks, and monitors |
-| [Postman Onboarding: Insights Linking](https://github.com/postman-cs/postman-insights-onboarding-action) | Links Insights discovered services to the workspace |
-
-Sibling actions in the Postman onboarding pipeline:
-
-- [postman-cs/postman-api-onboarding-action](https://github.com/postman-cs/postman-api-onboarding-action): composite action that orchestrates the pipeline
-- [postman-cs/postman-resolve-service-token-action](https://github.com/postman-cs/postman-resolve-service-token-action): mints a service-account access token and team ID
-- [postman-cs/postman-aws-spec-discovery-action](https://github.com/postman-cs/postman-aws-spec-discovery-action): discovers AWS APIs and specs
-- [postman-cs/postman-smoke-flow-action](https://github.com/postman-cs/postman-smoke-flow-action): applies a curated flow.yaml to the Smoke collection
-- [postman-cs/postman-repo-sync-action](https://github.com/postman-cs/postman-repo-sync-action): syncs artifacts, environments, mocks, and monitors
-- [postman-cs/postman-insights-onboarding-action](https://github.com/postman-cs/postman-insights-onboarding-action): links Insights to the workspace
-
-Package and docs:
-
 - npm package: [@postman-cse/onboarding-bootstrap](https://www.npmjs.com/package/@postman-cse/onboarding-bootstrap)
-- [Credential matrix](docs/credentials.md)
-- [Support](SUPPORT.md)
-- [Security Policy](SECURITY.md)
-- [Release Policy](RELEASE_POLICY.md)
-- Postman API and auth references: [Postman API](https://learning.postman.com/docs/reference/postman-api/intro-api/), [API authentication](https://learning.postman.com/docs/reference/postman-api/authentication/), [service accounts](https://learning.postman.com/docs/administration/service-accounts/), [EU data residency](https://learning.postman.com/docs/administration/enterprise/about-eu-data-residency/)
-- Postman design resources: [workspaces](https://learning.postman.com/docs/collaborating-in-postman/using-workspaces/overview/), [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), [import a specification](https://learning.postman.com/docs/design-apis/specifications/import-a-specification/), [generate collections](https://learning.postman.com/docs/design-apis/specifications/generate-collections/), [validate a specification](https://learning.postman.com/docs/design-apis/specifications/validate-a-specification/)
-- Postman execution resources: [Postman CLI collection runs](https://learning.postman.com/docs/postman-cli/postman-cli-collections/), [Postman CLI governance](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), [API governance rules](https://learning.postman.com/docs/api-governance/configurable-rules/configuring-api-governance-rules/), [mock servers](https://learning.postman.com/docs/design-apis/mock-apis/set-up-mock-servers/), [monitors](https://learning.postman.com/docs/monitoring-your-api/intro-monitors/)
-- Local development: `npm install`, `npm test`, `npm run typecheck`, `npm run build` (produces the committed `dist/` bundles used by `action.yml`); regenerate the Inputs and Outputs tables with `npm run docs:tables`
+- Docs in this repo: [credentials](docs/credentials.md), [spec handling](docs/spec-handling.md), [lifecycle modes](docs/lifecycle-and-operations.md), [team identity](docs/team-identity.md), [generated assertions](docs/generated-assertions.md), [contract error codes](docs/contract-error-codes.md)
+- Marketplace docs: [Support](SUPPORT.md), [Security Policy](SECURITY.md), [Release Policy](RELEASE_POLICY.md)
+- Postman references: [Postman API](https://learning.postman.com/docs/reference/postman-api/intro-api/), [API authentication](https://learning.postman.com/docs/reference/postman-api/authentication/), [service accounts](https://learning.postman.com/docs/administration/service-accounts/), [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), [generate collections](https://learning.postman.com/docs/design-apis/specifications/generate-collections/), [Postman CLI governance](https://learning.postman.com/docs/postman-cli/postman-cli-governance/)
+
+Local development: `npm install`, `npm test`, `npm run typecheck`, `npm run build` (produces the committed `dist/` bundles used by `action.yml`).
 
 ## Telemetry
 
-This action sends a single non-identifying usage event when a run completes, so the
-Postman team can measure adoption across CI systems. The event contains the
-action name and version, your Postman team ID, the run outcome, an event
-timestamp, the detected CI provider, runner kind, and runner OS, the CI run
-identifier and event trigger, a one-way SHA-256 hash of the repository
-identifier, the detected git provider (github, gitlab, bitbucket, or
-azure-devops), a one-way SHA-256 hash of the VCS organization name, a coarse
-account type (service or user), and a coarse ref kind (default-branch, branch,
-or tag). Each event also carries a schema version and a constant event marker (always `completion`). The Postman team ID is sent in the clear on a legitimate-interest
-basis to measure product adoption.
-
-The `events.pm-cse.dev` endpoint is operated by the Postman Customer Success
-Engineering team. Postman, Inc. processes these events only to measure
-onboarding adoption in aggregate, retains them only as aggregated counts for
-product-adoption trend analysis, and includes no payload field that identifies
-an individual person.
-
-It never sends API keys, access tokens, spec content, workspace or repository
-names, or any personal data. It is fire-and-forget with a hard
-timeout and can never block or fail your pipeline. Corporate HTTP and HTTPS
-proxies are honored through the standard `HTTPS_PROXY`, `HTTP_PROXY`, and
-`NO_PROXY` environment variables.
-
-Disable it by setting either environment variable in your CI:
-
-```sh
-POSTMAN_ACTIONS_TELEMETRY=off
-# or the cross-tool standard
-DO_NOT_TRACK=1
-```
-
-Telemetry is also skipped automatically when no Postman team ID can be resolved.
-
-Events are sent over HTTPS to `https://events.pm-cse.dev/v1/events`. To
-allowlist this destination on a restricted network, or to route events to a
-collector you operate, set the `POSTMAN_ACTIONS_TELEMETRY_ENDPOINT` environment
-variable to your own URL.
+The action sends one anonymous usage event per run (action name/version, outcome, coarse CI metadata; never secrets, spec content, or repo names). Disable with `POSTMAN_ACTIONS_TELEMETRY=off` or `DO_NOT_TRACK=1`; route events to your own collector with `POSTMAN_ACTIONS_TELEMETRY_ENDPOINT`.
 
 ## License
 

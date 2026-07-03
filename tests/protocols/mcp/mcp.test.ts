@@ -588,6 +588,43 @@ describe('mcp runtime HTTP scripts', () => {
     expect(vars.get('mcp_initialized_ok')).toBeUndefined();
   });
 
+  it('allows only advisory id-less notifications before the initialize SSE response', () => {
+    const valid = runMcpScript(initializeScript(), undefined, new Map(), {
+      contentType: 'text/event-stream; charset=utf-8',
+      text: [
+        'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}',
+        '',
+        'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"weather","version":"1.0.0"}}}',
+        '',
+        ''
+      ].join('\n')
+    });
+    expect(
+      runtimeTestResult(
+        valid.results,
+        'MCP initialize succeeded before sending initialized notification (MCP 2025-06-18 lifecycle)'
+      )?.passed
+    ).toBe(true);
+
+    const invalid = runMcpScript(initializeScript(), undefined, new Map(), {
+      contentType: 'text/event-stream; charset=utf-8',
+      text: [
+        'data: {"jsonrpc":"2.0","id":"server-request","method":"ping"}',
+        '',
+        'data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"weather","version":"1.0.0"}}}',
+        '',
+        ''
+      ].join('\n')
+    });
+    expect(
+      runtimeTestResult(
+        invalid.results,
+        'MCP initialize response is a JSON-RPC object, not a batch (MCP 2025-06-18; JSON-RPC 2.0 §5)'
+      )?.passed
+    ).toBe(false);
+    expect(invalid.vars.get('mcp_initialize_ok')).toBeUndefined();
+  });
+
   it('adds session-requirement and pagination probes with their runtime gates', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });

@@ -73,6 +73,25 @@ function mcpResponseMessages(label) {
   var body = mcpResponseBody();
   return Array.isArray(body) ? body : [body];
 }
+function mcpAssertPreInitializedSseMessages() {
+  var contentType = pm.response.headers.get('Content-Type') || '';
+  if (!/text\\/event-stream/i.test(contentType)) return;
+  var payloads = mcpSseJsonPayloads('MCP initialize SSE pre-initialized messages');
+  var terminalIndex = -1;
+  payloads.forEach(function (message, i) {
+    var isResponse = message && message.id !== undefined && message.method === undefined && (message.result !== undefined || message.error !== undefined);
+    if (isResponse && terminalIndex === -1) terminalIndex = i;
+  });
+  var known = { 'notifications/message': true, 'notifications/progress': true, 'notifications/resources/list_changed': true, 'notifications/tools/list_changed': true, 'notifications/prompts/list_changed': true, 'notifications/logging/message': true };
+  payloads.forEach(function (message, i) {
+    if (terminalIndex !== -1 && i >= terminalIndex) return;
+    pm.expect(message, 'pre-initialized SSE payload ' + i).to.be.an('object').and.not.an('array');
+    if (message.method === undefined || message.id !== undefined || !/^notifications\\//.test(String(message.method))) {
+      pm.expect.fail('pre-initialized server messages must be id-less notifications before initialized; frame ' + i + ' was ' + JSON.stringify(message));
+    }
+    if (!known[message.method]) console.warn('MCP initialize received an uncommon pre-initialized notification method: ' + message.method);
+  });
+}
 function mcpAssertErrorShape(message, body, expectedId) {
   pm.expect(body, message + ' body is object').to.be.an('object').and.not.an('array');
   pm.expect(body.jsonrpc, message + ' JSON-RPC 2.0 §4/§5').to.eql('2.0');
@@ -290,12 +309,12 @@ export function initializeScript(): string {
     "var body;",
     `pm.test('MCP initialize transport is HTTP 2xx (MCP 2025-06-18 Streamable HTTP)', function () { pm.expect(pm.response.code).to.be.within(200, 299); });`,
     `pm.test('MCP initialize Content-Type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { pm.expect(pm.response.headers.get('Content-Type') || '').to.match(/application\\/json|text\\/event-stream/i); mcpAssertPostMediaType('initialize'); });`,
-    `pm.test('MCP initialize response is a JSON-RPC object, not a batch (MCP 2025-06-18; JSON-RPC 2.0 §5)', function () { body = mcpResponseBody(); mcpAssertResponseObject('initialize', body, 1); pm.expect(body.result, 'initialize result').to.be.an('object'); });`,
+    `pm.test('MCP initialize response is a JSON-RPC object, not a batch (MCP 2025-06-18; JSON-RPC 2.0 §5)', function () { body = mcpResponseBody(); mcpAssertPreInitializedSseMessages(); mcpAssertResponseObject('initialize', body, 1); pm.expect(body.result, 'initialize result').to.be.an('object'); });`,
     `pm.test('MCP initialize negotiates a supported protocolVersion (MCP 2025-06-18 initialize)', function () { pm.expect(body.result.protocolVersion).to.match(/^\\d{4}-\\d{2}-\\d{2}$/); pm.expect(['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].indexOf(body.result.protocolVersion), 'protocolVersion is in the known MCP revision set').to.not.eql(-1); });`,
     `pm.test('MCP initialize capabilities have typed open sub-shapes (MCP 2025-06-18 capabilities)', function () { var caps = body.result.capabilities; pm.expect(caps).to.be.an('object'); ['tools','resources','prompts'].forEach(function (name) { if (caps[name]) Object.keys(caps[name]).filter(function (k) { return /^(listChanged|subscribe)$/.test(k); }).forEach(function (k) { pm.expect(caps[name][k], name + '.' + k).to.be.a('boolean'); }); }); ['logging','completions'].forEach(function (name) { if (caps[name] !== undefined) pm.expect(caps[name], name).to.be.an('object'); }); });`,
     `pm.test('MCP initialize serverInfo and instructions shape (MCP 2025-06-18 initialize)', function () { pm.expect(body.result.serverInfo).to.be.an('object'); pm.expect(body.result.serverInfo.name).to.be.a('string'); pm.expect(body.result.serverInfo.version).to.be.a('string'); if (body.result.instructions !== undefined) pm.expect(body.result.instructions).to.be.a('string'); });`,
     `pm.test('MCP initialize session id header is visible ASCII when present (MCP 2025-06-18 Mcp-Session-Id)', function () { var session = pm.response.headers.get('Mcp-Session-Id'); if (session) pm.expect(session).to.match(/^[\\x21-\\x7E]+$/); });`,
-    `pm.test('MCP initialize succeeded before sending initialized notification (MCP 2025-06-18 lifecycle)', function () { pm.expect(pm.response.code).to.be.within(200, 299); body = body || mcpResponseBody(); mcpAssertResponseObject('initialize', body, 1); pm.expect(body.result, 'initialize result').to.be.an('object'); pm.expect(body.result.protocolVersion).to.match(/^\\d{4}-\\d{2}-\\d{2}$/); pm.expect(['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].indexOf(body.result.protocolVersion), 'protocolVersion is in the known MCP revision set').to.not.eql(-1); pm.expect(body.result.capabilities, 'capabilities').to.be.an('object'); pm.expect(body.result.serverInfo, 'serverInfo').to.be.an('object'); pm.expect(body.result.serverInfo.name, 'serverInfo.name').to.be.a('string'); pm.expect(body.result.serverInfo.version, 'serverInfo.version').to.be.a('string'); mcpSaveSessionAndCapabilities(body); pm.collectionVariables.set('mcp_initialize_ok', 'true'); });`
+    `pm.test('MCP initialize succeeded before sending initialized notification (MCP 2025-06-18 lifecycle)', function () { pm.expect(pm.response.code).to.be.within(200, 299); body = body || mcpResponseBody(); mcpAssertPreInitializedSseMessages(); mcpAssertResponseObject('initialize', body, 1); pm.expect(body.result, 'initialize result').to.be.an('object'); pm.expect(body.result.protocolVersion).to.match(/^\\d{4}-\\d{2}-\\d{2}$/); pm.expect(['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].indexOf(body.result.protocolVersion), 'protocolVersion is in the known MCP revision set').to.not.eql(-1); pm.expect(body.result.capabilities, 'capabilities').to.be.an('object'); pm.expect(body.result.serverInfo, 'serverInfo').to.be.an('object'); pm.expect(body.result.serverInfo.name, 'serverInfo.name').to.be.a('string'); pm.expect(body.result.serverInfo.version, 'serverInfo.version').to.be.a('string'); mcpSaveSessionAndCapabilities(body); pm.collectionVariables.set('mcp_initialize_ok', 'true'); });`
   ]);
 }
 

@@ -300,6 +300,27 @@ function mcpCapabilityDeclared(name) {
   if (!raw) return null;
   try { var caps = JSON.parse(raw); return Object.prototype.hasOwnProperty.call(caps, name); } catch (e) { return null; }
 }
+function mcpCapabilityFlag(name, flag) {
+  var raw = pm.collectionVariables.get('mcp_capabilities');
+  if (!raw) return null;
+  try {
+    var caps = JSON.parse(raw);
+    if (!caps || typeof caps !== 'object' || Array.isArray(caps)) return null;
+    if (!Object.prototype.hasOwnProperty.call(caps, name)) return false;
+    var shape = caps[name];
+    if (!shape || typeof shape !== 'object' || Array.isArray(shape)) return false;
+    return shape[flag] === true;
+  } catch (e) { return null; }
+}
+function mcpAssertListChangedNotification(message, label, capabilityName) {
+  pm.expect(message.jsonrpc, label + ' JSON-RPC version').to.eql('2.0');
+  pm.expect(message.method, label + ' method').to.eql('notifications/' + capabilityName + '/list_changed');
+  if (message.id !== undefined) pm.expect.fail(label + ' must be an id-less JSON-RPC notification; got id ' + JSON.stringify(message.id));
+  if (message.params !== undefined) pm.expect(message.params, label + ' params').to.be.an('object').and.not.an('array');
+  mcpAssertMetaKeys(message, label);
+  var advertised = mcpCapabilityFlag(capabilityName, 'listChanged');
+  if (advertised !== null) pm.expect(advertised, label + ' requires initialize capabilities.' + capabilityName + '.listChanged=true').to.eql(true);
+}
 function mcpSessionHeader() {
   return pm.collectionVariables.get('mcp_session_id') || '';
 }
@@ -532,6 +553,8 @@ export function getListenScript(): string {
     "    if (message.jsonrpc !== undefined) pm.expect(message.jsonrpc, 'GET listen JSON-RPC version at frame ' + i).to.eql('2.0');",
     "    var isResponse = message.id !== undefined && message.method === undefined && (message.result !== undefined || message.error !== undefined);",
     "    if (isResponse) pm.expect.fail('GET listen non-resumable stream must not carry JSON-RPC responses; frame ' + i + ' had id ' + JSON.stringify(message.id));",
+    "    if (message.method === 'notifications/tools/list_changed') mcpAssertListChangedNotification(message, 'GET listen tools/list_changed frame ' + i, 'tools');",
+    "    if (message.method === 'notifications/prompts/list_changed') mcpAssertListChangedNotification(message, 'GET listen prompts/list_changed frame ' + i, 'prompts');",
     '  });',
     '});'
   ]);

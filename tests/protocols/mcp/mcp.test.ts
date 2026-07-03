@@ -862,6 +862,45 @@ describe('mcp runtime HTTP scripts', () => {
     ).toBe(true);
   });
 
+  it('validates GET listen tool and prompt list_changed notifications', () => {
+    const testName = 'MCP GET listen returns an SSE stream or HTTP 405 (MCP 2025-06-18 Streamable HTTP)';
+    const valid = runMcpScript(
+      getListenScript(),
+      undefined,
+      new Map([
+        ['mcp_capabilities', JSON.stringify({ tools: { listChanged: true }, prompts: { listChanged: true } })]
+      ]),
+      {
+        contentType: 'text/event-stream; charset=utf-8',
+        text: [
+          'data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"_meta":{"pm-cse/change":"tool"}}}',
+          '',
+          'data: {"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}',
+          '',
+          ''
+        ].join('\n')
+      }
+    );
+    expect(runtimeTestResult(valid.results, testName)?.passed).toBe(true);
+
+    const undeclared = runMcpScript(
+      getListenScript(),
+      undefined,
+      new Map([['mcp_capabilities', JSON.stringify({ tools: {} })]]),
+      {
+        contentType: 'text/event-stream; charset=utf-8',
+        text: ['data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}', '', ''].join('\n')
+      }
+    );
+    expect(runtimeTestResult(undeclared.results, testName)?.passed).toBe(false);
+
+    const idBearing = runMcpScript(getListenScript(), undefined, new Map(), {
+      contentType: 'text/event-stream; charset=utf-8',
+      text: ['data: {"jsonrpc":"2.0","id":"bad","method":"notifications/prompts/list_changed"}', '', ''].join('\n')
+    });
+    expect(runtimeTestResult(idBearing.results, testName)?.passed).toBe(false);
+  });
+
   it('validates id-less notification and client-response POST rejection framing', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });

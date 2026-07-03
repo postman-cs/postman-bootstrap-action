@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { parseMcpServerSpec } from '../../../src/lib/protocols/mcp/mcp-parser.js';
 import { buildMcpCollection } from '../../../src/lib/protocols/mcp/mcp-collection-builder.js';
 import { instrumentMcpCollection } from '../../../src/lib/protocols/mcp/mcp-instrumenter.js';
-import { resourceTemplatesScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
+import { getPromptScript, initializeScript, progressToolCallScript, resourceTemplatesScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
 import { detectSpecType } from '../../../src/lib/spec/detect-spec-type.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -480,6 +480,24 @@ describe('mcp instrumenter (static validation)', () => {
 });
 
 describe('mcp runtime HTTP scripts', () => {
+  it('fails initialize responses that negotiate an unknown protocol version', () => {
+    const { results } = runMcpScript(initializeScript(), {
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        protocolVersion: '2099-01-01',
+        capabilities: {},
+        serverInfo: { name: 'weather', version: '1.0.0' }
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP initialize negotiates a supported protocolVersion (MCP 2025-06-18 initialize)'
+      )?.passed
+    ).toBe(false);
+  });
+
   it('adds session-requirement and pagination probes with their runtime gates', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });
@@ -537,12 +555,18 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP old session ping'
     ]);
     const ping = httpItems.find((item) => String(item.title).endsWith('HTTP ping'))!;
-    const pingHeaders = ((ping.payload as JsonRecord).headers as JsonRecord[]).map((h) => h.key);
-    expect(pingHeaders).toContain('Mcp-Session-Id');
+    const pingHeaders = ((ping.payload as JsonRecord).headers as JsonRecord[]);
+    expect(pingHeaders.map((h) => h.key)).toContain('Mcp-Session-Id');
+    expect(pingHeaders.find((h) => h.key === 'MCP-Protocol-Version')?.value).toBe('{{mcp_protocol_version}}');
     const pingScript = (((ping.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
     expect(pingScript).toContain('MCP ping echoes string id and empty result');
     const badVersion = httpItems.find((item) => String(item.title).includes('bad protocol version'))!;
     expect(((badVersion.payload as JsonRecord).headers as JsonRecord[]).find((h) => h.key === 'MCP-Protocol-Version')?.value).toBe('1999-01-01');
+  });
+
+  it('rejects generated initialize messages with unsupported protocol versions', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    expect(() => buildMcpCollection(index, { protocolVersion: '2099-01-01' })).toThrow(/MCP_PROTOCOL_VERSION_UNSUPPORTED/);
   });
 
   it('self-conforms generated runtime messages and headers', () => {
@@ -584,6 +608,31 @@ describe('mcp runtime HTTP scripts', () => {
     expect(((progressMessage.params as JsonRecord)._meta as JsonRecord).progressToken).toBe('pm-progress');
     const progressScript = (((progress.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
     expect(progressScript).toContain('progress notifications echo the token and increase');
+  });
+
+  it('validates optional progress notification total and message fields', () => {
+    const script = progressToolCallScript('get_forecast');
+    const invalid = runMcpScript(script, [
+      { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: 'pm-progress', progress: 3, total: 2, message: 5 } },
+      { jsonrpc: '2.0', id: 'pm-progress-call', result: {} }
+    ]);
+    expect(
+      runtimeTestResult(
+        invalid.results,
+        'MCP progress notifications echo the token and increase for get_forecast (MCP 2025-06-18 utilities/progress)'
+      )?.passed
+    ).toBe(false);
+
+    const valid = runMcpScript(script, [
+      { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: 'pm-progress', progress: 1, total: 2, message: 'halfway' } },
+      { jsonrpc: '2.0', id: 'pm-progress-call', result: {} }
+    ]);
+    expect(
+      runtimeTestResult(
+        valid.results,
+        'MCP progress notifications echo the token and increase for get_forecast (MCP 2025-06-18 utilities/progress)'
+      )?.passed
+    ).toBe(true);
   });
 
   it('emits authorization probes only for servers with a configured Authorization header', () => {
@@ -739,6 +788,27 @@ describe('mcp tools/call runtime structuredContent assertions', () => {
       )?.passed
     ).toBe(false);
   });
+
+  it('fails unknown content discriminators, invalid base64/media types, and invalid resource URIs', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools.find((entry) => entry.name === 'list_stations')!;
+    const { script, warnings } = toolsCallScript(index, tool, 10);
+    expect(warnings).toEqual([]);
+    const runContent = (content: unknown[]) => runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 10,
+      result: { content }
+    });
+    const testName = 'MCP tools/call content blocks are typed for list_stations (MCP 2025-06-18 content blocks)';
+
+    expect(runtimeTestResult(runContent([{ type: 'video', url: 'resource://x' }]).results, testName)?.passed).toBe(false);
+    expect(runtimeTestResult(runContent([{ type: 'image', data: '', mimeType: 'image/png' }]).results, testName)?.passed).toBe(false);
+    expect(runtimeTestResult(runContent([{ type: 'image', data: 'not base64?', mimeType: 'image/png' }]).results, testName)?.passed).toBe(false);
+    expect(runtimeTestResult(runContent([{ type: 'audio', data: 'QUJD', mimeType: 'not-media' }]).results, testName)?.passed).toBe(false);
+    expect(runtimeTestResult(runContent([{ type: 'resource_link', uri: 'relative/path', name: 'r' }]).results, testName)?.passed).toBe(false);
+    expect(runtimeTestResult(runContent([{ type: 'resource', resource: { uri: 'resource://station/1', blob: 'not base64?', mimeType: 'application/json' } }]).results, testName)?.passed).toBe(false);
+    expect(runtimeTestResult(runContent([{ type: 'text', text: 'ok', annotations: { audience: ['user'], priority: 0.5 }, _meta: { 'pm-cse/key': true } }]).results, testName)?.passed).toBe(true);
+  });
 });
 
 describe('mcp tools/list runtime descriptor assertions', () => {
@@ -791,6 +861,39 @@ describe('mcp tools/list runtime descriptor assertions', () => {
   });
 });
 
+describe('mcp prompts/get runtime content assertions', () => {
+  it('reuses MCP content-block validation for prompt messages', () => {
+    const script = getPromptScript('forecast_summary');
+    const invalid = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 'pm-prompt-get:forecast_summary',
+      result: {
+        messages: [{ role: 'assistant', content: { type: 'image', data: 'bad?', mimeType: 'image/png' } }]
+      }
+    });
+    expect(
+      runtimeTestResult(
+        invalid.results,
+        'MCP prompts/get result shape for forecast_summary (MCP 2025-06-18 prompts/get)'
+      )?.passed
+    ).toBe(false);
+
+    const valid = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 'pm-prompt-get:forecast_summary',
+      result: {
+        messages: [{ role: 'assistant', content: { type: 'text', text: 'hello', annotations: { audience: ['assistant'] } } }]
+      }
+    });
+    expect(
+      runtimeTestResult(
+        valid.results,
+        'MCP prompts/get result shape for forecast_summary (MCP 2025-06-18 prompts/get)'
+      )?.passed
+    ).toBe(true);
+  });
+});
+
 describe('mcp manifest static additions', () => {
   it('flags metadata typing, _meta grammar, reserved prefixes, unknown fields, title precedence, and mime types', () => {
     const doc = JSON.stringify({
@@ -820,6 +923,21 @@ describe('mcp manifest static additions', () => {
 });
 
 describe('mcp resource template runtime checks', () => {
+  it('fails when resources/templates/list omits the resourceTemplates array', () => {
+    const script = resourceTemplatesScript();
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 5,
+      result: {}
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP resource templates compile under RFC 6570 (MCP 2025-06-18 resources; RFC 6570)'
+      )?.passed
+    ).toBe(false);
+  });
+
   it('fails when resources/templates/list nextCursor is not a string', () => {
     const script = resourceTemplatesScript();
     const { results } = runMcpScript(script, {

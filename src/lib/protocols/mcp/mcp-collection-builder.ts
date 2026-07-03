@@ -70,6 +70,7 @@ export interface McpCollectionOptions {
 const DEFAULT_CREATED_AT = '1970-01-01T00:00:00.000Z';
 // Latest MCP protocol revision the generated initialize template negotiates.
 const DEFAULT_MCP_PROTOCOL_VERSION = '2025-06-18';
+const SUPPORTED_MCP_PROTOCOL_VERSIONS = new Set(['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']);
 
 // Deterministic, dependency-free id: a stable hash of the seed + key. uuid-shaped
 // but derived, matching the gRPC/AsyncAPI builders' stableId discipline.
@@ -99,8 +100,12 @@ function jsonRpcNotification(method: string): string {
 }
 
 function initializeMessage(options: McpCollectionOptions): string {
+  const protocolVersion = options.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION;
+  if (!SUPPORTED_MCP_PROTOCOL_VERSIONS.has(protocolVersion)) {
+    throw new Error(`MCP_PROTOCOL_VERSION_UNSUPPORTED: generated initialize protocolVersion ${JSON.stringify(protocolVersion)} is not in the supported MCP revision set`);
+  }
   return jsonRpc(1, 'initialize', {
-    protocolVersion: options.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION,
+    protocolVersion,
     capabilities: {},
     clientInfo: { name: 'postman-contract', version: '1.0.0' }
   });
@@ -202,7 +207,10 @@ function baseHeaders(server: McpServerDescriptor): Array<{ key: string; value: s
 }
 
 function withSession(headers: Array<{ key: string; value: string }>): Array<{ key: string; value: string }> {
-  return [...headers, { key: 'Mcp-Session-Id', value: '{{mcp_session_id}}' }];
+  return [
+    ...headers.map((entry) => entry.key === 'MCP-Protocol-Version' ? { ...entry, value: '{{mcp_protocol_version}}' } : entry),
+    { key: 'Mcp-Session-Id', value: '{{mcp_session_id}}' }
+  ];
 }
 
 function body(content: string): JsonRecord {

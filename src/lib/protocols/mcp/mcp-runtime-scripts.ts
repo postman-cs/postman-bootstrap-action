@@ -56,9 +56,66 @@ function mcpWalkMeta(value, path, bad) {
   }
   Object.keys(value).forEach(function (key) { mcpWalkMeta(value[key], path + '.' + key, bad); });
 }
+function mcpMimeTypeOk(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*(?:\\s*;\\s*[A-Za-z0-9!#$&^_.+-]+=(?:"[^"]*"|[A-Za-z0-9!#$&^_.+-]+))*$/.test(value);
+}
+function mcpBase64Ok(value) {
+  return typeof value === 'string' && value.length > 0 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+}
+function mcpAbsoluteUriOk(value) {
+  return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9+.-]*:[^\\s]*$/.test(value);
+}
+function mcpAssertAnnotations(value, label) {
+  if (value === undefined) return;
+  pm.expect(value, label + ' annotations').to.be.an('object').and.not.an('array');
+  if (value.audience !== undefined) {
+    pm.expect(value.audience, label + ' annotations.audience').to.be.an('array');
+    value.audience.forEach(function (entry) { if (entry !== 'user' && entry !== 'assistant') pm.expect.fail(label + ' annotations.audience entries must be user or assistant; got ' + JSON.stringify(entry)); });
+  }
+  if (value.priority !== undefined && (typeof value.priority !== 'number' || value.priority < 0 || value.priority > 1)) pm.expect.fail(label + ' annotations.priority must be a number from 0 through 1');
+  if (value.lastModified !== undefined) pm.expect(value.lastModified, label + ' annotations.lastModified').to.be.a('string');
+}
+function mcpAssertResourceContents(resource, label) {
+  pm.expect(resource, label + ' resource').to.be.an('object').and.not.an('array');
+  pm.expect(resource.uri, label + ' resource.uri').to.be.a('string');
+  if (!mcpAbsoluteUriOk(resource.uri)) pm.expect.fail(label + ' resource.uri must be an absolute URI (MCP 2025-06-18 Resources); got ' + resource.uri);
+  if (resource.mimeType !== undefined && !mcpMimeTypeOk(resource.mimeType)) pm.expect.fail(label + ' resource.mimeType must be a valid media type; got ' + resource.mimeType);
+  var hasText = typeof resource.text === 'string';
+  var hasBlob = typeof resource.blob === 'string';
+  pm.expect(hasText || hasBlob, label + ' resource has text or blob').to.eql(true);
+  if (hasBlob && !mcpBase64Ok(resource.blob)) pm.expect.fail(label + ' resource.blob must be strict base64 content');
+}
+function mcpAssertContentBlock(block, label) {
+  pm.expect(block, label + ' content block').to.be.an('object').and.not.an('array');
+  pm.expect(block.type, label + ' content block type').to.be.a('string');
+  mcpAssertAnnotations(block.annotations, label + ' content block');
+  if (block._meta !== undefined) {
+    pm.expect(block._meta, label + ' content block _meta').to.be.an('object').and.not.an('array');
+    var badMeta = []; mcpWalkMeta({ _meta: block._meta }, label, badMeta); pm.expect(badMeta.length, label + ' content block _meta key grammar').to.eql(0);
+  }
+  if (block.type === 'text') {
+    pm.expect(block.text, label + ' text').to.be.a('string');
+  } else if (block.type === 'image' || block.type === 'audio') {
+    pm.expect(block.data, label + ' data').to.be.a('string');
+    if (!mcpBase64Ok(block.data)) pm.expect.fail(label + ' ' + block.type + ' data must be strict base64 content');
+    if (!mcpMimeTypeOk(block.mimeType)) pm.expect.fail(label + ' ' + block.type + ' mimeType must be a valid media type; got ' + block.mimeType);
+  } else if (block.type === 'resource_link') {
+    pm.expect(block.uri, label + ' resource_link.uri').to.be.a('string');
+    if (!mcpAbsoluteUriOk(block.uri)) pm.expect.fail(label + ' resource_link.uri must be an absolute URI; got ' + block.uri);
+    pm.expect(block.name, label + ' resource_link.name').to.be.a('string');
+    if (block.title !== undefined) pm.expect(block.title, label + ' resource_link.title').to.be.a('string');
+    if (block.description !== undefined) pm.expect(block.description, label + ' resource_link.description').to.be.a('string');
+    if (block.mimeType !== undefined && !mcpMimeTypeOk(block.mimeType)) pm.expect.fail(label + ' resource_link.mimeType must be a valid media type; got ' + block.mimeType);
+  } else if (block.type === 'resource') {
+    mcpAssertResourceContents(block.resource, label + ' embedded');
+  } else {
+    pm.expect.fail(label + ' content block type "' + block.type + '" is not a known MCP 2025-06-18 content discriminator');
+  }
+}
 function mcpSaveSessionAndCapabilities(body) {
   var session = pm.response.headers.get('Mcp-Session-Id');
   if (session) pm.collectionVariables.set('mcp_session_id', session);
+  if (body && body.result && typeof body.result.protocolVersion === 'string') pm.collectionVariables.set('mcp_protocol_version', body.result.protocolVersion);
   if (body && body.result && body.result.capabilities) pm.collectionVariables.set('mcp_capabilities', JSON.stringify(body.result.capabilities));
 }
 function mcpAssertPostMediaType(label) {
@@ -93,7 +150,7 @@ export function initializeScript(): string {
     `pm.test('MCP initialize transport is HTTP 2xx (MCP 2025-06-18 Streamable HTTP)', function () { pm.expect(pm.response.code).to.be.within(200, 299); });`,
     `pm.test('MCP initialize Content-Type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { pm.expect(pm.response.headers.get('Content-Type') || '').to.match(/application\\/json|text\\/event-stream/i); mcpAssertPostMediaType('initialize'); });`,
     `pm.test('MCP initialize response is a JSON-RPC object, not a batch (MCP 2025-06-18; JSON-RPC 2.0 §5)', function () { body = mcpResponseBody(); mcpAssertResponseObject('initialize', body, 1); pm.expect(body.result, 'initialize result').to.be.an('object'); });`,
-    `pm.test('MCP initialize negotiates protocolVersion date (MCP 2025-06-18 initialize)', function () { pm.expect(body.result.protocolVersion).to.match(/^\\d{4}-\\d{2}-\\d{2}$/); if (['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].indexOf(body.result.protocolVersion) === -1) console.warn('MCP initialize protocolVersion is not in the known revision set: ' + body.result.protocolVersion); });`,
+    `pm.test('MCP initialize negotiates a supported protocolVersion (MCP 2025-06-18 initialize)', function () { pm.expect(body.result.protocolVersion).to.match(/^\\d{4}-\\d{2}-\\d{2}$/); pm.expect(['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].indexOf(body.result.protocolVersion), 'protocolVersion is in the known MCP revision set').to.not.eql(-1); });`,
     `pm.test('MCP initialize capabilities have typed open sub-shapes (MCP 2025-06-18 capabilities)', function () { var caps = body.result.capabilities; pm.expect(caps).to.be.an('object'); ['tools','resources','prompts'].forEach(function (name) { if (caps[name]) Object.keys(caps[name]).filter(function (k) { return /^(listChanged|subscribe)$/.test(k); }).forEach(function (k) { pm.expect(caps[name][k], name + '.' + k).to.be.a('boolean'); }); }); ['logging','completions'].forEach(function (name) { if (caps[name] !== undefined) pm.expect(caps[name], name).to.be.an('object'); }); });`,
     `pm.test('MCP initialize serverInfo and instructions shape (MCP 2025-06-18 initialize)', function () { pm.expect(body.result.serverInfo).to.be.an('object'); pm.expect(body.result.serverInfo.name).to.be.a('string'); pm.expect(body.result.serverInfo.version).to.be.a('string'); if (body.result.instructions !== undefined) pm.expect(body.result.instructions).to.be.a('string'); });`,
     `pm.test('MCP initialize session id header is visible ASCII when present (MCP 2025-06-18 Mcp-Session-Id)', function () { var session = pm.response.headers.get('Mcp-Session-Id'); if (session) pm.expect(session).to.match(/^[\\x21-\\x7E]+$/); mcpSaveSessionAndCapabilities(body); });`
@@ -154,7 +211,7 @@ export function promptsListScript(promptNames: string[]): string {
 export function getPromptScript(promptName: string): string {
   return join([
     `var expectedPromptName = ${json(promptName)};`,
-    `pm.test('MCP prompts/get result shape for ${promptName} (MCP 2025-06-18 prompts/get)', function () { var body = mcpResponseBody(); mcpAssertResponseObject('prompts/get', body, 'pm-prompt-get:' + expectedPromptName); pm.expect(body.result).to.be.an('object'); if (body.result.description !== undefined) pm.expect(body.result.description).to.be.a('string'); pm.expect(body.result.messages, 'prompts/get messages').to.be.an('array'); pm.expect(body.result.messages.length > 0, 'prompts/get returns at least one message').to.eql(true); body.result.messages.forEach(function (message) { pm.expect(message).to.be.an('object'); pm.expect(message.role, 'prompt message role').to.be.a('string'); pm.expect(message.content, 'prompt message content').to.be.an('object'); pm.expect(message.content.type, 'prompt message content type').to.be.a('string'); if (message.content.type === 'text') pm.expect(message.content.text).to.be.a('string'); }); });`,
+    `pm.test('MCP prompts/get result shape for ${promptName} (MCP 2025-06-18 prompts/get)', function () { var body = mcpResponseBody(); mcpAssertResponseObject('prompts/get', body, 'pm-prompt-get:' + expectedPromptName); pm.expect(body.result).to.be.an('object'); if (body.result.description !== undefined) pm.expect(body.result.description).to.be.a('string'); pm.expect(body.result.messages, 'prompts/get messages').to.be.an('array'); pm.expect(body.result.messages.length > 0, 'prompts/get returns at least one message').to.eql(true); body.result.messages.forEach(function (message, i) { pm.expect(message).to.be.an('object'); pm.expect(message.role, 'prompt message role').to.be.a('string'); mcpAssertContentBlock(message.content, 'prompt ' + expectedPromptName + ' message[' + i + ']'); }); });`,
     `pm.test('MCP prompts/get is served only when the prompts capability was declared (MCP 2025-06-18 Prompts sec. 1; Lifecycle sec. 1.2)', function () { var body = mcpResponseBody(); if (!body || body.error) return; var declared = mcpCapabilityDeclared('prompts'); if (declared === null) return; pm.expect(declared, 'initialize declared capabilities.prompts before serving prompts/get').to.eql(true); });`,
     `pm.test('MCP prompts/get response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('prompts/get'); });`
   ]);
@@ -167,7 +224,7 @@ export function toolsCallScript(index: McpContractIndex, tool: McpToolDescriptor
     "var body = mcpResponseBody();",
     `pm.test('MCP tools/call returns JSON-RPC result for ${tool.name} (MCP 2025-06-18 tools/call; JSON-RPC 2.0 §5)', function () { mcpAssertResponseObject('tools/call ' + toolName, body, ${requestId}); pm.expect(body.result, 'tools/call result').to.be.an('object'); });`,
     `pm.test('MCP tools/call structuredContent is object-valued when present for ${tool.name} (MCP 2025-06-18 structured content)', function () { if (!body || !body.result || body.result.structuredContent === undefined) return; pm.expect(body.result.structuredContent, 'structuredContent').to.be.an('object').and.not.an('array'); });`,
-    `pm.test('MCP tools/call content blocks are typed for ${tool.name} (MCP 2025-06-18 content blocks)', function () { if (body.result.isError !== undefined) pm.expect(body.result.isError).to.be.a('boolean'); pm.expect(body.result.content, 'tools/call result.content').to.be.an('array'); if (body.result.isError) console.warn('MCP tools/call returned tool-execution-error for ' + toolName + '; validating content block envelope only'); body.result.content.forEach(function (block) { pm.expect(block).to.be.an('object'); pm.expect(block.type).to.be.a('string'); if (block.type === 'text') pm.expect(block.text).to.be.a('string'); else if (block.type === 'image' || block.type === 'audio') { pm.expect(block.data).to.match(/^[A-Za-z0-9+/]+={0,2}$/); pm.expect(block.mimeType).to.be.a('string'); } else if (block.type === 'resource_link') { pm.expect(block.uri).to.be.a('string'); pm.expect(block.name).to.be.a('string'); } else if (block.type === 'resource') { pm.expect(block.resource).to.be.an('object'); pm.expect(block.resource.uri).to.be.a('string'); var hasText = typeof block.resource.text === 'string'; var hasBlob = typeof block.resource.blob === 'string'; pm.expect(hasText || hasBlob, 'resource has text or blob').to.eql(true); if (hasText && hasBlob) console.warn('MCP resource content block carries both text and blob for ' + toolName); } }); });`,
+    `pm.test('MCP tools/call content blocks are typed for ${tool.name} (MCP 2025-06-18 content blocks)', function () { if (body.result.isError !== undefined) pm.expect(body.result.isError).to.be.a('boolean'); pm.expect(body.result.content, 'tools/call result.content').to.be.an('array'); if (body.result.isError) console.warn('MCP tools/call returned tool-execution-error for ' + toolName + '; validating content block envelope only'); body.result.content.forEach(function (block, i) { mcpAssertContentBlock(block, 'tools/call ' + toolName + ' content[' + i + ']'); }); });`,
     `pm.test('MCP tools/call is served only when the tools capability was declared for ${tool.name} (MCP 2025-06-18 Tools sec. 1; Lifecycle sec. 1.2)', function () { if (!body || body.error) return; var declared = mcpCapabilityDeclared('tools'); if (declared === null) return; pm.expect(declared, 'initialize declared capabilities.tools before serving tools/call').to.eql(true); });`,
     `pm.test('MCP tools/call response media type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { mcpAssertPostMediaType('tools/call'); });`
   ];
@@ -208,7 +265,6 @@ export function resourceTemplatesScript(): string {
     "  pm.expect(body.result, 'resources/templates/list result').to.be.an('object');",
     '  var templates = body.result.resourceTemplates;',
     "  if (body.result.nextCursor !== undefined) pm.expect(body.result.nextCursor, 'resources/templates/list nextCursor').to.be.a('string');",
-    '  if (templates === undefined) return;',
     "  pm.expect(templates, 'resourceTemplates').to.be.an('array');",
     '  var exprRe = /^\\{[+#./;?&]?[A-Za-z0-9_%.]+(?::[1-9][0-9]{0,3}|\\*)?(?:,[A-Za-z0-9_%.]+(?::[1-9][0-9]{0,3}|\\*)?)*\\}$/;',
     '  templates.forEach(function (template) {',
@@ -251,6 +307,8 @@ export function progressToolCallScript(toolName: string): string {
     '    var params = frame.params || {};',
     "    pm.expect(params.progressToken, 'progress notifications must echo the request progressToken (MCP 2025-06-18 utilities/progress)').to.eql('pm-progress');",
     "    pm.expect(typeof params.progress, 'progress must be a number').to.eql('number');",
+    "    if (params.total !== undefined) { pm.expect(typeof params.total, 'progress total must be a number when present').to.eql('number'); if (params.total < params.progress) pm.expect.fail('progress total must be greater than or equal to progress; got total ' + params.total + ' and progress ' + params.progress); }",
+    "    if (params.message !== undefined) pm.expect(params.message, 'progress message must be a string when present').to.be.a('string');",
     "    if (!(params.progress > lastProgress)) pm.expect.fail('progress values must increase with each notification (MCP 2025-06-18 utilities/progress); got ' + params.progress + ' after ' + lastProgress);",
     '    lastProgress = params.progress;',
     "    if (responseIndex !== -1 && i > responseIndex) pm.expect.fail('progress notifications must stop after the final response (MCP 2025-06-18 utilities/progress)');",

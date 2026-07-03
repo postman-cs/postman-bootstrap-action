@@ -113,9 +113,9 @@ describe('protocol dispatch format discriminant', () => {
     expect(result.type).toBe('mcp');
     expect(result.format).toBe('v3-ec');
     expect(result.runnableInCi).toBe(true);
-    expect(result.operationCount).toBe(42);
+    expect(result.operationCount).toBe(44);
     const items = (result.collection.item as Array<Record<string, unknown>>) ?? [];
-    expect(items.filter((item) => item.type === 'mcp-request')).toHaveLength(18);
+    expect(items.filter((item) => item.type === 'mcp-request')).toHaveLength(20);
     expect(items.filter((item) => item.type === 'http-request')).toHaveLength(24);
   });
 
@@ -126,7 +126,7 @@ describe('protocol dispatch format discriminant', () => {
       name: 'T'
     });
     expect(result.runnableInCi).toBe(false);
-    expect(result.operationCount).toBe(4);
+    expect(result.operationCount).toBe(5);
     expect(result.warnings.some((w) => w.startsWith('MCP_RUNTIME_SURFACE_UNAVAILABLE'))).toBe(true);
   });
 

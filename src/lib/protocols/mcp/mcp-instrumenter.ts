@@ -146,12 +146,17 @@ function assertJsonRpcRequest(message: unknown, itemTitle: string): JsonRecord {
     if (!record.id) return fail('id string must be non-empty');
   } else if (typeof record.id === 'number') {
     if (!Number.isFinite(record.id) || Math.floor(record.id) !== record.id) return fail('id number must be a finite integer');
+  } else if (record.id === undefined && record.method.startsWith('notifications/')) {
+    // JSON-RPC notifications intentionally have no id and no response.
   } else {
     return fail('id must be a string or number');
   }
   if (record.params !== undefined && asRecord(record.params) === null) return fail('params must be an object when present');
 
   switch (record.method) {
+    case 'notifications/initialized':
+      assertOptionalObjectParams(record, 'notifications/initialized', fail);
+      break;
     case 'initialize': {
       const params = assertObjectParams(record, 'initialize', fail);
       if (typeof params.protocolVersion !== 'string' || !params.protocolVersion) fail('initialize params.protocolVersion must be a non-empty string');
@@ -317,18 +322,20 @@ export function instrumentMcpCollection(collection: JsonRecord, index: McpContra
       ids.push(typeof item.id === 'string' && item.id ? item.id : `#${ids.length}`);
       const itemTitle = String(item.title ?? item.id ?? 'mcp-request');
       const request = assertJsonRpcRequest(asRecord(item.payload)?.message, itemTitle);
-      const scopedId = `${itemServerScope(itemTitle)}\u0000${typeof request.id === 'number' ? `n:${request.id}` : `s:${request.id}`}`;
-      if (requestIdsByServer.has(scopedId)) {
-        throw new Error(
-          `MCP_REQUEST_ID_DUPLICATE: server "${itemServerScope(itemTitle)}" reuses JSON-RPC id ${JSON.stringify(request.id)} across generated mcp-request items; generated contract collection is ambiguous`
-        );
+      if (request.id !== undefined) {
+        const scopedId = `${itemServerScope(itemTitle)}\u0000${typeof request.id === 'number' ? `n:${request.id}` : `s:${request.id}`}`;
+        if (requestIdsByServer.has(scopedId)) {
+          throw new Error(
+            `MCP_REQUEST_ID_DUPLICATE: server "${itemServerScope(itemTitle)}" reuses JSON-RPC id ${JSON.stringify(request.id)} across generated mcp-request items; generated contract collection is ambiguous`
+          );
+        }
+        requestIdsByServer.add(scopedId);
       }
-      requestIdsByServer.add(scopedId);
     } else if (String(item.type) === 'http-request' && String(item.title ?? '').includes('HTTP')) {
       httpIds.push(typeof item.id === 'string' && item.id ? item.id : `#${httpIds.length}`);
     }
   }
-  const expected = index.servers.length * (4 + index.tools.length + index.resources.length + index.prompts.length);
+  const expected = index.servers.length * (5 + index.tools.length + index.resources.length + index.prompts.length);
   const unique = new Set(ids).size;
   if (ids.length !== expected || unique !== expected) {
     throw new Error(

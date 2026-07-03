@@ -311,10 +311,10 @@ describe('mcp collection builder', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });
     const items = collection.item as JsonRecord[];
-    // 2 servers x (initialize + tools/list + resources/list + prompts/list +
+    // 2 servers x (initialize + initialized + tools/list + resources/list + prompts/list +
     // 2 tools/call + 2 resources/read + 1 prompts/get) mcp-request templates,
     // plus 1 url-bearing server x (24 HTTP runtime probes/items).
-    expect(items).toHaveLength(42);
+    expect(items).toHaveLength(44);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -323,6 +323,9 @@ describe('mcp collection builder', () => {
     expect(initMessage.jsonrpc).toBe('2.0');
     expect(initMessage.method).toBe('initialize');
     expect((initMessage.params as JsonRecord).protocolVersion).toBe('2025-06-18');
+    const initialized = items.find((i) => String(i.title) === 'io.github.example/weather remote-1 · notifications/initialized')!;
+    const initializedMessage = JSON.parse(String((initialized.payload as JsonRecord).message)) as JsonRecord;
+    expect(initializedMessage).toEqual({ jsonrpc: '2.0', method: 'notifications/initialized' });
     const call = items.find((i) => String(i.title).includes('tools/call get_forecast'))!;
     const callMessage = JSON.parse(String((call.payload as JsonRecord).message)) as JsonRecord;
     expect(callMessage.method).toBe('tools/call');
@@ -332,6 +335,9 @@ describe('mcp collection builder', () => {
       .filter((i) => i.type === 'mcp-request' && String(i.title).startsWith('io.github.example/weather remote-1 · tools/call'))
       .map((i) => JSON.parse(String((i.payload as JsonRecord).message)).id);
     expect(remoteToolCallIds).toEqual([3, 4]);
+    const remoteCall = items.find((i) => i.type === 'mcp-request' && String(i.title) === 'io.github.example/weather remote-1 · tools/call get_forecast')!;
+    const remoteHeaders = (((remoteCall.payload as JsonRecord).headers as JsonRecord[]) ?? []).map((h) => h.key);
+    expect(remoteHeaders).toEqual(['MCP-Protocol-Version', 'X-API-Key']);
     const httpInitialize = items.find((i) => i.type === 'http-request' && String(i.title).endsWith('HTTP initialize'))!;
     expect(httpInitialize.id).toBe('8855b5e4-0000-4000-8000-000000000036');
     const headers = (((httpInitialize.payload as JsonRecord).headers as JsonRecord[]) ?? []).map((h) => h.key);
@@ -353,7 +359,7 @@ describe('mcp collection builder', () => {
     const stdioMessages = (collection.item as JsonRecord[])
       .filter((item) => item.type === 'mcp-request' && (item.payload as JsonRecord).transport === 'stdio')
       .map((item) => String((item.payload as JsonRecord).message));
-    expect(stdioMessages).toHaveLength(9);
+    expect(stdioMessages).toHaveLength(10);
     for (const message of stdioMessages) {
       expect(message).not.toContain('\n');
       expect(message).toBe(JSON.stringify(JSON.parse(message)));

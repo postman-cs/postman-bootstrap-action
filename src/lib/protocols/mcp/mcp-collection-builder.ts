@@ -1,6 +1,6 @@
 // Build a v3/EC (Extensible Collection) JSON object with mcp-request items for
-// an MCP server contract: per server an `initialize` and a `tools/list`
-// JSON-RPC template, plus one `tools/call` template per declared tool with
+// an MCP server contract: per server an `initialize`, `notifications/initialized`,
+// and `tools/list` JSON-RPC template, plus one `tools/call` template per declared tool with
 // arguments synthesized from the tool's inputSchema.
 //
 // Grounding for the item shape is the bundled `@postman/runtime.models`
@@ -192,6 +192,20 @@ export function expectedRuntimeItemCount(index: McpContractIndex, server: McpSer
   return count;
 }
 
+function mcpRequestHeaders(server: McpServerDescriptor, protocolVersion: string): Array<{ key: string; value: string }> {
+  const headers = [
+    { key: 'MCP-Protocol-Version', value: protocolVersion },
+    ...server.headers.map((entry) => ({ key: entry.key, value: entry.value }))
+  ];
+  const seen = new Set<string>();
+  return headers.filter((entry) => {
+    const key = entry.key.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function baseHeaders(server: McpServerDescriptor): Array<{ key: string; value: string }> {
   const headers = [
     { key: 'Content-Type', value: 'application/json' },
@@ -330,7 +344,7 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
   return items;
 }
 
-function serverPayload(server: McpServerDescriptor, message: string): JsonRecord {
+function serverPayload(server: McpServerDescriptor, message: string, protocolVersion: string): JsonRecord {
   if (server.transport === 'stdio') {
     const payload: JsonRecord = { transport: 'stdio', message: compactJsonMessage(message) };
     if (server.command) payload.command = server.command;
@@ -339,7 +353,7 @@ function serverPayload(server: McpServerDescriptor, message: string): JsonRecord
   }
   const payload: JsonRecord = { transport: 'sse', message };
   if (server.url) payload.url = server.url;
-  if (server.headers.length > 0) payload.headers = server.headers.map((entry) => ({ key: entry.key, value: entry.value }));
+  payload.headers = mcpRequestHeaders(server, protocolVersion);
   return payload;
 }
 
@@ -357,7 +371,7 @@ function buildItem(
     title,
     name: title,
     createdAt: options.createdAt ?? DEFAULT_CREATED_AT,
-    payload: serverPayload(server, message),
+    payload: serverPayload(server, message, options.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION),
     extensions: {}
   };
 }
@@ -367,6 +381,7 @@ export function buildMcpCollection(index: McpContractIndex, options: McpCollecti
   const item: JsonRecord[] = [];
   for (const server of index.servers) {
     item.push(buildItem(server, `srv:${server.id}:initialize`, `${server.id} · initialize`, initializeMessage(options), options));
+    item.push(buildItem(server, `srv:${server.id}:initialized`, `${server.id} · notifications/initialized`, jsonRpcNotification('notifications/initialized'), options));
     item.push(buildItem(server, `srv:${server.id}:tools/list`, `${server.id} · tools/list`, toolsListMessage(), options));
     item.push(buildItem(server, `srv:${server.id}:resources/list`, `${server.id} · resources/list`, resourcesListMessage(), options));
     item.push(buildItem(server, `srv:${server.id}:prompts/list`, `${server.id} · prompts/list`, promptsListMessage(), options));

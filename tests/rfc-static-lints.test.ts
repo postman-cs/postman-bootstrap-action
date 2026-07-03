@@ -118,7 +118,7 @@ paths:
           description: OK
           links:
 ${links}`;
-    const partial = indexFrom(spec("            next:\n              operationId: getA\n              parameters: { id: '$response.body#/id', path: '$request.path.id' }\n"));
+    const partial = indexFrom(spec("            next:\n              operationId: getA\n              parameters: { id: '$response.body#/id', path: '$url' }\n"));
     expect(partial.operations[0]!.responses['200']!.links).toEqual([{ link: 'next', kind: 'body', pointer: '/id', param: 'id' }]);
     expect(partial.operations[0]!.warnings.some((w) => w.startsWith('CONTRACT_LINKS_PARTIALLY_VALIDATED'))).toBe(true);
     const none = indexFrom(spec('            next:\n              operationId: getA\n'));

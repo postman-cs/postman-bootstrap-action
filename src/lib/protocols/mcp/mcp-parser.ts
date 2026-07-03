@@ -24,6 +24,8 @@
 // by the Postman CLI runner, so contract checking is generation-time/static.
 import { validator, type Schema } from '@exodus/schemasafe';
 
+import { REGISTRY_SERVER_SCHEMA } from './registry-server-schema.js';
+
 type JsonRecord = Record<string, unknown>;
 
 export type McpTransport = 'sse' | 'stdio';
@@ -119,9 +121,10 @@ const REGISTRY_SCHEMA_URL_RE = /^https:\/\/static\.modelcontextprotocol\.io\/sch
 const RFC6570_EXPRESSION_RE = /^\{[+#./;?&]?[A-Za-z0-9_%.]+(?::[1-9][0-9]{0,3}|\*)?(?:,[A-Za-z0-9_%.]+(?::[1-9][0-9]{0,3}|\*)?)*\}$/;
 const RFC6570_OPERATOR_RE = /^[+#./;?&]/;
 const LEGACY_REGISTRY_PACKAGE_KEYS = ['registry_type', 'runtime_hint', 'runtime_arguments', 'package_arguments', 'environment_variables', 'registry_base_url'] as const;
-const LEGACY_TO_CANONICAL_KEY: Record<string, string> = {
+const REGISTRY_SCHEMA_KEY_ALIASES: Record<string, string> = {
   environment_variables: 'environmentVariables',
   file_sha256: 'fileSha256',
+  is_repeated: 'isRepeated',
   is_required: 'isRequired',
   is_secret: 'isSecret',
   package_arguments: 'packageArguments',
@@ -133,7 +136,8 @@ const LEGACY_TO_CANONICAL_KEY: Record<string, string> = {
   website_url: 'websiteUrl'
 };
 
-const REGISTRY_SERVER_SCHEMA_SUBSET: Schema = {
+// Fallback only if schemasafe cannot compile a future vendored schema shape.
+const REGISTRY_SERVER_SCHEMA_COMPATIBILITY_FALLBACK: Schema = {
   $schema: 'http://json-schema.org/draft-07/schema#',
   type: 'object',
   required: ['name', 'description', 'version'],
@@ -271,23 +275,29 @@ const REGISTRY_SERVER_SCHEMA_SUBSET: Schema = {
   }
 };
 
+const REGISTRY_SCHEMA_VALIDATOR_OPTIONS = {
+  includeErrors: true,
+  allErrors: true,
+  allowUnusedKeywords: true,
+  contentValidation: false,
+  formatAssertion: true,
+  isJSON: true,
+  mode: 'default',
+  removeAdditional: false,
+  requireSchema: true,
+  requireStringValidation: false,
+  useDefaults: false
+} as const;
+
 const validateRegistryServerSchema = (() => {
   try {
-    return validator(REGISTRY_SERVER_SCHEMA_SUBSET, {
-      includeErrors: true,
-      allErrors: true,
-      allowUnusedKeywords: true,
-      contentValidation: false,
-      formatAssertion: true,
-      isJSON: true,
-      mode: 'default',
-      removeAdditional: false,
-      requireSchema: true,
-      requireStringValidation: false,
-      useDefaults: false
-    });
+    return validator(REGISTRY_SERVER_SCHEMA, REGISTRY_SCHEMA_VALIDATOR_OPTIONS);
   } catch {
-    return null;
+    try {
+      return validator(REGISTRY_SERVER_SCHEMA_COMPATIBILITY_FALLBACK, REGISTRY_SCHEMA_VALIDATOR_OPTIONS);
+    } catch {
+      return null;
+    }
   }
 })();
 
@@ -304,31 +314,31 @@ function hasOwn(record: JsonRecord, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-function canonicalRegistryKey(key: string): string {
-  return LEGACY_TO_CANONICAL_KEY[key] ?? key;
+function registrySchemaKey(key: string): string {
+  return REGISTRY_SCHEMA_KEY_ALIASES[key] ?? key;
 }
 
-function normalizeRegistryValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((entry) => normalizeRegistryValue(entry));
+function normalizeRegistrySchemaValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => normalizeRegistrySchemaValue(entry));
   const record = asRecord(value);
   if (!record) return value;
   const out: JsonRecord = {};
   for (const [key, entry] of Object.entries(record)) {
-    out[canonicalRegistryKey(key)] = normalizeRegistryValue(entry);
+    out[registrySchemaKey(key)] = normalizeRegistrySchemaValue(entry);
   }
   return out;
 }
 
-function normalizeRegistryPackage(pkg: JsonRecord): JsonRecord {
-  const out = normalizeRegistryValue(pkg) as JsonRecord;
+function normalizeRegistryPackageForSchema(pkg: JsonRecord): JsonRecord {
+  const out = normalizeRegistrySchemaValue(pkg) as JsonRecord;
   const hadLegacyShape = LEGACY_REGISTRY_PACKAGE_KEYS.some((key) => hasOwn(pkg, key));
   if (!hasOwn(out, 'transport') && hadLegacyShape) out.transport = { type: 'stdio' };
   return out;
 }
 
-function normalizeRegistryManifest(record: JsonRecord): JsonRecord {
-  const out = normalizeRegistryValue(record) as JsonRecord;
-  if (Array.isArray(record.packages)) out.packages = record.packages.map((entry) => normalizeRegistryPackage(asRecord(entry) ?? {}));
+function normalizeRegistryManifestForSchema(record: JsonRecord): JsonRecord {
+  const out = normalizeRegistrySchemaValue(record) as JsonRecord;
+  if (Array.isArray(record.packages)) out.packages = record.packages.map((entry) => normalizeRegistryPackageForSchema(asRecord(entry) ?? {}));
   return out;
 }
 
@@ -340,10 +350,10 @@ function registrySchemaWarnings(record: JsonRecord): string[] {
   if (!validateRegistryServerSchema) {
     return ['MCP_REGISTRY_SCHEMA_NOT_VALIDATED: official registry server schema validator could not be compiled locally'];
   }
-  const valid = validateRegistryServerSchema(normalizeRegistryManifest(record) as Parameters<typeof validateRegistryServerSchema>[0]);
+  const valid = validateRegistryServerSchema(normalizeRegistryManifestForSchema(record) as Parameters<typeof validateRegistryServerSchema>[0]);
   if (valid) return [];
   const errors = Array.isArray(validateRegistryServerSchema.errors) ? validateRegistryServerSchema.errors : [];
-  return errors.map((error) => `MCP_REGISTRY_SCHEMA_INVALID: registry server.json violates the supported MCP registry schema subset at ${error.instanceLocation || '#'} (${error.keywordLocation || 'schema'})`);
+  return errors.map((error) => `MCP_REGISTRY_SCHEMA_INVALID: registry server.json violates the official MCP registry server schema at ${error.instanceLocation || '#'} (${error.keywordLocation || 'schema'})`);
 }
 
 function pickValue(record: JsonRecord, preferredKey: string, legacyKey?: string): unknown {

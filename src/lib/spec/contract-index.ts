@@ -18,9 +18,11 @@ export interface ContractHeader {
 
 export interface ContractLinkExpression {
   link: string;
-  kind: 'body' | 'header';
+  kind: 'body' | 'header' | 'requestBody' | 'requestHeader' | 'requestQuery' | 'requestPath';
   pointer?: string;
   header?: string;
+  query?: string;
+  path?: string;
   // Target input this response value feeds (parameter key such as "id" or
   // "query.limit", or "$requestBody") and the linkTargetValidators key whose
   // compiled schema the resolved value must satisfy.
@@ -1039,12 +1041,16 @@ function jsonRequestBodySchema(root: JsonRecord, requestBody: JsonRecord | null)
   return undefined;
 }
 
-// Link parameter/requestBody values of the form $response.body#/ptr and
-// $response.header.Name are collected for runtime resolution against the
-// response the link is declared on. When the link's target operation and the
-// fed parameter/requestBody schema resolve, a compiled validator key is
-// attached so the resolved value is also checked against the target schema.
-// Everything else ($request.*, $url, whole-body) stays unevaluated and warns.
+function linkParameterSchema(param: JsonRecord | undefined): unknown | undefined {
+  if (!param) return undefined;
+  return jsonContentParameterMedia(param) ?? param.schema;
+}
+
+// Link parameter/requestBody values backed by response and request runtime
+// expressions are collected for runtime resolution. When the link's target
+// operation and the fed parameter/requestBody schema resolve, a compiled
+// validator key is attached so the resolved value is also checked against the
+// target schema. $url and whole-body expressions stay unevaluated and warn.
 function collectLinkExpressions(root: JsonRecord, response: JsonRecord, operationId: string, warnings: Set<string>, version: OpenApiVersion, targetSchemas: Record<string, unknown>): ContractLinkExpression[] {
   const links = asRecord(response.links);
   if (!links) return [];
@@ -1078,12 +1084,24 @@ function collectLinkExpressions(root: JsonRecord, response: JsonRecord, operatio
     for (const { key, value } of entries) {
       if (key === '$requestBody') providedKeys.add('$requestBody');
       else { const matched = matchParam(key); if (matched) providedKeys.add(`${String(matched.in).toLowerCase()}.${String(matched.name)}`); }
+      const matchedParam = key === '$requestBody' ? undefined : matchParam(key);
+      const schemaSource = key === '$requestBody' ? jsonRequestBodySchema(root, targetRequestBody) : linkParameterSchema(matchedParam);
+      if (key === '$requestBody' && schemaSource !== undefined && (typeof value !== 'string' || !value.startsWith('$'))) {
+        const packed = packSchema(root, schemaSource, version, 'request');
+        const validate = !packed.unsupported && packed.schema !== undefined ? compileSchemaValidator(packed.schema) : null;
+        if (validate && !validate(value)) {
+          warnings.add(`CONTRACT_LINK_REQUEST_BODY_SCHEMA_MISMATCH: link ${linkName} on ${operationId} supplies a literal requestBody that does not satisfy the target operation schema`);
+        }
+      }
       if (typeof value !== 'string' || !value.startsWith('$')) continue;
       const bodyMatch = value.match(/^\$response\.body#(\/.*)$/);
       const headerMatch = bodyMatch ? null : value.match(/^\$response\.header\.([!#$%&'*+.^_`|~0-9A-Za-z-]+)$/);
-      if (!bodyMatch && !headerMatch) { unevaluated = true; continue; }
+      const requestBodyMatch = bodyMatch || headerMatch ? null : value.match(/^\$request\.body#(\/.*)$/);
+      const requestHeaderMatch = bodyMatch || headerMatch || requestBodyMatch ? null : value.match(/^\$request\.header\.([!#$%&'*+.^_`|~0-9A-Za-z-]+)$/);
+      const requestQueryMatch = bodyMatch || headerMatch || requestBodyMatch || requestHeaderMatch ? null : value.match(/^\$request\.query\.([!$&'()*+,;=:@A-Za-z0-9._~-]+)$/);
+      const requestPathMatch = bodyMatch || headerMatch || requestBodyMatch || requestHeaderMatch || requestQueryMatch ? null : value.match(/^\$request\.path\.([!$&'()*+,;=:@A-Za-z0-9._~-]+)$/);
+      if (!bodyMatch && !headerMatch && !requestBodyMatch && !requestHeaderMatch && !requestQueryMatch && !requestPathMatch) { unevaluated = true; continue; }
       let targetKey: string | undefined;
-      const schemaSource = key === '$requestBody' ? jsonRequestBodySchema(root, targetRequestBody) : matchParam(key)?.schema;
       if (schemaSource !== undefined) {
         const packed = packSchema(root, schemaSource, version, 'request');
         if (!packed.unsupported && packed.schema !== undefined) {
@@ -1091,9 +1109,13 @@ function collectLinkExpressions(root: JsonRecord, response: JsonRecord, operatio
           targetSchemas[targetKey] = packed.schema;
         }
       }
-      const expression: ContractLinkExpression = bodyMatch
-        ? { link: linkName, kind: 'body', pointer: bodyMatch[1]!, param: key }
-        : { link: linkName, kind: 'header', header: headerMatch![1]!, param: key };
+      let expression: ContractLinkExpression;
+      if (bodyMatch) expression = { link: linkName, kind: 'body', pointer: bodyMatch[1]!, param: key };
+      else if (headerMatch) expression = { link: linkName, kind: 'header', header: headerMatch[1]!, param: key };
+      else if (requestBodyMatch) expression = { link: linkName, kind: 'requestBody', pointer: requestBodyMatch[1]!, param: key };
+      else if (requestHeaderMatch) expression = { link: linkName, kind: 'requestHeader', header: requestHeaderMatch[1]!, param: key };
+      else if (requestQueryMatch) expression = { link: linkName, kind: 'requestQuery', query: requestQueryMatch[1]!, param: key };
+      else expression = { link: linkName, kind: 'requestPath', path: requestPathMatch![1]!, param: key };
       if (targetKey) expression.targetKey = targetKey;
       expressions.push(expression);
     }

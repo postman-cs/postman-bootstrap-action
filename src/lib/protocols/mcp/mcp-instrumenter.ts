@@ -38,6 +38,8 @@ const META_KEY_RE = /^(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?\.)*[a-zA-
 const RESERVED_META_PREFIX_RE = /^(?:.*\.)?(?:modelcontextprotocol|mcp)\//i;
 const MIME_TYPE_RE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*(?:\s*;\s*[A-Za-z0-9!#$&^_.+-]+=(?:"[^"]*"|[A-Za-z0-9!#$&^_.+-]+))*$/;
 const TOOL_FIELDS_2025_06_18 = new Set(['name', 'title', 'description', 'inputSchema', 'outputSchema', 'annotations', '_meta']);
+const JSON_RPC_STANDARD_ERROR_CODES = new Set([-32700, -32600, -32601, -32602, -32603]);
+const MCP_PROTOCOL_VERSIONS = new Set(['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']);
 
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -46,6 +48,112 @@ function asRecord(value: unknown): JsonRecord | null {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function isStrictBase64(value: string): boolean {
+  if (!value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  try {
+    return Buffer.from(value, 'base64').toString('base64') === value;
+  } catch {
+    return false;
+  }
+}
+
+function walkDocument(value: unknown, path: string, visit: (record: JsonRecord, path: string) => void): void {
+  const record = asRecord(value);
+  if (record) {
+    visit(record, path);
+    for (const [key, child] of Object.entries(record)) walkDocument(child, `${path}.${key}`, visit);
+    return;
+  }
+  if (Array.isArray(value)) value.forEach((entry, i) => walkDocument(entry, `${path}[${i}]`, visit));
+}
+
+function validateStaticContentBlock(block: JsonRecord, label: string, warnings: string[]): void {
+  if (typeof block.type !== 'string') {
+    warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} content block type must be a string`);
+    return;
+  }
+  if (block.annotations !== undefined && asRecord(block.annotations) === null) {
+    warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} annotations must be an object when present`);
+  }
+  if (block._meta !== undefined && asRecord(block._meta) === null) {
+    warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} _meta must be an object when present`);
+  }
+  if (block.type === 'text') {
+    if (typeof block.text !== 'string') warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} text content block must carry string text`);
+    return;
+  }
+  if (block.type === 'image' || block.type === 'audio') {
+    if (typeof block.data !== 'string' || !isStrictBase64(block.data)) warnings.push(`MCP_STATIC_CONTENT_PAYLOAD_ENCODING_INVALID: ${label} ${block.type}.data must be strict base64`);
+    if (typeof block.mimeType !== 'string' || !MIME_TYPE_RE.test(block.mimeType)) warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} ${block.type}.mimeType must be a valid media type`);
+    return;
+  }
+  if (block.type === 'resource') {
+    const resource = asRecord(block.resource);
+    if (!resource) {
+      warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} resource content block must carry a resource object`);
+      return;
+    }
+    if (typeof resource.uri !== 'string') warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} resource.uri must be a string`);
+    if (resource.mimeType !== undefined && (typeof resource.mimeType !== 'string' || !MIME_TYPE_RE.test(resource.mimeType))) warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} resource.mimeType must be a valid media type`);
+    if (typeof resource.blob === 'string' && !isStrictBase64(resource.blob)) warnings.push(`MCP_STATIC_CONTENT_PAYLOAD_ENCODING_INVALID: ${label} resource.blob must be strict base64`);
+    if (resource.text === undefined && resource.blob === undefined) warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} resource content must carry text or blob`);
+    return;
+  }
+  warnings.push(`MCP_STATIC_CONTENT_BLOCK_INVALID: ${label} content block type "${block.type}" is not a known MCP 2025-06-18 content discriminator`);
+}
+
+function validateStaticResultFixture(record: JsonRecord, path: string, warnings: string[]): void {
+  const result = asRecord(record.result);
+  if (!result) return;
+  for (const key of ['tools', 'resources', 'prompts'] as const) {
+    if (result[key] !== undefined && !Array.isArray(result[key])) warnings.push(`MCP_STATIC_PAGINATION_RESULT_INVALID: ${path}.${key} must be an array in static list-result fixtures`);
+  }
+  if ((result.tools !== undefined || result.resources !== undefined || result.prompts !== undefined) && result.nextCursor !== undefined && typeof result.nextCursor !== 'string') {
+    warnings.push(`MCP_STATIC_PAGINATION_CURSOR_INVALID: ${path}.nextCursor must be a string when present in static list-result fixtures`);
+  }
+  if (result.protocolVersion !== undefined || result.capabilities !== undefined || result.serverInfo !== undefined) {
+    if (typeof result.protocolVersion !== 'string' || !MCP_PROTOCOL_VERSIONS.has(result.protocolVersion)) warnings.push(`MCP_STATIC_INITIALIZE_RESULT_INVALID: ${path}.protocolVersion must be a supported MCP protocol version`);
+    if (asRecord(result.capabilities) === null) warnings.push(`MCP_STATIC_INITIALIZE_RESULT_INVALID: ${path}.capabilities must be an object`);
+    const serverInfo = asRecord(result.serverInfo);
+    if (!serverInfo) warnings.push(`MCP_STATIC_INITIALIZE_RESULT_INVALID: ${path}.serverInfo must be an object`);
+    else {
+      if (typeof serverInfo.name !== 'string' || !serverInfo.name) warnings.push(`MCP_STATIC_INITIALIZE_RESULT_INVALID: ${path}.serverInfo.name must be a non-empty string`);
+      if (typeof serverInfo.version !== 'string' || !serverInfo.version) warnings.push(`MCP_STATIC_INITIALIZE_RESULT_INVALID: ${path}.serverInfo.version must be a non-empty string`);
+    }
+  }
+}
+
+function validateStaticJsonRpcFixtures(index: McpContractIndex, warnings: string[]): void {
+  walkDocument(index.documentJson, '$', (record, path) => {
+    const error = asRecord(record.error);
+    if (record.jsonrpc === '2.0' && error) {
+      if (typeof error.code !== 'number' || Math.floor(error.code) !== error.code) warnings.push(`MCP_STATIC_ERROR_CODE_INVALID: ${path}.error.code must be an integer JSON-RPC error code`);
+      else if (error.code >= -32768 && error.code <= -32000 && !JSON_RPC_STANDARD_ERROR_CODES.has(error.code) && !(error.code >= -32099 && error.code <= -32000)) warnings.push(`MCP_STATIC_ERROR_CODE_INVALID: ${path}.error.code ${error.code} is inside the reserved JSON-RPC range but is not a standard or server-error code`);
+      if (typeof error.message !== 'string') warnings.push(`MCP_STATIC_ERROR_CODE_INVALID: ${path}.error.message must be a string`);
+    }
+    validateStaticResultFixture(record, path, warnings);
+    if (Array.isArray(record.content)) {
+      record.content.forEach((entry, i) => {
+        const block = asRecord(entry);
+        if (block) validateStaticContentBlock(block, `${path}.content[${i}]`, warnings);
+      });
+    }
+    if (Array.isArray(record.messages)) {
+      record.messages.forEach((entry, i) => {
+        const message = asRecord(entry);
+        if (!message) {
+          warnings.push(`MCP_STATIC_PROMPT_MESSAGE_INVALID: ${path}.messages[${i}] must be an object`);
+          return;
+        }
+        if (message.role !== 'user' && message.role !== 'assistant') warnings.push(`MCP_STATIC_PROMPT_MESSAGE_INVALID: ${path}.messages[${i}].role must be user or assistant`);
+        const content = asRecord(message.content);
+        if (!content) warnings.push(`MCP_STATIC_PROMPT_MESSAGE_INVALID: ${path}.messages[${i}].content must be a content block object`);
+        else validateStaticContentBlock(content, `${path}.messages[${i}].content`, warnings);
+      });
+    }
+  });
 }
 
 function walkManifest(value: unknown, path: string, warnings: string[]): void {
@@ -381,6 +489,7 @@ export function instrumentMcpCollection(collection: JsonRecord, index: McpContra
   validateManifestDocument(index, warnings);
   validateCapabilities(index, warnings);
   validateAnnotatedDeclarations(index, warnings);
+  validateStaticJsonRpcFixtures(index, warnings);
   for (const tool of index.tools) warnings.push(...toolsCallScript(index, tool).warnings);
 
   // Coverage + message well-formedness over the built items: every server must

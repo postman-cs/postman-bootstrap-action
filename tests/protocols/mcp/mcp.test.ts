@@ -313,6 +313,21 @@ describe('mcp parser', () => {
     expect(index.warnings.some((warning) => warning.startsWith('MCP_REGISTRY_SCHEMA_INVALID') && warning.includes('#/remotes/0/url'))).toBe(true);
   });
 
+  it('validates registry server.json against the vendored full schema', () => {
+    const doc = JSON.stringify({
+      $schema: 'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json',
+      name: 'io.github.example/weather',
+      description: 'Weather data MCP server',
+      version: '1.0.0',
+      remotes: [{ type: 'streamable-http', url: 'https://mcp.example.com/mcp' }],
+      repository: { url: 'https://github.com/example/weather' },
+      icons: [{ src: 'https://example.com/icon.gif', mimeType: 'image/gif' }]
+    });
+    const index = parseMcpServerSpec(doc);
+    expect(index.warnings.some((warning) => warning.startsWith('MCP_REGISTRY_SCHEMA_INVALID') && warning.includes('#/repository'))).toBe(true);
+    expect(index.warnings.some((warning) => warning.startsWith('MCP_REGISTRY_SCHEMA_INVALID') && warning.includes('#/icons/0/mimeType'))).toBe(true);
+  });
+
   it('parses prompt/resource declarations but keeps invalid entries auditable with warnings', () => {
     const doc = JSON.stringify({
       mcpServers: { weather: { command: 'npx weather-server' } },
@@ -505,6 +520,37 @@ describe('mcp instrumenter (static validation)', () => {
     expect(warnings.some((w) => w.startsWith('MCP_PROMPT_ARGUMENT_NAME_MISSING') && w.includes('forecast_prompt'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_PROMPT_ARGUMENT_DUPLICATE') && w.includes('forecast_prompt'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('MCP_META_OBJECT_INVALID') && w.includes('$._meta'))).toBe(true);
+  });
+
+  it('validates static JSON-RPC fixtures, pagination, initialize results, and prompt content examples', () => {
+    const index = parseMcpServerSpec(JSON.stringify({
+      mcpServers: { s: { command: 'run-server' } },
+      tools: [{ name: 'forecast', inputSchema: { type: 'object' } }],
+      fixtures: {
+        invalidError: { jsonrpc: '2.0', id: 1, error: { code: 'bad', message: 42 } },
+        invalidPagination: { result: { tools: [], nextCursor: 7 } },
+        invalidInitialize: { result: { protocolVersion: '2099-01-01', capabilities: [], serverInfo: { name: '', version: 2 } } }
+      },
+      prompts: [
+        {
+          name: 'example_prompt',
+          messages: [
+            { role: 'system', content: { type: 'image', data: 'not-base64', mimeType: 'bad' } }
+          ]
+        }
+      ],
+      examples: {
+        toolResult: { content: [{ type: 'audio', data: 'abc', mimeType: 'audio/wav' }] }
+      }
+    }));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const { warnings } = instrumentMcpCollection(collection, index);
+    expect(warnings.some((w) => w.startsWith('MCP_STATIC_ERROR_CODE_INVALID') && w.includes('error.code'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_STATIC_PAGINATION_CURSOR_INVALID'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_STATIC_INITIALIZE_RESULT_INVALID') && w.includes('protocolVersion'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_STATIC_PROMPT_MESSAGE_INVALID') && w.includes('role'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_STATIC_CONTENT_PAYLOAD_ENCODING_INVALID') && w.includes('image.data'))).toBe(true);
+    expect(warnings.some((w) => w.startsWith('MCP_STATIC_CONTENT_PAYLOAD_ENCODING_INVALID') && w.includes('audio.data'))).toBe(true);
   });
 
   it('fails closed when the built collection drops an item', () => {

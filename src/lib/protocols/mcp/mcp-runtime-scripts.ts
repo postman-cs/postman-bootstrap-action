@@ -13,14 +13,45 @@ function mcpResponseBody() {
   var raw = pm.response.text();
   if (!raw) return undefined;
   if (/text\\/event-stream/i.test(contentType)) {
-    var payloads = [];
-    raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {
-      var data = frame.split(/\\r?\\n/).filter(function (line) { return /^data\\s*:/i.test(line); }).map(function (line) { return line.replace(/^data\\s*:\\s?/i, ''); }).join('\\n');
-      if (data) payloads.push(JSON.parse(data));
-    });
+    var frames = mcpSseFrames();
+    mcpAssertSseEventIdsUnique(frames, 'MCP SSE response');
+    var payloads = frames.filter(function (frame) { return Object.prototype.hasOwnProperty.call(frame, 'json'); }).map(function (frame) { return frame.json; });
     return payloads.length === 1 ? payloads[0] : payloads;
   }
   return JSON.parse(raw);
+}
+function mcpSseFrames() {
+  var raw = pm.response.text();
+  if (!raw) return [];
+  var frames = [];
+  raw.split(/\\r?\\n\\r?\\n/).forEach(function (chunk) {
+    if (!chunk.trim()) return;
+    var data = [];
+    var out = { event: 'message', data: '' };
+    chunk.split(/\\r?\\n/).forEach(function (line) {
+      if (!line || line.charAt(0) === ':') return;
+      var match = /^([^:]*)(?:: ?(.*))?$/.exec(line);
+      if (!match) return;
+      var field = match[1];
+      var value = match[2] === undefined ? '' : match[2];
+      if (field === 'event') out.event = value || 'message';
+      else if (field === 'id') out.id = value;
+      else if (field === 'retry') out.retry = value;
+      else if (field === 'data') data.push(value);
+    });
+    out.data = data.join('\\n');
+    if (out.data) out.json = JSON.parse(out.data);
+    frames.push(out);
+  });
+  return frames;
+}
+function mcpAssertSseEventIdsUnique(frames, label) {
+  var seen = {};
+  frames.forEach(function (frame, i) {
+    if (frame.id === undefined || frame.id === '') return;
+    pm.expect(seen[frame.id], label + ' duplicate SSE event id at frame ' + i + ': ' + frame.id).to.not.eql(true);
+    seen[frame.id] = true;
+  });
 }
 function mcpAssertErrorShape(message, body, expectedId) {
   pm.expect(body, message + ' body is object').to.be.an('object').and.not.an('array');
@@ -406,6 +437,27 @@ export function progressToolCallScript(toolName: string): string {
     "    if (!(params.progress > lastProgress)) pm.expect.fail('progress values must increase with each notification (MCP 2025-06-18 utilities/progress); got ' + params.progress + ' after ' + lastProgress);",
     '    lastProgress = params.progress;',
     "    if (responseIndex !== -1 && i > responseIndex) pm.expect.fail('progress notifications must stop after the final response (MCP 2025-06-18 utilities/progress)');",
+    '  });',
+    '});'
+  ]);
+}
+
+export function getListenScript(): string {
+  return join([
+    "pm.test('MCP GET listen returns an SSE stream or HTTP 405 (MCP 2025-06-18 Streamable HTTP)', function () {",
+    '  if (pm.response.code === 405) return;',
+    "  pm.expect(pm.response.code, 'GET listen response code').to.eql(200);",
+    "  pm.expect(pm.response.headers.get('Content-Type') || '', 'GET listen Content-Type').to.match(/text\\/event-stream/i);",
+    '  var frames = mcpSseFrames();',
+    "  mcpAssertSseEventIdsUnique(frames, 'GET listen');",
+    '  frames.forEach(function (frame, i) {',
+    "    if (frame.retry !== undefined && !/^\\d+$/.test(String(frame.retry))) pm.expect.fail('GET listen retry must be decimal milliseconds at frame ' + i);",
+    "    if (!Object.prototype.hasOwnProperty.call(frame, 'json')) return;",
+    '    var message = frame.json;',
+    "    pm.expect(message, 'GET listen JSON-RPC frame ' + i).to.be.an('object').and.not.an('array');",
+    "    if (message.jsonrpc !== undefined) pm.expect(message.jsonrpc, 'GET listen JSON-RPC version at frame ' + i).to.eql('2.0');",
+    "    var isResponse = message.id !== undefined && message.method === undefined && (message.result !== undefined || message.error !== undefined);",
+    "    if (isResponse) pm.expect.fail('GET listen non-resumable stream must not carry JSON-RPC responses; frame ' + i + ' had id ' + JSON.stringify(message.id));",
     '  });',
     '});'
   ]);

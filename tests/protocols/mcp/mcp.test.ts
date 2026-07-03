@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { parseMcpServerSpec } from '../../../src/lib/protocols/mcp/mcp-parser.js';
 import { buildMcpCollection } from '../../../src/lib/protocols/mcp/mcp-collection-builder.js';
 import { instrumentMcpCollection } from '../../../src/lib/protocols/mcp/mcp-instrumenter.js';
-import { getPromptScript, initializeScript, nextCursorScript, progressToolCallScript, readResourceScript, resourceTemplatesScript, resourcesListScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
+import { getListenScript, getPromptScript, initializeScript, nextCursorScript, progressToolCallScript, readResourceScript, resourceTemplatesScript, resourcesListScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
 import { detectSpecType } from '../../../src/lib/spec/detect-spec-type.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -139,14 +139,19 @@ function createPmExpect() {
   return expectFn;
 }
 
-function runMcpScript(script: string, responseBody: unknown, vars = new Map<string, string>()): { results: RuntimeTestResult[]; warnings: string[]; vars: Map<string, string> } {
+function runMcpScript(
+  script: string,
+  responseBody: unknown,
+  vars = new Map<string, string>(),
+  responseOptions: { code?: number; contentType?: string; text?: string } = {}
+): { results: RuntimeTestResult[]; warnings: string[]; vars: Map<string, string> } {
   const results: RuntimeTestResult[] = [];
   const warnings: string[] = [];
   const pm = {
     response: {
-      code: 200,
-      headers: headerList([{ key: 'Content-Type', value: 'application/json; charset=utf-8' }]),
-      text: (): string => JSON.stringify(responseBody)
+      code: responseOptions.code ?? 200,
+      headers: headerList([{ key: 'Content-Type', value: responseOptions.contentType ?? 'application/json; charset=utf-8' }]),
+      text: (): string => responseOptions.text ?? JSON.stringify(responseBody)
     },
     collectionVariables: {
       get(key: string): string | undefined {
@@ -345,8 +350,8 @@ describe('mcp collection builder', () => {
     const items = collection.item as JsonRecord[];
     // 2 servers x (initialize + initialized + tools/list + resources/list + prompts/list +
     // 2 tools/call + 2 resources/read + 1 prompts/get) mcp-request templates,
-    // plus 1 url-bearing server x (24 HTTP runtime probes/items).
-    expect(items).toHaveLength(44);
+    // plus 1 url-bearing server x (25 HTTP runtime probes/items).
+    expect(items).toHaveLength(45);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -629,6 +634,7 @@ describe('mcp runtime HTTP scripts', () => {
     expect(httpItems.map((item) => item.title)).toEqual([
       'io.github.example/weather remote-1 · HTTP initialize',
       'io.github.example/weather remote-1 · HTTP notifications/initialized',
+      'io.github.example/weather remote-1 · HTTP GET listen stream',
       'io.github.example/weather remote-1 · HTTP ping',
       'io.github.example/weather remote-1 · HTTP tools/list',
       'io.github.example/weather remote-1 · HTTP resources/list',
@@ -655,6 +661,12 @@ describe('mcp runtime HTTP scripts', () => {
     const initialized = httpItems.find((item) => String(item.title).endsWith('HTTP notifications/initialized'))!;
     expect(runtimeEventScript(initialized, 'beforeRequest')).toContain('mcp_initialize_ok');
     expect(runtimeEventScript(initialized)).toContain('mcp_initialized_ok');
+    const listen = httpItems.find((item) => String(item.title).endsWith('HTTP GET listen stream'))!;
+    expect((listen.payload as JsonRecord).method).toBe('GET');
+    expect(((listen.payload as JsonRecord).headers as JsonRecord[]).some((h) => h.key === 'Content-Type')).toBe(false);
+    expect(((listen.payload as JsonRecord).headers as JsonRecord[]).find((h) => h.key === 'Accept')?.value).toBe('text/event-stream');
+    expect(runtimeEventScript(listen, 'beforeRequest')).toContain('mcp_initialized_ok');
+    expect(runtimeEventScript(listen)).toContain('must not carry JSON-RPC responses');
     const ping = httpItems.find((item) => String(item.title).endsWith('HTTP ping'))!;
     const pingHeaders = ((ping.payload as JsonRecord).headers as JsonRecord[]);
     expect(pingHeaders.map((h) => h.key)).toContain('Mcp-Session-Id');
@@ -733,6 +745,73 @@ describe('mcp runtime HTTP scripts', () => {
       runtimeTestResult(
         valid.results,
         'MCP progress notifications echo the token and increase for get_forecast (MCP 2025-06-18 utilities/progress)'
+      )?.passed
+    ).toBe(true);
+  });
+
+  it('validates GET listen SSE metadata and bans JSON-RPC responses', () => {
+    const responseFrame = [
+      'id: response-one',
+      'data: {"jsonrpc":"2.0","id":"pm-server-response","result":{}}',
+      '',
+      'id: event-two',
+      'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}',
+      '',
+      ''
+    ].join('\n');
+    const invalid = runMcpScript(getListenScript(), undefined, new Map(), {
+      contentType: 'text/event-stream; charset=utf-8',
+      text: responseFrame
+    });
+    expect(
+      runtimeTestResult(
+        invalid.results,
+        'MCP GET listen returns an SSE stream or HTTP 405 (MCP 2025-06-18 Streamable HTTP)'
+      )?.passed
+    ).toBe(false);
+
+    const duplicateIds = runMcpScript(getListenScript(), undefined, new Map(), {
+      contentType: 'text/event-stream; charset=utf-8',
+      text: [
+        'id: duplicate',
+        'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}',
+        '',
+        'id: duplicate',
+        'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}',
+        '',
+        ''
+      ].join('\n')
+    });
+    expect(
+      runtimeTestResult(
+        duplicateIds.results,
+        'MCP GET listen returns an SSE stream or HTTP 405 (MCP 2025-06-18 Streamable HTTP)'
+      )?.passed
+    ).toBe(false);
+
+    const valid = runMcpScript(getListenScript(), undefined, new Map(), {
+      contentType: 'text/event-stream; charset=utf-8',
+      text: [
+        'id: one',
+        'event: message',
+        'retry: 1000',
+        'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}',
+        '',
+        ''
+      ].join('\n')
+    });
+    expect(
+      runtimeTestResult(
+        valid.results,
+        'MCP GET listen returns an SSE stream or HTTP 405 (MCP 2025-06-18 Streamable HTTP)'
+      )?.passed
+    ).toBe(true);
+
+    const methodNotAllowed = runMcpScript(getListenScript(), undefined, new Map(), { code: 405, text: '' });
+    expect(
+      runtimeTestResult(
+        methodNotAllowed.results,
+        'MCP GET listen returns an SSE stream or HTTP 405 (MCP 2025-06-18 Streamable HTTP)'
       )?.passed
     ).toBe(true);
   });

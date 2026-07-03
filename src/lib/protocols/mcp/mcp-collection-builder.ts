@@ -27,6 +27,7 @@ import type {
 import {
   badVersionScript,
   bogusBearerScript,
+  getListenScript,
   getPromptScript,
   initializeScript,
   initializeSucceededPrerequest,
@@ -185,7 +186,7 @@ function protectedResourceMetadataUrl(serverUrl: string): string | null {
 // Shared with the instrumenter's coverage gate so builder drift fails closed.
 export function expectedRuntimeItemCount(index: McpContractIndex, server: McpServerDescriptor): number {
   if (server.transport !== 'sse' || !server.url) return 0;
-  let count = 18 + index.tools.length + index.resources.length + index.prompts.length;
+  let count = 19 + index.tools.length + index.resources.length + index.prompts.length;
   if (index.tools.length > 0) count += 1;
   if (hasAuthorizationHeader(server)) {
     count += 2;
@@ -229,6 +230,12 @@ function withSession(headers: Array<{ key: string; value: string }>): Array<{ ke
     ...headers.map((entry) => entry.key === 'MCP-Protocol-Version' ? { ...entry, value: '{{mcp_protocol_version}}' } : entry),
     { key: 'Mcp-Session-Id', value: '{{mcp_session_id}}' }
   ];
+}
+
+function listenHeaders(headers: Array<{ key: string; value: string }>): Array<{ key: string; value: string }> {
+  return withSession(headers)
+    .filter((entry) => entry.key.toLowerCase() !== 'content-type')
+    .map((entry) => entry.key.toLowerCase() === 'accept' ? { ...entry, value: 'text/event-stream' } : entry);
 }
 
 function body(content: string): JsonRecord {
@@ -276,6 +283,7 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
   const items: JsonRecord[] = [
     httpItem(seed, `srv:${server.id}:http:initialize`, `${server.id} · HTTP initialize`, server.url, 'POST', headers, initializeMessage(options), initializeScript()),
     httpItem(seed, `srv:${server.id}:http:initialized`, `${server.id} · HTTP notifications/initialized`, server.url, 'POST', sessionHeaders, jsonRpcNotification('notifications/initialized'), initializedNotificationScript(), initializeSucceededPrerequest()),
+    httpItem(seed, `srv:${server.id}:http:get-listen`, `${server.id} · HTTP GET listen stream`, server.url, 'GET', listenHeaders(headers), undefined, getListenScript(), postInitializeGuard),
     httpItem(seed, `srv:${server.id}:http:ping`, `${server.id} · HTTP ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-ping', 'ping'), pingScript(), postInitializeGuard),
     httpItem(seed, `srv:${server.id}:http:tools/list`, `${server.id} · HTTP tools/list`, server.url, 'POST', sessionHeaders, toolsListMessage(), toolsListScript(index.tools.map((tool) => tool.name)), postInitializeGuard),
     httpItem(seed, `srv:${server.id}:http:resources/list`, `${server.id} · HTTP resources/list`, server.url, 'POST', sessionHeaders, resourcesListMessage(), resourcesListScript(index.resources.map((resource) => resource.name)), postInitializeGuard),

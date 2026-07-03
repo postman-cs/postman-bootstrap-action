@@ -155,6 +155,9 @@ pm.test("[query lineByMsisdn] data.lineByMsisdn matches schema return type", fun
       var gqlActualKeys = Object.keys(value).slice().sort();
       var gqlExpectedKeys = ["activatedAt","id","msisdn","status"];
       if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("query.lineByMsisdn (Line): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+      var gqlOrderedExpected = ["activatedAt","id","msisdn","status"];
+      var gqlActualOrder = Object.keys(value);
+      if (JSON.stringify(gqlActualOrder) === JSON.stringify(gqlOrderedExpected.slice().sort()) && JSON.stringify(gqlActualOrder) !== JSON.stringify(gqlOrderedExpected)) console.warn("query.lineByMsisdn (Line): response field order should follow the selection set order (GraphQL spec 7.1, SHOULD)" + " [expected " + gqlOrderedExpected.join(", ") + "; got " + gqlActualOrder.join(", ") + "]");
     })();
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value["id"], "Line.id is declared non-null but was null").to.not.be.null;
@@ -349,6 +352,9 @@ pm.test("[query plans] data.plans matches schema return type", function () {
           var gqlActualKeys = Object.keys(__el).slice().sort();
           var gqlExpectedKeys = ["dataCapGb","id","monthlyPriceCents","name"];
           if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("query.plans (list element) (Plan): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+          var gqlOrderedExpected = ["dataCapGb","id","monthlyPriceCents","name"];
+          var gqlActualOrder = Object.keys(__el);
+          if (JSON.stringify(gqlActualOrder) === JSON.stringify(gqlOrderedExpected.slice().sort()) && JSON.stringify(gqlActualOrder) !== JSON.stringify(gqlOrderedExpected)) console.warn("query.plans (list element) (Plan): response field order should follow the selection set order (GraphQL spec 7.1, SHOULD)" + " [expected " + gqlOrderedExpected.join(", ") + "; got " + gqlActualOrder.join(", ") + "]");
         })();
         if (__el["dataCapGb"] !== undefined && __el["dataCapGb"] !== null) {
             pm.expect(__el["dataCapGb"], "query.plans (list element).dataCapGb: expected Int scalar").to.be.a("number");
@@ -527,6 +533,9 @@ pm.test("[query subscriber] data.subscriber matches schema return type", functio
       var gqlActualKeys = Object.keys(value).slice().sort();
       var gqlExpectedKeys = ["displayName","email","id"];
       if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("query.subscriber (Subscriber): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+      var gqlOrderedExpected = ["displayName","email","id"];
+      var gqlActualOrder = Object.keys(value);
+      if (JSON.stringify(gqlActualOrder) === JSON.stringify(gqlOrderedExpected.slice().sort()) && JSON.stringify(gqlActualOrder) !== JSON.stringify(gqlOrderedExpected)) console.warn("query.subscriber (Subscriber): response field order should follow the selection set order (GraphQL spec 7.1, SHOULD)" + " [expected " + gqlOrderedExpected.join(", ") + "; got " + gqlActualOrder.join(", ") + "]");
     })();
     pm.expect(value, "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
     pm.expect(value["displayName"], "Subscriber.displayName is declared non-null but was null").to.not.be.null;
@@ -718,6 +727,9 @@ pm.test("[query subscribers] data.subscribers matches schema return type", funct
           var gqlActualKeys = Object.keys(__el).slice().sort();
           var gqlExpectedKeys = ["displayName","email","id"];
           if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("query.subscribers (list element) (Subscriber): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+          var gqlOrderedExpected = ["displayName","email","id"];
+          var gqlActualOrder = Object.keys(__el);
+          if (JSON.stringify(gqlActualOrder) === JSON.stringify(gqlOrderedExpected.slice().sort()) && JSON.stringify(gqlActualOrder) !== JSON.stringify(gqlOrderedExpected)) console.warn("query.subscribers (list element) (Subscriber): response field order should follow the selection set order (GraphQL spec 7.1, SHOULD)" + " [expected " + gqlOrderedExpected.join(", ") + "; got " + gqlActualOrder.join(", ") + "]");
         })();
         pm.expect(__el, "Subscriber is missing non-null field 'displayName'").to.have.property("displayName");
         pm.expect(__el["displayName"], "Subscriber.displayName is declared non-null but was null").to.not.be.null;
@@ -898,6 +910,9 @@ pm.test("[mutation provisionLine] data.provisionLine matches schema return type"
       var gqlActualKeys = Object.keys(value).slice().sort();
       var gqlExpectedKeys = ["activatedAt","id","msisdn","status"];
       if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("mutation.provisionLine (Line): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+      var gqlOrderedExpected = ["activatedAt","id","msisdn","status"];
+      var gqlActualOrder = Object.keys(value);
+      if (JSON.stringify(gqlActualOrder) === JSON.stringify(gqlOrderedExpected.slice().sort()) && JSON.stringify(gqlActualOrder) !== JSON.stringify(gqlOrderedExpected)) console.warn("mutation.provisionLine (Line): response field order should follow the selection set order (GraphQL spec 7.1, SHOULD)" + " [expected " + gqlOrderedExpected.join(", ") + "; got " + gqlActualOrder.join(", ") + "]");
     })();
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value["id"], "Line.id is declared non-null but was null").to.not.be.null;
@@ -1089,6 +1104,9 @@ pm.test("[mutation suspendLine] data.suspendLine matches schema return type", fu
       var gqlActualKeys = Object.keys(value).slice().sort();
       var gqlExpectedKeys = ["activatedAt","id","msisdn","status"];
       if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("mutation.suspendLine (Line): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+      var gqlOrderedExpected = ["activatedAt","id","msisdn","status"];
+      var gqlActualOrder = Object.keys(value);
+      if (JSON.stringify(gqlActualOrder) === JSON.stringify(gqlOrderedExpected.slice().sort()) && JSON.stringify(gqlActualOrder) !== JSON.stringify(gqlOrderedExpected)) console.warn("mutation.suspendLine (Line): response field order should follow the selection set order (GraphQL spec 7.1, SHOULD)" + " [expected " + gqlOrderedExpected.join(", ") + "; got " + gqlActualOrder.join(", ") + "]");
     })();
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value["id"], "Line.id is declared non-null but was null").to.not.be.null;
@@ -1280,6 +1298,9 @@ pm.test("[subscription lineStatusChanged] data.lineStatusChanged matches schema 
       var gqlActualKeys = Object.keys(value).slice().sort();
       var gqlExpectedKeys = ["activatedAt","id","msisdn","status"];
       if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail("subscription.lineStatusChanged (Line): response object must contain exactly the selected fields" + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));
+      var gqlOrderedExpected = ["activatedAt","id","msisdn","status"];
+      var gqlActualOrder = Object.keys(value);
+      if (JSON.stringify(gqlActualOrder) === JSON.stringify(gqlOrderedExpected.slice().sort()) && JSON.stringify(gqlActualOrder) !== JSON.stringify(gqlOrderedExpected)) console.warn("subscription.lineStatusChanged (Line): response field order should follow the selection set order (GraphQL spec 7.1, SHOULD)" + " [expected " + gqlOrderedExpected.join(", ") + "; got " + gqlActualOrder.join(", ") + "]");
     })();
     pm.expect(value, "Line is missing non-null field 'id'").to.have.property("id");
     pm.expect(value["id"], "Line.id is declared non-null but was null").to.not.be.null;

@@ -354,11 +354,15 @@ function selectedResponseKeys(selection: SelectedField[] | null): string[] {
 function exactSelectedKeyAssertions(accessor: string, selection: SelectedField[] | null, ctx: string): string[] {
   const expectedKeys = selectedResponseKeys(selection).slice().sort((a, b) => a.localeCompare(b));
   if (expectedKeys.length === 0) return [];
+  const orderedKeys = selectedResponseKeys(selection);
   return [
     '(function () {',
     `  var gqlActualKeys = Object.keys(${accessor}).slice().sort();`,
     `  var gqlExpectedKeys = ${JSON.stringify(expectedKeys)};`,
     `  if (JSON.stringify(gqlActualKeys) !== JSON.stringify(gqlExpectedKeys)) pm.expect.fail(${JSON.stringify(`${ctx}: response object must contain exactly the selected fields`)} + " [" + gqlExpectedKeys.join(", ") + "]; got keys: " + gqlActualKeys.join(", "));`,
+    `  var gqlOrderedExpected = ${JSON.stringify(orderedKeys)};`,
+    `  var gqlActualOrder = Object.keys(${accessor});`,
+    `  if (JSON.stringify(gqlActualOrder) === JSON.stringify(gqlOrderedExpected.slice().sort()) && JSON.stringify(gqlActualOrder) !== JSON.stringify(gqlOrderedExpected)) console.warn(${JSON.stringify(`${ctx}: response field order should follow the selection set order (GraphQL spec 7.1, SHOULD)`)} + " [expected " + gqlOrderedExpected.join(", ") + "; got " + gqlActualOrder.join(", ") + "]");`,
     '})();'
   ];
 }

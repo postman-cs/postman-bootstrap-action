@@ -403,6 +403,45 @@ Dynamic contract failures and warnings use `CONTRACT_` error codes. Remediation 
 | `CONTRACT_TAG_UNDECLARED` | An operation uses a tag that is not declared in the top-level `tags` list. | Add the tag to the top-level `tags` array or remove it from the operation. |
 | `CONTRACT_TAG_UNUSED` | A top-level tag is not used by any operation. | Remove the unused tag or apply it to an operation. |
 | `CONTRACT_TEMPLATED_PATH_COLLISION` | Two paths are identical once template variable names are erased (for example `/pets/{id}` and `/pets/{name}`). | Merge or restructure the colliding paths. |
+| `CONTRACT_HEAD_RESPONSE_BODY` | A HEAD operation declares response content, but HEAD carries no message body. | Remove the body from HEAD responses or model it on the GET. |
+| `CONTRACT_BODYLESS_STATUS_FRAMING_HEADER` | A 1xx or 204 response declares Content-Length or Transfer-Encoding, which RFC 9110 forbids. | Drop framing headers from bodyless statuses. |
+| `CONTRACT_304_METHOD` | A 304 response is declared on a method other than GET or HEAD. | Restrict 304 to GET and HEAD operations. |
+| `CONTRACT_304_CACHE_HEADER_MISSING` | A 304 omits a validator/cache header that its 200 representation marks required. | Mirror the required validator and cache headers on the 304. |
+| `CONTRACT_304_CONTENT_LENGTH` | A 304 declares Content-Length even though it carries no body. | Remove Content-Length or ensure it equals the selected 200 representation. |
+| `CONTRACT_RANGE_METHOD` | A Range request header is declared on a non-GET operation. | Only accept the Range header on GET. |
+| `CONTRACT_206_METHOD` | A 206 response is declared on a non-GET operation. | Pair 206 responses with GET range requests. |
+| `CONTRACT_206_RANGE_AFFORDANCE` | A 206 is declared without a Range request header to trigger it. | Declare the Range request header parameter. |
+| `CONTRACT_206_CONTENT_RANGE` | A 206 declares neither a Content-Range header nor a multipart/byteranges body. | Add Content-Range (or a multipart/byteranges body) to the 206. |
+| `CONTRACT_206_CACHE_HEADER_MISSING` | A 206 omits a validator/cache header its 200 representation marks required. | Mirror the required validator and cache headers on the 206. |
+| `CONTRACT_416_CONTENT_RANGE` | A 416 Range Not Satisfiable response omits the Content-Range header. | Declare the Content-Range header on the 416. |
+| `CONTRACT_IF_RANGE_PRECONDITION` | An If-Range request header is declared without a GET Range request. | Only accept If-Range on GET alongside a Range header. |
+| `CONTRACT_IF_RANGE_RESPONSES` | An If-Range request header lacks a documented 206 or success response. | Document a 206 and a 200/2XX/default success response. |
+| `CONTRACT_IF_MODIFIED_SINCE` | An If-Modified-Since header lacks GET/HEAD scope or a 304 response. | Restrict it to GET/HEAD and document the 304 response. |
+| `CONTRACT_IF_NONE_MATCH_STATUS` | An If-None-Match header lacks the matching 304 (safe) or 412 (unsafe) response. | Document the conditional-outcome status for the method. |
+| `CONTRACT_PRECONDITION_412` | An If-Match or If-Unmodified-Since header lacks a 412 response. | Document the 412 Precondition Failed response. |
+| `CONTRACT_428_AFFORDANCE` | A 428 Precondition Required response accepts no conditional request header. | Accept a conditional header such as If-Match or If-None-Match. |
+| `CONTRACT_NONCACHEABLE_STATUS_CACHE_HEADER` | A 428/429/431/511 response declares cache-storage headers though it must not be stored. | Remove cache-storage headers from these statuses. |
+| `CONTRACT_401_WWW_AUTHENTICATE` | A secured operation's 401 response omits the WWW-Authenticate header. | Declare the WWW-Authenticate challenge header on the 401. |
+| `CONTRACT_BEARER_CHALLENGE_NOT_VALIDATED` | The 401 Bearer challenge error and scope parameters are not statically literal-validated. | Review the WWW-Authenticate Bearer parameters during code review. |
+| `CONTRACT_407_PROXY_AUTHENTICATE` | A 407 Proxy Authentication Required response omits the Proxy-Authenticate header. | Declare the Proxy-Authenticate header on the 407. |
+| `CONTRACT_405_ALLOW` | A 405 Method Not Allowed response omits the Allow header. | Declare the Allow header listing the supported methods. |
+| `CONTRACT_426_UPGRADE` | A 426 Upgrade Required response omits the Upgrade header. | Declare the Upgrade header on the 426. |
+| `CONTRACT_REDIRECT_LOCATION` | A 301/302/303/307/308 redirect omits the Location header. | Declare the Location header on the redirect response. |
+| `CONTRACT_202_MONITOR` | A 202 Accepted response provides no status-monitor affordance. | Add a Location/Link header or a status body to the 202. |
+| `CONTRACT_PROBLEM_JSON_SHAPE_NOT_VALIDATED` | A problem+json response body's RFC 9457 members are not statically validated. | Review the problem members manually or add a strict schema. |
+| `CONTRACT_PROBLEM_STATUS_NOT_VALIDATED` | A problem+json status member is not checked against the HTTP status code. | Ensure the problem status member equals the response status. |
+| `CONTRACT_PROBLEM_EXTENSION_NOT_VALIDATED` | A problem+json response's extension member names are not statically validated. | Review extension member names for reserved-name collisions. |
+| `CONTRACT_PROBLEM_XML_NOT_VALIDATED` | A problem+xml response's schema and examples are not statically validated. | Review the problem+xml representation manually. |
+| `CONTRACT_LINK_OPERATION_REF_NOT_VALIDATED` | A Link operationRef's resolution to a single Operation Object is not statically proven. | Verify the operationRef target resolves to one operation. |
+| `CONTRACT_LINK_PARAMETERS_NOT_VALIDATED` | A Link object's parameters are not statically matched against the target operation. | Verify link parameter names against the target operation. |
+| `CONTRACT_LINK_REQUEST_EXPRESSION_NOT_VALIDATED` | A Link $request runtime expression's ABNF and request parameter name are not validated. | Verify the runtime expression and declared request parameter. |
+| `CONTRACT_LINK_HEADER_NOT_VALIDATED` | A Link response header's RFC 8288 field grammar is not statically literal-validated. | Review the Link header value grammar manually. |
+| `CONTRACT_SERVER_URL_UNBOUND_VARIABLE` | A server URL retains template braces after applying variable defaults. | Give every server variable a default value. |
+| `CONTRACT_SERVER_URL_UNPARSEABLE` | A server URL does not parse as a URI reference after default substitution. | Correct the server URL. |
+| `CONTRACT_INSECURE_SERVER_FOR_SECURED_OP` | A secured operation lists a cleartext http:// server. | Use https:// servers for secured operations. |
+| `CONTRACT_OAUTH_TOKEN_IN_QUERY` | A query parameter carries a bearer/OAuth token in the URI. | Move the token to the Authorization request header. |
+| `CONTRACT_STANDARD_HEADER_GRAMMAR_NOT_VALIDATED` | A structured standard header's RFC field grammar is not statically literal-validated. | Review the header value grammar manually. |
+| `CONTRACT_451_BLOCKED_BY_LINK` | A 451 Unavailable For Legal Reasons response omits a blocking-authority Link header. | Declare a Link header with rel=blocked-by. |
 
 ## Resources
 

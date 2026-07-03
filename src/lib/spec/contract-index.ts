@@ -1,4 +1,5 @@
 import { WELL_KNOWN_URI_SUFFIXES } from './iana-registries.js';
+import { collectHttpSemanticStaticLints } from './http-semantic-lints.js';
 import { isSchemaGraphOverflow, packSchema, resolvePointer, type OpenApiVersion, type PackedSchema } from './schema-pack.js';
 import { compileSchemaValidator } from './schema-validator-code.js';
 
@@ -103,12 +104,12 @@ export interface ContractIndex {
 
 const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']);
 
-function asRecord(value: unknown): JsonRecord | null {
+export function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as JsonRecord;
 }
 
-function asArray(value: unknown): unknown[] {
+export function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
@@ -122,7 +123,7 @@ function detectOpenApiVersion(root: JsonRecord): OpenApiVersion {
   return match[1] === '1' ? '3.1' : '3.0';
 }
 
-function resolveInternalRef<T extends JsonRecord>(root: JsonRecord, value: unknown): T | null {
+export function resolveInternalRef<T extends JsonRecord>(root: JsonRecord, value: unknown): T | null {
   const record = asRecord(value);
   if (!record) return null;
   const ref = typeof record.$ref === 'string' ? record.$ref : '';
@@ -1391,6 +1392,7 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
         opWarnings.push(...collectSecurityStaticLints(root, operation));
         opWarnings.push(...collectSecurityResponseLints(root, operation, responses, operationId));
         opWarnings.push(...collectOperationStaticLints(root, version, path, pathItem, operation, responses, operationId));
+        opWarnings.push(...collectHttpSemanticStaticLints(root, lowerMethod, path, pathItem, operation, responses));
         const requiredParameters = collectParameters(root, pathItem, operation);
         for (const parameter of requiredParameters.filter((entry) => entry.securityDerived)) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);

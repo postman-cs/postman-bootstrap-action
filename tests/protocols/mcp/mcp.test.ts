@@ -245,6 +245,32 @@ describe('mcp parser', () => {
     expect(pkg.warnings).toEqual([]);
   });
 
+  it('resolves registry remote URL and header variables without persisting secrets', () => {
+    const index = parseMcpServerSpec(JSON.stringify({
+      name: 'io.example/vars',
+      remotes: [
+        {
+          type: 'sse',
+          url: 'https://{host}/mcp/{tenant}/{missing}',
+          variables: {
+            host: { value: 'api.example.com' },
+            tenant: { isSecret: true }
+          },
+          headers: [
+            { name: 'X-Tenant', value: '{tenant}' },
+            { name: 'X-Host', value: '{host}' }
+          ]
+        }
+      ]
+    }));
+    expect(index.servers[0].url).toBe('https://api.example.com/mcp/{{tenant}}/{missing}');
+    expect(index.servers[0].headers).toEqual([
+      { key: 'X-Tenant', value: '{{tenant}}' },
+      { key: 'X-Host', value: 'api.example.com' }
+    ]);
+    expect(index.servers[0].warnings.some((w) => w.startsWith('MCP_REMOTE_VARIABLE_UNRESOLVED') && w.includes('missing'))).toBe(true);
+  });
+
   it('skips non-stdio package transports instead of inferring stdio from package fields', () => {
     const doc = JSON.stringify({
       name: 'io.github.example/weather',

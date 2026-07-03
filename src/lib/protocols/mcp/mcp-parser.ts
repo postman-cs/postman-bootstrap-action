@@ -454,18 +454,48 @@ function sampleFromSchema(schema: unknown, depth: number): unknown {
   }
 }
 
+function registryInputValue(name: string, input: JsonRecord): string {
+  const secret = pickValue(input, 'isSecret', 'is_secret') === true;
+  if (!secret) {
+    for (const key of ['value', 'default', 'placeholder']) {
+      const value = input[key];
+      if (typeof value === 'string' && value) return value;
+    }
+  }
+  return `{{${name}}}`;
+}
+
+function registryVariableValues(variables: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  const record = asRecord(variables);
+  if (!record) return out;
+  for (const [name, input] of Object.entries(record)) {
+    const value = asRecord(input);
+    if (value) out[name] = registryInputValue(name, value);
+  }
+  return out;
+}
+
+function resolveRegistryVariables(value: string, variables: Record<string, string>, context: string, warnings: string[]): string {
+  return value.replace(/\{([A-Za-z0-9_.-]+)\}/g, (match, name: string) => {
+    if (Object.prototype.hasOwnProperty.call(variables, name)) return variables[name];
+    warnings.push(`MCP_REMOTE_VARIABLE_UNRESOLVED: ${context} references variable ${JSON.stringify(name)} but remotes[].variables does not define it`);
+    return match;
+  });
+}
+
 // Registry `remotes[].headers` entries are `{ name, value?, is_required?,
 // is_secret? }`; secret or valueless headers become `{{name}}` variable
 // placeholders so no concrete secret is ever written into the collection.
-function registryHeaderKeyValues(headers: unknown): McpKeyValue[] {
+function registryHeaderKeyValues(headers: unknown, variables: Record<string, string> = {}, warnings: string[] = [], context = 'remote header'): McpKeyValue[] {
   return asArray(headers)
     .map((entry) => asRecord(entry))
     .filter((entry): entry is JsonRecord => entry !== null && typeof entry.name === 'string' && entry.name !== '')
     .map((entry) => {
       const name = String(entry.name);
-      const secret = pickValue(entry, 'isSecret', 'is_secret') === true;
-      const value = typeof entry.value === 'string' && entry.value && !secret ? entry.value : `{{${name}}}`;
-      return { key: name, value };
+      const value = registryInputValue(name, entry);
+      const resolvedValue = resolveRegistryVariables(value, variables, `${context} ${name}`, warnings);
+      return { key: name, value: resolvedValue };
     });
 }
 
@@ -501,8 +531,9 @@ function stringArguments(values: unknown): string[] {
 
 function remoteDescriptor(remote: JsonRecord, id: string, warnings: string[]): McpServerDescriptor | null {
   const type = String(remote.type ?? '').toLowerCase();
-  const url = typeof remote.url === 'string' ? remote.url : '';
   const serverWarnings: string[] = [];
+  const variables = registryVariableValues(remote.variables);
+  const url = typeof remote.url === 'string' ? resolveRegistryVariables(remote.url, variables, `remote ${id} url`, serverWarnings) : '';
   if (type === 'streamable-http') {
     serverWarnings.push(
       `MCP_STREAMABLE_HTTP_AS_SSE: server ${id} declares a streamable-http remote; the Postman mcp-request item models only sse/stdio transports, so it is emitted as sse and the endpoint must speak SSE or be adjusted in-app`
@@ -515,7 +546,7 @@ function remoteDescriptor(remote: JsonRecord, id: string, warnings: string[]): M
     id,
     transport: 'sse',
     url,
-    headers: registryHeaderKeyValues(remote.headers),
+    headers: registryHeaderKeyValues(remote.headers, variables, serverWarnings, `remote ${id} header`),
     env: [],
     warnings: serverWarnings
   };

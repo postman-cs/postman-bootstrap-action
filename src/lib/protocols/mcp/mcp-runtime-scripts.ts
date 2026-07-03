@@ -357,8 +357,8 @@ export function initializedNotificationScript(): string {
   ]);
 }
 
-function idlessPostFramingScript(label: string): string {
-  return join([
+function idlessPostFramingAssertions(label: string): string[] {
+  return [
     `var idlessPostLabel = ${json(label)};`,
     "pm.test('MCP ' + idlessPostLabel + ' POST is accepted or rejected without a response id (MCP 2025-06-18 Streamable HTTP; JSON-RPC 2.0 notifications)', function () {",
     '  if (pm.response.code === 202) { pm.expect(pm.response.text()).to.eql(\'\'); return; }',
@@ -368,7 +368,11 @@ function idlessPostFramingScript(label: string): string {
     '  mcpAssertErrorShape(idlessPostLabel, body);',
     "  if (Object.prototype.hasOwnProperty.call(body, 'id')) pm.expect.fail(idlessPostLabel + ' rejection body must not include id for an id-less notification/client response POST; got ' + JSON.stringify(body.id));",
     '});'
-  ]);
+  ];
+}
+
+function idlessPostFramingScript(label: string): string {
+  return join(idlessPostFramingAssertions(label));
 }
 
 export function notificationPostFramingScript(): string {
@@ -377,6 +381,25 @@ export function notificationPostFramingScript(): string {
 
 export function clientResponsePostFramingScript(): string {
   return idlessPostFramingScript('client response');
+}
+
+export function cancellationNotificationScript(requestId: string): string {
+  return join([
+    `var expectedCancelledRequestId = ${json(requestId)};`,
+    "pm.test('MCP cancelled notification request is id-less and names the active request (MCP 2025-06-18 cancellation)', function () {",
+    "  if (!pm.request || !pm.request.body || typeof pm.request.body.raw !== 'string') return;",
+    '  var sent = JSON.parse(pm.request.body.raw);',
+    "  pm.expect(sent, 'cancelled notification request').to.be.an('object').and.not.an('array');",
+    "  pm.expect(sent.jsonrpc, 'cancelled notification JSON-RPC version').to.eql('2.0');",
+    "  pm.expect(sent.method, 'cancelled notification method').to.eql('notifications/cancelled');",
+    "  if (sent.id !== undefined) pm.expect.fail('notifications/cancelled must not carry an id; got ' + JSON.stringify(sent.id));",
+    "  pm.expect(sent.params, 'cancelled notification params').to.be.an('object').and.not.an('array');",
+    "  pm.expect(sent.params.requestId, 'cancelled notification requestId').to.eql(expectedCancelledRequestId);",
+    "  if (sent.params.reason !== undefined) pm.expect(sent.params.reason, 'cancelled notification reason').to.be.a('string');",
+    "  mcpAssertMetaKeys(sent, 'cancelled notification request');",
+    '});',
+    ...idlessPostFramingAssertions('cancellation notification')
+  ]);
 }
 
 export function pingScript(): string {

@@ -351,8 +351,8 @@ describe('mcp collection builder', () => {
     const items = collection.item as JsonRecord[];
     // 2 servers x (initialize + initialized + tools/list + resources/list + prompts/list +
     // 2 tools/call + 2 resources/read + 1 prompts/get) mcp-request templates,
-    // plus 1 url-bearing server x (28 HTTP runtime probes/items).
-    expect(items).toHaveLength(48);
+    // plus 1 url-bearing server x (29 HTTP runtime probes/items).
+    expect(items).toHaveLength(49);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -694,6 +694,7 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP resources/templates/list',
       'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken pm-progress',
       'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken pm-progress-secondary',
+      'io.github.example/weather remote-1 · HTTP notifications/cancelled get_forecast',
       'io.github.example/weather remote-1 · HTTP negative bad protocol version',
       'io.github.example/weather remote-1 · HTTP tools/list invalid cursor',
       'io.github.example/weather remote-1 · HTTP session DELETE',
@@ -927,6 +928,50 @@ describe('mcp runtime HTTP scripts', () => {
       text: ['data: {"jsonrpc":"2.0","id":"bad","method":"notifications/prompts/list_changed"}', '', ''].join('\n')
     });
     expect(runtimeTestResult(idBearing.results, testName)?.passed).toBe(false);
+  });
+
+  it('emits and validates cancellation notifications for a generated request id', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const collection = buildMcpCollection(index, { idSeed: 'test' });
+    const httpItems = (collection.item as JsonRecord[]).filter((item) => item.type === 'http-request');
+    const cancellation = httpItems.find((item) => String(item.title).endsWith('HTTP notifications/cancelled get_forecast'))!;
+    const cancellationMessage = JSON.parse(String(((cancellation.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
+    expect(cancellationMessage).toMatchObject({
+      jsonrpc: '2.0',
+      method: 'notifications/cancelled',
+      params: { requestId: 'pm-progress-call-secondary', reason: 'postman-contract-cancel-probe' }
+    });
+
+    const script = runtimeEventScript(cancellation);
+    const accepted = runMcpScript(script, undefined, new Map(), {
+      code: 202,
+      text: '',
+      requestBody: String(((cancellation.payload as JsonRecord).body as JsonRecord).content)
+    });
+    expect(
+      runtimeTestResult(
+        accepted.results,
+        'MCP cancelled notification request is id-less and names the active request (MCP 2025-06-18 cancellation)'
+      )?.passed
+    ).toBe(true);
+    expect(
+      runtimeTestResult(
+        accepted.results,
+        'MCP cancellation notification POST is accepted or rejected without a response id (MCP 2025-06-18 Streamable HTTP; JSON-RPC 2.0 notifications)'
+      )?.passed
+    ).toBe(true);
+
+    const wrongRequest = runMcpScript(script, undefined, new Map(), {
+      code: 202,
+      text: '',
+      requestBody: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'pm-progress-call' } })
+    });
+    expect(
+      runtimeTestResult(
+        wrongRequest.results,
+        'MCP cancelled notification request is id-less and names the active request (MCP 2025-06-18 cancellation)'
+      )?.passed
+    ).toBe(false);
   });
 
   it('validates id-less notification and client-response POST rejection framing', () => {

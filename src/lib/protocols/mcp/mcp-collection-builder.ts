@@ -27,6 +27,7 @@ import type {
 import {
   badVersionScript,
   bogusBearerScript,
+  cancellationNotificationScript,
   clientResponsePostFramingScript,
   getListenScript,
   getPromptScript,
@@ -197,7 +198,7 @@ function protectedResourceMetadataUrl(serverUrl: string): string | null {
 export function expectedRuntimeItemCount(index: McpContractIndex, server: McpServerDescriptor): number {
   if (server.transport !== 'sse' || !server.url) return 0;
   let count = 21 + index.tools.length + index.resources.length + index.prompts.length;
-  if (index.tools.length > 0) count += 2;
+  if (index.tools.length > 0) count += 3;
   if (hasAuthorizationHeader(server)) {
     count += 2;
     if (protectedResourceMetadataUrl(server.url)) count += 1;
@@ -349,6 +350,9 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
         httpItem(seed, `srv:${server.id}:http:progress:${progressTool.name}:${probe.suffix}`, `${server.id} · HTTP tools/call ${progressTool.name} with progressToken ${probe.progressToken}`, server.url, 'POST', sessionHeaders, toolsCallProgressMessage(progressTool, probe.requestId, probe.progressToken), progressToolCallScript(progressTool.name, probe.requestId, probe.progressToken), postInitializeGuard)
       );
     }
+    items.push(
+      httpItem(seed, `srv:${server.id}:http:cancellation:${progressTool.name}`, `${server.id} · HTTP notifications/cancelled ${progressTool.name}`, server.url, 'POST', sessionHeaders, jsonRpcNotificationWithParams('notifications/cancelled', { requestId: 'pm-progress-call-secondary', reason: 'postman-contract-cancel-probe' }), cancellationNotificationScript('pm-progress-call-secondary'), postInitializeGuard)
+    );
   }
   if (hasAuthorizationHeader(server)) {
     const noAuthHeaders = headers.filter((entry) => entry.key.toLowerCase() !== 'authorization');

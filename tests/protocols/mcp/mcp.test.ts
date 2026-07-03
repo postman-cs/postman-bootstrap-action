@@ -351,8 +351,8 @@ describe('mcp collection builder', () => {
     const items = collection.item as JsonRecord[];
     // 2 servers x (initialize + initialized + tools/list + resources/list + prompts/list +
     // 2 tools/call + 2 resources/read + 1 prompts/get) mcp-request templates,
-    // plus 1 url-bearing server x (27 HTTP runtime probes/items).
-    expect(items).toHaveLength(47);
+    // plus 1 url-bearing server x (28 HTTP runtime probes/items).
+    expect(items).toHaveLength(48);
     for (const item of items) {
       if (item.type === 'mcp-request') expect(ecIssues(item)).toBeFalsy();
     }
@@ -692,7 +692,8 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP resources/read Station Directory',
       'io.github.example/weather remote-1 · HTTP prompts/get forecast_summary',
       'io.github.example/weather remote-1 · HTTP resources/templates/list',
-      'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken',
+      'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken pm-progress',
+      'io.github.example/weather remote-1 · HTTP tools/call get_forecast with progressToken pm-progress-secondary',
       'io.github.example/weather remote-1 · HTTP negative bad protocol version',
       'io.github.example/weather remote-1 · HTTP tools/list invalid cursor',
       'io.github.example/weather remote-1 · HTTP session DELETE',
@@ -762,12 +763,14 @@ describe('mcp runtime HTTP scripts', () => {
     expect(templatesMessage.method).toBe('resources/templates/list');
     const templatesScript = runtimeEventScript(templates);
     expect(templatesScript).toContain('RFC 6570');
-    const progress = httpItems.find((item) => String(item.title).includes('with progressToken'))!;
-    const progressMessage = JSON.parse(String(((progress.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
-    expect(progressMessage.id).toBe('pm-progress-call');
-    expect(((progressMessage.params as JsonRecord)._meta as JsonRecord).progressToken).toBe('pm-progress');
-    const progressScript = runtimeEventScript(progress);
-    expect(progressScript).toContain('progress notifications echo the token and increase');
+    const progressItems = httpItems.filter((item) => String(item.title).includes('with progressToken'));
+    expect(progressItems).toHaveLength(2);
+    const progressMessages = progressItems.map((item) => JSON.parse(String(((item.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord);
+    expect(progressMessages.map((message) => message.id)).toEqual(['pm-progress-call', 'pm-progress-call-secondary']);
+    const progressTokens = progressMessages.map((message) => ((message.params as JsonRecord)._meta as JsonRecord).progressToken);
+    expect(progressTokens).toEqual(['pm-progress', 'pm-progress-secondary']);
+    expect(new Set(progressTokens).size).toBe(progressTokens.length);
+    expect(progressItems.map((item) => runtimeEventScript(item))).toEqual(expect.arrayContaining([expect.stringContaining('pm-progress'), expect.stringContaining('pm-progress-secondary')]));
   });
 
   it('validates optional progress notification total and message fields', () => {
@@ -793,6 +796,31 @@ describe('mcp runtime HTTP scripts', () => {
         'MCP progress notifications echo the token and increase for get_forecast (MCP 2025-06-18 utilities/progress)'
       )?.passed
     ).toBe(true);
+  });
+
+  it('binds progress validation to each request id and progress token', () => {
+    const script = progressToolCallScript('get_forecast', 'pm-progress-call-secondary', 'pm-progress-secondary');
+    const valid = runMcpScript(script, [
+      { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: 'pm-progress-secondary', progress: 1 } },
+      { jsonrpc: '2.0', id: 'pm-progress-call-secondary', result: {} }
+    ]);
+    expect(
+      runtimeTestResult(
+        valid.results,
+        'MCP progress notifications echo the token and increase for get_forecast (MCP 2025-06-18 utilities/progress)'
+      )?.passed
+    ).toBe(true);
+
+    const wrongToken = runMcpScript(script, [
+      { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken: 'pm-progress', progress: 1 } },
+      { jsonrpc: '2.0', id: 'pm-progress-call-secondary', result: {} }
+    ]);
+    expect(
+      runtimeTestResult(
+        wrongToken.results,
+        'MCP progress notifications echo the token and increase for get_forecast (MCP 2025-06-18 utilities/progress)'
+      )?.passed
+    ).toBe(false);
   });
 
   it('validates GET listen SSE metadata and bans JSON-RPC responses', () => {

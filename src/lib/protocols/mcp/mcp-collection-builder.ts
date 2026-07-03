@@ -168,11 +168,11 @@ function getPromptMessage(prompt: McpPromptDescriptor, id: string | number): str
   });
 }
 
-function toolsCallProgressMessage(tool: McpToolDescriptor): string {
-  return jsonRpcWithId('pm-progress-call', 'tools/call', {
+function toolsCallProgressMessage(tool: McpToolDescriptor, requestId = 'pm-progress-call', progressToken = 'pm-progress'): string {
+  return jsonRpcWithId(requestId, 'tools/call', {
     name: tool.name,
     arguments: toolArguments(tool),
-    _meta: { progressToken: 'pm-progress' }
+    _meta: { progressToken }
   });
 }
 
@@ -197,7 +197,7 @@ function protectedResourceMetadataUrl(serverUrl: string): string | null {
 export function expectedRuntimeItemCount(index: McpContractIndex, server: McpServerDescriptor): number {
   if (server.transport !== 'sse' || !server.url) return 0;
   let count = 21 + index.tools.length + index.resources.length + index.prompts.length;
-  if (index.tools.length > 0) count += 1;
+  if (index.tools.length > 0) count += 2;
   if (hasAuthorizationHeader(server)) {
     count += 2;
     if (protectedResourceMetadataUrl(server.url)) count += 1;
@@ -340,9 +340,15 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
   );
   if (index.tools.length > 0) {
     const progressTool = index.tools[0];
-    items.push(
-      httpItem(seed, `srv:${server.id}:http:progress:${progressTool.name}`, `${server.id} · HTTP tools/call ${progressTool.name} with progressToken`, server.url, 'POST', sessionHeaders, toolsCallProgressMessage(progressTool), progressToolCallScript(progressTool.name), postInitializeGuard)
-    );
+    const progressProbes = [
+      { suffix: 'primary', requestId: 'pm-progress-call', progressToken: 'pm-progress' },
+      { suffix: 'secondary', requestId: 'pm-progress-call-secondary', progressToken: 'pm-progress-secondary' }
+    ];
+    for (const probe of progressProbes) {
+      items.push(
+        httpItem(seed, `srv:${server.id}:http:progress:${progressTool.name}:${probe.suffix}`, `${server.id} · HTTP tools/call ${progressTool.name} with progressToken ${probe.progressToken}`, server.url, 'POST', sessionHeaders, toolsCallProgressMessage(progressTool, probe.requestId, probe.progressToken), progressToolCallScript(progressTool.name, probe.requestId, probe.progressToken), postInitializeGuard)
+      );
+    }
   }
   if (hasAuthorizationHeader(server)) {
     const noAuthHeaders = headers.filter((entry) => entry.key.toLowerCase() !== 'authorization');

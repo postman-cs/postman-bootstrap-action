@@ -506,9 +506,11 @@ export function resourceTemplatesScript(): string {
   ]);
 }
 
-export function progressToolCallScript(toolName: string): string {
+export function progressToolCallScript(toolName: string, requestId = 'pm-progress-call', progressToken = 'pm-progress'): string {
   return join([
     `var progressToolName = ${json(toolName)};`,
+    `var progressRequestId = ${json(requestId)};`,
+    `var expectedProgressToken = ${json(progressToken)};`,
     `pm.test('MCP progress notifications echo the token and increase for ' + progressToolName + ' (MCP 2025-06-18 utilities/progress)', function () {`,
     "  var frames = mcpResponseMessages('MCP progress stream');",
     '  var responseIndex = -1; var responseCount = 0;',
@@ -517,7 +519,7 @@ export function progressToolCallScript(toolName: string): string {
     "    pm.expect(frame.jsonrpc, 'SSE frame jsonrpc').to.eql('2.0');",
     '    if (frame.method === undefined) {',
     '      responseCount += 1; responseIndex = i;',
-    "      pm.expect(frame.id, 'the response id echoes the request id').to.eql('pm-progress-call');",
+    "      pm.expect(frame.id, 'the response id echoes the request id').to.eql(progressRequestId);",
     "    } else if (frame.id !== undefined) { pm.expect.fail('a notification must not carry an id (JSON-RPC 2.0 section 4.1); got ' + frame.method + ' with id ' + JSON.stringify(frame.id)); }",
     '  });',
     "  pm.expect(responseCount, 'exactly one JSON-RPC response per POST stream (MCP 2025-06-18 transports)').to.eql(1);",
@@ -525,7 +527,7 @@ export function progressToolCallScript(toolName: string): string {
     '  frames.forEach(function (frame, i) {',
     "    if (frame.method !== 'notifications/progress') return;",
     '    var params = frame.params || {};',
-    "    pm.expect(params.progressToken, 'progress notifications must echo the request progressToken (MCP 2025-06-18 utilities/progress)').to.eql('pm-progress');",
+    "    pm.expect(params.progressToken, 'progress notifications must echo the request progressToken (MCP 2025-06-18 utilities/progress)').to.eql(expectedProgressToken);",
     "    pm.expect(typeof params.progress, 'progress must be a number').to.eql('number');",
     "    if (params.total !== undefined) { pm.expect(typeof params.total, 'progress total must be a number when present').to.eql('number'); if (params.total < params.progress) pm.expect.fail('progress total must be greater than or equal to progress; got total ' + params.total + ' and progress ' + params.progress); }",
     "    if (params.message !== undefined) pm.expect(params.message, 'progress message must be a string when present').to.be.a('string');",

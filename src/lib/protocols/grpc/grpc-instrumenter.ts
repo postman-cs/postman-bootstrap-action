@@ -691,7 +691,7 @@ function createGrpcScript(spec: OperationSpec): string[] {
     '  var grpcSingletons = ["content-type", "grpc-status", "grpc-message", "grpc-encoding", "grpc-timeout", "grpc-status-details-bin"];',
     '  for (var gi = 0; gi < grpcSingletons.length; gi++) { if (grpcMetaCount(pm.response.metadata, grpcSingletons[gi]) > 1) pm.expect.fail("gRPC response metadata carries duplicate " + grpcSingletons[gi] + " entries; standard fields are singletons (gRPC PROTOCOL-HTTP2)"); if (grpcMetaCount(pm.response.trailers, grpcSingletons[gi]) > 1) pm.expect.fail("gRPC response trailers carry duplicate " + grpcSingletons[gi] + " entries; standard fields are singletons (gRPC PROTOCOL-HTTP2)"); }',
     '  var contentType = grpcMetaOne(pm.response.metadata, "content-type");',
-    '  if (contentType && contentType.value !== undefined && contentType.value !== null && !/^application\\/grpc/.test(String(contentType.value))) pm.expect.fail("gRPC response content-type metadata must be application/grpc[+proto|+json] but was " + contentType.value);',
+    '  if (contentType && contentType.value !== undefined && contentType.value !== null && !/^application\\/grpc(\\+(proto|json))?(\\s*;.*)?$/.test(String(contentType.value))) pm.expect.fail("gRPC response content-type metadata must be exactly application/grpc, application/grpc+proto, or application/grpc+json (gRPC PROTOCOL-HTTP2 Content-Type) but was " + contentType.value);',
     // Message-Encoding conformance (gRPC PROTOCOL-HTTP2): grpc-encoding, when
     // surfaced, must be a Content-Coding token; unknown codecs on a response
     // the client never advertised are an unnegotiated-compression defect.

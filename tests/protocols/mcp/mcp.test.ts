@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { parseMcpServerSpec } from '../../../src/lib/protocols/mcp/mcp-parser.js';
 import { buildMcpCollection } from '../../../src/lib/protocols/mcp/mcp-collection-builder.js';
 import { instrumentMcpCollection } from '../../../src/lib/protocols/mcp/mcp-instrumenter.js';
-import { getPromptScript, initializeScript, progressToolCallScript, resourceTemplatesScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
+import { getPromptScript, initializeScript, progressToolCallScript, readResourceScript, resourceTemplatesScript, resourcesListScript, toolsCallScript, toolsListScript } from '../../../src/lib/protocols/mcp/mcp-runtime-scripts.js';
 import { detectSpecType } from '../../../src/lib/spec/detect-spec-type.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -807,7 +807,91 @@ describe('mcp tools/call runtime structuredContent assertions', () => {
     expect(runtimeTestResult(runContent([{ type: 'audio', data: 'QUJD', mimeType: 'not-media' }]).results, testName)?.passed).toBe(false);
     expect(runtimeTestResult(runContent([{ type: 'resource_link', uri: 'relative/path', name: 'r' }]).results, testName)?.passed).toBe(false);
     expect(runtimeTestResult(runContent([{ type: 'resource', resource: { uri: 'resource://station/1', blob: 'not base64?', mimeType: 'application/json' } }]).results, testName)?.passed).toBe(false);
+    expect(runtimeTestResult(runContent([{ type: 'text', text: 'ok', _meta: { 'mcp/reserved': true } }]).results, testName)?.passed).toBe(false);
     expect(runtimeTestResult(runContent([{ type: 'text', text: 'ok', annotations: { audience: ['user'], priority: 0.5 }, _meta: { 'pm-cse/key': true } }]).results, testName)?.passed).toBe(true);
+  });
+
+  it('requires structuredContent to be mirrored by JSON text content', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools.find((entry) => entry.name === 'list_stations')!;
+    const { script, warnings } = toolsCallScript(index, tool, 10);
+    expect(warnings).toEqual([]);
+    const testName = 'MCP tools/call structuredContent is mirrored by a JSON text content block for list_stations (MCP 2025-06-18 structured content compatibility)';
+
+    const invalid = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        content: [{ type: 'text', text: 'station list' }],
+        structuredContent: { stations: ['SFO'] }
+      }
+    });
+    expect(runtimeTestResult(invalid.results, testName)?.passed).toBe(false);
+
+    const valid = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        content: [{ type: 'text', text: JSON.stringify({ stations: ['SFO'] }) }],
+        structuredContent: { stations: ['SFO'] }
+      }
+    });
+    expect(runtimeTestResult(valid.results, testName)?.passed).toBe(true);
+  });
+
+  it('rejects reserved _meta prefixes anywhere in a JSON-RPC response', () => {
+    const index = parseMcpServerSpec(read('server.json'));
+    const tool = index.tools.find((entry) => entry.name === 'list_stations')!;
+    const { script, warnings } = toolsCallScript(index, tool, 10);
+    expect(warnings).toEqual([]);
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 10,
+      result: {
+        content: [{ type: 'text', text: 'ok' }],
+        _meta: { 'mcp/reserved': true }
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP tools/call returns JSON-RPC result for list_stations (MCP 2025-06-18 tools/call; JSON-RPC 2.0 §5)'
+      )?.passed
+    ).toBe(false);
+  });
+});
+
+describe('mcp resource runtime URI assertions', () => {
+  it('rejects relative resource URIs in resources/list and resources/read results', () => {
+    const listScript = resourcesListScript(['Forecast Index']);
+    const list = runMcpScript(listScript, {
+      jsonrpc: '2.0',
+      id: 8,
+      result: {
+        resources: [{ name: 'Forecast Index', uri: 'relative/path' }]
+      }
+    });
+    expect(
+      runtimeTestResult(
+        list.results,
+        'MCP resources/list result shape and manifest subset (MCP 2025-06-18 resources/list)'
+      )?.passed
+    ).toBe(false);
+
+    const readScript = readResourceScript('resource://forecast-index');
+    const read = runMcpScript(readScript, {
+      jsonrpc: '2.0',
+      id: 'pm-resource-read:resource://forecast-index',
+      result: {
+        contents: [{ uri: 'relative/path', text: '{}' }]
+      }
+    });
+    expect(
+      runtimeTestResult(
+        read.results,
+        'MCP resources/read result shape for resource://forecast-index (MCP 2025-06-18 resources/read)'
+      )?.passed
+    ).toBe(false);
   });
 });
 
@@ -923,6 +1007,23 @@ describe('mcp manifest static additions', () => {
 });
 
 describe('mcp resource template runtime checks', () => {
+  it('fails when a resource template is not absolute after RFC 6570 expansion', () => {
+    const script = resourceTemplatesScript();
+    const { results } = runMcpScript(script, {
+      jsonrpc: '2.0',
+      id: 5,
+      result: {
+        resourceTemplates: [{ name: 'Relative Template', uriTemplate: 'forecast/{city}' }]
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP resource templates compile under RFC 6570 (MCP 2025-06-18 resources; RFC 6570)'
+      )?.passed
+    ).toBe(false);
+  });
+
   it('fails when resources/templates/list omits the resourceTemplates array', () => {
     const script = resourceTemplatesScript();
     const { results } = runMcpScript(script, {

@@ -279,7 +279,7 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
   for (const resource of index.resources) {
     const requestId = `pm-resource-read:${resource.name}`;
     items.push(
-      httpItem(seed, `srv:${server.id}:http:resources/read:${resource.name}`, `${server.id} · HTTP resources/read ${resource.name}`, server.url, 'POST', sessionHeaders, readResourceMessage(resource, requestId), readResourceScript(resource.uri))
+      httpItem(seed, `srv:${server.id}:http:resources/read:${resource.name}`, `${server.id} · HTTP resources/read ${resource.name}`, server.url, 'POST', sessionHeaders, readResourceMessage(resource, requestId), readResourceScript(resource.uri, requestId))
     );
   }
   for (const prompt of index.prompts) {

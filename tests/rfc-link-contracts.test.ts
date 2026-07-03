@@ -92,7 +92,8 @@ describe('OpenAPI link + writeOnly runtime assertions', () => {
   const script = createContractScript(op).join('\n');
 
   it('captures the header link expression and the response writeOnly property', () => {
-    expect(op.responses['200']!.links).toEqual([{ link: 'next', kind: 'header', header: 'X-Next' }]);
+    expect(op.responses['200']!.links).toEqual([{ link: 'next', kind: 'header', header: 'X-Next', param: 'thingId', targetKey: 'next:thingId' }]);
+    expect(op.linkTargetSchemas).toEqual({ 'next:thingId': { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'string' } });
     expect(op.responses['200']!.writeOnlyProperties).toEqual(['password']);
   });
 
@@ -114,5 +115,71 @@ describe('OpenAPI link + writeOnly runtime assertions', () => {
 
   it('fails writeOnly leakage when the response includes a writeOnly property', () => {
     expect(runScript(script, { code: 200, headers: { 'X-Next': '/things/42' }, body: '{"id":"1","password":"secret"}' })[WRITEONLY_TEST]).toBe('fail');
+  });
+
+  it('validates response-derived link body values against target operation inputs', () => {
+    const targetIndex = indexFrom([
+      'openapi: 3.1.0',
+      'info: { title: T, version: 1.0.0 }',
+      'paths:',
+      '  /orders:',
+      '    get:',
+      '      responses:',
+      "        '200':",
+      '          description: OK',
+      '          content:',
+      '            application/json:',
+      '              schema: { type: object, properties: { id: { type: integer } } }',
+      '          links:',
+      '            next:',
+      '              operationId: getOrder',
+      '              parameters:',
+      "                id: '$response.body#/id'",
+      '  /orders/{id}:',
+      '    get:',
+      '      operationId: getOrder',
+      '      parameters:',
+      '        - { name: id, in: path, required: true, schema: { type: integer, minimum: 1 } }',
+      '      responses:',
+      "        '200': { description: OK }",
+      ''
+    ].join('\n'));
+    const sourceOp = targetIndex.operations.find((operation) => operation.path === '/orders')!;
+    expect(sourceOp.responses['200']!.links).toEqual([{ link: 'next', kind: 'body', pointer: '/id', param: 'id', targetKey: 'next:id' }]);
+    expect(sourceOp.linkTargetSchemas).toEqual({ 'next:id': { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'integer', minimum: 1 } });
+    const targetScript = createContractScript(sourceOp).join('\n');
+
+    expect(runScript(targetScript, { code: 200, body: '{"id":7}' })[LINK_TEST]).toBe('pass');
+    expect(runScript(targetScript, { code: 200, body: '{"id":"bad"}' })[LINK_TEST]).toBe('fail');
+    expect(runScript(targetScript, { code: 200, body: '{"id":0}' })[LINK_TEST]).toBe('fail');
+  });
+
+  it('warns when a link omits required target inputs', () => {
+    const targetIndex = indexFrom([
+      'openapi: 3.1.0',
+      'info: { title: T, version: 1.0.0 }',
+      'paths:',
+      '  /orders:',
+      '    get:',
+      '      responses:',
+      "        '200':",
+      '          description: OK',
+      '          links:',
+      '            next:',
+      '              operationId: getOrder',
+      '              parameters:',
+      "                id: '$response.body#/id'",
+      '  /orders/{id}:',
+      '    get:',
+      '      operationId: getOrder',
+      '      parameters:',
+      '        - { name: id, in: path, required: true, schema: { type: integer } }',
+      '        - { name: limit, in: query, required: true, schema: { type: integer } }',
+      '      responses:',
+      "        '200': { description: OK }",
+      ''
+    ].join('\n'));
+    const sourceOp = targetIndex.operations.find((operation) => operation.path === '/orders')!;
+    expect(sourceOp.warnings).toContain('CONTRACT_LINK_REQUIRED_INPUT_MISSING: link next on GET /orders does not supply required target input(s) query.limit');
   });
 });

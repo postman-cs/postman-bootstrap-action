@@ -43,7 +43,15 @@ describe('GraphQL generation documents-static (graphql_generation_documents_stat
 
 describe('GraphQL-over-HTTP GET discipline (graphql_runtime_over_http GET rows 10-15)', () => {
   const index = parseGraphQLSchema(SDL);
-  const collection = buildGraphQLCollection(index) as { item: Array<Record<string, any>> };
+  interface GraphQLTestItem {
+    id?: string;
+    request: {
+      method: string;
+      body?: unknown;
+      url: { raw?: string; query?: Array<{ key: string; value?: string }> };
+    };
+  }
+  const collection = buildGraphQLCollection(index) as { item: GraphQLTestItem[] };
   const getItems = collection.item.filter((it) => it.request?.method === 'GET');
 
   it('row 14: emits a GET mutation-rejection probe', () => {

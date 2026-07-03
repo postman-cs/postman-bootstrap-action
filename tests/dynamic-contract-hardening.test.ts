@@ -1964,7 +1964,7 @@ paths:
     expect(serialization).toEqual([]);
 
     const script = createContractScript(operation).join('\n');
-    const run = (query: Array<{ key: string; value: string }>, headers: Record<string, string> = {}) => {
+    const runAll = (query: Array<{ key: string; value: string }>, headers: Record<string, string> = {}) => {
       const results: Record<string, string> = {};
       const permissive: unknown = new Proxy(function () {}, {
         get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
@@ -1983,8 +1983,10 @@ paths:
         }
       };
       runInContext(script, createContext({ pm }));
-      return results['Request parameters match OpenAPI schemas'];
+      return results;
     };
+    const run = (query: Array<{ key: string; value: string }>, headers: Record<string, string> = {}) => runAll(query, headers)['Request parameters match OpenAPI schemas'];
+    const runWire = (query: Array<{ key: string; value: string }>, headers: Record<string, string> = {}) => runAll(query, headers)['Request parameters use the OpenAPI-declared wire serialization'];
 
     expect(run([{ key: 'tags', value: 'a' }, { key: 'tags', value: 'b' }])).toBe('pass');
     expect(run([{ key: 'tags', value: 'a' }, { key: 'tags', value: 'b' }, { key: 'tags', value: 'c' }])).toBe('fail');
@@ -2001,6 +2003,11 @@ paths:
     expect(run([{ key: 'labels', value: 'red%20blue,green' }])).toBe('pass');
     expect(run([{ key: 'labels', value: 'RED,green' }])).toBe('fail');
     expect(run([{ key: 'empty', value: '' }])).toBe('pass');
+    expect(runWire([{ key: 'tags', value: 'a' }, { key: 'tags', value: 'b' }])).toBe('pass');
+    expect(runWire([{ key: 'tags', value: 'a,b' }])).toBe('fail');
+    expect(runWire([{ key: 'ids', value: '1' }, { key: 'ids', value: '2' }])).toBe('fail');
+    expect(runWire([{ key: 'codes', value: '1 2' }])).toBe('fail');
+    expect(runWire([{ key: 'filter', value: 'kind' }])).toBe('fail');
   });
 
   it('validates path parameter values at runtime with server prefix alignment and placeholder skips', async () => {
@@ -2049,6 +2056,48 @@ paths:
     expect(run(['v1', 'pets', '<integer>'])).toBe('pass');
     expect(run(['v1', 'pets', '{petId}'])).toBe('pass');
     expect(run(['pets'])).toBe('pass');
+  });
+
+  it('checks declared path parameter wire serialization style', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets/{petId}:
+    get:
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          style: label
+          schema: { type: integer }
+      responses:
+        '200': { description: OK }
+`);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const run = (path: string[]) => {
+      const results: Record<string, string> = {};
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch { results[name] = 'fail'; }
+        },
+        expect: permissive,
+        response: { code: 200, headers: { get: () => null }, text: () => '', json: () => ({}) },
+        request: {
+          headers: { each: () => undefined },
+          url: { query: { each: () => undefined }, path, getPath: () => `/${path.join('/')}` }
+        }
+      };
+      runInContext(script, createContext({ pm }));
+      return results['Request parameters use the OpenAPI-declared wire serialization'];
+    };
+    expect(run(['pets', '.7'])).toBe('pass');
+    expect(run(['pets', '7'])).toBe('fail');
+    expect(run(['pets', '<integer>'])).toBe('pass');
   });
 
   it('asserts required cookie parameters and validates their values at runtime', async () => {

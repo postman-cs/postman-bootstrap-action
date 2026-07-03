@@ -169,7 +169,7 @@ function tryCompile(target: string, schema: unknown, lines: string[], warnings: 
 }
 
 function buildValidatorAssignments(operation: ContractOperation, warnings: string[], skipped: string[]): string[] {
-  const lines = ['var validators = {};'];
+  const lines = ['var validators = {};', 'var linkTargetValidators = {};'];
   const parameterChecks = operation.parameterChecks ?? [];
   if (parameterChecks.length > 0) {
     lines.push('var paramValidators = {};');
@@ -198,6 +198,10 @@ function buildValidatorAssignments(operation: ContractOperation, warnings: strin
       }
     }
   }
+  const linkTargetSchemas = Object.entries(operation.linkTargetSchemas ?? {});
+  for (const [key, schema] of linkTargetSchemas) {
+    tryCompile(`linkTargetValidators[${JSON.stringify(key)}]`, schema, lines, warnings, `link target schema ${key} on ${operation.id}`, skipped);
+  }
   return lines;
 }
 
@@ -220,6 +224,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     servers: operation.servers,
     callbacks: operation.callbacks,
     callbackRequestSources: operation.callbackRequestSources,
+    linkTargetSchemas: operation.linkTargetSchemas,
     multipartFields
   };
   const skipped: string[] = [];
@@ -257,6 +262,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     'function requestQueryValues(name) { var values = []; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === String(name).toLowerCase()) values.push(param.value === null || param.value === undefined ? "" : String(param.value)); }); return values; }',
     'function requestQueryValue(name) { var values = requestQueryValues(name); return values.length > 0 ? values[values.length - 1] : undefined; }',
     'function requestPathSegments() { var raw = ""; try { raw = typeof pm.request.url.getPath === "function" ? String(pm.request.url.getPath() || "") : ""; } catch (ignored) {} if (!raw) { var path = pm.request.url.path; raw = Array.isArray(path) ? "/" + path.join("/") : String(path || ""); } return raw.split("?")[0].split("#")[0].split("/").filter(function (segment) { return segment.length > 0; }); }',
+    'function pathRawSegment(name) { var template = String(contract.path).split("/").filter(function (segment) { return segment.length > 0; }); var actual = requestPathSegments(); var offset = actual.length - template.length; if (offset < 0) return undefined; var token = "{" + name + "}"; for (var i = 0; i < template.length; i += 1) { if (template[i] === token) return actual[offset + i]; } return undefined; }',
     'function requestPathParamValue(name) { var template = String(contract.path).split("/").filter(function (segment) { return segment.length > 0; }); var actual = requestPathSegments(); var offset = actual.length - template.length; if (offset < 0) return undefined; var token = "{" + name + "}"; for (var i = 0; i < template.length; i += 1) { var seg = template[i]; var actualSeg = actual[offset + i]; if (actualSeg === undefined) continue; if (seg === token) return decodeComponent(actualSeg); if (seg.indexOf(token) === -1) continue; var chunks = [], j = 0, bad = false; while (j < seg.length) { if (seg.charAt(j) === "{") { var close = seg.indexOf("}", j); if (close === -1) { bad = true; break; } chunks.push({ p: seg.slice(j + 1, close) }); j = close + 1; } else { var nb = seg.indexOf("{", j); var lit = nb === -1 ? seg.slice(j) : seg.slice(j, nb); chunks.push({ l: lit }); j = nb === -1 ? seg.length : nb; } } if (bad) return undefined; var pos = 0, found, ok = true; for (var c = 0; c < chunks.length; c += 1) { var ch = chunks[c]; if (ch.l !== undefined) { if (actualSeg.indexOf(ch.l, pos) === pos) pos += ch.l.length; else { ok = false; break; } } else { var nextLit = (chunks[c + 1] && chunks[c + 1].l !== undefined) ? chunks[c + 1].l : undefined; var isLast = c === chunks.length - 1; var end; if (isLast) { end = actualSeg.length; } else if (nextLit === undefined) { ok = false; break; } else { var idx = actualSeg.indexOf(nextLit, pos + 1); if (idx === -1) { ok = false; break; } end = idx; } if (end <= pos) { ok = false; break; } if (ch.p === name) found = actualSeg.slice(pos, end); pos = end; } } if (ok && pos === actualSeg.length && found !== undefined) return decodeComponent(found); } return undefined; }',
     'function mediaScore(expected, actual) {',
     '  var e = mediaParts(expected); var a = mediaParts(actual);',
@@ -1135,6 +1141,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '      else if (pm.response.headers.get(expression.header)) linkHeaderMatches = 1;',
     '      if (linkHeaderMatches === 0) pm.expect.fail("OpenAPI link " + expression.link + " references response header " + expression.header + " which is absent");',
     '      else if (linkHeaderMatches > 1) pm.expect.fail("OpenAPI link " + expression.link + " expression $response.header." + expression.header + " is ambiguous because the response carries " + linkHeaderMatches + " " + expression.header + " header fields (OAS Runtime Expressions)");',
+    '      if (linkHeaderMatches === 1 && expression.targetKey && linkTargetValidators[expression.targetKey] && !linkTargetValidators[expression.targetKey].skip) { var lhv = null; if (typeof pm.response.headers.each === "function") pm.response.headers.each(function (hf) { if (hf && hf.key && String(hf.key).toLowerCase() === String(expression.header).toLowerCase()) lhv = String(hf.value); }); else lhv = pm.response.headers.get(expression.header); var lhSchema = (contract.linkTargetSchemas || {})[expression.targetKey] || {}; if (!linkTargetValidators[expression.targetKey](coerceBySchema(lhv, lhSchema))) pm.expect.fail("OpenAPI link " + expression.link + " supplies response header " + expression.header + " to target input " + expression.param + ", but the value does not satisfy the target operation schema (OAS Link Object): " + JSON.stringify(linkTargetValidators[expression.targetKey].errors || [])); }',
     '      return;',
     '    }',
     '    if (!linkBodyParsed) { linkBodyParsed = true; try { linkBody = JSON.parse(responseText()); } catch (error) { linkBody = null; } }',
@@ -1146,6 +1153,7 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '      else { target = undefined; break; }',
     '    }',
     '    if (target === undefined) pm.expect.fail("OpenAPI link " + expression.link + " expression $response.body#" + expression.pointer + " does not resolve in the response body");',
+    '    if (target !== undefined && expression.targetKey && linkTargetValidators[expression.targetKey] && !linkTargetValidators[expression.targetKey].skip && !linkTargetValidators[expression.targetKey](target)) pm.expect.fail("OpenAPI link " + expression.link + " supplies response body value $response.body#" + expression.pointer + " to target input " + expression.param + ", but it does not satisfy the target operation schema (OAS Link Object): " + JSON.stringify(linkTargetValidators[expression.targetKey].errors || []));',
     '  });',
     '});',
     'pm.test(\'Response body does not leak writeOnly properties\', function () {',
@@ -1288,6 +1296,34 @@ export function createContractScript(operation: ContractOperation, warnings: str
       '      value = coerceBySchema(value, param.schema);',
       '    }',
       '    if (!validate(value)) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
+      '  });',
+      '});'
+    ] : []),
+    ...(operation.parameterChecks && operation.parameterChecks.length > 0 ? [
+      "pm.test('Request parameters use the OpenAPI-declared wire serialization', function () {",
+      '  function isPh(v) { var t = String(v).trim(); return /^<[^<>]*>$/.test(t) || t.indexOf("{{") !== -1; }',
+      '  var allMembers = []; pm.request.url.query.each(function (p) { if (!p || p.disabled === true) return; allMembers.push({ key: String(p.key), value: p.value === null || p.value === undefined ? "" : String(p.value) }); });',
+      '  (contract.parameters || []).forEach(function (param) {',
+      '    if (param.in === "query") {',
+      '      var lname = String(param.name).toLowerCase();',
+      '      var members = allMembers.filter(function (m) { return m.key.replace(/\\[[^\\]]*\\]$/, "").toLowerCase() === lname; });',
+      '      if (members.length === 0) return;',
+      '      if (members.some(function (m) { return isPh(m.value); })) return;',
+      '      if (param.decode === "deepObject") { members.forEach(function (m) { if (!/^[^\\[]+\\[[^\\]]+\\]$/.test(m.key)) pm.expect.fail("OpenAPI query parameter " + param.name + " declares deepObject style, so each member must be spelled " + param.name + "[property]=value (OAS Parameter serialization), but a member arrived as " + m.key); }); return; }',
+      '      var bracketed = members.filter(function (m) { return /\\[[^\\]]*\\]$/.test(m.key); });',
+      '      if (bracketed.length > 0) pm.expect.fail("OpenAPI query parameter " + param.name + " does not declare deepObject style but was serialized with bracket notation " + bracketed[0].key + " (OAS Parameter serialization)");',
+      '      if (param.decode === "multi") { if (members.length === 1 && members[0].value.indexOf(",") !== -1) pm.expect.fail("OpenAPI query parameter " + param.name + " declares exploded form style (explode=true), so each array item must be its own " + param.name + "= pair, but the items were comma-joined into one value: " + members[0].value); return; }',
+      '      if (param.decode === "csv") { if (members.length > 1) pm.expect.fail("OpenAPI query parameter " + param.name + " declares non-exploded form style (explode=false), so array items must be comma-joined into a single " + param.name + "= pair, but " + members.length + " pairs were sent"); return; }',
+      '      if (param.decode === "ssv" || param.decode === "pipes") { var styleName = param.decode === "ssv" ? "spaceDelimited" : "pipeDelimited"; if (members.length > 1) pm.expect.fail("OpenAPI query parameter " + param.name + " declares " + styleName + " style, so array items must join into a single " + param.name + "= pair, but " + members.length + " pairs were sent"); var jv = members[0].value; if (jv.indexOf(",") !== -1) pm.expect.fail("OpenAPI query parameter " + param.name + " declares " + styleName + " style, so array items must be delimited by " + (param.decode === "ssv" ? "spaces" : "pipes (|)") + ", not commas: " + jv); if (param.decode === "pipes" && /\\s/.test(jv) && jv.indexOf("|") === -1) pm.expect.fail("OpenAPI query parameter " + param.name + " declares pipeDelimited style, so array items must be joined with |, but the value uses spaces: " + jv); return; }',
+      '      return;',
+      '    }',
+      '    if (param.in === "path") {',
+      '      var seg; try { seg = pathRawSegment(param.name); } catch (ignored) { seg = undefined; }',
+      '      if (seg === undefined || seg === null || isPh(seg)) return;',
+      '      if (param.pathStyle === "label") { if (String(seg).charAt(0) !== ".") pm.expect.fail("OpenAPI path parameter " + param.name + " declares label style, so its segment must begin with \'.\' (OAS Parameter serialization), but arrived as " + seg); return; }',
+      '      if (param.pathStyle === "matrix") { if (String(seg).indexOf(";" + param.name + "=") !== 0) pm.expect.fail("OpenAPI path parameter " + param.name + " declares matrix style, so its segment must begin with \';" + param.name + "=\' (OAS Parameter serialization), but arrived as " + seg); return; }',
+      '      return;',
+      '    }',
       '  });',
       '});'
     ] : []),

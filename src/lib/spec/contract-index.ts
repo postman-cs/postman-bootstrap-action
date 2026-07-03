@@ -21,6 +21,11 @@ export interface ContractLinkExpression {
   kind: 'body' | 'header';
   pointer?: string;
   header?: string;
+  // Target input this response value feeds (parameter key such as "id" or
+  // "query.limit", or "$requestBody") and the linkTargetValidators key whose
+  // compiled schema the resolved value must satisfy.
+  param?: string;
+  targetKey?: string;
 }
 
 export interface ContractCallbackExpression {
@@ -108,6 +113,7 @@ export interface ContractOperation {
   servers?: string[];
   callbacks?: ContractCallbackExpression[];
   callbackRequestSources?: ContractCallbackRequestSources;
+  linkTargetSchemas?: Record<string, unknown>;
   warnings: string[];
 }
 
@@ -997,7 +1003,49 @@ function collectSecurityResponseLints(root: JsonRecord, operation: JsonRecord, r
 // $response.header.Name are runtime-evaluable against the very response the
 // link is declared on; everything else ($request.*, $url, whole-body) stays
 // warning-only.
-function collectLinkExpressions(root: JsonRecord, response: JsonRecord, operationId: string, warnings: Set<string>): ContractLinkExpression[] {
+// Resolve a link's target operation from operationId or operationRef so its
+// declared parameter/requestBody schemas can direct runtime validation of the
+// values the link feeds forward (OAS Link Object).
+function resolveLinkTargetOperation(root: JsonRecord, link: JsonRecord): { operation: JsonRecord; pathItem: JsonRecord } | null {
+  if (typeof link.operationRef === 'string' && link.operationRef.startsWith('#/')) {
+    const operation = asRecord(resolvePointer(root, link.operationRef));
+    if (!operation) return null;
+    const pathItem = asRecord(resolvePointer(root, link.operationRef.replace(/\/[^/]+$/, ''))) ?? {};
+    return { operation, pathItem };
+  }
+  if (typeof link.operationId === 'string') {
+    const paths = asRecord(root.paths);
+    if (!paths) return null;
+    for (const rawPathItem of Object.values(paths)) {
+      const pathItem = resolveInternalRef<JsonRecord>(root, rawPathItem);
+      if (!pathItem) continue;
+      for (const [method, rawOp] of Object.entries(pathItem)) {
+        if (!HTTP_METHODS.has(method.toLowerCase())) continue;
+        const operation = resolveInternalRef<JsonRecord>(root, rawOp);
+        if (operation && operation.operationId === link.operationId) return { operation, pathItem };
+      }
+    }
+  }
+  return null;
+}
+
+function jsonRequestBodySchema(root: JsonRecord, requestBody: JsonRecord | null): unknown | undefined {
+  const content = asRecord(requestBody?.content);
+  if (!content) return undefined;
+  for (const [contentType, mediaObject] of Object.entries(content)) {
+    const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
+    if (isJsonBaseType(base)) return asRecord(mediaObject)?.schema;
+  }
+  return undefined;
+}
+
+// Link parameter/requestBody values of the form $response.body#/ptr and
+// $response.header.Name are collected for runtime resolution against the
+// response the link is declared on. When the link's target operation and the
+// fed parameter/requestBody schema resolve, a compiled validator key is
+// attached so the resolved value is also checked against the target schema.
+// Everything else ($request.*, $url, whole-body) stays unevaluated and warns.
+function collectLinkExpressions(root: JsonRecord, response: JsonRecord, operationId: string, warnings: Set<string>, version: OpenApiVersion, targetSchemas: Record<string, unknown>): ContractLinkExpression[] {
   const links = asRecord(response.links);
   if (!links) return [];
   const expressions: ContractLinkExpression[] = [];
@@ -1006,16 +1054,54 @@ function collectLinkExpressions(root: JsonRecord, response: JsonRecord, operatio
     let link: JsonRecord | null;
     try { link = resolveInternalRef<JsonRecord>(root, rawLink); } catch { link = null; }
     if (!link) { unevaluated = true; continue; }
-    const values: unknown[] = Object.values(asRecord(link.parameters) ?? {});
-    if (link.requestBody !== undefined) values.push(link.requestBody);
-    if (values.length === 0) unevaluated = true;
-    for (const value of values) {
+    const target = resolveLinkTargetOperation(root, link);
+    const targetParams = target ? resolvedParameters(root, target.pathItem, target.operation) : [];
+    const paramByKey = new Map<string, JsonRecord>();
+    const requiredKeys = new Set<string>();
+    for (const parameter of targetParams) {
+      const loc = String(parameter.in || '').toLowerCase();
+      const nm = String(parameter.name || '');
+      if (!nm) continue;
+      paramByKey.set(`${loc}.${nm}`, parameter);
+      if (!paramByKey.has(nm)) paramByKey.set(nm, parameter);
+      if (parameter.required === true) requiredKeys.add(`${loc}.${nm}`);
+    }
+    const targetRequestBody = target ? asRecord(resolveInternalRef<JsonRecord>(root, target.operation.requestBody)) : null;
+    const targetRequestBodyRequired = targetRequestBody?.required === true;
+    const matchParam = (key: string): JsonRecord | undefined => paramByKey.get(key) ?? paramByKey.get(key.replace(/^(path|query|header|cookie)\./i, ''));
+
+    const entries: Array<{ key: string; value: unknown }> = Object.entries(asRecord(link.parameters) ?? {}).map(([key, value]) => ({ key, value }));
+    if (link.requestBody !== undefined) entries.push({ key: '$requestBody', value: link.requestBody });
+    if (entries.length === 0) unevaluated = true;
+
+    const providedKeys = new Set<string>();
+    for (const { key, value } of entries) {
+      if (key === '$requestBody') providedKeys.add('$requestBody');
+      else { const matched = matchParam(key); if (matched) providedKeys.add(`${String(matched.in).toLowerCase()}.${String(matched.name)}`); }
       if (typeof value !== 'string' || !value.startsWith('$')) continue;
       const bodyMatch = value.match(/^\$response\.body#(\/.*)$/);
-      if (bodyMatch) { expressions.push({ link: linkName, kind: 'body', pointer: bodyMatch[1]! }); continue; }
-      const headerMatch = value.match(/^\$response\.header\.([!#$%&'*+.^_`|~0-9A-Za-z-]+)$/);
-      if (headerMatch) { expressions.push({ link: linkName, kind: 'header', header: headerMatch[1]! }); continue; }
-      unevaluated = true;
+      const headerMatch = bodyMatch ? null : value.match(/^\$response\.header\.([!#$%&'*+.^_`|~0-9A-Za-z-]+)$/);
+      if (!bodyMatch && !headerMatch) { unevaluated = true; continue; }
+      let targetKey: string | undefined;
+      const schemaSource = key === '$requestBody' ? jsonRequestBodySchema(root, targetRequestBody) : matchParam(key)?.schema;
+      if (schemaSource !== undefined) {
+        const packed = packSchema(root, schemaSource, version, 'request');
+        if (!packed.unsupported && packed.schema !== undefined) {
+          targetKey = `${linkName}:${key}`;
+          targetSchemas[targetKey] = packed.schema;
+        }
+      }
+      const expression: ContractLinkExpression = bodyMatch
+        ? { link: linkName, kind: 'body', pointer: bodyMatch[1]!, param: key }
+        : { link: linkName, kind: 'header', header: headerMatch![1]!, param: key };
+      if (targetKey) expression.targetKey = targetKey;
+      expressions.push(expression);
+    }
+    if (target) {
+      const missing: string[] = [];
+      for (const requiredKey of requiredKeys) if (!providedKeys.has(requiredKey)) missing.push(requiredKey);
+      if (targetRequestBodyRequired && !providedKeys.has('$requestBody')) missing.push('$requestBody');
+      if (missing.length > 0) warnings.add(`CONTRACT_LINK_REQUIRED_INPUT_MISSING: link ${linkName} on ${operationId} does not supply required target input(s) ${missing.sort().join(', ')}`);
     }
   }
   if (expressions.length === 0) {
@@ -1530,13 +1616,14 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
         }
         const contractResponses: Record<string, ContractResponse> = {};
         const responseWarnings = new Set<string>();
+        const linkTargetSchemas: Record<string, unknown> = {};
         for (const [status, rawResponse] of Object.entries(responses)) {
           const response = resolveInternalRef<JsonRecord>(root, rawResponse);
           if (!response) continue;
           if (status !== 'default' && !/^[1-5]XX$/.test(status) && !/^[1-5][0-9][0-9]$/.test(status)) {
             responseWarnings.add(`CONTRACT_INVALID_STATUS_CODE: ${lowerMethod.toUpperCase()} ${path} declares response status "${status}" outside RFC 9110's 100-599, 1XX-5XX, or default forms`);
           }
-          const linkExpressions = collectLinkExpressions(root, response, `${lowerMethod.toUpperCase()} ${path}`, responseWarnings);
+          const linkExpressions = collectLinkExpressions(root, response, `${lowerMethod.toUpperCase()} ${path}`, responseWarnings, version, linkTargetSchemas);
           const responseContext = `${lowerMethod.toUpperCase()} ${path} status ${status}`;
           const content = responseContent(root, version, response, responseContext, responseWarnings);
           if ((status === '204' || status === '205' || status === '304') && Object.keys(content).length > 0) {
@@ -1617,6 +1704,7 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           servers: serverAdvisoryPatterns(root, pathItem, operation),
           callbacks: callbackExpressions,
           callbackRequestSources: callbackExpressions ? collectCallbackRequestSources(root, pathItem, operation) : undefined,
+          linkTargetSchemas: Object.keys(linkTargetSchemas).length > 0 ? linkTargetSchemas : undefined,
           warnings: [...new Set(opWarnings)].sort()
         });
       }

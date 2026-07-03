@@ -1,5 +1,7 @@
 import { SOAP12_UNSUPPORTED_MEDIA_PROBE_NAME } from './builder.js';
 import { defaultActionIri, localName, type SoapContractIndex, type SoapOperation } from './parser.js';
+import { resolveResponseDecl, xsdPayloadLines } from './xsd-payload.js';
+import type { XsdSchemaIndex } from './xsd-index.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -47,6 +49,8 @@ export interface SoapScriptOptions {
   declaresAddressing?: boolean;
   /** WSDL targetNamespace, used to derive the defaulted wsa:Action IRI. */
   targetNamespace?: string;
+  /** Inline-XSD component index (SoapContractIndex.schemaIndex) for payload assertions. */
+  schemaIndex?: XsdSchemaIndex;
 }
 
 const XML_HELPER_LINES: string[] = [
@@ -328,6 +332,7 @@ function deepConformanceLines(operation: SoapOperation): string[] {
       '  if (declared.length > 0) { for (var j = 0; j < accessors.length; j++) { if (declared.indexOf(localPart(accessors[j])) === -1) pm.expect.fail("accessor " + accessors[j] + " matches no wsdl:part of the output message"); } }',
       '  var order = accessors.map(function (a) { return declared.indexOf(localPart(a)); }).filter(function (idx) { return idx !== -1; });',
       '  for (var k = 1; k < order.length; k++) { if (order[k] < order[k - 1]) pm.expect.fail("rpc-literal part accessors must appear in the wsdl:part order of the output message (WS-I Basic Profile 1.1 R2729)"); }',
+      '  if (declared.length > 0) { for (var p = 0; p < declared.length; p++) { var pcnt = 0; for (var q = 0; q < accessors.length; q++) { if (localPart(accessors[q]) === declared[p]) pcnt += 1; } if (pcnt !== 1) pm.expect.fail("rpc-literal responses carry exactly one accessor per bound wsdl:part (WS-I Basic Profile 1.1 R2735); part " + declared[p] + " appears " + pcnt + " time(s)"); } }',
       '  if (/xsi:nil\\s*=\\s*["\'](?:1|true)["\']/.test(wrapInner)) pm.expect.fail("rpc-literal part accessors must not carry xsi:nil (WS-I Basic Profile 1.1)");',
       '});'
     );
@@ -662,11 +667,13 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
       `  pm.expect(bodyText, "expected SOAP response element <" + soap.expectedResponseElement + "> not found").to.match(new RegExp(${JSON.stringify(responseRegex)}));`,
       '});'
     );
-    // Explicit scope caveat (not a silent gap): SOAP assertions validate transport,
-    // content-type, Envelope/Body, Fault-absence and the top-level response element
-    // only. Deep WSDL/XSD child-element and scalar payload validation is out of scope
-    // for the XML-parser-free sandbox path.
-    warnings.push(`SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation ${operation.name} asserts the SOAP envelope/body/fault and the top-level response element <${operation.expectedResponseElement}> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)`);
+    // Scope gate: when the inline-XSD index resolves the response element to a
+    // plain sequence, xsdPayloadLines appends child/scalar payload assertions;
+    // otherwise the wrapper-only caveat below stays accurate.
+    const responseDecl = resolveResponseDecl(operation, options.schemaIndex);
+    if (!responseDecl || responseDecl.children === undefined) {
+      warnings.push('SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation ' + operation.name + ' asserts the SOAP envelope/body/fault and the top-level response element <' + operation.expectedResponseElement + '> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)');
+    }
   } else if (operation.output) {
     warnings.push(`SOAP_RESPONSE_ELEMENT_UNKNOWN: operation ${operation.name} has an output message but no resolvable response element; only Envelope/Body/Fault are asserted`);
   }
@@ -714,7 +721,7 @@ export function createSoapScript(operation: SoapOperation, warnings: string[] = 
       '});'
     );
   }
-  lines.push(...requestDisciplineLines(operation), ...deepConformanceLines(operation));
+  lines.push(...requestDisciplineLines(operation), ...deepConformanceLines(operation), ...xsdPayloadLines(operation, options.schemaIndex));
   return lines.join('\n');
 }
 
@@ -784,7 +791,7 @@ export function instrumentSoapCollection(collection: JsonRecord, index: SoapCont
       return;
     }
     covered.add(operation.name);
-    const exec = createSoapScript(operation, warnings, { declaresAddressing: index.declaresAddressing, targetNamespace: index.targetNamespace }).split('\n');
+    const exec = createSoapScript(operation, warnings, { declaresAddressing: index.declaresAddressing, targetNamespace: index.targetNamespace, schemaIndex: index.schemaIndex }).split('\n');
     const existing = asArray(item.event)
       .map((entry) => asRecord(entry))
       .filter((entry): entry is JsonRecord => Boolean(entry) && entry!.listen !== 'test');

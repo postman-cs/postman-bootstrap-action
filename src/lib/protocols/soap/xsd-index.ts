@@ -5,10 +5,21 @@
 // Only plain xsd:sequence content models one level deep are indexed;
 // all/choice/wildcard/derived content yields no child metadata so the
 // generated assertions never fail on shapes the index cannot prove.
+// Assertable extras carried per element: required/fixed attribute uses and
+// enumeration facets of same-schema simple types.
 
 type JsonRecord = Record<string, unknown>;
 
 const XSD_NS = 'http://www.w3.org/2001/XMLSchema';
+
+export interface XsdAttributeUse {
+  /** Local name of the attribute (ref targets contribute their local name). */
+  name: string;
+  /** True when use="required". */
+  required: boolean;
+  /** Fixed value constraint, when declared. */
+  fixed?: string;
+}
 
 export interface XsdChildElement {
   /** Local name of the child element (ref targets contribute their local name). */
@@ -18,6 +29,10 @@ export interface XsdChildElement {
   nillable: boolean;
   /** XSD built-in simple type local name, when the child type resolves to one. */
   builtinType?: string;
+  /** Enumeration facet values when the child type is a same-schema enumerated simpleType. */
+  enumeration?: string[];
+  /** True when the child is an element ref; its form follows the referenced declaration. */
+  viaRef?: boolean;
 }
 
 export interface XsdElementDecl {
@@ -26,6 +41,8 @@ export interface XsdElementDecl {
   nillable: boolean;
   /** Effective form for local child elements of this element's schema. */
   childrenQualified: boolean;
+  /** Required or fixed attribute uses on the element's complexType. */
+  attributes?: XsdAttributeUse[];
   /** Direct xsd:sequence children; undefined when the content model is not a plain sequence. */
   children?: XsdChildElement[];
 }
@@ -123,12 +140,45 @@ function parseOccursMax(raw: string): number | 'unbounded' {
   return Number.isNaN(value) ? 1 : value;
 }
 
+interface SimpleTypeFacets {
+  base?: string;
+  enums?: string[];
+}
+
+/** Base builtin and enumeration facets of an xsd:simpleType restriction. */
+function simpleTypeFacets(simpleType: JsonRecord, scopes: JsonRecord[]): SimpleTypeFacets {
+  const restriction = asRecord(child(simpleType, 'restriction'));
+  if (!restriction) return {};
+  const baseQName = attr(restriction, 'base');
+  const baseNs = baseQName ? namespaceForPrefix([...scopes, restriction], prefixOf(baseQName)) : '';
+  const enums = children(restriction, 'enumeration').map((e) => attr(e, 'value')).filter((v) => v !== '');
+  return {
+    ...(baseQName && baseNs === XSD_NS ? { base: localName(baseQName) } : {}),
+    ...(enums.length > 0 ? { enums } : {})
+  };
+}
+
+/** Required or fixed attribute uses declared directly on a complexType. */
+function attributeUses(complexType: JsonRecord | null): XsdAttributeUse[] | undefined {
+  if (!complexType) return undefined;
+  const out: XsdAttributeUse[] = [];
+  for (const a of children(complexType, 'attribute')) {
+    const name = attr(a, 'name') || localName(attr(a, 'ref'));
+    if (!name) continue;
+    const required = attr(a, 'use') === 'required';
+    const fixed = attr(a, 'fixed');
+    if (!required && !fixed) continue;
+    out.push({ name, required, ...(fixed ? { fixed } : {}) });
+  }
+  return out.length > 0 ? out : undefined;
+}
+
 /**
  * Direct element children of a complexType when (and only when) its content
  * model is a single flat xsd:sequence. Derived, mixed-model, or grouped
  * content returns undefined so callers skip child assertions entirely.
  */
-function sequenceChildren(complexType: JsonRecord | null, scopes: JsonRecord[]): XsdChildElement[] | undefined {
+function sequenceChildren(complexType: JsonRecord | null, scopes: JsonRecord[], tns: string, simpleTypes: Map<string, SimpleTypeFacets>): XsdChildElement[] | undefined {
   if (!complexType) return undefined;
   if (child(complexType, 'complexContent') !== undefined || child(complexType, 'simpleContent') !== undefined) return undefined;
   if (child(complexType, 'choice') !== undefined || child(complexType, 'all') !== undefined || child(complexType, 'group') !== undefined) return undefined;
@@ -137,16 +187,34 @@ function sequenceChildren(complexType: JsonRecord | null, scopes: JsonRecord[]):
   if (child(sequence, 'choice') !== undefined || child(sequence, 'sequence') !== undefined || child(sequence, 'any') !== undefined || child(sequence, 'group') !== undefined) return undefined;
   const out: XsdChildElement[] = [];
   for (const el of children(sequence, 'element')) {
-    const name = attr(el, 'name') || localName(attr(el, 'ref'));
+    const ref = attr(el, 'ref');
+    const name = attr(el, 'name') || localName(ref);
     if (!name) return undefined;
     const typeQName = attr(el, 'type');
     const typeNs = typeQName ? namespaceForPrefix([...scopes, el], prefixOf(typeQName)) : '';
+    let builtinType = typeQName && typeNs === XSD_NS ? localName(typeQName) : undefined;
+    let enumeration: string[] | undefined;
+    if (typeQName && typeNs === tns) {
+      const sameSchema = simpleTypes.get(localName(typeQName));
+      if (sameSchema) {
+        builtinType = sameSchema.base ?? builtinType;
+        enumeration = sameSchema.enums;
+      }
+    }
+    const inlineSimple = asRecord(child(el, 'simpleType'));
+    if (inlineSimple) {
+      const facets = simpleTypeFacets(inlineSimple, [...scopes, el]);
+      builtinType = facets.base ?? builtinType;
+      enumeration = facets.enums ?? enumeration;
+    }
     out.push({
       name,
       minOccurs: parseOccursMin(attr(el, 'minOccurs')),
       maxOccurs: parseOccursMax(attr(el, 'maxOccurs')),
       nillable: /^(true|1)$/.test(attr(el, 'nillable')),
-      builtinType: typeQName && typeNs === XSD_NS ? localName(typeQName) : undefined
+      ...(builtinType ? { builtinType } : {}),
+      ...(enumeration && enumeration.length > 0 ? { enumeration } : {}),
+      ...(ref ? { viaRef: true } : {})
     });
   }
   return out;
@@ -173,9 +241,12 @@ export function buildXsdIndex(docNode: JsonRecord): XsdSchemaIndex {
         complexTypes.set(name, complexType);
         index.typeLocalNames.add(name);
       }
+      const simpleTypes = new Map<string, SimpleTypeFacets>();
       for (const simpleType of children(schema, 'simpleType')) {
         const name = attr(simpleType, 'name');
-        if (name) index.typeLocalNames.add(name);
+        if (!name) continue;
+        index.typeLocalNames.add(name);
+        simpleTypes.set(name, simpleTypeFacets(simpleType, [...scopes, simpleType]));
       }
       for (const el of children(schema, 'element')) {
         const name = attr(el, 'name');
@@ -190,7 +261,8 @@ export function buildXsdIndex(docNode: JsonRecord): XsdSchemaIndex {
           namespace: tns,
           nillable: /^(true|1)$/.test(attr(el, 'nillable')),
           childrenQualified: qualified,
-          children: sequenceChildren(inline ?? named, [...scopes, el])
+          attributes: attributeUses(inline ?? named),
+          children: sequenceChildren(inline ?? named, [...scopes, el], tns, simpleTypes)
         });
       }
     }

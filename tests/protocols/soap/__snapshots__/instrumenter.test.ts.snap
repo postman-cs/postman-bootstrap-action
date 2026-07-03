@@ -214,6 +214,116 @@ pm.test('SOAP 1.1 MustUnderstand faults carry no Body detail (SOAP 1.1 section 4
   if (!fc || localPart(fc[1].trim()) !== "MustUnderstand") return;
   var muDetail = elementInner(cleanXml, "detail");
   if (muDetail !== null && muDetail.trim()) pm.expect.fail("a MustUnderstand fault reports a header processing error; error details belong in header blocks, not soap:detail (SOAP 1.1 section 4.4)");
+});
+
+var xsd = JSON.parse("{\\"wrapper\\":\\"GetStockPriceResponse\\",\\"complete\\":true,\\"qualified\\":false,\\"nillable\\":false,\\"childrenKnown\\":true,\\"children\\":[{\\"name\\":\\"price\\",\\"min\\":1,\\"max\\":1,\\"nillable\\":false,\\"builtin\\":\\"double\\",\\"lex\\":\\"^([+-]?(\\\\\\\\d+(\\\\\\\\.\\\\\\\\d*)?|\\\\\\\\.\\\\\\\\d+)([eE][+-]?\\\\\\\\d+)?|-?INF|NaN)$\\"}],\\"attrs\\":[],\\"typeNames\\":[],\\"builtins\\":[\\"anyType\\",\\"anySimpleType\\",\\"string\\",\\"boolean\\",\\"decimal\\",\\"float\\",\\"double\\",\\"duration\\",\\"dateTime\\",\\"time\\",\\"date\\",\\"gYearMonth\\",\\"gYear\\",\\"gMonthDay\\",\\"gDay\\",\\"gMonth\\",\\"hexBinary\\",\\"base64Binary\\",\\"anyURI\\",\\"QName\\",\\"NOTATION\\",\\"normalizedString\\",\\"token\\",\\"language\\",\\"NMTOKEN\\",\\"NMTOKENS\\",\\"Name\\",\\"NCName\\",\\"ID\\",\\"IDREF\\",\\"IDREFS\\",\\"ENTITY\\",\\"ENTITIES\\",\\"integer\\",\\"nonPositiveInteger\\",\\"negativeInteger\\",\\"long\\",\\"int\\",\\"short\\",\\"byte\\",\\"nonNegativeInteger\\",\\"unsignedLong\\",\\"unsignedInt\\",\\"unsignedShort\\",\\"unsignedByte\\",\\"positiveInteger\\"],\\"envNs\\":\\"http://schemas.xmlsoap.org/soap/envelope/\\"}");
+function directChildEls(inner) {
+  var out = []; var depth = 0; var m; var start = -1; var name = ""; var tag = "";
+  var re = /<(\\/?)([A-Za-z_][\\w.-]*(?::[A-Za-z_][\\w.-]*)?)([^>]*?)(\\/?)>/g;
+  while ((m = re.exec(inner))) {
+    if (m[1]) { depth -= 1; if (depth === 0) out.push({ name: name, tag: tag, inner: inner.slice(start, m.index) }); continue; }
+    if (depth === 0) { name = m[2]; tag = m[0]; start = m.index + m[0].length; if (m[4]) { out.push({ name: name, tag: tag, inner: "" }); continue; } }
+    if (!m[4]) depth += 1;
+  }
+  return out;
+}
+function xsdWrapperInner() {
+  if (accepted202 || matchTag("Fault").test(bodyText)) return null;
+  return elementInner(cleanXml, xsd.wrapper);
+}
+function xsdWrapperTag() {
+  if (accepted202 || matchTag("Fault").test(bodyText)) return null;
+  var open = cleanXml.match(new RegExp("<(?:[A-Za-z_][\\\\w.-]*:)?" + xsd.wrapper + "(?=[\\\\s/>])[^>]*>"));
+  return open ? open[0] : null;
+}
+
+pm.test('Response wrapper children match the declared xsd:sequence (XML Schema Part 1 section 3.8)', function () {
+  var inner = xsdWrapperInner();
+  if (inner === null) return;
+  var kids = directChildEls(inner);
+  var declared = xsd.children.map(function (c) { return c.name; });
+  if (xsd.complete) {
+    for (var i = 0; i < kids.length; i++) { if (declared.indexOf(localPart(kids[i].name)) === -1) pm.expect.fail("element " + kids[i].name + " is not declared in the xsd:sequence of " + xsd.wrapper); }
+  }
+  for (var j = 0; j < xsd.children.length; j++) {
+    var c = xsd.children[j]; var cnt = 0;
+    for (var k = 0; k < kids.length; k++) { if (localPart(kids[k].name) === c.name) cnt += 1; }
+    if (cnt < c.min) pm.expect.fail("child " + c.name + " of " + xsd.wrapper + " occurs " + cnt + " time(s); the schema requires minOccurs=" + c.min);
+    if (c.max !== -1 && cnt > c.max) pm.expect.fail("child " + c.name + " of " + xsd.wrapper + " occurs " + cnt + " time(s); the schema allows maxOccurs=" + c.max);
+  }
+  var seq = []; for (var s = 0; s < kids.length; s++) { var di = declared.indexOf(localPart(kids[s].name)); if (di !== -1) seq.push(di); }
+  for (var o = 1; o < seq.length; o++) { if (seq[o] < seq[o - 1]) pm.expect.fail("children of " + xsd.wrapper + " must follow the xsd:sequence order " + declared.join(", ")); }
+});
+
+pm.test('Response wrapper children follow the schema element form (XML Schema Part 1 section 3.3.2 / WS-I Basic Profile 1.1 R1014)', function () {
+  var inner = xsdWrapperInner();
+  if (inner === null || inner.indexOf("xmlns=") !== -1) return;
+  var kids = directChildEls(inner);
+  for (var i = 0; i < kids.length; i++) {
+    var prefixed = kids[i].name.indexOf(":") !== -1;
+    var known = null;
+    for (var j = 0; j < xsd.children.length; j++) { if (xsd.children[j].name === localPart(kids[i].name)) { known = xsd.children[j]; break; } }
+    if (xsd.qualified && !prefixed) pm.expect.fail("child " + kids[i].name + " of " + xsd.wrapper + " must be namespace-qualified (elementFormDefault=qualified)");
+    if (!xsd.qualified && prefixed && known && !known.ref) pm.expect.fail("child " + kids[i].name + " of " + xsd.wrapper + " must be unqualified (unqualified local elements live in no namespace)");
+  }
+});
+
+pm.test('Response wrapper scalar children match their XSD simple types (XML Schema Part 2)', function () {
+  var inner = xsdWrapperInner();
+  if (inner === null) return;
+  var kids = directChildEls(inner);
+  for (var i = 0; i < kids.length; i++) {
+    var name = localPart(kids[i].name); var c = null;
+    for (var j = 0; j < xsd.children.length; j++) { if (xsd.children[j].name === name) { c = xsd.children[j]; break; } }
+    if (!c || (!c.lex && !c.enums)) continue;
+    if (/(?:^|\\s)xsi:nil\\s*=\\s*["'](?:1|true)["']/.test(kids[i].tag)) continue;
+    if (kids[i].inner.indexOf("<") !== -1) continue;
+    var text = kids[i].inner.trim().replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, String.fromCharCode(34)).replace(/&apos;/g, String.fromCharCode(39)).replace(/&amp;/g, "&");
+    if (c.lex && !new RegExp(c.lex).test(text)) pm.expect.fail("element " + name + " value " + text + " is not a valid xsd:" + c.builtin + " (XML Schema Part 2)");
+    if (c.lex && new RegExp(c.lex).test(text) && (c.vmin !== undefined || c.vmax !== undefined)) {
+      var n = Number(text);
+      if (c.vmin !== undefined && n < c.vmin) pm.expect.fail("element " + name + " value " + text + " is below the xsd:" + c.builtin + " minimum " + c.vmin);
+      if (c.vmax !== undefined && n > c.vmax) pm.expect.fail("element " + name + " value " + text + " exceeds the xsd:" + c.builtin + " maximum " + c.vmax);
+    }
+    if (c.enums && c.enums.indexOf(text) === -1) pm.expect.fail("element " + name + " value " + text + " is not among the enumeration " + c.enums.join(", "));
+  }
+});
+
+pm.test('xsi:nil usage matches the schema nillable declarations (XML Schema Part 1 section 3.3.1)', function () {
+  var tag = xsdWrapperTag();
+  if (tag === null) return;
+  var nilRe = /(?:^|\\s)xsi:nil\\s*=\\s*["'](?:1|true)["']/;
+  if (nilRe.test(tag) && !xsd.nillable) pm.expect.fail("element " + xsd.wrapper + " is not declared nillable but carries xsi:nil=true");
+  var inner = xsdWrapperInner();
+  if (inner === null) return;
+  if (nilRe.test(tag) && inner.trim()) pm.expect.fail("element " + xsd.wrapper + " carries xsi:nil=true and must therefore be empty");
+  var kids = directChildEls(inner);
+  for (var i = 0; i < kids.length; i++) {
+    if (!nilRe.test(kids[i].tag)) continue;
+    if (kids[i].inner.trim()) pm.expect.fail("element " + kids[i].name + " carries xsi:nil=true and must therefore be empty");
+    if (!xsd.childrenKnown) continue;
+    var name = localPart(kids[i].name);
+    for (var j = 0; j < xsd.children.length; j++) { if (xsd.children[j].name === name && !xsd.children[j].nillable) pm.expect.fail("element " + name + " is not declared nillable but carries xsi:nil=true"); }
+  }
+});
+
+pm.test('Literal response element carries no SOAP envelope attributes (WS-I Basic Profile 1.1 R1005/R2706)', function () {
+  var tag = xsdWrapperTag();
+  if (tag === null) return;
+  var re = /([A-Za-z_][\\w.-]*):(encodingStyle|mustUnderstand|actor|role|relay)\\s*=/g; var m;
+  while ((m = re.exec(tag))) {
+    if (cleanXml.indexOf("xmlns:" + m[1] + "=" + String.fromCharCode(34) + xsd.envNs + String.fromCharCode(34)) !== -1 || cleanXml.indexOf("xmlns:" + m[1] + "=" + String.fromCharCode(39) + xsd.envNs + String.fromCharCode(39)) !== -1) pm.expect.fail("SOAP " + m[2] + " must not appear on the literal response element " + xsd.wrapper + " (WS-I Basic Profile 1.1 R1005/R2706)");
+  }
+});
+
+pm.test('xsi:type values name declared or built-in schema types (XML Schema Part 1 section 2.6.1)', function () {
+  var inner = xsdWrapperInner();
+  if (inner === null) return;
+  var re = /xsi:type\\s*=\\s*["']([^"']+)["']/g; var m;
+  while ((m = re.exec(inner))) {
+    var lp = localPart(m[1].trim());
+    if (xsd.builtins.indexOf(lp) === -1 && xsd.typeNames.indexOf(lp) === -1) pm.expect.fail("xsi:type " + m[1] + " names no schema-declared or XSD built-in type");
+  }
 });",
       "name": "GetStockPrice",
     },
@@ -428,6 +538,95 @@ pm.test('SOAP 1.1 MustUnderstand faults carry no Body detail (SOAP 1.1 section 4
   if (!fc || localPart(fc[1].trim()) !== "MustUnderstand") return;
   var muDetail = elementInner(cleanXml, "detail");
   if (muDetail !== null && muDetail.trim()) pm.expect.fail("a MustUnderstand fault reports a header processing error; error details belong in header blocks, not soap:detail (SOAP 1.1 section 4.4)");
+});
+
+var xsd = JSON.parse("{\\"wrapper\\":\\"ListSymbolsResponse\\",\\"complete\\":true,\\"qualified\\":false,\\"nillable\\":false,\\"childrenKnown\\":true,\\"children\\":[{\\"name\\":\\"symbol\\",\\"min\\":1,\\"max\\":-1,\\"nillable\\":false,\\"builtin\\":\\"string\\"}],\\"attrs\\":[],\\"typeNames\\":[],\\"builtins\\":[\\"anyType\\",\\"anySimpleType\\",\\"string\\",\\"boolean\\",\\"decimal\\",\\"float\\",\\"double\\",\\"duration\\",\\"dateTime\\",\\"time\\",\\"date\\",\\"gYearMonth\\",\\"gYear\\",\\"gMonthDay\\",\\"gDay\\",\\"gMonth\\",\\"hexBinary\\",\\"base64Binary\\",\\"anyURI\\",\\"QName\\",\\"NOTATION\\",\\"normalizedString\\",\\"token\\",\\"language\\",\\"NMTOKEN\\",\\"NMTOKENS\\",\\"Name\\",\\"NCName\\",\\"ID\\",\\"IDREF\\",\\"IDREFS\\",\\"ENTITY\\",\\"ENTITIES\\",\\"integer\\",\\"nonPositiveInteger\\",\\"negativeInteger\\",\\"long\\",\\"int\\",\\"short\\",\\"byte\\",\\"nonNegativeInteger\\",\\"unsignedLong\\",\\"unsignedInt\\",\\"unsignedShort\\",\\"unsignedByte\\",\\"positiveInteger\\"],\\"envNs\\":\\"http://schemas.xmlsoap.org/soap/envelope/\\"}");
+function directChildEls(inner) {
+  var out = []; var depth = 0; var m; var start = -1; var name = ""; var tag = "";
+  var re = /<(\\/?)([A-Za-z_][\\w.-]*(?::[A-Za-z_][\\w.-]*)?)([^>]*?)(\\/?)>/g;
+  while ((m = re.exec(inner))) {
+    if (m[1]) { depth -= 1; if (depth === 0) out.push({ name: name, tag: tag, inner: inner.slice(start, m.index) }); continue; }
+    if (depth === 0) { name = m[2]; tag = m[0]; start = m.index + m[0].length; if (m[4]) { out.push({ name: name, tag: tag, inner: "" }); continue; } }
+    if (!m[4]) depth += 1;
+  }
+  return out;
+}
+function xsdWrapperInner() {
+  if (accepted202 || matchTag("Fault").test(bodyText)) return null;
+  return elementInner(cleanXml, xsd.wrapper);
+}
+function xsdWrapperTag() {
+  if (accepted202 || matchTag("Fault").test(bodyText)) return null;
+  var open = cleanXml.match(new RegExp("<(?:[A-Za-z_][\\\\w.-]*:)?" + xsd.wrapper + "(?=[\\\\s/>])[^>]*>"));
+  return open ? open[0] : null;
+}
+
+pm.test('Response wrapper children match the declared xsd:sequence (XML Schema Part 1 section 3.8)', function () {
+  var inner = xsdWrapperInner();
+  if (inner === null) return;
+  var kids = directChildEls(inner);
+  var declared = xsd.children.map(function (c) { return c.name; });
+  if (xsd.complete) {
+    for (var i = 0; i < kids.length; i++) { if (declared.indexOf(localPart(kids[i].name)) === -1) pm.expect.fail("element " + kids[i].name + " is not declared in the xsd:sequence of " + xsd.wrapper); }
+  }
+  for (var j = 0; j < xsd.children.length; j++) {
+    var c = xsd.children[j]; var cnt = 0;
+    for (var k = 0; k < kids.length; k++) { if (localPart(kids[k].name) === c.name) cnt += 1; }
+    if (cnt < c.min) pm.expect.fail("child " + c.name + " of " + xsd.wrapper + " occurs " + cnt + " time(s); the schema requires minOccurs=" + c.min);
+    if (c.max !== -1 && cnt > c.max) pm.expect.fail("child " + c.name + " of " + xsd.wrapper + " occurs " + cnt + " time(s); the schema allows maxOccurs=" + c.max);
+  }
+  var seq = []; for (var s = 0; s < kids.length; s++) { var di = declared.indexOf(localPart(kids[s].name)); if (di !== -1) seq.push(di); }
+  for (var o = 1; o < seq.length; o++) { if (seq[o] < seq[o - 1]) pm.expect.fail("children of " + xsd.wrapper + " must follow the xsd:sequence order " + declared.join(", ")); }
+});
+
+pm.test('Response wrapper children follow the schema element form (XML Schema Part 1 section 3.3.2 / WS-I Basic Profile 1.1 R1014)', function () {
+  var inner = xsdWrapperInner();
+  if (inner === null || inner.indexOf("xmlns=") !== -1) return;
+  var kids = directChildEls(inner);
+  for (var i = 0; i < kids.length; i++) {
+    var prefixed = kids[i].name.indexOf(":") !== -1;
+    var known = null;
+    for (var j = 0; j < xsd.children.length; j++) { if (xsd.children[j].name === localPart(kids[i].name)) { known = xsd.children[j]; break; } }
+    if (xsd.qualified && !prefixed) pm.expect.fail("child " + kids[i].name + " of " + xsd.wrapper + " must be namespace-qualified (elementFormDefault=qualified)");
+    if (!xsd.qualified && prefixed && known && !known.ref) pm.expect.fail("child " + kids[i].name + " of " + xsd.wrapper + " must be unqualified (unqualified local elements live in no namespace)");
+  }
+});
+
+pm.test('xsi:nil usage matches the schema nillable declarations (XML Schema Part 1 section 3.3.1)', function () {
+  var tag = xsdWrapperTag();
+  if (tag === null) return;
+  var nilRe = /(?:^|\\s)xsi:nil\\s*=\\s*["'](?:1|true)["']/;
+  if (nilRe.test(tag) && !xsd.nillable) pm.expect.fail("element " + xsd.wrapper + " is not declared nillable but carries xsi:nil=true");
+  var inner = xsdWrapperInner();
+  if (inner === null) return;
+  if (nilRe.test(tag) && inner.trim()) pm.expect.fail("element " + xsd.wrapper + " carries xsi:nil=true and must therefore be empty");
+  var kids = directChildEls(inner);
+  for (var i = 0; i < kids.length; i++) {
+    if (!nilRe.test(kids[i].tag)) continue;
+    if (kids[i].inner.trim()) pm.expect.fail("element " + kids[i].name + " carries xsi:nil=true and must therefore be empty");
+    if (!xsd.childrenKnown) continue;
+    var name = localPart(kids[i].name);
+    for (var j = 0; j < xsd.children.length; j++) { if (xsd.children[j].name === name && !xsd.children[j].nillable) pm.expect.fail("element " + name + " is not declared nillable but carries xsi:nil=true"); }
+  }
+});
+
+pm.test('Literal response element carries no SOAP envelope attributes (WS-I Basic Profile 1.1 R1005/R2706)', function () {
+  var tag = xsdWrapperTag();
+  if (tag === null) return;
+  var re = /([A-Za-z_][\\w.-]*):(encodingStyle|mustUnderstand|actor|role|relay)\\s*=/g; var m;
+  while ((m = re.exec(tag))) {
+    if (cleanXml.indexOf("xmlns:" + m[1] + "=" + String.fromCharCode(34) + xsd.envNs + String.fromCharCode(34)) !== -1 || cleanXml.indexOf("xmlns:" + m[1] + "=" + String.fromCharCode(39) + xsd.envNs + String.fromCharCode(39)) !== -1) pm.expect.fail("SOAP " + m[2] + " must not appear on the literal response element " + xsd.wrapper + " (WS-I Basic Profile 1.1 R1005/R2706)");
+  }
+});
+
+pm.test('xsi:type values name declared or built-in schema types (XML Schema Part 1 section 2.6.1)', function () {
+  var inner = xsdWrapperInner();
+  if (inner === null) return;
+  var re = /xsi:type\\s*=\\s*["']([^"']+)["']/g; var m;
+  while ((m = re.exec(inner))) {
+    var lp = localPart(m[1].trim());
+    if (xsd.builtins.indexOf(lp) === -1 && xsd.typeNames.indexOf(lp) === -1) pm.expect.fail("xsi:type " + m[1] + " names no schema-declared or XSD built-in type");
+  }
 });",
       "name": "ListSymbols",
     },
@@ -435,8 +634,6 @@ pm.test('SOAP 1.1 MustUnderstand faults carry no Body detail (SOAP 1.1 section 4
   "warnings": [
     "SOAP_LINT_DOC_LITERAL_WRAPPED: operation GetStockPrice follows the doc-literal-wrapped convention (input wrapper element <GetStockPrice> is named after the operation); advisory only -- convention-based detection, not a WS-I requirement",
     "SOAP_LINT_DOC_LITERAL_WRAPPED: operation ListSymbols follows the doc-literal-wrapped convention (input wrapper element <ListSymbols> is named after the operation); advisory only -- convention-based detection, not a WS-I requirement",
-    "SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation GetStockPrice asserts the SOAP envelope/body/fault and the top-level response element <GetStockPriceResponse> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)",
-    "SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation ListSymbols asserts the SOAP envelope/body/fault and the top-level response element <ListSymbolsResponse> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)",
   ],
 }
 `;

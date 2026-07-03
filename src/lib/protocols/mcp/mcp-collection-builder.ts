@@ -29,7 +29,9 @@ import {
   bogusBearerScript,
   getPromptScript,
   initializeScript,
+  initializeSucceededPrerequest,
   initializedNotificationScript,
+  initializedGuardPrerequest,
   cursorProbePrerequest,
   cursorReplayScript,
   invalidCursorScript,
@@ -270,16 +272,17 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
   const seed = options.idSeed ?? 'mcp';
   const headers = baseHeaders(server);
   const sessionHeaders = withSession(headers);
+  const postInitializeGuard = initializedGuardPrerequest();
   const items: JsonRecord[] = [
     httpItem(seed, `srv:${server.id}:http:initialize`, `${server.id} · HTTP initialize`, server.url, 'POST', headers, initializeMessage(options), initializeScript()),
-    httpItem(seed, `srv:${server.id}:http:initialized`, `${server.id} · HTTP notifications/initialized`, server.url, 'POST', sessionHeaders, jsonRpcNotification('notifications/initialized'), initializedNotificationScript()),
-    httpItem(seed, `srv:${server.id}:http:ping`, `${server.id} · HTTP ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-ping', 'ping'), pingScript()),
-    httpItem(seed, `srv:${server.id}:http:tools/list`, `${server.id} · HTTP tools/list`, server.url, 'POST', sessionHeaders, toolsListMessage(), toolsListScript(index.tools.map((tool) => tool.name))),
-    httpItem(seed, `srv:${server.id}:http:resources/list`, `${server.id} · HTTP resources/list`, server.url, 'POST', sessionHeaders, resourcesListMessage(), resourcesListScript(index.resources.map((resource) => resource.name))),
-    httpItem(seed, `srv:${server.id}:http:prompts/list`, `${server.id} · HTTP prompts/list`, server.url, 'POST', sessionHeaders, promptsListMessage(), promptsListScript(index.prompts.map((prompt) => prompt.name))),
+    httpItem(seed, `srv:${server.id}:http:initialized`, `${server.id} · HTTP notifications/initialized`, server.url, 'POST', sessionHeaders, jsonRpcNotification('notifications/initialized'), initializedNotificationScript(), initializeSucceededPrerequest()),
+    httpItem(seed, `srv:${server.id}:http:ping`, `${server.id} · HTTP ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-ping', 'ping'), pingScript(), postInitializeGuard),
+    httpItem(seed, `srv:${server.id}:http:tools/list`, `${server.id} · HTTP tools/list`, server.url, 'POST', sessionHeaders, toolsListMessage(), toolsListScript(index.tools.map((tool) => tool.name)), postInitializeGuard),
+    httpItem(seed, `srv:${server.id}:http:resources/list`, `${server.id} · HTTP resources/list`, server.url, 'POST', sessionHeaders, resourcesListMessage(), resourcesListScript(index.resources.map((resource) => resource.name)), postInitializeGuard),
+    httpItem(seed, `srv:${server.id}:http:prompts/list`, `${server.id} · HTTP prompts/list`, server.url, 'POST', sessionHeaders, promptsListMessage(), promptsListScript(index.prompts.map((prompt) => prompt.name)), postInitializeGuard),
     // Session-requirement probe: same ping, deliberately without the session
-    // header (base headers), after initialize has had a chance to issue one.
-    httpItem(seed, `srv:${server.id}:http:no-session-ping`, `${server.id} · HTTP ping without session id`, server.url, 'POST', headers, jsonRpcWithId('pm-nosession', 'ping'), sessionRequiredScript()),
+    // header (base headers), after the initialized handshake completes.
+    httpItem(seed, `srv:${server.id}:http:no-session-ping`, `${server.id} · HTTP ping without session id`, server.url, 'POST', headers, jsonRpcWithId('pm-nosession', 'ping'), sessionRequiredScript(), postInitializeGuard),
     // Pagination probes self-skip when the previous page exposed no nextCursor.
     // The bounded chain accumulates tool names across pages and fails if the
     // server has not reached an end condition by the final probe.
@@ -297,28 +300,28 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
     const requestId = 10 + i;
     const { script } = toolsCallScript(index, tool, requestId);
     items.push(
-      httpItem(seed, `srv:${server.id}:http:tools/call:${tool.name}`, `${server.id} · HTTP tools/call ${tool.name}`, server.url, 'POST', sessionHeaders, toolsCallMessage(tool, requestId), script)
+      httpItem(seed, `srv:${server.id}:http:tools/call:${tool.name}`, `${server.id} · HTTP tools/call ${tool.name}`, server.url, 'POST', sessionHeaders, toolsCallMessage(tool, requestId), script, postInitializeGuard)
     );
   }
   for (const resource of index.resources) {
     const requestId = `pm-resource-read:${resource.name}`;
     items.push(
-      httpItem(seed, `srv:${server.id}:http:resources/read:${resource.name}`, `${server.id} · HTTP resources/read ${resource.name}`, server.url, 'POST', sessionHeaders, readResourceMessage(resource, requestId), readResourceScript(resource.uri, requestId))
+      httpItem(seed, `srv:${server.id}:http:resources/read:${resource.name}`, `${server.id} · HTTP resources/read ${resource.name}`, server.url, 'POST', sessionHeaders, readResourceMessage(resource, requestId), readResourceScript(resource.uri, requestId), postInitializeGuard)
     );
   }
   for (const prompt of index.prompts) {
     const requestId = `pm-prompt-get:${prompt.name}`;
     items.push(
-      httpItem(seed, `srv:${server.id}:http:prompts/get:${prompt.name}`, `${server.id} · HTTP prompts/get ${prompt.name}`, server.url, 'POST', sessionHeaders, getPromptMessage(prompt, requestId), getPromptScript(prompt.name))
+      httpItem(seed, `srv:${server.id}:http:prompts/get:${prompt.name}`, `${server.id} · HTTP prompts/get ${prompt.name}`, server.url, 'POST', sessionHeaders, getPromptMessage(prompt, requestId), getPromptScript(prompt.name), postInitializeGuard)
     );
   }
   items.push(
-    httpItem(seed, `srv:${server.id}:http:resources/templates`, `${server.id} · HTTP resources/templates/list`, server.url, 'POST', sessionHeaders, jsonRpcWithId(5, 'resources/templates/list', {}), resourceTemplatesScript())
+    httpItem(seed, `srv:${server.id}:http:resources/templates`, `${server.id} · HTTP resources/templates/list`, server.url, 'POST', sessionHeaders, jsonRpcWithId(5, 'resources/templates/list', {}), resourceTemplatesScript(), postInitializeGuard)
   );
   if (index.tools.length > 0) {
     const progressTool = index.tools[0];
     items.push(
-      httpItem(seed, `srv:${server.id}:http:progress:${progressTool.name}`, `${server.id} · HTTP tools/call ${progressTool.name} with progressToken`, server.url, 'POST', sessionHeaders, toolsCallProgressMessage(progressTool), progressToolCallScript(progressTool.name))
+      httpItem(seed, `srv:${server.id}:http:progress:${progressTool.name}`, `${server.id} · HTTP tools/call ${progressTool.name} with progressToken`, server.url, 'POST', sessionHeaders, toolsCallProgressMessage(progressTool), progressToolCallScript(progressTool.name), postInitializeGuard)
     );
   }
   if (hasAuthorizationHeader(server)) {
@@ -336,10 +339,10 @@ function runtimeItems(index: McpContractIndex, server: McpServerDescriptor, opti
     }
   }
   items.push(
-    httpItem(seed, `srv:${server.id}:http:bad-version`, `${server.id} · HTTP negative bad protocol version`, server.url, 'POST', sessionHeaders.map((entry) => entry.key === 'MCP-Protocol-Version' ? { ...entry, value: '1999-01-01' } : entry), jsonRpcWithId('pm-badver', 'ping'), badVersionScript()),
-    httpItem(seed, `srv:${server.id}:http:invalid-cursor`, `${server.id} · HTTP tools/list invalid cursor`, server.url, 'POST', sessionHeaders, jsonRpcWithId(4, 'tools/list', { cursor: 'pm-invalid-cursor-§' }), invalidCursorScript()),
-    httpItem(seed, `srv:${server.id}:http:terminate`, `${server.id} · HTTP session DELETE`, server.url, 'DELETE', sessionHeaders, undefined, terminateScript()),
-    httpItem(seed, `srv:${server.id}:http:old-session-ping`, `${server.id} · HTTP old session ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-old-session-ping', 'ping'), oldSessionPingScript())
+    httpItem(seed, `srv:${server.id}:http:bad-version`, `${server.id} · HTTP negative bad protocol version`, server.url, 'POST', sessionHeaders.map((entry) => entry.key === 'MCP-Protocol-Version' ? { ...entry, value: '1999-01-01' } : entry), jsonRpcWithId('pm-badver', 'ping'), badVersionScript(), postInitializeGuard),
+    httpItem(seed, `srv:${server.id}:http:invalid-cursor`, `${server.id} · HTTP tools/list invalid cursor`, server.url, 'POST', sessionHeaders, jsonRpcWithId(4, 'tools/list', { cursor: 'pm-invalid-cursor-§' }), invalidCursorScript(), postInitializeGuard),
+    httpItem(seed, `srv:${server.id}:http:terminate`, `${server.id} · HTTP session DELETE`, server.url, 'DELETE', sessionHeaders, undefined, terminateScript(), postInitializeGuard),
+    httpItem(seed, `srv:${server.id}:http:old-session-ping`, `${server.id} · HTTP old session ping`, server.url, 'POST', sessionHeaders, jsonRpcWithId('pm-old-session-ping', 'ping'), oldSessionPingScript(), postInitializeGuard)
   );
   return items;
 }

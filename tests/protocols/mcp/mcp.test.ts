@@ -177,6 +177,12 @@ function runtimeTestResult(results: RuntimeTestResult[], name: string): RuntimeT
   return results.find((entry) => entry.name === name);
 }
 
+function runtimeEventScript(item: JsonRecord, listen: 'beforeRequest' | 'afterResponse' = 'afterResponse'): string {
+  const events = ((item.extensions as JsonRecord).events as JsonRecord[]) ?? [];
+  const match = events.find((event) => event.listen === listen);
+  return String(((match?.script as JsonRecord | undefined)?.exec) ?? '');
+}
+
 describe('mcp detection', () => {
   it('detects the registry server.json and the mcpServers client config as mcp', () => {
     expect(detectSpecType(read('server.json'))).toBe('mcp');
@@ -557,6 +563,26 @@ describe('mcp runtime HTTP scripts', () => {
     ).toBe(false);
   });
 
+  it('marks initialize as successful only after the lifecycle response conforms', () => {
+    const { results, vars } = runMcpScript(initializeScript(), {
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        serverInfo: { name: 'weather', version: '1.0.0' }
+      }
+    });
+    expect(
+      runtimeTestResult(
+        results,
+        'MCP initialize succeeded before sending initialized notification (MCP 2025-06-18 lifecycle)'
+      )?.passed
+    ).toBe(true);
+    expect(vars.get('mcp_initialize_ok')).toBe('true');
+    expect(vars.get('mcp_initialized_ok')).toBeUndefined();
+  });
+
   it('adds session-requirement and pagination probes with their runtime gates', () => {
     const index = parseMcpServerSpec(read('server.json'));
     const collection = buildMcpCollection(index, { idSeed: 'test' });
@@ -565,7 +591,8 @@ describe('mcp runtime HTTP scripts', () => {
     const noSession = httpItems.find((item) => String(item.title).endsWith('ping without session id'))!;
     const noSessionHeaders = (((noSession.payload as JsonRecord).headers as JsonRecord[]) ?? []).map((h) => h.key);
     expect(noSessionHeaders).not.toContain('Mcp-Session-Id');
-    const noSessionScript = String(((((noSession.extensions as JsonRecord).events as JsonRecord[])[0]).script as JsonRecord).exec);
+    expect(runtimeEventScript(noSession, 'beforeRequest')).toContain('mcp_initialized_ok');
+    const noSessionScript = runtimeEventScript(noSession);
     expect(noSessionScript).toContain('respond 400 Bad Request');
 
     const pageItems = httpItems.filter((item) => /tools\/list page \d+$/.test(String(item.title)));
@@ -574,6 +601,7 @@ describe('mcp runtime HTTP scripts', () => {
     const nextPageEvents = (nextPage.extensions as JsonRecord).events as JsonRecord[];
     expect(nextPageEvents[0].listen).toBe('beforeRequest');
     expect(String((nextPageEvents[0].script as JsonRecord).exec)).toContain('skipRequest');
+    expect(String((nextPageEvents[0].script as JsonRecord).exec)).toContain('mcp_initialized_ok');
     const nextPageBody = JSON.parse(String(((nextPage.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
     expect(nextPageBody.id).toBe('pm-tools-list-page:1');
     expect((nextPageBody.params as JsonRecord).cursor).toBe('{{mcp_next_cursor}}');
@@ -583,10 +611,11 @@ describe('mcp runtime HTTP scripts', () => {
     const replay = httpItems.find((item) => String(item.title).endsWith('tools/list cursor replay'))!;
     const replayBody = JSON.parse(String(((replay.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
     expect((replayBody.params as JsonRecord).cursor).toBe('{{mcp_first_cursor}}');
-    expect(String(((((replay.extensions as JsonRecord).events as JsonRecord[])[1]).script as JsonRecord).exec)).toContain('-32602');
+    expect(runtimeEventScript(replay)).toContain('-32602');
 
     const toolsList = httpItems.find((item) => String(item.title).endsWith('\u00b7 HTTP tools/list'))!;
-    const toolsListScriptText = String(((((toolsList.extensions as JsonRecord).events as JsonRecord[])[0]).script as JsonRecord).exec);
+    expect(runtimeEventScript(toolsList, 'beforeRequest')).toContain('mcp_initialized_ok');
+    const toolsListScriptText = runtimeEventScript(toolsList);
     expect(toolsListScriptText).toContain('mcp_next_cursor');
     expect(toolsListScriptText).toContain('capabilities.tools');
     expect(toolsListScriptText).toContain('mcpAssertPostMediaType');
@@ -623,11 +652,15 @@ describe('mcp runtime HTTP scripts', () => {
       'io.github.example/weather remote-1 · HTTP session DELETE',
       'io.github.example/weather remote-1 · HTTP old session ping'
     ]);
+    const initialized = httpItems.find((item) => String(item.title).endsWith('HTTP notifications/initialized'))!;
+    expect(runtimeEventScript(initialized, 'beforeRequest')).toContain('mcp_initialize_ok');
+    expect(runtimeEventScript(initialized)).toContain('mcp_initialized_ok');
     const ping = httpItems.find((item) => String(item.title).endsWith('HTTP ping'))!;
     const pingHeaders = ((ping.payload as JsonRecord).headers as JsonRecord[]);
     expect(pingHeaders.map((h) => h.key)).toContain('Mcp-Session-Id');
     expect(pingHeaders.find((h) => h.key === 'MCP-Protocol-Version')?.value).toBe('{{mcp_protocol_version}}');
-    const pingScript = (((ping.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
+    expect(runtimeEventScript(ping, 'beforeRequest')).toContain('mcp_initialized_ok');
+    const pingScript = runtimeEventScript(ping);
     expect(pingScript).toContain('MCP ping echoes string id and empty result');
     const badVersion = httpItems.find((item) => String(item.title).includes('bad protocol version'))!;
     expect(((badVersion.payload as JsonRecord).headers as JsonRecord[]).find((h) => h.key === 'MCP-Protocol-Version')?.value).toBe('1999-01-01');
@@ -669,13 +702,13 @@ describe('mcp runtime HTTP scripts', () => {
     const templates = httpItems.find((item) => String(item.title).endsWith('HTTP resources/templates/list'))!;
     const templatesMessage = JSON.parse(String(((templates.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
     expect(templatesMessage.method).toBe('resources/templates/list');
-    const templatesScript = (((templates.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
+    const templatesScript = runtimeEventScript(templates);
     expect(templatesScript).toContain('RFC 6570');
     const progress = httpItems.find((item) => String(item.title).includes('with progressToken'))!;
     const progressMessage = JSON.parse(String(((progress.payload as JsonRecord).body as JsonRecord).content)) as JsonRecord;
     expect(progressMessage.id).toBe('pm-progress-call');
     expect(((progressMessage.params as JsonRecord)._meta as JsonRecord).progressToken).toBe('pm-progress');
-    const progressScript = (((progress.extensions as JsonRecord).events as JsonRecord[])[0].script as JsonRecord).exec;
+    const progressScript = runtimeEventScript(progress);
     expect(progressScript).toContain('progress notifications echo the token and increase');
   });
 
@@ -732,9 +765,9 @@ describe('mcp runtime HTTP scripts', () => {
     const collection = buildMcpCollection(index, { idSeed: 'test' });
     const scripts = (collection.item as JsonRecord[])
       .filter((item) => item.type === 'http-request')
-      .map((item) => {
+      .flatMap((item) => {
         const events = ((item.extensions as JsonRecord).events as JsonRecord[]) ?? [];
-        return String((events[0].script as JsonRecord).exec ?? '');
+        return events.map((event) => String((event.script as JsonRecord).exec ?? ''));
       });
     expect(scripts.length).toBeGreaterThan(0);
     for (const source of scripts) {

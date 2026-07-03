@@ -234,6 +234,8 @@ function json(value: unknown): string {
 
 export function initializeScript(): string {
   return join([
+    "pm.collectionVariables.unset('mcp_initialize_ok');",
+    "pm.collectionVariables.unset('mcp_initialized_ok');",
     "var body;",
     `pm.test('MCP initialize transport is HTTP 2xx (MCP 2025-06-18 Streamable HTTP)', function () { pm.expect(pm.response.code).to.be.within(200, 299); });`,
     `pm.test('MCP initialize Content-Type is JSON or SSE with a utf-8 charset (MCP 2025-06-18 transports)', function () { pm.expect(pm.response.headers.get('Content-Type') || '').to.match(/application\\/json|text\\/event-stream/i); mcpAssertPostMediaType('initialize'); });`,
@@ -241,13 +243,15 @@ export function initializeScript(): string {
     `pm.test('MCP initialize negotiates a supported protocolVersion (MCP 2025-06-18 initialize)', function () { pm.expect(body.result.protocolVersion).to.match(/^\\d{4}-\\d{2}-\\d{2}$/); pm.expect(['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].indexOf(body.result.protocolVersion), 'protocolVersion is in the known MCP revision set').to.not.eql(-1); });`,
     `pm.test('MCP initialize capabilities have typed open sub-shapes (MCP 2025-06-18 capabilities)', function () { var caps = body.result.capabilities; pm.expect(caps).to.be.an('object'); ['tools','resources','prompts'].forEach(function (name) { if (caps[name]) Object.keys(caps[name]).filter(function (k) { return /^(listChanged|subscribe)$/.test(k); }).forEach(function (k) { pm.expect(caps[name][k], name + '.' + k).to.be.a('boolean'); }); }); ['logging','completions'].forEach(function (name) { if (caps[name] !== undefined) pm.expect(caps[name], name).to.be.an('object'); }); });`,
     `pm.test('MCP initialize serverInfo and instructions shape (MCP 2025-06-18 initialize)', function () { pm.expect(body.result.serverInfo).to.be.an('object'); pm.expect(body.result.serverInfo.name).to.be.a('string'); pm.expect(body.result.serverInfo.version).to.be.a('string'); if (body.result.instructions !== undefined) pm.expect(body.result.instructions).to.be.a('string'); });`,
-    `pm.test('MCP initialize session id header is visible ASCII when present (MCP 2025-06-18 Mcp-Session-Id)', function () { var session = pm.response.headers.get('Mcp-Session-Id'); if (session) pm.expect(session).to.match(/^[\\x21-\\x7E]+$/); mcpSaveSessionAndCapabilities(body); });`
+    `pm.test('MCP initialize session id header is visible ASCII when present (MCP 2025-06-18 Mcp-Session-Id)', function () { var session = pm.response.headers.get('Mcp-Session-Id'); if (session) pm.expect(session).to.match(/^[\\x21-\\x7E]+$/); });`,
+    `pm.test('MCP initialize succeeded before sending initialized notification (MCP 2025-06-18 lifecycle)', function () { pm.expect(pm.response.code).to.be.within(200, 299); body = body || mcpResponseBody(); mcpAssertResponseObject('initialize', body, 1); pm.expect(body.result, 'initialize result').to.be.an('object'); pm.expect(body.result.protocolVersion).to.match(/^\\d{4}-\\d{2}-\\d{2}$/); pm.expect(['2024-11-05','2025-03-26','2025-06-18','2025-11-25'].indexOf(body.result.protocolVersion), 'protocolVersion is in the known MCP revision set').to.not.eql(-1); pm.expect(body.result.capabilities, 'capabilities').to.be.an('object'); pm.expect(body.result.serverInfo, 'serverInfo').to.be.an('object'); pm.expect(body.result.serverInfo.name, 'serverInfo.name').to.be.a('string'); pm.expect(body.result.serverInfo.version, 'serverInfo.version').to.be.a('string'); mcpSaveSessionAndCapabilities(body); pm.collectionVariables.set('mcp_initialize_ok', 'true'); });`
   ]);
 }
 
 export function initializedNotificationScript(): string {
   return join([
-    `pm.test('MCP initialized notification returns HTTP 202 with empty body (MCP 2025-06-18 transports)', function () { pm.expect(pm.response.code).to.eql(202); pm.expect(pm.response.text()).to.eql(''); });`
+    "pm.collectionVariables.unset('mcp_initialized_ok');",
+    `pm.test('MCP initialized notification returns HTTP 202 with empty body (MCP 2025-06-18 transports)', function () { pm.expect(pm.response.code).to.eql(202); pm.expect(pm.response.text()).to.eql(''); pm.collectionVariables.set('mcp_initialized_ok', 'true'); });`
   ]);
 }
 
@@ -453,10 +457,25 @@ export function sessionRequiredScript(): string {
   ]);
 }
 
-// Pre-request guard shared by the pagination probes: without a saved
-// nextCursor there is nothing deterministic to follow, so the item is skipped.
+function prerequestGuard(variableName: string, message: string): string {
+  return `if (pm.collectionVariables.get('${variableName}') !== 'true' && pm.execution && typeof pm.execution.skipRequest === 'function') { console.log('${message}'); pm.execution.skipRequest(); }`;
+}
+
+export function initializeSucceededPrerequest(): string {
+  return prerequestGuard('mcp_initialize_ok', 'MCP initialize did not complete successfully; skipping initialized notification');
+}
+
+export function initializedGuardPrerequest(): string {
+  return prerequestGuard('mcp_initialized_ok', 'MCP initialized notification did not complete successfully; skipping post-initialize request');
+}
+
+// Pre-request guard shared by the pagination probes: without a completed
+// lifecycle and saved nextCursor there is nothing deterministic to follow.
 export function cursorProbePrerequest(variableName = 'mcp_next_cursor'): string {
-  return `if (!pm.collectionVariables.get('${variableName}') && pm.execution && typeof pm.execution.skipRequest === 'function') { console.log('MCP tools/list returned no saved cursor; skipping the pagination probe'); pm.execution.skipRequest(); }`;
+  return [
+    initializedGuardPrerequest(),
+    `if (!pm.collectionVariables.get('${variableName}') && pm.execution && typeof pm.execution.skipRequest === 'function') { console.log('MCP tools/list returned no saved cursor; skipping the pagination probe'); pm.execution.skipRequest(); }`
+  ].join('\n');
 }
 
 export function nextCursorScript(pageNumber = 1, requestId: string | number = `pm-tools-list-page:${pageNumber}`, maxPages = 5): string {

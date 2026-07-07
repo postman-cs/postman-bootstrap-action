@@ -24,19 +24,23 @@ function asRecord(value: unknown): JsonRecord | null {
 
 /**
  * The non-org create path POSTs a personal workspace then flips it to team
- * visibility. On an org service account that flip 403s
- * (`addWorkspaceLevelTeamRoles` / "You are not authorized"): the account is
- * actually org-mode and needs a sub-team owner. Rewrite that specific 403 into
- * the definitive org-account guidance (set workspace-team-id) so the fix is
- * obvious instead of a raw gateway 403. Any other error passes through unchanged
- * (the non-org flip succeeds on real non-org accounts, so this never fires there).
+ * visibility. That flip 403s when the account cannot promote workspaces to
+ * team visibility: org service accounts (`addWorkspaceLevelTeamRoles` /
+ * "You are not authorized"), and members whose team policy restricts
+ * team-visible workspace creation ("You do not have permission to update
+ * visibility to team", live-seen on an enterprise team). Rewrite those 403s
+ * into the definitive guidance (set workspace-team-id / fix the member's role)
+ * so the fix is obvious instead of a raw gateway 403. Any other error passes
+ * through unchanged (the non-org flip succeeds on real non-org accounts, so
+ * this never fires there).
  */
 function adviseWorkspaceFlipForbidden(error: unknown): unknown {
   if (error instanceof HttpError && error.status === 403) {
     const body = error.responseBody || '';
     if (
       /addWorkspaceLevelTeamRoles/i.test(body) ||
-      /You are not authorized to perform this action/i.test(body)
+      /You are not authorized to perform this action/i.test(body) ||
+      /permission to update visibility to team/i.test(body)
     ) {
       return new Error(WORKSPACE_PERSONAL_ONLY_ADVICE, { cause: error });
     }

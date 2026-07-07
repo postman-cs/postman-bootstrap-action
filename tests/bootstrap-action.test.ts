@@ -3397,6 +3397,66 @@ describe('runAction credential preflight', () => {
     expect(infos.some((line) => line.includes('credential preflight OK'))).toBe(true);
   }, 30000);
 
+  it('runAction with PMAK only eagerly mints an access token, runs the org-mode probe, and creates the workspace over the gateway', async () => {
+    const events: string[] = [];
+    vi.stubGlobal('fetch', createRunActionFetchRouter({ events }));
+    const { core, infos, outputs, warnings } = createRunActionCore(
+      baseInputValues({ 'postman-access-token': '' }),
+      events
+    );
+
+    await runAction(core, createExecStub(), createIoStub());
+
+    // Eager mint happened before the preflight
+    const mintFetchIndex = events.findIndex(
+      (entry) => entry === 'fetch:POST https://api.getpostman.com/service-account-tokens'
+    );
+    expect(mintFetchIndex).toBeGreaterThanOrEqual(0);
+    expect(
+      infos.some((line) => line.includes('minted a short-lived service-account access token'))
+    ).toBe(true);
+    // Org-mode squad probe ran (needs the minted token)
+    expect(events.some((entry) => entry.startsWith('proxy:ums'))).toBe(true);
+    // Governance is no longer silently skipped
+    expect(
+      warnings.some((line) =>
+        line.includes('Skipping governance assignment because postman-access-token is not configured')
+      )
+    ).toBe(false);
+    // Workspace creation went through the gateway as usual
+    expect(events.some((entry) => entry === 'proxy:workspaces POST /workspaces')).toBe(true);
+    expect(outputs['workspace-id']).toBe('ws-runaction');
+  }, 30000);
+
+  it('runAction with PMAK only warns up front when the mint fails (service accounts not enabled)', async () => {
+    const events: string[] = [];
+    const baseRouter = createRunActionFetchRouter({ events });
+    const router = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method || 'GET').toUpperCase();
+      if (url === 'https://api.getpostman.com/service-account-tokens' && method === 'POST') {
+        events.push(`fetch:${method} ${url}`);
+        return new Response('service accounts not enabled', { status: 400 });
+      }
+      return baseRouter(input, init);
+    }) as typeof fetch;
+    vi.stubGlobal('fetch', router);
+    const { core, warnings } = createRunActionCore(
+      baseInputValues({ 'postman-access-token': '' }),
+      events
+    );
+
+    // Asset ops are gateway-only, so with no mintable token the run cannot
+    // proceed; the eager mint surfaces the actionable warning before it fails.
+    await expect(runAction(core, createExecStub(), createIoStub())).rejects.toThrow(
+      /service accounts are not enabled/
+    );
+    expect(
+      warnings.some((line) => line.includes('could not mint an access token from the postman-api-key'))
+    ).toBe(true);
+  }, 30000);
+
+
   it('runAction completes when /me and iapub both 404 (preflight non-fatal)', async () => {
     const events: string[] = [];
     vi.stubGlobal(

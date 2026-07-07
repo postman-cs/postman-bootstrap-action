@@ -527,6 +527,49 @@ function warnIfDeprecatedAccessToken(
   );
 }
 
+/**
+ * Eagerly mint the short-lived service-account access token from the PMAK when
+ * no postman-access-token was supplied. Mutates `inputs.postmanAccessToken` on
+ * success so every downstream consumer (credential preflight, org-mode squad
+ * probe, governance adapter, EC client, gateway) sees the token exactly as if
+ * it had been provided. Mint failure is a warning, not fatal: the gateway
+ * client still lazily re-mints on first use, and PMAK-only teams without
+ * service accounts enabled keep the previous degraded-but-working behavior.
+ */
+export async function mintAccessTokenIfNeeded(
+  inputs: Pick<ResolvedInputs, 'postmanAccessToken' | 'postmanApiKey' | 'postmanApiBase'> & {
+    postmanAccessToken?: string;
+  },
+  log: { info: (message: string) => void; warning: (message: string) => void },
+  setSecret?: (secret: string) => void
+): Promise<void> {
+  if (inputs.postmanAccessToken || !inputs.postmanApiKey) {
+    return;
+  }
+  const provider = new AccessTokenProvider({
+    apiKey: inputs.postmanApiKey,
+    apiBaseUrl: inputs.postmanApiBase,
+    onToken: (token) => setSecret?.(token)
+  });
+  try {
+    inputs.postmanAccessToken = await provider.refresh();
+    log.info(
+      'postman: no postman-access-token configured - minted a short-lived service-account access token from the postman-api-key.'
+    );
+  } catch (error) {
+    const mask = createSecretMasker([inputs.postmanApiKey]);
+    const message = error instanceof Error ? error.message : String(error);
+    log.warning(
+      mask(
+        'postman: could not mint an access token from the postman-api-key (' +
+          message +
+          '). Continuing with PMAK only - governance assignment and org-mode detection are disabled. ' +
+          'Configure postman-access-token (postman-cs/postman-resolve-service-token-action) for full functionality.'
+      )
+    );
+  }
+}
+
 function isLegacyAccessTokenDeprecationWarning(message: string): boolean {
   return message.includes('Postman CLI credential store populated by `postman login` is a legacy fallback');
 }
@@ -2212,6 +2255,17 @@ export async function runAction(
   actionIo: IOLike = io
 ): Promise<PlannedOutputs> {
   const inputs = readActionInputs(actionCore);
+
+  // PMAK-only runs: eagerly mint the short-lived access token from the service
+  // -account PMAK so the whole access-token surface (credential preflight
+  // diagnostics, org-mode squad probe, governance/internal-integration adapter,
+  // EC client) works exactly as when postman-access-token is supplied. Without
+  // this, org-mode detection silently defaults to false and the non-org
+  // create-then-flip-visibility path 403s on org service accounts.
+  await mintAccessTokenIfNeeded(inputs, {
+    info: (message) => actionCore.info(message),
+    warning: (message) => actionCore.warning(message)
+  }, (secret) => actionCore.setSecret(secret));
 
   // Proactive credential preflight: resolve and cross-check both identities once,
   // before any write. Independent of getTeams()/orgMode below.

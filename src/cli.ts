@@ -9,6 +9,7 @@ import * as io from '@actions/io';
 
 import {
   createBootstrapDependencies,
+  mintAccessTokenIfNeeded,
   resolveInputs,
   type ResolvedInputs,
   runBootstrap,
@@ -357,6 +358,13 @@ export async function runCli(
   validateCliInputs(inputs);
   assertOutputFileAllowed(config.resultJsonPath);
   assertOutputFileAllowed(config.dotenvPath);
+
+  // PMAK-only runs: mint the access token up front (mirrors runAction) so the
+  // dependencies built below get the full access-token surface (governance
+  // adapter, EC client) instead of silently downgrading.
+  const mintReporter = new ConsoleReporter();
+  await mintAccessTokenIfNeeded(inputs, mintReporter);
+
   const dependencies = createCliDependencies(inputs);
 
   // Proactive credential preflight: resolve and cross-check both identities

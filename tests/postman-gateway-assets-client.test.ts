@@ -565,6 +565,32 @@ describe('PostmanGatewayAssetsClient', () => {
       );
     });
 
+    it('maps a flip-path 403 ("permission to update visibility to team") to the org-account guidance', async () => {
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/workspaces') {
+          return jsonResponse({ data: { id: 'ws-flip3' } });
+        }
+        if (env.method === 'put') {
+          return jsonResponse(
+            {
+              error: {
+                status: 403,
+                name: 'forbidden',
+                message: 'Access to this resource is forbidden for this user',
+                detail: 'You do not have permission to update visibility to team'
+              }
+            },
+            { status: 403 }
+          );
+        }
+        return jsonResponse({});
+      });
+
+      await expect(client.createWorkspace('ws', 'about')).rejects.toThrow(
+        WORKSPACE_PERSONAL_ONLY_ADVICE
+      );
+    });
+
     it('passes an unrelated flip 403 through unchanged (does not over-trigger)', async () => {
       const { client } = makeClient((env) => {
         if (env.method === 'post' && env.path === '/workspaces') {

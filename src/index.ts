@@ -42,7 +42,10 @@ import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
 import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
 import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
-import { AccessTokenProvider } from './lib/postman/token-provider.js';
+import {
+  AccessTokenProvider,
+  mintAccessTokenIfNeeded as mintAccessTokenWithDiagnostics
+} from './lib/postman/token-provider.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
@@ -543,31 +546,10 @@ export async function mintAccessTokenIfNeeded(
   log: { info: (message: string) => void; warning: (message: string) => void },
   setSecret?: (secret: string) => void
 ): Promise<void> {
-  if (inputs.postmanAccessToken || !inputs.postmanApiKey) {
-    return;
-  }
-  const provider = new AccessTokenProvider({
-    apiKey: inputs.postmanApiKey,
-    apiBaseUrl: inputs.postmanApiBase,
-    onToken: (token) => setSecret?.(token)
-  });
-  try {
-    inputs.postmanAccessToken = await provider.refresh();
-    log.info(
-      'postman: no postman-access-token configured - minted a short-lived service-account access token from the postman-api-key.'
-    );
-  } catch (error) {
-    const mask = createSecretMasker([inputs.postmanApiKey]);
-    const message = error instanceof Error ? error.message : String(error);
-    log.warning(
-      mask(
-        'postman: could not mint an access token from the postman-api-key (' +
-          message +
-          '). Continuing with PMAK only - governance assignment and org-mode detection are disabled. ' +
-          'Configure postman-access-token (postman-cs/postman-resolve-service-token-action) for full functionality.'
-      )
-    );
-  }
+  // Shared eager-mint with live-probed failure diagnosis (personal key vs
+  // permission gap vs invalid key vs feature disabled) lives beside the
+  // provider; bootstrap keeps this export for its CLI entry and tests.
+  await mintAccessTokenWithDiagnostics(inputs, log, setSecret);
 }
 
 function isLegacyAccessTokenDeprecationWarning(message: string): boolean {

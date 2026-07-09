@@ -23,6 +23,25 @@ function asRecord(value: unknown): JsonRecord | null {
 }
 
 /**
+ * Resolve a poll-budget number from an explicit option, then an env override,
+ * then the default. Non-numeric or below-`min` values fall through so a stray
+ * env value can never zero out or invert a production budget.
+ */
+function resolvePollBudget(
+  explicit: number | undefined,
+  envValue: string | undefined,
+  fallback: number,
+  min: number
+): number {
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit >= min) return explicit;
+  if (envValue !== undefined) {
+    const parsed = Number(envValue);
+    if (Number.isFinite(parsed) && parsed >= min) return parsed;
+  }
+  return fallback;
+}
+
+/**
  * The non-org create path POSTs a personal workspace then flips it to team
  * visibility. That flip 403s when the account cannot promote workspaces to
  * team visibility: org service accounts (`addWorkspaceLevelTeamRoles` /
@@ -78,6 +97,13 @@ function extractGitRepoUrl(value: unknown): string | null {
 export interface PostmanGatewayAssetsClientOptions {
   gateway: AccessTokenGatewayClient;
   sleep?: (delayMs: number) => Promise<void>;
+  // Generation task poll budget. Defaults hold the live-proven production values
+  // (90 attempts x 2000ms ~= 180s). Overridable so the e2e smoke path can shrink
+  // the wait without weakening resilience for real onboarding runs; also read
+  // from POSTMAN_GENERATION_POLL_ATTEMPTS / POSTMAN_GENERATION_POLL_DELAY_MS when
+  // the options are not passed explicitly.
+  generationPollAttempts?: number;
+  generationPollDelayMs?: number;
 }
 
 /**
@@ -94,15 +120,29 @@ export interface PostmanGatewayAssetsClientOptions {
  */
 export class PostmanGatewayAssetsClient {
   private static readonly GENERATION_LOCKED_MAX_RETRIES = 5;
-  private static readonly GENERATION_POLL_ATTEMPTS = 90;
-  private static readonly GENERATION_POLL_DELAY_MS = 2000;
+  private static readonly DEFAULT_GENERATION_POLL_ATTEMPTS = 90;
+  private static readonly DEFAULT_GENERATION_POLL_DELAY_MS = 2000;
 
   private readonly gateway: AccessTokenGatewayClient;
   private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly generationPollAttempts: number;
+  private readonly generationPollDelayMs: number;
 
   constructor(options: PostmanGatewayAssetsClientOptions) {
     this.gateway = options.gateway;
     this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+    this.generationPollAttempts = resolvePollBudget(
+      options.generationPollAttempts,
+      process.env.POSTMAN_GENERATION_POLL_ATTEMPTS,
+      PostmanGatewayAssetsClient.DEFAULT_GENERATION_POLL_ATTEMPTS,
+      1
+    );
+    this.generationPollDelayMs = resolvePollBudget(
+      options.generationPollDelayMs,
+      process.env.POSTMAN_GENERATION_POLL_DELAY_MS,
+      PostmanGatewayAssetsClient.DEFAULT_GENERATION_POLL_DELAY_MS,
+      0
+    );
   }
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
@@ -277,8 +317,8 @@ export class PostmanGatewayAssetsClient {
     const taskId = await this.postGenerationWithLockRetry(specId, body);
 
     if (taskId) {
-      for (let attempt = 0; attempt < PostmanGatewayAssetsClient.GENERATION_POLL_ATTEMPTS; attempt += 1) {
-        await this.sleep(PostmanGatewayAssetsClient.GENERATION_POLL_DELAY_MS);
+      for (let attempt = 0; attempt < this.generationPollAttempts; attempt += 1) {
+        await this.sleep(this.generationPollDelayMs);
         const task = await this.gateway.requestJson<JsonRecord>({
           service: 'specification',
           method: 'get',
@@ -292,7 +332,7 @@ export class PostmanGatewayAssetsClient {
         if (status && status !== 'in-progress' && status !== 'pending' && status !== 'queued') {
           break;
         }
-        if (attempt === PostmanGatewayAssetsClient.GENERATION_POLL_ATTEMPTS - 1) {
+        if (attempt === this.generationPollAttempts - 1) {
           throw new Error(`Collection generation timed out for ${prefix}`);
         }
       }

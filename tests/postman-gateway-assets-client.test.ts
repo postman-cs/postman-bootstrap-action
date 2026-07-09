@@ -30,7 +30,8 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
  * parsed proxy envelope and returns a Response. Records every envelope sent.
  */
 function makeClient(
-  handler: (env: Envelope, callIndex: number) => Response
+  handler: (env: Envelope, callIndex: number) => Response,
+  clientOptions?: { generationPollAttempts?: number; generationPollDelayMs?: number }
 ): { client: PostmanGatewayAssetsClient; gateway: AccessTokenGatewayClient; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   let i = 0;
@@ -44,7 +45,7 @@ function makeClient(
   });
   const provider = new AccessTokenProvider({ accessToken: 'tok-1' });
   const gateway = new AccessTokenGatewayClient({ tokenProvider: provider, fetchImpl });
-  const client = new PostmanGatewayAssetsClient({ gateway, sleep: async () => undefined });
+  const client = new PostmanGatewayAssetsClient({ gateway, sleep: async () => undefined, ...clientOptions });
   return { client, gateway, calls };
 }
 
@@ -143,6 +144,87 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ data: [] });
       });
       await expect(client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback')).rejects.toThrow(/task failed/);
+    });
+
+    it('caps polling at the explicit generationPollAttempts budget and times out', async () => {
+      let polls = 0;
+      const { client } = makeClient(
+        (env) => {
+          if (env.method === 'post') return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+          if (env.path === '/tasks') {
+            polls += 1;
+            return jsonResponse({ data: { t: 'in-progress' } });
+          }
+          return jsonResponse({ data: [] });
+        },
+        { generationPollAttempts: 3, generationPollDelayMs: 0 }
+      );
+      await expect(client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback')).rejects.toThrow(/timed out/);
+      expect(polls).toBe(3);
+    });
+
+    it('reads the poll budget from POSTMAN_GENERATION_POLL_ATTEMPTS when no option is passed', async () => {
+      vi.stubEnv('POSTMAN_GENERATION_POLL_ATTEMPTS', '2');
+      vi.stubEnv('POSTMAN_GENERATION_POLL_DELAY_MS', '0');
+      try {
+        let polls = 0;
+        const { client } = makeClient((env) => {
+          if (env.method === 'post') return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+          if (env.path === '/tasks') {
+            polls += 1;
+            return jsonResponse({ data: { t: 'in-progress' } });
+          }
+          return jsonResponse({ data: [] });
+        });
+        await expect(client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback')).rejects.toThrow(/timed out/);
+        expect(polls).toBe(2);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('ignores a below-min or non-numeric env poll budget (falls back to the default)', async () => {
+      vi.stubEnv('POSTMAN_GENERATION_POLL_ATTEMPTS', '0'); // below min=1 -> must NOT zero the budget
+      vi.stubEnv('POSTMAN_GENERATION_POLL_DELAY_MS', 'nonsense'); // non-numeric -> default delay used
+      try {
+        let polls = 0;
+        const { client } = makeClient((env) => {
+          if (env.method === 'post') return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+          if (env.path === '/tasks') {
+            polls += 1;
+            return jsonResponse({ data: { t: polls < 2 ? 'in-progress' : 'completed' } });
+          }
+          return jsonResponse({ data: [{ collection: 'uid-D', state: 'in-sync' }] });
+        });
+        // Default budget (90) is far above the 2 polls needed; a zeroed budget would throw instead.
+        const uid = await client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback');
+        expect(uid).toBe('uid-D');
+        expect(polls).toBe(2);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('explicit poll-budget option beats the env override', async () => {
+      vi.stubEnv('POSTMAN_GENERATION_POLL_ATTEMPTS', '50');
+      try {
+        let polls = 0;
+        const { client } = makeClient(
+          (env) => {
+            if (env.method === 'post') return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+            if (env.path === '/tasks') {
+              polls += 1;
+              return jsonResponse({ data: { t: 'in-progress' } });
+            }
+            return jsonResponse({ data: [] });
+          },
+          { generationPollAttempts: 1, generationPollDelayMs: 0 }
+        );
+        await expect(client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback')).rejects.toThrow(/timed out/);
+        expect(polls).toBe(1);
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
   });
 

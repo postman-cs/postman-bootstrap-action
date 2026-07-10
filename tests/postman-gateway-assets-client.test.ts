@@ -632,6 +632,33 @@ describe('PostmanGatewayAssetsClient', () => {
       ]);
     });
 
+    it('applies root description via JSON Patch on create, not the root POST body', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-root-desc' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.createCollection('ws-1', {
+        $kind: 'collection',
+        name: 'Description only',
+        description: 'created from Local View',
+        items: []
+      });
+
+      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      expect(rootCreate?.body).toEqual({ name: 'Description only' });
+
+      const rootPatch = calls.find((c) => c.path === '/v3/collections/root-desc');
+      expect(rootPatch?.body).toEqual([
+        { op: 'add', path: '/description', value: 'created from Local View' }
+      ]);
+    });
+
     it('throws when the root create returns no id', async () => {
       const { client } = makeClient(() => jsonResponse({ data: {} }));
       await expect(

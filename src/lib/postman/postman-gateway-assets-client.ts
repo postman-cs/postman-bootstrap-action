@@ -1284,10 +1284,11 @@ export class PostmanGatewayAssetsClient {
    */
   async createCollection(workspaceId: string, collection: unknown): Promise<string> {
     const v3 = this.normalizeCollectionForWrite(collection);
+    // Root create accepts name only; description/auth/variables/scripts are applied
+    // via JSON Patch in applyCollectionLevelSettings (live-proven). Putting
+    // description on the POST body makes a later add /description a no-op that
+    // can 400 when the patch set is otherwise empty or redundant.
     const rootBody: JsonRecord = { name: String(v3.name ?? 'Untitled Collection') };
-    if (typeof v3.description === 'string' && v3.description) {
-      rootBody.description = v3.description;
-    }
     const created = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
       method: 'post',

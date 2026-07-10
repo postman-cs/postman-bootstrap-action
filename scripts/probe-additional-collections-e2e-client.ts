@@ -41,6 +41,7 @@ async function writeCreatedTree(root: string): Promise<void> {
     path.join(collectionDir, '.resources/definition.yaml'),
     stringify({
       $kind: 'collection',
+      id: 'local-root-id',
       name: 'Local View E2E Probe',
       description: 'created from Local View',
       auth: { type: 'bearer', credentials: { token: '{{token}}' } },
@@ -54,12 +55,19 @@ async function writeCreatedTree(root: string): Promise<void> {
   );
   await writeFile(
     path.join(folderDir, '.resources/definition.yaml'),
-    stringify({ $kind: 'collection', name: 'First Folder', description: 'nested', order: 1000 })
+    stringify({
+      $kind: 'collection',
+      id: 'local-folder-id',
+      name: 'First Folder',
+      description: 'nested',
+      order: 1000
+    })
   );
   await writeFile(
     path.join(folderDir, 'Nested.request.yaml'),
     stringify({
       $kind: 'http-request',
+      id: 'local-nested-request-id',
       name: 'Nested request',
       method: 'GET',
       url: '{{baseUrl}}/get?nested=true',
@@ -75,9 +83,13 @@ async function writeCreatedTree(root: string): Promise<void> {
     path.join(collectionDir, 'Root.request.yaml'),
     stringify({
       $kind: 'http-request',
+      id: 'local-root-request-id',
       name: 'Root request',
       method: 'GET',
-      url: '{{baseUrl}}/get?root=true',
+      url: '{{baseUrl}}/things/:thingId',
+      queryParams: [{ key: 'root', value: 'true' }],
+      pathVariables: [{ key: 'thingId', value: '42' }],
+      settings: { strictSSL: false, followRedirects: false },
       order: 2000
     })
   );
@@ -164,12 +176,39 @@ async function main(): Promise<void> {
     const firstItems = Array.isArray(firstExport.items) ? firstExport.items.map(asRecord) : [];
     requireCondition(firstExport.name === 'Local View E2E Probe', 'created root name');
     requireCondition(firstExport.description === 'created from Local View', 'created description');
-    requireCondition(firstExport.auth !== undefined, 'created root auth');
-    requireCondition(firstExport.variables !== undefined, 'created root variables');
-    requireCondition(firstExport.scripts !== undefined, 'created root scripts');
-    requireCondition(firstItems.map((item) => item.name).join(',') === 'First Folder,Root request', 'created item order');
+    const rootAuth = asRecord(Array.isArray(firstExport.auth) ? firstExport.auth[0] : firstExport.auth);
+    const rootCredentials = Array.isArray(rootAuth.credentials) ? rootAuth.credentials.map(asRecord) : [];
+    const rootVariables = Array.isArray(firstExport.variables) ? firstExport.variables.map(asRecord) : [];
+    const rootScripts = Array.isArray(firstExport.scripts) ? firstExport.scripts.map(asRecord) : [];
+    requireCondition(rootAuth.type === 'bearer', 'created root auth type');
+    requireCondition(rootCredentials.some((entry) => entry.value === '{{token}}'), 'created root auth credential');
+    requireCondition(rootVariables.some((entry) => entry.key === 'baseUrl'), 'created root variables');
+    requireCondition(rootScripts[0]?.type === 'http:beforeRequest', 'created root script type');
+    requireCondition(
+      String(rootScripts[0]?.code ?? '').includes('probe'),
+      'created root script code'
+    );
+    requireCondition(firstExport.id !== 'local-root-id', 'local root id must not be reused remotely');
+    requireCondition(
+      firstItems.map((item) => item.name).join(',') === 'First Folder,Root request',
+      'created item order'
+    );
     requireCondition(Array.isArray(firstItems[0].items) && firstItems[0].items.length === 1, 'nested folder export');
-    console.log('[pass] Local View create/export preserved root fields, order, and nesting');
+    const nestedItem = asRecord((firstItems[0].items as unknown[])[0]);
+    requireCondition(Array.isArray(nestedItem.scripts), 'nested request scripts');
+    requireCondition(asRecord((nestedItem.scripts as unknown[])[0]).type === 'afterResponse', 'item script type');
+    requireCondition(Array.isArray(firstItems[1].queryParams), 'HTTP query parameters');
+    requireCondition(Array.isArray(firstItems[1].pathVariables), 'HTTP path variables');
+    requireCondition(
+      firstItems[1].settings !== null &&
+      typeof firstItems[1].settings === 'object' &&
+      !Array.isArray(firstItems[1].settings) &&
+      asRecord(firstItems[1].settings).strictSSL === false &&
+      asRecord(firstItems[1].settings).followRedirects === false,
+      'HTTP settings'
+    );
+    requireCondition(firstItems[1].id !== 'local-root-request-id', 'local request id must not be reused remotely');
+    console.log('[pass] Local View create/export preserved root fields, scripts, HTTP fields, order, and nesting');
 
     await writeUpdatedTree(workspaceRoot);
     const updatedFiles = loadAdditionalCollectionFiles('postman/additional', resourcesState);

@@ -11,6 +11,11 @@ import path from 'node:path';
 
 import { parse, stringify } from 'yaml';
 
+import {
+  assertSupportedLocalViewContract,
+  normalizeLocalViewScriptType
+} from './local-view-contract.js';
+
 type JsonRecord = Record<string, unknown>;
 
 export type CloudResourceMap = Record<string, string>;
@@ -126,93 +131,6 @@ function resolveInsideWorkspace(
   return resolved;
 }
 
-const GRAPHQL_UNSUPPORTED_FIELDS = [
-  'url',
-  'headers',
-  'auth',
-  'settings',
-  'method',
-  'body',
-  'queryParams',
-  'pathVariables',
-  'examples'
-] as const;
-
-/**
- * Bounded Local View writer contract: reject features the gateway writer cannot
- * proveably preserve. Do not silently drop — fail before any remote mutation.
- */
-function assertSupportedLocalViewContract(
-  node: JsonRecord,
-  options: { isRoot?: boolean; displayPath: string }
-): void {
-  const label = options.displayPath;
-  const kind = String(node.$kind ?? '');
-
-  if (node.scripts !== undefined && !Array.isArray(node.scripts)) {
-    throw new Error(
-      `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} scripts must contain inline script objects; path-valued scripts cannot be preserved`
-    );
-  }
-  if (Array.isArray(node.scripts)) {
-    for (const entry of node.scripts) {
-      const script = asRecord(entry);
-      if (!script || (typeof script.path === 'string' && script.path.trim())) {
-        throw new Error(
-          `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} path-valued scripts cannot be preserved; use inline script code`
-        );
-      }
-    }
-  }
-
-  if (node.examples !== undefined) {
-    throw new Error(
-      `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} examples cannot be preserved by the Local View writer`
-    );
-  }
-
-  if (kind === 'graphql-request') {
-    const unsupported = GRAPHQL_UNSUPPORTED_FIELDS.filter((field) => node[field] !== undefined);
-    // examples already covered; keep message focused on graphql endpoint fields
-    const graphqlUnsupported = unsupported.filter((field) => field !== 'examples');
-    if (graphqlUnsupported.length > 0) {
-      throw new Error(
-        `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} graphql fields [${graphqlUnsupported.join(', ')}] cannot be preserved; only query/variables are supported`
-      );
-    }
-  }
-
-  // Folder (non-root collection) auth/variables are dropped by the writer today.
-  if (!options.isRoot && kind === 'collection') {
-    if (node.auth !== undefined) {
-      throw new Error(
-        `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} folder auth cannot be preserved by the Local View writer`
-      );
-    }
-    if (node.variables !== undefined) {
-      throw new Error(
-        `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} folder variables cannot be preserved by the Local View writer`
-      );
-    }
-    if (node.scripts !== undefined) {
-      throw new Error(
-        `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} folder scripts cannot be preserved by the Local View writer`
-      );
-    }
-  }
-
-  const children = Array.isArray(node.items) ? node.items : [];
-  children.forEach((child, index) => {
-    const childRecord = asRecord(child);
-    if (!childRecord) return;
-    const childName = typeof childRecord.name === 'string' ? childRecord.name : `items[${index}]`;
-    assertSupportedLocalViewContract(childRecord, {
-      isRoot: false,
-      displayPath: `${label}/${childName}`
-    });
-  });
-}
-
 export function readResourcesState(): PostmanResourcesState | null {
   try {
     return parse(readFileSync(RESOURCES_PATH, 'utf8')) as PostmanResourcesState;
@@ -324,11 +242,6 @@ function keyValueMapToArray(value: unknown): unknown {
   });
 }
 
-function normalizeScriptType(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  return value.startsWith('http:') ? value.slice('http:'.length) : value;
-}
-
 function normalizeScripts(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
   return value.map((entry) => {
@@ -336,12 +249,17 @@ function normalizeScripts(value: unknown): unknown {
     if (!script) return entry;
     return {
       ...script,
-      type: normalizeScriptType(script.type)
+      type: normalizeLocalViewScriptType(script.type)
     };
   });
 }
 
 function normalizeAuth(value: unknown): unknown {
+  if (Array.isArray(value) && value.length > 1) {
+    throw new Error(
+      'ADDITIONAL_COLLECTION_UNSUPPORTED: Local View collections support one auth profile per node'
+    );
+  }
   const record = Array.isArray(value) ? asRecord(value[0]) : asRecord(value);
   if (!record) return value;
   return {
@@ -356,12 +274,14 @@ function normalizeV3LocalNode(node: JsonRecord, fallbackName: string, fallbackKi
   if (typeof normalized.name !== 'string' || !normalized.name.trim()) {
     normalized.name = fallbackName;
   }
-  normalized.auth = normalizeAuth(normalized.auth);
-  normalized.headers = keyValueMapToArray(normalized.headers);
-  normalized.pathVariables = keyValueMapToArray(normalized.pathVariables);
-  normalized.queryParams = keyValueMapToArray(normalized.queryParams);
-  normalized.variables = keyValueMapToArray(normalized.variables);
-  normalized.scripts = normalizeScripts(normalized.scripts);
+  if (normalized.auth !== undefined) normalized.auth = normalizeAuth(normalized.auth);
+  if (normalized.headers !== undefined) normalized.headers = keyValueMapToArray(normalized.headers);
+  if (normalized.pathVariables !== undefined) {
+    normalized.pathVariables = keyValueMapToArray(normalized.pathVariables);
+  }
+  if (normalized.queryParams !== undefined) normalized.queryParams = keyValueMapToArray(normalized.queryParams);
+  if (normalized.variables !== undefined) normalized.variables = keyValueMapToArray(normalized.variables);
+  if (normalized.scripts !== undefined) normalized.scripts = normalizeScripts(normalized.scripts);
   return normalized;
 }
 
@@ -532,8 +452,14 @@ function loadV3DirectoryItems(directoryPath: string, workspaceRoot: string): Jso
     const entryPath = path.join(directoryPath, entry.name);
     const realEntryPath = realpathSync(entryPath);
     assertInsideWorkspace(workspaceRoot, realEntryPath, 'additional-collections-dir');
+    if (entry.isSymbolicLink()) {
+      throw new Error(
+        `ADDITIONAL_COLLECTION_UNSUPPORTED: symlinked Local View entry ${normalizedDisplayPath(workspaceRoot, entryPath)} is not supported`
+      );
+    }
+    const entryStats = statSync(realEntryPath);
 
-    if (entry.isDirectory()) {
+    if (entryStats.isDirectory()) {
       const definitionPath = path.join(realEntryPath, V3_DEFINITION_PATH);
       const displayPath = normalizedDisplayPath(workspaceRoot, definitionPath);
       if (!existsSync(definitionPath)) {
@@ -552,6 +478,16 @@ function loadV3DirectoryItems(directoryPath: string, workspaceRoot: string): Jso
           `ADDITIONAL_COLLECTION_INVALID: ${displayPath} must contain a collection v3 folder object`
         );
       }
+      if (definition.items !== undefined) {
+        throw new Error(
+          `ADDITIONAL_COLLECTION_UNSUPPORTED: ${displayPath} inline items are not supported; folder items come from the directory tree`
+        );
+      }
+      if (definition.$kind !== 'collection' && definition.$kind !== 'folder') {
+        throw new Error(
+          `ADDITIONAL_COLLECTION_INVALID: ${displayPath} folder $kind must be collection or folder`
+        );
+      }
       const folder = normalizeV3LocalNode(definition, path.basename(realEntryPath), 'collection');
       // Native Local View folder metadata may use $kind: folder; writer recurses on collection.
       if (folder.$kind === 'folder') {
@@ -562,8 +498,10 @@ function loadV3DirectoryItems(directoryPath: string, workspaceRoot: string): Jso
       continue;
     }
 
-    if (!entry.isFile() || !entry.name.endsWith(V3_REQUEST_SUFFIX)) {
-      continue;
+    if (!entryStats.isFile() || !entry.name.endsWith(V3_REQUEST_SUFFIX)) {
+      throw new Error(
+        `ADDITIONAL_COLLECTION_INVALID: unsupported Local View entry ${normalizedDisplayPath(workspaceRoot, entryPath)}`
+      );
     }
 
     const displayPath = normalizedDisplayPath(workspaceRoot, realEntryPath);
@@ -573,7 +511,7 @@ function loadV3DirectoryItems(directoryPath: string, workspaceRoot: string): Jso
         `ADDITIONAL_COLLECTION_INVALID: ${displayPath} must contain a collection v3 request object`
       );
     }
-    const kind = typeof request.$kind === 'string' ? request.$kind : 'http-request';
+    const kind = typeof request.$kind === 'string' ? request.$kind : '';
     if (kind !== 'http-request' && kind !== 'graphql-request') {
       throw new Error(
         `ADDITIONAL_COLLECTION_INVALID: ${displayPath} unsupported collection v3 request kind ${kind}`
@@ -606,6 +544,11 @@ function loadV3CollectionDirectory(
   if (!definition || definition.$kind !== 'collection') {
     throw new Error(
       `ADDITIONAL_COLLECTION_INVALID: ${definitionDisplayPath} must contain a collection v3 root object`
+    );
+  }
+  if (definition.items !== undefined) {
+    throw new Error(
+      `ADDITIONAL_COLLECTION_UNSUPPORTED: ${definitionDisplayPath} inline items are not supported; collection items come from the directory tree`
     );
   }
   const collection = normalizeV3LocalNode(definition, path.basename(directoryPath), 'collection');

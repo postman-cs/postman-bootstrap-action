@@ -506,6 +506,44 @@ describe('PostmanGatewayAssetsClient', () => {
   });
 
   describe('createCollection', () => {
+    it('rejects native v3 GraphQL before creating the collection', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({}));
+
+      await expect(client.createCollection('ws-1', {
+        $kind: 'collection',
+        name: 'GraphQL',
+        items: [{
+          $kind: 'graphql-request',
+          name: 'Query',
+          query: 'query Ping { ping }',
+          variables: '{}'
+        }]
+      })).rejects.toThrow(/graphql-request.*item-create endpoint/i);
+
+      expect(calls).toHaveLength(0);
+    });
+
+    it('rejects converted v2 GraphQL before creating the collection', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({}));
+
+      await expect(client.createCollection('ws-1', {
+        info: {
+          name: 'GraphQL',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+        },
+        item: [{
+          name: 'Query',
+          request: {
+            method: 'POST',
+            url: 'https://example.test/graphql',
+            body: { mode: 'graphql', graphql: { query: 'query Ping { ping }', variables: '{}' } }
+          }
+        }]
+      })).rejects.toThrow(/graphql-request.*item-create endpoint/i);
+
+      expect(calls).toHaveLength(0);
+    });
+
     it('converts v2.1 -> v3 and creates the root + nested folder/leaf tree, returning the full uid', async () => {
       const v21 = {
         info: { name: 'Curated', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
@@ -563,12 +601,14 @@ describe('PostmanGatewayAssetsClient', () => {
     it('creates canonical v3 collections directly and preserves root and item scripts', async () => {
       const v3 = {
         $kind: 'collection',
+        id: 'local-root-id',
         name: 'Curated v3',
         variables: [{ key: 'baseUrl', value: 'https://example.test' }],
         scripts: [{ type: 'beforeRequest', code: 'pm.variables.set("x", "1");', language: 'text/javascript' }],
         items: [
           {
             $kind: 'http-request',
+            id: 'local-request-id',
             name: 'Create',
             method: 'POST',
             url: '{{baseUrl}}/things',
@@ -613,6 +653,7 @@ describe('PostmanGatewayAssetsClient', () => {
           settings: {}
         })
       });
+      expect((itemCreate?.body as Record<string, unknown>).id).toBeUndefined();
 
       const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/root-v3/items/55363555-create-v3');
       expect(itemScriptPatch).toMatchObject({
@@ -697,6 +738,10 @@ describe('PostmanGatewayAssetsClient', () => {
       ).rejects.toThrow(/item create did not return an id/i);
 
       expect(calls.some((c) => c.method === 'patch')).toBe(false);
+      expect(calls).toContainEqual(expect.objectContaining({
+        method: 'delete',
+        path: '/v3/collections/root-uid'
+      }));
     });
 
     it('normalizes http: script types for converted v2.1 collection and item scripts', async () => {
@@ -818,6 +863,72 @@ describe('PostmanGatewayAssetsClient', () => {
 
       expect(calls).toHaveLength(0);
     });
+
+    it('rejects unknown v3 fields and script types before any remote mutation', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({ data: { id: 'should-not-create' } }));
+
+      await expect(
+        client.createCollection('ws-1', {
+          $kind: 'collection',
+          name: 'Unknown field',
+          items: [{
+            $kind: 'http-request',
+            name: 'Leaf',
+            method: 'GET',
+            url: 'https://example.test',
+            cookieJar: { enabled: true }
+          }]
+        })
+      ).rejects.toThrow(/cookieJar.*cannot be preserved|unsupported.*cookieJar/i);
+
+      await expect(
+        client.createCollection('ws-1', {
+          $kind: 'collection',
+          name: 'Unknown script',
+          scripts: [{ type: 'duringRequest', code: '1;', language: 'text/javascript' }],
+          items: []
+        })
+      ).rejects.toThrow(/script type.*duringRequest|duringRequest.*unsupported/i);
+
+      expect(calls).toHaveLength(0);
+    });
+
+    it('keeps legacy v2.1 saved examples and folder metadata compatible', async () => {
+      const v21 = {
+        info: {
+          name: 'Legacy compatibility',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+        },
+        item: [{
+          name: 'Folder',
+          auth: { type: 'bearer', bearer: [{ key: 'token', value: '{{token}}', type: 'string' }] },
+          event: [{ listen: 'prerequest', script: { exec: ['pm.variables.set("folder", "1");'] } }],
+          item: [{
+            name: 'Leaf',
+            request: { method: 'GET', url: 'https://example.test' },
+            response: [{ name: 'Saved', status: 'OK', code: 200 }]
+          }]
+        }]
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-legacy-root' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/legacy-root/items/') {
+          const name = String((env.body as { name?: string }).name ?? 'item').toLowerCase();
+          return jsonResponse({ data: { id: `55363555-${name}-id` } });
+        }
+        return jsonResponse({ data: { id: 'patched' } });
+      });
+
+      await expect(client.createCollection('ws-1', v21)).resolves.toBe('55363555-legacy-root');
+
+      const folderScriptPatch = calls.find((call) => (
+        call.method === 'patch' &&
+        call.headers['x-entity-type'] === 'collection'
+      ));
+      expect(folderScriptPatch).toBeUndefined();
+    });
   });
 
   describe('updateCollection', () => {
@@ -828,9 +939,15 @@ describe('PostmanGatewayAssetsClient', () => {
           { name: 'New Leaf', request: { method: 'GET', url: { raw: 'https://example.test/v2', host: ['example', 'test'], path: ['v2'] } } }
         ]
       };
+      let itemListReads = 0;
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
-          return jsonResponse({ data: [{ id: 'old-1', $kind: 'http-request' }, { id: 'old-2', $kind: 'http-request' }] });
+          itemListReads += 1;
+          return jsonResponse({
+            data: itemListReads === 1
+              ? [{ id: 'old-1', $kind: 'http-request' }, { id: 'old-2', $kind: 'http-request' }]
+              : []
+          });
         }
         if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
           // Present root fields that must be cleared on update (live: only remove when present).
@@ -880,6 +997,47 @@ describe('PostmanGatewayAssetsClient', () => {
           { op: 'remove', path: '/scripts' }
         ])
       );
+    });
+
+    it('rejects malformed existing item listings before deleting anything', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+          return jsonResponse({ data: [{ name: 'Missing id', $kind: 'http-request' }] });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.updateCollection('55363555-cid-1', {
+        $kind: 'collection',
+        name: 'Replacement',
+        items: []
+      })).rejects.toThrow(/existing item.*id|item listing.*id/i);
+
+      expect(calls.some((call) => call.method === 'delete')).toBe(false);
+      expect(calls.some((call) => call.method === 'post')).toBe(false);
+    });
+
+    it('does not recreate when a tolerated delete error leaves an old item behind', async () => {
+      let itemListReads = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+          itemListReads += 1;
+          return jsonResponse({ data: [{ id: 'old-1', name: 'Old', $kind: 'http-request' }] });
+        }
+        if (env.method === 'delete') {
+          return jsonResponse({ error: { code: 'GENERIC_ERROR' } }, { status: 500 });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.updateCollection('55363555-cid-1', {
+        $kind: 'collection',
+        name: 'Replacement',
+        items: [{ $kind: 'http-request', name: 'New', method: 'GET', url: 'https://example.test' }]
+      })).rejects.toThrow(/old items remain|delete.*verification/i);
+
+      expect(itemListReads).toBe(2);
+      expect(calls.some((call) => call.method === 'post')).toBe(false);
     });
 
     it('reconciles root description/auth/variables/scripts on update, including removals', async () => {

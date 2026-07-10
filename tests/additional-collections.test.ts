@@ -803,7 +803,7 @@ describe('additional local collection provisioning', () => {
 
     expect(() =>
       withCwd(workspace, () => loadAdditionalCollectionFiles('postman/additional', null))
-    ).toThrow(/folder (auth|variables)|cannot preserve/i);
+    ).toThrow(/folder.*(auth|variables)|field (auth|variables) cannot be preserved/i);
   });
 
   it('rejects nested directories without a Local View folder definition', () => {
@@ -871,6 +871,82 @@ describe('additional local collection provisioning', () => {
     ).toThrow(/folder scripts|cannot be preserved/i);
   });
 
+  it('rejects inline definition items and multiple auth profiles', () => {
+    const workspace = makeTempWorkspace();
+    tempDirs.push(workspace);
+    const definitionDir = path.join(workspace, 'postman/additional/closed-contract/.resources');
+    mkdirSync(definitionDir, { recursive: true });
+    writeFileSync(
+      path.join(definitionDir, 'definition.yaml'),
+      stringify({
+        $kind: 'collection',
+        name: 'Inline items',
+        items: [{ $kind: 'http-request', name: 'Hidden', method: 'GET', url: 'https://example.test' }]
+      })
+    );
+
+    expect(() =>
+      withCwd(workspace, () => loadAdditionalCollectionFiles('postman/additional', null))
+    ).toThrow(/items.*directory|inline items/i);
+
+    writeFileSync(
+      path.join(definitionDir, 'definition.yaml'),
+      stringify({
+        $kind: 'collection',
+        name: 'Multiple auth',
+        auth: [
+          { type: 'bearer', credentials: { token: 'one' } },
+          { type: 'apikey', credentials: { key: 'two' } }
+        ]
+      })
+    );
+
+    expect(() =>
+      withCwd(workspace, () => loadAdditionalCollectionFiles('postman/additional', null))
+    ).toThrow(/multiple auth|one auth profile/i);
+  });
+
+  it('rejects invalid node kinds, malformed order, and unknown Local View files', () => {
+    const workspace = makeTempWorkspace();
+    tempDirs.push(workspace);
+    const collectionDir = path.join(workspace, 'postman/additional/strict-tree');
+    mkdirSync(path.join(collectionDir, '.resources'), { recursive: true });
+    mkdirSync(path.join(collectionDir, 'Bad Folder/.resources'), { recursive: true });
+    writeFileSync(
+      path.join(collectionDir, '.resources/definition.yaml'),
+      stringify({ $kind: 'collection', name: 'Strict tree' })
+    );
+    writeFileSync(
+      path.join(collectionDir, 'Bad Folder/.resources/definition.yaml'),
+      stringify({ $kind: 'http-request', name: 'Not a folder', order: 1000 })
+    );
+
+    expect(() =>
+      withCwd(workspace, () => loadAdditionalCollectionFiles('postman/additional', null))
+    ).toThrow(/folder.*\$kind|collection.*folder/i);
+
+    rmSync(path.join(collectionDir, 'Bad Folder'), { recursive: true, force: true });
+    writeFileSync(
+      path.join(collectionDir, 'Bad.request.yaml'),
+      stringify({
+        $kind: 'http-request',
+        name: 'Bad order',
+        method: 'GET',
+        url: 'https://example.test',
+        order: 'first'
+      })
+    );
+    expect(() =>
+      withCwd(workspace, () => loadAdditionalCollectionFiles('postman/additional', null))
+    ).toThrow(/order.*finite number/i);
+
+    rmSync(path.join(collectionDir, 'Bad.request.yaml'));
+    writeFileSync(path.join(collectionDir, 'Ignored.yaml'), 'ignored: true\n');
+    expect(() =>
+      withCwd(workspace, () => loadAdditionalCollectionFiles('postman/additional', null))
+    ).toThrow(/unsupported Local View entry.*Ignored\.yaml/i);
+  });
+
   it('rejects path-valued scripts and unsupported GraphQL fields before mutation', () => {
     const workspace = makeTempWorkspace();
     tempDirs.push(workspace);
@@ -894,7 +970,7 @@ describe('additional local collection provisioning', () => {
 
     expect(() =>
       withCwd(workspace, () => loadAdditionalCollectionFiles('postman/additional', null))
-    ).toThrow(/path-valued script|inline script|cannot preserve/i);
+    ).toThrow(/path-valued script|inline script|script field path cannot be preserved/i);
 
     rmSync(path.join(workspace, 'postman/additional/path-scripts'), { recursive: true, force: true });
     mkdirSync(path.join(workspace, 'postman/additional/gql-extra/.resources'), { recursive: true });
@@ -916,6 +992,6 @@ describe('additional local collection provisioning', () => {
 
     expect(() =>
       withCwd(workspace, () => loadAdditionalCollectionFiles('postman/additional', null))
-    ).toThrow(/graphql|cannot preserve/i);
+    ).toThrow(/graphql|cannot be preserved/i);
   });
 });

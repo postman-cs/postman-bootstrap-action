@@ -6,6 +6,10 @@ import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
 import { AccessTokenGatewayClient } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
+import {
+  assertSupportedLocalViewContract,
+  normalizeLocalViewScriptType
+} from './local-view-contract.js';
 import { planContractItemScripts } from '../spec/collection-contracts.js';
 import type { ContractIndex } from '../spec/contract-index.js';
 
@@ -980,10 +984,11 @@ export class PostmanGatewayAssetsClient {
   // `@postman/runtime.models` pipeline repo-sync's converter uses, then written
   // via the v3 items surface: root create (`X-Entity-Target: http`), one
   // `POST .../items/` per node (folder = `$kind:'collection'`, leaf =
-  // `$kind:'http-request'`/`'graphql-request'`), recursing into folder children
+  // `$kind:'http-request'`), recursing into folder children
   // with the new item id as `position.parent`. Multi-level nesting, per-item
   // `description`, and collection-level rename/auth/variables are all
-  // live-proven against the sandbox.
+  // live-proven against the sandbox. Canonical `graphql-request` input is
+  // rejected before root creation because this item-create endpoint rejects it.
 
   /**
    * Bridge the same v2->v3 graphql gap repo-sync's converter documents: the v2
@@ -1005,12 +1010,6 @@ export class PostmanGatewayAssetsClient {
     for (const child of asItemArray(node.items)) {
       this.normalizeGraphqlRequests(child);
     }
-  }
-
-  /** Strip `http:` script-type prefixes for both v2->v3 and Local View payloads. */
-  private normalizeScriptType(value: unknown): unknown {
-    if (typeof value !== 'string') return value;
-    return value.startsWith('http:') ? value.slice('http:'.length) : value;
   }
 
   /**
@@ -1040,7 +1039,7 @@ export class PostmanGatewayAssetsClient {
       node.scripts = node.scripts.map((entry) => {
         const script = asRecord(entry);
         if (!script) return entry;
-        return { ...script, type: this.normalizeScriptType(script.type) };
+        return { ...script, type: normalizeLocalViewScriptType(script.type) };
       });
     }
     for (const child of asItemArray(node.items)) {
@@ -1048,76 +1047,15 @@ export class PostmanGatewayAssetsClient {
     }
   }
 
-  /**
-   * Reject Local View features this writer cannot proveably preserve. Fail before
-   * any remote mutation — never silently drop examples, folder auth/variables,
-   * path-valued scripts, or unsupported GraphQL endpoint fields.
-   */
-  private assertSupportedLocalViewContract(node: JsonRecord, isRoot = true, label = 'collection'): void {
-    const kind = String(node.$kind ?? '');
-
-    if (node.scripts !== undefined && !Array.isArray(node.scripts)) {
-      throw new Error(
-        `Unsupported Local View feature at ${label}: scripts must contain inline script objects; path-valued scripts cannot be preserved`
-      );
-    }
-    if (Array.isArray(node.scripts)) {
-      for (const entry of node.scripts) {
-        const script = asRecord(entry);
-        if (!script || (typeof script.path === 'string' && script.path.trim())) {
-          throw new Error(
-            `Unsupported Local View feature at ${label}: path-valued scripts cannot be preserved; use inline script code`
-          );
-        }
-      }
-    }
-
-    if (node.examples !== undefined) {
-      throw new Error(
-        `Unsupported Local View feature at ${label}: examples cannot be preserved`
-      );
-    }
-
-    if (kind === 'graphql-request') {
-      const unsupported = [
-        'url',
-        'headers',
-        'auth',
-        'settings',
-        'method',
-        'body',
-        'queryParams',
-        'pathVariables'
-      ].filter((field) => node[field] !== undefined);
-      if (unsupported.length > 0) {
+  private assertGatewayWritableItemKinds(node: JsonRecord): void {
+    for (const item of asItemArray(node.items)) {
+      if (item.$kind === 'graphql-request') {
         throw new Error(
-          `Unsupported Local View feature at ${label}: graphql fields [${unsupported.join(', ')}] cannot be preserved`
+          'ADDITIONAL_COLLECTION_UNSUPPORTED: graphql-request is not supported by the collection item-create endpoint'
         );
       }
+      this.assertGatewayWritableItemKinds(item);
     }
-
-    if (!isRoot && kind === 'collection') {
-      if (node.auth !== undefined) {
-        throw new Error(
-          `Unsupported Local View feature at ${label}: folder auth cannot be preserved`
-        );
-      }
-      if (node.variables !== undefined) {
-        throw new Error(
-          `Unsupported Local View feature at ${label}: folder variables cannot be preserved`
-        );
-      }
-      if (node.scripts !== undefined) {
-        throw new Error(
-          `Unsupported Local View feature at ${label}: folder scripts cannot be preserved`
-        );
-      }
-    }
-
-    asItemArray(node.items).forEach((child, index) => {
-      const childName = typeof child.name === 'string' ? child.name : `items[${index}]`;
-      this.assertSupportedLocalViewContract(child, false, `${label}/${childName}`);
-    });
   }
 
   /** v2.1 collection JSON -> canonical v3 IR, via the official runtime.models transform. */
@@ -1143,15 +1081,19 @@ export class PostmanGatewayAssetsClient {
         this.normalizeGraphqlRequests(item);
       }
       this.normalizeScriptsInTree(v3);
-      this.assertSupportedLocalViewContract(v3, true, String(v3.name ?? 'collection'));
+      assertSupportedLocalViewContract(v3, {
+        isRoot: true,
+        displayPath: String(v3.name ?? 'collection')
+      });
+      this.assertGatewayWritableItemKinds(v3);
       return v3;
     }
     if (record && Array.isArray(record.items)) {
       throw new Error('Collection v3 payloads with items must declare $kind: collection');
     }
-    const converted = this.convertV2CollectionToV3(collection);
-    this.assertSupportedLocalViewContract(converted, true, String(converted.name ?? 'collection'));
-    return converted;
+    const v3 = this.convertV2CollectionToV3(collection);
+    this.assertGatewayWritableItemKinds(v3);
+    return v3;
   }
 
   /** v3 IR item node -> the POST .../items/ create body, scoped to the fields live-proven above. */
@@ -1201,7 +1143,9 @@ export class PostmanGatewayAssetsClient {
           `Item create did not return an id for ${String(item.name ?? 'item')}`
         );
       }
-      if (Array.isArray(item.scripts) && item.scripts.length > 0) {
+      // Native v3 folder scripts are rejected by the bounded contract. Legacy
+      // v2 folder events remain intentionally ignored, matching prior behavior.
+      if (kind !== 'collection' && Array.isArray(item.scripts) && item.scripts.length > 0) {
         await this.patchNewItemScripts(cid, newId, item.scripts as JsonRecord[], kind);
       }
       const children = asItemArray(item.items);
@@ -1209,6 +1153,25 @@ export class PostmanGatewayAssetsClient {
         await this.createItemTree(cid, children, newId);
       }
     }
+  }
+
+  private async listCollectionItems(cid: string): Promise<JsonRecord[]> {
+    const listed = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'get',
+      path: `/v3/collections/${cid}/items/`
+    });
+    if (!Array.isArray(listed?.data)) {
+      throw new Error('Collection item listing did not return an array');
+    }
+    return listed.data.map((entry, index) => {
+      const item = asRecord(entry);
+      const itemId = String(item?.id ?? '').trim();
+      if (!item || !itemId) {
+        throw new Error(`Existing collection item listing entry ${index} did not return an id`);
+      }
+      return item;
+    });
   }
 
   /**
@@ -1301,8 +1264,26 @@ export class PostmanGatewayAssetsClient {
       throw new Error('Collection create did not return an id');
     }
     const cid = this.bareModelId(rawId);
-    await this.createItemTree(cid, asItemArray(v3.items), cid);
-    await this.applyCollectionLevelSettings(cid, v3);
+    try {
+      await this.createItemTree(cid, asItemArray(v3.items), cid);
+      await this.applyCollectionLevelSettings(cid, v3);
+    } catch (error) {
+      let cleanupError: unknown;
+      try {
+        await this.deleteCollection(rawId);
+      } catch (err) {
+        cleanupError = err;
+      }
+      if (cleanupError !== undefined) {
+        throw new Error(
+          `Collection ${rawId} failed to populate and cleanup also failed: ${
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          }`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
     return rawId;
   }
 
@@ -1317,15 +1298,9 @@ export class PostmanGatewayAssetsClient {
     const cid = this.bareModelId(collectionUid);
     const v3 = this.normalizeCollectionForWrite(collection);
 
-    const listed = await this.gateway.requestJson<JsonRecord>({
-      service: 'collection',
-      method: 'get',
-      path: `/v3/collections/${cid}/items/`
-    });
-    const rootItems = asItemArray(listed?.data);
-    for (const item of rootItems) {
-      const itemId = String(item.id ?? '').trim();
-      if (!itemId) continue;
+    const existingItems = await this.listCollectionItems(cid);
+    for (const item of existingItems) {
+      const itemId = String(item.id).trim();
       try {
         await this.gateway.requestJson<JsonRecord>({
           service: 'collection',
@@ -1338,6 +1313,13 @@ export class PostmanGatewayAssetsClient {
           throw error;
         }
       }
+    }
+
+    const remainingItems = await this.listCollectionItems(cid);
+    if (remainingItems.length > 0) {
+      throw new Error(
+        `Collection delete verification failed: ${remainingItems.length} old items remain`
+      );
     }
 
     await this.createItemTree(cid, asItemArray(v3.items), cid);

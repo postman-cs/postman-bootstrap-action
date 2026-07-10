@@ -168,7 +168,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `baseline-collection-id` | Existing baseline collection ID | no |  |
 | `smoke-collection-id` | Existing smoke collection ID | no |  |
 | `contract-collection-id` | Existing contract collection ID | no |  |
-| `additional-collections-dir` | Workspace-relative directory containing curated Postman collection JSON/YAML files to create or update in the workspace. | no |  |
+| `additional-collections-dir` | Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update. | no |  |
 | `sync-examples` | Whether linked spec/collection relations should enable example syncing | no | `true` |
 | `collection-sync-mode` | Collection lifecycle policy (refresh or version) | no | `refresh` |
 | `spec-sync-mode` | Spec lifecycle policy (update or version) | no | `update` |

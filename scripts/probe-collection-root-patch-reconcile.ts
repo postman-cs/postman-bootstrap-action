@@ -35,6 +35,20 @@ function bareModelId(uid: string): string {
   return u.includes('-') ? u.slice(u.indexOf('-') + 1) : u;
 }
 
+function assertStatuses(
+  actual: Array<{ op: string; status: number }>,
+  expected: Record<string, number>
+): void {
+  for (const [op, status] of Object.entries(expected)) {
+    const row = actual.find((entry) => entry.op === op);
+    if (!row || row.status !== status) {
+      throw new Error(
+        `PROBE_ASSERTION_FAILED: ${op} expected ${status}, got ${row?.status ?? '<missing>'}`
+      );
+    }
+  }
+}
+
 async function gw(
   client: AccessTokenGatewayClient,
   label: string,
@@ -222,6 +236,24 @@ async function main(): Promise<void> {
       conditionalOps
     );
     results.push({ op: 'conditional-remove-present-only', status: conditional });
+
+    assertStatuses(results, {
+      'remove-absent /description': 200,
+      'remove-absent /auth': -1,
+      'remove-absent /variables': -1,
+      'remove-absent /scripts': -1,
+      'add /description': 200,
+      'add /auth': 200,
+      'add /variables': 200,
+      'add /scripts': -1,
+      'remove-present /description': 200,
+      'remove-present /auth': 200,
+      'remove-present /variables': 200,
+      'remove-present /scripts': -1,
+      'add /scripts http:beforeRequest': 200,
+      'remove-present /scripts after http add': 200,
+      'conditional-remove-present-only': 200
+    });
 
     console.log('\n== verdict table ==');
     for (const row of results) {

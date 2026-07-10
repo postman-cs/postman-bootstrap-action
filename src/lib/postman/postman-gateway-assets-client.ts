@@ -1056,10 +1056,15 @@ export class PostmanGatewayAssetsClient {
   private assertSupportedLocalViewContract(node: JsonRecord, isRoot = true, label = 'collection'): void {
     const kind = String(node.$kind ?? '');
 
+    if (node.scripts !== undefined && !Array.isArray(node.scripts)) {
+      throw new Error(
+        `Unsupported Local View feature at ${label}: scripts must contain inline script objects; path-valued scripts cannot be preserved`
+      );
+    }
     if (Array.isArray(node.scripts)) {
       for (const entry of node.scripts) {
         const script = asRecord(entry);
-        if (script && typeof script.path === 'string' && script.path.trim()) {
+        if (!script || (typeof script.path === 'string' && script.path.trim())) {
           throw new Error(
             `Unsupported Local View feature at ${label}: path-valued scripts cannot be preserved; use inline script code`
           );
@@ -1102,6 +1107,11 @@ export class PostmanGatewayAssetsClient {
           `Unsupported Local View feature at ${label}: folder variables cannot be preserved`
         );
       }
+      if (node.scripts !== undefined) {
+        throw new Error(
+          `Unsupported Local View feature at ${label}: folder scripts cannot be preserved`
+        );
+      }
     }
 
     asItemArray(node.items).forEach((child, index) => {
@@ -1125,7 +1135,7 @@ export class PostmanGatewayAssetsClient {
   /** Accept either legacy v2.1 input or canonical collection v3 input. */
   private normalizeCollectionForWrite(collection: unknown): JsonRecord {
     const record = asRecord(collection);
-    if (record && (record.$kind === 'collection' || Array.isArray(record.items))) {
+    if (record?.$kind === 'collection') {
       const v3 = typeof structuredClone === 'function'
         ? structuredClone(record) as JsonRecord
         : JSON.parse(JSON.stringify(record)) as JsonRecord;
@@ -1135,6 +1145,9 @@ export class PostmanGatewayAssetsClient {
       this.normalizeScriptsInTree(v3);
       this.assertSupportedLocalViewContract(v3, true, String(v3.name ?? 'collection'));
       return v3;
+    }
+    if (record && Array.isArray(record.items)) {
+      throw new Error('Collection v3 payloads with items must declare $kind: collection');
     }
     const converted = this.convertV2CollectionToV3(collection);
     this.assertSupportedLocalViewContract(converted, true, String(converted.name ?? 'collection'));

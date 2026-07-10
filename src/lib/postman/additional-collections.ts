@@ -149,10 +149,15 @@ function assertSupportedLocalViewContract(
   const label = options.displayPath;
   const kind = String(node.$kind ?? '');
 
+  if (node.scripts !== undefined && !Array.isArray(node.scripts)) {
+    throw new Error(
+      `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} scripts must contain inline script objects; path-valued scripts cannot be preserved`
+    );
+  }
   if (Array.isArray(node.scripts)) {
     for (const entry of node.scripts) {
       const script = asRecord(entry);
-      if (script && typeof script.path === 'string' && script.path.trim()) {
+      if (!script || (typeof script.path === 'string' && script.path.trim())) {
         throw new Error(
           `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} path-valued scripts cannot be preserved; use inline script code`
         );
@@ -187,6 +192,11 @@ function assertSupportedLocalViewContract(
     if (node.variables !== undefined) {
       throw new Error(
         `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} folder variables cannot be preserved by the Local View writer`
+      );
+    }
+    if (node.scripts !== undefined) {
+      throw new Error(
+        `ADDITIONAL_COLLECTION_UNSUPPORTED: ${label} folder scripts cannot be preserved by the Local View writer`
       );
     }
   }
@@ -526,15 +536,17 @@ function loadV3DirectoryItems(directoryPath: string, workspaceRoot: string): Jso
     if (entry.isDirectory()) {
       const definitionPath = path.join(realEntryPath, V3_DEFINITION_PATH);
       const displayPath = normalizedDisplayPath(workspaceRoot, definitionPath);
-      let definition: JsonRecord = {};
-      if (existsSync(definitionPath)) {
-        const realDefinitionPath = resolveInsideWorkspace(
-          workspaceRoot,
-          definitionPath,
-          'additional-collections-dir'
+      if (!existsSync(definitionPath)) {
+        throw new Error(
+          `ADDITIONAL_COLLECTION_INVALID: ${displayPath} is required for Local View folder ${path.basename(realEntryPath)}`
         );
-        definition = asRecord(parseYamlDocument(realDefinitionPath, displayPath)) ?? {};
       }
+      const realDefinitionPath = resolveInsideWorkspace(
+        workspaceRoot,
+        definitionPath,
+        'additional-collections-dir'
+      );
+      const definition = asRecord(parseYamlDocument(realDefinitionPath, displayPath));
       if (!definition) {
         throw new Error(
           `ADDITIONAL_COLLECTION_INVALID: ${displayPath} must contain a collection v3 folder object`

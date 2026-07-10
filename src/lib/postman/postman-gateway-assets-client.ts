@@ -6,6 +6,10 @@ import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
 import { AccessTokenGatewayClient } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
+import {
+  assertSupportedLocalViewContract,
+  normalizeLocalViewScriptType
+} from './local-view-contract.js';
 import { planContractItemScripts } from '../spec/collection-contracts.js';
 import type { ContractIndex } from '../spec/contract-index.js';
 
@@ -585,7 +589,12 @@ export class PostmanGatewayAssetsClient {
    * transient retry, to wait out a longer platform hiccup on this fragile write.
    * Non-transient errors (e.g. 4xx schema rejections) surface immediately.
    */
-  private async patchNewItemScripts(cid: string, itemId: string, scripts: JsonRecord[]): Promise<void> {
+  private async patchNewItemScripts(
+    cid: string,
+    itemId: string,
+    scripts: JsonRecord[],
+    entityType = 'http-request'
+  ): Promise<void> {
     const maxAttempts = 6;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
@@ -593,7 +602,7 @@ export class PostmanGatewayAssetsClient {
           service: 'collection',
           method: 'patch',
           path: `/v3/collections/${cid}/items/${itemId}`,
-          headers: { 'X-Entity-Type': 'http-request' },
+          headers: { 'X-Entity-Type': entityType },
           body: [{ op: 'add', path: '/scripts', value: scripts }]
         });
         return;
@@ -975,10 +984,11 @@ export class PostmanGatewayAssetsClient {
   // `@postman/runtime.models` pipeline repo-sync's converter uses, then written
   // via the v3 items surface: root create (`X-Entity-Target: http`), one
   // `POST .../items/` per node (folder = `$kind:'collection'`, leaf =
-  // `$kind:'http-request'`/`'graphql-request'`), recursing into folder children
+  // `$kind:'http-request'`), recursing into folder children
   // with the new item id as `position.parent`. Multi-level nesting, per-item
   // `description`, and collection-level rename/auth/variables are all
-  // live-proven against the sandbox.
+  // live-proven against the sandbox. Canonical `graphql-request` input is
+  // rejected before root creation because this item-create endpoint rejects it.
 
   /**
    * Bridge the same v2->v3 graphql gap repo-sync's converter documents: the v2
@@ -1002,6 +1012,52 @@ export class PostmanGatewayAssetsClient {
     }
   }
 
+  /**
+   * Collection-root scripts require `http:beforeRequest` / `http:afterResponse`
+   * (live-proven). Item scripts keep the stripped form used by injectTests.
+   */
+  private toRootScriptType(value: unknown): unknown {
+    if (typeof value !== 'string') return value;
+    if (value === 'beforeRequest' || value === 'afterResponse') {
+      return `http:${value}`;
+    }
+    return value;
+  }
+
+  private toRootScripts(scripts: unknown): JsonRecord[] {
+    if (!Array.isArray(scripts)) return [];
+    return scripts.map((entry) => {
+      const script = asRecord(entry);
+      if (!script) return entry as JsonRecord;
+      return { ...script, type: this.toRootScriptType(script.type) };
+    });
+  }
+
+  private normalizeScriptsInTree(node: JsonRecord): void {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node.scripts)) {
+      node.scripts = node.scripts.map((entry) => {
+        const script = asRecord(entry);
+        if (!script) return entry;
+        return { ...script, type: normalizeLocalViewScriptType(script.type) };
+      });
+    }
+    for (const child of asItemArray(node.items)) {
+      this.normalizeScriptsInTree(child);
+    }
+  }
+
+  private assertGatewayWritableItemKinds(node: JsonRecord): void {
+    for (const item of asItemArray(node.items)) {
+      if (item.$kind === 'graphql-request') {
+        throw new Error(
+          'ADDITIONAL_COLLECTION_UNSUPPORTED: graphql-request is not supported by the collection item-create endpoint'
+        );
+      }
+      this.assertGatewayWritableItemKinds(item);
+    }
+  }
+
   /** v2.1 collection JSON -> canonical v3 IR, via the official runtime.models transform. */
   private convertV2CollectionToV3(v2Collection: unknown): JsonRecord {
     const model = (V2 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
@@ -1010,6 +1066,33 @@ export class PostmanGatewayAssetsClient {
     for (const item of asItemArray(v3.items)) {
       this.normalizeGraphqlRequests(item);
     }
+    this.normalizeScriptsInTree(v3);
+    return v3;
+  }
+
+  /** Accept either legacy v2.1 input or canonical collection v3 input. */
+  private normalizeCollectionForWrite(collection: unknown): JsonRecord {
+    const record = asRecord(collection);
+    if (record?.$kind === 'collection') {
+      const v3 = typeof structuredClone === 'function'
+        ? structuredClone(record) as JsonRecord
+        : JSON.parse(JSON.stringify(record)) as JsonRecord;
+      for (const item of asItemArray(v3.items)) {
+        this.normalizeGraphqlRequests(item);
+      }
+      this.normalizeScriptsInTree(v3);
+      assertSupportedLocalViewContract(v3, {
+        isRoot: true,
+        displayPath: String(v3.name ?? 'collection')
+      });
+      this.assertGatewayWritableItemKinds(v3);
+      return v3;
+    }
+    if (record && Array.isArray(record.items)) {
+      throw new Error('Collection v3 payloads with items must declare $kind: collection');
+    }
+    const v3 = this.convertV2CollectionToV3(collection);
+    this.assertGatewayWritableItemKinds(v3);
     return v3;
   }
 
@@ -1035,8 +1118,11 @@ export class PostmanGatewayAssetsClient {
     if (typeof item.method === 'string') body.method = item.method;
     if (typeof item.url === 'string') body.url = item.url;
     if (Array.isArray(item.headers)) body.headers = item.headers;
+    if (Array.isArray(item.queryParams)) body.queryParams = item.queryParams;
+    if (Array.isArray(item.pathVariables)) body.pathVariables = item.pathVariables;
     if (item.body && typeof item.body === 'object') body.body = item.body;
     if (item.auth && typeof item.auth === 'object') body.auth = item.auth;
+    if (item.settings && typeof item.settings === 'object') body.settings = item.settings;
     return body;
   }
 
@@ -1052,29 +1138,98 @@ export class PostmanGatewayAssetsClient {
         body: this.buildItemCreateBody(item, parentId)
       });
       const newId = String(asRecord(created?.data)?.id ?? '').trim();
+      if (!newId) {
+        throw new Error(
+          `Item create did not return an id for ${String(item.name ?? 'item')}`
+        );
+      }
+      // Native v3 folder scripts are rejected by the bounded contract. Legacy
+      // v2 folder events remain intentionally ignored, matching prior behavior.
+      if (kind !== 'collection' && Array.isArray(item.scripts) && item.scripts.length > 0) {
+        await this.patchNewItemScripts(cid, newId, item.scripts as JsonRecord[], kind);
+      }
       const children = asItemArray(item.items);
-      if (kind === 'collection' && children.length > 0 && newId) {
+      if (kind === 'collection' && children.length > 0) {
         await this.createItemTree(cid, children, newId);
       }
     }
   }
 
-  /** Collection-level rename/auth/variables via a single JSON-Patch PATCH; no-op when nothing applies. */
+  private async listCollectionItems(cid: string): Promise<JsonRecord[]> {
+    const listed = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'get',
+      path: `/v3/collections/${cid}/items/`
+    });
+    if (!Array.isArray(listed?.data)) {
+      throw new Error('Collection item listing did not return an array');
+    }
+    return listed.data.map((entry, index) => {
+      const item = asRecord(entry);
+      const itemId = String(item?.id ?? '').trim();
+      if (!item || !itemId) {
+        throw new Error(`Existing collection item listing entry ${index} did not return an id`);
+      }
+      return item;
+    });
+  }
+
+  /**
+   * Collection-level name/description/auth/variables/scripts via JSON-Patch.
+   *
+   * Live-proven gateway semantics (scripts/probe-collection-root-patch-reconcile.ts):
+   * - `add` works for /description, /auth, /variables, /scripts
+   * - root /scripts types must be `http:beforeRequest` / `http:afterResponse`
+   * - `remove` of absent /auth|/variables|/scripts => 400 REJECTED_PATCH
+   * - `remove` of /description always works (field exists as "")
+   * - on update, GET the root first and only remove fields that currently exist
+   */
   private async applyCollectionLevelSettings(
     cid: string,
     v3: JsonRecord,
-    options: { rename?: boolean } = {}
+    options: { rename?: boolean; reconcileRemovals?: boolean } = {}
   ): Promise<void> {
     const ops: JsonRecord[] = [];
     if (options.rename && typeof v3.name === 'string' && v3.name) {
       ops.push({ op: 'replace', path: '/name', value: v3.name });
     }
+
+    let current: JsonRecord | null = null;
+    if (options.reconcileRemovals) {
+      const got = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'get',
+        path: `/v3/collections/${cid}`
+      });
+      current = asRecord(got?.data);
+    }
+
+    const hasDescription = typeof v3.description === 'string' && v3.description.length > 0;
+    if (hasDescription) {
+      ops.push({ op: 'add', path: '/description', value: v3.description });
+    } else if (options.reconcileRemovals) {
+      // description always exists (possibly ""); remove clears it to ""
+      ops.push({ op: 'remove', path: '/description' });
+    }
+
     if (v3.auth && typeof v3.auth === 'object') {
       ops.push({ op: 'add', path: '/auth', value: v3.auth });
+    } else if (options.reconcileRemovals && current && current.auth !== undefined) {
+      ops.push({ op: 'remove', path: '/auth' });
     }
+
     if (Array.isArray(v3.variables) && v3.variables.length > 0) {
       ops.push({ op: 'add', path: '/variables', value: v3.variables });
+    } else if (options.reconcileRemovals && current && current.variables !== undefined) {
+      ops.push({ op: 'remove', path: '/variables' });
     }
+
+    if (Array.isArray(v3.scripts) && v3.scripts.length > 0) {
+      ops.push({ op: 'add', path: '/scripts', value: this.toRootScripts(v3.scripts) });
+    } else if (options.reconcileRemovals && current && current.scripts !== undefined) {
+      ops.push({ op: 'remove', path: '/scripts' });
+    }
+
     if (ops.length === 0) return;
     await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
@@ -1085,17 +1240,18 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Create a curated local v2.1.0 collection through the gateway v3 write
+   * Create a curated local v2.1.0 or collection v3 payload through the gateway v3 write
    * surface. Returns the full uid (same format `generateCollection` returns),
    * so callers can persist it and pass it straight to `updateCollection`/
    * `deleteCollection`/`tagCollection`/`injectTests` unchanged.
    */
   async createCollection(workspaceId: string, collection: unknown): Promise<string> {
-    const v3 = this.convertV2CollectionToV3(collection);
+    const v3 = this.normalizeCollectionForWrite(collection);
+    // Root create accepts name only; description/auth/variables/scripts are applied
+    // via JSON Patch in applyCollectionLevelSettings (live-proven). Putting
+    // description on the POST body makes a later add /description a no-op that
+    // can 400 when the patch set is otherwise empty or redundant.
     const rootBody: JsonRecord = { name: String(v3.name ?? 'Untitled Collection') };
-    if (typeof v3.description === 'string' && v3.description) {
-      rootBody.description = v3.description;
-    }
     const created = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
       method: 'post',
@@ -1108,13 +1264,31 @@ export class PostmanGatewayAssetsClient {
       throw new Error('Collection create did not return an id');
     }
     const cid = this.bareModelId(rawId);
-    await this.createItemTree(cid, asItemArray(v3.items), cid);
-    await this.applyCollectionLevelSettings(cid, v3);
+    try {
+      await this.createItemTree(cid, asItemArray(v3.items), cid);
+      await this.applyCollectionLevelSettings(cid, v3);
+    } catch (error) {
+      let cleanupError: unknown;
+      try {
+        await this.deleteCollection(rawId);
+      } catch (err) {
+        cleanupError = err;
+      }
+      if (cleanupError !== undefined) {
+        throw new Error(
+          `Collection ${rawId} failed to populate and cleanup also failed: ${
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          }`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
     return rawId;
   }
 
   /**
-   * Full-replace reconcile of a curated local v2.1.0 collection: delete every
+   * Full-replace reconcile of a curated local v2.1.0 or collection v3 payload: delete every
    * root-level item (deleting a folder cascades its children server-side —
    * live-proven), tolerating the gateway's spurious 500 on an already-cascaded
    * child by not trusting individual delete statuses, then recreate the tree
@@ -1122,17 +1296,11 @@ export class PostmanGatewayAssetsClient {
    */
   async updateCollection(collectionUid: string, collection: unknown): Promise<void> {
     const cid = this.bareModelId(collectionUid);
-    const v3 = this.convertV2CollectionToV3(collection);
+    const v3 = this.normalizeCollectionForWrite(collection);
 
-    const listed = await this.gateway.requestJson<JsonRecord>({
-      service: 'collection',
-      method: 'get',
-      path: `/v3/collections/${cid}/items/`
-    });
-    const rootItems = asItemArray(listed?.data);
-    for (const item of rootItems) {
-      const itemId = String(item.id ?? '').trim();
-      if (!itemId) continue;
+    const existingItems = await this.listCollectionItems(cid);
+    for (const item of existingItems) {
+      const itemId = String(item.id).trim();
       try {
         await this.gateway.requestJson<JsonRecord>({
           service: 'collection',
@@ -1147,7 +1315,14 @@ export class PostmanGatewayAssetsClient {
       }
     }
 
+    const remainingItems = await this.listCollectionItems(cid);
+    if (remainingItems.length > 0) {
+      throw new Error(
+        `Collection delete verification failed: ${remainingItems.length} old items remain`
+      );
+    }
+
     await this.createItemTree(cid, asItemArray(v3.items), cid);
-    await this.applyCollectionLevelSettings(cid, v3, { rename: true });
+    await this.applyCollectionLevelSettings(cid, v3, { rename: true, reconcileRemovals: true });
   }
 }

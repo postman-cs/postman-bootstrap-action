@@ -22,7 +22,7 @@ inputs:
     description: Existing contract collection ID
     required: false
   additional-collections-dir:
-    description: Workspace-relative directory containing curated Postman collection JSON/YAML files to create or update in the workspace.
+    description: Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update.
     required: false
   sync-examples:
     description: Whether linked spec/collection relations should enable example syncing

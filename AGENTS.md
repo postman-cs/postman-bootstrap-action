@@ -61,10 +61,13 @@ Residual PMAK / `X-Api-Key` uses -- none are asset ops: `POST /service-account-t
 
 ## CI
 
-`.github/workflows/ci.yml` runs a single `gate` job that fans out lint, test, typecheck, dist, integration, commitlint, and actionlint
-as backgrounded shell processes on one runner: wall-clock is `max(gate)`, not
-`sum`, setup runs once, and every gate prints its result under a `::group::`
-block even when another fails.
+`.github/workflows/ci.yml` runs a single `gate` job. Setup installs deps/tools,
+then `npm run build` runs once before fan-out so `dist/` is present for pack
+tests. The job then fans out lint, test, typecheck, dist, integration,
+commitlint, and actionlint as backgrounded shell processes on one runner:
+wall-clock is `max(gate)`, not `sum`, and every gate prints its result under a
+`::group::` block even when another fails. The parallel `dist` gate is a
+read-only `git diff` of committed `dist/` (no second rebuild).
 
 The `integration` gate needs the Postman CLI, installed in a step before the fan-out.
 

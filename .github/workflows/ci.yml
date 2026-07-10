@@ -37,6 +37,9 @@ jobs:
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.11 "$RUNNER_TEMP"
           echo "ACTIONLINT_BIN=$RUNNER_TEMP/actionlint" >> "$GITHUB_ENV"
+      # Build once before fan-out so the parallel dist gate is a read-only
+      # freshness check and cannot delete dist/ while npm pack runs in tests.
+      - run: npm run build
       # One runner, all checks in parallel via shell job control: wall-clock is
       # max(gate), not sum. Every gate reports; failures aggregate so one pass
       # surfaces them all under ::group:: logs, so one pass shows every result.
@@ -49,7 +52,7 @@ jobs:
           run lint       npm run lint
           run test       npm test
           run typecheck  npm run typecheck
-          run dist       npm run verify:dist
+          run dist       git diff --ignore-space-at-eol --text --exit-code -- dist
           run integ      npm run test:integration
           run actionlint "$ACTIONLINT_BIN"
           if [ "${{ github.event_name }}" = "pull_request" ]; then

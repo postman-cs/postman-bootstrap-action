@@ -1007,6 +1007,109 @@ export class PostmanGatewayAssetsClient {
     }
   }
 
+  /** Strip `http:` script-type prefixes for both v2->v3 and Local View payloads. */
+  private normalizeScriptType(value: unknown): unknown {
+    if (typeof value !== 'string') return value;
+    return value.startsWith('http:') ? value.slice('http:'.length) : value;
+  }
+
+  /**
+   * Collection-root scripts require `http:beforeRequest` / `http:afterResponse`
+   * (live-proven). Item scripts keep the stripped form used by injectTests.
+   */
+  private toRootScriptType(value: unknown): unknown {
+    if (typeof value !== 'string') return value;
+    if (value === 'beforeRequest' || value === 'afterResponse') {
+      return `http:${value}`;
+    }
+    return value;
+  }
+
+  private toRootScripts(scripts: unknown): JsonRecord[] {
+    if (!Array.isArray(scripts)) return [];
+    return scripts.map((entry) => {
+      const script = asRecord(entry);
+      if (!script) return entry as JsonRecord;
+      return { ...script, type: this.toRootScriptType(script.type) };
+    });
+  }
+
+  private normalizeScriptsInTree(node: JsonRecord): void {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node.scripts)) {
+      node.scripts = node.scripts.map((entry) => {
+        const script = asRecord(entry);
+        if (!script) return entry;
+        return { ...script, type: this.normalizeScriptType(script.type) };
+      });
+    }
+    for (const child of asItemArray(node.items)) {
+      this.normalizeScriptsInTree(child);
+    }
+  }
+
+  /**
+   * Reject Local View features this writer cannot proveably preserve. Fail before
+   * any remote mutation — never silently drop examples, folder auth/variables,
+   * path-valued scripts, or unsupported GraphQL endpoint fields.
+   */
+  private assertSupportedLocalViewContract(node: JsonRecord, isRoot = true, label = 'collection'): void {
+    const kind = String(node.$kind ?? '');
+
+    if (Array.isArray(node.scripts)) {
+      for (const entry of node.scripts) {
+        const script = asRecord(entry);
+        if (script && typeof script.path === 'string' && script.path.trim()) {
+          throw new Error(
+            `Unsupported Local View feature at ${label}: path-valued scripts cannot be preserved; use inline script code`
+          );
+        }
+      }
+    }
+
+    if (node.examples !== undefined) {
+      throw new Error(
+        `Unsupported Local View feature at ${label}: examples cannot be preserved`
+      );
+    }
+
+    if (kind === 'graphql-request') {
+      const unsupported = [
+        'url',
+        'headers',
+        'auth',
+        'settings',
+        'method',
+        'body',
+        'queryParams',
+        'pathVariables'
+      ].filter((field) => node[field] !== undefined);
+      if (unsupported.length > 0) {
+        throw new Error(
+          `Unsupported Local View feature at ${label}: graphql fields [${unsupported.join(', ')}] cannot be preserved`
+        );
+      }
+    }
+
+    if (!isRoot && kind === 'collection') {
+      if (node.auth !== undefined) {
+        throw new Error(
+          `Unsupported Local View feature at ${label}: folder auth cannot be preserved`
+        );
+      }
+      if (node.variables !== undefined) {
+        throw new Error(
+          `Unsupported Local View feature at ${label}: folder variables cannot be preserved`
+        );
+      }
+    }
+
+    asItemArray(node.items).forEach((child, index) => {
+      const childName = typeof child.name === 'string' ? child.name : `items[${index}]`;
+      this.assertSupportedLocalViewContract(child, false, `${label}/${childName}`);
+    });
+  }
+
   /** v2.1 collection JSON -> canonical v3 IR, via the official runtime.models transform. */
   private convertV2CollectionToV3(v2Collection: unknown): JsonRecord {
     const model = (V2 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
@@ -1015,6 +1118,7 @@ export class PostmanGatewayAssetsClient {
     for (const item of asItemArray(v3.items)) {
       this.normalizeGraphqlRequests(item);
     }
+    this.normalizeScriptsInTree(v3);
     return v3;
   }
 
@@ -1028,9 +1132,13 @@ export class PostmanGatewayAssetsClient {
       for (const item of asItemArray(v3.items)) {
         this.normalizeGraphqlRequests(item);
       }
+      this.normalizeScriptsInTree(v3);
+      this.assertSupportedLocalViewContract(v3, true, String(v3.name ?? 'collection'));
       return v3;
     }
-    return this.convertV2CollectionToV3(collection);
+    const converted = this.convertV2CollectionToV3(collection);
+    this.assertSupportedLocalViewContract(converted, true, String(converted.name ?? 'collection'));
+    return converted;
   }
 
   /** v3 IR item node -> the POST .../items/ create body, scoped to the fields live-proven above. */
@@ -1075,35 +1183,77 @@ export class PostmanGatewayAssetsClient {
         body: this.buildItemCreateBody(item, parentId)
       });
       const newId = String(asRecord(created?.data)?.id ?? '').trim();
-      if (newId && Array.isArray(item.scripts) && item.scripts.length > 0) {
+      if (!newId) {
+        throw new Error(
+          `Item create did not return an id for ${String(item.name ?? 'item')}`
+        );
+      }
+      if (Array.isArray(item.scripts) && item.scripts.length > 0) {
         await this.patchNewItemScripts(cid, newId, item.scripts as JsonRecord[], kind);
       }
       const children = asItemArray(item.items);
-      if (kind === 'collection' && children.length > 0 && newId) {
+      if (kind === 'collection' && children.length > 0) {
         await this.createItemTree(cid, children, newId);
       }
     }
   }
 
-  /** Collection-level rename/auth/variables via a single JSON-Patch PATCH; no-op when nothing applies. */
+  /**
+   * Collection-level name/description/auth/variables/scripts via JSON-Patch.
+   *
+   * Live-proven gateway semantics (scripts/probe-collection-root-patch-reconcile.ts):
+   * - `add` works for /description, /auth, /variables, /scripts
+   * - root /scripts types must be `http:beforeRequest` / `http:afterResponse`
+   * - `remove` of absent /auth|/variables|/scripts => 400 REJECTED_PATCH
+   * - `remove` of /description always works (field exists as "")
+   * - on update, GET the root first and only remove fields that currently exist
+   */
   private async applyCollectionLevelSettings(
     cid: string,
     v3: JsonRecord,
-    options: { rename?: boolean } = {}
+    options: { rename?: boolean; reconcileRemovals?: boolean } = {}
   ): Promise<void> {
     const ops: JsonRecord[] = [];
     if (options.rename && typeof v3.name === 'string' && v3.name) {
       ops.push({ op: 'replace', path: '/name', value: v3.name });
     }
+
+    let current: JsonRecord | null = null;
+    if (options.reconcileRemovals) {
+      const got = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'get',
+        path: `/v3/collections/${cid}`
+      });
+      current = asRecord(got?.data);
+    }
+
+    const hasDescription = typeof v3.description === 'string' && v3.description.length > 0;
+    if (hasDescription) {
+      ops.push({ op: 'add', path: '/description', value: v3.description });
+    } else if (options.reconcileRemovals) {
+      // description always exists (possibly ""); remove clears it to ""
+      ops.push({ op: 'remove', path: '/description' });
+    }
+
     if (v3.auth && typeof v3.auth === 'object') {
       ops.push({ op: 'add', path: '/auth', value: v3.auth });
+    } else if (options.reconcileRemovals && current && current.auth !== undefined) {
+      ops.push({ op: 'remove', path: '/auth' });
     }
+
     if (Array.isArray(v3.variables) && v3.variables.length > 0) {
       ops.push({ op: 'add', path: '/variables', value: v3.variables });
+    } else if (options.reconcileRemovals && current && current.variables !== undefined) {
+      ops.push({ op: 'remove', path: '/variables' });
     }
+
     if (Array.isArray(v3.scripts) && v3.scripts.length > 0) {
-      ops.push({ op: 'add', path: '/scripts', value: v3.scripts });
+      ops.push({ op: 'add', path: '/scripts', value: this.toRootScripts(v3.scripts) });
+    } else if (options.reconcileRemovals && current && current.scripts !== undefined) {
+      ops.push({ op: 'remove', path: '/scripts' });
     }
+
     if (ops.length === 0) return;
     await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
@@ -1177,6 +1327,6 @@ export class PostmanGatewayAssetsClient {
     }
 
     await this.createItemTree(cid, asItemArray(v3.items), cid);
-    await this.applyCollectionLevelSettings(cid, v3, { rename: true });
+    await this.applyCollectionLevelSettings(cid, v3, { rename: true, reconcileRemovals: true });
   }
 }

@@ -624,7 +624,11 @@ describe('PostmanGatewayAssetsClient', () => {
       const rootPatch = calls.find((c) => c.path === '/v3/collections/root-v3');
       expect(rootPatch?.body).toEqual([
         { op: 'add', path: '/variables', value: v3.variables },
-        { op: 'add', path: '/scripts', value: v3.scripts }
+        {
+          op: 'add',
+          path: '/scripts',
+          value: [{ type: 'http:beforeRequest', code: 'pm.variables.set("x", "1");', language: 'text/javascript' }]
+        }
       ]);
     });
 
@@ -636,6 +640,156 @@ describe('PostmanGatewayAssetsClient', () => {
           item: []
         })
       ).rejects.toThrow('Collection create did not return an id');
+    });
+
+    it('throws when an item create returns no id', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-root-uid' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/root-uid/items/') {
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection('ws-1', {
+          $kind: 'collection',
+          name: 'Missing item id',
+          items: [
+            {
+              $kind: 'http-request',
+              name: 'Leaf',
+              method: 'GET',
+              url: 'https://example.test/leaf',
+              scripts: [{ type: 'afterResponse', code: 'pm.test("x", function () {});', language: 'text/javascript' }]
+            }
+          ]
+        })
+      ).rejects.toThrow(/item create did not return an id/i);
+
+      expect(calls.some((c) => c.method === 'patch')).toBe(false);
+    });
+
+    it('normalizes http: script types for converted v2.1 collection and item scripts', async () => {
+      const v21 = {
+        info: {
+          name: 'Scripted v2',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+        },
+        event: [
+          {
+            listen: 'prerequest',
+            script: { type: 'text/javascript', exec: ['pm.collectionVariables.set("ready", "1");'] }
+          }
+        ],
+        item: [
+          {
+            name: 'Leaf',
+            event: [
+              {
+                listen: 'test',
+                script: { type: 'text/javascript', exec: ['pm.test("ok", function () {});'] }
+              }
+            ],
+            request: { method: 'GET', url: 'https://example.test/get' }
+          }
+        ]
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-root-uid' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/root-uid/items/') {
+          return jsonResponse({ data: { id: '55363555-leaf-uid' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.createCollection('ws-1', v21);
+
+      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/root-uid/items/55363555-leaf-uid');
+      const itemScripts = (itemScriptPatch?.body as Array<{ value: Array<{ type: string }> }>)[0].value;
+      expect(itemScripts.every((script) => !String(script.type).startsWith('http:'))).toBe(true);
+      expect(itemScripts.map((script) => script.type)).toContain('afterResponse');
+
+      const rootPatch = calls.find((c) => c.path === '/v3/collections/root-uid');
+      const rootScripts = (
+        (rootPatch?.body as Array<{ path: string; value?: Array<{ type: string }> }>).find(
+          (op) => op.path === '/scripts'
+        )?.value ?? []
+      );
+      expect(rootScripts.length).toBeGreaterThan(0);
+      // Root wire form requires http: prefix (live-proven); IR normalize still strips.
+      expect(rootScripts.every((script) => String(script.type).startsWith('http:'))).toBe(true);
+    });
+
+    it('creates siblings in declared items order', async () => {
+      const v3 = {
+        $kind: 'collection',
+        name: 'Ordered create',
+        items: [
+          { $kind: 'http-request', name: 'First', method: 'GET', url: 'https://example.test/1' },
+          { $kind: 'http-request', name: 'Second', method: 'GET', url: 'https://example.test/2' },
+          { $kind: 'http-request', name: 'Third', method: 'GET', url: 'https://example.test/3' }
+        ]
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-root-uid' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/root-uid/items/') {
+          const body = env.body as { name?: string };
+          return jsonResponse({ data: { id: `55363555-${body.name}-uid` } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.createCollection('ws-1', v3);
+
+      const createdNames = calls
+        .filter((c) => c.method === 'post' && c.path === '/v3/collections/root-uid/items/')
+        .map((c) => (c.body as { name?: string }).name);
+      expect(createdNames).toEqual(['First', 'Second', 'Third']);
+    });
+
+    it('rejects unsupported Local View features before any remote mutation', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({ data: { id: 'should-not-create' } }));
+
+      await expect(
+        client.createCollection('ws-1', {
+          $kind: 'collection',
+          name: 'Unsupported',
+          items: [
+            {
+              $kind: 'http-request',
+              name: 'With examples',
+              method: 'GET',
+              url: 'https://example.test/x',
+              examples: './.resources/With examples.resources/examples'
+            }
+          ]
+        })
+      ).rejects.toThrow(/examples/i);
+
+      expect(calls).toHaveLength(0);
+    });
+
+    it('rejects an ambiguous items-only payload before any remote mutation', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({ data: { id: 'should-not-create' } }));
+
+      await expect(
+        client.createCollection('ws-1', {
+          name: 'Missing v3 discriminator',
+          items: []
+        })
+      ).rejects.toThrow(/\$kind.*collection|collection v3/i);
+
+      expect(calls).toHaveLength(0);
     });
   });
 
@@ -650,6 +804,19 @@ describe('PostmanGatewayAssetsClient', () => {
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
           return jsonResponse({ data: [{ id: 'old-1', $kind: 'http-request' }, { id: 'old-2', $kind: 'http-request' }] });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          // Present root fields that must be cleared on update (live: only remove when present).
+          return jsonResponse({
+            data: {
+              id: '55363555-cid-1',
+              name: 'Old',
+              description: 'old desc',
+              auth: { type: 'bearer', credentials: [{ key: 'token', value: 'x' }] },
+              variables: [{ key: 'old', value: '1' }],
+              scripts: [{ type: 'http:beforeRequest', code: '1;', language: 'text/javascript' }]
+            }
+          });
         }
         if (env.method === 'delete' && env.path === '/v3/collections/cid-1/items/old-1') {
           return new Response(null, { status: 204 });
@@ -670,12 +837,188 @@ describe('PostmanGatewayAssetsClient', () => {
 
       expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/cid-1/items/old-1')).toBe(true);
       expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/cid-1/items/old-2')).toBe(true);
+      expect(calls.some((c) => c.method === 'get' && c.path === '/v3/collections/cid-1')).toBe(true);
 
       const created = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/cid-1/items/');
       expect(created).toMatchObject({ body: expect.objectContaining({ name: 'New Leaf' }) });
 
       const patch = calls.find((c) => c.method === 'patch' && c.path === '/v3/collections/cid-1');
-      expect(patch?.body).toEqual([{ op: 'replace', path: '/name', value: 'Curated (updated)' }]);
+      const ops = patch?.body as Array<{ op: string; path: string; value?: unknown }>;
+      expect(ops).toEqual(
+        expect.arrayContaining([
+          { op: 'replace', path: '/name', value: 'Curated (updated)' },
+          { op: 'remove', path: '/description' },
+          { op: 'remove', path: '/auth' },
+          { op: 'remove', path: '/variables' },
+          { op: 'remove', path: '/scripts' }
+        ])
+      );
+    });
+
+    it('reconciles root description/auth/variables/scripts on update, including removals', async () => {
+      const desired = {
+        $kind: 'collection',
+        name: 'Reconciled',
+        description: 'updated description',
+        auth: { type: 'bearer', credentials: [{ key: 'token', value: '{{t}}' }] },
+        variables: [{ key: 'baseUrl', value: 'https://example.test' }],
+        scripts: [
+          { type: 'beforeRequest', code: 'pm.variables.set("ready", "1");', language: 'text/javascript' }
+        ],
+        items: []
+      };
+      let rootState: Record<string, unknown> = {
+        id: '55363555-cid-1',
+        name: 'Old',
+        description: ''
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: rootState });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'cid-1' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.updateCollection('55363555-cid-1', desired);
+
+      const patches = calls.filter((c) => c.method === 'patch' && c.path === '/v3/collections/cid-1');
+      const ops = patches.flatMap((c) => c.body as Array<{ op: string; path: string; value?: unknown }>);
+      expect(ops).toEqual(
+        expect.arrayContaining([
+          { op: 'replace', path: '/name', value: 'Reconciled' },
+          { op: 'add', path: '/description', value: 'updated description' },
+          { op: 'add', path: '/auth', value: desired.auth },
+          { op: 'add', path: '/variables', value: desired.variables },
+          {
+            op: 'add',
+            path: '/scripts',
+            value: [
+              {
+                type: 'http:beforeRequest',
+                code: 'pm.variables.set("ready", "1");',
+                language: 'text/javascript'
+              }
+            ]
+          }
+        ])
+      );
+
+      // Simulate the post-update remote state so clear only removes present fields.
+      rootState = {
+        id: '55363555-cid-1',
+        name: 'Reconciled',
+        description: 'updated description',
+        auth: desired.auth,
+        variables: desired.variables,
+        scripts: [{ type: 'http:beforeRequest', code: 'pm.variables.set("ready", "1");', language: 'text/javascript' }]
+      };
+
+      const cleared = {
+        $kind: 'collection',
+        name: 'Cleared root',
+        items: []
+      };
+      calls.length = 0;
+      await client.updateCollection('55363555-cid-1', cleared);
+      const clearPatches = calls.filter((c) => c.method === 'patch' && c.path === '/v3/collections/cid-1');
+      const clearOps = clearPatches.flatMap(
+        (c) => c.body as Array<{ op: string; path: string; value?: unknown }>
+      );
+      expect(clearOps).toEqual(
+        expect.arrayContaining([
+          { op: 'replace', path: '/name', value: 'Cleared root' },
+          { op: 'remove', path: '/description' },
+          { op: 'remove', path: '/auth' },
+          { op: 'remove', path: '/variables' },
+          { op: 'remove', path: '/scripts' }
+        ])
+      );
+
+      // Absent optional fields must not emit blind removes (live 400).
+      rootState = { id: '55363555-cid-1', name: 'Cleared root', description: '' };
+      calls.length = 0;
+      await client.updateCollection('55363555-cid-1', {
+        $kind: 'collection',
+        name: 'Still clear',
+        items: []
+      });
+      const absentOps = calls
+        .filter((c) => c.method === 'patch' && c.path === '/v3/collections/cid-1')
+        .flatMap((c) => c.body as Array<{ op: string; path: string }>);
+      expect(absentOps).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ op: 'replace', path: '/name', value: 'Still clear' }),
+          expect.objectContaining({ op: 'remove', path: '/description' })
+        ])
+      );
+      expect(absentOps.some((op) => op.path === '/auth')).toBe(false);
+      expect(absentOps.some((op) => op.path === '/variables')).toBe(false);
+      expect(absentOps.some((op) => op.path === '/scripts')).toBe(false);
+    });
+
+    it('normalizes http: script types on v2.1 updateCollection', async () => {
+      const v21 = {
+        info: {
+          name: 'Updated scripts',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+        },
+        event: [
+          {
+            listen: 'prerequest',
+            script: { type: 'text/javascript', exec: ['pm.collectionVariables.set("ready", "1");'] }
+          }
+        ],
+        item: [
+          {
+            name: 'Leaf',
+            event: [
+              {
+                listen: 'test',
+                script: { type: 'text/javascript', exec: ['pm.test("ok", function () {});'] }
+              }
+            ],
+            request: { method: 'GET', url: 'https://example.test/get' }
+          }
+        ]
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: { id: '55363555-cid-1', name: 'Old', description: '' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/cid-1/items/') {
+          return jsonResponse({ data: { id: '55363555-leaf-uid' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.updateCollection('55363555-cid-1', v21);
+
+      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/cid-1/items/55363555-leaf-uid');
+      const itemScripts = (itemScriptPatch?.body as Array<{ value: Array<{ type: string }> }>)[0].value;
+      expect(itemScripts.every((script) => !String(script.type).startsWith('http:'))).toBe(true);
+
+      const rootPatch = calls.find(
+        (c) => c.method === 'patch' && c.path === '/v3/collections/cid-1'
+      );
+      const rootScripts =
+        (
+          (rootPatch?.body as Array<{ path: string; value?: Array<{ type: string }> }> | undefined) ??
+          []
+        ).find((op) => op.path === '/scripts')?.value ?? [];
+      expect(rootScripts.length).toBeGreaterThan(0);
+      expect(rootScripts.every((script) => String(script.type).startsWith('http:'))).toBe(true);
     });
   });
 

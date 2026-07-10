@@ -192,6 +192,139 @@ describe('additional local collection provisioning', () => {
     expect(loaded[0].name).toBe('String request curated');
   });
 
+  it('loads collection v3 directories as single additional collections', () => {
+    const workspace = makeTempWorkspace();
+    tempDirs.push(workspace);
+    mkdirSync(path.join(workspace, 'postman/additional/authored-v3/.resources'), { recursive: true });
+    mkdirSync(path.join(workspace, 'postman/additional/authored-v3/Workflows/.resources'), { recursive: true });
+    mkdirSync(path.join(workspace, '.postman'), { recursive: true });
+    writeFileSync(
+      path.join(workspace, 'postman/additional/authored-v3/.resources/definition.yaml'),
+      stringify({
+        $kind: 'collection',
+        name: 'Authored v3 regression',
+        variables: {
+          baseUrl: 'https://example.test',
+          bearerToken: ''
+        },
+        auth: [
+          {
+            type: 'bearer',
+            credentials: {
+              token: '{{bearerToken}}'
+            }
+          }
+        ],
+        scripts: [
+          {
+            type: 'http:beforeRequest',
+            code: 'pm.collectionVariables.set("ready", "true");',
+            language: 'text/javascript'
+          }
+        ]
+      })
+    );
+    writeFileSync(
+      path.join(workspace, 'postman/additional/authored-v3/Workflows/.resources/definition.yaml'),
+      stringify({
+        $kind: 'collection',
+        description: 'Workflow lifecycle',
+        order: 2000
+      })
+    );
+    writeFileSync(
+      path.join(workspace, 'postman/additional/authored-v3/Workflows/Create Thing.request.yaml'),
+      stringify({
+        $kind: 'http-request',
+        url: '{{baseUrl}}/things',
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        queryParams: {
+          filter: 'status eq "{{testStatus}}"'
+        },
+        settings: {},
+        scripts: [
+          {
+            type: 'afterResponse',
+            code: 'pm.test("created", function () {});',
+            language: 'text/javascript'
+          }
+        ],
+        order: 1000
+      })
+    );
+    writeFileSync(
+      path.join(workspace, '.postman/resources.yaml'),
+      stringify({
+        cloudResources: {
+          additionalCollections: {
+            '../postman/additional/authored-v3': 'col-authored-existing'
+          }
+        }
+      })
+    );
+
+    const loaded = withCwd(workspace, () =>
+      loadAdditionalCollectionFiles('postman/additional', readResources())
+    );
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]).toMatchObject({
+      existingCollectionId: 'col-authored-existing',
+      name: 'Authored v3 regression',
+      resourcePath: '../postman/additional/authored-v3'
+    });
+    expect(loaded[0].collection).toMatchObject({
+      $kind: 'collection',
+      name: 'Authored v3 regression',
+      variables: [
+        { key: 'baseUrl', value: 'https://example.test' },
+        { key: 'bearerToken', value: '' }
+      ],
+      auth: {
+        type: 'bearer',
+        credentials: [{ key: 'token', value: '{{bearerToken}}' }]
+      },
+      scripts: [
+        {
+          type: 'beforeRequest',
+          code: 'pm.collectionVariables.set("ready", "true");',
+          language: 'text/javascript'
+        }
+      ],
+      items: [
+        {
+          $kind: 'collection',
+          name: 'Workflows',
+          items: [
+            {
+              $kind: 'http-request',
+              name: 'Create Thing',
+              headers: [
+                { key: 'Accept', value: 'application/json' },
+                { key: 'Content-Type', value: 'application/json' }
+              ],
+              queryParams: [
+                { key: 'filter', value: 'status eq "{{testStatus}}"' }
+              ],
+              settings: {},
+              scripts: [
+                {
+                  type: 'afterResponse',
+                  code: 'pm.test("created", function () {});',
+                  language: 'text/javascript'
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    });
+  });
+
   it('creates and updates collections from real files and persists resource mappings', async () => {
     const workspace = makeTempWorkspace();
     tempDirs.push(workspace);

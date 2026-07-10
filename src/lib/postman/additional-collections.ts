@@ -1,4 +1,12 @@
-import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync
+} from 'node:fs';
 import path from 'node:path';
 
 import { parse, stringify } from 'yaml';
@@ -47,6 +55,8 @@ export interface AdditionalCollectionsPostmanClient {
 
 const ADDITIONAL_COLLECTION_EXTENSIONS = new Set(['.json', '.yaml', '.yml']);
 const POSTMAN_COLLECTION_V21_SCHEMA_FRAGMENT = '/collection/v2.1.0/collection.json';
+const V3_DEFINITION_PATH = path.join('.resources', 'definition.yaml');
+const V3_REQUEST_SUFFIX = '.request.yaml';
 const RESOURCES_PATH = '.postman/resources.yaml';
 
 function normalizeInputValue(value: string | undefined): string | undefined {
@@ -80,6 +90,16 @@ function normalizedDisplayPath(workspaceRoot: string, filePath: string): string 
 
 function toResourcePath(displayPath: string): string {
   return `../${displayPath.replace(/^\/+/, '')}`;
+}
+
+function fileNameWithoutSuffix(filePath: string, suffix: string): string {
+  const name = path.basename(filePath);
+  return name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
+}
+
+function structuredCloneSafe<T>(value: T): T {
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function assertInsideWorkspace(
@@ -182,6 +202,71 @@ function parseAdditionalCollectionDocument(
   }
 }
 
+function parseYamlDocument(filePath: string, displayPath: string): unknown {
+  try {
+    return parse(readFileSync(filePath, 'utf8')) as unknown;
+  } catch (error) {
+    throw new Error(
+      `ADDITIONAL_COLLECTION_PARSE_FAILED: ${displayPath} is not valid YAML`,
+      { cause: error }
+    );
+  }
+}
+
+function keyValueMapToArray(value: unknown): unknown {
+  if (Array.isArray(value)) return value;
+  const record = asRecord(value);
+  if (!record) return value;
+  return Object.entries(record).map(([key, entry]) => {
+    const entryRecord = asRecord(entry);
+    if (entryRecord) {
+      return { key, ...entryRecord };
+    }
+    return { key, value: entry };
+  });
+}
+
+function normalizeScriptType(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  return value.startsWith('http:') ? value.slice('http:'.length) : value;
+}
+
+function normalizeScripts(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  return value.map((entry) => {
+    const script = asRecord(entry);
+    if (!script) return entry;
+    return {
+      ...script,
+      type: normalizeScriptType(script.type)
+    };
+  });
+}
+
+function normalizeAuth(value: unknown): unknown {
+  const record = Array.isArray(value) ? asRecord(value[0]) : asRecord(value);
+  if (!record) return value;
+  return {
+    ...record,
+    credentials: keyValueMapToArray(record.credentials)
+  };
+}
+
+function normalizeV3LocalNode(node: JsonRecord, fallbackName: string, fallbackKind: string): JsonRecord {
+  const normalized = structuredCloneSafe(node);
+  normalized.$kind = typeof normalized.$kind === 'string' ? normalized.$kind : fallbackKind;
+  if (typeof normalized.name !== 'string' || !normalized.name.trim()) {
+    normalized.name = fallbackName;
+  }
+  normalized.auth = normalizeAuth(normalized.auth);
+  normalized.headers = keyValueMapToArray(normalized.headers);
+  normalized.pathVariables = keyValueMapToArray(normalized.pathVariables);
+  normalized.queryParams = keyValueMapToArray(normalized.queryParams);
+  normalized.variables = keyValueMapToArray(normalized.variables);
+  normalized.scripts = normalizeScripts(normalized.scripts);
+  return normalized;
+}
+
 function validateCollectionItems(
   items: unknown[],
   displayPath: string,
@@ -250,10 +335,14 @@ function collectSupportedCollectionPaths(
   directoryPath: string,
   workspaceRoot: string,
   files: string[],
+  skippedDirectories = new Set<string>(),
   visitedDirectories = new Set<string>()
 ): void {
   const realDirectoryPath = realpathSync(directoryPath);
   assertInsideWorkspace(workspaceRoot, realDirectoryPath, 'additional-collections-dir');
+  if (skippedDirectories.has(realDirectoryPath)) {
+    return;
+  }
   if (visitedDirectories.has(realDirectoryPath)) {
     return;
   }
@@ -272,6 +361,7 @@ function collectSupportedCollectionPaths(
         realEntryPath,
         workspaceRoot,
         files,
+        skippedDirectories,
         visitedDirectories
       );
       continue;
@@ -287,6 +377,140 @@ function collectSupportedCollectionPaths(
   }
 }
 
+function hasV3CollectionDefinition(directoryPath: string): boolean {
+  return existsSync(path.join(directoryPath, V3_DEFINITION_PATH));
+}
+
+function collectV3CollectionDirectories(
+  directoryPath: string,
+  workspaceRoot: string,
+  directories: string[],
+  visitedDirectories = new Set<string>()
+): void {
+  const realDirectoryPath = realpathSync(directoryPath);
+  assertInsideWorkspace(workspaceRoot, realDirectoryPath, 'additional-collections-dir');
+  if (visitedDirectories.has(realDirectoryPath)) {
+    return;
+  }
+  visitedDirectories.add(realDirectoryPath);
+
+  if (hasV3CollectionDefinition(realDirectoryPath)) {
+    directories.push(realDirectoryPath);
+    return;
+  }
+
+  const entries = readdirSync(realDirectoryPath, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const entryPath = path.join(realDirectoryPath, entry.name);
+    const realEntryPath = realpathSync(entryPath);
+    assertInsideWorkspace(workspaceRoot, realEntryPath, 'additional-collections-dir');
+    collectV3CollectionDirectories(realEntryPath, workspaceRoot, directories, visitedDirectories);
+  }
+}
+
+function sortV3Items(items: JsonRecord[]): JsonRecord[] {
+  return items.sort((a, b) => {
+    const left = typeof a.order === 'number' && Number.isFinite(a.order) ? a.order : Number.MAX_SAFE_INTEGER;
+    const right = typeof b.order === 'number' && Number.isFinite(b.order) ? b.order : Number.MAX_SAFE_INTEGER;
+    if (left !== right) return left - right;
+    return String(a.name ?? '').localeCompare(String(b.name ?? ''));
+  });
+}
+
+function loadV3DirectoryItems(directoryPath: string, workspaceRoot: string): JsonRecord[] {
+  const entries = readdirSync(directoryPath, { withFileTypes: true })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const items: JsonRecord[] = [];
+
+  for (const entry of entries) {
+    if (entry.name === '.resources') {
+      continue;
+    }
+    const entryPath = path.join(directoryPath, entry.name);
+    const realEntryPath = realpathSync(entryPath);
+    assertInsideWorkspace(workspaceRoot, realEntryPath, 'additional-collections-dir');
+
+    if (entry.isDirectory()) {
+      const definitionPath = path.join(realEntryPath, V3_DEFINITION_PATH);
+      const displayPath = normalizedDisplayPath(workspaceRoot, definitionPath);
+      const definition = existsSync(definitionPath)
+        ? asRecord(parseYamlDocument(definitionPath, displayPath))
+        : {};
+      if (!definition) {
+        throw new Error(
+          `ADDITIONAL_COLLECTION_INVALID: ${displayPath} must contain a collection v3 folder object`
+        );
+      }
+      const folder = normalizeV3LocalNode(definition, path.basename(realEntryPath), 'collection');
+      folder.items = loadV3DirectoryItems(realEntryPath, workspaceRoot);
+      items.push(folder);
+      continue;
+    }
+
+    if (!entry.isFile() || !entry.name.endsWith(V3_REQUEST_SUFFIX)) {
+      continue;
+    }
+
+    const displayPath = normalizedDisplayPath(workspaceRoot, realEntryPath);
+    const request = asRecord(parseYamlDocument(realEntryPath, displayPath));
+    if (!request) {
+      throw new Error(
+        `ADDITIONAL_COLLECTION_INVALID: ${displayPath} must contain a collection v3 request object`
+      );
+    }
+    const kind = typeof request.$kind === 'string' ? request.$kind : 'http-request';
+    if (kind !== 'http-request' && kind !== 'graphql-request') {
+      throw new Error(
+        `ADDITIONAL_COLLECTION_INVALID: ${displayPath} unsupported collection v3 request kind ${kind}`
+      );
+    }
+    items.push(normalizeV3LocalNode(
+      request,
+      fileNameWithoutSuffix(realEntryPath, V3_REQUEST_SUFFIX),
+      kind
+    ));
+  }
+
+  return sortV3Items(items);
+}
+
+function loadV3CollectionDirectory(
+  directoryPath: string,
+  workspaceRoot: string,
+  resourcesState: PostmanResourcesState | null
+): AdditionalCollectionFile {
+  const definitionPath = path.join(directoryPath, V3_DEFINITION_PATH);
+  const displayPath = normalizedDisplayPath(workspaceRoot, directoryPath);
+  const definitionDisplayPath = normalizedDisplayPath(workspaceRoot, definitionPath);
+  const definition = asRecord(parseYamlDocument(definitionPath, definitionDisplayPath));
+  if (!definition || definition.$kind !== 'collection') {
+    throw new Error(
+      `ADDITIONAL_COLLECTION_INVALID: ${definitionDisplayPath} must contain a collection v3 root object`
+    );
+  }
+  const collection = normalizeV3LocalNode(definition, path.basename(directoryPath), 'collection');
+  collection.items = loadV3DirectoryItems(directoryPath, workspaceRoot);
+  if (!Array.isArray(collection.items)) {
+    throw new Error(
+      `ADDITIONAL_COLLECTION_INVALID: ${definitionDisplayPath} collection v3 items must be an array`
+    );
+  }
+  const name = String(collection.name ?? '').trim();
+  const resourcePath = toResourcePath(displayPath);
+  return {
+    collection,
+    existingCollectionId: findExistingAdditionalCollectionId(resourcesState, resourcePath),
+    displayPath,
+    name,
+    resourcePath
+  };
+}
+
 export function loadAdditionalCollectionFiles(
   directoryInput: string | undefined,
   resourcesState: PostmanResourcesState | null
@@ -296,17 +520,30 @@ export function loadAdditionalCollectionFiles(
     return [];
   }
   const { directoryPath, workspaceRoot } = resolveAdditionalCollectionsDir(configured);
+  const v3Directories: string[] = [];
+  collectV3CollectionDirectories(directoryPath, workspaceRoot, v3Directories);
+  v3Directories.sort((a, b) => normalizedDisplayPath(workspaceRoot, a).localeCompare(normalizedDisplayPath(workspaceRoot, b)));
+
   const filePaths: string[] = [];
-  collectSupportedCollectionPaths(directoryPath, workspaceRoot, filePaths);
+  collectSupportedCollectionPaths(
+    directoryPath,
+    workspaceRoot,
+    filePaths,
+    new Set(v3Directories)
+  );
   filePaths.sort((a, b) => normalizedDisplayPath(workspaceRoot, a).localeCompare(normalizedDisplayPath(workspaceRoot, b)));
 
-  if (filePaths.length === 0) {
+  if (v3Directories.length === 0 && filePaths.length === 0) {
     throw new Error(
-      `ADDITIONAL_COLLECTIONS_DIR_EMPTY: additional-collections-dir contains no Postman collection JSON/YAML files: ${configured}`
+      `ADDITIONAL_COLLECTIONS_DIR_EMPTY: additional-collections-dir contains no Postman collection JSON/YAML files or collection v3 directories: ${configured}`
     );
   }
 
-  return filePaths.map((filePath) => {
+  const collections = v3Directories.map((collectionDirectory) =>
+    loadV3CollectionDirectory(collectionDirectory, workspaceRoot, resourcesState)
+  );
+
+  collections.push(...filePaths.map((filePath) => {
     const displayPath = normalizedDisplayPath(workspaceRoot, filePath);
     const extension = path.extname(filePath).toLowerCase();
     const document = parseAdditionalCollectionDocument(
@@ -324,7 +561,9 @@ export function loadAdditionalCollectionFiles(
       name: String(info.name).trim(),
       resourcePath
     };
-  });
+  }));
+
+  return collections.sort((a, b) => a.resourcePath.localeCompare(b.resourcePath));
 }
 
 function ensureAdditionalCollectionsMap(state: PostmanResourcesState): CloudResourceMap {

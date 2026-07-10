@@ -560,6 +560,74 @@ describe('PostmanGatewayAssetsClient', () => {
       });
     });
 
+    it('creates canonical v3 collections directly and preserves root and item scripts', async () => {
+      const v3 = {
+        $kind: 'collection',
+        name: 'Curated v3',
+        variables: [{ key: 'baseUrl', value: 'https://example.test' }],
+        scripts: [{ type: 'beforeRequest', code: 'pm.variables.set("x", "1");', language: 'text/javascript' }],
+        items: [
+          {
+            $kind: 'http-request',
+            name: 'Create',
+            method: 'POST',
+            url: '{{baseUrl}}/things',
+            headers: [{ key: 'Content-Type', value: 'application/json' }],
+            queryParams: [{ key: 'dryRun', value: 'true' }],
+            pathVariables: [{ key: 'tenantId', value: 'demo' }],
+            settings: {},
+            scripts: [{ type: 'afterResponse', code: 'pm.test("ok", function () {});', language: 'text/javascript' }]
+          }
+        ]
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-root-v3' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/root-v3/items/') {
+          return jsonResponse({ data: { id: '55363555-create-v3' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      const id = await client.createCollection('ws-1', v3);
+
+      expect(id).toBe('55363555-root-v3');
+      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      expect(rootCreate?.body).toEqual({ name: 'Curated v3' });
+
+      const itemCreate = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/root-v3/items/');
+      expect(itemCreate).toMatchObject({
+        headers: expect.objectContaining({ 'x-entity-type': 'http-request' }),
+        body: expect.objectContaining({
+          $kind: 'http-request',
+          name: 'Create',
+          method: 'POST',
+          url: '{{baseUrl}}/things',
+          headers: [{ key: 'Content-Type', value: 'application/json' }],
+          queryParams: [{ key: 'dryRun', value: 'true' }],
+          pathVariables: [{ key: 'tenantId', value: 'demo' }],
+          settings: {}
+        })
+      });
+
+      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/root-v3/items/55363555-create-v3');
+      expect(itemScriptPatch).toMatchObject({
+        method: 'patch',
+        headers: expect.objectContaining({ 'x-entity-type': 'http-request' }),
+        body: [{ op: 'add', path: '/scripts', value: v3.items[0].scripts }]
+      });
+
+      const rootPatch = calls.find((c) => c.path === '/v3/collections/root-v3');
+      expect(rootPatch?.body).toEqual([
+        { op: 'add', path: '/variables', value: v3.variables },
+        { op: 'add', path: '/scripts', value: v3.scripts }
+      ]);
+    });
+
     it('throws when the root create returns no id', async () => {
       const { client } = makeClient(() => jsonResponse({ data: {} }));
       await expect(

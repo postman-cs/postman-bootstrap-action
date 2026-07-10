@@ -585,7 +585,12 @@ export class PostmanGatewayAssetsClient {
    * transient retry, to wait out a longer platform hiccup on this fragile write.
    * Non-transient errors (e.g. 4xx schema rejections) surface immediately.
    */
-  private async patchNewItemScripts(cid: string, itemId: string, scripts: JsonRecord[]): Promise<void> {
+  private async patchNewItemScripts(
+    cid: string,
+    itemId: string,
+    scripts: JsonRecord[],
+    entityType = 'http-request'
+  ): Promise<void> {
     const maxAttempts = 6;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
@@ -593,7 +598,7 @@ export class PostmanGatewayAssetsClient {
           service: 'collection',
           method: 'patch',
           path: `/v3/collections/${cid}/items/${itemId}`,
-          headers: { 'X-Entity-Type': 'http-request' },
+          headers: { 'X-Entity-Type': entityType },
           body: [{ op: 'add', path: '/scripts', value: scripts }]
         });
         return;
@@ -1013,6 +1018,21 @@ export class PostmanGatewayAssetsClient {
     return v3;
   }
 
+  /** Accept either legacy v2.1 input or canonical collection v3 input. */
+  private normalizeCollectionForWrite(collection: unknown): JsonRecord {
+    const record = asRecord(collection);
+    if (record && (record.$kind === 'collection' || Array.isArray(record.items))) {
+      const v3 = typeof structuredClone === 'function'
+        ? structuredClone(record) as JsonRecord
+        : JSON.parse(JSON.stringify(record)) as JsonRecord;
+      for (const item of asItemArray(v3.items)) {
+        this.normalizeGraphqlRequests(item);
+      }
+      return v3;
+    }
+    return this.convertV2CollectionToV3(collection);
+  }
+
   /** v3 IR item node -> the POST .../items/ create body, scoped to the fields live-proven above. */
   private buildItemCreateBody(item: JsonRecord, parentId: string): JsonRecord {
     const kind = String(item.$kind ?? 'http-request');
@@ -1035,8 +1055,11 @@ export class PostmanGatewayAssetsClient {
     if (typeof item.method === 'string') body.method = item.method;
     if (typeof item.url === 'string') body.url = item.url;
     if (Array.isArray(item.headers)) body.headers = item.headers;
+    if (Array.isArray(item.queryParams)) body.queryParams = item.queryParams;
+    if (Array.isArray(item.pathVariables)) body.pathVariables = item.pathVariables;
     if (item.body && typeof item.body === 'object') body.body = item.body;
     if (item.auth && typeof item.auth === 'object') body.auth = item.auth;
+    if (item.settings && typeof item.settings === 'object') body.settings = item.settings;
     return body;
   }
 
@@ -1052,6 +1075,9 @@ export class PostmanGatewayAssetsClient {
         body: this.buildItemCreateBody(item, parentId)
       });
       const newId = String(asRecord(created?.data)?.id ?? '').trim();
+      if (newId && Array.isArray(item.scripts) && item.scripts.length > 0) {
+        await this.patchNewItemScripts(cid, newId, item.scripts as JsonRecord[], kind);
+      }
       const children = asItemArray(item.items);
       if (kind === 'collection' && children.length > 0 && newId) {
         await this.createItemTree(cid, children, newId);
@@ -1075,6 +1101,9 @@ export class PostmanGatewayAssetsClient {
     if (Array.isArray(v3.variables) && v3.variables.length > 0) {
       ops.push({ op: 'add', path: '/variables', value: v3.variables });
     }
+    if (Array.isArray(v3.scripts) && v3.scripts.length > 0) {
+      ops.push({ op: 'add', path: '/scripts', value: v3.scripts });
+    }
     if (ops.length === 0) return;
     await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
@@ -1085,13 +1114,13 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Create a curated local v2.1.0 collection through the gateway v3 write
+   * Create a curated local v2.1.0 or collection v3 payload through the gateway v3 write
    * surface. Returns the full uid (same format `generateCollection` returns),
    * so callers can persist it and pass it straight to `updateCollection`/
    * `deleteCollection`/`tagCollection`/`injectTests` unchanged.
    */
   async createCollection(workspaceId: string, collection: unknown): Promise<string> {
-    const v3 = this.convertV2CollectionToV3(collection);
+    const v3 = this.normalizeCollectionForWrite(collection);
     const rootBody: JsonRecord = { name: String(v3.name ?? 'Untitled Collection') };
     if (typeof v3.description === 'string' && v3.description) {
       rootBody.description = v3.description;
@@ -1114,7 +1143,7 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Full-replace reconcile of a curated local v2.1.0 collection: delete every
+   * Full-replace reconcile of a curated local v2.1.0 or collection v3 payload: delete every
    * root-level item (deleting a folder cascades its children server-side —
    * live-proven), tolerating the gateway's spurious 500 on an already-cascaded
    * child by not trusting individual delete statuses, then recreate the tree
@@ -1122,7 +1151,7 @@ export class PostmanGatewayAssetsClient {
    */
   async updateCollection(collectionUid: string, collection: unknown): Promise<void> {
     const cid = this.bareModelId(collectionUid);
-    const v3 = this.convertV2CollectionToV3(collection);
+    const v3 = this.normalizeCollectionForWrite(collection);
 
     const listed = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',

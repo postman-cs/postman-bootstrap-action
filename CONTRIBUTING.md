@@ -33,7 +33,7 @@ actionlint          # Validate GitHub workflow syntax, if installed
 
 ### Rebuilding dist/
 
-This action ships bundled JavaScript in `dist/`. After any source change, run `npm run build` and include the updated `dist/` files in your commit. CI enforces this with a dedicated `check-dist` job (`npm run verify:dist`), and a pre-push hook rebuilds and stages `dist/` for you.
+This action ships bundled JavaScript in `dist/`. After any source change, run `npm run build` and include the updated `dist/` files in your commit. CI builds once before its parallel gates and then read-only `git diff`s committed `dist/`; a pre-push hook runs `npm run verify:dist` (rebuild + diff) for you.
 
 ## PR E2E Gate
 

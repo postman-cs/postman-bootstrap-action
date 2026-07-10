@@ -1,109 +1,213 @@
-/**
- * End-to-end proof: PostmanGatewayAssetsClient.createCollection/updateCollection
- * against a real v2.1.0 collection (folder + nested leaf + root leaf), verifying
- * the full port of bootstrap's additional-collections feature off PMAK.
- */
-import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
+/** Secret-safe Local View loader -> sync -> gateway create/update/export proof. */
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+import { stringify } from 'yaml';
+
+import {
+  loadAdditionalCollectionFiles,
+  syncAdditionalCollections,
+  type PostmanResourcesState
+} from '../src/lib/postman/additional-collections.js';
+import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
 import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
-import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
+import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 
 const API = POSTMAN_ENDPOINT_PROFILES.prod.apiBaseUrl;
+type JsonRecord = Record<string, unknown>;
 
-const v21Collection = {
-  info: {
-    name: 'Curated E2E Probe',
-    schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
-  },
-  item: [
-    {
-      name: 'Payments',
-      item: [
-        {
-          name: 'Get balance',
-          request: {
-            method: 'GET',
-            header: [{ key: 'X-Probe', value: 'nested' }],
-            url: { raw: 'https://postman-echo.com/get?scope=balance', host: ['postman-echo', 'com'], path: ['get'], query: [{ key: 'scope', value: 'balance' }] }
-          }
-        }
-      ]
-    },
-    {
-      name: 'Root health',
-      request: {
-        method: 'GET',
-        url: { raw: 'https://postman-echo.com/get', host: ['postman-echo', 'com'], path: ['get'] }
-      }
-    }
-  ]
-};
+function requireCondition(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(`PROBE_ASSERTION_FAILED: ${message}`);
+}
+
+function asRecord(value: unknown): JsonRecord {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as JsonRecord
+    : {};
+}
+
+function bareModelId(uid: string): string {
+  return uid.includes('-') ? uid.slice(uid.indexOf('-') + 1) : uid;
+}
+
+async function writeCreatedTree(root: string): Promise<void> {
+  const collectionDir = path.join(root, 'postman/additional/local-view');
+  const folderDir = path.join(collectionDir, 'First Folder');
+  await mkdir(path.join(collectionDir, '.resources'), { recursive: true });
+  await mkdir(path.join(folderDir, '.resources'), { recursive: true });
+  await writeFile(
+    path.join(collectionDir, '.resources/definition.yaml'),
+    stringify({
+      $kind: 'collection',
+      name: 'Local View E2E Probe',
+      description: 'created from Local View',
+      auth: { type: 'bearer', credentials: { token: '{{token}}' } },
+      variables: [{ key: 'baseUrl', value: 'https://postman-echo.com' }],
+      scripts: [{
+        type: 'beforeRequest',
+        code: 'pm.collectionVariables.set("probe", "created");',
+        language: 'text/javascript'
+      }]
+    })
+  );
+  await writeFile(
+    path.join(folderDir, '.resources/definition.yaml'),
+    stringify({ $kind: 'collection', name: 'First Folder', description: 'nested', order: 1000 })
+  );
+  await writeFile(
+    path.join(folderDir, 'Nested.request.yaml'),
+    stringify({
+      $kind: 'http-request',
+      name: 'Nested request',
+      method: 'GET',
+      url: '{{baseUrl}}/get?nested=true',
+      order: 1000,
+      scripts: [{
+        type: 'afterResponse',
+        code: 'pm.test("nested", function () { pm.expect(pm.response.code).to.eql(200); });',
+        language: 'text/javascript'
+      }]
+    })
+  );
+  await writeFile(
+    path.join(collectionDir, 'Root.request.yaml'),
+    stringify({
+      $kind: 'http-request',
+      name: 'Root request',
+      method: 'GET',
+      url: '{{baseUrl}}/get?root=true',
+      order: 2000
+    })
+  );
+}
+
+async function writeUpdatedTree(root: string): Promise<void> {
+  const collectionDir = path.join(root, 'postman/additional/local-view');
+  await rm(path.join(collectionDir, 'First Folder'), { recursive: true, force: true });
+  await writeFile(
+    path.join(collectionDir, '.resources/definition.yaml'),
+    stringify({ $kind: 'collection', name: 'Local View E2E Probe (updated)' })
+  );
+  await writeFile(
+    path.join(collectionDir, 'Root.request.yaml'),
+    stringify({
+      $kind: 'http-request',
+      name: 'Only request',
+      method: 'GET',
+      url: 'https://postman-echo.com/get?updated=true',
+      order: 1000
+    })
+  );
+}
+
+async function exportCollection(
+  gateway: AccessTokenGatewayClient,
+  collectionUid: string
+): Promise<JsonRecord> {
+  const exported = await gateway.requestJson<{ data?: { collection?: unknown } }>({
+    service: 'collection',
+    method: 'get',
+    path: `/v3/collections/${bareModelId(collectionUid)}/export`
+  });
+  return asRecord(exported?.data?.collection);
+}
 
 async function main(): Promise<void> {
   const apiKey = process.env.POSTMAN_API_KEY || process.env.POSTMAN_E2E_API_KEY_NON_ORG_MODE || '';
-  if (!apiKey) { console.log('[skip] no key'); return; }
+  if (!apiKey) {
+    console.log('[skip] no POSTMAN_API_KEY / POSTMAN_E2E_API_KEY_NON_ORG_MODE');
+    return;
+  }
 
   const provider = new AccessTokenProvider({ apiKey, apiBaseUrl: API });
   await provider.refresh();
   const gateway = new AccessTokenGatewayClient({ tokenProvider: provider });
   const client = new PostmanGatewayAssetsClient({ gateway });
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'local-view-e2e-'));
+  const previousCwd = process.cwd();
+  const previousWorkspace = process.env.GITHUB_WORKSPACE;
+  const resourcesState: PostmanResourcesState = {};
   let workspaceId = '';
   let collectionUid = '';
 
   try {
-    const wsRes = await gateway.requestJson<{ data?: { id?: string } }>({
-      service: 'workspaces', method: 'post', path: '/workspaces',
-      body: { name: `additional-collections-e2e-${stamp}`, visibilityStatus: 'personal' }
+    process.chdir(workspaceRoot);
+    process.env.GITHUB_WORKSPACE = workspaceRoot;
+    await writeCreatedTree(workspaceRoot);
+
+    const workspace = await gateway.requestJson<{ data?: { id?: string } }>({
+      service: 'workspaces',
+      method: 'post',
+      path: '/workspaces',
+      body: {
+        name: `local-view-e2e-${new Date().toISOString().replace(/[:.]/g, '-')}`,
+        visibilityStatus: 'personal'
+      }
     });
-    workspaceId = String(wsRes?.data?.id ?? '').trim();
-    if (!workspaceId) { console.log('[abort] no workspace'); return; }
-    console.log(`[setup] workspace ${workspaceId}`);
+    workspaceId = String(workspace?.data?.id ?? '').trim();
+    requireCondition(workspaceId, 'workspace create returned no id');
 
-    console.log('\n== createCollection (v2.1 -> v3 write) ==');
-    collectionUid = await client.createCollection(workspaceId, v21Collection);
-    console.log(`  [created] ${collectionUid}`);
-
-    console.log('\n== verify export: nesting + names ==');
-    const bareId = collectionUid.includes('-') ? collectionUid.slice(collectionUid.indexOf('-') + 1) : collectionUid;
-    const exported = await gateway.requestJson<{ data?: { collection?: unknown } }>({
-      service: 'collection', method: 'get', path: `/v3/collections/${bareId}/export`
+    const createdFiles = loadAdditionalCollectionFiles('postman/additional', resourcesState);
+    const created = await syncAdditionalCollections({
+      collectionFiles: createdFiles,
+      core: { info: console.log, warning: console.warn },
+      postman: client,
+      resourcesState,
+      workspaceId
     });
-    console.log(JSON.stringify(exported?.data?.collection, null, 2));
+    requireCondition(created.length === 1 && created[0].operation === 'created', 'create sync result');
+    collectionUid = created[0].collectionId;
 
-    console.log('\n== updateCollection (full-replace reconcile with a renamed + trimmed tree) ==');
-    const updated = {
-      info: {
-        name: 'Curated E2E Probe (updated)',
-        schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
-      },
-      item: [
-        {
-          name: 'Root health v2',
-          request: {
-            method: 'GET',
-            url: { raw: 'https://postman-echo.com/get?v=2', host: ['postman-echo', 'com'], path: ['get'], query: [{ key: 'v', value: '2' }] }
-          }
-        }
-      ]
-    };
-    await client.updateCollection(collectionUid, updated);
+    const firstExport = await exportCollection(gateway, collectionUid);
+    const firstItems = Array.isArray(firstExport.items) ? firstExport.items.map(asRecord) : [];
+    requireCondition(firstExport.name === 'Local View E2E Probe', 'created root name');
+    requireCondition(firstExport.description === 'created from Local View', 'created description');
+    requireCondition(firstExport.auth !== undefined, 'created root auth');
+    requireCondition(firstExport.variables !== undefined, 'created root variables');
+    requireCondition(firstExport.scripts !== undefined, 'created root scripts');
+    requireCondition(firstItems.map((item) => item.name).join(',') === 'First Folder,Root request', 'created item order');
+    requireCondition(Array.isArray(firstItems[0].items) && firstItems[0].items.length === 1, 'nested folder export');
+    console.log('[pass] Local View create/export preserved root fields, order, and nesting');
 
-    console.log('\n== verify export after update ==');
-    const exportedAfter = await gateway.requestJson<{ data?: { collection?: unknown } }>({
-      service: 'collection', method: 'get', path: `/v3/collections/${bareId}/export`
+    await writeUpdatedTree(workspaceRoot);
+    const updatedFiles = loadAdditionalCollectionFiles('postman/additional', resourcesState);
+    const updated = await syncAdditionalCollections({
+      collectionFiles: updatedFiles,
+      core: { info: console.log, warning: console.warn },
+      postman: client,
+      resourcesState,
+      workspaceId
     });
-    console.log(JSON.stringify(exportedAfter?.data?.collection, null, 2));
+    requireCondition(updated.length === 1 && updated[0].operation === 'updated', 'update sync result');
 
-    console.log('\n[verdict] createCollection + updateCollection round-trip complete.');
+    const secondExport = await exportCollection(gateway, collectionUid);
+    const secondItems = Array.isArray(secondExport.items) ? secondExport.items.map(asRecord) : [];
+    requireCondition(secondExport.name === 'Local View E2E Probe (updated)', 'updated root name');
+    requireCondition(secondExport.description === '', 'updated description cleared');
+    requireCondition(secondExport.auth === undefined, 'updated auth cleared');
+    requireCondition(secondExport.variables === undefined, 'updated variables cleared');
+    requireCondition(secondExport.scripts === undefined, 'updated scripts cleared');
+    requireCondition(secondItems.length === 1 && secondItems[0].name === 'Only request', 'updated item tree');
+    console.log('[pass] Local View update/export cleared root fields and replaced the item tree');
   } finally {
-    console.log('\n[teardown]');
+    process.chdir(previousCwd);
+    if (previousWorkspace === undefined) delete process.env.GITHUB_WORKSPACE;
+    else process.env.GITHUB_WORKSPACE = previousWorkspace;
     if (collectionUid) await client.deleteCollection(collectionUid).catch(() => {});
     if (workspaceId) {
-      await gateway.requestJson({ service: 'workspaces', method: 'delete', path: `/workspaces/${workspaceId}` }).catch(() => {});
+      await gateway.requestJson({
+        service: 'workspaces',
+        method: 'delete',
+        path: `/workspaces/${workspaceId}`
+      }).catch(() => {});
     }
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 }
 
-main().catch((error) => { console.error(error); process.exit(1); });
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

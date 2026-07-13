@@ -1,0 +1,11 @@
+# Keep the host's node_modules out of the build context so `COPY . .` cannot
+# clobber the linux deps that `npm ci` installs in the image (host is macOS
+# arm64; the container is linux x64). Also trims context size.
+node_modules
+build
+.git
+coverage
+*.log
+.env
+.env.*
+.DS_Store

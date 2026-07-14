@@ -26,7 +26,7 @@ const packageManifest = JSON.parse(
 ) as {
   description: string;
   main: string;
-  scripts: { build: string };
+  scripts: Record<string, string>;
 };
 const contractSmokeWorkflowText = readFileSync(
   resolve(repoRoot, '.github/workflows/contract-smoke.yml'),
@@ -56,10 +56,16 @@ describe('bootstrap action contract', () => {
       main: 'dist/action.cjs'
     });
     expect(packageManifest.main).toBe('dist/index.cjs');
-    expect(packageManifest.scripts.build).toContain('src/index.ts --bundle');
-    expect(packageManifest.scripts.build).toContain('--outfile=dist/index.cjs');
-    expect(packageManifest.scripts.build).toContain('src/main.ts --bundle');
-    expect(packageManifest.scripts.build).toContain('--outfile=dist/action.cjs');
+    expect(packageManifest.scripts.bundle).toContain('src/index.ts --bundle');
+    expect(packageManifest.scripts.bundle).toContain('--outfile=dist/index.cjs');
+    expect(packageManifest.scripts.bundle).toContain('src/main.ts --bundle');
+    expect(packageManifest.scripts.bundle).toContain('--outfile=dist/action.cjs');
+    expect(packageManifest.scripts.bundle).toContain("--banner:js='#!/usr/bin/env node'");
+    expect(packageManifest.scripts.bundle).toMatch(/chmod(?:\s+\+x|\s+755)\s+dist\/cli\.cjs/);
+    expect(packageManifest.scripts.build.match(/npm run typecheck/g) ?? []).toHaveLength(1);
+    expect(packageManifest.scripts.build.match(/npm run bundle/g) ?? []).toHaveLength(1);
+    expect(packageManifest.scripts['verify:dist:assert']).toContain('scripts/verify-dist-artifact.mjs');
+    expect(packageManifest.scripts['verify:dist']).toMatch(/build.*verify:dist:assert|verify:dist:assert/);
   });
 
   it('keeps integration-backend internal: contract and runtime resolve to bifrost while the manifest omits a visible default', () => {

@@ -12,18 +12,21 @@ function namedStep(name: string): string {
 }
 
 describe('CI workflow dist/pack race contract', () => {
-  it('builds dist once before fan-out and keeps the parallel dist gate read-only', () => {
+  it('bundles dist once before fan-out, typechecks once, and keeps the parallel dist gate read-only', () => {
     // Regression for the parallel race where `npm run verify:dist` deleted
     // dist/ while tests/cli.test.ts ran `npm pack`.
-    expect(ciWorkflow).toMatch(/run: npm run build[\s\S]*?- name: Run gates/);
+    expect(ciWorkflow).toMatch(/run: npm run bundle[\s\S]*?- name: Run gates/);
+    expect(ciWorkflow).not.toMatch(/run: npm run build/);
+    expect(ciWorkflow.match(/npm run typecheck/g) ?? []).toHaveLength(1);
 
     const runGates = namedStep('Run gates');
     expect(runGates).toContain('run test');
     expect(runGates).toContain('run dist');
-    expect(runGates).not.toContain('npm run verify:dist');
+    expect(runGates).toContain('npm run verify:dist:assert');
+    expect(runGates).not.toMatch(/npm run verify:dist(?:\s|$|"|')/);
     expect(runGates).not.toContain('npm run build');
     expect(runGates).not.toContain('rm -rf dist');
-    expect(runGates).toMatch(/run dist\s+git diff --ignore-space-at-eol --text --exit-code -- dist/);
+    expect(runGates).not.toMatch(/run dist\s+git diff --ignore-space-at-eol --text --exit-code -- dist/);
 
     // Preserve aggregate gate reporting and expected-dist upload.
     expect(runGates).toContain('gate:$n=pass');

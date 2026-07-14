@@ -4,7 +4,10 @@ import { pathToFileURL } from 'node:url';
 const DEFAULT_E2E_REPOSITORY = 'postman-cs/postman-actions-e2e';
 const DEFAULT_E2E_WORKFLOW = 'e2e.yml';
 const DEFAULT_E2E_REF = 'main';
-const DEFAULT_TIMEOUT_SECONDS = 13200;
+// Live smoke-tier runs complete in 3-4 minutes with parallel sandbox
+// isolation (no cross-run serialize wait). 30 minutes is 7-10x headroom;
+// E2E_GATE_TIMEOUT_SECONDS overrides for exceptional runs.
+const DEFAULT_TIMEOUT_SECONDS = 1800;
 const DEFAULT_POLL_SECONDS = 10;
 const TRANSIENT_BACKOFF_BASE_SECONDS = 15;
 const TRANSIENT_BACKOFF_CAP_SECONDS = 120;

@@ -64,8 +64,10 @@ describe('bootstrap action contract', () => {
     expect(packageManifest.scripts.bundle).toMatch(/chmod(?:\s+\+x|\s+755)\s+dist\/cli\.cjs/);
     expect(packageManifest.scripts.build.match(/npm run typecheck/g) ?? []).toHaveLength(1);
     expect(packageManifest.scripts.build.match(/npm run bundle/g) ?? []).toHaveLength(1);
-    expect(packageManifest.scripts['verify:dist:assert']).toContain('scripts/verify-dist-artifact.mjs');
-    expect(packageManifest.scripts['verify:dist']).toMatch(/build.*verify:dist:assert|verify:dist:assert/);
+    expect(packageManifest.scripts['verify:dist:assert']).toBe(
+      'git diff --ignore-space-at-eol --text --exit-code -- dist && node scripts/verify-dist-artifact.mjs'
+    );
+    expect(packageManifest.scripts['verify:dist']).toBe('npm run build && npm run verify:dist:assert');
   });
 
   it('keeps integration-backend internal: contract and runtime resolve to bifrost while the manifest omits a visible default', () => {

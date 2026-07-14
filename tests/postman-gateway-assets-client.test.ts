@@ -136,6 +136,28 @@ describe('PostmanGatewayAssetsClient', () => {
       expect((post?.body as { options: Record<string, unknown> }).options).not.toHaveProperty('nestedFolderHierarchy');
     });
 
+    it('retries a transient timeout while renaming a generated collection', async () => {
+      let posted = false;
+      let renameAttempts = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'post') {
+          posted = true;
+          return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { t: 'completed' } });
+        if (env.method === 'patch' && env.path === '/v3/collections/collection-1') {
+          renameAttempts += 1;
+          return renameAttempts === 1
+            ? jsonResponse({ error: { details: 'ESOCKETTIMEDOUT', source: 'downstream' } }, { status: 500 })
+            : jsonResponse({ data: { id: 'collection-1' } });
+        }
+        return jsonResponse({ data: posted ? [{ collection: 'owner-collection-1', name: '[Smoke] P [bootstrap:test-run]' }] : [] });
+      });
+
+      await expect(client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback')).resolves.toBe('owner-collection-1');
+      expect(renameAttempts).toBe(2);
+    });
+
     it('retries a 423-locked generate then succeeds', async () => {
       let attempts = 0;
       let posted = false;

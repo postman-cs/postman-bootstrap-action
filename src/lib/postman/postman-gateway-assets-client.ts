@@ -492,7 +492,8 @@ export class PostmanGatewayAssetsClient {
       service: 'collection',
       method: 'patch',
       path: `/v3/collections/${this.bareModelId(collectionId)}`,
-      retry: 'none',
+      // Replacing a generated collection's name with the same value is idempotent.
+      retry: 'safe',
       body: [{ op: 'replace', path: '/name', value: name }]
     });
   }

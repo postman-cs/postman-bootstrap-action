@@ -153,13 +153,6 @@ export function writeResourcesState(state: PostmanResourcesState): void {
   writeFileSync(target, stringify(state), 'utf8');
 }
 
-export function getFirstCloudResourceId(map: CloudResourceMap | undefined): string | undefined {
-  if (!map) {
-    return undefined;
-  }
-  return Object.values(map)[0];
-}
-
 export function findCloudResourceId(
   map: CloudResourceMap | undefined,
   matcher: (filePath: string) => boolean

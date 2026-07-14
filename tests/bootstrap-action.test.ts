@@ -1799,7 +1799,7 @@ paths:
       stringifyYaml({
         workspace: { id: 'ws-existing' },
         cloudResources: {
-          specs: { '../index.yaml': 'spec-v111' },
+          specs: { 'spec-url:https://example.test/openapi.yaml#release=release-v1.1.1': 'spec-v111' },
           collections: {
             '../postman/collections/core-payments release-v1.1.1': 'col-baseline-v111',
             '../postman/collections/[Smoke] core-payments release-v1.1.1': 'col-smoke-v111',
@@ -1971,7 +1971,7 @@ paths:
       stringifyYaml({
         workspace: { id: 'ws-from-file' },
         cloudResources: {
-          specs: { '../index.yaml': 'spec-from-file' },
+          specs: { 'spec-url:https://example.test/openapi.yaml': 'spec-from-file' },
           collections: {
             '../postman/curated/[Smoke] curated.json': 'col-additional-smoke-legacy',
             '../postman/curated/[Contract] curated.json': 'col-additional-contract-legacy',

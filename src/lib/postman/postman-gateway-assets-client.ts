@@ -758,6 +758,7 @@ export class PostmanGatewayAssetsClient {
           service: 'collection',
           method: 'patch',
           path: `/v3/collections/${cid}/items/${itemId}`,
+          retry: 'safe',
           headers: { 'X-Entity-Type': entityType },
           body: [{ op: 'add', path: '/scripts', value: scripts }]
         });
@@ -868,6 +869,7 @@ export class PostmanGatewayAssetsClient {
         service: 'collection',
         method: 'patch',
         path: `/v3/collections/${cid}/items/${itemId}`,
+        retry: 'safe',
         headers: { 'X-Entity-Type': 'http-request' },
         body: [{ op: 'add', path: '/scripts', value: toV3Scripts(smokeTests) }]
       });
@@ -1063,6 +1065,7 @@ export class PostmanGatewayAssetsClient {
         service: 'collection',
         method: 'patch',
         path: `/v3/collections/${cid}/items/${script.itemId}`,
+        retry: 'safe',
         headers: { 'X-Entity-Type': 'http-request' },
         body: [{ op: 'add', path: '/scripts', value: toV3Scripts(script.exec) }]
       });

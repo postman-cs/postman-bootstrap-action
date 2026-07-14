@@ -44,7 +44,11 @@ function makeClient(
     return handler(env, i++);
   });
   const provider = new AccessTokenProvider({ accessToken: 'tok-1' });
-  const gateway = new AccessTokenGatewayClient({ tokenProvider: provider, fetchImpl });
+  const gateway = new AccessTokenGatewayClient({
+    tokenProvider: provider,
+    fetchImpl,
+    sleepImpl: async () => undefined
+  });
   const client = new PostmanGatewayAssetsClient({
     gateway,
     sleep: async () => undefined,
@@ -461,6 +465,31 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(secretsPatchAttempts).toBe(2);
       const secretsPatches = calls.filter((c) => c.method === 'patch' && /\/items\/55363555-secrets$/.test(c.path));
       expect(secretsPatches).toHaveLength(2);
+    });
+
+    it('retries a transient downstream timeout while patching an existing leaf script', async () => {
+      const items = [
+        { id: '55363555-leaf-1', $kind: 'http-request', name: 'Ping' },
+        { id: '55363555-secrets', $kind: 'http-request', name: '00 - Resolve Secrets' }
+      ];
+      let leafPatchAttempts = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get') return jsonResponse({ data: items });
+        if (env.method === 'patch') {
+          leafPatchAttempts += 1;
+          return leafPatchAttempts === 1
+            ? jsonResponse(
+                { error: { name: 'serverError', details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+                { status: 500 }
+              )
+            : jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({ error: 'unexpected mutation' }, { status: 500 });
+      });
+
+      await client.injectTests('55363555-model-9', 'smoke');
+
+      expect(leafPatchAttempts).toBe(2);
     });
 
     it('is idempotent: skips the create when a secrets resolver already exists', async () => {

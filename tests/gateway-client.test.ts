@@ -183,6 +183,57 @@ describe('AccessTokenGatewayClient', () => {
     expect(sleep).toHaveBeenCalledWith(10);
   });
 
+  it('retries an explicitly safe PATCH after a transient downstream timeout', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response('{"error":{"name":"serverError","details":"ESOCKETTIMEDOUT","source":"downstream"}}', { status: 500 })
+      )
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+      fetchImpl,
+      retryBaseDelayMs: 10,
+      sleepImpl: sleep
+    });
+
+    const result = await client.requestJson({
+      service: 'collection',
+      method: 'patch',
+      path: '/v3/collections/x/items/y',
+      retry: 'safe',
+      body: [{ op: 'add', path: '/scripts', value: [] }]
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(10);
+  });
+
+  it('does not retry a PATCH unless the caller marks it safe', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response('{"error":{"name":"serverError","details":"ESOCKETTIMEDOUT","source":"downstream"}}', { status: 500 })
+      )
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+      fetchImpl,
+      sleepImpl: async () => undefined
+    });
+
+    await expect(client.requestJson({
+      service: 'collection',
+      method: 'patch',
+      path: '/v3/collections/x',
+      body: [{ op: 'replace', path: '/name', value: 'X' }]
+    })).rejects.toThrow(/500/);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('exhausts the transient retry budget and raises a redacted error', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

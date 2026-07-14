@@ -721,15 +721,26 @@ export class PostmanGatewayAssetsClient {
 
   // --- collection v3 mutation + tagging (live-proven 2026-06-30; see docs/REST-to-gateway.md) ---
   //
-  // These retire bootstrap's last asset-op PMAK dependencies. The gateway keys
-  // the v3 collection-items surface on the BARE model id (strip the `<owner>-`
-  // prefix) with a trailing slash; the tagging service is distinct from the
-  // collection service and takes the FULL uid.
+  // These retire bootstrap's last asset-op PMAK dependencies. Collection ROOT
+  // routes (GET/PATCH/DELETE `/v3/collections/:id`) accept the bare model id.
+  // Collection ITEMS routes (`/v3/collections/:id/items/...`) must use the FULL
+  // public uid (`<owner>-<uuid>`): bare model ids are flaky on org-mode squads
+  // (live-proven 2026-07-14 on team 172912 / Northwind — immediate post-generation
+  // `GET .../items/` returns 403 FORBIDDEN with bare id, 200 with full uid).
+  // The tagging service is distinct and takes the FULL uid.
 
-  /** `<owner>-<uuid>` public uid -> bare `<uuid>` model id (the v3 items surface keys on it). */
+  /** `<owner>-<uuid>` public uid -> bare `<uuid>` model id (collection ROOT routes only). */
   private bareModelId(uid: string): string {
     const u = String(uid ?? '').trim();
     return u.includes('-') ? u.slice(u.indexOf('-') + 1) : u;
+  }
+
+  /**
+   * Collection id for ITEMS routes. Prefer the full public uid; fall back to the
+   * trimmed input when the caller already has a bare/model id.
+   */
+  private collectionItemsId(uid: string): string {
+    return String(uid ?? '').trim();
   }
 
   /**
@@ -803,9 +814,9 @@ export class PostmanGatewayAssetsClient {
   /**
    * Inject smoke-test assertions into every leaf request of a spec-generated
    * collection, over the v3 collection-items surface (no PMAK):
-   *   1. `GET /v3/collections/:cid/items/` (bare model id, trailing slash) — flat list.
+   *   1. `GET /v3/collections/:cid/items/` (FULL public uid, trailing slash) — flat list.
    *   2. for each `http-request` leaf, `PATCH /v3/collections/:cid/items/:itemId`
-   *      (full uid for `:itemId`, `X-Entity-Type: http-request` header) with a
+   *      (full uid for `:cid` and `:itemId`, `X-Entity-Type: http-request` header) with a
    *      JSON-Patch that sets `/scripts` to the canonical v3 shape
    *      (`[{type:'afterResponse', code, language}]`). The v3 surface persists test
    *      scripts under `scripts`, NOT `events`: a `/events` patch returns 200 but is
@@ -818,7 +829,7 @@ export class PostmanGatewayAssetsClient {
    */
   async injectTests(collectionUid: string, type: 'smoke'): Promise<void> {
     void type;
-    const cid = this.bareModelId(collectionUid);
+    const cid = this.collectionItemsId(collectionUid);
     const listed = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
       method: 'get',
@@ -910,8 +921,8 @@ export class PostmanGatewayAssetsClient {
         position: { parent: { id: cid, $kind: 'collection' } }
       }
     });
-    // List + create echo item ids as full uids, and `:itemId` PATCH wants the full
-    // uid (bare model id only for `:cid`) — use the created id verbatim, do NOT bare it.
+    // List + create echo item ids as full uids; items routes want full uids for
+    // both `:cid` and `:itemId` — use the created id verbatim, do NOT bare it.
     const newItemId = String(asRecord(created?.data)?.id ?? '').trim();
     if (!newItemId) return;
     // Attach the secrets-resolution test script (CI-skipped) as a canonical v3
@@ -1016,7 +1027,7 @@ export class PostmanGatewayAssetsClient {
    * Inject the deterministic OpenAPI contract assertions into every generated
    * request of a spec-generated collection, entirely over the v3 collection
    * surface (no PMAK, no v2.1.0 read/PUT):
-   *   1. `GET /v3/collections/:cid/items/` — flat item list (ids as full uids).
+   *   1. `GET /v3/collections/:cid/items/` — flat item list (FULL public uid for `:cid`).
    *   2. `GET /v3/collections/:cid/items/:itemId` (`X-Entity-Type: http-request`)
    *      — the full v3 IR record (method/url/headers/body) the matcher needs.
    *   3. `planContractItemScripts` matches each request to its OpenAPI operation
@@ -1027,7 +1038,7 @@ export class PostmanGatewayAssetsClient {
    * Returns the non-fatal instrumentation warnings for the caller to surface.
    */
   async injectContractTests(collectionUid: string, index: ContractIndex): Promise<string[]> {
-    const cid = this.bareModelId(collectionUid);
+    const cid = this.collectionItemsId(collectionUid);
     const listed = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
       method: 'get',
@@ -1485,11 +1496,13 @@ export class PostmanGatewayAssetsClient {
     if (!rawId) {
       throw new Error('Collection create did not return an id');
     }
-    const cid = this.bareModelId(rawId);
+    // Items routes need the full public uid; root PATCH/DELETE still accept bare.
+    const itemsCid = this.collectionItemsId(rawId);
+    const rootCid = this.bareModelId(rawId);
     await options.onRootCreated?.(rawId);
     try {
-      await this.createItemTree(cid, asItemArray(v3.items), cid);
-      await this.applyCollectionLevelSettings(cid, v3, { rename: true });
+      await this.createItemTree(itemsCid, asItemArray(v3.items), itemsCid);
+      await this.applyCollectionLevelSettings(rootCid, v3, { rename: true });
     } catch (error) {
       if (options.onRootCreated) throw error;
       let cleanupError: unknown;
@@ -1519,17 +1532,18 @@ export class PostmanGatewayAssetsClient {
    * from the converted v3 IR and reapply name/auth/variables.
    */
   async updateCollection(collectionUid: string, collection: unknown): Promise<void> {
-    const cid = this.bareModelId(collectionUid);
+    const itemsCid = this.collectionItemsId(collectionUid);
+    const rootCid = this.bareModelId(collectionUid);
     const v3 = this.normalizeCollectionForWrite(collection);
 
-    const existingItems = await this.listCollectionItems(cid);
+    const existingItems = await this.listCollectionItems(itemsCid);
     for (const item of existingItems) {
       const itemId = String(item.id).trim();
       try {
         await this.gateway.requestJson<JsonRecord>({
           service: 'collection',
           method: 'delete',
-          path: `/v3/collections/${cid}/items/${itemId}`,
+          path: `/v3/collections/${itemsCid}/items/${itemId}`,
           retry: 'none',
           headers: { 'X-Entity-Type': String(item.$kind ?? 'http-request') }
         });
@@ -1537,7 +1551,7 @@ export class PostmanGatewayAssetsClient {
         if (isAmbiguousTransportError(error)) {
           // Re-read before deciding. Gone => cascade/spurious 5xx; still present =>
           // fall through to the post-loop verification so we never recreate.
-          const stillPresent = (await this.listCollectionItems(cid)).some(
+          const stillPresent = (await this.listCollectionItems(itemsCid)).some(
             (candidate) => String(candidate.id ?? '').trim() === itemId
           );
           if (!stillPresent) continue;
@@ -1549,14 +1563,14 @@ export class PostmanGatewayAssetsClient {
       }
     }
 
-    const remainingItems = await this.listCollectionItems(cid);
+    const remainingItems = await this.listCollectionItems(itemsCid);
     if (remainingItems.length > 0) {
       throw new Error(
         `Collection delete verification failed: ${remainingItems.length} old items remain`
       );
     }
 
-    await this.createItemTree(cid, asItemArray(v3.items), cid);
-    await this.applyCollectionLevelSettings(cid, v3, { rename: true, reconcileRemovals: true });
+    await this.createItemTree(itemsCid, asItemArray(v3.items), itemsCid);
+    await this.applyCollectionLevelSettings(rootCid, v3, { rename: true, reconcileRemovals: true });
   }
 }

@@ -409,11 +409,11 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await client.injectTests('55363555-model-9', 'smoke');
 
-      // 1) list on the bare model id with trailing slash
+      // 1) list on the FULL public uid with trailing slash (bare ids are flaky on org squads)
       expect(calls[0]).toMatchObject({
         service: 'collection',
         method: 'get',
-        path: '/v3/collections/model-9/items/'
+        path: '/v3/collections/55363555-model-9/items/'
       });
       // 2) one /scripts PATCH per http-request leaf (full uid, afterResponse shape)
       const leafPatches = calls.filter((c) => c.method === 'patch' && /\/items\/55363555-leaf-/.test(c.path));
@@ -424,7 +424,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(patch[0].value[0].code).toContain('pm.test');
       // 3) resolve-secrets created with ROOT-level v3 IR headers/body/auth, then scripted
       const create = calls.find((c) => c.method === 'post');
-      expect(create?.path).toBe('/v3/collections/model-9/items/');
+      expect(create?.path).toBe('/v3/collections/55363555-model-9/items/');
       const createBody = create?.body as {
         name: string;
         payload?: unknown;
@@ -505,7 +505,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.some((c) => c.method === 'post')).toBe(false);
       // the existing resolver leaf is NOT re-scripted as a normal leaf
       expect(calls.filter((c) => c.method === 'patch')).toHaveLength(1);
-      expect(calls.find((c) => c.method === 'patch')?.path).toBe('/v3/collections/model-9/items/55363555-leaf-1');
+      expect(calls.find((c) => c.method === 'patch')?.path).toBe('/v3/collections/55363555-model-9/items/55363555-leaf-1');
     });
   });
 
@@ -611,7 +611,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: { id: '55363555-root-uid' } });
         }
-        if (env.method === 'post' && env.path === '/v3/collections/root-uid/items/') {
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-root-uid/items/') {
           const body = env.body as { name?: string };
           if (body?.name === 'Folder') return jsonResponse({ data: { id: '55363555-folder-uid' } });
           return jsonResponse({ data: { id: '55363555-leaf-uid' } });
@@ -626,15 +626,15 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(rootCreate).toMatchObject({ headers: expect.objectContaining({ 'x-entity-target': 'http' }), body: { name: 'Curated [bootstrap:test-run]' } });
 
       const folderCreate = calls.find(
-        (c) => c.path === '/v3/collections/root-uid/items/' && (c.body as { name?: string })?.name === 'Folder'
+        (c) => c.path === '/v3/collections/55363555-root-uid/items/' && (c.body as { name?: string })?.name === 'Folder'
       );
       expect(folderCreate).toMatchObject({
         headers: expect.objectContaining({ 'x-entity-type': 'collection' }),
-        body: { $kind: 'collection', name: 'Folder', position: { parent: { id: 'root-uid', $kind: 'collection' } } }
+        body: { $kind: 'collection', name: 'Folder', position: { parent: { id: '55363555-root-uid', $kind: 'collection' } } }
       });
 
       const leafCreate = calls.find(
-        (c) => c.path === '/v3/collections/root-uid/items/' && (c.body as { name?: string })?.name === 'Leaf'
+        (c) => c.path === '/v3/collections/55363555-root-uid/items/' && (c.body as { name?: string })?.name === 'Leaf'
       );
       expect(leafCreate?.headers['x-entity-type']).toBe('http-request');
       expect(leafCreate?.body).toMatchObject({
@@ -672,7 +672,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: { id: '55363555-root-v3' } });
         }
-        if (env.method === 'post' && env.path === '/v3/collections/root-v3/items/') {
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-root-v3/items/') {
           return jsonResponse({ data: { id: '55363555-create-v3' } });
         }
         if (env.method === 'patch') {
@@ -687,7 +687,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
       expect(rootCreate?.body).toEqual({ name: 'Curated v3 [bootstrap:test-run]' });
 
-      const itemCreate = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/root-v3/items/');
+      const itemCreate = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/55363555-root-v3/items/');
       expect(itemCreate).toMatchObject({
         headers: expect.objectContaining({ 'x-entity-type': 'http-request' }),
         body: expect.objectContaining({
@@ -703,7 +703,7 @@ describe('PostmanGatewayAssetsClient', () => {
       });
       expect((itemCreate?.body as Record<string, unknown>).id).toBeUndefined();
 
-      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/root-v3/items/55363555-create-v3');
+      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/55363555-root-v3/items/55363555-create-v3');
       expect(itemScriptPatch).toMatchObject({
         method: 'patch',
         headers: expect.objectContaining({ 'x-entity-type': 'http-request' }),
@@ -765,7 +765,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: { id: '55363555-root-uid' } });
         }
-        if (env.method === 'post' && env.path === '/v3/collections/root-uid/items/') {
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-root-uid/items/') {
           return jsonResponse({ data: {} });
         }
         return jsonResponse({});
@@ -823,7 +823,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: { id: '55363555-root-uid' } });
         }
-        if (env.method === 'post' && env.path === '/v3/collections/root-uid/items/') {
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-root-uid/items/') {
           return jsonResponse({ data: { id: '55363555-leaf-uid' } });
         }
         if (env.method === 'patch') {
@@ -834,7 +834,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await client.createCollection('ws-1', v21);
 
-      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/root-uid/items/55363555-leaf-uid');
+      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/55363555-root-uid/items/55363555-leaf-uid');
       const itemScripts = (itemScriptPatch?.body as Array<{ value: Array<{ type: string }> }>)[0].value;
       expect(itemScripts.every((script) => !String(script.type).startsWith('http:'))).toBe(true);
       expect(itemScripts.map((script) => script.type)).toContain('afterResponse');
@@ -864,7 +864,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: { id: '55363555-root-uid' } });
         }
-        if (env.method === 'post' && env.path === '/v3/collections/root-uid/items/') {
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-root-uid/items/') {
           const body = env.body as { name?: string };
           return jsonResponse({ data: { id: `55363555-${body.name}-uid` } });
         }
@@ -874,7 +874,7 @@ describe('PostmanGatewayAssetsClient', () => {
       await client.createCollection('ws-1', v3);
 
       const createdNames = calls
-        .filter((c) => c.method === 'post' && c.path === '/v3/collections/root-uid/items/')
+        .filter((c) => c.method === 'post' && c.path === '/v3/collections/55363555-root-uid/items/')
         .map((c) => (c.body as { name?: string }).name);
       expect(createdNames).toEqual(['First', 'Second', 'Third']);
     });
@@ -964,7 +964,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: { id: '55363555-legacy-root' } });
         }
-        if (env.method === 'post' && env.path === '/v3/collections/legacy-root/items/') {
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-legacy-root/items/') {
           const name = String((env.body as { name?: string }).name ?? 'item').toLowerCase();
           return jsonResponse({ data: { id: `55363555-${name}-id` } });
         }
@@ -991,7 +991,7 @@ describe('PostmanGatewayAssetsClient', () => {
       };
       let itemListReads = 0;
       const { client, calls } = makeClient((env) => {
-        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           itemListReads += 1;
           return jsonResponse({
             data: itemListReads === 1
@@ -1012,13 +1012,13 @@ describe('PostmanGatewayAssetsClient', () => {
             }
           });
         }
-        if (env.method === 'delete' && env.path === '/v3/collections/cid-1/items/old-1') {
+        if (env.method === 'delete' && env.path === '/v3/collections/55363555-cid-1/items/old-1') {
           return new Response(null, { status: 204 });
         }
-        if (env.method === 'delete' && env.path === '/v3/collections/cid-1/items/old-2') {
+        if (env.method === 'delete' && env.path === '/v3/collections/55363555-cid-1/items/old-2') {
           return jsonResponse({ error: { code: 'GENERIC_ERROR' } }, { status: 500 });
         }
-        if (env.method === 'post' && env.path === '/v3/collections/cid-1/items/') {
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: { id: '55363555-new-leaf-uid' } });
         }
         if (env.method === 'patch' && env.path === '/v3/collections/cid-1') {
@@ -1029,11 +1029,11 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await client.updateCollection('55363555-cid-1', v21);
 
-      expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/cid-1/items/old-1')).toBe(true);
-      expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/cid-1/items/old-2')).toBe(true);
+      expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/55363555-cid-1/items/old-1')).toBe(true);
+      expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/55363555-cid-1/items/old-2')).toBe(true);
       expect(calls.some((c) => c.method === 'get' && c.path === '/v3/collections/cid-1')).toBe(true);
 
-      const created = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/cid-1/items/');
+      const created = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/55363555-cid-1/items/');
       expect(created).toMatchObject({ body: expect.objectContaining({ name: 'New Leaf' }) });
 
       const patch = calls.find((c) => c.method === 'patch' && c.path === '/v3/collections/cid-1');
@@ -1051,7 +1051,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
     it('rejects malformed existing item listings before deleting anything', async () => {
       const { client, calls } = makeClient((env) => {
-        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: [{ name: 'Missing id', $kind: 'http-request' }] });
         }
         return jsonResponse({ data: {} });
@@ -1070,7 +1070,7 @@ describe('PostmanGatewayAssetsClient', () => {
     it('does not recreate when a tolerated delete error leaves an old item behind', async () => {
       let itemListReads = 0;
       const { client, calls } = makeClient((env) => {
-        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           itemListReads += 1;
           return jsonResponse({ data: [{ id: 'old-1', name: 'Old', $kind: 'http-request' }] });
         }
@@ -1109,7 +1109,7 @@ describe('PostmanGatewayAssetsClient', () => {
         description: ''
       };
       const { client, calls } = makeClient((env) => {
-        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: [] });
         }
         if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
@@ -1224,13 +1224,13 @@ describe('PostmanGatewayAssetsClient', () => {
         ]
       };
       const { client, calls } = makeClient((env) => {
-        if (env.method === 'get' && env.path === '/v3/collections/cid-1/items/') {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: [] });
         }
         if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
           return jsonResponse({ data: { id: '55363555-cid-1', name: 'Old', description: '' } });
         }
-        if (env.method === 'post' && env.path === '/v3/collections/cid-1/items/') {
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: { id: '55363555-leaf-uid' } });
         }
         if (env.method === 'patch') {
@@ -1241,7 +1241,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await client.updateCollection('55363555-cid-1', v21);
 
-      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/cid-1/items/55363555-leaf-uid');
+      const itemScriptPatch = calls.find((c) => c.path === '/v3/collections/55363555-cid-1/items/55363555-leaf-uid');
       const itemScripts = (itemScriptPatch?.body as Array<{ value: Array<{ type: string }> }>)[0].value;
       expect(itemScripts.every((script) => !String(script.type).startsWith('http:'))).toBe(true);
 

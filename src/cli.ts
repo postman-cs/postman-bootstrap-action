@@ -1,5 +1,4 @@
-#!/usr/bin/env node
-import { existsSync, lstatSync, readlinkSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
@@ -33,6 +32,55 @@ export interface CliRuntime {
 }
 
 type ReporterCore = BootstrapExecutionDependencies['core'];
+
+const HELP_TEXT = `Usage: postman-bootstrap [options]
+
+Bootstrap Postman workspaces, specs, and collections from OpenAPI.
+
+Options:
+  --help                         Show this help and exit
+  --version                      Show version and exit
+  --result-json <path>           Write JSON result (default: postman-bootstrap-result.json)
+  --dotenv-path <path>           Optional dotenv output path
+  --<input-name> <value>         Action input as kebab-case flag (same names as action.yml)
+
+Examples:
+  postman-bootstrap --help
+  postman-bootstrap --project-name demo --spec-path ./openapi.yaml ...
+`;
+
+function wantsHelp(argv: string[]): boolean {
+  return argv.includes('--help') || argv.includes('-h');
+}
+
+function wantsVersion(argv: string[]): boolean {
+  return argv.includes('--version') || argv.includes('-V');
+}
+
+function resolvePackageVersion(): string {
+  const candidates: string[] = [];
+  // Present in the esbuild CJS bundle (dist/cli.cjs -> ../package.json).
+  if (typeof __filename === 'string' && __filename) {
+    candidates.push(path.join(path.dirname(__filename), '..', 'package.json'));
+  }
+  // vitest/ESM and local smoke: package.json at cwd.
+  candidates.push(path.join(process.cwd(), 'package.json'));
+
+  for (const packageJsonPath of candidates) {
+    try {
+      const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as {
+        name?: string;
+        version?: string;
+      };
+      if (packageJson.name === '@postman-cse/onboarding-bootstrap' && packageJson.version) {
+        return String(packageJson.version).trim();
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return '0.0.0';
+}
 
 export class ConsoleReporter implements ReporterCore {
   public error(message: string): void {
@@ -352,6 +400,19 @@ export async function runCli(
   argv: string[] = process.argv.slice(2),
   runtime: CliRuntime = {}
 ): Promise<void> {
+  const writeStdout = runtime.writeStdout ?? ((chunk: string) => process.stdout.write(chunk));
+  if (wantsHelp(argv) && wantsVersion(argv)) {
+    throw new Error('Cannot use --help and --version together');
+  }
+  if (wantsHelp(argv)) {
+    writeStdout(HELP_TEXT);
+    return;
+  }
+  if (wantsVersion(argv)) {
+    writeStdout(`${resolvePackageVersion()}\n`);
+    return;
+  }
+
   const env = runtime.env ?? process.env;
   const config = parseCliArgs(argv, env);
   const inputs = resolveInputs(config.inputEnv);
@@ -394,7 +455,6 @@ export async function runCli(
   await writeOptionalFile(config.resultJsonPath, JSON.stringify(result, null, 2));
   await writeOptionalFile(config.dotenvPath, toDotenv(result));
 
-  const writeStdout = runtime.writeStdout ?? ((chunk: string) => process.stdout.write(chunk));
   writeStdout(`${JSON.stringify(result, null, 2)}\n`);
 }
 

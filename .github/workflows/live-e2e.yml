@@ -9,6 +9,12 @@ on:
       - synchronize
       - reopened
       - ready_for_review
+    paths:
+      - 'src/**'
+      - 'dist/**'
+      - 'action.yml'
+      - 'package*.json'
+      - 'fixtures/**'
 
 permissions:
   contents: read

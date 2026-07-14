@@ -95,6 +95,7 @@ jobs:
         env:
           E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
           E2E_GATE_FAILURE_INJECTION: ${{ inputs.e2e_failure_injection || '' }}
+          E2E_GATE_SUITE: smoke
         run: node .github/scripts/wait-for-e2e-gate.mjs
 
   publish:

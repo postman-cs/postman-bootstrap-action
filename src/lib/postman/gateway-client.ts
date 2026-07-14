@@ -14,6 +14,8 @@ export interface GatewayRequest {
   body?: unknown;
   /** Extra route-specific headers (e.g. x-app-version, X-Entity-Type). */
   headers?: Record<string, string>;
+  /** Unsafe mutations must reconcile after an ambiguous response, not resend. */
+  retry?: 'safe' | 'none';
 }
 
 export interface AccessTokenGatewayClientOptions {
@@ -156,7 +158,12 @@ export class AccessTokenGatewayClient {
         throw this.toHttpError(request, response, retryBody);
       }
 
-      if (isTransientGatewayError(response.status, body) && attempt < this.maxRetries) {
+      const retryMode = request.retry ?? (request.method === 'get' ? 'safe' : 'none');
+      if (
+        retryMode === 'safe' &&
+        isTransientGatewayError(response.status, body) &&
+        attempt < this.maxRetries
+      ) {
         const delay = this.retryBaseDelayMs * 2 ** attempt;
         attempt += 1;
         await this.sleepImpl(delay);

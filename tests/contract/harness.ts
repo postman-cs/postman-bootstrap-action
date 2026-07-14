@@ -86,6 +86,8 @@ export async function runContractAction(options: ContractRunOptions): Promise<Co
 
   __resetIdentityMemo();
   vi.stubEnv('GITHUB_WORKSPACE', specDir);
+  vi.stubEnv('GITHUB_RUN_ID', 'contract-test-run');
+  vi.stubEnv('GITHUB_RUN_ATTEMPT', '1');
   for (const name of NEUTRALIZED_ENV_VARS) {
     vi.stubEnv(name, '');
   }

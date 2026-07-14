@@ -54,7 +54,11 @@ export interface AdditionalCollectionsLogger {
 }
 
 export interface AdditionalCollectionsPostmanClient {
-  createCollection?: (workspaceId: string, collection: unknown) => Promise<string>;
+  createCollection?: (
+    workspaceId: string,
+    collection: unknown,
+    options?: { onRootCreated?: (id: string) => void | Promise<void> }
+  ) => Promise<string>;
   updateCollection?: (collectionUid: string, collection: unknown) => Promise<void>;
 }
 
@@ -131,17 +135,22 @@ function resolveInsideWorkspace(
   return resolved;
 }
 
+function resourcesStatePath(): string {
+  return path.join(workspaceRootForLocalInputs(), RESOURCES_PATH);
+}
+
 export function readResourcesState(): PostmanResourcesState | null {
   try {
-    return parse(readFileSync(RESOURCES_PATH, 'utf8')) as PostmanResourcesState;
+    return parse(readFileSync(resourcesStatePath(), 'utf8')) as PostmanResourcesState;
   } catch {
     return null;
   }
 }
 
 export function writeResourcesState(state: PostmanResourcesState): void {
-  mkdirSync(path.dirname(RESOURCES_PATH), { recursive: true });
-  writeFileSync(RESOURCES_PATH, stringify(state), 'utf8');
+  const target = resourcesStatePath();
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, stringify(state), 'utf8');
 }
 
 export function getFirstCloudResourceId(map: CloudResourceMap | undefined): string | undefined {
@@ -643,17 +652,23 @@ async function createAdditionalCollection(options: {
   file: AdditionalCollectionFile;
   postman: AdditionalCollectionsPostmanClient;
   resourcesState: PostmanResourcesState;
+  writeResourcesState: (state: PostmanResourcesState) => void;
   workspaceId: string;
 }): Promise<AdditionalCollectionSyncResult> {
-  const { core, file, postman, resourcesState, workspaceId } = options;
+  const { core, file, postman, resourcesState, workspaceId, writeResourcesState } = options;
   if (!postman.createCollection) {
     throw new Error(
       'Additional collection creates require createCollection support from the Postman client'
     );
   }
-  const collectionId = await postman.createCollection(workspaceId, file.collection);
-  ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId;
-  writeResourcesState(resourcesState);
+  const persistRoot = (collectionId: string): void => {
+    ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId;
+    writeResourcesState(resourcesState);
+  };
+  const collectionId = await postman.createCollection(workspaceId, file.collection, {
+    onRootCreated: persistRoot
+  });
+  persistRoot(collectionId);
   core.info(
     `Created additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
   );
@@ -671,9 +686,17 @@ export async function syncAdditionalCollections(options: {
   core: AdditionalCollectionsLogger;
   postman: AdditionalCollectionsPostmanClient;
   resourcesState: PostmanResourcesState;
+  writeResourcesState?: (state: PostmanResourcesState) => void;
   workspaceId: string;
 }): Promise<AdditionalCollectionSyncResult[]> {
-  const { collectionFiles, core, postman, resourcesState, workspaceId } = options;
+  const {
+    collectionFiles,
+    core,
+    postman,
+    resourcesState,
+    workspaceId,
+    writeResourcesState: writeState = writeResourcesState
+  } = options;
   const results: AdditionalCollectionSyncResult[] = [];
 
   for (const file of collectionFiles) {
@@ -697,12 +720,13 @@ export async function syncAdditionalCollections(options: {
           file,
           postman,
           resourcesState,
+          writeResourcesState: writeState,
           workspaceId
         }));
         continue;
       }
       ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = file.existingCollectionId;
-      writeResourcesState(resourcesState);
+      writeState(resourcesState);
       core.info(
         `Updated additional collection ${file.name} (${file.existingCollectionId}) from ${file.displayPath}`
       );
@@ -721,6 +745,7 @@ export async function syncAdditionalCollections(options: {
       file,
       postman,
       resourcesState,
+      writeResourcesState: writeState,
       workspaceId
     }));
   }

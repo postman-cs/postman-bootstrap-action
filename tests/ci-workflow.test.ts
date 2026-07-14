@@ -32,6 +32,8 @@ describe('CI workflow dist/pack race contract', () => {
     expect(runGates).toContain('gate:$n=pass');
     expect(runGates).toContain('gate:$n=fail');
     expect(runGates).toContain('::group::$n');
+    expect(runGates).toContain('MAX_PARALLEL_GATES=2');
+    expect(runGates).toContain('wait -n -p finished_pid');
 
     const upload = namedStep('Upload expected dist on mismatch');
     expect(upload).toContain('if: failure()');

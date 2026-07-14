@@ -5,7 +5,7 @@
 # an image layer. The finished binary bundles every dependency plus the Node
 # runtime, so the consumer needs no npm, no Node, and no token.
 
-FROM --platform=linux/amd64 node:24-bookworm AS build
+FROM --platform=linux/amd64 node:24-bookworm@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059 AS build
 
 WORKDIR /app
 

@@ -2,15 +2,57 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  buildDispatchInputs,
   buildCorrelationId,
+  findFailedJobUrl,
   findRunByCorrelation,
   isSuccessfulConclusion,
   isTerminalStatus,
   jitter,
   normalizeRunDetails,
+  normalizeSuite,
   parseRetryAfterMs,
   transientBackoffMs
 } from './wait-for-e2e-gate.mjs';
+
+test('normalizes smoke/full suite and rejects unknown values', () => {
+  assert.equal(normalizeSuite(undefined), 'full');
+  assert.equal(normalizeSuite(''), 'full');
+  assert.equal(normalizeSuite(' smoke '), 'smoke');
+  assert.equal(normalizeSuite('full'), 'full');
+  assert.throws(() => normalizeSuite('fast'), /E2E_GATE_SUITE must be smoke or full/);
+});
+
+test('buildDispatchInputs carries the selected suite to central e2e', () => {
+  assert.deepEqual(
+    buildDispatchInputs({
+      action: 'postman-bootstrap-action',
+      refName: 'abc123',
+      correlationId: 'corr-123',
+      failureInjection: '',
+      suite: 'smoke'
+    }),
+    {
+      action: 'postman-bootstrap-action',
+      ref: 'abc123',
+      gate_correlation_id: 'corr-123',
+      failure_injection: '',
+      suite: 'smoke'
+    }
+  );
+});
+
+test('findFailedJobUrl prefers the failed job and ignores successful jobs', () => {
+  assert.equal(
+    findFailedJobUrl([
+      { conclusion: 'success', html_url: 'https://example.test/jobs/1' },
+      { conclusion: 'cancelled', html_url: 'https://example.test/jobs/2' },
+      { conclusion: 'failure', html_url: 'https://example.test/jobs/3' }
+    ]),
+    'https://example.test/jobs/3'
+  );
+  assert.equal(findFailedJobUrl([{ conclusion: 'success', html_url: 'https://example.test/jobs/1' }]), null);
+});
 
 test('buildCorrelationId creates a stable run-scoped identifier', () => {
   assert.equal(

@@ -380,7 +380,8 @@ describe('additional local collection provisioning', () => {
         'ws-existing',
         expect.objectContaining({
           info: expect.objectContaining({ name: 'Refunds curated' })
-        })
+        }),
+        expect.objectContaining({ onRootCreated: expect.any(Function) })
       );
       expect(results).toEqual([
         expect.objectContaining({
@@ -457,7 +458,8 @@ describe('additional local collection provisioning', () => {
         'ws-existing',
         expect.objectContaining({
           info: expect.objectContaining({ name: 'Payments curated' })
-        })
+        }),
+        expect.objectContaining({ onRootCreated: expect.any(Function) })
       );
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('col-payments-stale')

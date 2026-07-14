@@ -38,5 +38,6 @@ jobs:
           E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
           E2E_GATE_ACTION: postman-bootstrap-action
           E2E_GATE_REF: ${{ github.event.pull_request.head.sha }}
+          E2E_GATE_SUITE: smoke
           E2E_GATE_CORRELATION_ID: pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.event.pull_request.head.sha }}
         run: node .github/scripts/wait-for-e2e-gate.mjs

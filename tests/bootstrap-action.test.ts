@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 import {
+  readResourcesState,
+  writeResourcesState
+} from '../src/lib/postman/additional-collections.js';
+import {
   lintSpecViaCli,
   normalizeSpecDocument,
   readActionInputs,
@@ -265,6 +269,7 @@ async function runExistingSpecBootstrap(
     github?: { getRepositoryCustomProperty: (name: string) => Promise<string> };
     inputs?: Partial<ResolvedInputs>;
     internalIntegration?: ReturnType<typeof createRollbackIntegration>;
+    resourcesState?: { read: typeof readResourcesState; write: typeof writeResourcesState };
   } = {}
 ) {
   return await runBootstrap(
@@ -280,6 +285,7 @@ async function runExistingSpecBootstrap(
       internalIntegration: options.internalIntegration,
       io: createIoStub(),
       postman,
+      resourcesState: options.resourcesState,
       specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
         new Response(VALID_SPEC_31, { status: 200 })
       )
@@ -562,6 +568,7 @@ describe('bootstrap action', () => {
         await runExistingSpecBootstrap(postman, {
           core,
           internalIntegration,
+          resourcesState: { read: readResourcesState, write: writeResourcesState },
           inputs: {
             additionalCollectionsDir: 'postman/curated',
             baselineCollectionId: 'col-baseline-existing',
@@ -576,7 +583,8 @@ describe('bootstrap action', () => {
           'ws-existing',
           expect.objectContaining({
             info: expect.objectContaining({ name: 'Refunds curated' })
-          })
+          }),
+          expect.objectContaining({ onRootCreated: expect.any(Function) })
         );
         expect(postman.updateCollection).toHaveBeenCalledWith(
           'col-payments-existing',
@@ -649,6 +657,7 @@ describe('bootstrap action', () => {
         });
 
         await runExistingSpecBootstrap(postman, {
+          resourcesState: { read: readResourcesState, write: writeResourcesState },
           inputs: {
             additionalCollectionsDir: 'postman/curated',
             baselineCollectionId: 'col-baseline-existing',
@@ -1790,7 +1799,7 @@ paths:
       stringifyYaml({
         workspace: { id: 'ws-existing' },
         cloudResources: {
-          specs: { '../index.yaml': 'spec-v111' },
+          specs: { 'spec-url:https://example.test/openapi.yaml#release=release-v1.1.1': 'spec-v111' },
           collections: {
             '../postman/collections/core-payments release-v1.1.1': 'col-baseline-v111',
             '../postman/collections/[Smoke] core-payments release-v1.1.1': 'col-smoke-v111',
@@ -1962,7 +1971,7 @@ paths:
       stringifyYaml({
         workspace: { id: 'ws-from-file' },
         cloudResources: {
-          specs: { '../index.yaml': 'spec-from-file' },
+          specs: { 'spec-url:https://example.test/openapi.yaml': 'spec-from-file' },
           collections: {
             '../postman/curated/[Smoke] curated.json': 'col-additional-smoke-legacy',
             '../postman/curated/[Contract] curated.json': 'col-additional-contract-legacy',
@@ -3223,7 +3232,7 @@ describe('runAction credential preflight', () => {
     // The gateway generateCollection resolves the new uid via the spec's
     // collection list (newest last), so accumulate one distinct uid per
     // generation to mirror the real store and avoid id collisions.
-    const generatedCollectionUids: string[] = [];
+    const generatedCollections: Array<{ collection: string; name: string }> = [];
     const router = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = String(input);
       const method = String(init?.method || 'GET').toUpperCase();
@@ -3326,13 +3335,13 @@ describe('runAction credential preflight', () => {
               : name.includes('[Contract]')
                 ? 'contract'
                 : 'baseline';
-            generatedCollectionUids.push(`col-${slot}`);
+            generatedCollections.push({ collection: `col-${slot}`, name });
             return json({ data: { taskId: 'task-1' } });
           }
           if (pmethod === 'get' && /\/tasks/.test(ppath)) return json({ data: { 'task-1': 'completed' } });
           if (pmethod === 'get' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
             return json({
-              data: generatedCollectionUids.map((collection) => ({ collection, state: 'in-sync' }))
+              data: generatedCollections.map((entry) => ({ ...entry, state: 'in-sync' }))
             });
           }
           if (pmethod === 'get' && /\/specifications\/[^/]+\/files\/[^/]+/.test(ppath)) return json({ data: { id: 'file-root', content: 'openapi: 3.0.0' } });

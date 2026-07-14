@@ -17,10 +17,10 @@ import {
 } from './lib/openapi-changes.js';
 import {
   findCloudResourceId,
-  getFirstCloudResourceId,
   loadAdditionalCollectionFiles,
   readResourcesState,
   syncAdditionalCollections,
+  writeResourcesState,
   type PostmanResourcesState
 } from './lib/postman/additional-collections.js';
 import {
@@ -35,6 +35,7 @@ import {
   runCredentialPreflight,
   type PreflightMode
 } from './lib/postman/credential-identity.js';
+import { isAmbiguousTransportError } from './lib/postman/create-reconciliation.js';
 import { adviseFromHttpError } from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
@@ -197,7 +198,11 @@ export interface BootstrapExecutionDependencies {
     tagCollection(collectionId: string, tags: string[]): Promise<void>;
     deleteCollection?(collectionUid: string): Promise<void>;
     injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
-    createCollection?(workspaceId: string, collection: unknown): Promise<string>;
+    createCollection?(
+      workspaceId: string,
+      collection: unknown,
+      options?: { onRootCreated?: (id: string) => void | Promise<void> }
+    ): Promise<string>;
     updateCollection?(collectionUid: string, collection: unknown): Promise<void>;
   };
   ecClient?: Pick<
@@ -210,7 +215,18 @@ export interface BootstrapExecutionDependencies {
     | 'configureTeamContext'
   >;
   openApiChanges?: OpenApiBreakingChangeCheckRunner;
+  resourcesState?: {
+    read(): PostmanResourcesState | null;
+    write(state: PostmanResourcesState): void;
+  };
   specFetcher: typeof fetch;
+}
+
+function resolveResourcesStateStore(dependencies: BootstrapExecutionDependencies) {
+  return dependencies.resourcesState ?? {
+    read: readResourcesState,
+    write: (): void => undefined
+  };
 }
 
 const GOVERNANCE_GROUP_PROPERTY_NAME = 'postman-governance-group';
@@ -913,29 +929,60 @@ function generatedCollectionResourcePath(
   return `../postman/collections/${directoryName}`;
 }
 
-function specResourceStatePath(inputs: ResolvedInputs): string | undefined {
+function specResourceStatePath(
+  inputs: ResolvedInputs,
+  releaseLabel?: string
+): string | undefined {
+  let base: string | undefined;
   if (inputs.specPath) {
-    return toResourcesStatePath(inputs.specPath);
+    base = toResourcesStatePath(inputs.specPath);
+  } else if (inputs.specUrl) {
+    base = `spec-url:${sanitizeUrlForLog(inputs.specUrl)}`;
   }
-  if (inputs.specUrl) {
-    return `spec-url:${sanitizeUrlForLog(inputs.specUrl)}`;
+  if (!base) {
+    return undefined;
   }
-  return undefined;
+  if (inputs.specSyncMode === 'version') {
+    const normalized = normalizeReleaseLabel(releaseLabel);
+    if (!normalized) {
+      return undefined;
+    }
+    return `${base}#release=${normalized}`;
+  }
+  return base;
+}
+
+function resolveSpecIdFromResourcesState(
+  inputs: ResolvedInputs,
+  resourcesState: PostmanResourcesState | null,
+  releaseLabel?: string
+): string | undefined {
+  if (inputs.specId) {
+    return inputs.specId;
+  }
+  const key = specResourceStatePath(inputs, releaseLabel);
+  if (!key) {
+    return undefined;
+  }
+  return resourcesState?.cloudResources?.specs?.[key];
 }
 
 function recordCurrentBootstrapResources(options: {
   assetProjectName: string;
   inputs: ResolvedInputs;
   outputs: PlannedOutputs;
+  persistWorkspaceId: boolean;
+  releaseLabel?: string;
   resourcesState: PostmanResourcesState;
 }): void {
-  const { assetProjectName, inputs, outputs, resourcesState } = options;
-  if (outputs['workspace-id']) {
+  const { assetProjectName, inputs, outputs, persistWorkspaceId, releaseLabel, resourcesState } =
+    options;
+  if (persistWorkspaceId && outputs['workspace-id']) {
     resourcesState.workspace ??= {};
     resourcesState.workspace.id = outputs['workspace-id'];
   }
 
-  const specPath = specResourceStatePath(inputs);
+  const specPath = specResourceStatePath(inputs, releaseLabel);
   if (outputs['spec-id'] && specPath) {
     resourcesState.cloudResources ??= {};
     resourcesState.cloudResources.specs ??= {};
@@ -1080,11 +1127,19 @@ export async function runBootstrap(
   }
 }
 
+type ProvisionedWorkspace = {
+  workspaceId: string | undefined;
+  /** Whether the resolved id may be durably written to resources.yaml. */
+  persistable: boolean;
+};
+
 /**
  * Resolve, reuse, or create the Postman workspace (with org-mode sub-team
  * handling and visibility checks), assign governance, invite the requester, and
  * add admins. Shared by the OpenAPI and multi-protocol paths so both provision
- * the workspace identically. Returns the resolved workspace id.
+ * the workspace identically. Returns the resolved workspace id plus whether that
+ * id may be durably persisted (explicit/resources/linked_match/repo_var/clean
+ * create are persistable; name_match and reconciled create are not).
  */
 async function provisionWorkspace(
   inputs: ResolvedInputs,
@@ -1094,7 +1149,7 @@ async function provisionWorkspace(
   resourcesState: PostmanResourcesState | null,
   workspaceName: string,
   aboutText: string
-): Promise<string | undefined> {
+): Promise<ProvisionedWorkspace> {
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
     explicitWorkspaceId = resourcesState.workspace.id;
@@ -1103,6 +1158,7 @@ async function provisionWorkspace(
 
   const repoWorkspaceId = explicitWorkspaceId;
   let workspaceId = explicitWorkspaceId;
+  let workspaceMutationOwned = Boolean(explicitWorkspaceId);
 
   let teamId = inputs.teamId || '';
   if (!teamId) {
@@ -1134,6 +1190,7 @@ async function provisionWorkspace(
 
     if (selection.type === 'existing') {
       workspaceId = selection.workspaceId;
+      workspaceMutationOwned = selection.source !== 'name_match';
       if (selection.warning) {
         dependencies.core.warning(selection.warning);
       }
@@ -1246,6 +1303,7 @@ async function provisionWorkspace(
       async () => dependencies.postman.createWorkspace(workspaceName, aboutText, workspaceTeamId)
     );
     workspaceId = workspace.id;
+    workspaceMutationOwned = !workspace.reconciled;
   } else {
     // Reused workspaces skip createWorkspace's visibility enforcement, so a
     // personal-visibility workspace minted by an earlier org-mode run without
@@ -1269,7 +1327,7 @@ async function provisionWorkspace(
   const governanceGroupName = await resolveGovernanceGroupName(inputs, dependencies);
   const shouldAssignGovernance = Boolean(inputs.domain || governanceGroupName);
 
-  if (shouldAssignGovernance && dependencies.internalIntegration) {
+  if (shouldAssignGovernance && dependencies.internalIntegration && workspaceMutationOwned) {
     await runGroup(
       dependencies.core,
       'Assign Workspace to Governance Group',
@@ -1306,7 +1364,7 @@ async function provisionWorkspace(
     );
   }
 
-  if (inputs.requesterEmail) {
+  if (inputs.requesterEmail && workspaceMutationOwned) {
     await runGroup(
       dependencies.core,
       'Invite Requester to Workspace',
@@ -1327,7 +1385,7 @@ async function provisionWorkspace(
   }
 
   const adminIds = inputs.workspaceAdminUserIds || '';
-  if (adminIds) {
+  if (adminIds && workspaceMutationOwned) {
     await runGroup(
       dependencies.core,
       'Add Team Admins to Workspace',
@@ -1344,7 +1402,10 @@ async function provisionWorkspace(
     );
   }
 
-  return workspaceId;
+  return {
+    workspaceId,
+    persistable: workspaceMutationOwned
+  };
 }
 
 /**
@@ -1379,9 +1440,11 @@ async function runProtocolBootstrap(
 ): Promise<PlannedOutputs> {
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
-  const resourcesState = readResourcesState();
+  const stateStore = resolveResourcesStateStore(dependencies);
+  const resourcesState = stateStore.read();
+  const writableResourcesState = resourcesState ?? {};
 
-  const workspaceId = await provisionWorkspace(
+  const provisioned = await provisionWorkspace(
     inputs,
     dependencies,
     telemetry,
@@ -1390,7 +1453,17 @@ async function runProtocolBootstrap(
     workspaceName,
     aboutText
   );
-
+  const workspaceId = provisioned.workspaceId;
+  const persistWorkspaceId = provisioned.persistable;
+  outputs['workspace-id'] = workspaceId || '';
+  recordCurrentBootstrapResources({
+    assetProjectName: inputs.projectName,
+    inputs,
+    outputs,
+    persistWorkspaceId,
+    resourcesState: writableResourcesState
+  });
+  stateStore.write(writableResourcesState);
   // gRPC service configs conventionally ship as a JSON file next to the proto
   // (grpc_service_config.json). When present it is linted against the parsed
   // contract (method selectors, retry/hedging policies, timeouts, LB policies);
@@ -1464,7 +1537,8 @@ async function runProtocolBootstrap(
     workspaceId || '',
     built,
     inputs,
-    dependencies
+    dependencies,
+    writableResourcesState
   );
 
   outputs['contract-collection-id'] = contractCollectionId;
@@ -1509,11 +1583,12 @@ async function runProtocolBootstrap(
  * half-built collection is deleted before rethrowing so no orphaned, partially
  * populated collection is left behind.
  */
-async function createExtensibleContractCollection(
+export async function createExtensibleContractCollection(
   workspaceId: string,
   built: ProtocolCollectionResult,
   inputs: ResolvedInputs,
-  dependencies: BootstrapExecutionDependencies
+  dependencies: BootstrapExecutionDependencies,
+  resourcesState: PostmanResourcesState
 ): Promise<string> {
   if (!dependencies.ecClient) {
     throw new Error(
@@ -1549,7 +1624,7 @@ async function createExtensibleContractCollection(
   let existingId = inputs.contractCollectionId?.trim() || undefined;
   if (!existingId) {
     existingId = findCloudResourceId(
-      readResourcesState()?.cloudResources?.collections,
+      resolveResourcesStateStore(dependencies).read()?.cloudResources?.collections,
       (filePath) => filePath.includes(CONTRACT_COLLECTION_PREFIX)
     );
   }
@@ -1566,10 +1641,23 @@ async function createExtensibleContractCollection(
             `Refreshing ${label} EC contract collection: deleted existing ${existingId} before rebuild.`
           );
         } catch (error) {
-          dependencies.core.warning(
-            `Could not delete existing ${label} EC contract collection ${existingId} for refresh ` +
-              `(${error instanceof Error ? error.message : String(error)}); creating a new one.`
-          );
+          if (error instanceof HttpError && error.status === 404) {
+            // Verified gone; replacement is safe.
+          } else if (isAmbiguousTransportError(error)) {
+            // The delete may have committed. Re-read durable state and live ID
+            // before replacement; if the old collection still exists, stop.
+            resolveResourcesStateStore(dependencies).read();
+            try {
+              await ecClient.getExtensibleCollection(existingId);
+              throw error;
+            } catch (readError) {
+              if (!(readError instanceof HttpError && readError.status === 404)) {
+                throw readError;
+              }
+            }
+          } else {
+            throw error;
+          }
         }
       }
 
@@ -1578,6 +1666,14 @@ async function createExtensibleContractCollection(
         ...(collectionPayload ? { payload: collectionPayload } : {}),
         ...(collectionExtensions ? { extensions: collectionExtensions } : {})
       });
+      // Never invent workspace.id here — persistability is owned by
+      // provisionWorkspace + recordCurrentBootstrapResources.
+      resourcesState.cloudResources ??= {};
+      resourcesState.cloudResources.collections ??= {};
+      resourcesState.cloudResources.collections[
+        generatedCollectionResourcePath(CONTRACT_COLLECTION_PREFIX, inputs.projectName)
+      ] = collectionId;
+      resolveResourcesStateStore(dependencies).write(resourcesState);
       let leafCount: number;
       try {
         leafCount = await ecClient.populateFromTree(collectionId, built.collection);
@@ -1629,7 +1725,8 @@ async function runBootstrapInner(
   // Validated before any side effect (CLI install, spec upload, workspace
   // create, ...): an invalid additional-collections-dir must fail fast, not
   // after partial provisioning has already run.
-  const resourcesState = readResourcesState();
+  const stateStore = resolveResourcesStateStore(dependencies);
+  const resourcesState = stateStore.read();
   const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
   const additionalCollections = loadAdditionalCollectionFiles(
     inputs.additionalCollectionsDir,
@@ -1647,12 +1744,9 @@ async function runBootstrapInner(
     dependencies.core.info('Skipping Postman CLI install: no postman-api-key (spec lint is skipped).');
   }
 
-  let specId = inputs.specId;
-  if (!specId) {
-    specId = getFirstCloudResourceId(resourcesState?.cloudResources?.specs);
-    if (specId) {
-      dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
-    }
+  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
+  if (!inputs.specId && specId) {
+    dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
   }
 
   let previousSpecContent: string | undefined;
@@ -1802,7 +1896,7 @@ async function runBootstrapInner(
     );
   }
 
-  const workspaceId = await provisionWorkspace(
+  const provisioned = await provisionWorkspace(
     inputs,
     dependencies,
     telemetry,
@@ -1811,6 +1905,18 @@ async function runBootstrapInner(
     workspaceName,
     aboutText
   );
+  const workspaceId = provisioned.workspaceId;
+  const persistWorkspaceId = provisioned.persistable;
+  outputs['workspace-id'] = workspaceId || '';
+  recordCurrentBootstrapResources({
+    assetProjectName: collectionAssetProjectName,
+    inputs,
+    outputs,
+    persistWorkspaceId,
+    releaseLabel,
+    resourcesState: writableResourcesState
+  });
+  stateStore.write(writableResourcesState);
 
   let baselineCollectionId = inputs.baselineCollectionId;
   let smokeCollectionId = inputs.smokeCollectionId;
@@ -1943,6 +2049,15 @@ async function runBootstrapInner(
           );
         }
         outputs['spec-id'] = specId;
+        recordCurrentBootstrapResources({
+          assetProjectName: collectionAssetProjectName,
+          inputs,
+          outputs,
+          persistWorkspaceId,
+          releaseLabel,
+          resourcesState: writableResourcesState
+        });
+        stateStore.write(writableResourcesState);
       }
     )
   );
@@ -2019,6 +2134,18 @@ async function runBootstrapInner(
                 );
                 return;
               } catch (error) {
+                if (isAmbiguousTransportError(error)) {
+                  const refreshedState = stateStore.read();
+                  findCloudResourceId(
+                    refreshedState?.cloudResources?.collections,
+                    (filePath) => prefix
+                      ? matchesPrefixedCollectionResource(filePath, prefix, assetProjectName)
+                      : matchesBaselineCollectionResource(filePath, assetProjectName)
+                  );
+                  // The sync may have committed. Never replace or adopt a
+                  // same-name collection after an ambiguous response.
+                  throw error;
+                }
                 dependencies.core.warning(
                   `Could not regenerate existing ${describeGeneratedCollection(prefix)} collection ${existingId} from spec ` +
                     `(${error instanceof Error ? error.message : String(error)}); generating a fresh collection`
@@ -2043,6 +2170,15 @@ async function runBootstrapInner(
           dependencies.core.info(
             `Generated ${describeGeneratedCollection(prefix)} collection: ${outputs[outputKey]}`
           );
+          recordCurrentBootstrapResources({
+            assetProjectName,
+            inputs,
+            outputs,
+            persistWorkspaceId,
+            releaseLabel,
+            resourcesState: writableResourcesState
+          });
+          stateStore.write(writableResourcesState);
         };
 
         await ensureCollection(BASELINE_COLLECTION_PREFIX, baselineCollectionId, 'baseline-collection-id');
@@ -2072,6 +2208,16 @@ async function runBootstrapInner(
       }
     )
   );
+
+  recordCurrentBootstrapResources({
+    assetProjectName: collectionAssetProjectName,
+    inputs,
+    outputs,
+    persistWorkspaceId,
+    releaseLabel,
+    resourcesState: writableResourcesState
+  });
+  stateStore.write(writableResourcesState);
 
   outputs['collections-json'] = JSON.stringify({
     baseline: outputs['baseline-collection-id'],
@@ -2139,6 +2285,8 @@ async function runBootstrapInner(
             assetProjectName: collectionAssetProjectName,
             inputs,
             outputs,
+            persistWorkspaceId,
+            releaseLabel,
             resourcesState: writableResourcesState
           });
           const additionalResults = await syncAdditionalCollections({
@@ -2146,6 +2294,7 @@ async function runBootstrapInner(
             core: dependencies.core,
             postman: dependencies.postman,
             resourcesState: writableResourcesState,
+            writeResourcesState: stateStore.write,
             workspaceId: workspaceId || ''
           });
           for (const result of additionalResults) {
@@ -2411,7 +2560,8 @@ export function createRoutingPostmanClient(options: {
     // read + v2.1.0 collection PUT the dynamic-contract refresh used to perform,
     // so no asset op ever reaches for the API key.
     injectContractTests: (collectionUid, index) => gateway.injectContractTests(collectionUid, index),
-    createCollection: (workspaceId, collection) => gateway.createCollection(workspaceId, collection),
+    createCollection: (workspaceId, collection, options) =>
+      gateway.createCollection(workspaceId, collection, options),
     updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection)
   };
 }
@@ -2455,7 +2605,15 @@ export function createBootstrapDependencies(
       })
     : undefined;
   const gatewayAssets = gatewayClient
-    ? new PostmanGatewayAssetsClient({ gateway: gatewayClient })
+    ? new PostmanGatewayAssetsClient({
+        gateway: gatewayClient,
+        ...(process.env.GITHUB_RUN_ID
+          ? {
+              createIdentity: () =>
+                `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT || '1'}`
+            }
+          : {})
+      })
     : undefined;
 
   const postman = createRoutingPostmanClient({ gateway: gatewayAssets });
@@ -2506,6 +2664,10 @@ export function createBootstrapDependencies(
     io: factories.io,
     internalIntegration,
     postman,
+    resourcesState: {
+      read: readResourcesState,
+      write: writeResourcesState
+    },
     specFetcher: factories.specFetcher ?? fetch
   };
 }

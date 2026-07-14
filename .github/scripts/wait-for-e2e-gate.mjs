@@ -22,6 +22,32 @@ export function isSuccessfulConclusion(conclusion) {
   return conclusion === 'success';
 }
 
+export function normalizeSuite(value) {
+  const suite = value?.trim() || 'full';
+  if (suite !== 'smoke' && suite !== 'full') {
+    throw new Error(`E2E_GATE_SUITE must be smoke or full; got ${suite}`);
+  }
+  return suite;
+}
+
+export function buildDispatchInputs({ action, refName, correlationId, failureInjection, suite }) {
+  return {
+    action,
+    ref: refName,
+    gate_correlation_id: correlationId,
+    failure_injection: failureInjection,
+    suite
+  };
+}
+
+export function findFailedJobUrl(jobs) {
+  const failure = jobs.find((job) => job.conclusion === 'failure');
+  const otherFailure = jobs.find(
+    (job) => !['success', 'skipped', 'neutral'].includes(job.conclusion)
+  );
+  return failure?.html_url ?? otherFailure?.html_url ?? null;
+}
+
 // Pure. Transient GitHub failures (rate-limit 403/429, 5xx, network blips) must
 // not fail a release gate mid-wait; the caller backs off and retries until its
 // own deadline. Honor a server Retry-After when present, else exponential+cap.
@@ -169,17 +195,16 @@ function workflowRunsUrl({ repository, workflow }) {
   return `https://api.github.com/repos/${repository}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&per_page=50`;
 }
 
-async function dispatchE2e({ token, repository, workflow, workflowRef, action, refName, correlationId, failureInjection }) {
+function workflowRunJobsUrl({ repository, runId }) {
+  return `https://api.github.com/repos/${repository}/actions/runs/${runId}/jobs?per_page=100`;
+}
+
+async function dispatchE2e({ token, repository, workflow, workflowRef, action, refName, correlationId, failureInjection, suite }) {
   const url = `https://api.github.com/repos/${repository}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`;
   const payload = {
     ref: workflowRef,
     return_run_details: true,
-    inputs: {
-      action,
-      ref: refName,
-      gate_correlation_id: correlationId,
-      failure_injection: failureInjection
-    }
+    inputs: buildDispatchInputs({ action, refName, correlationId, failureInjection, suite })
   };
   return githubRequest({
     token,
@@ -206,7 +231,7 @@ async function waitForMatchingRun({ token, repository, workflow, correlationId, 
   throw new Error(`Timed out waiting for e2e workflow run registration (correlation=${correlationId})`);
 }
 
-async function waitForTerminalRun({ token, run, deadlineMs, pollMs }) {
+async function waitForTerminalRun({ token, repository, run, deadlineMs, pollMs }) {
   let current = run;
   while (Date.now() < deadlineMs) {
     current = await pollGet({ token, url: current.url, deadlineMs });
@@ -216,7 +241,19 @@ async function waitForTerminalRun({ token, run, deadlineMs, pollMs }) {
       if (isSuccessfulConclusion(current.conclusion)) {
         return current;
       }
-      throw new Error(`e2e run concluded ${current.conclusion}: ${current.html_url}`);
+      let failedJobUrl = null;
+      try {
+        const jobs = await pollGet({
+          token,
+          url: workflowRunJobsUrl({ repository, runId: current.id }),
+          deadlineMs
+        });
+        failedJobUrl = findFailedJobUrl(jobs.jobs ?? []);
+      } catch (error) {
+        console.log(`::warning::Could not load failed e2e job URL: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const jobDetails = failedJobUrl ? `; failed job: ${failedJobUrl}` : '';
+      throw new Error(`e2e run concluded ${current.conclusion}: ${current.html_url}${jobDetails}`);
     }
 
     await sleep(jitter(pollMs));
@@ -241,11 +278,12 @@ async function main() {
     process.env.E2E_GATE_CORRELATION_ID ??
     buildCorrelationId({ repository, runId, runAttempt, refName });
   const failureInjection = process.env.E2E_GATE_FAILURE_INJECTION ?? '';
+  const suite = normalizeSuite(process.env.E2E_GATE_SUITE);
   const createdAfterIso = new Date(Date.now() - 30_000).toISOString();
   const deadlineMs = Date.now() + timeoutSeconds * 1000;
   const pollMs = pollSeconds * 1000;
 
-  console.log(`Dispatching e2e gate: action=${action} ref=${refName} correlation=${correlationId}`);
+  console.log(`Dispatching e2e gate: action=${action} ref=${refName} suite=${suite} correlation=${correlationId}`);
   const dispatchPayload = await dispatchE2e({
     token,
     repository: e2eRepository,
@@ -254,7 +292,8 @@ async function main() {
     action,
     refName,
     correlationId,
-    failureInjection
+    failureInjection,
+    suite
   });
   const runDetails = normalizeRunDetails(dispatchPayload);
   if (runDetails?.htmlUrl ?? runDetails?.url) {
@@ -274,7 +313,13 @@ async function main() {
   });
   console.log(`Matched e2e run: ${run.html_url}`);
 
-  const completed = await waitForTerminalRun({ token, run, deadlineMs, pollMs });
+  const completed = await waitForTerminalRun({
+    token,
+    repository: e2eRepository,
+    run,
+    deadlineMs,
+    pollMs
+  });
   console.log(`::notice::e2e gate passed: ${completed.html_url}`);
 }
 

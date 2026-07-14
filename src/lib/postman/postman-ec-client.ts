@@ -5,6 +5,10 @@ import { HttpError } from '../http-error.js';
 import { retry } from '../retry.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
 import type { AccessTokenProvider } from './token-provider.js';
+import {
+  adoptExactMatch,
+  isAmbiguousTransportError
+} from './create-reconciliation.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -212,8 +216,11 @@ export class PostmanExtensibleCollectionClient {
     body: unknown,
     operation: string
   ): Promise<JsonRecord | null> {
-    // Retry transient bifrost/collection-service failures (429/5xx/network);
-    // permanent 4xx and inner-envelope errors rethrow on the first attempt.
+    // Only reads are blindly retryable. Every mutation submits once; callers
+    // reconcile ambiguous create/delete outcomes before another write.
+    if (method !== 'GET') {
+      return this.proxyJsonOnce(method, path, body, operation);
+    }
     return retry(() => this.proxyJsonOnce(method, path, body, operation), {
       maxAttempts: EC_WRITE_MAX_ATTEMPTS,
       delayMs: 2000,
@@ -361,12 +368,34 @@ export class PostmanExtensibleCollectionClient {
       payload,
       extensions
     };
-    const response = await this.proxyJson(
-      'POST',
-      `/collections/${collectionId}/items/`,
-      body,
-      'createItem'
-    );
+    let response: JsonRecord | null;
+    try {
+      response = await this.proxyJson(
+        'POST',
+        `/collections/${collectionId}/items/`,
+        body,
+        'createItem'
+      );
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) throw error;
+      const expectedParent = String(parentId || collectionId);
+      const matches = (await this.listExtensibleCollectionItems(collectionId)).filter((candidate) => {
+        const position = asRecord(candidate.position);
+        const parent = asRecord(position?.parent);
+        const candidateParent = String(parent?.id ?? position?.parent ?? '').trim();
+        return String(candidate.id ?? '').trim() &&
+          String(candidate.type ?? candidate.$kind ?? '') === String(type ?? '') &&
+          String(candidate.title ?? candidate.name ?? '') === String(title ?? '') &&
+          candidateParent === expectedParent;
+      });
+      const match = adoptExactMatch(
+        `ec-item:${collectionId}:${expectedParent}:${String(type)}:${String(title)}`,
+        matches,
+        (candidate) => String(candidate.id ?? '')
+      );
+      if (!match) throw error;
+      response = { data: { id: match.id } };
+    }
     const id = this.extractId(response);
     if (!id) {
       throw new Error('EC_ITEM_FAILED: extensible collection item create did not return an id');
@@ -439,12 +468,13 @@ export class PostmanExtensibleCollectionClient {
     if (!collectionId) {
       throw new Error('EC_GET_INVALID_ARGUMENT: collectionId is required');
     }
-    return this.proxyJson(
+    const response = await this.proxyJson(
       'GET',
       `/collections/${collectionId}`,
       undefined,
       'getExtensibleCollection'
     );
+    return asRecord(response?.data) ?? asRecord(response);
   }
 
   async deleteExtensibleCollection(collectionId: string): Promise<void> {

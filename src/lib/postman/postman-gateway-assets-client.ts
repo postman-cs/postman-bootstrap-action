@@ -1,7 +1,12 @@
 import * as V2 from '@postman/runtime.models/v2';
 import { transform, FormatVersion } from '@postman/runtime.models/transforms';
+import { randomUUID } from 'node:crypto';
 
 import { HttpError } from '../http-error.js';
+import {
+  adoptExactMatch,
+  isAmbiguousTransportError
+} from './create-reconciliation.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
 import { AccessTokenGatewayClient } from './gateway-client.js';
@@ -108,6 +113,7 @@ export interface PostmanGatewayAssetsClientOptions {
   // the options are not passed explicitly.
   generationPollAttempts?: number;
   generationPollDelayMs?: number;
+  createIdentity?: () => string;
 }
 
 /**
@@ -131,9 +137,11 @@ export class PostmanGatewayAssetsClient {
   private readonly sleep: (delayMs: number) => Promise<void>;
   private readonly generationPollAttempts: number;
   private readonly generationPollDelayMs: number;
+  private readonly createIdentity: () => string;
 
   constructor(options: PostmanGatewayAssetsClientOptions) {
     this.gateway = options.gateway;
+    this.createIdentity = options.createIdentity ?? randomUUID;
     this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
     this.generationPollAttempts = resolvePollBudget(
       options.generationPollAttempts,
@@ -205,16 +213,29 @@ export class PostmanGatewayAssetsClient {
       throw new Error(`uploadSpec: unsupported openapiVersion "${openapiVersion}". Expected '3.0' or '3.1'.`);
     }
     const specType = openapiVersion === '3.1' ? 'OPENAPI:3.1' : 'OPENAPI:3.0';
-    const created = await this.gateway.requestJson<JsonRecord>({
-      service: 'specification',
-      method: 'post',
-      path: `/specifications?containerType=workspace&containerId=${workspaceId}`,
-      body: {
-        name: projectName,
-        type: specType,
-        files: [{ path: 'index.yaml', content: specContent, type: 'ROOT' }]
-      }
-    });
+    let created: JsonRecord | null;
+    try {
+      created = await this.gateway.requestJson<JsonRecord>({
+        service: 'specification',
+        method: 'post',
+        path: `/specifications?containerType=workspace&containerId=${workspaceId}`,
+        retry: 'none',
+        body: {
+          name: projectName,
+          type: specType,
+          files: [{ path: 'index.yaml', content: specContent, type: 'ROOT' }]
+        }
+      });
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) throw error;
+      const match = adoptExactMatch(
+        `specification:${workspaceId}:${projectName}`,
+        await this.findSpecificationsByExactName(workspaceId, projectName),
+        (entry) => entry.id
+      );
+      if (!match) throw error;
+      created = { data: { id: match.id } };
+    }
     const specId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
     if (!specId) {
       throw new Error('Spec upload did not return an ID');
@@ -226,6 +247,27 @@ export class PostmanGatewayAssetsClient {
       path: `/specifications/${specId}`
     });
     return specId;
+  }
+
+  async findSpecificationsByExactName(
+    workspaceId: string,
+    name: string
+  ): Promise<Array<{ id: string; name: string }>> {
+    const response = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'get',
+      path: `/specifications?containerType=workspace&containerId=${workspaceId}`
+    });
+    const entries = Array.isArray(response?.data) ? response.data : [];
+    return entries
+      .map((value) => asRecord(value))
+      .filter((value): value is JsonRecord => value !== null)
+      .map((value) => ({
+        id: String(value.id ?? value.uid ?? '').trim(),
+        name: String(value.name ?? '').trim()
+      }))
+      .filter((value) => value.id && value.name === name)
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   /**
@@ -309,8 +351,9 @@ export class PostmanGatewayAssetsClient {
     requestNameSource: string
   ): Promise<string> {
     const name = [prefix.trim(), projectName.trim()].filter(Boolean).join(' ');
+    const submittedName = `${name} [bootstrap:${this.createIdentity()}]`;
     const body = {
-      name,
+      name: submittedName,
       options: {
         requestNameSource,
         folderStrategy,
@@ -318,7 +361,29 @@ export class PostmanGatewayAssetsClient {
       }
     };
 
-    const taskId = await this.postGenerationWithLockRetry(specId, body);
+    const before = await this.listGeneratedCollectionRefs(specId);
+    let taskId: string;
+    try {
+      taskId = await this.postGenerationWithLockRetry(specId, body);
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) throw error;
+      const beforeIds = new Set(before.map((entry) => entry.id));
+      const appeared = (await this.listGeneratedCollectionRefs(specId)).filter(
+        (entry) => !beforeIds.has(entry.id)
+      );
+      const exactAppeared = await this.filterGeneratedCollectionsByExactName(
+        appeared,
+        submittedName
+      );
+      const match = adoptExactMatch(
+        `generated-collection:${specId}:${submittedName}`,
+        exactAppeared,
+        (entry) => entry.id
+      );
+      if (!match) throw error;
+      await this.renameGeneratedCollection(match.id, name);
+      return match.id;
+    }
 
     if (taskId) {
       for (let attempt = 0; attempt < this.generationPollAttempts; attempt += 1) {
@@ -342,10 +407,22 @@ export class PostmanGatewayAssetsClient {
       }
     }
 
-    const uid = await this.resolveGeneratedCollectionUid(specId);
+    const beforeIds = new Set(before.map((entry) => entry.id));
+    const after = await this.listGeneratedCollectionRefs(specId);
+    const appeared = after.filter((entry) => !beforeIds.has(entry.id));
+    const candidates = await this.filterGeneratedCollectionsByExactName(
+      appeared,
+      submittedName
+    );
+    const uid = adoptExactMatch(
+      `generated-collection:${specId}:${submittedName}`,
+      candidates,
+      (entry) => entry.id
+    )?.id;
     if (!uid) {
       throw new Error(`Collection generation did not yield a collection uid for ${prefix}`);
     }
+    await this.renameGeneratedCollection(uid, name);
     return uid;
   }
 
@@ -357,6 +434,7 @@ export class PostmanGatewayAssetsClient {
           service: 'specification',
           method: 'post',
           path: `/specifications/${specId}/collections`,
+          retry: 'none',
           body
         });
         return String(asRecord(created?.data)?.taskId ?? '').trim();
@@ -370,21 +448,53 @@ export class PostmanGatewayAssetsClient {
     }
   }
 
-  /** Most-recent generated collection uid for a spec, via the spec's collection list. */
-  private async resolveGeneratedCollectionUid(specId: string): Promise<string> {
+  private async listGeneratedCollectionRefs(
+    specId: string
+  ): Promise<Array<{ id: string; name?: string }>> {
     const list = await this.gateway.requestJson<JsonRecord>({
       service: 'specification',
       method: 'get',
       path: `/specifications/${specId}/collections`
     });
     const entries = Array.isArray(asRecord(list)?.data) ? (asRecord(list)!.data as unknown[]) : [];
-    // Newest last: prefer the final entry's collection uid.
-    for (let i = entries.length - 1; i >= 0; i -= 1) {
-      const entry = asRecord(entries[i]);
-      const uid = String(entry?.collection ?? entry?.collectionId ?? entry?.id ?? entry?.uid ?? '').trim();
-      if (uid) return uid;
+    const results: Array<{ id: string; name?: string }> = [];
+    for (const raw of entries) {
+      const entry = asRecord(raw);
+      const id = String(entry?.collection ?? entry?.collectionId ?? entry?.id ?? entry?.uid ?? '').trim();
+      if (!id) continue;
+      const entryName = String(entry?.name ?? entry?.title ?? '').trim();
+      results.push({ id, ...(entryName ? { name: entryName } : {}) });
     }
-    return '';
+    return results.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  private async filterGeneratedCollectionsByExactName(
+    entries: Array<{ id: string; name?: string }>,
+    expectedName: string
+  ): Promise<Array<{ id: string; name: string }>> {
+    const hydrated = await Promise.all(entries.map(async (entry) => {
+      if (entry.name) return { id: entry.id, name: entry.name };
+      const collection = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'get',
+        path: `/v3/collections/${this.bareModelId(entry.id)}`
+      });
+      return {
+        id: entry.id,
+        name: String(asRecord(collection?.data)?.name ?? '').trim()
+      };
+    }));
+    return hydrated.filter((entry) => entry.name === expectedName);
+  }
+
+  private async renameGeneratedCollection(collectionId: string, name: string): Promise<void> {
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'patch',
+      path: `/v3/collections/${this.bareModelId(collectionId)}`,
+      retry: 'none',
+      body: [{ op: 'replace', path: '/name', value: name }]
+    });
   }
 
   /**
@@ -402,16 +512,24 @@ export class PostmanGatewayAssetsClient {
    * Self-cleaning: if create succeeds but team visibility cannot be verified, the
    * just-created workspace is deleted before throwing.
    */
-  async createWorkspace(name: string, _about: string, targetTeamId?: number): Promise<{ id: string }> {
+  async createWorkspace(
+    name: string,
+    _about: string,
+    targetTeamId?: number
+  ): Promise<{ id: string; reconciled?: boolean }> {
     void _about;
 
     if (targetTeamId != null) {
       const squadId = String(targetTeamId);
       this.configureTeamContext(squadId, true);
-      const created = await this.gateway.requestJson<JsonRecord>({
+      let created: JsonRecord | null;
+      let createdByThisRun = true;
+      try {
+        created = await this.gateway.requestJson<JsonRecord>({
         service: 'workspaces',
         method: 'post',
         path: '/workspaces',
+        retry: 'none',
         body: {
           name,
           visibilityStatus: 'team',
@@ -420,7 +538,18 @@ export class PostmanGatewayAssetsClient {
             group: { [squadId]: ['WORKSPACE_VIEWER_V9'] }
           }
         }
-      });
+        });
+      } catch (error) {
+        if (!isAmbiguousTransportError(error)) throw error;
+        const match = adoptExactMatch(
+          `workspace:${name}`,
+          await this.findWorkspacesByName(name),
+          (entry) => entry.id
+        );
+        if (!match) throw error;
+        createdByThisRun = false;
+        created = { data: { id: match.id } };
+      }
       const workspaceId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
       if (!workspaceId) {
         throw new Error('Workspace create did not return an id');
@@ -428,24 +557,51 @@ export class PostmanGatewayAssetsClient {
 
       const visibility = await this.getWorkspaceVisibility(workspaceId);
       if (visibility !== 'team') {
-        await this.deleteWorkspace(workspaceId).catch(() => undefined);
+        if (createdByThisRun) {
+          await this.deleteWorkspace(workspaceId).catch(() => undefined);
+        }
         throw new Error(
           `Workspace ${workspaceId} was created but team visibility could not be verified (got '${visibility ?? 'unknown'}').`
         );
       }
 
-      return { id: workspaceId };
+      return { id: workspaceId, ...(!createdByThisRun ? { reconciled: true } : {}) };
     }
 
-    const created = await this.gateway.requestJson<JsonRecord>({
-      service: 'workspaces',
-      method: 'post',
-      path: '/workspaces',
-      body: { name, visibilityStatus: 'personal' }
-    });
+    let created: JsonRecord | null;
+    let createdByThisRun = true;
+    try {
+      created = await this.gateway.requestJson<JsonRecord>({
+        service: 'workspaces',
+        method: 'post',
+        path: '/workspaces',
+        retry: 'none',
+        body: { name, visibilityStatus: 'personal' }
+      });
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) throw error;
+      const match = adoptExactMatch(
+        `workspace:${name}`,
+        await this.findWorkspacesByName(name),
+        (entry) => entry.id
+      );
+      if (!match) throw error;
+      createdByThisRun = false;
+      created = { data: { id: match.id } };
+    }
     const workspaceId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
     if (!workspaceId) {
       throw new Error('Workspace create did not return an id');
+    }
+
+    if (!createdByThisRun) {
+      const visibility = await this.getWorkspaceVisibility(workspaceId);
+      if (visibility !== 'team') {
+        throw new Error(
+          `Workspace ${workspaceId} matched an ambiguous create by name but is not team-visible; refusing to mutate or delete an unowned workspace.`
+        );
+      }
+      return { id: workspaceId, reconciled: true };
     }
 
     try {
@@ -1130,13 +1286,36 @@ export class PostmanGatewayAssetsClient {
   private async createItemTree(cid: string, items: JsonRecord[], parentId: string): Promise<void> {
     for (const item of items) {
       const kind = String(item.$kind ?? 'http-request');
-      const created = await this.gateway.requestJson<JsonRecord>({
-        service: 'collection',
-        method: 'post',
-        path: `/v3/collections/${cid}/items/`,
-        headers: { 'X-Entity-Type': kind },
-        body: this.buildItemCreateBody(item, parentId)
-      });
+      let created: JsonRecord | null;
+      try {
+        created = await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'post',
+          path: `/v3/collections/${cid}/items/`,
+          retry: 'none',
+          headers: { 'X-Entity-Type': kind },
+          body: this.buildItemCreateBody(item, parentId)
+        });
+      } catch (error) {
+        if (!isAmbiguousTransportError(error)) throw error;
+        const name = String(item.name ?? 'Untitled');
+        const matches = (await this.listCollectionItems(cid)).filter((candidate) => {
+          if (String(candidate.name ?? candidate.title ?? '') !== name) return false;
+          if (String(candidate.$kind ?? candidate.type ?? 'http-request') !== kind) return false;
+          const position = asRecord(candidate.position);
+          const parent = asRecord(position?.parent);
+          const candidateParent = String(parent?.id ?? position?.parent ?? candidate.parent ?? '').trim();
+          return Boolean(candidateParent) &&
+            this.bareModelId(candidateParent) === this.bareModelId(parentId);
+        });
+        const match = adoptExactMatch(
+          `collection-item:${cid}:${parentId}:${kind}:${name}`,
+          matches,
+          (candidate) => String(candidate.id ?? '')
+        );
+        if (!match) throw error;
+        created = { data: { id: match.id } };
+      }
       const newId = String(asRecord(created?.data)?.id ?? '').trim();
       if (!newId) {
         throw new Error(
@@ -1245,29 +1424,71 @@ export class PostmanGatewayAssetsClient {
    * so callers can persist it and pass it straight to `updateCollection`/
    * `deleteCollection`/`tagCollection`/`injectTests` unchanged.
    */
-  async createCollection(workspaceId: string, collection: unknown): Promise<string> {
+  async findCollectionsByExactName(
+    workspaceId: string,
+    name: string
+  ): Promise<Array<{ id: string; name: string }>> {
+    const response = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'get',
+      path: `/v3/collections/?workspace=${workspaceId}`
+    });
+    const entries = Array.isArray(response?.data) ? response.data : [];
+    return entries
+      .map((value) => asRecord(value))
+      .filter((value): value is JsonRecord => value !== null)
+      .map((value) => ({
+        id: String(value.id ?? value.uid ?? '').trim(),
+        name: String(value.name ?? value.title ?? '').trim()
+      }))
+      .filter((value) => value.id && value.name === name)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  async createCollection(
+    workspaceId: string,
+    collection: unknown,
+    options: { onRootCreated?: (id: string) => void | Promise<void> } = {}
+  ): Promise<string> {
     const v3 = this.normalizeCollectionForWrite(collection);
     // Root create accepts name only; description/auth/variables/scripts are applied
     // via JSON Patch in applyCollectionLevelSettings (live-proven). Putting
     // description on the POST body makes a later add /description a no-op that
     // can 400 when the patch set is otherwise empty or redundant.
-    const rootBody: JsonRecord = { name: String(v3.name ?? 'Untitled Collection') };
-    const created = await this.gateway.requestJson<JsonRecord>({
-      service: 'collection',
-      method: 'post',
-      path: `/v3/collections/?workspace=${workspaceId}`,
-      headers: { 'X-Entity-Target': 'http' },
-      body: rootBody
-    });
+    const desiredName = String(v3.name ?? 'Untitled Collection');
+    const submittedName = `${desiredName} [bootstrap:${this.createIdentity()}]`;
+    const rootBody: JsonRecord = { name: submittedName };
+    let created: JsonRecord | null;
+    try {
+      created = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'post',
+        path: `/v3/collections/?workspace=${workspaceId}`,
+        retry: 'none',
+        headers: { 'X-Entity-Target': 'http' },
+        body: rootBody
+      });
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) throw error;
+      const match = adoptExactMatch(
+        `collection:${workspaceId}:${String(rootBody.name)}`,
+        await this.findCollectionsByExactName(workspaceId, String(rootBody.name)),
+        (entry) => entry.id
+      );
+      if (!match) throw error;
+      created = { data: { id: match.id } };
+    }
     const rawId = String(asRecord(created?.data)?.id ?? '').trim();
     if (!rawId) {
       throw new Error('Collection create did not return an id');
     }
     const cid = this.bareModelId(rawId);
+    await options.onRootCreated?.(rawId);
     try {
       await this.createItemTree(cid, asItemArray(v3.items), cid);
-      await this.applyCollectionLevelSettings(cid, v3);
+      await this.applyCollectionLevelSettings(cid, v3, { rename: true });
     } catch (error) {
+      if (options.onRootCreated) throw error;
       let cleanupError: unknown;
       try {
         await this.deleteCollection(rawId);
@@ -1306,10 +1527,20 @@ export class PostmanGatewayAssetsClient {
           service: 'collection',
           method: 'delete',
           path: `/v3/collections/${cid}/items/${itemId}`,
+          retry: 'none',
           headers: { 'X-Entity-Type': String(item.$kind ?? 'http-request') }
         });
       } catch (error) {
-        if (!(error instanceof HttpError && (error.status === 404 || error.status === 500))) {
+        if (isAmbiguousTransportError(error)) {
+          // Re-read before deciding. Gone => cascade/spurious 5xx; still present =>
+          // fall through to the post-loop verification so we never recreate.
+          const stillPresent = (await this.listCollectionItems(cid)).some(
+            (candidate) => String(candidate.id ?? '').trim() === itemId
+          );
+          if (!stillPresent) continue;
+          continue;
+        }
+        if (!(error instanceof HttpError && error.status === 404)) {
           throw error;
         }
       }

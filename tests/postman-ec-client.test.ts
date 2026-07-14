@@ -135,6 +135,56 @@ describe('PostmanExtensibleCollectionClient', () => {
     );
   });
 
+  it('fails an ambiguous EC item create when exact discovery finds zero matches', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('disconnect', { status: 503 }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl });
+
+    await expect(
+      client.createItem('ec-1', { type: 'folder', title: 'Owned folder' })
+    ).rejects.toThrow(/503|disconnect/);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('adopts one exact EC item match after an accepted-disconnect response', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('disconnect', { status: 503 }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: [{
+          id: 'item-owned',
+          type: 'folder',
+          title: 'Owned folder',
+          position: { parent: 'ec-1' }
+        }]
+      }));
+    const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl });
+
+    await expect(
+      client.createItem('ec-1', { type: 'folder', title: 'Owned folder' })
+    ).resolves.toBe('item-owned');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('names duplicate EC item ids when ambiguous discovery finds multiple exact matches', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('disconnect', { status: 503 }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: [
+          { id: 'item-a', type: 'folder', title: 'Owned folder', position: { parent: 'ec-1' } },
+          { id: 'item-b', type: 'folder', title: 'Owned folder', position: { parent: 'ec-1' } }
+        ]
+      }));
+    const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl });
+
+    await expect(
+      client.createItem('ec-1', { type: 'folder', title: 'Owned folder' })
+    ).rejects.toThrow(/item-a.*item-b/);
+  });
+
   it('populateFromTree creates folders then leaf requests with parent linkage', async () => {
     const ids = ['folder-A', 'leaf-1', 'leaf-2'];
     let i = 0;
@@ -238,7 +288,7 @@ describe('PostmanExtensibleCollectionClient', () => {
     const client = new PostmanExtensibleCollectionClient({ accessToken: 'tok', fetchImpl });
 
     const fetched = await client.getExtensibleCollection('ec-1');
-    expect((fetched?.data as Record<string, unknown>)?.id).toBe('ec-1');
+    expect(fetched).toMatchObject({ id: 'ec-1' });
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
       GATEWAY,
@@ -466,18 +516,31 @@ describe('PostmanExtensibleCollectionClient', () => {
     expect(message).not.toContain('secret-tok');
   });
 
-  it('retries a transient 5xx EC write and then succeeds', async () => {
+  it('does not blind-retry an unsafe EC create POST on transient 5xx', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response('upstream down', { status: 503 }))
-      .mockResolvedValueOnce(jsonResponse({ data: { id: 'ec-ok' } }));
+      .mockResolvedValue(new Response('upstream down', { status: 503 }));
     const client = new PostmanExtensibleCollectionClient({
       accessToken: 'tok',
       fetchImpl
     });
 
-    const id = await client.createExtensibleCollection('ws-1', { name: 'n' });
-    expect(id).toBe('ec-ok');
+    await expect(client.createExtensibleCollection('ws-1', { name: 'n' })).rejects.toThrow(/503/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a transient 5xx EC read and then succeeds', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('upstream down', { status: 503 }))
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 'ec-ok', title: 'n' } }));
+    const client = new PostmanExtensibleCollectionClient({
+      accessToken: 'tok',
+      fetchImpl
+    });
+
+    const collection = await client.getExtensibleCollection('ec-ok');
+    expect(collection).toMatchObject({ id: 'ec-ok' });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 

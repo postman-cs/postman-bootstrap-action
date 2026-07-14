@@ -45,7 +45,12 @@ function makeClient(
   });
   const provider = new AccessTokenProvider({ accessToken: 'tok-1' });
   const gateway = new AccessTokenGatewayClient({ tokenProvider: provider, fetchImpl });
-  const client = new PostmanGatewayAssetsClient({ gateway, sleep: async () => undefined, ...clientOptions });
+  const client = new PostmanGatewayAssetsClient({
+    gateway,
+    sleep: async () => undefined,
+    createIdentity: () => 'test-run',
+    ...clientOptions
+  });
   return { client, gateway, calls };
 }
 
@@ -86,8 +91,10 @@ describe('PostmanGatewayAssetsClient', () => {
   describe('generateCollection', () => {
     it('posts generate, polls the task to completion, and resolves the collection uid', async () => {
       let polls = 0;
+      let posted = false;
       const { client, calls } = makeClient((env) => {
         if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          posted = true;
           return jsonResponse({ data: { taskId: 'task-7' } }, { status: 202 });
         }
         if (env.path === '/tasks') {
@@ -95,7 +102,7 @@ describe('PostmanGatewayAssetsClient', () => {
           return jsonResponse({ data: { 'task-7': polls < 2 ? 'in-progress' : 'completed' } });
         }
         // spec collections list
-        return jsonResponse({ data: [{ collection: 'uid-A', state: 'in-sync' }] });
+        return jsonResponse({ data: posted ? [{ collection: 'uid-A', name: '[Smoke] Telecom [bootstrap:test-run]', state: 'in-sync' }] : [] });
       });
 
       const uid = await client.generateCollection('spec-1', 'Telecom', '[Smoke]', 'Tags', true, 'Fallback');
@@ -111,10 +118,14 @@ describe('PostmanGatewayAssetsClient', () => {
     });
 
     it('omits nestedFolderHierarchy when folderStrategy is not Tags', async () => {
+      let posted = false;
       const { client, calls } = makeClient((env) => {
-        if (env.method === 'post') return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+        if (env.method === 'post') {
+          posted = true;
+          return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+        }
         if (env.path === '/tasks') return jsonResponse({ data: { t: 'completed' } });
-        return jsonResponse({ data: [{ collection: 'uid-X' }] });
+        return jsonResponse({ data: posted ? [{ collection: 'uid-X', name: 'P [bootstrap:test-run]' }] : [] });
       });
       await client.generateCollection('spec-1', 'P', '', 'None', true, 'Fallback');
       const post = calls.find((c) => c.method === 'post');
@@ -123,14 +134,16 @@ describe('PostmanGatewayAssetsClient', () => {
 
     it('retries a 423-locked generate then succeeds', async () => {
       let attempts = 0;
+      let posted = false;
       const { client } = makeClient((env) => {
         if (env.method === 'post' && env.path.endsWith('/collections')) {
           attempts += 1;
           if (attempts === 1) return jsonResponse({ error: 'locked' }, { status: 423 });
+          posted = true;
           return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
         }
         if (env.path === '/tasks') return jsonResponse({ data: { t: 'completed' } });
-        return jsonResponse({ data: [{ collection: 'uid-R' }] });
+        return jsonResponse({ data: posted ? [{ collection: 'uid-R', name: '[Contract] P [bootstrap:test-run]' }] : [] });
       });
       const uid = await client.generateCollection('spec-1', 'P', '[Contract]', 'Tags', false, 'Fallback');
       expect(uid).toBe('uid-R');
@@ -169,7 +182,9 @@ describe('PostmanGatewayAssetsClient', () => {
       try {
         let polls = 0;
         const { client } = makeClient((env) => {
-          if (env.method === 'post') return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+          if (env.method === 'post') {
+            return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+          }
           if (env.path === '/tasks') {
             polls += 1;
             return jsonResponse({ data: { t: 'in-progress' } });
@@ -188,13 +203,17 @@ describe('PostmanGatewayAssetsClient', () => {
       vi.stubEnv('POSTMAN_GENERATION_POLL_DELAY_MS', 'nonsense'); // non-numeric -> default delay used
       try {
         let polls = 0;
+        let posted = false;
         const { client } = makeClient((env) => {
-          if (env.method === 'post') return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+          if (env.method === 'post') {
+            posted = true;
+            return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+          }
           if (env.path === '/tasks') {
             polls += 1;
             return jsonResponse({ data: { t: polls < 2 ? 'in-progress' : 'completed' } });
           }
-          return jsonResponse({ data: [{ collection: 'uid-D', state: 'in-sync' }] });
+          return jsonResponse({ data: posted ? [{ collection: 'uid-D', name: '[Smoke] P [bootstrap:test-run]', state: 'in-sync' }] : [] });
         });
         // Default budget (90) is far above the 2 polls needed; a zeroed budget would throw instead.
         const uid = await client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback');
@@ -575,7 +594,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(id).toBe('55363555-root-uid');
 
       const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
-      expect(rootCreate).toMatchObject({ headers: expect.objectContaining({ 'x-entity-target': 'http' }), body: { name: 'Curated' } });
+      expect(rootCreate).toMatchObject({ headers: expect.objectContaining({ 'x-entity-target': 'http' }), body: { name: 'Curated [bootstrap:test-run]' } });
 
       const folderCreate = calls.find(
         (c) => c.path === '/v3/collections/root-uid/items/' && (c.body as { name?: string })?.name === 'Folder'
@@ -637,7 +656,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       expect(id).toBe('55363555-root-v3');
       const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
-      expect(rootCreate?.body).toEqual({ name: 'Curated v3' });
+      expect(rootCreate?.body).toEqual({ name: 'Curated v3 [bootstrap:test-run]' });
 
       const itemCreate = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/root-v3/items/');
       expect(itemCreate).toMatchObject({
@@ -664,6 +683,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       const rootPatch = calls.find((c) => c.path === '/v3/collections/root-v3');
       expect(rootPatch?.body).toEqual([
+        { op: 'replace', path: '/name', value: 'Curated v3' },
         { op: 'add', path: '/variables', value: v3.variables },
         {
           op: 'add',
@@ -692,10 +712,11 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
-      expect(rootCreate?.body).toEqual({ name: 'Description only' });
+      expect(rootCreate?.body).toEqual({ name: 'Description only [bootstrap:test-run]' });
 
       const rootPatch = calls.find((c) => c.path === '/v3/collections/root-desc');
       expect(rootPatch?.body).toEqual([
+        { op: 'replace', path: '/name', value: 'Description only' },
         { op: 'add', path: '/description', value: 'created from Local View' }
       ]);
     });
@@ -1036,7 +1057,8 @@ describe('PostmanGatewayAssetsClient', () => {
         items: [{ $kind: 'http-request', name: 'New', method: 'GET', url: 'https://example.test' }]
       })).rejects.toThrow(/old items remain|delete.*verification/i);
 
-      expect(itemListReads).toBe(2);
+      // initial list + ambiguous-delete re-read + post-loop verification
+      expect(itemListReads).toBe(3);
       expect(calls.some((call) => call.method === 'post')).toBe(false);
     });
 

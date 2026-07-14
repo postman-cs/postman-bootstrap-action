@@ -117,7 +117,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
 
   // Mutable per-run platform state.
   let workspaceVisibility: string | undefined;
-  const generatedCollectionUids: string[] = [];
+  const generatedCollections: Array<{ collection: string; name: string }> = [];
   const taskStatuses = options.generationTaskStatuses
     ? [...options.generationTaskStatuses]
     : undefined;
@@ -222,7 +222,16 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
             : name.includes('[Contract]')
               ? 'contract'
               : 'baseline';
-          generatedCollectionUids.push(`12345678-col-${slot}`);
+          const defaultName =
+            slot === 'smoke'
+              ? '[Smoke] Contract Payments'
+              : slot === 'contract'
+                ? '[Contract] Contract Payments'
+                : 'Contract Payments';
+          generatedCollections.push({
+            collection: `12345678-col-${slot}`,
+            name: name || defaultName
+          });
           if (taskStatuses) {
             return json({ data: { taskId: 'task-1' } });
           }
@@ -238,7 +247,11 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
         }
         if (pmethod === 'get' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
           return json({
-            data: generatedCollectionUids.map((collection) => ({ collection, state: 'in-sync' }))
+            data: generatedCollections.map(({ collection, name }) => ({
+              collection,
+              name,
+              state: 'in-sync'
+            }))
           });
         }
         if (pmethod === 'get' && /\/specifications\/[^/]+\/files\/[^/]+/.test(ppath)) {

@@ -73,15 +73,16 @@ describe('contract: adversarial flows', () => {
     expect(fake.state.mintCount).toBe(1);
   });
 
-  it('retries a transient downstream 5xx with backoff and completes', async () => {
+  it('retries a transient safe-read 5xx with backoff and completes', async () => {
     let injected = 0;
     const fake = createPlatformFake({
       org: false,
       override: ({ proxy }) => {
+        // Wave 2: unsafe creates do not blind-retry. Prove safe GETs still retry.
         if (
           proxy?.service === 'workspaces' &&
-          proxy.method === 'post' &&
-          proxy.path === '/workspaces' &&
+          proxy.method === 'get' &&
+          proxy.path.startsWith('/workspaces') &&
           injected === 0
         ) {
           injected += 1;
@@ -101,7 +102,6 @@ describe('contract: adversarial flows', () => {
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
     expect(injected).toBe(1);
-    // Exactly one successful create followed the injected failure.
     expect(fake.state.workspaceCreateBodies).toHaveLength(1);
   });
 

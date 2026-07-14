@@ -27,24 +27,18 @@ actionlint          # Validate GitHub workflow syntax, if installed
 - [ ] `npm test` passes
 - [ ] `npm run build` was run and updated `dist/` is staged (`npm run verify:dist` passes)
 - [ ] `actionlint` passes for workflow changes
-- [ ] The `Live E2E` PR check passes; PRs should not be approved or merged until the correlated `postman-actions-e2e` run succeeds.
+- [ ] The offline `gate` check passes.
 - [ ] Changes are focused and address a single concern
 - [ ] New functionality includes tests
 
 ### Rebuilding dist/
 
-This action ships bundled JavaScript in `dist/`. After any source change, run `npm run build` and include the updated `dist/` files in your commit. CI builds once before its parallel gates and then read-only `git diff`s committed `dist/`; a pre-push hook runs `npm run verify:dist` (rebuild + diff) for you.
+This action ships bundled JavaScript in `dist/`. After any source change, run `npm run build` and include the updated `dist/` files in your commit. CI bundles once before its bounded queue and then runs read-only `verify:dist:assert`; a pre-push hook runs `npm run verify:dist` (rebuild + diff) for you.
 
-## PR E2E Gate
+## Live E2E Tier
 
-Every pull request targeting `main` runs the central live e2e suite before
-approval or merge. The PR workflow dispatches `postman-cs/postman-actions-e2e`
-with the PR head SHA pinned for `postman-bootstrap-action`, waits for the
-correlated run to succeed, and reports that result as the `Live E2E` check.
-
-Because the suite runs action code with repository-scoped live sandbox credentials, the PR
-branch must live in this repository. Fork-based PRs cannot receive those secrets;
-push the branch to this repo to run the required merge gate.
+Ordinary PRs use the deterministic offline gate. Live sandbox coverage runs on
+immutable releases and nightly in `postman-cs/postman-actions-e2e`.
 
 ## Release Gate
 

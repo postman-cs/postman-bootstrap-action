@@ -27,6 +27,7 @@ COPY . .
 
 RUN bash scripts/build-sea.sh
 
-# Export only the finished binary.
+# Export only the finished binary (version in the filename; wildcard so the
+# stage does not hardcode it).
 FROM scratch AS artifact
-COPY --from=build /app/build/sea/postman-bootstrap-linux-x64 /postman-bootstrap-linux-x64
+COPY --from=build /app/build/sea/postman-bootstrap-*-linux-x64 /

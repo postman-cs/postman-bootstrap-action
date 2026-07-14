@@ -1,0 +1,46 @@
+name: SEA binary
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Build self-contained SEA binary
+        run: bash scripts/build-sea.sh
+      - name: Smoke test in a node-less container
+        # Prove the binary runs on its embedded runtime with no node/npm present.
+        # The CLI always validates inputs, so a clean exit-0 path does not exist;
+        # instead assert it reaches its own input validation.
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          BIN="postman-bootstrap-${VERSION}-linux-x64"
+          out="$(docker run --rm -v "$PWD/build/sea:/w" -w /w debian:12-slim "./$BIN" 2>&1 || true)"
+          echo "$out"
+          if ! echo "$out" | grep -q "is required"; then
+            echo "::error::SEA binary did not execute as expected in a node-less container"
+            exit 1
+          fi
+      - name: Upload SEA binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: postman-bootstrap-linux-x64
+          path: build/sea/postman-bootstrap-*-linux-x64
+          if-no-files-found: error

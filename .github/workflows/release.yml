@@ -110,6 +110,11 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Build self-contained SEA binary
+        run: bash scripts/build-sea.sh
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
@@ -135,10 +140,12 @@ jobs:
         run: |
           npm pack
           mv ./*.tgz release.tgz
-      - name: Upload tarball
+      - name: Upload tarball and SEA binary
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
-          files: release.tgz
+          files: |
+            release.tgz
+            build/sea/postman-bootstrap-*-linux-x64
 
   advance-major-alias:
     # Keep the rolling major alias (e.g. v2) pointing at the newest published

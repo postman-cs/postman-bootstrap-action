@@ -12,7 +12,8 @@ cd "$ROOT"
 OUT_DIR="build/sea"
 BUNDLE="$OUT_DIR/cli.cjs"
 BLOB="$OUT_DIR/sea-prep.blob"
-BIN="$OUT_DIR/postman-bootstrap-linux-x64"
+VERSION="$(node -p "require('./package.json').version")"
+BIN="$OUT_DIR/postman-bootstrap-${VERSION}-linux-x64"
 # Fixed sentinel required by Node's SEA tooling.
 FUSE="NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2"
 

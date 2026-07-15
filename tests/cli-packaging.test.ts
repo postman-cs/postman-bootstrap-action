@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tempDirs: string[] = [];
+const expectedDistEntries = ['action.cjs', 'cli.cjs', 'index.cjs'];
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -21,9 +22,35 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
+async function trackedDistEntries(): Promise<string[]> {
+  const result = await execFileAsync('git', ['ls-files', '--', 'dist'], {
+    cwd: repoRoot,
+    encoding: 'utf8'
+  });
+  return result.stdout.split(/\r?\n/).filter(Boolean);
+}
+
+async function checkoutTrackedDist(): Promise<string> {
+  const root = await makeTempDir('postman-bootstrap-dist-snapshot-');
+  const entries = await trackedDistEntries();
+  await execFileAsync('git', ['checkout-index', `--prefix=${root}${path.sep}`, '--', 'package.json', ...entries], {
+    cwd: repoRoot,
+    encoding: 'utf8'
+  });
+  return path.join(root, 'dist');
+}
+
+async function readIndexedPackageJson(): Promise<{ version: string }> {
+  const result = await execFileAsync('git', ['show', ':package.json'], {
+    cwd: repoRoot,
+    encoding: 'utf8'
+  });
+  return JSON.parse(result.stdout) as { version: string };
+}
+
 describe('CLI packaging contract', () => {
   it('commits a Node shebang and git-index executable mode on dist/cli.cjs', async () => {
-    const cliPath = path.join(repoRoot, 'dist', 'cli.cjs');
+    const cliPath = path.join(await checkoutTrackedDist(), 'cli.cjs');
     const contents = await readFile(cliPath, 'utf8');
     expect(contents.startsWith('#!/usr/bin/env node\n')).toBe(true);
 
@@ -39,10 +66,8 @@ describe('CLI packaging contract', () => {
   });
 
   it('runs ./dist/cli.cjs --help and --version without credentials, network, or writes', async () => {
-    const cliPath = path.join(repoRoot, 'dist', 'cli.cjs');
-    const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
-      version: string;
-    };
+    const cliPath = path.join(await checkoutTrackedDist(), 'cli.cjs');
+    const packageJson = await readIndexedPackageJson();
     const sandbox = await makeTempDir('postman-bootstrap-cli-sandbox-');
     const env = {
       PATH: process.env.PATH ?? '',
@@ -78,19 +103,13 @@ describe('CLI packaging contract', () => {
   }, 20_000);
 
   it('keeps an exact dist census of action/cli/index entrypoints', async () => {
-    const distDir = path.join(repoRoot, 'dist');
-    const entries = (await execFileAsync('git', ['ls-files', '--', 'dist'], {
-      cwd: repoRoot,
-      encoding: 'utf8'
-    })).stdout
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((filePath) => path.basename(filePath))
-      .sort();
-    expect(entries).toEqual(['action.cjs', 'cli.cjs', 'index.cjs']);
+    const entries = (await trackedDistEntries()).map((filePath) => path.basename(filePath)).sort();
+    expect(entries).toEqual(expectedDistEntries);
 
-    const onDisk = (await import('node:fs/promises')).readdir(distDir);
-    expect((await onDisk).slice().sort()).toEqual(['action.cjs', 'cli.cjs', 'index.cjs']);
+    const snapshotDist = await checkoutTrackedDist();
+    expect(path.dirname(snapshotDist)).not.toBe(repoRoot);
+    const onDisk = await (await import('node:fs/promises')).readdir(snapshotDist);
+    expect(onDisk.slice().sort()).toEqual(expectedDistEntries);
   });
 
   it('does not rebuild dist from packaging tests', async () => {

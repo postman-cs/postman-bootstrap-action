@@ -274,7 +274,7 @@ describe('Wave 2 create reconciliation', () => {
 
       const id = await client.uploadSpec('ws-1', 'Payments API', 'openapi: 3.0.3', '3.0');
       expect(id).toBe('spec-adopted');
-      expect(createPosts).toBe(1);
+      expect(createPosts).toBe(0);
     });
   });
 
@@ -839,7 +839,7 @@ describe('Wave 2 create reconciliation', () => {
           const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8'));
           expect(resources).toMatchObject({
             workspace: { id: 'ws-created' },
-            cloudResources: {
+            canonical: {
               specs: {
                 '../openapi.yaml': 'spec-created'
               },

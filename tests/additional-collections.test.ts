@@ -396,11 +396,11 @@ describe('additional local collection provisioning', () => {
         })
       ]);
       const resources = readResources();
-      expect(resources.cloudResources?.additionalCollections).toMatchObject({
+      expect(resources.canonical?.additionalCollections).toMatchObject({
         '../postman/curated/nested/refunds.yaml': 'col-refunds-created',
         '../postman/curated/payments.json': 'col-payments-existing'
       });
-      expect(resources.cloudResources?.collections).toEqual({
+      expect(resources.canonical?.collections).toEqual({
         '../postman/curated/payments.json': 'col-payments-existing'
       });
     });
@@ -471,7 +471,7 @@ describe('additional local collection provisioning', () => {
           resourcePath: '../postman/curated/payments.json'
         })
       ]);
-      expect(readResources().cloudResources?.additionalCollections).toEqual({
+      expect(readResources().canonical?.additionalCollections).toEqual({
         '../postman/curated/payments.json': 'col-payments-recreated'
       });
     });

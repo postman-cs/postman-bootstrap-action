@@ -250,6 +250,17 @@ export class PostmanGatewayAssetsClient {
     if (openapiVersion !== '3.0' && openapiVersion !== '3.1') {
       throw new Error(`uploadSpec: unsupported openapiVersion "${openapiVersion}". Expected '3.0' or '3.1'.`);
     }
+    // Resolution-layer idempotency: an absent tracked state must not mean a
+    // blind create. Exact final-name lookup adopts one match, fails loudly on
+    // ambiguity, and only then enters the randomized-create race guard.
+    const existing = adoptExactMatch(
+      `specification:${workspaceId}:${projectName}`,
+      await this.findSpecificationsByExactName(workspaceId, projectName),
+      (entry) => entry.id
+    );
+    if (existing) {
+      return existing.id;
+    }
     const specType = openapiVersion === '3.1' ? 'OPENAPI:3.1' : 'OPENAPI:3.0';
     let created: JsonRecord | null;
     try {
@@ -277,6 +288,16 @@ export class PostmanGatewayAssetsClient {
     const specId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
     if (!specId) {
       throw new Error('Spec upload did not return an ID');
+    }
+    // A concurrent same-identity create may have won between lookup and POST.
+    // Re-list before proceeding so a duplicate is never silently retained.
+    const verified = adoptExactMatch(
+      `specification:${workspaceId}:${projectName}`,
+      await this.findSpecificationsByExactName(workspaceId, projectName),
+      (entry) => entry.id
+    );
+    if (verified && verified.id !== specId) {
+      return verified.id;
     }
     // Preflight the read so a generate immediately after create does not race.
     await this.gateway.requestJson<JsonRecord>({
@@ -359,6 +380,46 @@ export class PostmanGatewayAssetsClient {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Native Spec Hub version tags (branch-aware sync P3.5). Tags attach to the
+   * LATEST changelog group; the backend 409s when that group is already tagged
+   * (VersionControlService). Callers handle 409 as idempotent-by-group.
+   */
+  async tagSpecVersion(specId: string, name: string): Promise<{ id: string; name: string }> {
+    const trimmed = name.trim().slice(0, 255);
+    const created = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'post',
+      path: `/specifications/${specId}/tags`,
+      retry: 'none',
+      body: { name: trimmed }
+    });
+    const record = asRecord(created?.data) ?? created ?? {};
+    return {
+      id: String(record.id ?? '').trim(),
+      name: String(record.name ?? trimmed).trim()
+    };
+  }
+
+  /** List a spec's native version tags (newest first per backend ordering). */
+  async listSpecVersionTags(specId: string): Promise<Array<{ id: string; name: string }>> {
+    const response = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'get',
+      path: `/specifications/${specId}/tags`,
+      query: { limit: '50' }
+    });
+    const entries = Array.isArray(response?.data) ? (response.data as JsonRecord[]) : [];
+    return entries
+      .map((value) => asRecord(value))
+      .filter((value): value is JsonRecord => value !== null)
+      .map((value) => ({
+        id: String(value.id ?? '').trim(),
+        name: String(value.name ?? '').trim()
+      }))
+      .filter((value) => value.id || value.name);
   }
 
   /** Resolve a specification's ROOT file uuid via the files list. */

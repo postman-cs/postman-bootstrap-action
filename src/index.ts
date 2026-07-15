@@ -56,6 +56,17 @@ import { resolveActionVersion } from './action-version.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
+import {
+  BRANCH_DECISION_ENV,
+  channelAssetName,
+  parseChannelRules,
+  previewAssetName,
+  resolveBranchIdentity,
+  resolveEffectiveBranchDecision,
+  serializeBranchDecision,
+  type BranchDecision,
+  type BranchStrategy
+} from './lib/repo/branch-decision.js';
 import { buildProtocolCollection, type ProtocolCollectionResult } from './lib/protocols/dispatch.js';
 
 export interface ResolvedInputs {
@@ -111,6 +122,9 @@ export interface ResolvedInputs {
   githubSha?: string;
   githubToken?: string;
   ghFallbackToken?: string;
+  branchStrategy: BranchStrategy;
+  canonicalBranch?: string;
+  channels?: string;
 }
 
 export interface PlannedOutputs {
@@ -125,6 +139,11 @@ export interface PlannedOutputs {
   'lint-summary-json': string;
   'breaking-change-status': string;
   'breaking-change-summary-json': string;
+  'sync-status': string;
+  'branch-decision': string;
+  'spec-version-tag': string;
+  'spec-version-url': string;
+  'spec-content-changed'?: string;
 }
 
 export interface LintViolation {
@@ -196,6 +215,8 @@ export interface BootstrapExecutionDependencies {
     configureTeamContext?(teamId: string, orgMode: boolean): void;
     injectTests(collectionId: string, type: 'smoke'): Promise<void>;
     tagCollection(collectionId: string, tags: string[]): Promise<void>;
+    tagSpecVersion?(specId: string, name: string): Promise<{ id: string; name: string }>;
+    listSpecVersionTags?(specId: string): Promise<Array<{ id: string; name: string }>>;
     deleteCollection?(collectionUid: string): Promise<void>;
     injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
     createCollection?(
@@ -481,8 +502,94 @@ export function resolveInputs(
     githubRef: env.GITHUB_REF,
     githubSha: env.GITHUB_SHA,
     githubToken: getInput('github-token', env) || env.GITHUB_TOKEN || '',
-    ghFallbackToken: getInput('gh-fallback-token', env) || env.GH_FALLBACK_TOKEN || ''
+    ghFallbackToken: getInput('gh-fallback-token', env) || env.GH_FALLBACK_TOKEN || '',
+    branchStrategy: parseEnumInput<BranchStrategy>(
+      'branch-strategy',
+      getInput('branch-strategy', env),
+      'legacy'
+    ),
+    canonicalBranch: getInput('canonical-branch', env),
+    channels: getInput('channels', env)
   };
+}
+
+/**
+ * Resolve the run's immutable BranchDecision BEFORE any credential is
+ * validated or minted (decide step of decide -> execute -> finalize). An
+ * inherited POSTMAN_BRANCH_DECISION env decision wins so one decision spans
+ * bootstrap, repo-sync, smoke-flow, and insights within a single run.
+ */
+export function decideBranchTier(
+  inputs: Pick<ResolvedInputs, 'branchStrategy' | 'canonicalBranch' | 'channels'>,
+  env: NodeJS.ProcessEnv = process.env
+): BranchDecision {
+  return resolveEffectiveBranchDecision(
+    {
+      // Tolerate hand-built inputs objects (tests, embedders) that omit the
+      // field: absent means legacy, exactly like the action default.
+      strategy: inputs.branchStrategy ?? 'legacy',
+      identity: resolveBranchIdentity(env, { defaultBranch: inputs.canonicalBranch }),
+      canonicalBranch: inputs.canonicalBranch,
+      channels: parseChannelRules(inputs.channels)
+    },
+    env
+  );
+}
+
+/**
+ * Tagged read-only Spec Hub view URL (R20): deep-links the exact published
+ * version in CI logs / PR comments via the app's ?tagId=&versionLabel= params.
+ */
+export function buildSpecVersionUrl(
+  workspaceId: string,
+  specId: string,
+  tagId: string,
+  versionLabel: string
+): string {
+  return (
+    'https://go.postman.co/workspace/' + workspaceId +
+    '/specification/' + specId +
+    '?tagId=' + encodeURIComponent(tagId) +
+    '&versionLabel=' + encodeURIComponent(versionLabel)
+  );
+}
+
+/**
+ * Specs retain their branch identity even if a user edits the description. This
+ * extension is deliberately applied only to disposable preview/channel copies;
+ * canonical source content remains byte-for-byte customer authored.
+ */
+export function embedSpecBranchMarker(
+  content: string,
+  decision: BranchDecision,
+  repo: string | undefined
+): string {
+  if ((decision.tier !== 'preview' && decision.tier !== 'channel') || !decision.identity.headBranch || !repo) {
+    return content;
+  }
+  const rawBranch = decision.identity.headBranch;
+  const now = new Date().toISOString();
+  const marker = {
+    repo,
+    rawBranch,
+    sanitizedBranch: rawBranch.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 30),
+    role: decision.tier,
+    headSha: decision.identity.headSha,
+    createdAt: now,
+    lastSyncedAt: now
+  };
+  try {
+    if (content.trim().startsWith('{')) {
+      return `${JSON.stringify({ ...(JSON.parse(content) as Record<string, unknown>), 'x-postman-onboarding': marker }, null, 2)}\n`;
+    }
+    const document = parse(content);
+    if (!document || typeof document !== 'object' || Array.isArray(document)) return content;
+    return stringify({ ...(document as Record<string, unknown>), 'x-postman-onboarding': marker });
+  } catch {
+    // The contract parser already validated the document. Preserve content if a
+    // future format cannot round-trip through YAML instead of risking mutation.
+    return content;
+  }
 }
 
 export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
@@ -519,7 +626,12 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
       mode: inputs.breakingChangeMode,
       status: 'skipped',
       summaryPath: ''
-    })
+    }),
+    'sync-status': '',
+    'branch-decision': '',
+    'spec-version-tag': '',
+    'spec-version-url': '',
+    'spec-content-changed': ''
   };
 }
 
@@ -1707,6 +1819,52 @@ async function runBootstrapInner(
   telemetry: TelemetryContext
 ): Promise<PlannedOutputs> {
   const outputs = createPlannedOutputs(inputs);
+
+  // Branch-aware sync: the effective BranchDecision (inherited from the
+  // decide step via POSTMAN_BRANCH_DECISION, or resolved locally; legacy under
+  // default inputs). The canonical workspace name is computed BEFORE any
+  // preview/channel renaming: preview and channel asset sets live in the same
+  // canonical workspace.
+  const branchDecision = decideBranchTier(inputs);
+  const isCanonicalWriter = branchDecision.tier === 'legacy' || branchDecision.tier === 'canonical';
+  const workspaceName = createWorkspaceName(inputs);
+  const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
+  if (branchDecision.tier === 'preview' && branchDecision.identity.headBranch) {
+    inputs = {
+      ...inputs,
+      projectName: previewAssetName(inputs.projectName, branchDecision.identity.headBranch)
+    };
+    dependencies.core.info(`branch-aware sync: preview asset set "${inputs.projectName}"`);
+  } else if (branchDecision.tier === 'channel' && branchDecision.channel) {
+    inputs = {
+      ...inputs,
+      projectName: channelAssetName(inputs.projectName, branchDecision.channel.code)
+    };
+    dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
+  }
+  if (branchDecision.tier !== 'legacy') {
+    outputs['sync-status'] = 'synced';
+    outputs['branch-decision'] = serializeBranchDecision(branchDecision);
+  }
+
+  // Runtime guard (state v2): a non-canonical run handed an explicit canonical
+  // asset id would mutate canonical assets from a branch. Refuse loud instead
+  // of quietly writing. workspace-id is allowed: the workspace is shared
+  // infrastructure that preview/channel sets live inside.
+  if (!isCanonicalWriter) {
+    const explicitCanonicalIds = [
+      ['spec-id', inputs.specId],
+      ['baseline-collection-id', inputs.baselineCollectionId],
+      ['smoke-collection-id', inputs.smokeCollectionId],
+      ['contract-collection-id', inputs.contractCollectionId]
+    ].filter(([, value]) => Boolean(value));
+    if (explicitCanonicalIds.length > 0) {
+      throw new Error(
+        `CONTRACT_BRANCH_CANONICAL_WRITE: a ${branchDecision.tier} run must not mutate canonical assets, but explicit asset id input(s) were provided: ${explicitCanonicalIds.map(([name]) => name).join(', ')}. Remove them (preview/channel runs discover or create their own suffixed asset sets).`
+      );
+    }
+  }
+
   const requiresReleaseLabel =
     inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
@@ -1719,14 +1877,38 @@ async function runBootstrapInner(
     inputs.collectionSyncMode === 'version'
       ? createAssetProjectName(inputs, releaseLabel)
       : inputs.projectName;
-  const workspaceName = createWorkspaceName(inputs);
-  const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
 
   // Validated before any side effect (CLI install, spec upload, workspace
   // create, ...): an invalid additional-collections-dir must fail fast, not
   // after partial provisioning has already run.
-  const stateStore = resolveResourcesStateStore(dependencies);
-  const resourcesState = stateStore.read();
+  //
+  // State v2 (canonical-only): tracked .postman/resources.yaml is written ONLY
+  // by canonical/legacy runs, and asset ids are resolved from it ONLY on
+  // canonical/legacy runs (ref-aware v1 migration: a branch run with inherited
+  // v1 state neither clobbers nor resolves from it). Non-canonical runs keep
+  // workspace identity (shared infrastructure) but never canonical asset ids.
+  const rawStateStore = resolveResourcesStateStore(dependencies);
+  const trackedState = rawStateStore.read();
+  const stateStore = isCanonicalWriter
+    ? rawStateStore
+    : {
+        read: rawStateStore.read,
+        write: (): void => {
+          dependencies.core.info(
+            `branch-aware sync: skipping .postman/resources.yaml write on ${branchDecision.tier} run (canonical-only tracked state)`
+          );
+        }
+      };
+  const resourcesState = isCanonicalWriter
+    ? trackedState
+    : trackedState?.workspace
+      ? { workspace: trackedState.workspace }
+      : null;
+  if (!isCanonicalWriter && trackedState?.cloudResources) {
+    dependencies.core.info(
+      'branch-aware sync: canonical asset ids in .postman/resources.yaml are not resolved on a non-canonical run'
+    );
+  }
   const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
   const additionalCollections = loadAdditionalCollectionFiles(
     inputs.additionalCollectionsDir,
@@ -1751,6 +1933,7 @@ async function runBootstrapInner(
 
   let previousSpecContent: string | undefined;
   let previousSpecRollbackHash: string | undefined;
+  let specContentUnchanged = false;
   let detectedOpenapiVersion: '3.0' | '3.1' = '3.0';
   let contractIndex: ContractIndex | undefined;
   let sourceSpecContent = '';
@@ -1896,6 +2079,12 @@ async function runBootstrapInner(
     );
   }
 
+  const uploadSpecContent = embedSpecBranchMarker(
+    specContent,
+    branchDecision,
+    inputs.repoUrl
+  );
+
   const provisioned = await provisionWorkspace(
     inputs,
     dependencies,
@@ -2031,12 +2220,25 @@ async function runBootstrapInner(
       specId ? 'Update Spec in Spec Hub' : 'Upload Spec to Spec Hub',
       async () => {
         if (specId) {
-          dependencies.core.info(
-            `Updating existing spec ${specId} (detected version: ${detectedOpenapiVersion}). ` +
-            `Note: the spec type (OPENAPI:3.0 / OPENAPI:3.1) is set at creation and cannot be changed on update. ` +
-            `If you changed OpenAPI versions, clear the spec-id input to create a fresh spec.`
-          );
-          await dependencies.postman.updateSpec(specId, specContent, workspaceId);
+          // Content-hash no-op skip (native versioning): identical content
+          // means no new changelog group — skip the upload and the tag.
+          if (
+            previousSpecContent !== undefined &&
+            createHash('sha256').update(uploadSpecContent).digest('hex') ===
+              createHash('sha256').update(previousSpecContent).digest('hex')
+          ) {
+            specContentUnchanged = true;
+            dependencies.core.info(
+              `Spec content unchanged (sha256 match); skipping Spec Hub update and version tag for ${specId}.`
+            );
+          } else {
+            dependencies.core.info(
+              `Updating existing spec ${specId} (detected version: ${detectedOpenapiVersion}). ` +
+              `Note: the spec type (OPENAPI:3.0 / OPENAPI:3.1) is set at creation and cannot be changed on update. ` +
+              `If you changed OpenAPI versions, clear the spec-id input to create a fresh spec.`
+            );
+            await dependencies.postman.updateSpec(specId, uploadSpecContent, workspaceId);
+          }
         } else {
           specId = await dependencies.postman.uploadSpec(
             workspaceId || '',
@@ -2044,7 +2246,7 @@ async function runBootstrapInner(
               inputs,
               inputs.specSyncMode === 'version' ? releaseLabel : undefined
             ),
-            specContent,
+            uploadSpecContent,
             detectedOpenapiVersion
           );
         }
@@ -2061,6 +2263,10 @@ async function runBootstrapInner(
       }
     )
   );
+
+  // Repo-sync owns tag publication. Its finalize boundary certifies the whole
+  // onboarding run rather than only this spec upload.
+  outputs['spec-content-changed'] = isCanonicalWriter && !specContentUnchanged ? 'true' : 'false';
 
   if (lintEnabled) {
     const lintSummary = await runRollbackStage(
@@ -2380,12 +2586,89 @@ async function runBootstrapInner(
   return outputs;
 }
 
+/**
+ * Gated tier (publish-gate / fork-PR / tag): credential-free static validation
+ * only. Fetches or reads the spec, parses it, and runs the local contract
+ * index build (which performs the full static lint pass). No token is ever
+ * minted and no Postman API is called: zero writes by construction.
+ */
+export async function runGatedValidation(
+  inputs: ResolvedInputs,
+  decision: BranchDecision,
+  actionCore: Pick<CoreLike, 'info' | 'setOutput' | 'warning'>
+): Promise<PlannedOutputs> {
+  actionCore.info(`branch-aware sync: gated run (${decision.reason}) — credential-free static validation, zero workspace writes`);
+
+  const outputs = createPlannedOutputs(inputs);
+  outputs['sync-status'] = 'skipped-branch-gate';
+  outputs['branch-decision'] = serializeBranchDecision(decision);
+
+  let violations: string[] = [];
+  let validated = false;
+  try {
+    let content: string | undefined;
+    if (inputs.specPath) {
+      content = readFileSync(inputs.specPath, 'utf8');
+    } else if (inputs.specUrl) {
+      content = await safeFetchText(inputs.specUrl, { depth: 0 });
+    }
+    if (content) {
+      const specType = detectSpecType(content, inputs.specPath);
+      if (specType === 'openapi') {
+        const document = parseOpenApiDocument(content);
+        const index = buildContractIndex(document);
+        violations = index.warnings;
+        validated = true;
+      } else {
+        actionCore.info(`branch gate: static lint for spec type ${specType} runs through its protocol builder on publish; parse-only gate applied`);
+        validated = true;
+      }
+    } else {
+      actionCore.info('branch gate: no spec-url/spec-path provided; nothing to validate');
+    }
+  } catch (error) {
+    // Static validation failures must fail the gated run loudly: the branch is
+    // shipping a spec that cannot parse.
+    throw new Error(
+      `branch gate: static validation failed: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
+
+  outputs['lint-summary-json'] = JSON.stringify({
+    status: validated ? 'static-only' : 'skipped',
+    reason: 'branch-gated run: governance lint requires upload and runs on publish/preview syncs',
+    errors: 0,
+    warnings: violations.length,
+    total: violations.length,
+    violations: violations.map((issue) => ({ issue, severity: 'WARNING' }))
+  });
+
+  for (const [name, value] of Object.entries(outputs)) {
+    actionCore.setOutput(name, value);
+  }
+  return outputs;
+}
+
 export async function runAction(
   actionCore: CoreLike = core,
   actionExec: ExecLike = exec,
   actionIo: IOLike = io
 ): Promise<PlannedOutputs> {
   const inputs = readActionInputs(actionCore);
+
+  // Decide step (branch-aware sync): resolve the immutable BranchDecision from
+  // provider CI env BEFORE any credential validation or token mint. Gated runs
+  // exit here with credential-free static validation only -- provably zero
+  // workspace writes because no token is ever minted.
+  const branchDecision = decideBranchTier(inputs);
+  if (branchDecision.tier === 'gated') {
+    return runGatedValidation(inputs, branchDecision, actionCore);
+  }
+  if (branchDecision.tier !== 'legacy') {
+    actionCore.info(`branch-aware sync: tier=${branchDecision.tier} (${branchDecision.reason})`);
+    process.env[BRANCH_DECISION_ENV] = serializeBranchDecision(branchDecision);
+  }
 
   // PMAK-only runs: eagerly mint the short-lived access token from the service
   // -account PMAK so the whole access-token surface (credential preflight
@@ -2510,6 +2793,8 @@ export function createRoutingPostmanClient(options: {
       inviteRequesterToWorkspace: requireAccessToken('inviteRequesterToWorkspace'),
       injectTests: requireAccessToken('injectTests'),
       tagCollection: requireAccessToken('tagCollection'),
+      tagSpecVersion: requireAccessToken('tagSpecVersion'),
+      listSpecVersionTags: requireAccessToken('listSpecVersionTags'),
       deleteCollection: requireAccessToken('deleteCollection'),
       injectContractTests: requireAccessToken('injectContractTests'),
       createCollection: requireAccessToken('createCollection'),
@@ -2543,6 +2828,8 @@ export function createRoutingPostmanClient(options: {
     // + tagging surfaces (live-proven). PMAK is reserved for token minting, so
     // these never fall back to the API key even when one is present.
     injectTests: (collectionId, type) => gateway.injectTests(collectionId, type),
+    tagSpecVersion: (specId, name) => gateway.tagSpecVersion(specId, name),
+    listSpecVersionTags: (specId) => gateway.listSpecVersionTags(specId),
     tagCollection: (collectionId, tags) => gateway.tagCollection(collectionId, tags),
     // Sub-team (squad) enumeration over the gateway `ums` service. Access-token
     // only — never PMAK — so org-mode detection no longer needs a PMAK GET /teams.

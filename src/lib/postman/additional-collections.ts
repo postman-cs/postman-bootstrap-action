@@ -21,6 +21,8 @@ type JsonRecord = Record<string, unknown>;
 export type CloudResourceMap = Record<string, string>;
 
 export type PostmanResourcesState = {
+  /** State schema version. Absent = v1 (legacy). v2 is canonical-only. */
+  version?: number;
   workspace?: {
     id?: string;
   };
@@ -30,7 +32,26 @@ export type PostmanResourcesState = {
     environments?: CloudResourceMap;
     specs?: CloudResourceMap;
   };
-};
+  /** Canonical-only persisted state in schema v2. */
+  canonical?: {
+    additionalCollections?: CloudResourceMap;
+    collections?: CloudResourceMap;
+    environments?: CloudResourceMap;
+    specs?: CloudResourceMap;
+  };
+} & Record<string, unknown>;
+
+export const RESOURCES_STATE_VERSION = 2;
+const SUPPORTED_STATE_VERSIONS = new Set([1, RESOURCES_STATE_VERSION]);
+
+/** Contract violation raised when tracked state exists but cannot be trusted. */
+export class StateUnreadableError extends Error {
+  readonly code = 'CONTRACT_STATE_UNREADABLE';
+  constructor(message: string) {
+    super(`CONTRACT_STATE_UNREADABLE: ${message}`);
+    this.name = 'StateUnreadableError';
+  }
+}
 
 export interface AdditionalCollectionFile {
   collection: JsonRecord;
@@ -140,17 +161,53 @@ function resourcesStatePath(): string {
 }
 
 export function readResourcesState(): PostmanResourcesState | null {
+  let raw: string;
   try {
-    return parse(readFileSync(resourcesStatePath(), 'utf8')) as PostmanResourcesState;
+    raw = readFileSync(resourcesStatePath(), 'utf8');
   } catch {
+    // Missing state is a first run: fall through to discover/create.
     return null;
   }
+  // Malformed is NOT missing: an unreadable tracked-state file must fail loud
+  // instead of silently reopening the duplicate-creation path.
+  let parsed: unknown;
+  try {
+    parsed = parse(raw);
+  } catch (error) {
+    throw new StateUnreadableError(
+      `.postman/resources.yaml exists but is not parseable YAML (${error instanceof Error ? error.message : String(error)}). Fix or delete the file; refusing to treat tracked state as absent.`
+    );
+  }
+  if (parsed === null || parsed === undefined) {
+    return null;
+  }
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new StateUnreadableError(
+      '.postman/resources.yaml exists but does not contain a YAML mapping. Fix or delete the file; refusing to treat tracked state as absent.'
+    );
+  }
+  const state = parsed as PostmanResourcesState;
+  if (state.version !== undefined && !SUPPORTED_STATE_VERSIONS.has(Number(state.version))) {
+    throw new StateUnreadableError(
+      `.postman/resources.yaml declares unsupported state version ${String(state.version)} (supported: 1, ${RESOURCES_STATE_VERSION}). Upgrade the action or fix the file.`
+    );
+  }
+  // v2 persists canonical-only. Existing provisioning seams still consume the
+  // v1-shaped cloudResources map, so expose a transient in-memory alias. The
+  // writer below removes it again; branch state never leaks back into git.
+  if (state.canonical && !state.cloudResources) {
+    state.cloudResources = { ...state.canonical };
+  }
+  return state;
 }
 
 export function writeResourcesState(state: PostmanResourcesState): void {
   const target = resourcesStatePath();
   mkdirSync(path.dirname(target), { recursive: true });
-  writeFileSync(target, stringify(state), 'utf8');
+  const canonical = state.cloudResources ?? state.canonical ?? {};
+  const persisted: PostmanResourcesState = { ...state, version: RESOURCES_STATE_VERSION, canonical };
+  delete persisted.cloudResources;
+  writeFileSync(target, stringify(persisted), 'utf8');
 }
 
 export function findCloudResourceId(
@@ -170,6 +227,8 @@ function findExistingAdditionalCollectionId(
   resourcePath: string
 ): string | undefined {
   return (
+    resourcesState?.canonical?.additionalCollections?.[resourcePath] ??
+    resourcesState?.canonical?.collections?.[resourcePath] ??
     resourcesState?.cloudResources?.additionalCollections?.[resourcePath] ??
     resourcesState?.cloudResources?.collections?.[resourcePath]
   );

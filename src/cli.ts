@@ -8,14 +8,17 @@ import * as io from '@actions/io';
 
 import {
   createBootstrapDependencies,
+  decideBranchTier,
   mintAccessTokenIfNeeded,
   resolveInputs,
+  runGatedValidation,
   type ResolvedInputs,
   runBootstrap,
   type BootstrapExecutionDependencies,
   type ExecLike,
   type PlannedOutputs
 } from './index.js';
+import { BRANCH_DECISION_ENV, serializeBranchDecision } from './lib/repo/branch-decision.js';
 import { runCredentialPreflight } from './lib/postman/credential-identity.js';
 import { createSecretMasker } from './lib/secrets.js';
 
@@ -131,6 +134,9 @@ const cliInputNames = [
   'postman-api-key',
   'postman-access-token',
   'credential-preflight',
+  'branch-strategy',
+  'canonical-branch',
+  'channels',
   'workspace-id',
   'spec-id',
   'baseline-collection-id',
@@ -419,6 +425,26 @@ export async function runCli(
   validateCliInputs(inputs);
   assertOutputFileAllowed(config.resultJsonPath);
   assertOutputFileAllowed(config.dotenvPath);
+
+  // Decide step (branch-aware sync): resolve the immutable BranchDecision
+  // BEFORE any credential validation or token mint — the CLI entry must gate
+  // exactly as runAction does (dist/cli.cjs is what CI and e2e invoke).
+  const branchDecision = decideBranchTier(inputs, config.inputEnv);
+  if (branchDecision.tier === 'gated') {
+    const gatedReporter = new ConsoleReporter();
+    const gated = await runGatedValidation(inputs, branchDecision, {
+      info: (m: string) => gatedReporter.info(m),
+      warning: (m: string) => gatedReporter.warning(m),
+      setOutput: () => undefined
+    });
+    await writeOptionalFile(config.resultJsonPath, JSON.stringify(gated, null, 2));
+    await writeOptionalFile(config.dotenvPath, toDotenv(gated));
+    writeStdout(`${JSON.stringify(gated, null, 2)}\n`);
+    return;
+  }
+  if (branchDecision.tier !== 'legacy') {
+    process.env[BRANCH_DECISION_ENV] = serializeBranchDecision(branchDecision);
+  }
 
   // PMAK-only runs: mint the access token up front (mirrors runAction) so the
   // dependencies built below get the full access-token surface (governance

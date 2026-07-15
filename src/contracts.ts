@@ -186,6 +186,23 @@ export const bootstrapActionContract: ActionContract = {
       default: 'warn',
       allowedValues: ['enforce', 'warn']
     },
+    'branch-strategy': {
+      description:
+        'Branch-aware sync strategy. legacy (default) keeps branch-blind behavior; publish-gate restricts canonical writes to the canonical branch and runs credential-free static validation on other branches; preview additionally maintains suffixed per-branch preview asset sets.',
+      required: false,
+      default: 'legacy',
+      allowedValues: ['legacy', 'preview', 'publish-gate']
+    },
+    'canonical-branch': {
+      description:
+        'Explicit canonical branch (the sole writer of canonical assets). Defaults to the provider-resolved default branch; required on providers without a default-branch variable (Bitbucket, Azure DevOps) when branch-strategy is not legacy.',
+      required: false
+    },
+    'channels': {
+      description:
+        'Comma-separated channel map for long-lived promotion branches, e.g. "develop=DEV, staging=STAGE, release/*=RC". Channel branches maintain prefix-named parallel asset sets and never mutate canonical assets.',
+      required: false
+    },
     'integration-backend': {
       description: 'Integration backend for downstream workspace connectivity.',
       required: false,
@@ -256,6 +273,24 @@ export const bootstrapActionContract: ActionContract = {
     },
     'breaking-change-summary-json': {
       description: 'JSON summary of the OpenAPI breaking-change check.'
+    },
+    'sync-status': {
+      description:
+        'Branch-aware sync status: synced (canonical/channel/preview write ran), skipped-branch-gate (gated run, credential-free validation only), or empty under branch-strategy legacy.'
+    },
+    'branch-decision': {
+      description: 'Serialized BranchDecision JSON for downstream actions (also exported as POSTMAN_BRANCH_DECISION).'
+    },
+    'spec-version-tag': {
+      description:
+        'Native Spec Hub version tag applied on this canonical publish (tag-per-publish), empty when tagging was skipped (no-op sync, non-canonical run, or legacy client).'
+    },
+    'spec-version-url': {
+      description:
+        'Reserved for the repo-sync finalizer; bootstrap does not tag before complete onboarding.'
+    },
+    'spec-content-changed': {
+      description: 'Whether bootstrap changed canonical spec content; repo-sync uses this to skip native version tags on no-op syncs.'
     }
   },
   retainedBehavior: [

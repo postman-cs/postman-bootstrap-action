@@ -9,5 +9,9 @@
   "collections-json": "{\"baseline\":\"col-baseline\",\"smoke\":\"col-smoke\",\"contract\":\"col-contract\"}",
   "lint-summary-json": "{\"errors\":0,\"total\":0,\"violations\":[],\"warnings\":0}",
   "breaking-change-status": "skipped",
-  "breaking-change-summary-json": "{\"status\":\"skipped\"}"
+  "breaking-change-summary-json": "{\"status\":\"skipped\"}",
+  "sync-status": "",
+  "branch-decision": "",
+  "spec-version-tag": "",
+  "spec-version-url": ""
 }

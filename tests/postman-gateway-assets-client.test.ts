@@ -69,7 +69,9 @@ describe('PostmanGatewayAssetsClient', () => {
       const id = await client.uploadSpec('ws-9', 'Telecom API', 'openapi: 3.0.3', '3.0');
       expect(id).toBe('spec-1');
 
-      const create = calls[0];
+      const create = calls.find((call) => call.method === 'post');
+      expect(create).toBeDefined();
+      if (!create) throw new Error('spec create request was not made');
       expect(create.service).toBe('specification');
       expect(create.method).toBe('post');
       expect(create.path).toBe('/specifications?containerType=workspace&containerId=ws-9');
@@ -77,7 +79,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(body.type).toBe('OPENAPI:3.0');
       expect(body.files[0]).toMatchObject({ path: 'index.yaml', type: 'ROOT', content: 'openapi: 3.0.3' });
       // preflight GET happened
-      expect(calls[1]).toMatchObject({ service: 'specification', method: 'get', path: '/specifications/spec-1' });
+      expect(calls.at(-1)).toMatchObject({ service: 'specification', method: 'get', path: '/specifications/spec-1' });
     });
 
     it('maps 3.1 to OPENAPI:3.1 and rejects unsupported versions', async () => {

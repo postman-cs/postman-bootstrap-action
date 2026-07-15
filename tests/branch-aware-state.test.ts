@@ -133,6 +133,7 @@ function createPostman() {
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
     tagCollection: vi.fn().mockResolvedValue(undefined),
+    updateCollectionDescription: vi.fn().mockResolvedValue(undefined),
     updateSpec: vi.fn().mockResolvedValue(undefined),
     uploadSpec: vi.fn().mockResolvedValue('spec-created')
   };
@@ -293,6 +294,11 @@ describe('branch-aware bootstrap runs', () => {
       expect(postman.updateSpec).not.toHaveBeenCalled();
       expect(outputs['sync-status']).toBe('synced');
       expect(JSON.parse(outputs['branch-decision']).tier).toBe('preview');
+      expect(postman.updateCollectionDescription).toHaveBeenCalledTimes(3);
+      expect(postman.updateCollectionDescription).toHaveBeenCalledWith(
+        'col-baseline',
+        expect.stringContaining('"role":"preview"')
+      );
 
       // Tracked state untouched byte-for-byte.
       expect(readFileSync(join(workspace, '.postman/resources.yaml'), 'utf8')).toBe(priorState);

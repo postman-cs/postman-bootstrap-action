@@ -61,6 +61,7 @@ import {
   channelAssetName,
   parseChannelRules,
   previewAssetName,
+  renderAssetMarker,
   resolveBranchIdentity,
   resolveEffectiveBranchDecision,
   serializeBranchDecision,
@@ -225,6 +226,7 @@ export interface BootstrapExecutionDependencies {
       options?: { onRootCreated?: (id: string) => void | Promise<void> }
     ): Promise<string>;
     updateCollection?(collectionUid: string, collection: unknown): Promise<void>;
+    updateCollectionDescription?(collectionUid: string, description: string): Promise<void>;
   };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,
@@ -590,6 +592,28 @@ export function embedSpecBranchMarker(
     // future format cannot round-trip through YAML instead of risking mutation.
     return content;
   }
+}
+
+/** Durable description marker for preview/channel collection roots. */
+export function renderCollectionBranchMarker(
+  decision: BranchDecision,
+  repo: string | undefined,
+  now = new Date()
+): string | undefined {
+  if ((decision.tier !== 'preview' && decision.tier !== 'channel') || !decision.identity.headBranch || !repo) {
+    return undefined;
+  }
+  const rawBranch = decision.identity.headBranch;
+  const timestamp = now.toISOString();
+  return renderAssetMarker({
+    repo,
+    rawBranch,
+    sanitizedBranch: rawBranch.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 30),
+    role: decision.tier,
+    headSha: decision.identity.headSha,
+    createdAt: timestamp,
+    lastSyncedAt: timestamp
+  });
 }
 
 export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
@@ -1840,6 +1864,7 @@ async function runBootstrapInner(
     };
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
+  const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -2403,6 +2428,17 @@ async function runBootstrapInner(
         await ensureCollection(SMOKE_COLLECTION_PREFIX, smokeCollectionId, 'smoke-collection-id');
         await ensureCollection(CONTRACT_COLLECTION_PREFIX, contractCollectionId, 'contract-collection-id');
 
+        if (collectionBranchMarker) {
+          if (!dependencies.postman.updateCollectionDescription) {
+            throw new Error('Branch-scoped collections require updateCollectionDescription support');
+          }
+          await Promise.all([
+            outputs['baseline-collection-id'],
+            outputs['smoke-collection-id'],
+            outputs['contract-collection-id']
+          ].filter(Boolean).map((id) => dependencies.postman.updateCollectionDescription!(id, collectionBranchMarker)));
+        }
+
         // Contract test injection is v3-native over the access-token gateway:
         // list the generated collection's items, then PATCH each `http-request`
         // leaf's `/scripts` with the deterministic contract afterResponse script
@@ -2516,6 +2552,12 @@ async function runBootstrapInner(
             workspaceId: workspaceId || ''
           });
           for (const result of additionalResults) {
+            if (collectionBranchMarker) {
+              if (!dependencies.postman.updateCollectionDescription) {
+                throw new Error('Branch-scoped collections require updateCollectionDescription support');
+              }
+              await dependencies.postman.updateCollectionDescription(result.collectionId, collectionBranchMarker);
+            }
             completedExternalSideEffects.push(
               `${result.operation}AdditionalCollection(${result.collectionId} from ${result.displayPath})`
             );
@@ -2813,7 +2855,8 @@ export function createRoutingPostmanClient(options: {
       deleteCollection: requireAccessToken('deleteCollection'),
       injectContractTests: requireAccessToken('injectContractTests'),
       createCollection: requireAccessToken('createCollection'),
-      updateCollection: requireAccessToken('updateCollection')
+      updateCollection: requireAccessToken('updateCollection'),
+      updateCollectionDescription: requireAccessToken('updateCollectionDescription')
     };
   }
 
@@ -2864,7 +2907,9 @@ export function createRoutingPostmanClient(options: {
     injectContractTests: (collectionUid, index) => gateway.injectContractTests(collectionUid, index),
     createCollection: (workspaceId, collection, options) =>
       gateway.createCollection(workspaceId, collection, options),
-    updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection)
+    updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection),
+    updateCollectionDescription: (collectionUid, description) =>
+      gateway.updateCollectionDescription(collectionUid, description)
   };
 }
 

@@ -1657,6 +1657,15 @@ export class PostmanGatewayAssetsClient {
     // description on the POST body makes a later add /description a no-op that
     // can 400 when the patch set is otherwise empty or redundant.
     const desiredName = String(v3.name ?? 'Untitled Collection');
+    const existing = adoptExactMatch(
+      `collection:${workspaceId}:${desiredName}`,
+      await this.findCollectionsByExactName(workspaceId, desiredName),
+      (entry) => entry.id
+    );
+    if (existing) {
+      await this.updateCollection(existing.id, collection);
+      return existing.id;
+    }
     const submittedName = `${desiredName} [bootstrap:${this.createIdentity()}]`;
     const rootBody: JsonRecord = { name: submittedName };
     let created: JsonRecord | null;
@@ -1709,6 +1718,11 @@ export class PostmanGatewayAssetsClient {
       throw error;
     }
     return rawId;
+  }
+
+  /** Patch only the durable collection description without reconciling its item tree. */
+  async updateCollectionDescription(collectionUid: string, description: string): Promise<void> {
+    await this.applyCollectionLevelSettings(this.bareModelId(collectionUid), { description });
   }
 
   /**

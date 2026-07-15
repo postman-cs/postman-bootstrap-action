@@ -646,7 +646,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const id = await client.createCollection('ws-1', v21);
       expect(id).toBe('55363555-root-uid');
 
-      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      const rootCreate = calls.find((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='));
       expect(rootCreate).toMatchObject({ headers: expect.objectContaining({ 'x-entity-target': 'http' }), body: { name: 'Curated [bootstrap:test-run]' } });
 
       const folderCreate = calls.find(
@@ -708,7 +708,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const id = await client.createCollection('ws-1', v3);
 
       expect(id).toBe('55363555-root-v3');
-      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      const rootCreate = calls.find((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='));
       expect(rootCreate?.body).toEqual({ name: 'Curated v3 [bootstrap:test-run]' });
 
       const itemCreate = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/55363555-root-v3/items/');
@@ -764,7 +764,7 @@ describe('PostmanGatewayAssetsClient', () => {
         items: []
       });
 
-      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      const rootCreate = calls.find((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='));
       expect(rootCreate?.body).toEqual({ name: 'Description only [bootstrap:test-run]' });
 
       const rootPatch = calls.find((c) => c.path === '/v3/collections/root-desc');

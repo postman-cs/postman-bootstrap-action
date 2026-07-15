@@ -21,7 +21,7 @@ import {
   type AssetMarker,
   type BranchIdentity
 } from '../src/lib/repo/branch-decision.js';
-import { embedSpecBranchMarker } from '../src/index.js';
+import { embedSpecBranchMarker, renderCollectionBranchMarker } from '../src/index.js';
 
 function githubEventFile(payload: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), 'bd-test-'));
@@ -431,5 +431,30 @@ describe('durable spec marker', () => {
       identity: identity({ headBranch: 'main', defaultBranch: 'main', refKind: 'default-branch' })
     });
     expect(embedSpecBranchMarker(source, canonical, 'https://github.com/org/repo')).toBe(source);
+  });
+});
+
+describe('durable collection marker', () => {
+  it('renders a description marker only for branch-scoped tiers', () => {
+    const preview = resolveBranchDecision({
+      strategy: 'preview',
+      identity: identity({ headBranch: 'feature/payments', defaultBranch: 'main' })
+    });
+    expect(parseAssetMarker(renderCollectionBranchMarker(
+      preview,
+      'https://github.com/org/repo',
+      new Date('2026-07-15T00:00:00Z')
+    ))).toMatchObject({
+      repo: 'https://github.com/org/repo',
+      rawBranch: 'feature/payments',
+      role: 'preview',
+      createdAt: '2026-07-15T00:00:00.000Z'
+    });
+
+    const canonical = resolveBranchDecision({
+      strategy: 'publish-gate',
+      identity: identity({ headBranch: 'main', defaultBranch: 'main', refKind: 'default-branch' })
+    });
+    expect(renderCollectionBranchMarker(canonical, 'https://github.com/org/repo')).toBeUndefined();
   });
 });

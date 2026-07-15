@@ -384,7 +384,7 @@ function requireCliInput(name: string, value: string | undefined): void {
   }
 }
 
-function validateCliInputs(inputs: ResolvedInputs): void {
+function validateCliInputs(inputs: ResolvedInputs, options: { requireCredentials?: boolean } = {}): void {
   requireCliInput('project-name', inputs.projectName);
   if (!inputs.specUrl && !inputs.specPath) {
     throw new Error('One of spec-url or spec-path is required');
@@ -392,12 +392,10 @@ function validateCliInputs(inputs: ResolvedInputs): void {
   if (inputs.specUrl && inputs.specPath) {
     throw new Error('Provide either spec-url or spec-path, not both.');
   }
-  // postman-api-key is optional: a run may be access-token-primary (the gateway
-  // client handles asset ops, and the PMAK-only spec lint skips with a warning).
-  // Require only that at least one credential is present, mirroring index.ts so
-  // both entries agree -- a hard PMAK requirement here would reject a valid
-  // access-token-only run before bootstrap starts.
-  if (!inputs.postmanApiKey && !inputs.postmanAccessToken) {
+  // Gated (publish-gate) runs are credential-free by construction — decide
+  // before mint. Writing tiers still need at least one credential, mirroring
+  // runAction so CLI and action entries agree.
+  if (options.requireCredentials !== false && !inputs.postmanApiKey && !inputs.postmanAccessToken) {
     throw new Error('One of postman-api-key or postman-access-token is required.');
   }
 }
@@ -422,14 +420,12 @@ export async function runCli(
   const env = runtime.env ?? process.env;
   const config = parseCliArgs(argv, env);
   const inputs = resolveInputs(config.inputEnv);
-  validateCliInputs(inputs);
+  // Decide BEFORE credential validation so gated runs never require a token.
+  const branchDecision = decideBranchTier(inputs, config.inputEnv);
+  validateCliInputs(inputs, { requireCredentials: branchDecision.tier !== 'gated' });
   assertOutputFileAllowed(config.resultJsonPath);
   assertOutputFileAllowed(config.dotenvPath);
 
-  // Decide step (branch-aware sync): resolve the immutable BranchDecision
-  // BEFORE any credential validation or token mint — the CLI entry must gate
-  // exactly as runAction does (dist/cli.cjs is what CI and e2e invoke).
-  const branchDecision = decideBranchTier(inputs, config.inputEnv);
   if (branchDecision.tier === 'gated') {
     const gatedReporter = new ConsoleReporter();
     const gated = await runGatedValidation(inputs, branchDecision, {

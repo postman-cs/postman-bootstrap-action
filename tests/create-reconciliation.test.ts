@@ -474,6 +474,28 @@ describe('Wave 2 create reconciliation', () => {
   });
 
   describe('additional collection root and item seams', () => {
+    it('discovers and reconciles one final-name collection before randomized create', async () => {
+      let createPosts = 0;
+      const { client } = makeGatewayAssetsClient((env) => {
+        if (env.method === 'get' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: [{ id: 'col-existing', name: 'Payments curated' }] });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) createPosts += 1;
+        if (env.method === 'get' && env.path === '/v3/collections/col-existing/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'post' && env.path.includes('/items/')) {
+          return jsonResponse({ data: { id: 'item-1' } }, { status: 201 });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.createCollection('ws-1', createCuratedCollection('Payments curated'))
+      ).resolves.toBe('col-existing');
+      expect(createPosts).toBe(0);
+    });
+
     it('persists the additional collection root before child materialization and resumes a partial tree', async () => {
       const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-partial-tree-'));
       mkdirSync(join(workspace, 'postman/curated'), { recursive: true });

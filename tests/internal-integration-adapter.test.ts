@@ -250,6 +250,102 @@ describe('internal integration adapter', () => {
     );
   });
 
+  it('retries collection sync when a peer holds the 423 sync lock', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: {
+              name: 'actionLockedError',
+              status: 423,
+              title: 'Collection sync in progress',
+              detail: 'Collection sync is already in progress for the specification.'
+            }
+          },
+          { status: 423, statusText: 'Locked' }
+        )
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: { taskId: 'task-2' } }));
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    await expect(adapter.syncCollection('spec-123', 'col-1')).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2000);
+  });
+
+  it('treats collection already-in-sync as success for concurrent dual-trigger', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            name: 'badRequestError',
+            status: 400,
+            title: 'Collection is already in sync',
+            detail: 'Collection is already in sync'
+          }
+        },
+        { status: 400, statusText: 'Bad Request' }
+      )
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl
+    });
+
+    await expect(adapter.syncCollection('spec-123', 'col-1')).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries collection linking when a peer holds the 423 sync lock', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: {
+              name: 'actionLockedError',
+              status: 423,
+              title: 'Collection sync in progress'
+            }
+          },
+          { status: 423, statusText: 'Locked' }
+        )
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: { updated: 1 } }));
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    await expect(
+      adapter.linkCollectionsToSpecification('spec-123', [
+        { collectionId: 'col-1', syncOptions: { syncExamples: true } }
+      ])
+    ).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2000);
+  });
+
   it('treats projectAlreadyConnected as idempotent when the same repo is linked', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
       // First call: connectWorkspaceToRepository POST returns 400 projectAlreadyConnected

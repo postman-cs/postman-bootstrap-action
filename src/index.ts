@@ -220,6 +220,12 @@ export interface BootstrapExecutionDependencies {
     listSpecVersionTags?(specId: string): Promise<Array<{ id: string; name: string }>>;
     deleteCollection?(collectionUid: string): Promise<void>;
     injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
+    adoptGeneratedCollection?(
+      specId: string,
+      projectName: string,
+      prefix: string,
+      preferredId?: string
+    ): Promise<string>;
     createCollection?(
       workspaceId: string,
       collection: unknown,
@@ -2428,6 +2434,30 @@ async function runBootstrapInner(
         await ensureCollection(SMOKE_COLLECTION_PREFIX, smokeCollectionId, 'smoke-collection-id');
         await ensureCollection(CONTRACT_COLLECTION_PREFIX, contractCollectionId, 'contract-collection-id');
 
+        // Dual-trigger re-election: concurrent previews may have each generated
+        // then orphan-swept. Re-adopt the durable ids before description/inject.
+        if (dependencies.postman.adoptGeneratedCollection) {
+          const reelect = async (
+            prefix: GeneratedCollectionPrefix,
+            outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id'
+          ) => {
+            const effectivePrefix = branchDecision.tier === 'channel' && branchDecision.channel
+              ? channelAssetName(prefix, branchDecision.channel.code).trim()
+              : prefix;
+            const preferred = outputs[outputKey];
+            if (!preferred) return;
+            outputs[outputKey] = await dependencies.postman.adoptGeneratedCollection!(
+              specId,
+              assetProjectName,
+              effectivePrefix,
+              preferred
+            );
+          };
+          await reelect(BASELINE_COLLECTION_PREFIX, 'baseline-collection-id');
+          await reelect(SMOKE_COLLECTION_PREFIX, 'smoke-collection-id');
+          await reelect(CONTRACT_COLLECTION_PREFIX, 'contract-collection-id');
+        }
+
         if (collectionBranchMarker) {
           if (!dependencies.postman.updateCollectionDescription) {
             throw new Error('Branch-scoped collections require updateCollectionDescription support');
@@ -2841,6 +2871,7 @@ export function createRoutingPostmanClient(options: {
       updateSpec: requireAccessToken('updateSpec'),
       getSpecContent: requireAccessToken('getSpecContent'),
       generateCollection: requireAccessToken('generateCollection'),
+      adoptGeneratedCollection: requireAccessToken('adoptGeneratedCollection'),
       createWorkspace: requireAccessToken('createWorkspace'),
       getWorkspaceVisibility: requireAccessToken('getWorkspaceVisibility'),
       getWorkspaceGitRepoUrl: requireAccessToken('getWorkspaceGitRepoUrl'),
@@ -2871,6 +2902,8 @@ export function createRoutingPostmanClient(options: {
       gateway.uploadSpec(workspaceId, projectName, specContent, openapiVersion ?? '3.0'),
     generateCollection: (specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) =>
       gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
+    adoptGeneratedCollection: (specId, projectName, prefix, preferredId) =>
+      gateway.adoptGeneratedCollection(specId, projectName, prefix, preferredId),
     updateSpec: (specId, specContent, workspaceId) =>
       gateway.updateSpec(specId, specContent, workspaceId),
     getSpecContent: (specId) => gateway.getSpecContent(specId),

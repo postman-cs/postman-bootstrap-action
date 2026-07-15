@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CONTRACT_SIZE_LIMITS, createContractScript, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
-import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
+import { createOas30TypeNullCompatibilityDocument, loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
 import { packSchema } from '../src/lib/spec/schema-pack.js';
 import { compileSchemaValidator } from '../src/lib/spec/schema-validator-code.js';
 import { createPinnedLookup, isBlockedAddress, safeFetchText, validateSafeHttpsUrl } from '../src/lib/spec/safe-spec-fetch.js';
@@ -289,6 +289,56 @@ paths:
       expect(fetchText).not.toHaveBeenCalled();
       expect(loaded.version).toBe('3.0');
       expect(loaded.contractIndex.operations[0]?.path).toBe('/ping');
+    });
+
+    it('preserves supported OpenAPI 3.0 type null source while validating a compatibility view', async () => {
+      const source = `openapi: 3.0.3
+info: { title: Nullable Test, version: 1.0.0 }
+paths: {}
+components:
+  schemas:
+    SearchCriteria:
+      type: object
+      properties:
+        fromDate:
+          oneOf:
+            - type: string
+              format: date
+            - type: null
+`;
+      writeSpec('apis/svc/nullable.yaml', source);
+
+      await expect(
+        loadOpenApiContractSpecFromPath('apis/svc/nullable.yaml')
+      ).rejects.toThrow('CONTRACT_SPEC_VALIDATION_FAILED');
+
+      const loaded = await loadOpenApiContractSpecFromPath('apis/svc/nullable.yaml', {
+        preserveOas30TypeNull: true
+      });
+      expect(loaded.content).toBe(source);
+      expect(loaded.sourceTypeNullPaths).toEqual([
+        'components.schemas.SearchCriteria.properties.fromDate.oneOf.1.type'
+      ]);
+      expect(loaded.bundledDocument).toMatchObject({
+        components: {
+          schemas: {
+            SearchCriteria: {
+              properties: {
+                fromDate: { format: 'date', nullable: true, type: 'string' }
+              }
+            }
+          }
+        }
+      });
+    });
+
+    it('rejects type null outside the supported nullable oneOf shape', () => {
+      expect(() => createOas30TypeNullCompatibilityDocument({
+        openapi: '3.0.3',
+        info: { title: 'Invalid', version: '1.0.0' },
+        paths: {},
+        components: { schemas: { Invalid: { type: 'null' } } }
+      })).toThrow('CONTRACT_OAS30_TYPE_NULL_UNSUPPORTED');
     });
 
     it('reports CONTRACT_SPEC_READ_FAILED when the local spec is missing', async () => {

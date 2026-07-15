@@ -156,6 +156,7 @@ const cliInputNames = [
   'workspace-team-id',
   'repo-url',
   'openapi-version',
+  'preserve-oas30-type-null',
   'breaking-change-mode',
   'breaking-baseline-spec-path',
   'breaking-rules-path',

@@ -294,7 +294,11 @@ paths:
     it('preserves supported OpenAPI 3.0 type null source while validating a compatibility view', async () => {
       const source = `openapi: 3.0.3
 info: { title: Nullable Test, version: 1.0.0 }
-paths: {}
+paths:
+  /ping:
+    get:
+      responses:
+        '200': { description: OK }
 components:
   schemas:
     SearchCriteria:

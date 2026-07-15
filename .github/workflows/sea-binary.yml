@@ -38,6 +38,12 @@ jobs:
             echo "::error::SEA binary did not execute as expected in a node-less container"
             exit 1
           fi
+          ver="$(docker run --rm -v "$PWD/build/sea:/w" -w /w debian:12-slim "./$BIN" --version 2>/dev/null || true)"
+          echo "--version -> $ver"
+          if [ "$ver" != "$VERSION" ]; then
+            echo "::error::SEA --version reported '$ver', expected '$VERSION' (version not embedded)"
+            exit 1
+          fi
       - name: Upload SEA binary artifact
         uses: actions/upload-artifact@v4
         with:

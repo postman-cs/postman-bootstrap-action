@@ -60,7 +60,17 @@ function wantsVersion(argv: string[]): boolean {
   return argv.includes('--version') || argv.includes('-V');
 }
 
+// Embedded at SEA build time via esbuild --define (scripts/build-sea.sh); the
+// standalone binary ships no package.json, so the runtime file resolution below
+// would otherwise fall back to 0.0.0. The main bundle defines this as a constant
+// undefined, so this guard is inert there — the committed dist does not vary
+// with the version, only this one-time guard addition.
+declare const __SEA_VERSION__: string | undefined;
+
 function resolvePackageVersion(): string {
+  if (typeof __SEA_VERSION__ === 'string' && __SEA_VERSION__) {
+    return __SEA_VERSION__;
+  }
   const candidates: string[] = [];
   // Present in the esbuild CJS bundle (dist/cli.cjs -> ../package.json).
   if (typeof __filename === 'string' && __filename) {

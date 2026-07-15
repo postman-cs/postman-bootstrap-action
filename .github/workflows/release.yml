@@ -128,6 +128,12 @@ jobs:
             echo "::error::SEA binary did not execute as expected in a node-less container"
             exit 1
           fi
+          ver="$(docker run --rm -v "$PWD/build/sea:/w" -w /w debian:12-slim "./$BIN" --version 2>/dev/null || true)"
+          echo "--version -> $ver"
+          if [ "$ver" != "$VERSION" ]; then
+            echo "::error::SEA --version reported '$ver', expected '$VERSION' (version not embedded)"
+            exit 1
+          fi
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:

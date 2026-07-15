@@ -24,6 +24,7 @@ echo "==> bundling CLI -> $BUNDLE"
 node_modules/.bin/esbuild src/cli.ts \
   --bundle --platform=node --target=node24 --format=cjs \
   --alias:jsonc-parser=jsonc-parser/lib/esm/main.js \
+  --define:__SEA_VERSION__="\"${VERSION}\"" \
   --outfile="$BUNDLE"
 
 echo "==> generating SEA blob"

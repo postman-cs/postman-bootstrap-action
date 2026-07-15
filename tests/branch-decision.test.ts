@@ -306,9 +306,9 @@ describe('channels input parsing', () => {
     expect(() => parseChannelRules('develop=d!v')).toThrowError(/CONTRACT_CHANNELS_INPUT_INVALID/);
   });
 
-  it('empty/undefined -> no rules', () => {
-    expect(parseChannelRules(undefined)).toEqual([]);
-    expect(parseChannelRules('')).toEqual([]);
+  it('empty/undefined -> automatic release train channel', () => {
+    expect(parseChannelRules(undefined)).toEqual([{ pattern: 'release/*', code: 'RC' }]);
+    expect(parseChannelRules('')).toEqual([{ pattern: 'release/*', code: 'RC' }]);
   });
 });
 

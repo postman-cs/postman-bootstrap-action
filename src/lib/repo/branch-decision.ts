@@ -247,9 +247,8 @@ export function resolveBranchIdentity(
 /** Parse the `channels` input: `develop=DEV, staging=STAGE, release/*=RC`. */
 export function parseChannelRules(input: string | undefined): ChannelRule[] {
   const raw = clean(input);
-  if (!raw) return [];
   const rules: ChannelRule[] = [];
-  for (const part of raw.split(',')) {
+  for (const part of (raw ? raw.split(',') : [])) {
     const entry = part.trim();
     if (!entry) continue;
     const eq = entry.indexOf('=');
@@ -268,6 +267,11 @@ export function parseChannelRules(input: string | undefined): ChannelRule[] {
       );
     }
     rules.push({ pattern, code });
+  }
+  // Release trains are a first-class channel even when callers do not supply
+  // a channels map. An explicit release/* mapping wins by appearing first.
+  if (!rules.some((rule) => rule.pattern === 'release/*')) {
+    rules.push({ pattern: 'release/*', code: 'RC' });
   }
   return rules;
 }

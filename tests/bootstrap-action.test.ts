@@ -645,7 +645,11 @@ describe('bootstrap action', () => {
   it('uploads the original OpenAPI 3.0 bytes in type null compatibility mode', async () => {
     const source = `openapi: 3.0.3
 info: { title: Nullable Test, version: 1.0.0 }
-paths: {}
+paths:
+  /ping:
+    get:
+      responses:
+        '200': { description: OK }
 components:
   schemas:
     Criteria:

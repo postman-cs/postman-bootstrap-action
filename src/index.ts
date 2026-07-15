@@ -1824,6 +1824,7 @@ async function runBootstrapInner(
   // canonical workspace.
   const branchDecision = decideBranchTier(inputs);
   const isCanonicalWriter = branchDecision.tier === 'legacy' || branchDecision.tier === 'canonical';
+  const canonicalProjectName = inputs.projectName;
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
   if (branchDecision.tier === 'preview' && branchDecision.identity.headBranch) {
@@ -1871,7 +1872,9 @@ async function runBootstrapInner(
     );
   }
   const collectionAssetProjectName =
-    inputs.collectionSyncMode === 'version'
+    branchDecision.tier === 'channel'
+      ? canonicalProjectName
+      : inputs.collectionSyncMode === 'version'
       ? createAssetProjectName(inputs, releaseLabel)
       : inputs.projectName;
 
@@ -2362,10 +2365,15 @@ async function runBootstrapInner(
               return;
             }
           }
+          // Channels prefix the complete role-aware collection name so sets
+          // group as `[DEV] [Smoke] name`, never `[Smoke] [DEV] name`.
+          const effectivePrefix = branchDecision.tier === 'channel' && branchDecision.channel
+            ? channelAssetName(prefix, branchDecision.channel.code).trim()
+            : prefix;
           outputs[outputKey] = await dependencies.postman.generateCollection(
             specId,
             assetProjectName,
-            prefix,
+            effectivePrefix,
             inputs.folderStrategy,
             inputs.nestedFolderHierarchy,
             inputs.requestNameSource

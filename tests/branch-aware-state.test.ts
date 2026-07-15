@@ -111,8 +111,8 @@ function createPostman() {
     generateCollection: vi
       .fn()
       .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-        if (prefix === '') return 'col-baseline';
-        if (prefix === '[Smoke]') return 'col-smoke';
+        if (prefix === '' || prefix === '[DEV]') return 'col-baseline';
+        if (prefix === '[Smoke]' || prefix === '[DEV] [Smoke]') return 'col-smoke';
         return 'col-contract';
       }),
     getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
@@ -348,6 +348,14 @@ describe('branch-aware bootstrap runs', () => {
         '3.1'
       );
       expect(JSON.parse(outputs['branch-decision']).tier).toBe('channel');
+      expect(postman.generateCollection).toHaveBeenCalledWith(
+        expect.any(String),
+        'Payments',
+        '[DEV] [Smoke]',
+        expect.any(String),
+        expect.any(Boolean),
+        expect.any(String)
+      );
     });
   });
 

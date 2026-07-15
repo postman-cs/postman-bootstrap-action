@@ -87,6 +87,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     postmanApiKey: '',
     postmanAccessToken: 'access-token',
     credentialPreflight: 'warn',
+    branchStrategy: 'legacy',
     integrationBackend: 'bifrost',
     folderStrategy: 'Tags',
     nestedFolderHierarchy: true,
@@ -230,7 +231,7 @@ describe('bootstrap persistability and exact-source spec state', () => {
         expect(outputs['spec-id']).toBe('spec-v2');
 
         const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
-        expect(resources.cloudResources?.specs).toEqual({
+        expect(resources.canonical?.specs).toEqual({
           '../openapi.yaml': 'spec-v1',
           '../openapi.yaml#release=v2': 'spec-v2'
         });
@@ -299,7 +300,7 @@ describe('bootstrap persistability and exact-source spec state', () => {
         expect(outputs['spec-id']).toBe('spec-v2');
 
         const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
-        expect(resources.cloudResources?.specs).toEqual({
+        expect(resources.canonical?.specs).toEqual({
           '../openapi.yaml': 'spec-v1',
           '../openapi.yaml#release=v2': 'spec-v2'
         });
@@ -410,10 +411,10 @@ describe('bootstrap persistability and exact-source spec state', () => {
 
         const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
         expect(resources.workspace?.id).toBeUndefined();
-        expect(resources.cloudResources?.specs).toEqual({
+        expect(resources.canonical?.specs).toEqual({
           '../openapi.yaml': 'spec-created'
         });
-        expect(resources.cloudResources?.collections).toMatchObject({
+        expect(resources.canonical?.collections).toMatchObject({
           '../postman/collections/Payments': 'col-baseline',
           '../postman/collections/[Smoke] Payments': 'col-smoke',
           '../postman/collections/[Contract] Payments': 'col-contract'
@@ -454,7 +455,7 @@ describe('bootstrap persistability and exact-source spec state', () => {
 
         const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
         expect(resources.workspace?.id).toBeUndefined();
-        expect(resources.cloudResources?.specs).toEqual({
+        expect(resources.canonical?.specs).toEqual({
           '../openapi.yaml': 'spec-created'
         });
       });

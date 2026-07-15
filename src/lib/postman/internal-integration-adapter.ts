@@ -29,6 +29,8 @@ export interface InternalIntegrationAdapterOptions {
   gatewayBaseUrl?: string;
   orgMode?: boolean;
   secretMasker?: SecretMasker;
+  /** Injectable delay for lock-retry loops (tests). Defaults to setTimeout. */
+  sleep?: (delayMs: number) => Promise<void>;
   teamId: string;
 }
 
@@ -56,7 +58,12 @@ export interface InternalIntegrationAdapter {
 
 class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private static readonly MINIMUM_POSTMAN_APP_VERSION = '12.0.0';
+  /** Per-request wall-clock deadline (ms) so a hung Bifrost proxy or app-version
+   * endpoint aborts rather than blocking the run forever. */
+  private static readonly REQUEST_TIMEOUT_MS = 30_000;
   private static readonly POSTMAN_APP_VERSION_URL = `https://dl.pstmn.io/update/status?currentVersion=${BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION}&platform=osx_arm64`;
+  /** Concurrent dual-trigger previews share one spec; peer sync holds a 423 lock. */
+  private static readonly SYNC_LOCKED_MAX_RETRIES = 6;
 
   private readonly accessToken: string;
   private readonly tokenProvider?: AccessTokenProvider;
@@ -66,6 +73,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private readonly gatewayBaseUrl: string;
   private orgMode: boolean;
   private readonly secretMasker: SecretMasker;
+  private readonly sleep: (delayMs: number) => Promise<void>;
   private teamId: string;
 
   constructor(options: InternalIntegrationAdapterOptions) {
@@ -81,6 +89,8 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     this.orgMode = options.orgMode ?? false;
     this.secretMasker =
       options.secretMasker ?? createSecretMasker([this.accessToken]);
+    this.sleep =
+      options.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
     this.teamId = String(options.teamId || '').trim();
   }
 
@@ -107,6 +117,27 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     };
   }
 
+  /**
+   * fetch with a wall-clock deadline. A slow/hung proxy aborts instead of
+   * blocking the run forever; callers surface the abort like any other transport
+   * rejection.
+   */
+  private async fetchWithDeadline(
+    input: Parameters<typeof fetch>[0],
+    init: RequestInit = {}
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      BifrostInternalIntegrationAdapter.REQUEST_TIMEOUT_MS
+    );
+    try {
+      return await this.fetchImpl(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async proxyRequest(
     service: string,
     method: string,
@@ -126,7 +157,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       headers['x-entity-team-id'] = this.teamId;
     }
 
-    return this.fetchImpl(url, {
+    return this.fetchWithDeadline(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -142,7 +173,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private resolvePostmanAppVersion(): Promise<string> {
     this.appVersionPromise ??= (async () => {
       try {
-        const response = await this.fetchImpl(
+        const response = await this.fetchWithDeadline(
           BifrostInternalIntegrationAdapter.POSTMAN_APP_VERSION_URL,
           { method: 'GET' }
         );
@@ -314,63 +345,99 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       return;
     }
 
-    const response = await this.proxyRequest(
-      'specification',
-      'put',
-      `/specifications/${specificationId}/collections`,
-      collections.map((collection) => ({
-        collectionId: collection.collectionId,
-        ...(collection.syncOptions ? { syncOptions: collection.syncOptions } : {})
-      }))
-    );
+    const body = collections.map((collection) => ({
+      collectionId: collection.collectionId,
+      ...(collection.syncOptions ? { syncOptions: collection.syncOptions } : {})
+    }));
 
-    if (response.ok) {
-      return;
+    for (let lockedAttempt = 0; ; lockedAttempt += 1) {
+      const response = await this.proxyRequest(
+        'specification',
+        'put',
+        `/specifications/${specificationId}/collections`,
+        body
+      );
+
+      if (response.ok) {
+        return;
+      }
+
+      const httpErr = await HttpError.fromResponse(response, {
+        method: 'POST',
+        requestHeaders: {
+          'Content-Type': 'application/json',
+          'x-access-token': this.currentToken(),
+          ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
+        },
+        secretValues: [this.currentToken()],
+        url: `${this.bifrostBaseUrl}/ws/proxy`
+      });
+
+      if (
+        httpErr.status === 423 &&
+        lockedAttempt < BifrostInternalIntegrationAdapter.SYNC_LOCKED_MAX_RETRIES
+      ) {
+        await this.sleep(2000 * Math.pow(2, lockedAttempt));
+        continue;
+      }
+
+      const advised = adviseFromHttpError(
+        httpErr,
+        this.adviceContext('collection-to-specification linking')
+      );
+      throw advised ?? httpErr;
     }
-
-    const httpErr = await HttpError.fromResponse(response, {
-      method: 'POST',
-      requestHeaders: {
-        'Content-Type': 'application/json',
-        'x-access-token': this.currentToken(),
-        ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
-      },
-      secretValues: [this.currentToken()],
-      url: `${this.bifrostBaseUrl}/ws/proxy`
-    });
-    const advised = adviseFromHttpError(
-      httpErr,
-      this.adviceContext('collection-to-specification linking')
-    );
-    throw advised ?? httpErr;
   }
 
   async syncCollection(
     specificationId: string,
     collectionId: string
   ): Promise<void> {
-    const response = await this.proxyRequest(
-      'specification',
-      'post',
-      `/specifications/${specificationId}/collections/${collectionId}/sync`
-    );
+    for (let lockedAttempt = 0; ; lockedAttempt += 1) {
+      const response = await this.proxyRequest(
+        'specification',
+        'post',
+        `/specifications/${specificationId}/collections/${collectionId}/sync`
+      );
 
-    if (response.ok) {
-      return;
+      if (response.ok) {
+        return;
+      }
+
+      const bodyText = await response.clone().text().catch(() => '');
+      // Peer dual-trigger already finished sync for this collection. Treat as
+      // success so concurrent preview runners converge without failing.
+      if (
+        response.status === 400 &&
+        /already in sync/i.test(bodyText)
+      ) {
+        return;
+      }
+
+      const httpErr = await HttpError.fromResponse(response, {
+        method: 'POST',
+        requestHeaders: {
+          'Content-Type': 'application/json',
+          'x-access-token': this.currentToken(),
+          ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
+        },
+        secretValues: [this.currentToken()],
+        url: `${this.bifrostBaseUrl}/ws/proxy`
+      });
+
+      // Peer dual-trigger holds the per-spec collection-sync lock. Wait and
+      // retry; once the peer finishes, a second sync is safe/idempotent.
+      if (
+        httpErr.status === 423 &&
+        lockedAttempt < BifrostInternalIntegrationAdapter.SYNC_LOCKED_MAX_RETRIES
+      ) {
+        await this.sleep(2000 * Math.pow(2, lockedAttempt));
+        continue;
+      }
+
+      const advised = adviseFromHttpError(httpErr, this.adviceContext('collection sync'));
+      throw advised ?? httpErr;
     }
-
-    const httpErr = await HttpError.fromResponse(response, {
-      method: 'POST',
-      requestHeaders: {
-        'Content-Type': 'application/json',
-        'x-access-token': this.currentToken(),
-        ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
-      },
-      secretValues: [this.currentToken()],
-      url: `${this.bifrostBaseUrl}/ws/proxy`
-    });
-    const advised = adviseFromHttpError(httpErr, this.adviceContext('collection sync'));
-    throw advised ?? httpErr;
   }
 
   private async getWorkspaceGitRepoUrl(workspaceId: string): Promise<string | null> {

@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { createPlatformFake, DEFAULT_SQUAD } from './platform-fake.js';
-import { runContractAction } from './harness.js';
+import { runContractAction, runWithFakeTimers } from './harness.js';
 
 const PMAK_ONLY = { 'postman-api-key': 'pmak-test', 'postman-access-token': '' };
 const TOKEN_ONLY = { 'postman-api-key': '', 'postman-access-token': 'access-token-test' };
@@ -22,7 +22,7 @@ function firstIndex(events: string[], predicate: (entry: string) => boolean): nu
 describe('contract: credential x team matrix', () => {
   it('{PMAK-only, org} mints eagerly, probes squads, creates via the squad path, and NEVER attempts the visibility flip (7e2ed70 regression guard)', async () => {
     const fake = createPlatformFake({ org: true });
-    const result = await runContractAction({ inputs: PMAK_ONLY, fetchImpl: fake.fetch });
+    const result = await runWithFakeTimers(() => runContractAction({ inputs: PMAK_ONLY, fetchImpl: fake.fetch }));
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
@@ -50,7 +50,7 @@ describe('contract: credential x team matrix', () => {
 
   it('{PMAK-only, non-org} creates personal then flips to team visibility', async () => {
     const fake = createPlatformFake({ org: false });
-    const result = await runContractAction({ inputs: PMAK_ONLY, fetchImpl: fake.fetch });
+    const result = await runWithFakeTimers(() => runContractAction({ inputs: PMAK_ONLY, fetchImpl: fake.fetch }));
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
@@ -62,7 +62,7 @@ describe('contract: credential x team matrix', () => {
 
   it('{token-only, org} skips the mint, probes squads with the provided token, and never flips', async () => {
     const fake = createPlatformFake({ org: true });
-    const result = await runContractAction({ inputs: TOKEN_ONLY, fetchImpl: fake.fetch });
+    const result = await runWithFakeTimers(() => runContractAction({ inputs: TOKEN_ONLY, fetchImpl: fake.fetch }));
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
@@ -74,7 +74,7 @@ describe('contract: credential x team matrix', () => {
 
   it('{token-only, non-org} creates personal then flips (no mint available, none needed)', async () => {
     const fake = createPlatformFake({ org: false });
-    const result = await runContractAction({ inputs: TOKEN_ONLY, fetchImpl: fake.fetch });
+    const result = await runWithFakeTimers(() => runContractAction({ inputs: TOKEN_ONLY, fetchImpl: fake.fetch }));
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
@@ -84,7 +84,7 @@ describe('contract: credential x team matrix', () => {
 
   it('{both, org} uses the provided token (no mint) and the squad create path', async () => {
     const fake = createPlatformFake({ org: true });
-    const result = await runContractAction({ inputs: BOTH, fetchImpl: fake.fetch });
+    const result = await runWithFakeTimers(() => runContractAction({ inputs: BOTH, fetchImpl: fake.fetch }));
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
@@ -95,7 +95,7 @@ describe('contract: credential x team matrix', () => {
 
   it('{both, non-org} creates personal then flips', async () => {
     const fake = createPlatformFake({ org: false });
-    const result = await runContractAction({ inputs: BOTH, fetchImpl: fake.fetch });
+    const result = await runWithFakeTimers(() => runContractAction({ inputs: BOTH, fetchImpl: fake.fetch }));
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
@@ -104,10 +104,10 @@ describe('contract: credential x team matrix', () => {
 
   it('{PMAK-only, org, beta stack} routes every call to beta hosts', async () => {
     const fake = createPlatformFake({ org: true, stack: 'beta' });
-    const result = await runContractAction({
+    const result = await runWithFakeTimers(() => runContractAction({
       inputs: { ...PMAK_ONLY, 'postman-stack': 'beta' },
       fetchImpl: fake.fetch
-    });
+    }));
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
@@ -131,7 +131,7 @@ describe('contract: credential x team matrix', () => {
         { id: 132320, name: 'CSE v13', handle: 'cse-v13', organizationId: 13347347 }
       ]
     });
-    const result = await runContractAction({ inputs: BOTH, fetchImpl: fake.fetch });
+    const result = await runWithFakeTimers(() => runContractAction({ inputs: BOTH, fetchImpl: fake.fetch }));
 
     expect(result.error).toBeInstanceOf(Error);
     const message = result.error instanceof Error ? result.error.message : String(result.error);
@@ -150,10 +150,10 @@ describe('contract: credential x team matrix', () => {
         { id: 132320, name: 'CSE v13', handle: 'cse-v13', organizationId: 13347347 }
       ]
     });
-    const result = await runContractAction({
+    const result = await runWithFakeTimers(() => runContractAction({
       inputs: { ...BOTH, 'workspace-team-id': '132320' },
       fetchImpl: fake.fetch
-    });
+    }));
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');

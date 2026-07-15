@@ -8,14 +8,17 @@ import * as io from '@actions/io';
 
 import {
   createBootstrapDependencies,
+  decideBranchTier,
   mintAccessTokenIfNeeded,
   resolveInputs,
+  runGatedValidation,
   type ResolvedInputs,
   runBootstrap,
   type BootstrapExecutionDependencies,
   type ExecLike,
   type PlannedOutputs
 } from './index.js';
+import { BRANCH_DECISION_ENV, serializeBranchDecision } from './lib/repo/branch-decision.js';
 import { runCredentialPreflight } from './lib/postman/credential-identity.js';
 import { createSecretMasker } from './lib/secrets.js';
 
@@ -131,6 +134,9 @@ const cliInputNames = [
   'postman-api-key',
   'postman-access-token',
   'credential-preflight',
+  'branch-strategy',
+  'canonical-branch',
+  'channels',
   'workspace-id',
   'spec-id',
   'baseline-collection-id',
@@ -379,7 +385,7 @@ function requireCliInput(name: string, value: string | undefined): void {
   }
 }
 
-function validateCliInputs(inputs: ResolvedInputs): void {
+function validateCliInputs(inputs: ResolvedInputs, options: { requireCredentials?: boolean } = {}): void {
   requireCliInput('project-name', inputs.projectName);
   if (!inputs.specUrl && !inputs.specPath) {
     throw new Error('One of spec-url or spec-path is required');
@@ -387,12 +393,10 @@ function validateCliInputs(inputs: ResolvedInputs): void {
   if (inputs.specUrl && inputs.specPath) {
     throw new Error('Provide either spec-url or spec-path, not both.');
   }
-  // postman-api-key is optional: a run may be access-token-primary (the gateway
-  // client handles asset ops, and the PMAK-only spec lint skips with a warning).
-  // Require only that at least one credential is present, mirroring index.ts so
-  // both entries agree -- a hard PMAK requirement here would reject a valid
-  // access-token-only run before bootstrap starts.
-  if (!inputs.postmanApiKey && !inputs.postmanAccessToken) {
+  // Gated (publish-gate) runs are credential-free by construction — decide
+  // before mint. Writing tiers still need at least one credential, mirroring
+  // runAction so CLI and action entries agree.
+  if (options.requireCredentials !== false && !inputs.postmanApiKey && !inputs.postmanAccessToken) {
     throw new Error('One of postman-api-key or postman-access-token is required.');
   }
 }
@@ -417,9 +421,27 @@ export async function runCli(
   const env = runtime.env ?? process.env;
   const config = parseCliArgs(argv, env);
   const inputs = resolveInputs(config.inputEnv);
-  validateCliInputs(inputs);
+  // Decide BEFORE credential validation so gated runs never require a token.
+  const branchDecision = decideBranchTier(inputs, config.inputEnv);
+  validateCliInputs(inputs, { requireCredentials: branchDecision.tier !== 'gated' });
   assertOutputFileAllowed(config.resultJsonPath);
   assertOutputFileAllowed(config.dotenvPath);
+
+  if (branchDecision.tier === 'gated') {
+    const gatedReporter = new ConsoleReporter();
+    const gated = await runGatedValidation(inputs, branchDecision, {
+      info: (m: string) => gatedReporter.info(m),
+      warning: (m: string) => gatedReporter.warning(m),
+      setOutput: () => undefined
+    });
+    await writeOptionalFile(config.resultJsonPath, JSON.stringify(gated, null, 2));
+    await writeOptionalFile(config.dotenvPath, toDotenv(gated));
+    writeStdout(`${JSON.stringify(gated, null, 2)}\n`);
+    return;
+  }
+  if (branchDecision.tier !== 'legacy') {
+    process.env[BRANCH_DECISION_ENV] = serializeBranchDecision(branchDecision);
+  }
 
   // PMAK-only runs: mint the access token up front (mirrors runAction) so the
   // dependencies built below get the full access-token surface (governance

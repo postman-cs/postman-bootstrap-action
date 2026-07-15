@@ -262,4 +262,184 @@ describe('AccessTokenGatewayClient', () => {
     expect(sleep).toHaveBeenNthCalledWith(1, 5);
     expect(sleep).toHaveBeenNthCalledWith(2, 10);
   });
+
+  describe('transport-rejection retry (socket hangup / deadline)', () => {
+    it('retries a safe request when fetch itself rejects, then succeeds', async () => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockRejectedValueOnce(new Error('socket hang up'))
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      const sleep = vi.fn(async () => undefined);
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        retryBaseDelayMs: 10,
+        sleepImpl: sleep
+      });
+
+      const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x' });
+      expect(result).toEqual({ ok: true });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledWith(10);
+    });
+
+    it('does not retry an unsafe mutation on a transport rejection; it surfaces so the caller reconciles', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('ECONNRESET'));
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        sleepImpl: async () => undefined
+      });
+
+      await expect(
+        client.requestJson({ service: 'collection', method: 'post', path: '/v3/collections', body: {} })
+      ).rejects.toThrow(/ECONNRESET/);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a safe request within budget on repeated rejections, then re-throws', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('ETIMEDOUT'));
+      const sleep = vi.fn(async () => undefined);
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        maxRetries: 2,
+        retryBaseDelayMs: 5,
+        sleepImpl: sleep
+      });
+
+      await expect(
+        client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x' })
+      ).rejects.toThrow(/ETIMEDOUT/);
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+      expect(sleep).toHaveBeenCalledTimes(2);
+    });
+
+    it('aborts a request that exceeds the per-request deadline and (for safe requests) retries', async () => {
+      const controllerSignals: (AbortSignal | undefined)[] = [];
+      const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
+        const signal = (init as RequestInit).signal ?? undefined;
+        controllerSignals.push(signal);
+        if (controllerSignals.length === 1) {
+          // Emulate a hung proxy: reject only once the deadline fires.
+          return await new Promise<Response>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(new Error('The operation was aborted')));
+          });
+        }
+        return jsonResponse({ ok: true });
+      });
+      const sleep = vi.fn(async () => undefined);
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        requestTimeoutMs: 5,
+        retryBaseDelayMs: 1,
+        sleepImpl: sleep
+      });
+
+      const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x' });
+      expect(result).toEqual({ ok: true });
+      // Each send got a real AbortSignal (the deadline is wired).
+      expect(controllerSignals[0]).toBeInstanceOf(AbortSignal);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('passes a bodyless 204 delete through without crashing the Response rebuild', async () => {
+    // Regression: new Response('', { status: 204 }) throws "Invalid response
+    // status code 204" — a drained 204 must be rebuilt with a null body.
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const provider = new AccessTokenProvider({ accessToken: 'tok' });
+    const client = new AccessTokenGatewayClient({ tokenProvider: provider, fetchImpl });
+
+    await expect(
+      client.requestJson({ service: 'collection', method: 'delete', path: '/v3/collections/x' })
+    ).resolves.toBeNull();
+  });
+
+  describe('inner Bifrost envelope errors on HTTP 200', () => {
+    it('treats a 200 wrapping an inner error envelope as a failure and throws', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({ error: { name: 'forbidden', message: 'nope' }, status: 403 })
+      );
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        sleepImpl: async () => undefined
+      });
+
+      await expect(
+        client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x' })
+      ).rejects.toThrow(/403/);
+    });
+
+    it('retries a safe request when the inner envelope error is a transient 5xx', async () => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(jsonResponse({ error: { message: 'ESOCKETTIMEDOUT' }, status: 503 }))
+        .mockResolvedValueOnce(jsonResponse({ data: { ok: true } }));
+      const sleep = vi.fn(async () => undefined);
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        retryBaseDelayMs: 10,
+        sleepImpl: sleep
+      });
+
+      const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x' });
+      expect(result).toEqual({ data: { ok: true } });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry an unsafe mutation whose inner error is a transient 5xx; it surfaces for reconciliation', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({ error: { message: 'downstream' }, status: 503 })
+      );
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        sleepImpl: async () => undefined
+      });
+
+      await expect(
+        client.requestJson({ service: 'collection', method: 'post', path: '/v3/collections', body: {} })
+      ).rejects.toThrow(/503/);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes a clean 200 envelope through unchanged (no false inner error)', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({ data: { id: 'c1' }, status: 200 })
+      );
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        sleepImpl: async () => undefined
+      });
+
+      const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/c1' });
+      expect(result).toEqual({ data: { id: 'c1' }, status: 200 });
+    });
+
+    it('treats success:false envelopes as failures (fresh response per attempt)', async () => {
+      // success:false has no inner status, so it maps to 502 which is transient;
+      // a safe GET retries, so each attempt needs its own unconsumed Response.
+      const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ success: false }));
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        maxRetries: 1,
+        retryBaseDelayMs: 1,
+        sleepImpl: async () => undefined
+      });
+
+      await expect(
+        client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x' })
+      ).rejects.toThrow(/502/);
+      // initial attempt + 1 retry, each with a fresh envelope
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+  });
 });

@@ -63,6 +63,38 @@ export interface ContractRunOptions {
   fetchImpl: typeof fetch;
 }
 
+/**
+ * Run a contract action under vitest fake timers, flushing every timer chain
+ * (retry backoffs, generation poll sleeps, identity-settle windows) until the
+ * run settles. The production converge/settle sleeps are real seconds; this
+ * absorbs them so full-flow contract tests stay fast.
+ */
+export async function runWithFakeTimers<T>(fn: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  try {
+    const pending = fn();
+    let settled = false;
+    const settle = pending.then(
+      (value) => {
+        settled = true;
+        return value;
+      },
+      (error) => {
+        settled = true;
+        throw error;
+      }
+    );
+    while (!settled) {
+      await vi.runAllTimersAsync();
+      // Yield the microtask queue so `settled` can flip between timer flushes.
+      await Promise.resolve();
+    }
+    return settle;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 export function createExecStub(stdout = '{"violations":[]}'): ExecLike {
   return {
     exec: vi.fn().mockResolvedValue(0),

@@ -254,7 +254,7 @@ describe('Wave 2 create reconciliation', () => {
   });
 
   describe('spec upload seam', () => {
-    it('reconciles an accepted-create-then-503 by exact spec name without a second POST', async () => {
+    it('adopts an exact-name spec and updates it with incoming content without a create POST', async () => {
       let createPosts = 0;
       const { client } = makeGatewayAssetsClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/specifications?')) {
@@ -266,6 +266,13 @@ describe('Wave 2 create reconciliation', () => {
             data: [{ id: 'spec-adopted', name: 'Payments API' }]
           });
         }
+        if (env.path === '/specifications/spec-adopted/files') {
+          return jsonResponse({ data: [{ id: 'root-file', type: 'ROOT' }] });
+        }
+        if (env.method === 'patch' && env.path === '/specifications/spec-adopted/files/root-file') {
+          expect(env.body).toEqual([{ op: 'replace', path: '/content', value: 'openapi: 3.0.3' }]);
+          return jsonResponse({ data: {} });
+        }
         if (env.path === '/specifications/spec-adopted') {
           return jsonResponse({ data: { id: 'spec-adopted' } });
         }
@@ -274,11 +281,29 @@ describe('Wave 2 create reconciliation', () => {
 
       const id = await client.uploadSpec('ws-1', 'Payments API', 'openapi: 3.0.3', '3.0');
       expect(id).toBe('spec-adopted');
-      expect(createPosts).toBe(1);
+      expect(createPosts).toBe(0);
     });
   });
 
   describe('generated collection seam', () => {
+    it('adopts one final-name collection before starting a second generation', async () => {
+      let generationPosts = 0;
+      const { client } = makeGatewayAssetsClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          return jsonResponse({ data: [{ collection: 'uid-existing', name: '[Smoke] Payments' }] });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          generationPosts += 1;
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'Payments', '[Smoke]', 'Tags', true, 'Fallback')
+      ).resolves.toBe('uid-existing');
+      expect(generationPosts).toBe(0);
+    });
+
     it('submits a run-unique name and reconciles only that exact identity', async () => {
       let submittedName = '';
       const { client } = makeGatewayAssetsClient((env) => {
@@ -449,6 +474,28 @@ describe('Wave 2 create reconciliation', () => {
   });
 
   describe('additional collection root and item seams', () => {
+    it('discovers and reconciles one final-name collection before randomized create', async () => {
+      let createPosts = 0;
+      const { client } = makeGatewayAssetsClient((env) => {
+        if (env.method === 'get' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: [{ id: 'col-existing', name: 'Payments curated' }] });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) createPosts += 1;
+        if (env.method === 'get' && env.path === '/v3/collections/col-existing/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'post' && env.path.includes('/items/')) {
+          return jsonResponse({ data: { id: 'item-1' } }, { status: 201 });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.createCollection('ws-1', createCuratedCollection('Payments curated'))
+      ).resolves.toBe('col-existing');
+      expect(createPosts).toBe(0);
+    });
+
     it('persists the additional collection root before child materialization and resumes a partial tree', async () => {
       const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-partial-tree-'));
       mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
@@ -839,7 +886,7 @@ describe('Wave 2 create reconciliation', () => {
           const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8'));
           expect(resources).toMatchObject({
             workspace: { id: 'ws-created' },
-            cloudResources: {
+            canonical: {
               specs: {
                 '../openapi.yaml': 'spec-created'
               },

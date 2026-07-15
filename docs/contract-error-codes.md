@@ -28,6 +28,18 @@ These codes fail the run.
 | `CONTRACT_UNSUPPORTED_OPENAPI_VERSION` | The document was not OpenAPI 3.0 or 3.1. | Provide an OpenAPI 3.0/3.1 document. |
 
 
+## Branch-aware sync
+
+These codes fail the run before any credential is validated or any workspace write is attempted.
+
+| Code | Meaning | Fix |
+| --- | --- | --- |
+| `CONTRACT_DEFAULT_BRANCH_UNRESOLVED` | A non-legacy branch-strategy could not resolve the canonical branch (no explicit canonical-branch input and the provider exposes no default-branch variable). | Set the `canonical-branch` input. Bitbucket and Azure DevOps always require it under publish-gate/preview. |
+| `CONTRACT_CHANNELS_INPUT_INVALID` | A `channels` entry was not `<branch-or-glob>=<CODE>` or the code was not 1-16 chars of A-Z 0-9 _ - starting with a letter. | Fix the malformed entry, e.g. `develop=DEV, release/*=RC`. |
+| `CONTRACT_BRANCH_DECISION_INVALID` | The inherited `POSTMAN_BRANCH_DECISION` env value was not a valid serialized BranchDecision. | Let the first action in the run produce it, or unset the variable so this run decides locally. |
+| `CONTRACT_STATE_UNREADABLE` | `.postman/resources.yaml` exists but is malformed YAML, not a mapping, or declares an unsupported state version. Malformed state never silently reopens the create path. | Fix or delete the file (restore it from git history if needed), or upgrade the action for newer state versions. |
+| `CONTRACT_BRANCH_CANONICAL_WRITE` | A non-canonical branch run attempted to mutate a canonical asset or tracked state. | Run canonical writes from the canonical branch only; preview/channel runs own only their suffixed asset sets. |
+
 ## Contract indexing
 
 These codes fail the run.

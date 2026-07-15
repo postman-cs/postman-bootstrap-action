@@ -418,6 +418,9 @@ describe('bootstrap action contract', () => {
       'workspace-url': '',
       'workspace-name': '[AF] core-payments',
       'spec-id': '',
+      'spec-version-tag': '',
+      'spec-version-url': '',
+      'spec-content-changed': '',
       'baseline-collection-id': '',
       'smoke-collection-id': '',
       'contract-collection-id': '',
@@ -442,7 +445,9 @@ describe('bootstrap action contract', () => {
         mode: 'off',
         status: 'skipped',
         summaryPath: ''
-      })
+      }),
+      'sync-status': '',
+      'branch-decision': ''
     });
   });
 

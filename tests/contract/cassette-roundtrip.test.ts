@@ -15,7 +15,7 @@ import {
   CASSETTE_MINTED_TOKEN
 } from './cassette.js';
 import { createPlatformFake } from './platform-fake.js';
-import { runContractAction } from './harness.js';
+import { runContractAction, runWithFakeTimers } from './harness.js';
 
 const PMAK_ONLY = { 'postman-api-key': 'pmak-test', 'postman-access-token': '' };
 
@@ -29,7 +29,7 @@ describe('contract: cassette roundtrip', () => {
       createSecretMasker(['pmak-test', 'minted-access-token'])
     );
 
-    const recorded = await runContractAction({ inputs: PMAK_ONLY, fetchImpl: recording });
+    const recorded = await runWithFakeTimers(() => runContractAction({ inputs: PMAK_ONLY, fetchImpl: recording }));
     expect(recorded.error).toBeUndefined();
     expect(recorded.outputs['workspace-id']).toBe('ws-contract');
     expect(cassette.interactions.length).toBeGreaterThan(5);
@@ -47,10 +47,10 @@ describe('contract: cassette roundtrip', () => {
     ).toBe(true);
 
     // Replay the same flow with NO live transport at all.
-    const replayed = await runContractAction({
+    const replayed = await runWithFakeTimers(() => runContractAction({
       inputs: PMAK_ONLY,
       fetchImpl: createReplayFetch(structuredClone(cassette))
-    });
+    }));
     expect(replayed.error).toBeUndefined();
     expect(replayed.outputs['workspace-id']).toBe(recorded.outputs['workspace-id']);
     expect(replayed.outputs['spec-id']).toBe(recorded.outputs['spec-id']);

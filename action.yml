@@ -81,6 +81,10 @@ inputs:
     description: OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content.
     required: false
     default: ''
+  preserve-oas30-type-null:
+    description: 'Opt-in compatibility mode for OpenAPI 3.0 oneOf schemas that pair one normal schema with a null-only member. The action uploads the original source bytes unchanged and uses an internal nullable true view for validation and generated artifacts. All unrelated validation and lint errors remain enforced.'
+    required: false
+    default: 'false'
   breaking-change-mode:
     description: OpenAPI breaking-change comparison mode (off, pr-native, baseline-only, or previous-spec)
     required: false

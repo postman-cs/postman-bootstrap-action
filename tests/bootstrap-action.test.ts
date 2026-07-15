@@ -10,6 +10,7 @@ import {
   writeResourcesState
 } from '../src/lib/postman/additional-collections.js';
 import {
+  applyOas30TypeNullLintCompatibility,
   lintSpecViaCli,
   normalizeSpecDocument,
   readActionInputs,
@@ -672,6 +673,61 @@ describe('bootstrap action', () => {
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
+  });
+
+  it('uploads the original OpenAPI 3.0 bytes in type null compatibility mode', async () => {
+    const source = `openapi: 3.0.3
+info: { title: Nullable Test, version: 1.0.0 }
+paths:
+  /ping:
+    get:
+      responses:
+        '200': { description: OK }
+components:
+  schemas:
+    Criteria:
+      type: object
+      properties:
+        value:
+          oneOf:
+            - type: string
+            - type: 'null'
+`;
+    const postman = createRollbackPostman({
+      uploadSpec: vi.fn().mockResolvedValue('spec-nullable')
+    });
+    const lintPath = '$.components.schemas.Criteria.properties.value.oneOf[1].type';
+    const execStub = createExecStub(JSON.stringify({
+      violations: [{
+        severity: 'ERROR',
+        issue: '"type" property must be equal to one of the allowed values',
+        path: lintPath
+      }]
+    }));
+
+    const result = await runBootstrap(
+      createInputs({
+        preserveOas30TypeNull: true,
+        workspaceId: 'ws-existing'
+      }),
+      {
+        core: createCoreStub().core,
+        exec: execStub,
+        internalIntegration: createRollbackIntegration(),
+        io: createIoStub(),
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(new Response(source, { status: 200 }))
+      }
+    );
+
+    expect(postman.uploadSpec).toHaveBeenCalledWith(
+      'ws-existing',
+      'core-payments',
+      source,
+      '3.0'
+    );
+    expect(result['lint-summary-json']).toContain('"errors":0');
+    expect(result['lint-summary-json']).toContain('"severity":"WARNING"');
   });
 
   it('persists current bootstrap resource state before additional collection mappings', async () => {
@@ -2840,6 +2896,29 @@ describe('lintSpecViaCli', () => {
       ],
       warnings: 1
     });
+  });
+
+  it('downgrades only the accepted OpenAPI 3.0 type null lint finding', () => {
+    const summary = applyOas30TypeNullLintCompatibility(
+      {
+        errors: 2,
+        violations: [
+          {
+            severity: 'ERROR',
+            issue: '"type" property must be equal to one of the allowed values',
+            path: '$.components.schemas.Criteria.properties.value.oneOf[1].type'
+          },
+          { severity: 'ERROR', issue: 'required property is missing', path: '$.info.title' }
+        ],
+        warnings: 0
+      },
+      ['components.schemas.Criteria.properties.value.oneOf.1.type']
+    );
+
+    expect(summary.errors).toBe(1);
+    expect(summary.warnings).toBe(1);
+    expect(summary.violations[0]?.severity).toBe('WARNING');
+    expect(summary.violations[1]?.severity).toBe('ERROR');
   });
 });
 

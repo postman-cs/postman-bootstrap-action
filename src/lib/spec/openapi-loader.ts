@@ -25,11 +25,13 @@ export interface LoadedOpenApiContractSpec {
   bundledDocument: JsonRecord;
   contractIndex: ContractIndex;
   content: string;
+  sourceTypeNullPaths: string[];
   version: OpenApiVersion;
 }
 
 export interface OpenApiLoaderOptions extends SafeFetchOptions {
   fetchText?: (url: string, options: SafeFetchOptions) => Promise<string>;
+  preserveOas30TypeNull?: boolean;
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -145,6 +147,81 @@ export function serializeOpenApiDocument(document: JsonRecord): string {
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
+interface TypeNullCompatibilityResult {
+  document: JsonRecord;
+  sourceTypeNullPaths: string[];
+}
+
+function typeNullPath(pathSegments: Array<string | number>): string {
+  return pathSegments.map(String).join('.');
+}
+
+function isNullOnlySchema(value: unknown): value is JsonRecord {
+  const record = asRecord(value);
+  if (!record || record.type !== 'null') return false;
+  return Object.keys(record).every((key) => key === 'type' || key.startsWith('x-'));
+}
+
+export function createOas30TypeNullCompatibilityDocument(
+  sourceDocument: JsonRecord
+): TypeNullCompatibilityResult {
+  const document = structuredClone(sourceDocument);
+  const sourceTypeNullPaths: string[] = [];
+
+  const visit = (value: unknown, pathSegments: Array<string | number>): void => {
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => visit(entry, [...pathSegments, index]));
+      return;
+    }
+
+    const record = asRecord(value);
+    if (!record) return;
+
+    const oneOf = Array.isArray(record.oneOf) ? record.oneOf : undefined;
+    const nullIndexes = oneOf
+      ? oneOf.flatMap((entry, index) => isNullOnlySchema(entry) ? [index] : [])
+      : [];
+
+    if (nullIndexes.length > 0) {
+      if (oneOf?.length !== 2 || nullIndexes.length !== 1) {
+        throw new Error(
+          `CONTRACT_OAS30_TYPE_NULL_UNSUPPORTED: ${typeNullPath(pathSegments)} must use oneOf with exactly one null-only member and one non-null schema`
+        );
+      }
+      const nullIndex = nullIndexes[0] as number;
+      const nonNullIndex = nullIndex === 0 ? 1 : 0;
+      const nonNullSchema = asRecord(oneOf[nonNullIndex]);
+      if (!nonNullSchema || nonNullSchema.type === 'null') {
+        throw new Error(
+          `CONTRACT_OAS30_TYPE_NULL_UNSUPPORTED: ${typeNullPath(pathSegments)} must pair the null-only member with one non-null schema`
+        );
+      }
+
+      const siblings = Object.fromEntries(
+        Object.entries(record).filter(([key]) => key !== 'oneOf')
+      );
+      for (const key of Object.keys(record)) delete record[key];
+      Object.assign(record, structuredClone(nonNullSchema), siblings, { nullable: true });
+      sourceTypeNullPaths.push(typeNullPath([...pathSegments, 'oneOf', nullIndex, 'type']));
+      visit(record, pathSegments);
+      return;
+    }
+
+    if (record.type === 'null') {
+      throw new Error(
+        `CONTRACT_OAS30_TYPE_NULL_UNSUPPORTED: ${typeNullPath([...pathSegments, 'type'])} is not a supported nullable oneOf member`
+      );
+    }
+
+    for (const [key, child] of Object.entries(record)) {
+      visit(child, [...pathSegments, key]);
+    }
+  };
+
+  visit(document, []);
+  return { document, sourceTypeNullPaths };
+}
+
 async function bundleSpec(baseUrl: string, document: JsonRecord, options: OpenApiLoaderOptions): Promise<JsonRecord> {
   const budget: SafeFetchBudget = options.budget ?? { refs: 0, totalBytes: Buffer.byteLength(JSON.stringify(document), 'utf8') };
   const fetchText = options.fetchText ?? safeFetchText;
@@ -196,7 +273,14 @@ async function buildLoadedSpec(
 ): Promise<LoadedOpenApiContractSpec> {
   const document = parseOpenApiDocument(content);
   const version = detectOpenApiVersion(document);
-  const bundledDocument = await bundleSpec(baseRef, document, { ...options, budget, fetchText });
+  let contractDocument = document;
+  let sourceTypeNullPaths: string[] = [];
+  if (options.preserveOas30TypeNull && version === '3.0') {
+    const compatibility = createOas30TypeNullCompatibilityDocument(document);
+    contractDocument = compatibility.document;
+    sourceTypeNullPaths = compatibility.sourceTypeNullPaths;
+  }
+  const bundledDocument = await bundleSpec(baseRef, contractDocument, { ...options, budget, fetchText });
   const validation = await validateOpenApi(bundledDocument as never, {
     resolve: { external: false, file: false },
     dereference: { circular: 'ignore' },
@@ -210,6 +294,7 @@ async function buildLoadedSpec(
     bundledDocument,
     contractIndex: buildContractIndex(bundledDocument),
     content,
+    sourceTypeNullPaths,
     version
   };
 }

@@ -127,6 +127,12 @@ export const bootstrapActionContract: ActionContract = {
       default: '',
       allowedValues: ['3.0', '3.1']
     },
+    'preserve-oas30-type-null': {
+      description: 'Opt-in compatibility mode for legacy OpenAPI 3.0 oneOf schemas that pair a normal schema with type: null. The original source bytes are uploaded unchanged while an internal nullable view is used for validation and generated artifacts.',
+      required: false,
+      default: 'false',
+      allowedValues: ['true', 'false']
+    },
     'breaking-change-mode': {
       description: 'OpenAPI breaking-change comparison mode.',
       required: false,

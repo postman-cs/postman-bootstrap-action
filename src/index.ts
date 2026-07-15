@@ -96,6 +96,7 @@ export interface ResolvedInputs {
   protocol: 'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi';
   protocolEndpointUrl?: string;
   openapiVersion: string;
+  preserveOas30TypeNull?: boolean;
   breakingChangeMode: BreakingChangeMode;
   breakingBaselineSpecPath?: string;
   breakingRulesPath?: string;
@@ -476,6 +477,11 @@ export function resolveInputs(
     ),
     protocolEndpointUrl: getInput('protocol-endpoint-url', env),
     openapiVersion: resolveOpenapiVersion(getInput('openapi-version', env)),
+    preserveOas30TypeNull: parseBooleanInput(
+      'preserve-oas30-type-null',
+      getInput('preserve-oas30-type-null', env),
+      false
+    ),
     breakingChangeMode: parseBreakingChangeMode(getInput('breaking-change-mode', env)),
     breakingBaselineSpecPath: getInput('breaking-baseline-spec-path', env),
     breakingRulesPath:
@@ -798,6 +804,9 @@ export function readActionInputs(
       optionalInput(actionCore, 'request-name-source') ??
       bootstrapActionContract.inputs['request-name-source'].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? '',
+    INPUT_PRESERVE_OAS30_TYPE_NULL:
+      optionalInput(actionCore, 'preserve-oas30-type-null') ??
+      bootstrapActionContract.inputs['preserve-oas30-type-null'].default,
     INPUT_BREAKING_CHANGE_MODE:
       optionalInput(actionCore, 'breaking-change-mode') ??
       bootstrapActionContract.inputs['breaking-change-mode'].default,
@@ -946,6 +955,44 @@ export async function lintSpecViaCli(
     errors,
     violations,
     warnings
+  };
+}
+
+function normalizeLintPath(value: string): string {
+  return value
+    .trim()
+    .replace(/^\$\.?/, '')
+    .replace(/\[(\d+)\]/g, '.$1')
+    .replace(/^\./, '');
+}
+
+export function applyOas30TypeNullLintCompatibility(
+  summary: LintSummary,
+  sourceTypeNullPaths: string[]
+): LintSummary {
+  const acceptedPaths = new Set(sourceTypeNullPaths.map(normalizeLintPath));
+  if (acceptedPaths.size === 0) return summary;
+
+  const violations = summary.violations.map((violation) => {
+    const path = normalizeLintPath(violation.path ?? '');
+    const issue = violation.issue ?? '';
+    const isTypeEnumFinding =
+      /["']?type["']? property/i.test(issue) &&
+      /allowed values|must be equal to one of/i.test(issue);
+    if (
+      violation.severity === 'ERROR' &&
+      acceptedPaths.has(path) &&
+      isTypeEnumFinding
+    ) {
+      return { ...violation, severity: 'WARNING' };
+    }
+    return violation;
+  });
+
+  return {
+    errors: violations.filter((entry) => entry.severity === 'ERROR').length,
+    violations,
+    warnings: violations.filter((entry) => entry.severity === 'WARNING').length
   };
 }
 
@@ -1968,6 +2015,8 @@ async function runBootstrapInner(
   let detectedOpenapiVersion: '3.0' | '3.1' = '3.0';
   let contractIndex: ContractIndex | undefined;
   let sourceSpecContent = '';
+  let sourceTypeNullPaths: string[] = [];
+  let preserveSourceSpecBytes = false;
 
   // Detect the spec protocol before any OpenAPI-specific work. Only `openapi`
   // flows through Spec Hub; graphql/grpc/soap are handled by the protocol path.
@@ -2025,6 +2074,7 @@ async function runBootstrapInner(
       };
       const rootKey = inputs.specPath ? undefined : normalizeRef(inputs.specUrl);
       const loaderOptions = {
+        preserveOas30TypeNull: Boolean(inputs.preserveOas30TypeNull),
         fetchText: async (url: string, fetchOptions: Parameters<typeof safeFetchText>[1]) => {
           if (rootKey && normalizeRef(url) === rootKey) return rawSpecContent;
           if (dependencies.specFetcher === fetch) return safeFetchText(url, fetchOptions);
@@ -2035,6 +2085,8 @@ async function runBootstrapInner(
         ? await loadOpenApiContractSpecFromPath(inputs.specPath, loaderOptions)
         : await loadOpenApiContractSpec(inputs.specUrl, loaderOptions);
       sourceSpecContent = loaded.content;
+      sourceTypeNullPaths = loaded.sourceTypeNullPaths;
+      preserveSourceSpecBytes = sourceTypeNullPaths.length > 0;
       const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
         dependencies.core.warning(msg)
       );
@@ -2058,9 +2110,11 @@ async function runBootstrapInner(
             `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
           );
         }
-        previousSpecContent = normalizeSpecDocument(previousRaw, (msg) =>
-          dependencies.core.warning(`Previous spec normalization: ${msg}`)
-        );
+        previousSpecContent = preserveSourceSpecBytes
+          ? previousRaw
+          : normalizeSpecDocument(previousRaw, (msg) =>
+            dependencies.core.warning(`Previous spec normalization: ${msg}`)
+          );
         previousSpecRollbackHash = createHash('sha256').update(previousSpecContent).digest('hex');
         const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
         if (existingSpecType !== incomingSpecType) {
@@ -2073,6 +2127,12 @@ async function runBootstrapInner(
       dependencies.core.info(
         `Auto-detected OpenAPI version from spec content: ${detectedOpenapiVersion}`
       );
+      if (preserveSourceSpecBytes) {
+        dependencies.core.info(
+          `Preserving original OpenAPI source bytes; accepted ${sourceTypeNullPaths.length} legacy type: null member(s) for internal validation`
+        );
+        return loaded.content;
+      }
       return document;
     }
   );
@@ -2300,7 +2360,7 @@ async function runBootstrapInner(
   outputs['spec-content-changed'] = isCanonicalWriter && !specContentUnchanged ? 'true' : 'false';
 
   if (lintEnabled) {
-    const lintSummary = await runRollbackStage(
+    let lintSummary = await runRollbackStage(
       'Lint Spec via Postman CLI',
       async () => runGroup(
         dependencies.core,
@@ -2308,6 +2368,16 @@ async function runBootstrapInner(
         async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
       )
     );
+    if (preserveSourceSpecBytes) {
+      const originalErrorCount = lintSummary.errors;
+      lintSummary = applyOas30TypeNullLintCompatibility(lintSummary, sourceTypeNullPaths);
+      const acceptedCount = originalErrorCount - lintSummary.errors;
+      if (acceptedCount > 0) {
+        dependencies.core.info(
+          `Accepted ${acceptedCount} Postman CLI type: null finding(s) covered by preserve-oas30-type-null`
+        );
+      }
+    }
     outputs['lint-summary-json'] = JSON.stringify({
       errors: lintSummary.errors,
       total: lintSummary.violations.length,

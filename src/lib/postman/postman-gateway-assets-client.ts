@@ -467,6 +467,15 @@ export class PostmanGatewayAssetsClient {
     };
 
     const before = await this.listGeneratedCollectionRefs(specId);
+    // A completed prior run has already renamed its generated collection to the
+    // final identity. Adopt exactly one such collection before asking Spec Hub
+    // to generate again; ambiguity is a hard safety failure.
+    const existing = adoptExactMatch(
+      `generated-collection:${specId}:${name}`,
+      await this.filterGeneratedCollectionsByExactName(before, name),
+      (entry) => entry.id
+    );
+    if (existing) return existing.id;
     let taskId: string;
     try {
       taskId = await this.postGenerationWithLockRetry(specId, body);

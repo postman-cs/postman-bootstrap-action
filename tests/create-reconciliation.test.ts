@@ -286,6 +286,24 @@ describe('Wave 2 create reconciliation', () => {
   });
 
   describe('generated collection seam', () => {
+    it('adopts one final-name collection before starting a second generation', async () => {
+      let generationPosts = 0;
+      const { client } = makeGatewayAssetsClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          return jsonResponse({ data: [{ collection: 'uid-existing', name: '[Smoke] Payments' }] });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          generationPosts += 1;
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'Payments', '[Smoke]', 'Tags', true, 'Fallback')
+      ).resolves.toBe('uid-existing');
+      expect(generationPosts).toBe(0);
+    });
+
     it('submits a run-unique name and reconciles only that exact identity', async () => {
       let submittedName = '';
       const { client } = makeGatewayAssetsClient((env) => {

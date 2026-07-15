@@ -979,6 +979,7 @@ paths:
 
     expect(postman.updateSpec).not.toHaveBeenCalled();
     expect(tagSpecVersion).not.toHaveBeenCalled();
+    expect(postman.generateCollection).not.toHaveBeenCalled();
     expect(
       infos.some((info) => info.includes('Spec content unchanged'))
     ).toBe(true);

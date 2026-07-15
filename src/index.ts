@@ -2311,7 +2311,14 @@ async function runBootstrapInner(
     dependencies.core.warning('lint skipped: governance errors not enforced (no postman-api-key)');
   }
 
-  await runRollbackStage(
+  if (specContentUnchanged) {
+    // A canonical no-op has no new spec changelog group. Keep the existing
+    // collection identities but do not regenerate them from unchanged input.
+    outputs['baseline-collection-id'] = baselineCollectionId || '';
+    outputs['smoke-collection-id'] = smokeCollectionId || '';
+    outputs['contract-collection-id'] = contractCollectionId || '';
+    dependencies.core.info('Spec content unchanged; skipping collection regeneration and version finalization.');
+  } else await runRollbackStage(
     'Generate Collections from Spec',
     async () => runGroup(
       dependencies.core,

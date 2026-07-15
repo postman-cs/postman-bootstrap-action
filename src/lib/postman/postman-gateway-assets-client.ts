@@ -310,7 +310,6 @@ export class PostmanGatewayAssetsClient {
       // this create window, so elect the stable lowest id and delete only the
       // concurrently appeared losers. Both runners elect the same winner; 404
       // during duplicate cleanup means the peer already removed it.
-      const winner = matches[0];
       for (const duplicate of matches.slice(1)) {
         try {
           await this.deleteSpecification(duplicate.id);

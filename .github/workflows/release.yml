@@ -115,6 +115,19 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Build self-contained SEA binary
         run: bash scripts/build-sea.sh
+      - name: Smoke test SEA binary in a node-less container
+        # Tag releases do not trigger sea-binary.yml, so smoke the artifact here
+        # before any publish/upload: prove it runs on its embedded runtime with
+        # no node/npm present, so we never ship a binary we have not executed.
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          BIN="postman-bootstrap-${VERSION}-linux-x64"
+          out="$(docker run --rm -v "$PWD/build/sea:/w" -w /w debian:12-slim "./$BIN" 2>&1 || true)"
+          echo "$out"
+          if ! echo "$out" | grep -q "is required"; then
+            echo "::error::SEA binary did not execute as expected in a node-less container"
+            exit 1
+          fi
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:

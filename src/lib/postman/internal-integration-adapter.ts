@@ -56,6 +56,9 @@ export interface InternalIntegrationAdapter {
 
 class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private static readonly MINIMUM_POSTMAN_APP_VERSION = '12.0.0';
+  /** Per-request wall-clock deadline (ms) so a hung Bifrost proxy or app-version
+   * endpoint aborts rather than blocking the run forever. */
+  private static readonly REQUEST_TIMEOUT_MS = 30_000;
   private static readonly POSTMAN_APP_VERSION_URL = `https://dl.pstmn.io/update/status?currentVersion=${BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION}&platform=osx_arm64`;
 
   private readonly accessToken: string;
@@ -107,6 +110,27 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     };
   }
 
+  /**
+   * fetch with a wall-clock deadline. A slow/hung proxy aborts instead of
+   * blocking the run forever; callers surface the abort like any other transport
+   * rejection.
+   */
+  private async fetchWithDeadline(
+    input: Parameters<typeof fetch>[0],
+    init: RequestInit = {}
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(),
+      BifrostInternalIntegrationAdapter.REQUEST_TIMEOUT_MS
+    );
+    try {
+      return await this.fetchImpl(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async proxyRequest(
     service: string,
     method: string,
@@ -126,7 +150,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       headers['x-entity-team-id'] = this.teamId;
     }
 
-    return this.fetchImpl(url, {
+    return this.fetchWithDeadline(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -142,7 +166,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private resolvePostmanAppVersion(): Promise<string> {
     this.appVersionPromise ??= (async () => {
       try {
-        const response = await this.fetchImpl(
+        const response = await this.fetchWithDeadline(
           BifrostInternalIntegrationAdapter.POSTMAN_APP_VERSION_URL,
           { method: 'GET' }
         );

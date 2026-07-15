@@ -508,4 +508,33 @@ describe('internal integration adapter error advice', () => {
     expect(message).toContain('workspace-team-id 11430732');
     expect(message).toContain('GET https://api.getpostman.com/teams');
   });
+
+  it('wires a per-request AbortSignal deadline onto every outbound fetch', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ version: '12.10.0' }))
+      .mockResolvedValueOnce(jsonResponse({ workspaceGroups: [{ id: 'group-1', name: 'Core Banking' }] }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      fetchImpl
+    });
+
+    await adapter.assignWorkspaceToGovernanceGroup(
+      'ws-123',
+      'core-banking',
+      JSON.stringify({ 'core-banking': 'Core Banking' })
+    );
+
+    // Every call (app-version GET + both proxy POSTs) carries an AbortSignal so a
+    // hung endpoint aborts on the deadline instead of blocking forever.
+    for (const call of fetchImpl.mock.calls) {
+      const init = call[1] as RequestInit;
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+      expect(init.signal?.aborted).toBe(false);
+    }
+  });
 });

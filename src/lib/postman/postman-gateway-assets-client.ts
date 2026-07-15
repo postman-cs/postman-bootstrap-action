@@ -32,6 +32,44 @@ function asRecord(value: unknown): JsonRecord | null {
 }
 
 /**
+ * A 400 from a JSON-Patch remove whose target no longer exists — the signature
+ * of a retried PATCH whose first attempt actually committed downstream.
+ */
+const BOOTSTRAP_BARE_UUID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function isMissingPatchValueError(error: unknown): boolean {
+  return (
+    error instanceof HttpError &&
+    error.status === 400 &&
+    error.responseBody.includes('Remove operation must point to an existing value')
+  );
+}
+
+/**
+ * Order-insensitive deep equality by canonical JSON. Object keys are sorted so
+ * the readback of an add/replace can be compared against the exact requested
+ * value regardless of key order — a stale pre-PATCH value fails this even when
+ * it is merely non-null.
+ */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      out[key] = canonicalize(record[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+function deepEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(canonicalize(a)) === JSON.stringify(canonicalize(b));
+}
+
+/**
  * Resolve a poll-budget number from an explicit option, then an env override,
  * then the default. Non-numeric or below-`min` values fall through so a stray
  * env value can never zero out or invert a production budget.
@@ -291,6 +329,9 @@ export class PostmanGatewayAssetsClient {
       service: 'specification',
       method: 'patch',
       path: `/specifications/${specId}/files/${fileId}`,
+      // Replacing the ROOT file content with the same value is idempotent, so a
+      // transient downstream timeout (ESOCKETTIMEDOUT) is safe to retry.
+      retry: 'safe',
       body: [{ op: 'replace', path: '/content', value: specContent }]
     });
   }
@@ -730,9 +771,20 @@ export class PostmanGatewayAssetsClient {
   // `GET .../items/` returns 403 FORBIDDEN with bare id, 200 with full uid).
   // The tagging service is distinct and takes the FULL uid.
 
-  /** `<owner>-<uuid>` public uid -> bare `<uuid>` model id (collection ROOT routes only). */
+  /**
+   * `<owner>-<uuid>` public uid -> bare `<uuid>` model id (collection ROOT routes
+   * only). Strip ONLY the numeric owner prefix of a full public uid; a bare UUID
+   * (which itself contains hyphens) must pass through unchanged, so a naive
+   * split on the first hyphen — which would lop off a UUID's first segment — is
+   * rejected here in favour of an anchored `<digits>-<uuid>` match.
+   */
   private bareModelId(uid: string): string {
     const u = String(uid ?? '').trim();
+    // A bare UUID already IS the model id, and it contains hyphens — splitting on
+    // the first hyphen would corrupt it (dropping its first segment). Guard that
+    // case; for a full `<owner>-<uuid>` public uid the owner is a single
+    // hyphenless segment, so stripping up to the first hyphen yields the uuid.
+    if (BOOTSTRAP_BARE_UUID_RE.test(u)) return u;
     return u.includes('-') ? u.slice(u.indexOf('-') + 1) : u;
   }
 
@@ -1425,12 +1477,73 @@ export class PostmanGatewayAssetsClient {
     }
 
     if (ops.length === 0) return;
-    await this.gateway.requestJson<JsonRecord>({
-      service: 'collection',
-      method: 'patch',
-      path: `/v3/collections/${cid}`,
-      body: ops
-    });
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'patch',
+        path: `/v3/collections/${cid}`,
+        // Fixed-path add/replace ops are idempotent, and a remove that already
+        // committed is reconciled below, so transient downstream timeouts
+        // (ESOCKETTIMEDOUT) are safe to retry.
+        retry: 'safe',
+        body: ops
+      });
+    } catch (error) {
+      // A retried PATCH whose first attempt actually committed fails its
+      // removes as already-applied — but that 400 only proves one remove
+      // target is absent, not that the whole batch landed. Read the root back
+      // and only report success when every intended op's end state holds.
+      if (
+        isMissingPatchValueError(error) &&
+        ops.some((op) => op.op === 'remove') &&
+        (await this.verifyRootSettingsApplied(cid, ops))
+      ) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Read the collection root and check that every JSON-Patch op's intended end
+   * state holds. add/replace targets must be structurally equal to the exact
+   * requested value (a stale pre-PATCH description/auth/variables/scripts is
+   * non-null but not equal, so it can never falsely verify); remove targets must
+   * be absent (description clears to "" rather than disappearing).
+   */
+  private async verifyRootSettingsApplied(cid: string, ops: JsonRecord[]): Promise<boolean> {
+    let current: JsonRecord | null;
+    try {
+      const got = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'get',
+        path: `/v3/collections/${cid}`
+      });
+      current = asRecord(got?.data);
+    } catch {
+      return false;
+    }
+    if (!current) return false;
+    for (const op of ops) {
+      const rawPath = String(op.path ?? '');
+      const field = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath;
+      if (!field) return false;
+      const value = current[field];
+      if (op.op === 'remove') {
+        if (field === 'description') {
+          if (typeof value === 'string' && value.length > 0) return false;
+        } else if (!(value === undefined || value === null || (Array.isArray(value) && value.length === 0))) {
+          return false;
+        }
+      } else {
+        // add / replace: the committed value must structurally equal what we
+        // requested, not merely be present. Presence-only would accept a stale
+        // pre-PATCH value after a retried-timeout batch.
+        if (value === undefined || value === null) return false;
+        if (!deepEqual(value, op.value)) return false;
+      }
+    }
+    return true;
   }
 
   /**

@@ -29,6 +29,9 @@ export interface AccessTokenGatewayClientOptions {
   maxRetries?: number;
   /** Base backoff in ms; attempt n waits baseDelayMs * 2^(n-1) (default 400). */
   retryBaseDelayMs?: number;
+  /** Per-request wall-clock deadline in ms; a slow/hung proxy aborts and (for
+   * safe requests) retries instead of blocking the run forever (default 30000). */
+  requestTimeoutMs?: number;
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
@@ -38,6 +41,55 @@ function isExpiredAuthError(status: number, body: string): boolean {
     body.includes('UNAUTHENTICATED') ||
     body.includes('authenticationError')
   );
+}
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function innerEnvelopeStatus(envelope: Record<string, unknown>): number | undefined {
+  for (const key of ['status', 'statusCode']) {
+    const value = envelope[key];
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+  }
+  return undefined;
+}
+
+/**
+ * bifrost `/ws/proxy` can answer HTTP 200 while wrapping an inner
+ * collection-service failure in the envelope (the outer transport succeeded even
+ * though the inner RPC did not). Return the effective failure status when the
+ * envelope carries an `error`, `success:false`, or an inner `status`/`statusCode`
+ * >= 400 so a write is never silently reported as success and the transient
+ * retry policy can still see a retryable inner 5xx. Returns null for clean bodies.
+ */
+function detectInnerError(body: string): number | null {
+  const trimmed = body.trim();
+  if (!trimmed) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  const envelope = asRecord(parsed);
+  if (!envelope) return null;
+  const innerStatus = innerEnvelopeStatus(envelope);
+  const error = envelope.error;
+  const errorRecord = asRecord(error);
+  const hasError =
+    (error !== undefined &&
+      error !== null &&
+      !(errorRecord !== null && Object.keys(errorRecord).length === 0)) ||
+    envelope.success === false ||
+    (typeof innerStatus === 'number' && innerStatus >= 400);
+  if (!hasError) return null;
+  return typeof innerStatus === 'number' && innerStatus >= 400 ? innerStatus : 502;
 }
 
 /**
@@ -79,6 +131,7 @@ export class AccessTokenGatewayClient {
   private readonly secretMasker: SecretMasker;
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
+  private readonly requestTimeoutMs: number;
   private readonly sleepImpl: (ms: number) => Promise<void>;
 
   constructor(options: AccessTokenGatewayClientOptions) {
@@ -93,6 +146,7 @@ export class AccessTokenGatewayClient {
       options.secretMasker ?? createSecretMasker([this.tokenProvider.current()]);
     this.maxRetries = options.maxRetries ?? 3;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 400;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.sleepImpl = options.sleepImpl ?? defaultSleep;
   }
 
@@ -115,24 +169,35 @@ export class AccessTokenGatewayClient {
 
   private async send(request: GatewayRequest): Promise<Response> {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
-    return this.fetchImpl(url, {
-      method: 'POST',
-      headers: this.buildHeaders(request.headers),
-      body: JSON.stringify({
-        service: request.service,
-        method: request.method,
-        path: request.path,
-        ...(request.query !== undefined ? { query: request.query } : {}),
-        ...(request.body !== undefined ? { body: request.body } : {})
-      })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    try {
+      return await this.fetchImpl(url, {
+        method: 'POST',
+        headers: this.buildHeaders(request.headers),
+        signal: controller.signal,
+        body: JSON.stringify({
+          service: request.service,
+          method: request.method,
+          path: request.path,
+          ...(request.query !== undefined ? { query: request.query } : {}),
+          ...(request.body !== undefined ? { body: request.body } : {})
+        })
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
    * Send a gateway request, refreshing the token once on an auth failure and
-   * retrying transient downstream failures (5xx / Bifrost read timeouts) with
-   * exponential backoff. The auth-refresh-once path is independent of the
-   * transient-retry budget.
+   * retrying transient failures with exponential backoff. Transient covers both
+   * HTTP 5xx / Bifrost read timeouts AND transport-level rejections (fetch
+   * throwing on a socket hangup or the per-request deadline aborting) — a
+   * `retry: 'safe'` request retries either; a `retry: 'none'` mutation surfaces
+   * the failure so the caller reconciles instead of blindly resending. An HTTP
+   * 200 envelope carrying an inner collection-service error is treated as that
+   * inner status. The auth-refresh-once path is independent of the retry budget.
    */
   async request(request: GatewayRequest): Promise<Response> {
     // A PMAK-only run starts with no access token; mint one up front so the
@@ -140,11 +205,42 @@ export class AccessTokenGatewayClient {
     if (!this.tokenProvider.current() && this.tokenProvider.canRefresh()) {
       await this.tokenProvider.refresh();
     }
+    const retryMode = request.retry ?? (request.method === 'get' ? 'safe' : 'none');
     let attempt = 0;
     for (;;) {
-      let response = await this.send(request);
+      let response: Response;
+      try {
+        response = await this.send(request);
+      } catch (error) {
+        // Transport rejection (socket hangup, DNS, or the deadline aborting the
+        // request). Safe requests retry within budget; otherwise re-throw so an
+        // unsafe mutation is reconciled rather than blindly resent.
+        if (retryMode === 'safe' && attempt < this.maxRetries) {
+          const delay = this.retryBaseDelayMs * 2 ** attempt;
+          attempt += 1;
+          await this.sleepImpl(delay);
+          continue;
+        }
+        throw error;
+      }
+
       if (response.ok) {
-        return response;
+        const okBody = await response.text().catch(() => '');
+        const innerStatus = detectInnerError(okBody);
+        if (innerStatus !== null) {
+          if (
+            retryMode === 'safe' &&
+            isTransientGatewayError(innerStatus, okBody) &&
+            attempt < this.maxRetries
+          ) {
+            const delay = this.retryBaseDelayMs * 2 ** attempt;
+            attempt += 1;
+            await this.sleepImpl(delay);
+            continue;
+          }
+          throw this.toInnerHttpError(request, innerStatus, okBody);
+        }
+        return this.rebuildResponse(response, okBody);
       }
 
       const body = await response.text().catch(() => '');
@@ -152,13 +248,17 @@ export class AccessTokenGatewayClient {
         await this.tokenProvider.refresh();
         response = await this.send(request);
         if (response.ok) {
-          return response;
+          const refreshedBody = await response.text().catch(() => '');
+          const innerStatus = detectInnerError(refreshedBody);
+          if (innerStatus !== null) {
+            throw this.toInnerHttpError(request, innerStatus, refreshedBody);
+          }
+          return this.rebuildResponse(response, refreshedBody);
         }
         const retryBody = await response.text().catch(() => '');
         throw this.toHttpError(request, response, retryBody);
       }
 
-      const retryMode = request.retry ?? (request.method === 'get' ? 'safe' : 'none');
       if (
         retryMode === 'safe' &&
         isTransientGatewayError(response.status, body) &&
@@ -172,6 +272,19 @@ export class AccessTokenGatewayClient {
 
       throw this.toHttpError(request, response, body);
     }
+  }
+
+  /**
+   * The success path reads the body to inspect for an inner error, which
+   * consumes the stream. Hand callers a fresh Response over the buffered text so
+   * `requestJson` can still parse it.
+   */
+  private rebuildResponse(response: Response, body: string): Response {
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers
+    });
   }
 
   /** Send a gateway request and parse the JSON body, or null when empty. */
@@ -200,6 +313,22 @@ export class AccessTokenGatewayClient {
       url: `${this.bifrostBaseUrl}/ws/proxy (${request.service}: ${request.method} ${request.path})`,
       status: response.status,
       statusText: response.statusText,
+      requestHeaders: this.buildHeaders(request.headers),
+      responseBody: this.secretMasker(body),
+      secretValues: [this.tokenProvider.current()]
+    });
+  }
+
+  private toInnerHttpError(
+    request: GatewayRequest,
+    status: number,
+    body: string
+  ): HttpError {
+    return new HttpError({
+      method: request.method.toUpperCase(),
+      url: `${this.bifrostBaseUrl}/ws/proxy (${request.service}: ${request.method} ${request.path}) [inner]`,
+      status,
+      statusText: 'Inner Error',
       requestHeaders: this.buildHeaders(request.headers),
       responseBody: this.secretMasker(body),
       secretValues: [this.tokenProvider.current()]

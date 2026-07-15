@@ -1358,4 +1358,191 @@ describe('PostmanGatewayAssetsClient', () => {
       expect((error as Error).message).not.toContain(WORKSPACE_PERSONAL_ONLY_ADVICE);
     });
   });
+  describe('transient root-PATCH retry (ESOCKETTIMEDOUT)', () => {
+    const timeout500 = () => jsonResponse(
+      { error: { name: 'serverError', message: 'Something went wrong with the server', details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+      { status: 500 }
+    );
+
+    it('createCollection retries the collection-level settings PATCH after a downstream socket timeout', async () => {
+      let patchAttempts = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-root-uid' } });
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/root-uid') {
+          patchAttempts += 1;
+          if (patchAttempts === 1) return timeout500();
+          return jsonResponse({ data: { id: 'root-uid' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.createCollection('ws-1', {
+        info: { name: 'Curated', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+        item: []
+      });
+
+      expect(patchAttempts).toBe(2);
+      expect(calls.filter((c) => c.method === 'delete')).toHaveLength(0);
+    });
+
+    it('updateCollection retries the reconcile PATCH, and on a remove-already-applied 400 verifies the intended end state before reporting success', async () => {
+      let patchAttempts = 0;
+      let rootReads = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          rootReads += 1;
+          // First read: reconcileRemovals pre-read (old state). Second read:
+          // post-400 verification -- the timed-out PATCH actually committed.
+          return jsonResponse({
+            data: rootReads === 1
+              ? { id: '55363555-cid-1', name: 'Old', description: 'old', auth: { type: 'bearer' } }
+              : { id: '55363555-cid-1', name: 'New', description: '' }
+          });
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/cid-1') {
+          patchAttempts += 1;
+          if (patchAttempts === 1) return timeout500();
+          return jsonResponse(
+            { error: { name: 'invalidParamsError', message: 'Remove operation must point to an existing value' } },
+            { status: 400 }
+          );
+        }
+        return jsonResponse({});
+      });
+
+      await client.updateCollection('55363555-cid-1', {
+        info: { name: 'New', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+        item: []
+      });
+
+      expect(patchAttempts).toBe(2);
+      // Success required a verification read of the root, not just the 400.
+      expect(rootReads).toBe(2);
+      expect(calls.filter((c) => c.method === 'get' && c.path === '/v3/collections/cid-1')).toHaveLength(2);
+    });
+
+    it('updateCollection surfaces the failure when the remove-already-applied 400 masks a batch that never committed', async () => {
+      let patchAttempts = 0;
+      let rootReads = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          rootReads += 1;
+          // Another actor removed /auth, but the rename in this batch never
+          // landed: verification must fail and the error must surface.
+          return jsonResponse({
+            data: rootReads === 1
+              ? { id: '55363555-cid-1', name: 'Old', description: 'old', auth: { type: 'bearer' } }
+              : { id: '55363555-cid-1', name: 'Old', description: 'old' }
+          });
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/cid-1') {
+          patchAttempts += 1;
+          if (patchAttempts === 1) return timeout500();
+          return jsonResponse(
+            { error: { name: 'invalidParamsError', message: 'Remove operation must point to an existing value' } },
+            { status: 400 }
+          );
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.updateCollection('55363555-cid-1', {
+          info: { name: 'New', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+          item: []
+        })
+      ).rejects.toThrow(/400/);
+
+      expect(patchAttempts).toBe(2);
+      expect(rootReads).toBe(2);
+    });
+
+    it('updateCollection surfaces failure when a stale non-null value is present but not equal to the requested add/replace (no false-verify)', async () => {
+      let patchAttempts = 0;
+      let rootReads = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          rootReads += 1;
+          // Pre-read has old variables. Post-400 verify read returns the SAME
+          // stale variables plus a removed auth — /variables was requested as an
+          // add of the NEW value but the committed value is stale, so a
+          // presence-only check would falsely pass. Structural equality must
+          // reject and surface the error.
+          return jsonResponse({
+            data: rootReads === 1
+              ? { id: '55363555-cid-1', name: 'Old', description: 'old', auth: { type: 'bearer' }, variables: [{ key: 'stale', value: '1' }] }
+              : { id: '55363555-cid-1', name: 'New', description: '', variables: [{ key: 'stale', value: '1' }] }
+          });
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/cid-1') {
+          patchAttempts += 1;
+          if (patchAttempts === 1) return timeout500();
+          return jsonResponse(
+            { error: { name: 'invalidParamsError', message: 'Remove operation must point to an existing value' } },
+            { status: 400 }
+          );
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.updateCollection('55363555-cid-1', {
+          info: { name: 'New', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+          variable: [{ key: 'fresh', value: '2' }],
+          item: []
+        })
+      ).rejects.toThrow(/400/);
+      expect(patchAttempts).toBe(2);
+      expect(rootReads).toBe(2);
+    });
+
+    it('updateSpec retries the spec-file content PATCH after a downstream socket timeout', async () => {
+      let patchAttempts = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/files') {
+          return jsonResponse({ data: [{ id: 'file-1', type: 'ROOT' }] });
+        }
+        if (env.method === 'patch' && env.path === '/specifications/spec-1/files/file-1') {
+          patchAttempts += 1;
+          if (patchAttempts === 1) return timeout500();
+          return jsonResponse({ data: { id: 'file-1' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.updateSpec('spec-1', 'openapi: 3.0.3');
+
+      expect(patchAttempts).toBe(2);
+    });
+  });
+
+  describe('collection ROOT bare-model-id parsing (strict UID)', () => {
+    it('strips the owner prefix from a full <owner>-<uuid> public uid', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({ data: {} }));
+      await client.deleteCollection('55363555-11111111-2222-3333-4444-555555555555');
+      const del = calls.find((c) => c.method === 'delete');
+      expect(del?.path).toBe('/v3/collections/11111111-2222-3333-4444-555555555555');
+    });
+
+    it('passes a bare UUID through unchanged (does not lop off its first segment)', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({ data: {} }));
+      await client.deleteCollection('11111111-2222-3333-4444-555555555555');
+      const del = calls.find((c) => c.method === 'delete');
+      // A naive split on the first hyphen would corrupt this to
+      // '2222-3333-4444-555555555555'; the strict guard preserves it.
+      expect(del?.path).toBe('/v3/collections/11111111-2222-3333-4444-555555555555');
+    });
+  });
+
 });

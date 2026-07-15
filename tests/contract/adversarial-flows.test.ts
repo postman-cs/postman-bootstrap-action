@@ -9,37 +9,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createPlatformFake } from './platform-fake.js';
-import { runContractAction } from './harness.js';
+import { runContractAction, runWithFakeTimers } from './harness.js';
 
 const BOTH = { 'postman-api-key': 'pmak-test', 'postman-access-token': 'stale-token' };
-
-async function runWithFakeTimers<T>(fn: () => Promise<T>): Promise<T> {
-  vi.useFakeTimers();
-  try {
-    const pending = fn();
-    // Flush every timer chain (retry backoffs, generation poll sleeps) until
-    // the run settles. runAllTimersAsync processes timers scheduled by timers.
-    let settled = false;
-    const settle = pending.then(
-      (value) => {
-        settled = true;
-        return value;
-      },
-      (error) => {
-        settled = true;
-        throw error;
-      }
-    );
-    while (!settled) {
-      await vi.runAllTimersAsync();
-      // Yield the microtask queue so `settled` can flip between timer flushes.
-      await Promise.resolve();
-    }
-    return settle;
-  } finally {
-    vi.useRealTimers();
-  }
-}
 
 describe('contract: adversarial flows', () => {
   afterEach(() => {
@@ -65,7 +37,11 @@ describe('contract: adversarial flows', () => {
       }
     });
 
-    const result = await runContractAction({ inputs: BOTH, fetchImpl: fake.fetch });
+    // Fake timers absorb the identity-settle sleeps (spec create + per-collection
+    // converge) that would otherwise push this full run past the test timeout.
+    const result = await runWithFakeTimers(() =>
+      runContractAction({ inputs: BOTH, fetchImpl: fake.fetch })
+    );
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');

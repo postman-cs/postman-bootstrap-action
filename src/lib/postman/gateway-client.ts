@@ -280,7 +280,10 @@ export class AccessTokenGatewayClient {
    * `requestJson` can still parse it.
    */
   private rebuildResponse(response: Response, body: string): Response {
-    return new Response(body, {
+    // Null-body statuses (204/205/304) reject ANY body in the Response
+    // constructor, including the empty string a drained 204 produces.
+    const nullBody = response.status === 204 || response.status === 205 || response.status === 304;
+    return new Response(nullBody ? null : body, {
       status: response.status,
       statusText: response.statusText,
       headers: response.headers

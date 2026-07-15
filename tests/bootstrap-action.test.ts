@@ -49,6 +49,38 @@ const VALID_SPEC_31 = `{
 }
 `;
 
+
+// Previous Spec Hub content that differs from the incoming spec so update +
+// rollback paths actually execute (identical content triggers the P3.5
+// content-hash no-op skip and never calls updateSpec).
+const PREVIOUS_SPEC_31 = `{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Previous Test API",
+    "version": "0.9.0"
+  },
+  "paths": {
+    "/payments": {
+      "get": {
+        "summary": "GET /payments",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`;
+
 const COLLECTION_SCHEMA =
   'https://schema.getpostman.com/json/collection/v2.1.0/collection.json';
 
@@ -121,6 +153,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     postmanApiKey: 'pmak-test',
     postmanAccessToken: 'postman-access-token',
     credentialPreflight: 'warn',
+    branchStrategy: 'legacy',
     integrationBackend: 'bifrost',
     folderStrategy: 'Paths',
     nestedFolderHierarchy: false,
@@ -236,7 +269,7 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
       }),
     getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
     getCollection: vi.fn().mockResolvedValue(createGeneratedContractCollection()),
-    getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+    getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31),
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
@@ -444,7 +477,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
@@ -593,15 +626,15 @@ describe('bootstrap action', () => {
           })
         );
         const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8'));
-        expect(resources.cloudResources?.additionalCollections).toMatchObject({
+        expect(resources.canonical?.additionalCollections).toMatchObject({
           '../postman/curated/nested/refunds.yaml': 'col-refunds-created',
           '../postman/curated/payments.json': 'col-payments-existing'
         });
         expect(resources.workspace).toEqual({ id: 'ws-existing' });
-        expect(resources.cloudResources?.specs).toEqual({
+        expect(resources.canonical?.specs).toEqual({
           'spec-url:https://example.test/openapi.yaml': 'spec-existing'
         });
-        expect(resources.cloudResources?.collections).toMatchObject({
+        expect(resources.canonical?.collections).toMatchObject({
           '../postman/collections/core-payments v1': 'col-baseline-existing',
           '../postman/collections/[Smoke] core-payments v1': 'col-smoke-existing',
           '../postman/collections/[Contract] core-payments v1': 'col-contract-existing'
@@ -673,7 +706,7 @@ describe('bootstrap action', () => {
         const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8'));
         expect(resources).toMatchObject({
           workspace: { id: 'ws-existing' },
-          cloudResources: {
+          canonical: {
             specs: {
               '../openapi.yaml': 'spec-existing'
             },
@@ -779,7 +812,7 @@ describe('bootstrap action', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const rootSpec = `openapi: 3.1.0
 info: { title: Test API, version: 1.0.0 }
@@ -854,7 +887,7 @@ paths:
       tagCollection: vi.fn(),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
 
     await expect(
@@ -893,7 +926,7 @@ paths:
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
       injectContractTests: vi.fn().mockResolvedValue([]),
@@ -929,9 +962,80 @@ paths:
     expect(postman.updateSpec).toHaveBeenNthCalledWith(
       2,
       'spec-existing',
-      VALID_SPEC_31,
+      PREVIOUS_SPEC_31,
       'ws-existing'
     );
+  });
+
+  it('skips spec update, version tag, and rollback when existing content hash matches (no-op sync)', async () => {
+    const { core, infos } = createCoreStub();
+    const tagSpecVersion = vi.fn();
+    const postman = createRollbackPostman({
+      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+      tagSpecVersion
+    });
+
+    await runExistingSpecBootstrap(postman, { core });
+
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+    expect(tagSpecVersion).not.toHaveBeenCalled();
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(
+      infos.some((info) => info.includes('Spec content unchanged'))
+    ).toBe(true);
+  });
+
+  it('reports a content-changing canonical publish for repo-sync finalization', async () => {
+    const { core, outputs } = createCoreStub();
+    const tagSpecVersion = vi.fn().mockResolvedValue({ id: 'tag-1', name: 'v1 (deadbee)' });
+    const postman = createRollbackPostman({ tagSpecVersion });
+
+    await runExistingSpecBootstrap(postman, {
+      core,
+      inputs: { githubSha: 'deadbeef0123', releaseLabel: 'v1' }
+    });
+
+    expect(tagSpecVersion).not.toHaveBeenCalled();
+    expect(outputs['spec-content-changed']).toBe('true');
+  });
+
+  it('does not attempt tag conflict handling before repo-sync finalization', async () => {
+    const { core, outputs } = createCoreStub();
+    const conflict = Object.assign(new Error('tag exists'), { status: 409 });
+    const tagSpecVersion = vi.fn().mockRejectedValue(conflict);
+    const listSpecVersionTags = vi.fn().mockResolvedValue([{ id: 'tag-9', name: 'v1 (deadbee)' }]);
+    const postman = createRollbackPostman({ tagSpecVersion, listSpecVersionTags });
+
+    await runExistingSpecBootstrap(postman, {
+      core,
+      inputs: { githubSha: 'deadbeef0123', releaseLabel: 'v1' }
+    });
+
+    expect(listSpecVersionTags).not.toHaveBeenCalled();
+    expect(outputs['spec-version-tag']).toBe('');
+  });
+
+  it('leaves tag conflict handling to repo-sync finalization', async () => {
+    const { core, outputs, warnings } = createCoreStub();
+    const conflict = Object.assign(new Error('tag exists'), { status: 409 });
+    const tagSpecVersion = vi.fn().mockRejectedValue(conflict);
+    const listSpecVersionTags = vi.fn().mockResolvedValue([{ id: 'tag-7', name: 'my hand tag' }]);
+    const postman = createRollbackPostman({ tagSpecVersion, listSpecVersionTags });
+
+    await runExistingSpecBootstrap(postman, { core });
+
+    expect(outputs['spec-version-tag'] ?? '').toBe('');
+    expect(warnings.some((warning) => warning.includes('hand-applied tag'))).toBe(false);
+  });
+
+  it('does not warn about tag failures before repo-sync finalization', async () => {
+    const { core, warnings } = createCoreStub();
+    const tagSpecVersion = vi.fn().mockRejectedValue(new Error('gateway hiccup'));
+    const postman = createRollbackPostman({ tagSpecVersion });
+
+    await runExistingSpecBootstrap(postman, { core });
+
+    expect(warnings.some((warning) => warning.includes('Spec version tagging failed'))).toBe(false);
   });
 
   it('snapshots normalized previous spec content before updating an existing spec', async () => {
@@ -1068,7 +1172,7 @@ paths:
       );
       expect(postman.updateSpec).toHaveBeenLastCalledWith(
         'spec-existing',
-        VALID_SPEC_31,
+        PREVIOUS_SPEC_31,
         'ws-existing'
       );
       expect(postman.updateSpec).toHaveBeenCalledTimes(2);
@@ -1105,7 +1209,7 @@ paths:
     expect(postman.updateSpec).toHaveBeenNthCalledWith(
       2,
       'spec-existing',
-      VALID_SPEC_31,
+      PREVIOUS_SPEC_31,
       'ws-existing'
     );
     expect(postman.generateCollection).not.toHaveBeenCalled();
@@ -1161,7 +1265,7 @@ paths:
       expect(postman.updateSpec).toHaveBeenNthCalledWith(
         3,
         'spec-existing',
-        VALID_SPEC_31,
+        PREVIOUS_SPEC_31,
         'ws-existing'
       );
       expect(outputs).toEqual({});
@@ -1218,7 +1322,7 @@ paths:
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
       injectContractTests: vi.fn().mockResolvedValue([]),
@@ -1312,7 +1416,7 @@ paths:
       generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
       injectContractTests: vi.fn().mockResolvedValue([]),
@@ -1456,7 +1560,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     await runBootstrap(
       createInputs({
@@ -1508,7 +1612,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const result = await runBootstrap(
       createInputs({
@@ -1576,7 +1680,7 @@ paths:
       uploadSpec: vi.fn(),
       updateCollection: vi.fn().mockResolvedValue(undefined),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
 
     await runBootstrap(
@@ -1791,7 +1895,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     mkdirSync('.postman', { recursive: true });
     writeFileSync(
@@ -1864,7 +1968,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-v111'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     await runBootstrap(
       createInputs({
@@ -1909,7 +2013,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-v112'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const result = await runBootstrap(
       createInputs({
@@ -1963,7 +2067,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn(),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     mkdirSync('.postman', { recursive: true });
     writeFileSync(
@@ -2042,7 +2146,7 @@ paths:
         tagCollection: vi.fn().mockResolvedValue(undefined),
         uploadSpec: vi.fn().mockResolvedValue('spec-123'),
         updateSpec: vi.fn().mockResolvedValue(undefined),
-        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+        getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
       };
       const result = await runBootstrap(createInputs(), {
         core,
@@ -2084,7 +2188,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -2128,7 +2232,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockRejectedValue(new Error('gateway 404')),
@@ -2189,7 +2293,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
@@ -2241,7 +2345,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -2286,7 +2390,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-v2'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const resources = {
       workspace: { id: 'ws-current' },
@@ -2352,7 +2456,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-v2'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -2401,7 +2505,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
 
     const result = await runBootstrap(createInputs(), {
@@ -2440,7 +2544,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
 
     const result = await runBootstrap(
@@ -2686,7 +2790,7 @@ paths:
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
 
     await runBootstrap(
@@ -2761,7 +2865,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
@@ -2806,7 +2910,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const internalIntegration = {
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
@@ -2866,7 +2970,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
@@ -2905,7 +3009,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
@@ -2942,7 +3046,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
@@ -2985,7 +3089,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
@@ -3032,7 +3136,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
@@ -3075,7 +3179,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
@@ -3121,7 +3225,7 @@ describe('lintSpecViaCli', () => {
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })

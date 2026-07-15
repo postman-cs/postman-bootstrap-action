@@ -250,6 +250,21 @@ export class PostmanGatewayAssetsClient {
     if (openapiVersion !== '3.0' && openapiVersion !== '3.1') {
       throw new Error(`uploadSpec: unsupported openapiVersion "${openapiVersion}". Expected '3.0' or '3.1'.`);
     }
+    // Resolution-layer idempotency: an absent tracked state must not mean a
+    // blind create. Exact final-name lookup adopts one match, fails loudly on
+    // ambiguity, and only then enters the randomized-create race guard.
+    const before = await this.findSpecificationsByExactName(workspaceId, projectName);
+    const existing = adoptExactMatch(
+      `specification:${workspaceId}:${projectName}`,
+      before,
+      (entry) => entry.id
+    );
+    if (existing) {
+      // Adoption is resolution, not success: a same-identity spec from a prior
+      // run still needs the incoming content before collection generation.
+      await this.updateSpec(existing.id, specContent, workspaceId);
+      return existing.id;
+    }
     const specType = openapiVersion === '3.1' ? 'OPENAPI:3.1' : 'OPENAPI:3.0';
     let created: JsonRecord | null;
     try {
@@ -274,9 +289,60 @@ export class PostmanGatewayAssetsClient {
       if (!match) throw error;
       created = { data: { id: match.id } };
     }
-    const specId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
+    let specId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
     if (!specId) {
       throw new Error('Spec upload did not return an ID');
+    }
+    // A concurrent same-identity create may have won between lookup and POST.
+    // Re-list before proceeding so a duplicate is never silently retained.
+    let matches = await this.findSpecificationsByExactName(workspaceId, projectName);
+    if (before.length === 0 && matches.length <= 1) {
+      // Cross-run creates become list-visible slightly after their POST returns.
+      // Give the identity index one bounded settle window before treating a
+      // singleton as final; otherwise a runner can start generation on a spec a
+      // peer is about to classify as the losing duplicate and delete.
+      await this.sleep(1000);
+      const settled = await this.findSpecificationsByExactName(workspaceId, projectName);
+      if (settled.length > 0) matches = settled;
+    }
+    if (matches.length > 1 && before.length === 0) {
+      // Two runners can both observe zero then POST. Every exact match is new in
+      // this create window, so elect the stable lowest id and delete only the
+      // concurrently appeared losers. Both runners elect the same winner; 404
+      // during duplicate cleanup means the peer already removed it.
+      for (const duplicate of matches.slice(1)) {
+        try {
+          await this.deleteSpecification(duplicate.id);
+        } catch (error) {
+          if (!(error instanceof HttpError && error.status === 404)) throw error;
+        }
+      }
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        matches = await this.findSpecificationsByExactName(workspaceId, projectName);
+        if (matches.length <= 1) break;
+        await this.sleep(250 * (attempt + 1));
+      }
+      const converged = adoptExactMatch(
+        `specification:${workspaceId}:${projectName}`,
+        matches,
+        (entry) => entry.id
+      );
+      if (!converged) {
+        throw new Error(`Concurrent specification create for ${projectName} did not converge`);
+      }
+      specId = converged.id;
+      // The winner may have been created by the peer. Last writer wins for the
+      // same branch identity, which is safe and ensures this run's content lands.
+      if (specId !== String(asRecord(created?.data)?.id ?? created?.id ?? '').trim()) {
+        await this.updateSpec(specId, specContent, workspaceId);
+      }
+    } else {
+      const verified = adoptExactMatch(
+        `specification:${workspaceId}:${projectName}`,
+        matches,
+        (entry) => entry.id
+      );
+      if (verified) specId = verified.id;
     }
     // Preflight the read so a generate immediately after create does not race.
     await this.gateway.requestJson<JsonRecord>({
@@ -285,6 +351,15 @@ export class PostmanGatewayAssetsClient {
       path: `/specifications/${specId}`
     });
     return specId;
+  }
+
+  private async deleteSpecification(specId: string): Promise<void> {
+    await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'delete',
+      path: `/specifications/${specId}`,
+      retry: 'none'
+    });
   }
 
   async findSpecificationsByExactName(
@@ -361,6 +436,47 @@ export class PostmanGatewayAssetsClient {
     }
   }
 
+  /**
+   * Native Spec Hub version tags (branch-aware sync P3.5). Tags attach to the
+   * LATEST changelog group; the backend 409s when that group is already tagged
+   * (VersionControlService). Callers handle 409 as idempotent-by-group.
+   */
+  async tagSpecVersion(specId: string, name: string): Promise<{ id: string; name: string }> {
+    const trimmed = name.trim().slice(0, 255);
+    const created = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'post',
+      path: `/specifications/${specId}/tags`,
+      retry: 'none',
+      body: { name: trimmed }
+    });
+    const record = asRecord(created?.data) ?? created ?? {};
+    return {
+      id: String(record.id ?? '').trim(),
+      name: String(record.name ?? trimmed).trim()
+    };
+  }
+
+  /** List a spec's native version tags (newest first per backend ordering). */
+  async listSpecVersionTags(specId: string): Promise<Array<{ id: string; name: string }>> {
+    const response = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'get',
+      path: `/specifications/${specId}/tags`,
+      query: { limit: '50' }
+    });
+    const entries = Array.isArray(response?.data) ? (response.data as JsonRecord[]) : [];
+    return entries
+      .map((value) => asRecord(value))
+      .filter((value): value is JsonRecord => value !== null)
+      .map((value) => ({
+        id: String(value.id ?? '').trim(),
+        // listTags returns `message`; createTag returns `name`. Accept both.
+        name: String(value.name ?? value.message ?? '').trim()
+      }))
+      .filter((value) => value.id || value.name);
+  }
+
   /** Resolve a specification's ROOT file uuid via the files list. */
   private async resolveRootFileId(specId: string): Promise<string> {
     const files = await this.gateway.requestJson<JsonRecord>({
@@ -392,83 +508,224 @@ export class PostmanGatewayAssetsClient {
     requestNameSource: string
   ): Promise<string> {
     const name = [prefix.trim(), projectName.trim()].filter(Boolean).join(' ');
-    const submittedName = `${name} [bootstrap:${this.createIdentity()}]`;
-    const body = {
-      name: submittedName,
-      options: {
-        requestNameSource,
-        folderStrategy,
-        ...(folderStrategy === 'Tags' ? { nestedFolderHierarchy } : {})
-      }
-    };
-
     const before = await this.listGeneratedCollectionRefs(specId);
-    let taskId: string;
-    try {
-      taskId = await this.postGenerationWithLockRetry(specId, body);
-    } catch (error) {
-      if (!isAmbiguousTransportError(error)) throw error;
+    // A completed prior run has already renamed its generated collection to the
+    // final identity. Adopt exactly one such collection before asking Spec Hub
+    // to generate again; ambiguity is a hard safety failure.
+    const existing = adoptExactMatch(
+      `generated-collection:${specId}:${name}`,
+      await this.filterGeneratedCollectionsByExactName(before, name),
+      (entry) => entry.id
+    );
+    if (existing) return this.convergeGeneratedCollections(specId, name, existing.id);
+
+    // Spec Hub collection-generation tasks occasionally fail under load; one
+    // full re-POST with a fresh temp name absorbs that flake without masking
+    // durable contract errors.
+    let lastError: Error | undefined;
+    for (let taskAttempt = 0; taskAttempt < 2; taskAttempt += 1) {
+      const submittedName = `${name} [bootstrap:${this.createIdentity()}]`;
+      const body = {
+        name: submittedName,
+        options: {
+          requestNameSource,
+          folderStrategy,
+          ...(folderStrategy === 'Tags' ? { nestedFolderHierarchy } : {})
+        }
+      };
+      let taskId: string;
+      try {
+        const generation = await this.postGenerationWithLockRetry(specId, body, name);
+        if (generation.adoptedId) {
+          return this.convergeGeneratedCollections(specId, name, generation.adoptedId);
+        }
+        taskId = generation.taskId ?? '';
+      } catch (error) {
+        if (!isAmbiguousTransportError(error)) throw error;
+        const beforeIds = new Set(before.map((entry) => entry.id));
+        const appeared = (await this.listGeneratedCollectionRefs(specId)).filter(
+          (entry) => !beforeIds.has(entry.id)
+        );
+        const exactAppeared = await this.filterGeneratedCollectionsByExactName(
+          appeared,
+          submittedName
+        );
+        const match = adoptExactMatch(
+          `generated-collection:${specId}:${submittedName}`,
+          exactAppeared,
+          (entry) => entry.id
+        );
+        if (!match) throw error;
+        await this.renameGeneratedCollection(match.id, name);
+        return this.convergeGeneratedCollections(specId, name, match.id);
+      }
+
+      let taskFailed = false;
+      if (taskId) {
+        for (let attempt = 0; attempt < this.generationPollAttempts; attempt += 1) {
+          await this.sleep(this.generationPollDelayMs);
+          const task = await this.gateway.requestJson<JsonRecord>({
+            service: 'specification',
+            method: 'get',
+            path: '/tasks',
+            query: { entityId: specId, entityType: 'specification', type: 'collection-generation' }
+          });
+          const status = String(asRecord(task?.data)?.[taskId] ?? '').toLowerCase();
+          if (status === 'failed' || status === 'error') {
+            taskFailed = true;
+            lastError = new Error(`Collection generation task failed for ${prefix}`);
+            break;
+          }
+          if (status && status !== 'in-progress' && status !== 'pending' && status !== 'queued') {
+            break;
+          }
+          if (attempt === this.generationPollAttempts - 1) {
+            throw new Error(`Collection generation timed out for ${prefix}`);
+          }
+        }
+      }
+      if (taskFailed) {
+        await this.sleep(1000 * (taskAttempt + 1));
+        continue;
+      }
+
       const beforeIds = new Set(before.map((entry) => entry.id));
-      const appeared = (await this.listGeneratedCollectionRefs(specId)).filter(
-        (entry) => !beforeIds.has(entry.id)
-      );
-      const exactAppeared = await this.filterGeneratedCollectionsByExactName(
+      const after = await this.listGeneratedCollectionRefs(specId);
+      const appeared = after.filter((entry) => !beforeIds.has(entry.id));
+      const candidates = await this.filterGeneratedCollectionsByExactName(
         appeared,
         submittedName
       );
-      const match = adoptExactMatch(
+      const uid = adoptExactMatch(
         `generated-collection:${specId}:${submittedName}`,
-        exactAppeared,
+        candidates,
         (entry) => entry.id
+      )?.id;
+      if (!uid) {
+        throw new Error(`Collection generation did not yield a collection uid for ${prefix}`);
+      }
+      await this.renameGeneratedCollection(uid, name);
+      return this.convergeGeneratedCollections(specId, name, uid);
+    }
+    throw lastError ?? new Error(`Collection generation task failed for ${prefix}`);
+  }
+
+  /**
+   * Re-elect the durable generated collection for a final name. Call after
+   * concurrent dual-trigger generates and before description/inject/tag so a
+   * peer orphan-sweep cannot leave this runner holding a deleted id.
+   */
+  async adoptGeneratedCollection(
+    specId: string,
+    projectName: string,
+    prefix: string,
+    preferredId = ''
+  ): Promise<string> {
+    const name = [prefix.trim(), projectName.trim()].filter(Boolean).join(' ');
+    return this.convergeGeneratedCollections(specId, name, preferredId);
+  }
+
+  /**
+   * Concurrent dual-trigger previews can each generate+rename the same final
+   * collection identity. Elect the stable lowest-id winner.
+   *
+   * Losers only delete *their own* preferred collection (never a peer's still-
+   * in-use id). Winners wait briefly for peers to self-delete, then clean any
+   * leftover same-identity orphans (temps + extra finals).
+   */
+  private async convergeGeneratedCollections(
+    specId: string,
+    finalName: string,
+    preferredId: string
+  ): Promise<string> {
+    const tempPrefix = `${finalName} [bootstrap:`;
+    const hydrate = async () => {
+      const linked = await this.listGeneratedCollectionRefs(specId);
+      return Promise.all(
+        linked.map(async (entry) => {
+          if (entry.name) return { id: entry.id, name: entry.name };
+          try {
+            const collection = await this.gateway.requestJson<JsonRecord>({
+              service: 'collection',
+              method: 'get',
+              path: `/v3/collections/${this.bareModelId(entry.id)}`
+            });
+            return {
+              id: entry.id,
+              name: String(asRecord(collection?.data)?.name ?? '').trim()
+            };
+          } catch (error) {
+            if (error instanceof HttpError && error.status === 404) {
+              return { id: entry.id, name: '' };
+            }
+            throw error;
+          }
+        })
       );
-      if (!match) throw error;
-      await this.renameGeneratedCollection(match.id, name);
-      return match.id;
+    };
+
+    const selectSameIdentity = (
+      entries: Array<{ id: string; name: string }>
+    ) =>
+      entries
+        .filter(
+          (entry) =>
+            entry.name === finalName || entry.name.startsWith(tempPrefix)
+        )
+        .sort((a, b) => a.id.localeCompare(b.id));
+
+    let sameIdentity = selectSameIdentity(await hydrate());
+    if (sameIdentity.length === 0) return preferredId;
+
+    // Solo observation is not final under dual-trigger: a peer may still be
+    // renaming its temp into this identity. One short settle catches that.
+    if (sameIdentity.length === 1) {
+      await this.sleep(1000);
+      sameIdentity = selectSameIdentity(await hydrate());
+      if (sameIdentity.length === 0) return preferredId;
     }
 
-    if (taskId) {
-      for (let attempt = 0; attempt < this.generationPollAttempts; attempt += 1) {
-        await this.sleep(this.generationPollDelayMs);
-        const task = await this.gateway.requestJson<JsonRecord>({
-          service: 'specification',
-          method: 'get',
-          path: '/tasks',
-          query: { entityId: specId, entityType: 'specification', type: 'collection-generation' }
-        });
-        const status = String(asRecord(task?.data)?.[taskId] ?? '').toLowerCase();
-        if (status === 'failed' || status === 'error') {
-          throw new Error(`Collection generation task failed for ${prefix}`);
+    const winner = sameIdentity[0];
+    if (winner.name !== finalName) {
+      await this.renameGeneratedCollection(winner.id, finalName);
+    }
+
+    if (preferredId && preferredId !== winner.id) {
+      // We lost the election: drop only our own collection so a peer still
+      // injecting/tagging its preferred id is not deleted out from under it.
+      const own = sameIdentity.find((entry) => entry.id === preferredId);
+      if (own) {
+        try {
+          await this.deleteCollection(preferredId);
+        } catch (error) {
+          if (!(error instanceof HttpError && error.status === 404)) throw error;
         }
-        if (status && status !== 'in-progress' && status !== 'pending' && status !== 'queued') {
-          break;
-        }
-        if (attempt === this.generationPollAttempts - 1) {
-          throw new Error(`Collection generation timed out for ${prefix}`);
+      }
+      return winner.id;
+    }
+
+    // We won. Give peers a beat to self-delete, then sweep remaining orphans.
+    if (sameIdentity.length > 1) {
+      await this.sleep(1500);
+      sameIdentity = selectSameIdentity(await hydrate());
+      for (const duplicate of sameIdentity) {
+        if (duplicate.id === winner.id) continue;
+        try {
+          await this.deleteCollection(duplicate.id);
+        } catch (error) {
+          if (!(error instanceof HttpError && error.status === 404)) throw error;
         }
       }
     }
-
-    const beforeIds = new Set(before.map((entry) => entry.id));
-    const after = await this.listGeneratedCollectionRefs(specId);
-    const appeared = after.filter((entry) => !beforeIds.has(entry.id));
-    const candidates = await this.filterGeneratedCollectionsByExactName(
-      appeared,
-      submittedName
-    );
-    const uid = adoptExactMatch(
-      `generated-collection:${specId}:${submittedName}`,
-      candidates,
-      (entry) => entry.id
-    )?.id;
-    if (!uid) {
-      throw new Error(`Collection generation did not yield a collection uid for ${prefix}`);
-    }
-    await this.renameGeneratedCollection(uid, name);
-    return uid;
+    return winner.id;
   }
 
   /** POST the generation request, retrying a 423-locked spec; returns the task id. */
-  private async postGenerationWithLockRetry(specId: string, body: unknown): Promise<string> {
+  private async postGenerationWithLockRetry(
+    specId: string,
+    body: unknown,
+    finalName: string
+  ): Promise<{ taskId?: string; adoptedId?: string }> {
     for (let lockedAttempt = 0; ; lockedAttempt += 1) {
       try {
         const created = await this.gateway.requestJson<JsonRecord>({
@@ -478,13 +735,22 @@ export class PostmanGatewayAssetsClient {
           retry: 'none',
           body
         });
-        return String(asRecord(created?.data)?.taskId ?? '').trim();
+        return { taskId: String(asRecord(created?.data)?.taskId ?? '').trim() };
       } catch (error) {
         const locked = error instanceof HttpError && error.status === 423;
         if (!locked || lockedAttempt >= PostmanGatewayAssetsClient.GENERATION_LOCKED_MAX_RETRIES) {
           throw error;
         }
         await this.sleep(5000 * Math.pow(2, lockedAttempt));
+        const adopted = adoptExactMatch(
+          `generated-collection:${specId}:${finalName}`,
+          await this.filterGeneratedCollectionsByExactName(
+            await this.listGeneratedCollectionRefs(specId),
+            finalName
+          ),
+          (entry) => entry.id
+        );
+        if (adopted) return { adoptedId: adopted.id };
       }
     }
   }
@@ -529,14 +795,29 @@ export class PostmanGatewayAssetsClient {
   }
 
   private async renameGeneratedCollection(collectionId: string, name: string): Promise<void> {
-    await this.gateway.requestJson<JsonRecord>({
-      service: 'collection',
-      method: 'patch',
-      path: `/v3/collections/${this.bareModelId(collectionId)}`,
-      // Replacing a generated collection's name with the same value is idempotent.
-      retry: 'safe',
-      body: [{ op: 'replace', path: '/name', value: name }]
-    });
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'patch',
+        path: `/v3/collections/${this.bareModelId(collectionId)}`,
+        // Replacing a generated collection's name with the same value is idempotent.
+        retry: 'safe',
+        body: [{ op: 'replace', path: '/name', value: name }]
+      });
+    } catch (error) {
+      // Eventual list consistency can make converge re-issue the final rename
+      // after the name is already correct; treat no-op patch as success.
+      if (
+        error instanceof HttpError &&
+        error.status === 400 &&
+        /must update at least one|REJECTED_PATCH/i.test(
+          `${error.message}\n${error.responseBody ?? ''}`
+        )
+      ) {
+        return;
+      }
+      throw error;
+    }
   }
 
   /**
@@ -856,10 +1137,13 @@ export class PostmanGatewayAssetsClient {
     if (normalized.length === 0) {
       throw new Error(`No valid tag slugs to apply for collection ${collectionUid}`);
     }
+    // PUT is idempotent (replace tag set). Concurrent dual-trigger previews can
+    // race the tagging service into transient 500s; safe-retry absorbs those.
     await this.gateway.requestJson<JsonRecord>({
       service: 'tagging',
       method: 'put',
       path: `/v1/tags/collections/${collectionUid}`,
+      retry: 'safe',
       body: { tags: normalized.map((slug) => ({ slug })) }
     });
   }
@@ -1584,6 +1868,15 @@ export class PostmanGatewayAssetsClient {
     // description on the POST body makes a later add /description a no-op that
     // can 400 when the patch set is otherwise empty or redundant.
     const desiredName = String(v3.name ?? 'Untitled Collection');
+    const existing = adoptExactMatch(
+      `collection:${workspaceId}:${desiredName}`,
+      await this.findCollectionsByExactName(workspaceId, desiredName),
+      (entry) => entry.id
+    );
+    if (existing) {
+      await this.updateCollection(existing.id, collection);
+      return existing.id;
+    }
     const submittedName = `${desiredName} [bootstrap:${this.createIdentity()}]`;
     const rootBody: JsonRecord = { name: submittedName };
     let created: JsonRecord | null;
@@ -1636,6 +1929,11 @@ export class PostmanGatewayAssetsClient {
       throw error;
     }
     return rawId;
+  }
+
+  /** Patch only the durable collection description without reconciling its item tree. */
+  async updateCollectionDescription(collectionUid: string, description: string): Promise<void> {
+    await this.applyCollectionLevelSettings(this.bareModelId(collectionUid), { description });
   }
 
   /**

@@ -9,3 +9,4 @@ integration/.work/
 
 # e2e harness bundle-cache marker (written by onboarding-e2e global-setup)
 dist/.e2e-build-hash
+tmp/

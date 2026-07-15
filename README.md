@@ -197,6 +197,9 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `postman-api-key` | Postman service-account API key (PMAK). With a postman-access-token present, the PMAK is used ONLY to mint/re-mint the access token and to log in the Postman CLI for `spec lint` — never for an asset operation. When the key is absent, the CLI spec lint is skipped (governance errors are not enforced). Optional. | no |  |
 | `postman-access-token` | Postman service-account access token (x-access-token). Primary credential — every asset operation (workspace create/visibility, spec upload/update, collection generation/read/mutation, test injection, tagging, team-scope) runs through the access-token gateway. Mint it with postman-resolve-service-token-action. Optional only for legacy PMAK-only runs; supply it for the gateway path. | no |  |
 | `credential-preflight` | Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created. | no | `warn` |
+| `branch-strategy` | Branch-aware sync strategy. legacy (default) keeps branch-blind behavior; publish-gate restricts canonical writes to the canonical branch and runs credential-free static validation on other branches; preview additionally maintains suffixed per-branch preview asset sets. | no | `legacy` |
+| `canonical-branch` | Explicit canonical branch (the sole writer of canonical assets). Defaults to the provider-resolved default branch; required on providers without a default-branch variable (Bitbucket, Azure DevOps) when branch-strategy is not legacy. | no |  |
+| `channels` | Comma-separated channel map for long-lived promotion branches, e.g. "develop=DEV, staging=STAGE, release/*=RC". Channel branches maintain prefix-named parallel asset sets and never mutate canonical assets. | no |  |
 | `folder-strategy` | Folder organization strategy for generated collections (Paths or Tags) | no | `Paths` |
 | `nested-folder-hierarchy` | When folder-strategy is Tags, enables nested folder hierarchy | no | `false` |
 | `request-name-source` | Determines how requests are named in generated collections (Fallback or URL) | no | `Fallback` |
@@ -219,6 +222,11 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `lint-summary-json` | JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }. | n/a | n/a |
 | `breaking-change-status` | OpenAPI breaking-change check status | n/a | n/a |
 | `breaking-change-summary-json` | JSON summary of the OpenAPI breaking-change check | n/a | n/a |
+| `sync-status` | Branch-aware sync status: synced, skipped-branch-gate, or empty under branch-strategy legacy. | n/a | n/a |
+| `branch-decision` | Serialized BranchDecision JSON for downstream actions (also exported as POSTMAN_BRANCH_DECISION). | n/a | n/a |
+| `spec-version-tag` | Native Spec Hub version tag applied on this canonical publish (tag-per-publish), empty when tagging was skipped (no-op sync, non-canonical run, or legacy client). | n/a | n/a |
+| `spec-version-url` | Reserved for the repo-sync finalizer; bootstrap does not tag before complete onboarding. | n/a | n/a |
+| `spec-content-changed` | Whether bootstrap changed canonical spec content; repo-sync uses this to skip native version tags on no-op syncs. | n/a | n/a |
 <!-- outputs-table:end -->
 
 Regenerate both tables from `action.yml` with `npm run docs:tables`.

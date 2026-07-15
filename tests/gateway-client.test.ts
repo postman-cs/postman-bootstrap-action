@@ -345,6 +345,20 @@ describe('AccessTokenGatewayClient', () => {
     });
   });
 
+  it('passes a bodyless 204 delete through without crashing the Response rebuild', async () => {
+    // Regression: new Response('', { status: 204 }) throws "Invalid response
+    // status code 204" — a drained 204 must be rebuilt with a null body.
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const provider = new AccessTokenProvider({ accessToken: 'tok' });
+    const client = new AccessTokenGatewayClient({ tokenProvider: provider, fetchImpl });
+
+    await expect(
+      client.requestJson({ service: 'collection', method: 'delete', path: '/v3/collections/x' })
+    ).resolves.toBeNull();
+  });
+
   describe('inner Bifrost envelope errors on HTTP 200', () => {
     it('treats a 200 wrapping an inner error envelope as a failure and throws', async () => {
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(

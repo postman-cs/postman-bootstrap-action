@@ -69,7 +69,9 @@ describe('PostmanGatewayAssetsClient', () => {
       const id = await client.uploadSpec('ws-9', 'Telecom API', 'openapi: 3.0.3', '3.0');
       expect(id).toBe('spec-1');
 
-      const create = calls[0];
+      const create = calls.find((call) => call.method === 'post');
+      expect(create).toBeDefined();
+      if (!create) throw new Error('spec create request was not made');
       expect(create.service).toBe('specification');
       expect(create.method).toBe('post');
       expect(create.path).toBe('/specifications?containerType=workspace&containerId=ws-9');
@@ -77,7 +79,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(body.type).toBe('OPENAPI:3.0');
       expect(body.files[0]).toMatchObject({ path: 'index.yaml', type: 'ROOT', content: 'openapi: 3.0.3' });
       // preflight GET happened
-      expect(calls[1]).toMatchObject({ service: 'specification', method: 'get', path: '/specifications/spec-1' });
+      expect(calls.at(-1)).toMatchObject({ service: 'specification', method: 'get', path: '/specifications/spec-1' });
     });
 
     it('maps 3.1 to OPENAPI:3.1 and rejects unsupported versions', async () => {
@@ -89,6 +91,87 @@ describe('PostmanGatewayAssetsClient', () => {
     it('throws when create returns no id', async () => {
       const { client } = makeClient(() => jsonResponse({ data: {} }));
       await expect(client.uploadSpec('ws', 'n', 'x')).rejects.toThrow(/did not return an ID/);
+    });
+
+    it('elects one winner and removes concurrently created duplicate specs', async () => {
+      let listCalls = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          listCalls += 1;
+          if (listCalls === 1) return jsonResponse({ data: [] });
+          if (listCalls === 2) {
+            return jsonResponse({
+              data: [
+                { id: 'spec-a', name: 'Payments' },
+                { id: 'spec-b', name: 'Payments' }
+              ]
+            });
+          }
+          return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
+        }
+        if (env.method === 'post') return jsonResponse({ data: { id: 'spec-b' } });
+        if (env.method === 'delete') return jsonResponse({ data: { id: 'spec-b' } });
+        if (env.path === '/specifications/spec-a/files') {
+          return jsonResponse({ data: [{ id: 'root-a', type: 'ROOT' }] });
+        }
+        if (env.method === 'patch') return jsonResponse({ data: { id: 'root-a' } });
+        return jsonResponse({ data: { id: 'spec-a' } });
+      });
+
+      await expect(
+        client.uploadSpec('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
+      ).resolves.toBe('spec-a');
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          service: 'specification',
+          method: 'delete',
+          path: '/specifications/spec-b'
+        })
+      );
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          service: 'specification',
+          method: 'patch',
+          path: '/specifications/spec-a/files/root-a'
+        })
+      );
+    });
+
+    it('waits for a delayed concurrent spec to become list-visible before generation', async () => {
+      let listCalls = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          listCalls += 1;
+          if (listCalls === 1) return jsonResponse({ data: [] });
+          if (listCalls === 2) {
+            return jsonResponse({ data: [{ id: 'spec-b', name: 'Payments' }] });
+          }
+          if (listCalls === 3) {
+            return jsonResponse({
+              data: [
+                { id: 'spec-a', name: 'Payments' },
+                { id: 'spec-b', name: 'Payments' }
+              ]
+            });
+          }
+          return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
+        }
+        if (env.method === 'post') return jsonResponse({ data: { id: 'spec-b' } });
+        if (env.method === 'delete') return jsonResponse({ data: { id: 'spec-b' } });
+        if (env.path === '/specifications/spec-a/files') {
+          return jsonResponse({ data: [{ id: 'root-a', type: 'ROOT' }] });
+        }
+        if (env.method === 'patch') return jsonResponse({ data: { id: 'root-a' } });
+        return jsonResponse({ data: { id: 'spec-a' } });
+      });
+
+      await expect(
+        client.uploadSpec('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
+      ).resolves.toBe('spec-a');
+      expect(listCalls).toBeGreaterThanOrEqual(4);
+      expect(calls).toContainEqual(
+        expect.objectContaining({ method: 'delete', path: '/specifications/spec-b' })
+      );
     });
   });
 
@@ -155,7 +238,8 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       await expect(client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', true, 'Fallback')).resolves.toBe('owner-collection-1');
-      expect(renameAttempts).toBe(2);
+      // 2 for the initial rename (1 fail + 1 retry), plus converge may rename again.
+      expect(renameAttempts).toBeGreaterThanOrEqual(2);
     });
 
     it('retries a 423-locked generate then succeeds', async () => {
@@ -174,6 +258,73 @@ describe('PostmanGatewayAssetsClient', () => {
       const uid = await client.generateCollection('spec-1', 'P', '[Contract]', 'Tags', false, 'Fallback');
       expect(uid).toBe('uid-R');
       expect(attempts).toBe(2);
+    });
+
+    it('adopts a peer-generated final collection after a 423 lock', async () => {
+      let listCalls = 0;
+      let posts = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path.endsWith('/collections')) {
+          posts += 1;
+          return jsonResponse({ error: 'locked' }, { status: 423 });
+        }
+        if (env.method === 'get' && env.path.endsWith('/collections')) {
+          listCalls += 1;
+          return jsonResponse({
+            data:
+              listCalls === 1
+                ? []
+                : [{ collection: 'uid-peer', name: '[Smoke] P' }]
+          });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', false, 'Fallback')
+      ).resolves.toBe('uid-peer');
+      expect(posts).toBe(1);
+    });
+
+    it('deletes concurrent same-identity generated collections after rename', async () => {
+      let posted = false;
+      const deleted = new Set<string>();
+      const ours = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const peerFinal = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const peerTemp = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+      let oursName = '[Smoke] P [bootstrap:test-run]';
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path.endsWith('/collections')) {
+          posted = true;
+          return jsonResponse({ data: { taskId: 't' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { t: 'completed' } });
+        if (env.method === 'delete' && env.path.startsWith('/v3/collections/')) {
+          deleted.add(env.path.split('/').pop() || '');
+          return jsonResponse({ data: { id: 'gone' } });
+        }
+        if (env.method === 'patch' && env.path.includes(ours)) {
+          oursName = '[Smoke] P';
+          return jsonResponse({ data: { id: ours } });
+        }
+        if (env.method === 'get' && env.path.endsWith('/collections')) {
+          if (!posted) return jsonResponse({ data: [] });
+          return jsonResponse({
+            data: [
+              { collection: peerFinal, name: '[Smoke] P' },
+              { collection: ours, name: oursName },
+              { collection: peerTemp, name: '[Smoke] P [bootstrap:peer]' }
+            ].filter((entry) => !deleted.has(entry.collection))
+          });
+        }
+        if (env.method === 'patch') return jsonResponse({ data: { id: ours } });
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(ours);
+      expect([...deleted]).toEqual(expect.arrayContaining([peerFinal, peerTemp]));
     });
 
     it('throws when the generation task reports failure', async () => {
@@ -644,7 +795,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const id = await client.createCollection('ws-1', v21);
       expect(id).toBe('55363555-root-uid');
 
-      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      const rootCreate = calls.find((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='));
       expect(rootCreate).toMatchObject({ headers: expect.objectContaining({ 'x-entity-target': 'http' }), body: { name: 'Curated [bootstrap:test-run]' } });
 
       const folderCreate = calls.find(
@@ -706,7 +857,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const id = await client.createCollection('ws-1', v3);
 
       expect(id).toBe('55363555-root-v3');
-      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      const rootCreate = calls.find((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='));
       expect(rootCreate?.body).toEqual({ name: 'Curated v3 [bootstrap:test-run]' });
 
       const itemCreate = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/55363555-root-v3/items/');
@@ -762,7 +913,7 @@ describe('PostmanGatewayAssetsClient', () => {
         items: []
       });
 
-      const rootCreate = calls.find((c) => c.path.startsWith('/v3/collections/?workspace='));
+      const rootCreate = calls.find((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='));
       expect(rootCreate?.body).toEqual({ name: 'Description only [bootstrap:test-run]' });
 
       const rootPatch = calls.find((c) => c.path === '/v3/collections/root-desc');

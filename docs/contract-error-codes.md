@@ -24,6 +24,7 @@ These codes fail the run.
 | `CONTRACT_SPEC_PARSE_FAILED` | The fetched document was not valid JSON/YAML object content. | Fix the source document syntax. |
 | `CONTRACT_SPEC_READ_FAILED` | The `spec-path` file could not be read from the workspace. | Verify the file exists at the configured path and that the workflow checked out the branch that contains it. |
 | `CONTRACT_SPEC_VALIDATION_FAILED` | The bundled document failed OpenAPI validation. | Fix [OpenAPI validation](https://learning.postman.com/docs/design-apis/specifications/validate-a-specification/) errors. |
+| `CONTRACT_OAS30_TYPE_NULL_UNSUPPORTED` | The opt-in OpenAPI 3.0 compatibility mode found `type: null` outside a two-member `oneOf` containing one normal schema and one null-only schema. | Use the supported nullable pair or leave the compatibility mode disabled and provide a valid OpenAPI 3.0 document. |
 | `CONTRACT_UNSUPPORTED_OPENAPI_VERSION` | The document was not OpenAPI 3.0 or 3.1. | Provide an OpenAPI 3.0/3.1 document. |
 
 

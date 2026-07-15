@@ -304,7 +304,7 @@ components:
           oneOf:
             - type: string
               format: date
-            - type: null
+            - type: 'null'
 `;
       writeSpec('apis/svc/nullable.yaml', source);
 

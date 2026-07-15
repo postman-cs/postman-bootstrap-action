@@ -82,7 +82,7 @@ inputs:
     required: false
     default: ''
   preserve-oas30-type-null:
-    description: Opt-in compatibility mode for legacy OpenAPI 3.0 oneOf schemas that pair a normal schema with type null. The original source bytes are uploaded unchanged while an internal nullable view is used for validation and generated artifacts.
+    description: 'Opt-in compatibility mode for OpenAPI 3.0 oneOf schemas that pair one normal schema with a null-only member. The action uploads the original source bytes unchanged and uses an internal nullable true view for validation and generated artifacts. All unrelated validation and lint errors remain enforced.'
     required: false
     default: 'false'
   breaking-change-mode:

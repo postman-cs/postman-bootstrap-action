@@ -654,7 +654,7 @@ components:
         value:
           oneOf:
             - type: string
-            - type: null
+            - type: 'null'
 `;
     const postman = createRollbackPostman({
       uploadSpec: vi.fn().mockResolvedValue('spec-nullable')

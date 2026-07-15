@@ -44,6 +44,12 @@ import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-clie
 import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
 import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
 import {
+  applyWorkspaceSections,
+  createWorkspacePanelsClient,
+  shouldApplySections,
+  type WorkspacePanelsClient
+} from './lib/postman/workspace-panels-client.js';
+import {
   AccessTokenProvider,
   mintAccessTokenIfNeeded as mintAccessTokenWithDiagnostics
 } from './lib/postman/token-provider.js';
@@ -126,6 +132,8 @@ export interface ResolvedInputs {
   branchStrategy: BranchStrategy;
   canonicalBranch?: string;
   channels?: string;
+  /** Cosmetic workspace Sections grouping. auto|off; default off. Never fails sync. */
+  sections: 'auto' | 'off';
 }
 
 export interface PlannedOutputs {
@@ -242,6 +250,8 @@ export interface BootstrapExecutionDependencies {
     read(): PostmanResourcesState | null;
     write(state: PostmanResourcesState): void;
   };
+  /** Cosmetic Sections client; absent or sections=off → no panel calls. */
+  panels?: WorkspacePanelsClient;
   specFetcher: typeof fetch;
 }
 
@@ -511,7 +521,8 @@ export function resolveInputs(
       'legacy'
     ),
     canonicalBranch: getInput('canonical-branch', env),
-    channels: getInput('channels', env)
+    channels: getInput('channels', env),
+    sections: parseEnumInput<'auto' | 'off'>('sections', getInput('sections', env), 'off')
   };
 }
 
@@ -2633,6 +2644,39 @@ async function runBootstrapInner(
     throw error;
   }
 
+  // Cosmetic Sections (panels): fail-open grouping only. Never fails the sync.
+  if (
+    dependencies.panels &&
+    shouldApplySections(inputs.sections, branchDecision.tier) &&
+    outputs['workspace-id']
+  ) {
+    const elements = [
+      outputs['spec-id']
+        ? { elementType: 'specification' as const, elementId: outputs['spec-id'] }
+        : null,
+      outputs['baseline-collection-id']
+        ? { elementType: 'collection' as const, elementId: outputs['baseline-collection-id'] }
+        : null,
+      outputs['smoke-collection-id']
+        ? { elementType: 'collection' as const, elementId: outputs['smoke-collection-id'] }
+        : null,
+      outputs['contract-collection-id']
+        ? { elementType: 'collection' as const, elementId: outputs['contract-collection-id'] }
+        : null
+    ].filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    await applyWorkspaceSections({
+      mode: inputs.sections,
+      workspaceId: outputs['workspace-id'],
+      decision: branchDecision,
+      elements,
+      client: dependencies.panels,
+      log: {
+        info: (message) => dependencies.core.info(message),
+        warning: (message) => dependencies.core.warning(message)
+      }
+    });
+  }
+
   for (const [name, value] of Object.entries(outputs)) {
     dependencies.core.setOutput(name, value);
   }
@@ -3003,6 +3047,14 @@ export function createBootstrapDependencies(
       })
       : undefined;
 
+  const panels =
+    gatewayClient && inputs.sections === 'auto'
+      ? createWorkspacePanelsClient({
+          gateway: gatewayClient,
+          teamId: inputs.teamId || inputs.workspaceTeamId || ''
+        })
+      : undefined;
+
   return {
     core: factories.core,
     ecClient,
@@ -3010,6 +3062,7 @@ export function createBootstrapDependencies(
     github,
     io: factories.io,
     internalIntegration,
+    panels,
     postman,
     resourcesState: {
       read: readResourcesState,

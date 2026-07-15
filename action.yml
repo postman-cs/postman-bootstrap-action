@@ -133,6 +133,10 @@ inputs:
   channels:
     description: 'Comma-separated channel map for long-lived promotion branches, e.g. "develop=DEV, staging=STAGE, release/*=RC". Channel branches maintain prefix-named parallel asset sets and never mutate canonical assets.'
     required: false
+  sections:
+    description: 'Cosmetic workspace Sections (panels). off (default) no-op. auto groups this run''s assets into Canonical / Channel CODE / Previews shelves. Fail-open; never fails sync. Requires panels-enabled team + app-version>=13.'
+    required: false
+    default: off
   integration-backend:
     description: Advanced/internal. Integration backend for managed workspace connectivity; leave unset to use the default.
     required: false

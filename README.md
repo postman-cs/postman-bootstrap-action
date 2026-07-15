@@ -200,6 +200,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `branch-strategy` | Branch-aware sync strategy. legacy (default) keeps branch-blind behavior; publish-gate restricts canonical writes to the canonical branch and runs credential-free static validation on other branches; preview additionally maintains suffixed per-branch preview asset sets. | no | `legacy` |
 | `canonical-branch` | Explicit canonical branch (the sole writer of canonical assets). Defaults to the provider-resolved default branch; required on providers without a default-branch variable (Bitbucket, Azure DevOps) when branch-strategy is not legacy. | no |  |
 | `channels` | Comma-separated channel map for long-lived promotion branches, e.g. "develop=DEV, staging=STAGE, release/*=RC". Channel branches maintain prefix-named parallel asset sets and never mutate canonical assets. | no |  |
+| `sections` | Cosmetic workspace Sections (panels). off (default) no-op. auto groups this run's assets into Canonical / Channel CODE / Previews shelves. Fail-open; never fails sync. Requires panels-enabled team + app-version>=13. | no | `off` |
 | `folder-strategy` | Folder organization strategy for generated collections (Paths or Tags) | no | `Paths` |
 | `nested-folder-hierarchy` | When folder-strategy is Tags, enables nested folder hierarchy | no | `false` |
 | `request-name-source` | Determines how requests are named in generated collections (Fallback or URL) | no | `Fallback` |

@@ -203,6 +203,13 @@ export const bootstrapActionContract: ActionContract = {
         'Comma-separated channel map for long-lived promotion branches, e.g. "develop=DEV, staging=STAGE, release/*=RC". Channel branches maintain prefix-named parallel asset sets and never mutate canonical assets.',
       required: false
     },
+    'sections': {
+      description:
+        'Cosmetic workspace Sections (panels) grouping. off (default) does nothing. auto creates/maintains one section per branch tier (Canonical / Channel CODE / Previews) and moves only assets this run minted. Panel API errors never fail the sync; prefixes and markers remain identity/GC truth. Requires team panels rollout + x-app-version>=13 bifrost access (see docs/wiki/sections-panels-spike.md).',
+      required: false,
+      default: 'off',
+      allowedValues: ['auto', 'off']
+    },
     'integration-backend': {
       description: 'Integration backend for downstream workspace connectivity.',
       required: false,

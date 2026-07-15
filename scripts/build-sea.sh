@@ -3,8 +3,9 @@ set -euo pipefail
 
 # SEA recipe for the postman-bootstrap CLI (Linux x64).
 # Bundles the Node runtime into a single executable so the action runs with no
-# npm and no Node install on the consumer. Runs inside the linux/amd64 build
-# container (see Dockerfile), or directly on a native linux runner in CI.
+# npm and no Node install on the consumer. Built on a native linux-x64 CI runner
+# (the authoritative build): assumes deps are already installed (npm ci) and that
+# it runs on the target platform, so it uses the runner's own node as the base.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

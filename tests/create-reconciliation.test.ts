@@ -254,7 +254,7 @@ describe('Wave 2 create reconciliation', () => {
   });
 
   describe('spec upload seam', () => {
-    it('reconciles an accepted-create-then-503 by exact spec name without a second POST', async () => {
+    it('adopts an exact-name spec and updates it with incoming content without a create POST', async () => {
       let createPosts = 0;
       const { client } = makeGatewayAssetsClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/specifications?')) {
@@ -265,6 +265,13 @@ describe('Wave 2 create reconciliation', () => {
           return jsonResponse({
             data: [{ id: 'spec-adopted', name: 'Payments API' }]
           });
+        }
+        if (env.path === '/specifications/spec-adopted/files') {
+          return jsonResponse({ data: [{ id: 'root-file', type: 'ROOT' }] });
+        }
+        if (env.method === 'patch' && env.path === '/specifications/spec-adopted/files/root-file') {
+          expect(env.body).toEqual([{ op: 'replace', path: '/content', value: 'openapi: 3.0.3' }]);
+          return jsonResponse({ data: {} });
         }
         if (env.path === '/specifications/spec-adopted') {
           return jsonResponse({ data: { id: 'spec-adopted' } });

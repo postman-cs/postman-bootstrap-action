@@ -259,6 +259,9 @@ export class PostmanGatewayAssetsClient {
       (entry) => entry.id
     );
     if (existing) {
+      // Adoption is resolution, not success: a same-identity spec from a prior
+      // run still needs the incoming content before collection generation.
+      await this.updateSpec(existing.id, specContent, workspaceId);
       return existing.id;
     }
     const specType = openapiVersion === '3.1' ? 'OPENAPI:3.1' : 'OPENAPI:3.0';

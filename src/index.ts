@@ -696,13 +696,10 @@ export function readActionInputs(
   if (specUrl && specPath) {
     throw new Error('Provide either spec-url or spec-path, not both.');
   }
-  // postman-api-key is optional: a run may be access-token-primary. At least one
-  // of postman-api-key / postman-access-token must be present to do any work.
+  // Credentials are validated only after BranchDecision resolution in runAction:
+  // gated runs intentionally perform credential-free static validation.
   const postmanApiKey = optionalInput(actionCore, 'postman-api-key') ?? '';
   const postmanAccessToken = optionalInput(actionCore, 'postman-access-token');
-  if (!postmanApiKey && !postmanAccessToken) {
-    throw new Error('One of postman-api-key or postman-access-token is required.');
-  }
   const githubToken = optionalInput(actionCore, 'github-token') || process.env.GITHUB_TOKEN;
   const ghFallbackToken = optionalInput(actionCore, 'gh-fallback-token') || process.env.GH_FALLBACK_TOKEN;
 
@@ -2664,6 +2661,9 @@ export async function runAction(
   const branchDecision = decideBranchTier(inputs);
   if (branchDecision.tier === 'gated') {
     return runGatedValidation(inputs, branchDecision, actionCore);
+  }
+  if (!inputs.postmanApiKey && !inputs.postmanAccessToken) {
+    throw new Error('One of postman-api-key or postman-access-token is required for a writing sync.');
   }
   if (branchDecision.tier !== 'legacy') {
     actionCore.info(`branch-aware sync: tier=${branchDecision.tier} (${branchDecision.reason})`);

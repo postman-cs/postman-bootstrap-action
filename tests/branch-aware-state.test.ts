@@ -189,7 +189,11 @@ function githubPreviewEnv(workspace: string): Record<string, string> {
     GITHUB_REF: 'refs/heads/feature/payments',
     GITHUB_REF_NAME: 'feature/payments',
     GITHUB_EVENT_PATH: eventPath,
-    GITHUB_SHA: 'abc123'
+    GITHUB_SHA: 'abc123',
+    // Neutralize the real CI run's PR context: a leaked GITHUB_HEAD_REF would
+    // flip these fixtures into pull_request identity (clean('') reads as unset).
+    GITHUB_HEAD_REF: '',
+    GITHUB_BASE_REF: ''
   };
 }
 
@@ -336,6 +340,8 @@ describe('branch-aware bootstrap runs', () => {
     vi.stubEnv('GITHUB_REF', 'refs/heads/develop');
     vi.stubEnv('GITHUB_REF_NAME', 'develop');
     vi.stubEnv('GITHUB_EVENT_PATH', eventPath);
+    vi.stubEnv('GITHUB_HEAD_REF', '');
+    vi.stubEnv('GITHUB_BASE_REF', '');
 
     await withCwd(workspace, async () => {
       const postman = createPostman();
@@ -378,6 +384,8 @@ describe('branch-aware bootstrap runs', () => {
     vi.stubEnv('GITHUB_REF', 'refs/heads/main');
     vi.stubEnv('GITHUB_REF_NAME', 'main');
     vi.stubEnv('GITHUB_EVENT_PATH', eventPath);
+    vi.stubEnv('GITHUB_HEAD_REF', '');
+    vi.stubEnv('GITHUB_BASE_REF', '');
 
     await withCwd(workspace, async () => {
       const outputs = await runBootstrap(

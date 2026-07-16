@@ -118,10 +118,10 @@ inputs:
     description: Fallback GitHub token used to read repository custom properties when github-token cannot
     required: false
   postman-api-key:
-    description: Postman service-account API key (PMAK). With a postman-access-token present, the PMAK is used ONLY to mint/re-mint the access token and to log in the Postman CLI for `spec lint` — never for an asset operation. When the key is absent, the CLI spec lint is skipped (governance errors are not enforced). Optional.
+    description: Postman service-account API key (PMAK). With a postman-access-token present, the PMAK is used ONLY to mint/re-mint the access token and to log in the Postman CLI for `spec lint` — never for an asset operation. When the key is absent, the CLI spec lint is skipped (governance errors are not enforced). CLI/binary usage may instead set the POSTMAN_API_KEY environment variable. Optional.
     required: false
   postman-access-token:
-    description: Postman service-account access token (x-access-token). Primary credential — every asset operation (workspace create/visibility, spec upload/update, collection generation/read/mutation, test injection, tagging, team-scope) runs through the access-token gateway. Mint it with postman-resolve-service-token-action. Optional only for legacy PMAK-only runs; supply it for the gateway path.
+    description: Postman service-account access token (x-access-token). Primary credential — every asset operation (workspace create/visibility, spec upload/update, collection generation/read/mutation, test injection, tagging, team-scope) runs through the access-token gateway. Mint it with postman-resolve-service-token-action. CLI/binary usage may instead set the POSTMAN_ACCESS_TOKEN environment variable (e.g. Jenkins withCredentials). Optional only for legacy PMAK-only runs; supply it for the gateway path.
     required: false
   credential-preflight:
     description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created."

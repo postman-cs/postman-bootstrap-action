@@ -491,8 +491,8 @@ export function resolveInputs(
     breakingSummaryPath: getInput('breaking-summary-path', env),
     breakingLogPath: getInput('breaking-log-path', env),
     governanceMappingJson: parseGovernanceMappingJson(getInput('governance-mapping-json', env)),
-    postmanApiKey: getInput('postman-api-key', env) ?? '',
-    postmanAccessToken: getInput('postman-access-token', env),
+    postmanApiKey: getInput('postman-api-key', env) || env.POSTMAN_API_KEY || '',
+    postmanAccessToken: getInput('postman-access-token', env) || env.POSTMAN_ACCESS_TOKEN,
     credentialPreflight: parseEnumInput<PreflightMode>(
       'credential-preflight',
       getInput('credential-preflight', env),
@@ -734,8 +734,9 @@ export function readActionInputs(
   }
   // Credentials are validated only after BranchDecision resolution in runAction:
   // gated runs intentionally perform credential-free static validation.
-  const postmanApiKey = optionalInput(actionCore, 'postman-api-key') ?? '';
-  const postmanAccessToken = optionalInput(actionCore, 'postman-access-token');
+  const postmanApiKey = optionalInput(actionCore, 'postman-api-key') || process.env.POSTMAN_API_KEY || '';
+  const postmanAccessToken =
+    optionalInput(actionCore, 'postman-access-token') || process.env.POSTMAN_ACCESS_TOKEN;
   const githubToken = optionalInput(actionCore, 'github-token') || process.env.GITHUB_TOKEN;
   const ghFallbackToken = optionalInput(actionCore, 'gh-fallback-token') || process.env.GH_FALLBACK_TOKEN;
 

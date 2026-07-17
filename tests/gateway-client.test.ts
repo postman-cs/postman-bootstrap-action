@@ -454,7 +454,7 @@ describe('AccessTokenGatewayClient', () => {
           new Response('{"error":{"details":"ESOCKETTIMEDOUT","source":"downstream"}}', { status: 500 })
         )
         .mockResolvedValueOnce(jsonResponse({ ok: true }));
-      const sleep = vi.fn(async (_ms: number) => undefined);
+      const sleep = vi.fn<(ms: number) => Promise<undefined>>(async () => undefined);
       const client = new AccessTokenGatewayClient({
         tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
         fetchImpl,

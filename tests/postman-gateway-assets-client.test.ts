@@ -1322,6 +1322,67 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(createAttempts).toBe(1);
     });
 
+    it('adopts a late-visible committed item on the settle read instead of re-POSTing a duplicate', async () => {
+      const v21 = {
+        info: { name: 'Curated (updated)', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+        item: [
+          { name: 'New Leaf', request: { method: 'GET', url: { raw: 'https://example.test/v2', host: ['example', 'test'], path: ['v2'] } } }
+        ]
+      };
+      let itemListReads = 0;
+      let createAttempts = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          itemListReads += 1;
+          if (itemListReads === 1) {
+            return jsonResponse({ data: [{ id: 'old-1', $kind: 'http-request' }] });
+          }
+          if (itemListReads === 2) {
+            // Delete verification: old tree gone.
+            return jsonResponse({ data: [] });
+          }
+          if (itemListReads === 3) {
+            // Immediate reconcile read: replica lag, the committed item is not
+            // visible yet.
+            return jsonResponse({ data: [] });
+          }
+          // Settle read after the jittered backoff: the 500'd create surfaces.
+          return jsonResponse({
+            data: [
+              {
+                id: '55363555-late-visible-uid',
+                name: 'New Leaf',
+                $kind: 'http-request',
+                position: { parent: '55363555-cid-1' }
+              }
+            ]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: { id: '55363555-cid-1', name: 'Old' } });
+        }
+        if (env.method === 'delete') {
+          return new Response(null, { status: 204 });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          createAttempts += 1;
+          return jsonResponse(
+            { error: { name: 'serverError', details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+            { status: 500 }
+          );
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: { id: 'cid-1' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.updateCollection('55363555-cid-1', v21);
+
+      expect(createAttempts).toBe(1);
+      expect(itemListReads).toBeGreaterThanOrEqual(4);
+    });
+
     it('rejects malformed existing item listings before deleting anything', async () => {
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {

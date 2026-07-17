@@ -1680,34 +1680,50 @@ export class PostmanGatewayAssetsClient {
             method: 'post',
             path: `/v3/collections/${cid}/items/`,
             retry: 'none',
+            // The transport's cold /_api fallback only fires after the primary
+            // budget is exhausted; by then this loop has reconciled the item as
+            // absent (match == null), so a fallback resend cannot duplicate a
+            // committed create.
+            fallback: 'auto',
             headers: { 'X-Entity-Type': kind },
             body: this.buildItemCreateBody(item, parentId)
           });
         } catch (error) {
           if (!isAmbiguousTransportError(error)) throw error;
           const name = String(item.name ?? 'Untitled');
-          const matches = (await this.listCollectionItems(cid)).filter((candidate) => {
-            if (String(candidate.name ?? candidate.title ?? '') !== name) return false;
-            if (String(candidate.$kind ?? candidate.type ?? 'http-request') !== kind) return false;
-            const position = asRecord(candidate.position);
-            const parent = asRecord(position?.parent);
-            const candidateParent = String(parent?.id ?? position?.parent ?? candidate.parent ?? '').trim();
-            return Boolean(candidateParent) &&
-              this.bareModelId(candidateParent) === this.bareModelId(parentId);
-          });
-          const match = adoptExactMatch(
-            `collection-item:${cid}:${parentId}:${kind}:${name}`,
-            matches,
-            (candidate) => String(candidate.id ?? '')
-          );
+          const findCommittedItem = async () => {
+            const matches = (await this.listCollectionItems(cid)).filter((candidate) => {
+              if (String(candidate.name ?? candidate.title ?? '') !== name) return false;
+              if (String(candidate.$kind ?? candidate.type ?? 'http-request') !== kind) return false;
+              const position = asRecord(candidate.position);
+              const parent = asRecord(position?.parent);
+              const candidateParent = String(parent?.id ?? position?.parent ?? candidate.parent ?? '').trim();
+              return Boolean(candidateParent) &&
+                this.bareModelId(candidateParent) === this.bareModelId(parentId);
+            });
+            return adoptExactMatch(
+              `collection-item:${cid}:${parentId}:${kind}:${name}`,
+              matches,
+              (candidate) => String(candidate.id ?? '')
+            );
+          };
+          let match = await findCommittedItem();
+          if (!match) {
+            // The create may have committed on a replica the first list read has
+            // not caught up to yet. Wait the jittered backoff, then reconcile
+            // once more before resending (or surfacing) - a blind re-POST here
+            // would duplicate a late-visible item.
+            await this.sleep(fullJitterDelayMs(attempt - 1, 300, 2000, this.random));
+            match = await findCommittedItem();
+          }
           if (match) {
             created = { data: { id: match.id } };
           } else {
             // Not committed server-side. Retry through the transient 5xx; only
-            // surface after the bounded budget is exhausted.
+            // surface after the bounded budget is exhausted. The backoff was
+            // already taken between the two reconciliation reads above.
             const retriable = error instanceof HttpError && error.status >= 500;
             if (!retriable || attempt === maxAttempts) throw error;
-            await this.sleep(fullJitterDelayMs(attempt - 1, 300, 2000, this.random));
             continue;
           }
         }

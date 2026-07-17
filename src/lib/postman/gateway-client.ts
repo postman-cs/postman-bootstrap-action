@@ -17,6 +17,11 @@ export interface GatewayRequest {
   headers?: Record<string, string>;
   /** Unsafe mutations must reconcile after an ambiguous response, not resend. */
   retry?: 'safe' | 'none';
+  /** Cold `/_api` fallback eligibility. `'auto'` opts an unsafe mutation in
+   * (only valid after the caller has reconciled and knows the create is
+   * absent); safe requests always fall back, unsafe requests never do unless
+   * `'auto'` is set. */
+  fallback?: 'auto';
 }
 
 export interface AccessTokenGatewayClientOptions {
@@ -28,6 +33,12 @@ export interface AccessTokenGatewayClientOptions {
   secretMasker?: SecretMasker;
   /** Max transient (5xx / network) retries per request (default 3). */
   maxRetries?: number;
+  /** Cold fallback base URL for one last-ditch attempt after the primary
+   * budget is exhausted on a transient failure (e.g. the app's `/_api` alias).
+   * Only used when the request would otherwise throw a transient error; the
+   * fallback is a single serial attempt, never hedged in parallel. Disabled
+   * when unset or when POSTMAN_ITEM_CREATE_FALLBACK=off. */
+  fallbackBaseUrl?: string;
   /** Base backoff in ms; attempt n waits baseDelayMs * 2^(n-1) (default 400). */
   retryBaseDelayMs?: number;
   /** Backoff ceiling in ms for jittered retries (default 5000). */
@@ -135,6 +146,7 @@ export class AccessTokenGatewayClient {
   private orgMode: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly secretMasker: SecretMasker;
+  private readonly fallbackBaseUrl?: string;
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
   private readonly retryMaxDelayMs: number;
@@ -152,6 +164,9 @@ export class AccessTokenGatewayClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.secretMasker =
       options.secretMasker ?? createSecretMasker([this.tokenProvider.current()]);
+    const fallbackEnv = typeof process !== 'undefined' ? process.env?.POSTMAN_ITEM_CREATE_FALLBACK : undefined;
+    this.fallbackBaseUrl =
+      fallbackEnv === 'off' ? undefined : options.fallbackBaseUrl?.replace(/\/+$/, '');
     this.maxRetries = options.maxRetries ?? 3;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 400;
     this.retryMaxDelayMs = options.retryMaxDelayMs ?? 5000;
@@ -177,8 +192,8 @@ export class AccessTokenGatewayClient {
     return headers;
   }
 
-  private async send(request: GatewayRequest): Promise<Response> {
-    const url = `${this.bifrostBaseUrl}/ws/proxy`;
+  private async send(request: GatewayRequest, baseUrl?: string): Promise<Response> {
+    const url = `${baseUrl ?? this.bifrostBaseUrl}/ws/proxy`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     try {
@@ -209,6 +224,53 @@ export class AccessTokenGatewayClient {
    * 200 envelope carrying an inner collection-service error is treated as that
    * inner status. The auth-refresh-once path is independent of the retry budget.
    */
+  /**
+   * One cold, serial attempt against the fallback base URL after the primary
+   * budget is exhausted on a transient failure. Never hedged in parallel with
+   * the primary; only fires when the request would otherwise throw. Callers
+   * with `retry: 'none'` still reconcile first — the fallback attempt here is
+   * the resend, so it is only used for requests whose mutation is known
+   * idempotent or already reconciled by the caller's adopt-on-ambiguous loop.
+   */
+  private async tryFallback(request: GatewayRequest): Promise<Response | null> {
+    if (!this.fallbackBaseUrl) return null;
+    try {
+      return await this.send(request, this.fallbackBaseUrl);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Run the fallback attempt and classify its response the same way the
+   * primary path would. Returns the rebuilt success response, or null when the
+   * fallback also failed transiently (caller then throws the original error).
+   * Non-transient fallback failures (4xx, inner errors) surface as their own
+   * HttpError since they are the freshest authoritative answer.
+   */
+  private fallbackEligible(request: GatewayRequest): boolean {
+    if (!this.fallbackBaseUrl) return false;
+    const retryMode = request.retry ?? (request.method === 'get' ? 'safe' : 'none');
+    return retryMode === 'safe' || request.fallback === 'auto';
+  }
+
+  private async attemptFallback(request: GatewayRequest): Promise<Response | null> {
+    if (!this.fallbackEligible(request)) return null;
+    const response = await this.tryFallback(request);
+    if (!response) return null;
+    const body = await response.text().catch(() => '');
+    if (response.ok) {
+      const innerStatus = detectInnerError(body);
+      if (innerStatus !== null) {
+        if (isTransientGatewayError(innerStatus, body)) return null;
+        throw this.toInnerHttpError(request, innerStatus, body);
+      }
+      return this.rebuildResponse(response, body);
+    }
+    if (isTransientGatewayError(response.status, body)) return null;
+    throw this.toHttpError(request, response, body);
+  }
+
   async request(request: GatewayRequest): Promise<Response> {
     // A PMAK-only run starts with no access token; mint one up front so the
     // gateway is the sole asset path (the PMAK is only ever the mint credential).
@@ -231,6 +293,8 @@ export class AccessTokenGatewayClient {
           await this.sleepImpl(delay);
           continue;
         }
+        const fallbackResponse = await this.attemptFallback(request);
+        if (fallbackResponse) return fallbackResponse;
         throw error;
       }
 
@@ -248,6 +312,8 @@ export class AccessTokenGatewayClient {
             await this.sleepImpl(delay);
             continue;
           }
+          const fallbackResponse = await this.attemptFallback(request);
+          if (fallbackResponse) return fallbackResponse;
           throw this.toInnerHttpError(request, innerStatus, okBody);
         }
         return this.rebuildResponse(response, okBody);
@@ -283,6 +349,8 @@ export class AccessTokenGatewayClient {
         continue;
       }
 
+      const fallbackResponse = await this.attemptFallback(request);
+      if (fallbackResponse) return fallbackResponse;
       throw this.toHttpError(request, response, body);
     }
   }

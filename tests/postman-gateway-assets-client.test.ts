@@ -1222,6 +1222,106 @@ describe('PostmanGatewayAssetsClient', () => {
       );
     });
 
+    it('retries an item create that 500s without committing (ESOCKETTIMEDOUT), then succeeds', async () => {
+      const v21 = {
+        info: { name: 'Curated (updated)', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+        item: [
+          { name: 'New Leaf', request: { method: 'GET', url: { raw: 'https://example.test/v2', host: ['example', 'test'], path: ['v2'] } } }
+        ]
+      };
+      let itemListReads = 0;
+      let createAttempts = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          itemListReads += 1;
+          return jsonResponse({
+            data: itemListReads === 1 ? [{ id: 'old-1', $kind: 'http-request' }] : []
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: { id: '55363555-cid-1', name: 'Old' } });
+        }
+        if (env.method === 'delete') {
+          return new Response(null, { status: 204 });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          createAttempts += 1;
+          if (createAttempts === 1) {
+            return jsonResponse(
+              { error: { name: 'serverError', details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+              { status: 500 }
+            );
+          }
+          return jsonResponse({ data: { id: '55363555-new-leaf-uid' } });
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: { id: 'cid-1' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.updateCollection('55363555-cid-1', v21);
+
+      expect(createAttempts).toBeGreaterThanOrEqual(2);
+      const posts = calls.filter((c) => c.method === 'post' && c.path === '/v3/collections/55363555-cid-1/items/');
+      expect(posts.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('adopts an item create that 500s but committed server-side (no duplicate)', async () => {
+      const v21 = {
+        info: { name: 'Curated (updated)', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
+        item: [
+          { name: 'New Leaf', request: { method: 'GET', url: { raw: 'https://example.test/v2', host: ['example', 'test'], path: ['v2'] } } }
+        ]
+      };
+      let itemListReads = 0;
+      let createAttempts = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          itemListReads += 1;
+          if (itemListReads === 1) {
+            return jsonResponse({ data: [{ id: 'old-1', $kind: 'http-request' }] });
+          }
+          if (itemListReads === 2) {
+            // Delete verification: old tree gone.
+            return jsonResponse({ data: [] });
+          }
+          // Adopt reconcile read: the 500'd create DID commit server-side.
+          return jsonResponse({
+            data: [
+              {
+                id: '55363555-committed-uid',
+                name: 'New Leaf',
+                $kind: 'http-request',
+                position: { parent: '55363555-cid-1' }
+              }
+            ]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: { id: '55363555-cid-1', name: 'Old' } });
+        }
+        if (env.method === 'delete') {
+          return new Response(null, { status: 204 });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          createAttempts += 1;
+          return jsonResponse(
+            { error: { name: 'serverError', details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+            { status: 500 }
+          );
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/cid-1') {
+          return jsonResponse({ data: { id: 'cid-1' } });
+        }
+        return jsonResponse({});
+      });
+
+      await client.updateCollection('55363555-cid-1', v21);
+
+      expect(createAttempts).toBe(1);
+    });
+
     it('rejects malformed existing item listings before deleting anything', async () => {
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {

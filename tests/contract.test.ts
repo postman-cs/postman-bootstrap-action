@@ -107,6 +107,32 @@ describe('bootstrap action contract', () => {
 
   });
 
+  it('resolves credentials from plain env with INPUT_ taking precedence', () => {
+    // Plain-env fallback so Jenkins `withCredentials` (POSTMAN_ACCESS_TOKEN /
+    // POSTMAN_API_KEY) works without the INPUT_ prefix, mirroring team-id.
+    const fromPlain = resolveInputs({
+      POSTMAN_ACCESS_TOKEN: 'pat-plain',
+      POSTMAN_API_KEY: 'pmak-plain'
+    });
+    expect(fromPlain.postmanAccessToken).toBe('pat-plain');
+    expect(fromPlain.postmanApiKey).toBe('pmak-plain');
+
+    // An explicit INPUT_ (kebab flag / action input) wins over the plain-env fallback.
+    const inputWins = resolveInputs({
+      INPUT_POSTMAN_ACCESS_TOKEN: 'pat-input',
+      POSTMAN_ACCESS_TOKEN: 'pat-plain',
+      INPUT_POSTMAN_API_KEY: 'pmak-input',
+      POSTMAN_API_KEY: 'pmak-plain'
+    });
+    expect(inputWins.postmanAccessToken).toBe('pat-input');
+    expect(inputWins.postmanApiKey).toBe('pmak-input');
+
+    // No credentials: apiKey is empty string, accessToken undefined.
+    const none = resolveInputs({});
+    expect(none.postmanApiKey).toBe('');
+    expect(none.postmanAccessToken).toBeUndefined();
+  });
+
   it('preserves legacy boolean aliases while rejecting unknown values', () => {
     expect(resolveInputs({ INPUT_SYNC_EXAMPLES: '1' }).syncExamples).toBe(true);
     expect(resolveInputs({ INPUT_SYNC_EXAMPLES: 'yes' }).syncExamples).toBe(true);

@@ -1,0 +1,55 @@
+name: SEA binary
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Build self-contained SEA binary
+        run: bash scripts/build-sea.sh
+      - name: Smoke test SEA binary with an empty environment
+        # A SEA embeds its runtime and never consults PATH for node, so running it
+        # with an empty env and a bogus PATH proves self-containment exactly as a
+        # node-less container would -- with no base image to pull (faster, and
+        # nothing for the IaC scanner to flag). The CLI always validates inputs, so
+        # a clean exit-0 path does not exist; assert it reaches input validation,
+        # then assert --version reports the embedded version.
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          BIN="$PWD/build/sea/postman-bootstrap-${VERSION}-linux-x64"
+          out="$(env -i PATH=/nonexistent "$BIN" 2>&1 || true)"
+          echo "$out"
+          if ! echo "$out" | grep -q "is required"; then
+            echo "::error::SEA binary did not reach input validation with an empty environment"
+            exit 1
+          fi
+          ver="$(env -i PATH=/nonexistent "$BIN" --version 2>/dev/null || true)"
+          echo "--version -> $ver"
+          if [ "$ver" != "$VERSION" ]; then
+            echo "::error::SEA --version reported '$ver', expected '$VERSION' (version not embedded)"
+            exit 1
+          fi
+      - name: Upload SEA binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: postman-bootstrap-linux-x64
+          path: build/sea/postman-bootstrap-*-linux-x64
+          if-no-files-found: error

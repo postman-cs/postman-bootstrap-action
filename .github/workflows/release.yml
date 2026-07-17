@@ -110,6 +110,31 @@ jobs:
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Build self-contained SEA binary
+        run: bash scripts/build-sea.sh
+      - name: Smoke test SEA binary with an empty environment
+        # Tag releases do not trigger sea-binary.yml, so smoke the artifact here
+        # before any publish/upload -- we never ship a binary we have not executed.
+        # A SEA embeds its runtime and never consults PATH for node, so an empty env
+        # with a bogus PATH proves self-containment (no base image to pull).
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          BIN="$PWD/build/sea/postman-bootstrap-${VERSION}-linux-x64"
+          out="$(env -i PATH=/nonexistent "$BIN" 2>&1 || true)"
+          echo "$out"
+          if ! echo "$out" | grep -q "is required"; then
+            echo "::error::SEA binary did not reach input validation with an empty environment"
+            exit 1
+          fi
+          ver="$(env -i PATH=/nonexistent "$BIN" --version 2>/dev/null || true)"
+          echo "--version -> $ver"
+          if [ "$ver" != "$VERSION" ]; then
+            echo "::error::SEA --version reported '$ver', expected '$VERSION' (version not embedded)"
+            exit 1
+          fi
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
@@ -135,10 +160,12 @@ jobs:
         run: |
           npm pack
           mv ./*.tgz release.tgz
-      - name: Upload tarball
+      - name: Upload tarball and SEA binary
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
-          files: release.tgz
+          files: |
+            release.tgz
+            build/sea/postman-bootstrap-*-linux-x64
 
   advance-major-alias:
     # Keep the rolling major alias (e.g. v2) pointing at the newest published

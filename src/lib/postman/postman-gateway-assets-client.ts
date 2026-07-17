@@ -1680,6 +1680,11 @@ export class PostmanGatewayAssetsClient {
             method: 'post',
             path: `/v3/collections/${cid}/items/`,
             retry: 'none',
+            // The transport's cold /_api fallback only fires after the primary
+            // budget is exhausted; by then this loop has reconciled the item as
+            // absent (match == null), so a fallback resend cannot duplicate a
+            // committed create.
+            fallback: 'auto',
             headers: { 'X-Entity-Type': kind },
             body: this.buildItemCreateBody(item, parentId)
           });

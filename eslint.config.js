@@ -8,7 +8,7 @@ export default tseslint.config(
     ignores: ['dist/', 'node_modules/', 'integration/.work/'],
   },
   {
-    files: ['integration/**/*.mjs', 'integration/**/*.mts'],
+    files: ['integration/**/*.mjs', 'integration/**/*.mts', 'scripts/**/*.mjs'],
     languageOptions: {
       globals: {
         process: 'readonly',
@@ -19,6 +19,9 @@ export default tseslint.config(
         Buffer: 'readonly',
         fetch: 'readonly',
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
+        performance: 'readonly',
+        crypto: 'readonly',
       },
     },
   },

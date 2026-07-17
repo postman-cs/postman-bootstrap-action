@@ -115,6 +115,7 @@ export interface ResolvedInputs {
   postmanStack: PostmanStack;
   postmanApiBase: string;
   postmanBifrostBase: string;
+  postmanFallbackBase: string;
   postmanGatewayBase: string;
   postmanCliInstallUrl: string;
   postmanIapubBase: string;
@@ -508,6 +509,7 @@ export function resolveInputs(
     postmanStack,
     postmanApiBase: endpointProfile.apiBaseUrl,
     postmanBifrostBase: endpointProfile.bifrostBaseUrl,
+    postmanFallbackBase: endpointProfile.fallbackBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
     postmanCliInstallUrl: endpointProfile.cliInstallUrl,
     postmanIapubBase: endpointProfile.iapubBaseUrl,
@@ -2877,6 +2879,7 @@ export async function runAction(
         gateway: new AccessTokenGatewayClient({
           tokenProvider: probeProvider,
           bifrostBaseUrl: inputs.postmanBifrostBase,
+          fallbackBaseUrl: inputs.postmanFallbackBase,
           teamId: inputs.teamId || '',
           orgMode: false,
           secretMasker: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
@@ -3050,6 +3053,7 @@ export function createBootstrapDependencies(
     ? new AccessTokenGatewayClient({
         tokenProvider,
         bifrostBaseUrl: inputs.postmanBifrostBase,
+        fallbackBaseUrl: inputs.postmanFallbackBase,
         teamId: inputs.teamId || '',
         orgMode,
         secretMasker

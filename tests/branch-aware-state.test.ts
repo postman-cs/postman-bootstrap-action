@@ -90,6 +90,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     postmanStack: 'prod',
     postmanApiBase: 'https://api.getpostman.com',
     postmanBifrostBase: 'https://bifrost-premium-https-v4.gw.postman.com',
+    postmanFallbackBase: 'https://go.postman.co/_api',
     postmanGatewayBase: 'https://gateway.postman.com',
     postmanCliInstallUrl: 'https://dl-cli.pstmn.io/install/unix.sh',
     postmanIapubBase: 'https://iapub.postman.co',

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { retry } from '../src/lib/retry.js';
+import { fullJitterDelayMs, parseRetryAfterMs, retry } from '../src/lib/retry.js';
 
 describe('retry', () => {
   afterEach(() => {
@@ -87,5 +87,40 @@ describe('retry', () => {
       { attempt: 1, delayMs: 100, message: 'first' },
       { attempt: 2, delayMs: 250, message: 'second' }
     ]);
+  });
+
+  describe('fullJitterDelayMs', () => {
+    it('returns a value inside [0, min(cap, base*2^attempt))', () => {
+      // attempt 0 -> ceiling 400; attempt 2 -> ceiling 1600; capped at 2000
+      expect(fullJitterDelayMs(0, 400, 2000, () => 0)).toBe(0);
+      expect(fullJitterDelayMs(0, 400, 2000, () => 0.999999)).toBe(399);
+      expect(fullJitterDelayMs(2, 400, 2000, () => 0.5)).toBe(800);
+      // ceiling clamps at the cap once base*2^attempt exceeds it
+      expect(fullJitterDelayMs(10, 400, 2000, () => 0.5)).toBe(1000);
+    });
+
+    it('never returns a negative delay for a negative attempt', () => {
+      expect(fullJitterDelayMs(-3, 400, 2000, () => 0.5)).toBe(200);
+    });
+  });
+
+  describe('parseRetryAfterMs', () => {
+    it('parses delta-seconds into milliseconds', () => {
+      expect(parseRetryAfterMs('2')).toBe(2000);
+      expect(parseRetryAfterMs('0')).toBe(0);
+    });
+
+    it('parses an HTTP-date into a positive delay', () => {
+      const future = new Date(Date.now() + 5000).toUTCString();
+      const ms = parseRetryAfterMs(future);
+      expect(ms).toBeGreaterThan(0);
+      expect(ms).toBeLessThanOrEqual(5000);
+    });
+
+    it('returns undefined for absent or unparseable values', () => {
+      expect(parseRetryAfterMs(undefined)).toBeUndefined();
+      expect(parseRetryAfterMs(null)).toBeUndefined();
+      expect(parseRetryAfterMs('soon')).toBeUndefined();
+    });
   });
 });

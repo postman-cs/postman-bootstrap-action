@@ -1,4 +1,5 @@
 import { HttpError } from '../http-error.js';
+import { fullJitterDelayMs, parseRetryAfterMs } from '../retry.js';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import type { SecretMasker } from '../secrets.js';
 import { createSecretMasker } from '../secrets.js';
@@ -29,10 +30,14 @@ export interface AccessTokenGatewayClientOptions {
   maxRetries?: number;
   /** Base backoff in ms; attempt n waits baseDelayMs * 2^(n-1) (default 400). */
   retryBaseDelayMs?: number;
+  /** Backoff ceiling in ms for jittered retries (default 5000). */
+  retryMaxDelayMs?: number;
   /** Per-request wall-clock deadline in ms; a slow/hung proxy aborts and (for
    * safe requests) retries instead of blocking the run forever (default 30000). */
   requestTimeoutMs?: number;
   sleepImpl?: (ms: number) => Promise<void>;
+  /** Injectable RNG for deterministic jitter in tests (default Math.random). */
+  randomImpl?: () => number;
 }
 
 function isExpiredAuthError(status: number, body: string): boolean {
@@ -100,6 +105,7 @@ function detectInnerError(body: string): number | null {
  * reuse-or-create idempotency + run-scoped teardown).
  */
 function isTransientGatewayError(status: number, body: string): boolean {
+  if (status === 429) return true;
   if (status === 502 || status === 503 || status === 504) return true;
   if (status >= 500 && (body.includes('ESOCKETTIMEDOUT') || body.includes('ETIMEDOUT') || body.includes('ECONNRESET') || body.includes('serverError') || body.includes('downstream'))) {
     return true;
@@ -131,8 +137,10 @@ export class AccessTokenGatewayClient {
   private readonly secretMasker: SecretMasker;
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
+  private readonly retryMaxDelayMs: number;
   private readonly requestTimeoutMs: number;
   private readonly sleepImpl: (ms: number) => Promise<void>;
+  private readonly randomImpl: () => number;
 
   constructor(options: AccessTokenGatewayClientOptions) {
     this.tokenProvider = options.tokenProvider;
@@ -146,8 +154,10 @@ export class AccessTokenGatewayClient {
       options.secretMasker ?? createSecretMasker([this.tokenProvider.current()]);
     this.maxRetries = options.maxRetries ?? 3;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 400;
+    this.retryMaxDelayMs = options.retryMaxDelayMs ?? 5000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.sleepImpl = options.sleepImpl ?? defaultSleep;
+    this.randomImpl = options.randomImpl ?? Math.random;
   }
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
@@ -216,7 +226,7 @@ export class AccessTokenGatewayClient {
         // request). Safe requests retry within budget; otherwise re-throw so an
         // unsafe mutation is reconciled rather than blindly resent.
         if (retryMode === 'safe' && attempt < this.maxRetries) {
-          const delay = this.retryBaseDelayMs * 2 ** attempt;
+          const delay = this.retryDelayMs(attempt);
           attempt += 1;
           await this.sleepImpl(delay);
           continue;
@@ -233,7 +243,7 @@ export class AccessTokenGatewayClient {
             isTransientGatewayError(innerStatus, okBody) &&
             attempt < this.maxRetries
           ) {
-            const delay = this.retryBaseDelayMs * 2 ** attempt;
+            const delay = this.retryDelayMs(attempt);
             attempt += 1;
             await this.sleepImpl(delay);
             continue;
@@ -264,7 +274,10 @@ export class AccessTokenGatewayClient {
         isTransientGatewayError(response.status, body) &&
         attempt < this.maxRetries
       ) {
-        const delay = this.retryBaseDelayMs * 2 ** attempt;
+        const delay = this.retryDelayMs(
+          attempt,
+          parseRetryAfterMs(response.headers.get('retry-after'))
+        );
         attempt += 1;
         await this.sleepImpl(delay);
         continue;
@@ -272,6 +285,19 @@ export class AccessTokenGatewayClient {
 
       throw this.toHttpError(request, response, body);
     }
+  }
+
+  /**
+   * Full-jitter backoff (uniform in [0, min(cap, base * 2^attempt))) so
+   * concurrent CI runners that fail together never retry in lockstep against
+   * the shared gateway. A server-sent Retry-After beats the heuristic: it is
+   * authoritative backpressure, honored verbatim (capped by the ceiling).
+   */
+  private retryDelayMs(attempt: number, retryAfterMs?: number): number {
+    if (retryAfterMs !== undefined) {
+      return Math.min(this.retryMaxDelayMs, retryAfterMs);
+    }
+    return fullJitterDelayMs(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs, this.randomImpl);
   }
 
   /**

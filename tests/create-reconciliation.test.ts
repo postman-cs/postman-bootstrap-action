@@ -674,7 +674,9 @@ describe('Wave 2 create reconciliation', () => {
       await expect(
         client.createCollection('ws-1', createCuratedCollection('Payments curated'))
       ).rejects.toThrow();
-      expect(itemPosts).toBe(1);
+      // Never adopted (parent identity missing), so the transient 503 is retried
+      // through the bounded budget before surfacing (was exactly 1 pre-retry).
+      expect(itemPosts).toBe(4);
     });
   });
 

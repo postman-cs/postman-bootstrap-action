@@ -3,7 +3,7 @@ import { transform, FormatVersion } from '@postman/runtime.models/transforms';
 import { randomUUID } from 'node:crypto';
 
 import { HttpError } from '../http-error.js';
-import { retry } from '../retry.js';
+import { fullJitterDelayMs, retry } from '../retry.js';
 import {
   adoptExactMatch,
   isAmbiguousTransportError
@@ -162,6 +162,8 @@ function extractGitRepoUrl(value: unknown): string | null {
 export interface PostmanGatewayAssetsClientOptions {
   gateway: AccessTokenGatewayClient;
   sleep?: (delayMs: number) => Promise<void>;
+  /** Injectable RNG for deterministic jitter in tests (default Math.random). */
+  random?: () => number;
   // Generation task poll budget. Defaults hold the live-proven production values
   // (90 attempts x 2000ms ~= 180s). Overridable so the e2e smoke path can shrink
   // the wait without weakening resilience for real onboarding runs; also read
@@ -191,6 +193,7 @@ export class PostmanGatewayAssetsClient {
 
   private readonly gateway: AccessTokenGatewayClient;
   private readonly sleep: (delayMs: number) => Promise<void>;
+  private readonly random: () => number;
   private readonly generationPollAttempts: number;
   private readonly generationPollDelayMs: number;
   private readonly createIdentity: () => string;
@@ -199,6 +202,7 @@ export class PostmanGatewayAssetsClient {
     this.gateway = options.gateway;
     this.createIdentity = options.createIdentity ?? randomUUID;
     this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+    this.random = options.random ?? Math.random;
     this.generationPollAttempts = resolvePollBudget(
       options.generationPollAttempts,
       process.env.POSTMAN_GENERATION_POLL_ATTEMPTS,
@@ -1131,7 +1135,7 @@ export class PostmanGatewayAssetsClient {
         if (!retriable || attempt === maxAttempts - 1) {
           throw error;
         }
-        await this.sleep(Math.min(2000, 300 * 2 ** attempt));
+        await this.sleep(fullJitterDelayMs(attempt, 300, 2000, this.random));
       }
     }
   }
@@ -1703,7 +1707,7 @@ export class PostmanGatewayAssetsClient {
             // surface after the bounded budget is exhausted.
             const retriable = error instanceof HttpError && error.status >= 500;
             if (!retriable || attempt === maxAttempts) throw error;
-            await this.sleep(Math.min(2000, 300 * 2 ** (attempt - 1)));
+            await this.sleep(fullJitterDelayMs(attempt - 1, 300, 2000, this.random));
             continue;
           }
         }

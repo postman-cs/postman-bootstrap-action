@@ -173,7 +173,8 @@ describe('AccessTokenGatewayClient', () => {
       tokenProvider: provider,
       fetchImpl,
       retryBaseDelayMs: 10,
-      sleepImpl: sleep
+      sleepImpl: sleep,
+      randomImpl: () => 1
     });
 
     const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x/items/' });
@@ -195,7 +196,8 @@ describe('AccessTokenGatewayClient', () => {
       tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
       fetchImpl,
       retryBaseDelayMs: 10,
-      sleepImpl: sleep
+      sleepImpl: sleep,
+      randomImpl: () => 1
     });
 
     const result = await client.requestJson({
@@ -245,7 +247,8 @@ describe('AccessTokenGatewayClient', () => {
       fetchImpl,
       maxRetries: 2,
       retryBaseDelayMs: 5,
-      sleepImpl: sleep
+      sleepImpl: sleep,
+      randomImpl: () => 1
     });
 
     let captured: unknown;
@@ -274,7 +277,8 @@ describe('AccessTokenGatewayClient', () => {
         tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
         fetchImpl,
         retryBaseDelayMs: 10,
-        sleepImpl: sleep
+        sleepImpl: sleep,
+        randomImpl: () => 1
       });
 
       const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x' });
@@ -440,6 +444,69 @@ describe('AccessTokenGatewayClient', () => {
       ).rejects.toThrow(/502/);
       // initial attempt + 1 retry, each with a fresh envelope
       expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+  });
+  describe('jitter and server backpressure', () => {
+    it('spreads retry delays across the full jittered window (no lockstep)', async () => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response('{"error":{"details":"ESOCKETTIMEDOUT","source":"downstream"}}', { status: 500 })
+        )
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      const sleep = vi.fn(async (_ms: number) => undefined);
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        retryBaseDelayMs: 400,
+        // first-retry window is [0, 400); a mid-window RNG must land inside it
+        randomImpl: () => 0.5,
+        sleepImpl: sleep
+      });
+
+      const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x/items/' });
+      expect(result).toEqual({ ok: true });
+      const delay = sleep.mock.calls[0]?.[0] ?? -1;
+      expect(delay).toBe(200);
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThan(400);
+    });
+
+    it('retries a 429 and honors a numeric Retry-After header verbatim', async () => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response('{"error":{"message":"rate limited"}}', { status: 429, headers: { 'Retry-After': '2' } }))
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      const sleep = vi.fn(async () => undefined);
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        retryBaseDelayMs: 10,
+        sleepImpl: sleep
+      });
+
+      const result = await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x/items/' });
+      expect(result).toEqual({ ok: true });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      // Retry-After: 2 seconds -> 2000ms, honored verbatim over the jitter heuristic
+      expect(sleep).toHaveBeenCalledWith(2000);
+    });
+
+    it('caps a large Retry-After at the backoff ceiling', async () => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response('{"error":{"message":"slow down"}}', { status: 503, headers: { 'Retry-After': '3600' } }))
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      const sleep = vi.fn(async () => undefined);
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        retryMaxDelayMs: 5000,
+        sleepImpl: sleep
+      });
+
+      await client.requestJson({ service: 'collection', method: 'get', path: '/v3/collections/x/items/' });
+      expect(sleep).toHaveBeenCalledWith(5000);
     });
   });
 });

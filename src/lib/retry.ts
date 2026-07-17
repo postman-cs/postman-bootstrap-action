@@ -77,3 +77,36 @@ export async function retry<T>(
 
   throw new Error('Retry exhausted without returning or throwing');
 }
+
+/**
+ * Full jitter (AWS, "Exponential Backoff And Jitter"): sleep a uniform random
+ * value in [0, min(capMs, baseMs * 2^attempt)). Randomizing the WHOLE interval,
+ * not adding a small jitter to a fixed backoff, is what de-synchronizes many CI
+ * runners that all fail against the shared gateway at the same instant -- the
+ * amplifier that makes a retry storm worse under concurrency. `attempt` is
+ * zero-based (0 = first retry). Averaging half the ceiling, full jitter also
+ * completes faster than deterministic backoff, which serves speed-to-green.
+ */
+export function fullJitterDelayMs(
+  attempt: number,
+  baseMs: number,
+  capMs: number,
+  random: () => number = Math.random
+): number {
+  const ceiling = Math.min(capMs, baseMs * 2 ** Math.max(0, attempt));
+  return Math.floor(random() * Math.max(0, ceiling));
+}
+
+/**
+ * Parse a `Retry-After` header (delta-seconds or HTTP-date) into milliseconds.
+ * Returns undefined when absent or unparseable. Server-authoritative backpressure
+ * beats any client-side heuristic, so honor it verbatim when present.
+ */
+export function parseRetryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const when = Date.parse(trimmed);
+  if (!Number.isNaN(when)) return Math.max(0, when - Date.now());
+  return undefined;
+}

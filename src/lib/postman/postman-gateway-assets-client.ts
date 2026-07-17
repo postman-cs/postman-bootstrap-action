@@ -3,6 +3,7 @@ import { transform, FormatVersion } from '@postman/runtime.models/transforms';
 import { randomUUID } from 'node:crypto';
 
 import { HttpError } from '../http-error.js';
+import { retry } from '../retry.js';
 import {
   adoptExactMatch,
   isAmbiguousTransportError
@@ -43,6 +44,23 @@ function isMissingPatchValueError(error: unknown): boolean {
     error instanceof HttpError &&
     error.status === 400 &&
     error.responseBody.includes('Remove operation must point to an existing value')
+  );
+}
+
+/**
+ * Generic no-op JSON-Patch rejection: the server refuses a patch whose net
+ * effect is zero (e.g. add /description with the same value, replace /name
+ * with the current name). Distinct from isMissingPatchValueError, which is
+ * remove-specific. Both are safe to treat as already-applied when the
+ * readback confirms the intended end state.
+ */
+function isRejectedPatchError(error: unknown): boolean {
+  return (
+    error instanceof HttpError &&
+    error.status === 400 &&
+    /REJECTED_PATCH|must update at least one/i.test(
+      `${error.message}\n${error.responseBody ?? ''}`
+    )
   );
 }
 
@@ -1409,14 +1427,21 @@ export class PostmanGatewayAssetsClient {
       { type: 'afterResponse', code: exec.join('\n'), language: 'text/javascript' }
     ];
     for (const script of plan.scripts) {
-      await this.gateway.requestJson<JsonRecord>({
-        service: 'collection',
-        method: 'patch',
-        path: `/v3/collections/${cid}/items/${script.itemId}`,
-        retry: 'safe',
-        headers: { 'X-Entity-Type': 'http-request' },
-        body: [{ op: 'add', path: '/scripts', value: toV3Scripts(script.exec) }]
-      });
+      try {
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${cid}/items/${script.itemId}`,
+          retry: 'safe',
+          headers: { 'X-Entity-Type': 'http-request' },
+          body: [{ op: 'add', path: '/scripts', value: toV3Scripts(script.exec) }]
+        });
+      } catch (error) {
+        // Idempotent rerun: the item already carries the exact script we are
+        // adding, so the server rejects the patch as a no-op. Treat as success.
+        if (isRejectedPatchError(error)) continue;
+        throw error;
+      }
     }
 
     // Idempotent: skip if a prior run already created the secrets resolver.
@@ -1637,37 +1662,54 @@ export class PostmanGatewayAssetsClient {
   private async createItemTree(cid: string, items: JsonRecord[], parentId: string): Promise<void> {
     for (const item of items) {
       const kind = String(item.$kind ?? 'http-request');
-      let created: JsonRecord | null;
-      try {
-        created = await this.gateway.requestJson<JsonRecord>({
-          service: 'collection',
-          method: 'post',
-          path: `/v3/collections/${cid}/items/`,
-          retry: 'none',
-          headers: { 'X-Entity-Type': kind },
-          body: this.buildItemCreateBody(item, parentId)
-        });
-      } catch (error) {
-        if (!isAmbiguousTransportError(error)) throw error;
-        const name = String(item.name ?? 'Untitled');
-        const matches = (await this.listCollectionItems(cid)).filter((candidate) => {
-          if (String(candidate.name ?? candidate.title ?? '') !== name) return false;
-          if (String(candidate.$kind ?? candidate.type ?? 'http-request') !== kind) return false;
-          const position = asRecord(candidate.position);
-          const parent = asRecord(position?.parent);
-          const candidateParent = String(parent?.id ?? position?.parent ?? candidate.parent ?? '').trim();
-          return Boolean(candidateParent) &&
-            this.bareModelId(candidateParent) === this.bareModelId(parentId);
-        });
-        const match = adoptExactMatch(
-          `collection-item:${cid}:${parentId}:${kind}:${name}`,
-          matches,
-          (candidate) => String(candidate.id ?? '')
-        );
-        if (!match) throw error;
-        created = { data: { id: match.id } };
+      // Retry only a 5xx/timeout that did NOT commit server-side (adopt finds no
+      // match). A committed 5xx is adopted below; a 4xx rejection surfaces at once.
+      // A downstream `500 ESOCKETTIMEDOUT` (live-observed on shared gateway under
+      // concurrent load) is exactly this transient, uncommitted case.
+      const maxAttempts = 4;
+      let newId = '';
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        let created: JsonRecord | null;
+        try {
+          created = await this.gateway.requestJson<JsonRecord>({
+            service: 'collection',
+            method: 'post',
+            path: `/v3/collections/${cid}/items/`,
+            retry: 'none',
+            headers: { 'X-Entity-Type': kind },
+            body: this.buildItemCreateBody(item, parentId)
+          });
+        } catch (error) {
+          if (!isAmbiguousTransportError(error)) throw error;
+          const name = String(item.name ?? 'Untitled');
+          const matches = (await this.listCollectionItems(cid)).filter((candidate) => {
+            if (String(candidate.name ?? candidate.title ?? '') !== name) return false;
+            if (String(candidate.$kind ?? candidate.type ?? 'http-request') !== kind) return false;
+            const position = asRecord(candidate.position);
+            const parent = asRecord(position?.parent);
+            const candidateParent = String(parent?.id ?? position?.parent ?? candidate.parent ?? '').trim();
+            return Boolean(candidateParent) &&
+              this.bareModelId(candidateParent) === this.bareModelId(parentId);
+          });
+          const match = adoptExactMatch(
+            `collection-item:${cid}:${parentId}:${kind}:${name}`,
+            matches,
+            (candidate) => String(candidate.id ?? '')
+          );
+          if (match) {
+            created = { data: { id: match.id } };
+          } else {
+            // Not committed server-side. Retry through the transient 5xx; only
+            // surface after the bounded budget is exhausted.
+            const retriable = error instanceof HttpError && error.status >= 500;
+            if (!retriable || attempt === maxAttempts) throw error;
+            await this.sleep(Math.min(2000, 300 * 2 ** (attempt - 1)));
+            continue;
+          }
+        }
+        newId = String(asRecord(created?.data)?.id ?? '').trim();
+        if (newId) break;
       }
-      const newId = String(asRecord(created?.data)?.id ?? '').trim();
       if (!newId) {
         throw new Error(
           `Item create did not return an id for ${String(item.name ?? 'item')}`
@@ -1714,6 +1756,32 @@ export class PostmanGatewayAssetsClient {
    * - `remove` of /description always works (field exists as "")
    * - on update, GET the root first and only remove fields that currently exist
    */
+  /**
+   * GET a collection root, retrying through the v3 surface's read-after-write
+   * 404 lag. A freshly generated/renamed collection can transiently report
+   * RESOURCE_NOT_FOUND for a few seconds (worse under concurrent runner load);
+   * retrying absorbs that instead of hard-failing the run.
+   */
+  private async getCollectionRoot(cid: string): Promise<JsonRecord | null> {
+    const got = await retry(
+      () =>
+        this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'get',
+          path: `/v3/collections/${cid}`,
+          retry: 'none'
+        }),
+      {
+        maxAttempts: 6,
+        delayMs: 1000,
+        backoffMultiplier: 2,
+        maxDelayMs: 8000,
+        shouldRetry: (error) => error instanceof HttpError && error.status === 404
+      }
+    );
+    return asRecord(got?.data);
+  }
+
   private async applyCollectionLevelSettings(
     cid: string,
     v3: JsonRecord,
@@ -1726,12 +1794,7 @@ export class PostmanGatewayAssetsClient {
 
     let current: JsonRecord | null = null;
     if (options.reconcileRemovals) {
-      const got = await this.gateway.requestJson<JsonRecord>({
-        service: 'collection',
-        method: 'get',
-        path: `/v3/collections/${cid}`
-      });
-      current = asRecord(got?.data);
+      current = await this.getCollectionRoot(cid);
     }
 
     const hasDescription = typeof v3.description === 'string' && v3.description.length > 0;
@@ -1780,6 +1843,15 @@ export class PostmanGatewayAssetsClient {
       if (
         isMissingPatchValueError(error) &&
         ops.some((op) => op.op === 'remove') &&
+        (await this.verifyRootSettingsApplied(cid, ops))
+      ) {
+        return;
+      }
+      // Generic no-op rejection (add/replace with same value, or a batch the
+      // server considers already applied): verify the end state holds and
+      // treat as success when it does.
+      if (
+        isRejectedPatchError(error) &&
         (await this.verifyRootSettingsApplied(cid, ops))
       ) {
         return;
@@ -1933,7 +2005,11 @@ export class PostmanGatewayAssetsClient {
 
   /** Patch only the durable collection description without reconciling its item tree. */
   async updateCollectionDescription(collectionUid: string, description: string): Promise<void> {
-    await this.applyCollectionLevelSettings(this.bareModelId(collectionUid), { description });
+    const cid = this.bareModelId(collectionUid);
+    // Read-back first: a freshly generated/renamed collection can transiently 404
+    // on the v3 surface (read-after-write lag); getCollectionRoot retries through it.
+    await this.getCollectionRoot(cid);
+    await this.applyCollectionLevelSettings(cid, { description });
   }
 
   /**

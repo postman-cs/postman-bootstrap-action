@@ -16,7 +16,7 @@ Each request in the generated `[Contract]` collection carries a test script buil
 | `Status code is defined by OpenAPI` | The response status is declared in the operation's `responses`. |
 | `Content-Type matches OpenAPI response content` | The response `Content-Type` matches a media type the spec declares for that status. |
 | `Response headers match OpenAPI` | Response headers declared in the spec validate against their schemas. |
-| `Response body matches OpenAPI body contract` | The presence or absence of a body agrees with the content the spec declares for that status. |
+| `Response body matches OpenAPI body contract` | Protocol-bodyless responses carry zero bytes; declared response content is non-empty; omitted/empty `content` is treated as undocumented and does not assert body presence. |
 | `Response body matches OpenAPI schema` | The parsed response body validates against the compiled JSON Schema for the matched status and media type. |
 | `Request carries credentials required by OpenAPI security` | The request satisfies at least one declared security requirement. `apiKey` schemes assert the named header, query parameter, or cookie; `http` schemes assert the `Authorization` value opens with the declared scheme token, compared case-insensitively per RFC 9110 section 11.1 (`Basic` per RFC 7617, `Bearer` per RFC 6750, and any other registered scheme by its name); `oauth2`/`openIdConnect` accept an `Authorization` header or an `access_token` query parameter (RFC 6750). |
 | `Request parameters match OpenAPI schemas` | Declared path, query, and header parameters validate against their schemas. |

@@ -8,6 +8,8 @@ type JsonRecord = Record<string, unknown>;
 
 export type ContractMedia = PackedSchema;
 
+export type ContractBodyExpectation = 'forbidden' | 'declared' | 'unknown';
+
 export interface ContractHeader {
   name: string;
   required: boolean;
@@ -43,7 +45,7 @@ export interface ContractCallbackRequestSources {
 
 export interface ContractResponse {
   content: Record<string, ContractMedia>;
-  hasBody: boolean;
+  bodyExpectation: ContractBodyExpectation;
   headers: ContractHeader[];
   links?: ContractLinkExpression[];
   writeOnlyProperties?: string[];
@@ -212,6 +214,25 @@ function joinPaths(prefix: string, path: string): string {
 function normalizeResponseKey(status: string): string {
   const raw = String(status);
   return /^[1-5]xx$/i.test(raw) ? raw.toUpperCase() : raw;
+}
+
+function responseBodyExpectation(
+  method: string,
+  status: string,
+  content: Record<string, ContractMedia>
+): ContractBodyExpectation {
+  const normalizedStatus = normalizeResponseKey(status);
+  if (
+    method === 'head'
+    || normalizedStatus === '1XX'
+    || /^1[0-9][0-9]$/.test(normalizedStatus)
+    || normalizedStatus === '204'
+    || normalizedStatus === '205'
+    || normalizedStatus === '304'
+  ) {
+    return 'forbidden';
+  }
+  return Object.keys(content).length > 0 ? 'declared' : 'unknown';
 }
 
 function collectSecurityApiKeys(root: JsonRecord, operation: JsonRecord): Set<string> {
@@ -776,6 +797,13 @@ function collectRequestBody(
   const body = resolveInternalRef<JsonRecord>(root, operation.requestBody);
   if (!body) return undefined;
   const content = asRecord(body.content);
+  for (const [contentType, mediaObject] of Object.entries(content ?? {})) {
+    if (asRecord(mediaObject)?.schema === undefined) {
+      warnings.push(
+        `CONTRACT_REQUEST_SCHEMA_UNDOCUMENTED: request body ${contentType} on ${operationId} declares no schema; generated request payload shape is not validated`
+      );
+    }
+  }
   const fieldRules = content ? requestBodyFieldRules(root, content, version, operationId, warnings) : undefined;
   if (fieldRules) {
     for (const [base, rule] of Object.entries(fieldRules)) {
@@ -1648,8 +1676,21 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           const linkExpressions = collectLinkExpressions(root, response, `${lowerMethod.toUpperCase()} ${path}`, responseWarnings, version, linkTargetSchemas);
           const responseContext = `${lowerMethod.toUpperCase()} ${path} status ${status}`;
           const content = responseContent(root, version, response, responseContext, responseWarnings);
-          if ((status === '204' || status === '205' || status === '304') && Object.keys(content).length > 0) {
+          const bodyExpectation = responseBodyExpectation(lowerMethod, status, content);
+          if (bodyExpectation === 'forbidden' && Object.keys(content).length > 0) {
             responseWarnings.add(`CONTRACT_BODYLESS_STATUS_WITH_CONTENT: ${lowerMethod.toUpperCase()} ${path} declares content for status ${status}, which RFC 9110 forbids on the wire`);
+          }
+          if (bodyExpectation === 'unknown') {
+            responseWarnings.add(
+              `CONTRACT_RESPONSE_BODY_UNDOCUMENTED: ${responseContext} declares no response content; body presence, media type, and shape are not validated`
+            );
+          }
+          for (const [contentType, mediaObject] of Object.entries(asRecord(response.content) ?? {})) {
+            if (asRecord(mediaObject)?.schema === undefined) {
+              responseWarnings.add(
+                `CONTRACT_RESPONSE_SCHEMA_UNDOCUMENTED: response ${contentType} on ${responseContext} declares no schema; body shape is not validated`
+              );
+            }
           }
           for (const [contentType, media] of Object.entries(content)) {
             const base = contentType.toLowerCase().split(';')[0]?.trim() ?? '';
@@ -1662,7 +1703,7 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           const writeOnlyProperties = collectResponseWriteOnlyNames(root, response);
           contractResponses[normalizeResponseKey(status)] = {
             content,
-            hasBody: Object.keys(content).length > 0,
+            bodyExpectation,
             headers,
             ...(linkExpressions.length > 0 ? { links: linkExpressions } : {}),
             ...(writeOnlyProperties.length > 0 ? { writeOnlyProperties } : {})

@@ -130,6 +130,168 @@ function runScript(script: string, response: JsonRecord): Record<string, 'pass' 
 const anyFail = (results: Record<string, 'pass' | 'fail'>): boolean =>
   Object.values(results).some((value) => value === 'fail');
 
+describe('OpenAPI response content omission semantics', () => {
+  function indexFor(operationLines: string[]): ReturnType<typeof buildContractIndex> {
+    return buildContractIndex(parseOpenApiDocument([
+      'openapi: 3.0.3',
+      "info: { title: Response contract, version: '1.0.0' }",
+      'paths:',
+      '  /health:',
+      ...operationLines.map((line) => `    ${line}`)
+    ].join('\n')));
+  }
+
+  function runAwsRouteOnlyResponse(): Record<string, 'pass' | 'fail'> {
+    const index = indexFor([
+      'post:',
+      '  responses:',
+      '    default:',
+      '      description: Default response'
+    ]);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    return runScript(script, {
+      code: 200,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': '15' },
+      text: '{"status":"ok"}',
+      json: { status: 'ok' }
+    });
+  }
+
+  it('does not treat an AWS-style default response without content as an empty-body contract', () => {
+    const results = runAwsRouteOnlyResponse();
+    expect(results['Response body matches OpenAPI body contract']).toBe('pass');
+  });
+
+  it('does not require zero Content-Length for an AWS-style default response without content', () => {
+    const results = runAwsRouteOnlyResponse();
+    expect(results['Content-Length is consistent with OpenAPI body expectations']).toBe('pass');
+  });
+
+  it('indexes omitted and empty content as unknown and warns without constraining body presence', () => {
+    for (const responseLines of [
+      ['    default:', '      description: Default response'],
+      ["    '200':", '      description: OK', '      content: {}']
+    ]) {
+      const index = indexFor(['post:', '  responses:', ...responseLines]);
+      const operation = index.operations[0]!;
+      const response = operation.responses.default ?? operation.responses['200']!;
+      expect(response.bodyExpectation).toBe('unknown');
+      expect(operation.warnings).toEqual(expect.arrayContaining([
+        expect.stringContaining('CONTRACT_RESPONSE_BODY_UNDOCUMENTED:')
+      ]));
+      const script = createContractScript(operation).join('\n');
+      expect(runScript(script, { code: 200, text: '', json: undefined })['Response body matches OpenAPI body contract']).toBe('pass');
+      expect(runScript(script, { code: 200, text: '{"status":"ok"}', json: { status: 'ok' } })['Response body matches OpenAPI body contract']).toBe('pass');
+    }
+  });
+
+  it('keeps media-declared responses strict while warning when their schema is absent', () => {
+    const index = indexFor([
+      'post:',
+      '  responses:',
+      "    '200':",
+      '      description: OK',
+      '      content:',
+      '        application/json: {}'
+    ]);
+    const operation = index.operations[0]!;
+    expect(operation.responses['200']?.bodyExpectation).toBe('declared');
+    expect(operation.warnings).toContain(
+      'CONTRACT_RESPONSE_SCHEMA_UNDOCUMENTED: response application/json on POST /health status 200 declares no schema; body shape is not validated'
+    );
+    const script = createContractScript(operation).join('\n');
+    const valid = runScript(script, {
+      code: 200,
+      headers: { 'Content-Type': 'application/json' },
+      text: '{"status":"ok"}',
+      json: { status: 'ok' }
+    });
+    const empty = runScript(script, {
+      code: 200,
+      headers: { 'Content-Type': 'application/json' },
+      text: '',
+      json: undefined
+    });
+    expect(valid['Response body matches OpenAPI body contract']).toBe('pass');
+    expect(valid['Content-Type matches OpenAPI response content']).toBe('pass');
+    expect(valid['Response body matches OpenAPI schema']).toBe('pass');
+    expect(empty['Response body matches OpenAPI body contract']).toBe('fail');
+  });
+
+  it('warns when declared request media has no schema', () => {
+    const index = indexFor([
+      'post:',
+      '  requestBody:',
+      '    content:',
+      '      application/json: {}',
+      '  responses:',
+      "    '204': { description: No content }"
+    ]);
+    expect(index.operations[0]!.warnings).toContain(
+      'CONTRACT_REQUEST_SCHEMA_UNDOCUMENTED: request body application/json on POST /health declares no schema; generated request payload shape is not validated'
+    );
+  });
+
+  it.each([199, 204, 205, 304])('rejects carried bytes for runtime bodyless status %i', (code) => {
+    const index = indexFor([
+      'post:',
+      '  responses:',
+      '    default: { description: Default response }'
+    ]);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const results = runScript(script, { code, text: ' ', json: undefined });
+    expect(results['Response body matches OpenAPI body contract']).toBe('fail');
+  });
+
+  it('rejects carried bytes for HEAD even when a default response is selected', () => {
+    const index = indexFor([
+      'head:',
+      '  responses:',
+      '    default: { description: Default response }'
+    ]);
+    expect(index.operations[0]!.responses.default?.bodyExpectation).toBe('forbidden');
+    const script = createContractScript(index.operations[0]!).join('\n');
+    expect(runScript(script, { code: 200, text: 'x', json: undefined })['Response body matches OpenAPI body contract']).toBe('fail');
+  });
+
+  it('keeps exact response precedence over a schema-less range and default', () => {
+    const index = indexFor([
+      'post:',
+      '  responses:',
+      "    '200':",
+      '      description: Exact',
+      '      content:',
+      '        application/json: {}',
+      "    '2XX': { description: Range }",
+      '    default: { description: Default response }'
+    ]);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const results = runScript(script, {
+      code: 200,
+      headers: { 'Content-Type': 'application/json' },
+      text: '',
+      json: undefined
+    });
+    expect(results['Response body matches OpenAPI body contract']).toBe('fail');
+  });
+
+  it('still rejects a mismatched Content-Length for an unknown response body', () => {
+    const index = indexFor([
+      'post:',
+      '  responses:',
+      '    default: { description: Default response }'
+    ]);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const results = runScript(script, {
+      code: 200,
+      headers: { 'Content-Type': 'application/json', 'Content-Length': '14' },
+      text: '{"status":"ok"}',
+      json: { status: 'ok' }
+    });
+    expect(results['Content-Length is consistent with OpenAPI body expectations']).toBe('fail');
+  });
+});
+
 function grpcItems(collection: JsonRecord): JsonRecord[] {
   const out: JsonRecord[] = [];
   const walk = (nodes: unknown): void => {

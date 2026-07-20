@@ -42,7 +42,7 @@ The self-contained binary resolves each credential from three sources, highest p
 2. The GitHub Action input env var — `INPUT_POSTMAN_ACCESS_TOKEN`, `INPUT_POSTMAN_API_KEY`
 3. A plain environment variable — `POSTMAN_ACCESS_TOKEN`, `POSTMAN_API_KEY`
 
-The plain-env fallback (3) is what makes Jenkins [`withCredentials`](https://www.jenkins.io/doc/pipeline/steps/credentials-binding/) work with no flags: bind a secret to `POSTMAN_ACCESS_TOKEN` and the binary picks it up. See [Obtaining Credentials](credentials.md) for the full credential matrix.
+The plain-env fallback (3) is what makes Jenkins [`withCredentials`](https://www.jenkins.io/doc/pipeline/steps/credentials-binding/) work with no flags: whatever sets `POSTMAN_ACCESS_TOKEN` in the environment, the binary picks it up. Because the access token is short-lived, store the long-lived **PMAK** in Jenkins and mint the access token into `POSTMAN_ACCESS_TOKEN` during the job (see the [Jenkins example](#jenkins-pipeline-example)) rather than storing a token that will expire. See [Obtaining Credentials](credentials.md) for the full credential matrix.
 
 ### Access-token-only keeps it self-contained
 
@@ -52,10 +52,16 @@ Passing `postman-api-key` additionally enables **spec lint**, which downloads an
 
 ### Minting an access token
 
-Mint a short-lived access token from a service-account PMAK immediately before the run (TTL ~1–1.5h):
+Mint a short-lived access token from a service-account PMAK immediately before the run (TTL ~1–1.5h). Mint against the API base for your region — `api.getpostman.com` for US, `api.eu.postman.com` for [EU data residency](https://learning.postman.com/docs/administration/enterprise/about-eu-data-residency/) — and pass the matching `--postman-region` to the binary:
 
 ```bash
-POSTMAN_ACCESS_TOKEN="$(curl -fsSL -X POST https://api.getpostman.com/service-account-tokens \
+POSTMAN_REGION=us                                          # EU data residency: eu
+case "$POSTMAN_REGION" in
+  eu) POSTMAN_API_BASE="https://api.eu.postman.com" ;;
+  *)  POSTMAN_API_BASE="https://api.getpostman.com" ;;
+esac
+
+POSTMAN_ACCESS_TOKEN="$(curl -fsSL -X POST "$POSTMAN_API_BASE/service-account-tokens" \
   -H "x-api-key: $POSTMAN_API_KEY" \
   -H "Content-Type: application/json" \
   -d "{\"apiKey\":\"$POSTMAN_API_KEY\"}" \
@@ -63,7 +69,9 @@ POSTMAN_ACCESS_TOKEN="$(curl -fsSL -X POST https://api.getpostman.com/service-ac
 export POSTMAN_ACCESS_TOKEN
 ```
 
-Store the PMAK in your CI secret store and mint on demand; do not persist the access token. For [EU data residency](https://learning.postman.com/docs/administration/enterprise/about-eu-data-residency/), pass `--postman-region eu`.
+A token minted from the US endpoint is not valid against the EU API (and vice versa), so the mint base and `--postman-region` must match. Store the PMAK in your CI secret store and mint on demand; do not persist the access token.
+
+Minting uses the PMAK only for this token exchange — it is **not** passed to the binary as `--postman-api-key`, so the run stays access-token-only (no lint, no Postman CLI install). In a truly air-gapped environment that cannot reach the Postman API to mint, generate the token on a connected host and inject it as `POSTMAN_ACCESS_TOKEN`.
 
 ## Run
 
@@ -73,10 +81,10 @@ Inputs are the same kebab-case names as [`action.yml`](../action.yml), passed as
 export POSTMAN_ACCESS_TOKEN="<minted-token>"
 
 ./postman-bootstrap \
-  --project-name claims-processing \
-  --spec-path specs/claims-processing-api-openapi.yaml \
-  --domain insurance-platform \
-  --domain-code CLAIMS \
+  --project-name core-payments \
+  --spec-path specs/openapi.yaml \
+  --domain payments-platform \
+  --domain-code PAY \
   --postman-region us \
   --result-json postman-bootstrap-result.json
 ```
@@ -88,7 +96,7 @@ export POSTMAN_ACCESS_TOKEN="<minted-token>"
 
 ## Jenkins pipeline example
 
-The binary must run on a **linux-x64 agent** — it is a Linux ELF and cannot execute on a Windows agent. Credentials come from `withCredentials` binding a Postman access token to `POSTMAN_ACCESS_TOKEN`, exercising the plain-env fallback with no flag.
+The binary must run on a **linux-x64 agent** — it is a Linux ELF and cannot execute on a Windows agent. The Jenkins credential stores the long-lived **PMAK**; the pipeline mints a short-lived access token from it in-job and exports it as `POSTMAN_ACCESS_TOKEN`, so the binary picks it up via the plain-env fallback with no flag. Do **not** store the access token itself in Jenkins — it expires in ~1–1.5h and a stored copy will eventually be stale.
 
 ```groovy
 pipeline {
@@ -96,8 +104,8 @@ pipeline {
   agent { label 'linux' }
 
   environment {
-    POSTMAN_ACCESS_TOKEN = credentials('postman-access-token')
     BOOTSTRAP_VERSION = '2.9.10'
+    POSTMAN_REGION = 'us'   // EU data residency: 'eu'
   }
 
   stages {
@@ -115,15 +123,28 @@ pipeline {
     }
     stage('Bootstrap') {
       steps {
-        // No --postman-access-token flag: it resolves from the POSTMAN_ACCESS_TOKEN env var.
-        sh '''
-          set -eu
-          ./postman-bootstrap \
-            --project-name claims-processing \
-            --spec-path specs/claims-processing-api-openapi.yaml \
-            --postman-region us \
-            --result-json "$WORKSPACE/postman-bootstrap-result.json"
-        '''
+        // Bind the PMAK, mint a fresh access token, then run -- all in one shell so the
+        // minted token stays in scope. The binary reads it from POSTMAN_ACCESS_TOKEN
+        // (no --postman-access-token flag); the PMAK is never passed to the binary.
+        withCredentials([string(credentialsId: 'postman-api-key', variable: 'POSTMAN_API_KEY')]) {
+          sh '''
+            set -eu
+            case "$POSTMAN_REGION" in
+              eu) API_BASE="https://api.eu.postman.com" ;;
+              *)  API_BASE="https://api.getpostman.com" ;;
+            esac
+            POSTMAN_ACCESS_TOKEN="$(curl -fsSL -X POST "$API_BASE/service-account-tokens" \
+              -H "x-api-key: $POSTMAN_API_KEY" -H "Content-Type: application/json" \
+              -d "{\\"apiKey\\":\\"$POSTMAN_API_KEY\\"}" \
+              | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)"
+            export POSTMAN_ACCESS_TOKEN
+            ./postman-bootstrap \
+              --project-name core-payments \
+              --spec-path specs/openapi.yaml \
+              --postman-region "$POSTMAN_REGION" \
+              --result-json "$WORKSPACE/postman-bootstrap-result.json"
+          '''
+        }
       }
     }
   }

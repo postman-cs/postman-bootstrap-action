@@ -62,9 +62,9 @@ Generated Postman test scripts validate response behavior for the matched OpenAP
   - Fails when a response header uses unsupported OpenAPI `content`.
 
 - **Response body presence**
-  - Requires empty bodies for `204`, `205`, `304`, and `HEAD`.
+  - Requires zero carried bytes for informational `1xx`, `204`, `205`, `304`, and `HEAD` responses, even when the selected exact/range/default declaration claims content.
   - Requires a non-empty body when the selected OpenAPI response defines response content.
-  - Requires an empty body when the selected OpenAPI response defines no response content.
+  - Treats omitted `content` and `content: {}` as unknown: neither empty nor non-empty is asserted. `CONTRACT_RESPONSE_BODY_UNDOCUMENTED` exposes the missing coverage instead of turning missing documentation into an empty-body contract.
 
 - **Response `Content-Type`**
   - Matches the live `Content-Type` against the OpenAPI response media types.
@@ -76,6 +76,7 @@ Generated Postman test scripts validate response behavior for the matched OpenAP
   - Validates JSON responses with `pm.response.json()`.
   - Asserts JSON Schema `format` values that schemasafe supports (`date-time`, `date`, `time`, `duration`, `email`, `hostname`, `ipv4`, `ipv6`, `uri`, `uri-reference`, `uri-template`, `uuid`, `json-pointer`, `relative-json-pointer`, `regex`); other formats are stripped as annotations, and `format: int32` integers gain numeric range bounds.
   - Runs schema validation for non-JSON media only when the schema is a string type; non-JSON media with object schemas skip runtime schema validation with a `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED` warning while Content-Type and body-presence checks still apply.
+  - A media entry without `schema` still enforces body presence and Content-Type, but skips shape validation with `CONTRACT_RESPONSE_SCHEMA_UNDOCUMENTED`.
 
 - **Security credential presence**
   - When the operation has enforceable security requirements, checks the sent request for matching credentials: API key header/query/cookie names, scheme-token Authorization prefixes for every registered HTTP scheme (RFC 7235 credentials open with the scheme token, so `Basic `, `Bearer `, `Digest `, and any other named scheme check case-insensitively by prefix), and `Authorization` presence or an `access_token` query parameter for OAuth2/OpenID Connect.
@@ -101,10 +102,12 @@ Generated Postman test scripts validate response behavior for the matched OpenAP
   - Validates concrete, parseable JSON request bodies against a request-side packed schema where `readOnly` properties are stripped and `writeOnly` properties are kept, the mirror of response packing.
   - Bodies containing placeholder tokens such as `"<string>"` or `{{variables}}` are skipped; a non-placeholder body that fails to parse as JSON fails the test.
   - Request schemas that cannot be packed warn with `CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED`.
+  - Request-body media entries that declare no schema warn with `CONTRACT_REQUEST_SCHEMA_UNDOCUMENTED`; no payload validator is invented.
 
 - **Content-Length consistency**
   - Requires `Content-Length`, when present, to be a non-negative integer.
-  - Requires `Content-Length: 0` when the selected response defines no body, except for `HEAD` requests, `304` responses where a representation length is legitimate, and responses carrying `Content-Encoding` where the encoded length differs from the decoded body.
+  - Compares Content-Length with actual UTF-8 response bytes when Content-Encoding and Transfer-Encoding are absent.
+  - Never infers `Content-Length: 0` from undocumented OpenAPI content. Protocol-bodyless responses still require zero carried bytes, while `HEAD` and `304` retain their legal representation-length handling.
 
 - **Static request shape before upload**
   - Confirms generated requests include required non-security query parameters.
@@ -215,7 +218,7 @@ Common failure categories:
 | Ref/resource limits | `CONTRACT_REF_LIMIT_EXCEEDED`, `CONTRACT_REF_DEPTH_EXCEEDED`, `CONTRACT_REF_SIZE_EXCEEDED` |
 | OpenAPI loading | `CONTRACT_SPEC_PARSE_FAILED`, `CONTRACT_SPEC_VALIDATION_FAILED`, `CONTRACT_UNSUPPORTED_OPENAPI_VERSION` |
 | Contract indexing | `CONTRACT_OPERATION_NO_RESPONSES`, `CONTRACT_NO_ELIGIBLE_OPERATIONS`, `CONTRACT_DUPLICATE_OPERATION_MATCH` |
-| Indexing warnings | `CONTRACT_SECURITY_NOT_VALIDATED`, `CONTRACT_COOKIE_PARAM_NOT_VALIDATED`, `CONTRACT_OPERATION_DEPRECATED`, `CONTRACT_LINKS_NOT_VALIDATED`, `CONTRACT_LINKS_PARTIALLY_VALIDATED`, `CONTRACT_UNKNOWN_HTTP_AUTH_SCHEME`, `CONTRACT_CREDENTIALS_IN_QUERY`, `CONTRACT_SECURITY_SCHEME_URL`, `CONTRACT_OAUTH2_UNDECLARED_SCOPE`, `CONTRACT_SECURITY_RESPONSES_INCOMPLETE`, `CONTRACT_UNSECURED_AUTH_RESPONSES`, `CONTRACT_INVALID_STATUS_CODE`, `CONTRACT_BODYLESS_STATUS_WITH_CONTENT`, `CONTRACT_METHOD_BODY_SEMANTICS`, `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`, `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED` |
+| Indexing warnings | `CONTRACT_SECURITY_NOT_VALIDATED`, `CONTRACT_COOKIE_PARAM_NOT_VALIDATED`, `CONTRACT_OPERATION_DEPRECATED`, `CONTRACT_LINKS_NOT_VALIDATED`, `CONTRACT_LINKS_PARTIALLY_VALIDATED`, `CONTRACT_UNKNOWN_HTTP_AUTH_SCHEME`, `CONTRACT_CREDENTIALS_IN_QUERY`, `CONTRACT_SECURITY_SCHEME_URL`, `CONTRACT_OAUTH2_UNDECLARED_SCOPE`, `CONTRACT_SECURITY_RESPONSES_INCOMPLETE`, `CONTRACT_UNSECURED_AUTH_RESPONSES`, `CONTRACT_INVALID_STATUS_CODE`, `CONTRACT_BODYLESS_STATUS_WITH_CONTENT`, `CONTRACT_RESPONSE_BODY_UNDOCUMENTED`, `CONTRACT_RESPONSE_SCHEMA_UNDOCUMENTED`, `CONTRACT_REQUEST_SCHEMA_UNDOCUMENTED`, `CONTRACT_METHOD_BODY_SEMANTICS`, `CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED`, `CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED` |
 | Instrumentation warnings | `CONTRACT_REQUEST_BODY_INCOMPLETE`, `CONTRACT_READONLY_PROPERTY_IN_REQUEST`, `CONTRACT_UNDOCUMENTED_QUERY_PARAM`, `CONTRACT_REQUEST_SCHEMA_NOT_VALIDATED` |
 | Request matching | `CONTRACT_DUPLICATE_OPERATION_REQUEST`, `CONTRACT_OPERATION_COVERAGE_FAILED`, `CONTRACT_STATIC_REQUEST_CHECK_FAILED` |
 | Script safety | `CONTRACT_FORBIDDEN_SCRIPT_CONSTRUCT`, `CONTRACT_SCRIPT_SIZE_EXCEEDED`, `CONTRACT_COLLECTION_SIZE_EXCEEDED` |

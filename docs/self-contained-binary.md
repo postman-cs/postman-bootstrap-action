@@ -61,12 +61,23 @@ case "$POSTMAN_REGION" in
   *)  POSTMAN_API_BASE="https://api.getpostman.com" ;;
 esac
 
-POSTMAN_ACCESS_TOKEN="$(curl -fsSL -X POST "$POSTMAN_API_BASE/service-account-tokens" \
+resp="$(curl -fsSL -X POST "$POSTMAN_API_BASE/service-account-tokens" \
   -H "x-api-key: $POSTMAN_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"apiKey\":\"$POSTMAN_API_KEY\"}" \
-  | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)"
+  -d "{\"apiKey\":\"$POSTMAN_API_KEY\"}")"
+
+# The endpoint returns the token as either "access_token" or a nested
+# session "token" -- accept both, matching the production extractor.
+POSTMAN_ACCESS_TOKEN="$(printf '%s' "$resp" | grep -o '"access_token":"[^"]*"' | head -1 | cut -d'"' -f4)"
+[ -n "$POSTMAN_ACCESS_TOKEN" ] || \
+  POSTMAN_ACCESS_TOKEN="$(printf '%s' "$resp" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4)"
+[ -n "$POSTMAN_ACCESS_TOKEN" ] || { echo "token mint failed" >&2; exit 1; }
 export POSTMAN_ACCESS_TOKEN
+
+# Drop the PMAK so it is not in scope when the binary runs: the binary
+# reads a plain POSTMAN_API_KEY too, and its presence would enable lint
+# (a runtime Postman CLI install), breaking access-token-only isolation.
+unset POSTMAN_API_KEY
 ```
 
 A token minted from the US endpoint is not valid against the EU API (and vice versa), so the mint base and `--postman-region` must match. Store the PMAK in your CI secret store and mint on demand; do not persist the access token.
@@ -125,19 +136,27 @@ pipeline {
       steps {
         // Bind the PMAK, mint a fresh access token, then run -- all in one shell so the
         // minted token stays in scope. The binary reads it from POSTMAN_ACCESS_TOKEN
-        // (no --postman-access-token flag); the PMAK is never passed to the binary.
+        // (no --postman-access-token flag); the PMAK is unset before the binary runs.
         withCredentials([string(credentialsId: 'postman-api-key', variable: 'POSTMAN_API_KEY')]) {
           sh '''
+            set +x          # Jenkins runs sh with -x by default; disable it BEFORE touching the PMAK
             set -eu
             case "$POSTMAN_REGION" in
               eu) API_BASE="https://api.eu.postman.com" ;;
               *)  API_BASE="https://api.getpostman.com" ;;
             esac
-            POSTMAN_ACCESS_TOKEN="$(curl -fsSL -X POST "$API_BASE/service-account-tokens" \
+            resp="$(curl -fsSL -X POST "$API_BASE/service-account-tokens" \
               -H "x-api-key: $POSTMAN_API_KEY" -H "Content-Type: application/json" \
-              -d "{\\"apiKey\\":\\"$POSTMAN_API_KEY\\"}" \
-              | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)"
+              -d "{\\"apiKey\\":\\"$POSTMAN_API_KEY\\"}")"
+            # Accept both response shapes: "access_token" or a nested session "token".
+            POSTMAN_ACCESS_TOKEN="$(printf '%s' "$resp" | grep -o '"access_token":"[^"]*"' | head -1 | cut -d'"' -f4)"
+            [ -n "$POSTMAN_ACCESS_TOKEN" ] || \
+              POSTMAN_ACCESS_TOKEN="$(printf '%s' "$resp" | grep -o '"token":"[^"]*"' | head -1 | cut -d'"' -f4)"
+            [ -n "$POSTMAN_ACCESS_TOKEN" ] || { echo "token mint failed" >&2; exit 1; }
             export POSTMAN_ACCESS_TOKEN
+            # Drop the PMAK so the binary stays access-token-only: it also reads a plain
+            # POSTMAN_API_KEY, whose presence would enable lint (a runtime CLI install).
+            unset POSTMAN_API_KEY
             ./postman-bootstrap \
               --project-name core-payments \
               --spec-path specs/openapi.yaml \

@@ -536,6 +536,152 @@ describe('internal integration adapter', () => {
     const callHeaders = (fetchImpl.mock.calls[0][1] as RequestInit).headers as Record<string, string>;
     expect(callHeaders['x-entity-team-id']).toBeUndefined();
   });
+
+  describe('findWorkspaceForRepo', () => {
+    const repoUrl = 'https://github.com/postman-cs/bootstrap-action-test';
+
+    it('returns free when the filesystem probe finds no owner (200 + null data)', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({ meta: { model: 'workspace', action: 'find' }, data: null })
+      );
+      const adapter = createInternalIntegrationAdapter({
+        backend: 'bifrost',
+        accessToken: 'token-123',
+        teamId: '11430732',
+        fetchImpl
+      });
+
+      await expect(adapter.findWorkspaceForRepo(repoUrl)).resolves.toEqual({ state: 'free' });
+
+      expect(fetchImpl).toHaveBeenCalledWith(
+        'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            service: 'workspaces',
+            method: 'GET',
+            path: `/workspaces/filesystem?repo=${encodeURIComponent(repoUrl)}&path=${encodeURIComponent('/')}`
+          })
+        })
+      );
+    });
+
+    it('returns linked-visible when the probe returns a workspace the credentials can view', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse({
+          meta: { model: 'workspace', action: 'find' },
+          data: { id: 'ws-linked', name: 'Payments Service', visibilityStatus: 'team' }
+        })
+      );
+      const adapter = createInternalIntegrationAdapter({
+        backend: 'bifrost',
+        accessToken: 'token-123',
+        teamId: '11430732',
+        fetchImpl
+      });
+
+      await expect(adapter.findWorkspaceForRepo(repoUrl, '/')).resolves.toEqual({
+        state: 'linked-visible',
+        workspace: {
+          id: 'ws-linked',
+          name: 'Payments Service',
+          visibilityStatus: 'team'
+        }
+      });
+    });
+
+    it('returns linked-invisible when the probe is 403 with error.meta.workspaceId', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          {
+            error: {
+              status: 403,
+              name: 'forbiddenError',
+              message: 'You do not have permission to view this workspace',
+              meta: { workspaceId: 'ws-hidden' }
+            }
+          },
+          { status: 403 }
+        )
+      );
+      const adapter = createInternalIntegrationAdapter({
+        backend: 'bifrost',
+        accessToken: 'token-123',
+        teamId: '11430732',
+        fetchImpl
+      });
+
+      await expect(adapter.findWorkspaceForRepo(repoUrl)).resolves.toEqual({
+        state: 'linked-invisible',
+        workspaceId: 'ws-hidden'
+      });
+    });
+
+    it('returns linked-invisible when HTTP 200 wraps error.meta.workspaceId', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          {
+            error: {
+              status: 403,
+              name: 'forbiddenError',
+              message: 'You do not have permission to view this workspace',
+              meta: { workspaceId: 'ws-hidden-wrapped' }
+            }
+          },
+          { status: 200 }
+        )
+      );
+      const adapter = createInternalIntegrationAdapter({
+        backend: 'bifrost',
+        accessToken: 'token-123',
+        teamId: '11430732',
+        fetchImpl
+      });
+
+      await expect(adapter.findWorkspaceForRepo(repoUrl)).resolves.toEqual({
+        state: 'linked-invisible',
+        workspaceId: 'ws-hidden-wrapped'
+      });
+    });
+
+    it('returns unknown (non-fatal) on transport or unexpected probe failures', async () => {
+      const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('network down'));
+      const adapter = createInternalIntegrationAdapter({
+        backend: 'bifrost',
+        accessToken: 'token-123',
+        teamId: '11430732',
+        fetchImpl
+      });
+
+      const result = await adapter.findWorkspaceForRepo(repoUrl);
+      expect(result.state).toBe('unknown');
+      if (result.state === 'unknown') {
+        expect(result.reason).toMatch(/network down/);
+      }
+    });
+
+    it('does not mistake an empty 200 or another 2xx response for a free link', async () => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response('', { status: 200 }))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      const adapter = createInternalIntegrationAdapter({
+        backend: 'bifrost',
+        accessToken: 'token-123',
+        teamId: '11430732',
+        fetchImpl
+      });
+
+      await expect(adapter.findWorkspaceForRepo(repoUrl)).resolves.toMatchObject({
+        state: 'unknown',
+        reason: 'Filesystem probe returned 200 without a data payload'
+      });
+      await expect(adapter.findWorkspaceForRepo(repoUrl)).resolves.toMatchObject({
+        state: 'unknown',
+        reason: 'Filesystem probe returned HTTP 204'
+      });
+    });
+  });
 });
 
 describe('internal integration adapter error advice', () => {

@@ -290,6 +290,7 @@ function createRollbackIntegration(overrides: Record<string, unknown> = {}) {
   return {
     assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
     configureTeamContext: vi.fn(),
+    findWorkspaceForRepo: vi.fn().mockResolvedValue({ state: 'free' }),
     linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
     syncCollection: vi.fn().mockResolvedValue(undefined),
     ...overrides
@@ -2922,6 +2923,212 @@ describe('lintSpecViaCli', () => {
     expect(summary.violations[1]?.severity).toBe('ERROR');
   });
 });
+
+  describe('repository link preflight', () => {
+    function createPreflightPostman(overrides: Record<string, unknown> = {}) {
+      return {
+        addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
+        findWorkspacesByName: vi.fn().mockResolvedValue([]),
+        generateCollection: vi
+          .fn()
+          .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+            if (prefix === '') return 'col-baseline';
+            if (prefix === '[Smoke]') return 'col-smoke';
+            return 'col-contract';
+          }),
+        getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+        getTeams: vi.fn().mockResolvedValue([]),
+        getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+        getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+        injectContractTests: vi.fn().mockResolvedValue([]),
+        injectTests: vi.fn().mockResolvedValue(undefined),
+        inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+        tagCollection: vi.fn().mockResolvedValue(undefined),
+        uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+        updateSpec: vi.fn().mockResolvedValue(undefined),
+        getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31),
+        ...overrides
+      };
+    }
+
+    it('adopts the linked-visible workspace and skips name-based selection/creation', async () => {
+      const { core, infos } = createCoreStub();
+      const postman = createPreflightPostman();
+      const findWorkspaceForRepo = vi.fn().mockResolvedValue({
+        state: 'linked-visible',
+        workspace: { id: 'ws-linked', name: 'Linked Payments' }
+      });
+      const internalIntegration = createRollbackIntegration({ findWorkspaceForRepo });
+
+      const result = await runBootstrap(createInputs(), {
+        core,
+        exec: createExecStub(),
+        io: createIoStub(),
+        internalIntegration,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      });
+
+      expect(findWorkspaceForRepo).toHaveBeenCalledWith(
+        'https://github.com/postman-cs/bootstrap-action-test'
+      );
+      expect(postman.createWorkspace).not.toHaveBeenCalled();
+      expect(postman.findWorkspacesByName).not.toHaveBeenCalled();
+      expect(result['workspace-id']).toBe('ws-linked');
+      expect(
+        infos.some((line) =>
+          line.includes('adopting it as the canonical workspace')
+          && line.includes('ws-linked')
+        )
+      ).toBe(true);
+    });
+
+    it('fails fast on linked-invisible before any workspace or asset creation', async () => {
+      const { core } = createCoreStub();
+      const postman = createPreflightPostman();
+      const findWorkspaceForRepo = vi.fn().mockResolvedValue({
+        state: 'linked-invisible',
+        workspaceId: 'ws-hidden'
+      });
+      const internalIntegration = createRollbackIntegration({ findWorkspaceForRepo });
+      const expectedMessage =
+        'REPOSITORY_LINK_CONFLICT_INVISIBLE: Repository https://github.com/postman-cs/bootstrap-action-test at path / is linked to workspace ws-hidden, but these credentials cannot view it. No Postman assets were changed. Ask its owner or a team admin to disconnect it.';
+
+      let thrown: unknown;
+      try {
+        await runBootstrap(createInputs(), {
+          core,
+          exec: createExecStub(),
+          io: createIoStub(),
+          internalIntegration,
+          postman: withContractHelpers(postman),
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response(VALID_SPEC_31, { status: 200 })
+          )
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe(expectedMessage);
+
+      expect(postman.createWorkspace).not.toHaveBeenCalled();
+      expect(postman.findWorkspacesByName).not.toHaveBeenCalled();
+      expect(postman.addAdminsToWorkspace).not.toHaveBeenCalled();
+      expect(postman.inviteRequesterToWorkspace).not.toHaveBeenCalled();
+      expect(postman.uploadSpec).not.toHaveBeenCalled();
+      expect(postman.updateSpec).not.toHaveBeenCalled();
+      expect(postman.generateCollection).not.toHaveBeenCalled();
+      expect(postman.injectTests).not.toHaveBeenCalled();
+      expect(postman.injectContractTests).not.toHaveBeenCalled();
+      expect(postman.tagCollection).not.toHaveBeenCalled();
+      expect(internalIntegration.assignWorkspaceToGovernanceGroup).not.toHaveBeenCalled();
+      expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+      expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+    });
+
+    it('appends org-mode remediation when workspace-team-id is set on linked-invisible', async () => {
+      const { core } = createCoreStub();
+      const postman = createPreflightPostman();
+      const internalIntegration = createRollbackIntegration({
+        findWorkspaceForRepo: vi.fn().mockResolvedValue({
+          state: 'linked-invisible',
+          workspaceId: 'ws-hidden'
+        })
+      });
+      const expectedMessage =
+        'REPOSITORY_LINK_CONFLICT_INVISIBLE: Repository https://github.com/postman-cs/bootstrap-action-test at path / is linked to workspace ws-hidden, but these credentials cannot view it. No Postman assets were changed. Ask its owner or a team admin to disconnect it. Verify workspace-team-id; if the owner is in another sub-team, ask that sub-team\'s admin to disconnect it.';
+
+      let thrown: unknown;
+      try {
+        await runBootstrap(createInputs({ workspaceTeamId: '132319' }), {
+          core,
+          exec: createExecStub(),
+          io: createIoStub(),
+          internalIntegration,
+          postman: withContractHelpers(postman),
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response(VALID_SPEC_31, { status: 200 })
+          )
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe(expectedMessage);
+
+      expect(postman.createWorkspace).not.toHaveBeenCalled();
+      expect(postman.findWorkspacesByName).not.toHaveBeenCalled();
+      expect(postman.addAdminsToWorkspace).not.toHaveBeenCalled();
+      expect(postman.inviteRequesterToWorkspace).not.toHaveBeenCalled();
+      expect(postman.uploadSpec).not.toHaveBeenCalled();
+      expect(postman.updateSpec).not.toHaveBeenCalled();
+      expect(postman.generateCollection).not.toHaveBeenCalled();
+      expect(postman.injectTests).not.toHaveBeenCalled();
+      expect(postman.injectContractTests).not.toHaveBeenCalled();
+      expect(postman.tagCollection).not.toHaveBeenCalled();
+      expect(internalIntegration.assignWorkspaceToGovernanceGroup).not.toHaveBeenCalled();
+      expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+      expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+    });
+
+    it('proceeds with existing behavior when the probe reports free', async () => {
+      const { core } = createCoreStub();
+      const postman = createPreflightPostman();
+      const findWorkspaceForRepo = vi.fn().mockResolvedValue({ state: 'free' });
+      const internalIntegration = createRollbackIntegration({ findWorkspaceForRepo });
+
+      const result = await runBootstrap(createInputs(), {
+        core,
+        exec: createExecStub(),
+        io: createIoStub(),
+        internalIntegration,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      });
+
+      expect(findWorkspaceForRepo).toHaveBeenCalled();
+      expect(postman.createWorkspace).toHaveBeenCalled();
+      expect(result['workspace-id']).toBe('ws-new');
+    });
+
+    it('warns and proceeds when the probe returns unknown', async () => {
+      const { core, warnings } = createCoreStub();
+      const postman = createPreflightPostman();
+      const findWorkspaceForRepo = vi.fn().mockResolvedValue({
+        state: 'unknown',
+        reason: 'HTTP 502 from Bifrost proxy'
+      });
+      const internalIntegration = createRollbackIntegration({ findWorkspaceForRepo });
+
+      const result = await runBootstrap(createInputs(), {
+        core,
+        exec: createExecStub(),
+        io: createIoStub(),
+        internalIntegration,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      });
+
+      expect(postman.createWorkspace).toHaveBeenCalled();
+      expect(result['workspace-id']).toBe('ws-new');
+      expect(
+        warnings.some((warning) =>
+          warning.includes('Repository link preflight')
+          && warning.includes('HTTP 502')
+        )
+      ).toBe(true);
+    });
+  });
 
   it('fails with team list when org-mode detected and no workspace-team-id', async () => {
     const { core } = createCoreStub();

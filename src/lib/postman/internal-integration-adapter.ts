@@ -15,6 +15,15 @@ export interface SpecificationCollectionLink {
   };
 }
 
+export type FindWorkspaceForRepoResult =
+  | { state: 'free' }
+  | {
+      state: 'linked-visible';
+      workspace: { id: string; name: string } & Record<string, unknown>;
+    }
+  | { state: 'linked-invisible'; workspaceId: string }
+  | { state: 'unknown'; reason: string };
+
 export interface InternalIntegrationAdapterOptions {
   accessToken: string;
   /**
@@ -46,6 +55,15 @@ export interface InternalIntegrationAdapter {
     workspaceId: string,
     repoUrl: string
   ): Promise<void>;
+  /**
+   * Probe whether `(repoUrl, path)` already owns a Bifrost filesystem link.
+   * Never throws for probe/transport failures — returns `{ state: 'unknown' }`
+   * so onboarding can proceed with existing workspace selection.
+   */
+  findWorkspaceForRepo(
+    repoUrl: string,
+    path?: string
+  ): Promise<FindWorkspaceForRepoResult>;
   linkCollectionsToSpecification(
     specificationId: string,
     collections: SpecificationCollectionLink[]
@@ -335,6 +353,115 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     });
     const advised = adviseFromHttpError(httpErr, this.adviceContext('workspace repository linking'));
     throw advised ?? httpErr;
+  }
+
+  async findWorkspaceForRepo(
+    repoUrl: string,
+    path = '/'
+  ): Promise<FindWorkspaceForRepoResult> {
+    const encodedRepo = encodeURIComponent(repoUrl);
+    const encodedPath = encodeURIComponent(path);
+    const requestPath = `/workspaces/filesystem?repo=${encodedRepo}&path=${encodedPath}`;
+
+    let response: Response;
+    try {
+      response = await this.proxyRequest('workspaces', 'GET', requestPath);
+    } catch (error) {
+      return {
+        state: 'unknown',
+        reason: error instanceof Error ? error.message : String(error)
+      };
+    }
+
+    let bodyText: string;
+    try {
+      bodyText = await response.text();
+    } catch (error) {
+      return {
+        state: 'unknown',
+        reason: error instanceof Error ? error.message : String(error)
+      };
+    }
+
+    type FilesystemProbeBody = {
+      data?: unknown;
+      error?: { meta?: { workspaceId?: unknown }; status?: unknown };
+      meta?: { workspaceId?: unknown };
+    };
+    let parsed: FilesystemProbeBody | null = null;
+    if (bodyText.trim()) {
+      try {
+        parsed = JSON.parse(bodyText) as FilesystemProbeBody;
+      } catch (error) {
+        return {
+          state: 'unknown',
+          reason: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }
+
+    // Bifrost may wrap an invisible-owner envelope in an outer HTTP 200 body.
+    // Detect this concrete owner-bearing shape before any 200 data/free
+    // classification so admission fails closed instead of treating it as unknown.
+    const wrappedInvisibleWorkspaceIdRaw = parsed?.error?.meta?.workspaceId;
+    const wrappedInvisibleWorkspaceId =
+      typeof wrappedInvisibleWorkspaceIdRaw === 'string'
+        ? wrappedInvisibleWorkspaceIdRaw.trim()
+        : '';
+    if (wrappedInvisibleWorkspaceId) {
+      return { state: 'linked-invisible', workspaceId: wrappedInvisibleWorkspaceId };
+    }
+
+    // The filesystem contract distinguishes only a successful 200 lookup.
+    // Do not treat another 2xx response (or an empty 200 body) as an
+    // unambiguously free link; proceeding on an ambiguous probe is safe, but
+    // reporting it as free would lose the diagnostic distinction.
+    if (response.status === 200) {
+      if (!parsed || !Object.prototype.hasOwnProperty.call(parsed, 'data')) {
+        return {
+          state: 'unknown',
+          reason: 'Filesystem probe returned 200 without a data payload'
+        };
+      }
+      const data = parsed?.data ?? null;
+      if (data == null) {
+        return { state: 'free' };
+      }
+      if (typeof data === 'object' && !Array.isArray(data)) {
+        const workspace = data as Record<string, unknown>;
+        const id = typeof workspace.id === 'string' ? workspace.id.trim() : '';
+        if (id) {
+          const name = typeof workspace.name === 'string' ? workspace.name : '';
+          return {
+            state: 'linked-visible',
+            workspace: { ...workspace, id, name }
+          };
+        }
+      }
+      return {
+        state: 'unknown',
+        reason: 'Filesystem probe returned 200 with unrecognized workspace payload'
+      };
+    }
+
+    if (response.status === 403) {
+      const workspaceIdRaw =
+        parsed?.error?.meta?.workspaceId ?? parsed?.meta?.workspaceId;
+      const workspaceId =
+        typeof workspaceIdRaw === 'string' ? workspaceIdRaw.trim() : '';
+      if (workspaceId) {
+        return { state: 'linked-invisible', workspaceId };
+      }
+      return {
+        state: 'unknown',
+        reason: 'Filesystem probe returned 403 without error.meta.workspaceId'
+      };
+    }
+
+    return {
+      state: 'unknown',
+      reason: `Filesystem probe returned HTTP ${response.status}`
+    };
   }
 
   async linkCollectionsToSpecification(

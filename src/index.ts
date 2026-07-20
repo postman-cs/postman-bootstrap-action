@@ -198,8 +198,12 @@ export interface BootstrapExecutionDependencies {
   io: IOLike;
   internalIntegration?: Pick<
     InternalIntegrationAdapter,
-    'assignWorkspaceToGovernanceGroup' | 'configureTeamContext' | 'linkCollectionsToSpecification' | 'syncCollection'
-  >;
+    | 'assignWorkspaceToGovernanceGroup'
+    | 'configureTeamContext'
+    | 'linkCollectionsToSpecification'
+    | 'syncCollection'
+  > &
+    Partial<Pick<InternalIntegrationAdapter, 'findWorkspaceForRepo'>>;
   github?: Pick<GitHubApiClient, 'getRepositoryCustomProperty'>;
   postman: Pick<
     PostmanGatewayAssetsClient,
@@ -1362,7 +1366,34 @@ async function provisionWorkspace(
   telemetry.setTeamId(teamId);
   const repoUrl = inputs.repoUrl || '';
 
-  if (!explicitWorkspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
+  // Bifrost enforces global uniqueness of (repo URL, path) -> workspace. Probe
+  // before name-based selection/create so a cross-team invisible owner fails
+  // admission with zero asset writes, and a visible owner is adopted.
+  if (repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo) {
+    const probe = await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl);
+    if (probe.state === 'linked-invisible') {
+      const orgTail = inputs.workspaceTeamId
+        ? ' Verify workspace-team-id; if the owner is in another sub-team, ask that sub-team\'s admin to disconnect it.'
+        : '';
+      throw new Error(
+        `REPOSITORY_LINK_CONFLICT_INVISIBLE: Repository ${repoUrl} at path / is linked to workspace ${probe.workspaceId}, but these credentials cannot view it. No Postman assets were changed. Ask its owner or a team admin to disconnect it.${orgTail}`
+      );
+    }
+    if (probe.state === 'linked-visible') {
+      workspaceId = probe.workspace.id;
+      workspaceMutationOwned = true;
+      const nameSuffix = probe.workspace.name ? ` ("${probe.workspace.name}")` : '';
+      dependencies.core.info(
+        `Repository ${repoUrl} at path / is already linked to workspace ${probe.workspace.id}${nameSuffix}; adopting it as the canonical workspace.`
+      );
+    } else if (probe.state === 'unknown') {
+      dependencies.core.warning(
+        `Repository link preflight could not determine ownership for ${repoUrl}: ${probe.reason}. Continuing with normal workspace selection.`
+      );
+    }
+  }
+
+  if (!workspaceId && repoUrl && inputs.postmanAccessToken && teamId) {
     const selection = await runGroup(
       dependencies.core,
       'Resolve Canonical Workspace',

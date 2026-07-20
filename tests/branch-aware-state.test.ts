@@ -82,6 +82,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     postmanAccessToken: 'access-token',
     credentialPreflight: 'warn',
     branchStrategy: 'legacy',
+    sections: 'off',
     integrationBackend: 'bifrost',
     folderStrategy: 'Tags',
     nestedFolderHierarchy: true,

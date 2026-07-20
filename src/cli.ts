@@ -147,6 +147,7 @@ const cliInputNames = [
   'branch-strategy',
   'canonical-branch',
   'channels',
+  'sections',
   'workspace-id',
   'spec-id',
   'baseline-collection-id',

@@ -4,6 +4,7 @@ import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 import {
   createInternalIntegrationAdapter
 } from '../src/lib/postman/internal-integration-adapter.js';
+import { createSecretMasker, REDACTED } from '../src/lib/secrets.js';
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -428,6 +429,14 @@ describe('internal integration adapter', () => {
   });
 
   it('throws when projectAlreadyConnected but linked to a different repo', async () => {
+    // Dynamic fields carry CR/LF/U+2028/U+2029 so the conflict path must
+    // normalize the complete message to one line after secret masking.
+    const attemptedUrl = 'https://gitlab.com/org/\rmy-service';
+    const existingUrl = 'https://gitlab.com/org/\ndifferent\u2028service';
+    const workspaceId = 'ws-leak-secret-xyz\u2029';
+    const leakySecret = 'leak-secret-xyz';
+    const toOneLine = (value: string) => value.replace(/[\r\n\u2028\u2029]+/g, ' ');
+
     const fetchImpl = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(
         jsonResponse(
@@ -437,7 +446,7 @@ describe('internal integration adapter', () => {
       )
       .mockResolvedValueOnce(
         jsonResponse({
-          repo: 'https://gitlab.com/org/different-service'
+          repo: existingUrl
         })
       );
 
@@ -446,12 +455,29 @@ describe('internal integration adapter', () => {
       accessToken: 'token-123',
       teamId: '11430732',
       orgMode: true,
-      fetchImpl
+      fetchImpl,
+      secretMasker: createSecretMasker([leakySecret])
     });
 
-    await expect(
-      adapter.connectWorkspaceToRepository('ws-456', 'https://gitlab.com/org/my-service')
-    ).rejects.toThrow(/linked to a different repo/);
+    let thrown: unknown;
+    try {
+      await adapter.connectWorkspaceToRepository(workspaceId, attemptedUrl);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).toContain(toOneLine(attemptedUrl));
+    expect(message).toContain(toOneLine(existingUrl));
+    expect(message).toContain(`workspace ws-${REDACTED}`);
+    expect(message).toMatch(/Bifrost uniqueness conflict/);
+    expect(message).toContain(
+      'Disconnect the existing repository link from that workspace or use the intended repository/workspace, then rerun.'
+    );
+    expect(message).not.toMatch(/[\r\n\u2028\u2029]/);
+    expect(message).toContain(REDACTED);
+    expect(message).not.toContain(leakySecret);
   });
 
   it('omits x-entity-team-id header when orgMode is false even with teamId set', async () => {

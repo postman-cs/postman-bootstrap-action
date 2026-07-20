@@ -148,8 +148,16 @@ export class GitHubApiClient {
         const body = await response.clone().text().catch(() => '');
         if (isRateLimitedResponse(response, body)) {
           const delay = this.rateLimitDelayMs(response, attempt);
-          console.log(
-            `GitHub API rate limited, retrying in ${Math.ceil(delay / 1000)}s (attempt ${attempt + 1}/${MAX_RETRIES})...`
+          const method = String(init.method || 'GET').toUpperCase();
+          const waitSeconds = Math.ceil(delay / 1000);
+          const cause = describeRateLimitCause(response, body);
+          const diagnostic =
+            `GitHub API rate limited on ${method} ${path} (repository ${this.repository}): ` +
+            `status ${response.status}, cause ${cause}; ` +
+            `waiting ${waitSeconds}s before automatic retry (attempt ${attempt + 1}/${MAX_RETRIES}). ` +
+            `If retries exhaust, check GitHub rate-limit and token permissions.`;
+          console.error(
+            this.secretMasker(diagnostic).replace(/[\r\n\u2028\u2029]+/g, ' ')
           );
           await new Promise((r) => setTimeout(r, delay));
           continue;
@@ -288,4 +296,24 @@ function isRateLimitedResponse(response: Response, body: string): boolean {
   if (message.includes('api rate limit exceeded')) return true;
 
   return response.status === 429;
+}
+
+function describeRateLimitCause(response: Response, body: string): string {
+  const message = body.toLowerCase();
+  if (message.includes('secondary rate limit')) {
+    return 'secondary rate limit';
+  }
+  if (message.includes('api rate limit exceeded')) {
+    return 'API rate limit exceeded';
+  }
+  if (response.headers.get('x-ratelimit-remaining') === '0') {
+    return 'primary rate limit (remaining=0)';
+  }
+  if (response.headers.get('retry-after')) {
+    return 'retry-after signaled';
+  }
+  if (response.status === 429) {
+    return 'HTTP 429 Too Many Requests';
+  }
+  return 'rate limit';
 }

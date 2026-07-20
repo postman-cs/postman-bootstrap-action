@@ -846,6 +846,41 @@ components:
     );
   });
 
+  it('warns with repository, property, masked cause, and remediation when governance property read fails', async () => {
+    const { core, warnings } = createCoreStub();
+    const postman = createRollbackPostman({
+      uploadSpec: vi.fn().mockResolvedValue('spec-123')
+    });
+    const internalIntegration = createRollbackIntegration();
+    const github = {
+      getRepositoryCustomProperty: vi
+        .fn()
+        .mockRejectedValue(new Error('GET properties failed with 403 - token gh-secret-token-xyz denied'))
+    };
+
+    await runExistingSpecBootstrap(postman, {
+      core,
+      github,
+      inputs: {
+        domain: undefined,
+        githubToken: 'gh-secret-token-xyz',
+        repoSlug: 'postman-cs/bootstrap\u2028action-test'
+      },
+      internalIntegration
+    });
+
+    const propertyWarning = warnings.find((warning) =>
+      warning.includes('Could not read GitHub repository property postman-governance-group')
+    );
+    expect(propertyWarning).toBeDefined();
+    expect(propertyWarning).toContain('repository postman-cs/bootstrap action-test');
+    expect(propertyWarning).toContain('Remediation:');
+    expect(propertyWarning).toMatch(/custom-property read permission|set governance-group explicitly/i);
+    expect(propertyWarning).toContain('[REDACTED]');
+    expect(propertyWarning).not.toContain('gh-secret-token-xyz');
+    expect(propertyWarning).not.toMatch(/[\r\n\u2028\u2029]/);
+  });
+
   it('uploads the bundled OpenAPI document used for dynamic contract validation', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
@@ -1845,7 +1880,7 @@ paths:
       internalIntegration,
       inputs: {
         baselineCollectionId: 'col-baseline-stale',
-        smokeCollectionId: 'col-smoke-stale',
+        smokeCollectionId: 'col-smoke\u2028stale',
         contractCollectionId: 'col-contract-stale',
         collectionSyncMode: 'refresh'
       }
@@ -1860,11 +1895,17 @@ paths:
       'smoke-collection-id': 'col-smoke-fresh',
       'contract-collection-id': 'col-contract-fresh'
     });
-    expect(
-      warnings.some((warning) =>
-        warning.includes('Could not regenerate existing') && warning.includes('col-smoke-stale')
-      )
-    ).toBe(true);
+    const regenerateWarning = warnings.find(
+      (warning) =>
+        warning.includes('Could not regenerate existing') && warning.includes('col-smoke stale')
+    );
+    expect(regenerateWarning).toBeDefined();
+    expect(regenerateWarning).toContain('spec spec-existing');
+    expect(regenerateWarning).toContain('smoke collection col-smoke stale');
+    expect(regenerateWarning).toContain('Consequence: generating a fresh');
+    expect(regenerateWarning).toContain('Remediation:');
+    expect(regenerateWarning).toMatch(/persisted references/i);
+    expect(regenerateWarning).not.toMatch(/[\r\n\u2028\u2029]/);
   });
 
   it('rejects collection ID collisions after refresh before tagging or linking', async () => {
@@ -1890,6 +1931,13 @@ paths:
   it('records completed tag side effects when a later tag fails', async () => {
     const { core, warnings } = createCoreStub();
     const postman = createRollbackPostman({
+      generateCollection: vi
+        .fn()
+        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
+          if (prefix === '') return 'col-baseline\u2028generated';
+          if (prefix === '[Smoke]') return 'col-smoke-generated';
+          return 'col-contract-generated';
+        }),
       tagCollection: vi
         .fn()
         .mockResolvedValueOnce(undefined)
@@ -1901,12 +1949,15 @@ paths:
     ).rejects.toThrow('smoke tag rejected');
 
     expect(postman.tagCollection).toHaveBeenCalledTimes(2);
-    expect(
-      warnings.some((warning) =>
+    const sideEffectWarning = warnings.find(
+      (warning) =>
         warning.includes('Completed external side effects before failure')
-        && warning.includes('tagCollection(col-baseline-generated, generated-docs)')
-      )
-    ).toBe(true);
+        && warning.includes('tagCollection(col-baseline generated, generated-docs)')
+    );
+    expect(sideEffectWarning).toBeDefined();
+    expect(sideEffectWarning).toContain('cause: smoke tag rejected');
+    expect(sideEffectWarning).toContain('Remediation: inspect and reconcile');
+    expect(sideEffectWarning).not.toMatch(/[\r\n\u2028\u2029]/);
   });
 
   it('records completed link and sync side effects when later sync fails', async () => {
@@ -1925,13 +1976,16 @@ paths:
 
     expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
     expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(2);
-    expect(
-      warnings.some((warning) =>
+    const sideEffectWarning = warnings.find(
+      (warning) =>
         warning.includes('Completed external side effects before failure')
         && warning.includes('linkCollectionsToSpecification(spec-existing: col-baseline-generated, col-smoke-generated, col-contract-generated; syncExamples=true)')
         && warning.includes('syncCollection(spec-existing, col-baseline-generated)')
-      )
-    ).toBe(true);
+    );
+    expect(sideEffectWarning).toBeDefined();
+    expect(sideEffectWarning).toContain('cause: second sync failed');
+    expect(sideEffectWarning).toContain('Remediation: inspect and reconcile');
+    expect(sideEffectWarning).not.toMatch(/[\r\n\u2028\u2029]/);
   });
 
   it('version mode reuses the current ref resources.yaml mappings instead of a release manifest', async () => {
@@ -2300,7 +2354,7 @@ paths:
     };
 
     const result = await runBootstrap(
-      createInputs(),
+      createInputs({ domain: 'core\u2028banking' }),
       {
         core,
         exec: execStub,
@@ -2316,16 +2370,124 @@ paths:
     expect(result['workspace-id']).toBe('ws-123');
     expect(internalIntegration.assignWorkspaceToGovernanceGroup).toHaveBeenCalledWith(
       'ws-123',
-      'core-banking',
+      'core\u2028banking',
       '{"core-banking":"Core Banking"}',
       undefined
     );
-    expect(
-      warnings.some((warning) =>
-        warning.includes('Failed to assign governance group: gateway 404')
-      )
-    ).toBe(true);
+    const governanceWarning = warnings.find((warning) =>
+      warning.includes('Failed to assign governance group')
+    );
+    expect(governanceWarning).toBeDefined();
+    expect(governanceWarning).toContain('workspace ws-123');
+    expect(governanceWarning).toContain('domain core banking');
+    expect(governanceWarning).toContain('gateway 404');
+    expect(governanceWarning).toContain('Remediation:');
+    expect(governanceWarning).toMatch(/assign the governance group manually/i);
+    expect(governanceWarning).toContain('[REDACTED]');
+    expect(governanceWarning).not.toContain('postman-access-token');
+    expect(governanceWarning).not.toMatch(/[\r\n\u2028\u2029]/);
     expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalled();
+  });
+
+  it('warns with workspace and requester email context when invite fails, then continues', async () => {
+    const { core, warnings } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-id'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi
+        .fn()
+        .mockRejectedValue(new Error('invite denied for pmak-test leaked')),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+    };
+
+    const result = await runBootstrap(
+      createInputs({ requesterEmail: 'owner@exam\nple.com' }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      }
+    );
+
+    expect(result['workspace-id']).toBe('ws-123');
+    const inviteWarning = warnings.find((warning) => warning.includes('Failed to invite requester'));
+    expect(inviteWarning).toBeDefined();
+    expect(inviteWarning).toContain('owner@exam ple.com');
+    expect(inviteWarning).toContain('workspace ws-123');
+    expect(inviteWarning).toContain('Remediation:');
+    expect(inviteWarning).toContain('[REDACTED]');
+    expect(inviteWarning).not.toContain('pmak-test');
+    expect(inviteWarning).not.toMatch(/[\r\n\u2028\u2029]/);
+    expect(postman.tagCollection).toHaveBeenCalled();
+  });
+
+  it('warns with workspace and admin ids when admin assignment fails, then continues', async () => {
+    const { core, warnings } = createCoreStub();
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi
+        .fn()
+        .mockRejectedValue(new Error('admin role denied\nfor tok-secret-admin-xyz')),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-id'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockResolvedValue([]),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+    };
+
+    const result = await runBootstrap(
+      createInputs({
+        postmanAccessToken: 'tok-secret-admin-xyz',
+        workspaceAdminUserIds: '101,\r102'
+      }),
+      {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman: withContractHelpers(postman),
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      }
+    );
+
+    expect(result['workspace-id']).toBe('ws-123');
+    const adminWarning = warnings.find((warning) => warning.includes('Failed to add team admins'));
+    expect(adminWarning).toBeDefined();
+    expect(adminWarning).toContain('101, 102');
+    expect(adminWarning).toContain('workspace ws-123');
+    expect(adminWarning).toContain('Remediation:');
+    expect(adminWarning).toContain('[REDACTED]');
+    expect(adminWarning).not.toContain('tok-secret-admin-xyz');
+    expect(adminWarning).not.toMatch(/[\r\n\u2028\u2029]/);
+    expect(postman.tagCollection).toHaveBeenCalled();
   });
 
   it('passes syncExamples=false when configured', async () => {
@@ -2900,6 +3062,75 @@ describe('lintSpecViaCli', () => {
     });
   });
 
+  it('masks multiline stderr and names spec/workspace on nonzero lint exit', async () => {
+    const masker = (input: string) => input.split('pmak-secret').join('[REDACTED]');
+    const exec: ExecLike = {
+      exec: vi.fn().mockResolvedValue(0),
+      getExecOutput: vi.fn().mockResolvedValue({
+        exitCode: 2,
+        stdout: '',
+        stderr: 'login failed\nwith key pmak-secret\u2028and token'
+      })
+    };
+
+    const rejection = await lintSpecViaCli(
+      { exec },
+      'ws\nlint',
+      'spec\u2028lint',
+      masker
+    ).catch((error: unknown) => error);
+    expect(rejection).toBeInstanceOf(Error);
+    const message = (rejection as Error).message;
+    expect(message).toContain('spec spec lint');
+    expect(message).toContain('workspace ws lint');
+    expect(message).toContain('[REDACTED]');
+    expect(message).not.toContain('pmak-secret');
+    expect(message).toContain('Remediation:');
+    expect(message).not.toMatch(/[\r\n\u2028\u2029]/);
+    expect(exec.getExecOutput).toHaveBeenCalledWith(
+      'postman',
+      [
+        'spec',
+        'lint',
+        'spec\u2028lint',
+        '--workspace-id',
+        'ws\nlint',
+        '--report-events',
+        '-o',
+        'json'
+      ],
+      { ignoreReturnCode: true }
+    );
+  });
+
+  it('masks multiline invalid JSON stdout/stderr and names spec/workspace', async () => {
+    const masker = (input: string) => input.split('access-secret').join('[REDACTED]');
+    const exec: ExecLike = {
+      exec: vi.fn().mockResolvedValue(0),
+      getExecOutput: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        stdout: 'not-json\naccess-secret',
+        stderr: 'parser blew up\u2029access-secret'
+      })
+    };
+
+    const rejection = await lintSpecViaCli(
+      { exec },
+      'ws\u2029lint',
+      'spec\rlint',
+      masker
+    ).catch((error: unknown) => error);
+    expect(rejection).toBeInstanceOf(Error);
+    const message = (rejection as Error).message;
+    expect(message).toContain('not valid JSON');
+    expect(message).toContain('spec spec lint');
+    expect(message).toContain('workspace ws lint');
+    expect(message).toContain('[REDACTED]');
+    expect(message).not.toContain('access-secret');
+    expect(message).toContain('Remediation:');
+    expect(message).not.toMatch(/[\r\n\u2028\u2029]/);
+  });
+
   it('downgrades only the accepted OpenAPI 3.0 type null lint finding', () => {
     const summary = applyOas30TypeNullLintCompatibility(
       {
@@ -3302,7 +3533,7 @@ describe('lintSpecViaCli', () => {
       new Response(VALID_SPEC_31, { status: 200 })
     );
 
-    await runBootstrap(createInputs(), {
+    await runBootstrap(createInputs({ projectName: 'core\u2028payments' }), {
       core,
       exec: execStub,
       io: ioStub,
@@ -3310,7 +3541,13 @@ describe('lintSpecViaCli', () => {
       specFetcher
     });
 
-    expect(warnings.some(w => w.includes('Could not check for org-mode'))).toBe(true);
+    const orgModeWarning = warnings.find((w) => w.includes('Could not check for org-mode'));
+    expect(orgModeWarning).toBeDefined();
+    expect(orgModeWarning).toContain('workspace [AF] core payments');
+    expect(orgModeWarning).toContain('Network error');
+    expect(orgModeWarning).toContain('Impact: continuing without org-mode team context (orgMode=false)');
+    expect(orgModeWarning).toContain('Remediation: set workspace-team-id');
+    expect(orgModeWarning).not.toMatch(/[\r\n\u2028\u2029]/);
     expect(postman.createWorkspace).toHaveBeenCalled();
   });
 
@@ -3795,6 +4032,37 @@ describe('runAction credential preflight', () => {
     expect(sessionLineIndex).toBeGreaterThan(pmakLineIndex);
     expect(createWorkspaceIndex).toBeGreaterThan(sessionLineIndex);
     expect(infos.some((line) => line.includes('credential preflight OK'))).toBe(true);
+  }, 30000);
+
+  it('runAction warns with context and defaults orgMode=false when the early org-mode probe fails', async () => {
+    const events: string[] = [];
+    vi.stubEnv('GITHUB_REPOSITORY', 'postman-cs/bootstrap\u2028action-test');
+    const { PostmanGatewayAssetsClient } = await import(
+      '../src/lib/postman/postman-gateway-assets-client.js'
+    );
+    const getTeamsSpy = vi
+      .spyOn(PostmanGatewayAssetsClient.prototype, 'getTeams')
+      .mockRejectedValueOnce(
+        new Error('ums probe denied for access-token-test\nacross teams')
+      );
+    vi.stubGlobal('fetch', createRunActionFetchRouter({ events }));
+    const { core, warnings, outputs } = createRunActionCore(baseInputValues(), events);
+
+    try {
+      await runAction(core, createExecStub(), createIoStub());
+    } finally {
+      getTeamsSpy.mockRestore();
+    }
+
+    expect(outputs['workspace-id']).toBe('ws-runaction');
+    const probeWarning = warnings.find((line) => line.includes('Could not probe org-mode teams'));
+    expect(probeWarning).toBeDefined();
+    expect(probeWarning).toContain('repository postman-cs/bootstrap action-test');
+    expect(probeWarning).toContain('Impact: defaulting orgMode=false');
+    expect(probeWarning).toContain('Remediation: set workspace-team-id');
+    expect(probeWarning).toContain('[REDACTED]');
+    expect(probeWarning).not.toContain('access-token-test');
+    expect(probeWarning).not.toMatch(/[\r\n\u2028\u2029]/);
   }, 30000);
 
   it('runAction with PMAK only eagerly mints an access token, runs the org-mode probe, and creates the workspace over the gateway', async () => {

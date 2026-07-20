@@ -335,8 +335,13 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         if (normalizeGitRepoUrl(linkedUrl) === normalizeGitRepoUrl(repoUrl)) {
           return;
         }
+        const linkedClause = linkedUrl
+          ? `already linked to ${linkedUrl}`
+          : 'already linked to a different repository';
         throw new Error(
-          `Bifrost link already exists for workspace ${workspaceId}, but linked to a different repo`
+          this.secretMasker(
+            `Cannot link repository ${repoUrl} to workspace ${workspaceId}: Bifrost uniqueness conflict — that workspace is ${linkedClause}. Disconnect the existing repository link from that workspace or use the intended repository/workspace, then rerun.`
+          ).replace(/[\r\n\u2028\u2029]+/g, ' ')
         );
       }
     }

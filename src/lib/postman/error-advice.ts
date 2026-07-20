@@ -108,13 +108,27 @@ function buildAdvice(status: number, body: string, ctx: ErrorAdviceContext): str
   return undefined;
 }
 
+/** Collapse CR/LF and other line separators so composed advice stays one CI-friendly line. */
+function toOneLine(value: string): string {
+  return String(value || '')
+    .replace(/[\r\n\u2028\u2029]+/g, ' ')
+    .replace(/[ \t\f\v]+/g, ' ')
+    .trim();
+}
+
+function withUnderlyingCause(advice: string, causeText: string, mask: SecretMasker): string {
+  const cause = String(causeText || '').trim();
+  const composed = cause ? `${advice} Underlying cause: ${cause}` : advice;
+  return toOneLine(mask(composed));
+}
+
 export function adviseFromHttpError(err: HttpError, ctx: ErrorAdviceContext): Error | undefined {
   const body = err.responseBody || err.message || '';
   const advice = buildAdvice(err.status, body, ctx);
   if (!advice) {
     return undefined;
   }
-  return new Error(ctx.mask(advice), { cause: err });
+  return new Error(withUnderlyingCause(advice, err.message, ctx.mask), { cause: err });
 }
 
 export function adviseFromBifrostBody(
@@ -126,7 +140,8 @@ export function adviseFromBifrostBody(
   if (!advice) {
     return undefined;
   }
-  return new Error(ctx.mask(advice), {
-    cause: new Error(ctx.mask(`HTTP ${status}: ${String(body || '').slice(0, 800)}`))
+  const causeText = `HTTP ${status}: ${String(body || '').slice(0, 800)}`;
+  return new Error(withUnderlyingCause(advice, causeText, ctx.mask), {
+    cause: new Error(ctx.mask(causeText))
   });
 }

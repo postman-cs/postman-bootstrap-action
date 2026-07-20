@@ -50,7 +50,7 @@ import {
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
-import { createSecretMasker, createMutableSecretMasker } from './lib/secrets.js';
+import { createSecretMasker, createMutableSecretMasker, type SecretMasker } from './lib/secrets.js';
 import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
 import { resolveActionVersion } from './action-version.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
@@ -265,6 +265,33 @@ function resolveResourcesStateStore(dependencies: BootstrapExecutionDependencies
 }
 
 const GOVERNANCE_GROUP_PROPERTY_NAME = 'postman-governance-group';
+
+/**
+ * Convert an unknown caught value, CLI stdout/stderr, or a COMPLETE final
+ * operator message (entity fields + cause + remediation) to a single-line,
+ * secret-masked string. Normalizes CR, LF, U+2028, and U+2029 to a single
+ * space so input-derived fields cannot introduce log-injection separators.
+ * No dependency beyond the local masker.
+ */
+function formatMaskedOneLine(value: unknown, masker?: SecretMasker): string {
+  const text = value instanceof Error ? value.message : String(value ?? '');
+  const masked = masker ? masker(text) : text;
+  return masked.replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
+}
+
+function createBootstrapSecretMasker(
+  inputs: Pick<
+    ResolvedInputs,
+    'postmanApiKey' | 'postmanAccessToken' | 'githubToken' | 'ghFallbackToken'
+  >
+): SecretMasker {
+  return createSecretMasker([
+    inputs.postmanApiKey,
+    inputs.postmanAccessToken,
+    inputs.githubToken,
+    inputs.ghFallbackToken
+  ]);
+}
 
 export interface BootstrapDependencyFactories {
   core: Pick<CoreLike, 'error' | 'group' | 'info' | 'setOutput' | 'warning'>;
@@ -851,6 +878,7 @@ async function resolveGovernanceGroupName(
     return undefined;
   }
 
+  const repository = normalizeInputValue(inputs.repoSlug) || '(unknown repository)';
   try {
     const propertyGroup = normalizeInputValue(
       await dependencies.github.getRepositoryCustomProperty(GOVERNANCE_GROUP_PROPERTY_NAME)
@@ -862,8 +890,14 @@ async function resolveGovernanceGroupName(
       return propertyGroup;
     }
   } catch (error) {
+    const mask = createBootstrapSecretMasker(inputs);
+    const cause = formatMaskedOneLine(error, mask);
     dependencies.core.warning(
-      `Could not read GitHub repository property ${GOVERNANCE_GROUP_PROPERTY_NAME}: ${error instanceof Error ? error.message : String(error)}`
+      formatMaskedOneLine(
+        `Could not read GitHub repository property ${GOVERNANCE_GROUP_PROPERTY_NAME} for repository ${repository}: ${cause}. ` +
+          'Remediation: grant the github-token custom-property read permission, or set governance-group explicitly.',
+        mask
+      )
     );
   }
 
@@ -922,7 +956,8 @@ export async function ensurePostmanCli(
 export async function lintSpecViaCli(
   dependencies: Pick<BootstrapExecutionDependencies, 'exec'>,
   workspaceId: string,
-  specId: string
+  specId: string,
+  masker?: SecretMasker
 ): Promise<LintSummary> {
   const result = await dependencies.exec.getExecOutput(
     'postman',
@@ -941,16 +976,31 @@ export async function lintSpecViaCli(
     }
   );
 
+  const workspaceLabel = workspaceId || '(none)';
   if (result.exitCode !== 0 && !result.stdout.trim()) {
-    throw new Error(`Spec lint command failed: ${result.stderr}`);
+    const cause = formatMaskedOneLine(result.stderr, masker);
+    throw new Error(
+      formatMaskedOneLine(
+        `Spec lint command failed for spec ${specId} in workspace ${workspaceLabel}: ${cause}. ` +
+          'Remediation: verify the Postman CLI can access the spec with the configured postman-api-key, then rerun.',
+        masker
+      )
+    );
   }
 
   let parsed: { violations?: LintViolation[] };
   try {
     parsed = JSON.parse(result.stdout || '{}') as { violations?: LintViolation[] };
   } catch {
+    const stdoutCause = formatMaskedOneLine(result.stdout, masker);
+    const stderrCause = formatMaskedOneLine(result.stderr, masker);
     throw new Error(
-      `Spec lint output is not valid JSON. output: ${result.stdout}, err: ${result.stderr}`
+      formatMaskedOneLine(
+        `Spec lint output is not valid JSON for spec ${specId} in workspace ${workspaceLabel}: ` +
+          `stdout=${stdoutCause}; stderr=${stderrCause}. ` +
+          'Remediation: verify the Postman CLI lint JSON report, then rerun with a working postman-api-key login.',
+        masker
+      )
     );
   }
 
@@ -1495,8 +1545,20 @@ async function provisionWorkspace(
       if (err instanceof Error && err.message.includes('Org-mode account detected')) {
         throw err;
       }
+      const mask = createBootstrapSecretMasker(inputs);
+      const cause = formatMaskedOneLine(err, mask);
+      const context = workspaceName
+        ? `workspace ${workspaceName}`
+        : inputs.repoSlug
+          ? `repository ${inputs.repoSlug}`
+          : `project ${inputs.projectName}`;
       dependencies.core.warning(
-        `Could not check for org-mode sub-teams: ${err instanceof Error ? err.message : String(err)}`
+        formatMaskedOneLine(
+          `Could not check for org-mode sub-teams while provisioning ${context}: ${cause}. ` +
+            'Impact: continuing without org-mode team context (orgMode=false). ' +
+            'Remediation: set workspace-team-id explicitly if workspace creation fails, or verify the postman-access-token can list teams.',
+          mask
+        )
       );
     }
   }
@@ -1561,6 +1623,7 @@ async function provisionWorkspace(
           );
         } catch (error) {
           const session = getMemoizedSessionIdentity();
+          const mask = createBootstrapSecretMasker(inputs);
           const advised =
             error instanceof HttpError
               ? adviseFromHttpError(error, {
@@ -1571,13 +1634,22 @@ async function provisionWorkspace(
                   sessionConsumerType: session?.consumerType,
                   workspaceTeamId: inputs.workspaceTeamId,
                   explicitTeamId: inputs.teamId || undefined,
-                  mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+                  mask
                 })
               : undefined;
           const reported = advised ?? error;
+          const cause = formatMaskedOneLine(reported, mask);
+          const target = governanceGroupName
+            ? `group ${governanceGroupName}`
+            : inputs.domain
+              ? `domain ${inputs.domain}`
+              : 'configured governance target';
           dependencies.core.warning(
-            `Failed to assign governance group: ${reported instanceof Error ? reported.message : String(reported)
-            }`
+            formatMaskedOneLine(
+              `Failed to assign governance group for workspace ${workspaceId || '(unknown)'} (${target}): ${cause}. ` +
+                'Remediation: assign the governance group manually in Postman, or verify the postman-access-token can update workspace governance.',
+              mask
+            )
           );
         }
       }
@@ -1595,9 +1667,14 @@ async function provisionWorkspace(
             inputs.requesterEmail || ''
           );
         } catch (error) {
+          const mask = createBootstrapSecretMasker(inputs);
+          const cause = formatMaskedOneLine(error, mask);
           dependencies.core.warning(
-            `Failed to invite requester: ${error instanceof Error ? error.message : String(error)
-            }`
+            formatMaskedOneLine(
+              `Failed to invite requester ${inputs.requesterEmail} to workspace ${workspaceId || '(unknown)'}: ${cause}. ` +
+                'Remediation: invite the requester manually, or verify the postman-access-token can manage workspace members.',
+              mask
+            )
           );
         }
       }
@@ -1613,9 +1690,14 @@ async function provisionWorkspace(
         try {
           await dependencies.postman.addAdminsToWorkspace(workspaceId || '', adminIds);
         } catch (error) {
+          const mask = createBootstrapSecretMasker(inputs);
+          const cause = formatMaskedOneLine(error, mask);
           dependencies.core.warning(
-            `Failed to add team admins: ${error instanceof Error ? error.message : String(error)
-            }`
+            formatMaskedOneLine(
+              `Failed to add team admins (${adminIds}) to workspace ${workspaceId || '(unknown)'}: ${cause}. ` +
+                `Remediation: add admin user ids ${adminIds} manually, or verify the postman-access-token can manage workspace roles.`,
+              mask
+            )
           );
         }
       }
@@ -1899,16 +1981,27 @@ export async function createExtensibleContractCollection(
         leafCount = await ecClient.populateFromTree(collectionId, built.collection);
       } catch (error) {
         // Atomic: never leave a half-populated collection behind.
+        const mask = createBootstrapSecretMasker(inputs);
+        const populationCause = formatMaskedOneLine(error, mask);
         try {
           await ecClient.deleteExtensibleCollection(collectionId);
           dependencies.core.warning(
-            `Populating ${label} EC contract collection ${collectionId} failed; deleted the partial collection.`
+            formatMaskedOneLine(
+              `Populating ${label} EC contract collection ${collectionId} (${collectionName}) failed: ${populationCause}; ` +
+                'cleanup deleted the partial collection. ' +
+                'Remediation: fix the population failure and rerun; no manual delete needed.',
+              mask
+            )
           );
         } catch (cleanupError) {
+          const cleanupCause = formatMaskedOneLine(cleanupError, mask);
           dependencies.core.warning(
-            `Populating ${label} EC contract collection ${collectionId} failed and cleanup also failed ` +
-              `(${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}); ` +
-              `delete collection ${collectionId} manually.`
+            formatMaskedOneLine(
+              `Populating ${label} EC contract collection ${collectionId} (${collectionName}) failed: ${populationCause}; ` +
+                `cleanup also failed: ${cleanupCause}. ` +
+                `Remediation: delete collection ${collectionId} manually, then fix the population failure and rerun.`,
+              mask
+            )
           );
         }
         throw error;
@@ -2399,7 +2492,13 @@ async function runBootstrapInner(
       async () => runGroup(
         dependencies.core,
         'Lint Spec via Postman CLI',
-        async () => lintSpecViaCli(dependencies, workspaceId || '', outputs['spec-id'])
+        async () =>
+          lintSpecViaCli(
+            dependencies,
+            workspaceId || '',
+            outputs['spec-id'],
+            createBootstrapSecretMasker(inputs)
+          )
       )
     );
     if (preserveSourceSpecBytes) {
@@ -2494,9 +2593,16 @@ async function runBootstrapInner(
                   // same-name collection after an ambiguous response.
                   throw error;
                 }
+                const role = describeGeneratedCollection(prefix);
+                const mask = createBootstrapSecretMasker(inputs);
+                const cause = formatMaskedOneLine(error, mask);
                 dependencies.core.warning(
-                  `Could not regenerate existing ${describeGeneratedCollection(prefix)} collection ${existingId} from spec ` +
-                    `(${error instanceof Error ? error.message : String(error)}); generating a fresh collection`
+                  formatMaskedOneLine(
+                    `Could not regenerate existing ${role} collection ${existingId} from spec ${specId}: ${cause}. ` +
+                      `Consequence: generating a fresh ${role} collection automatically (persisted references to ${existingId} will not be preserved). ` +
+                      `Remediation: if persisted references to ${existingId} matter, update repository variables or relink after the run; otherwise no action needed.`,
+                    mask
+                  )
                 );
               }
             } else {
@@ -2757,10 +2863,16 @@ async function runBootstrapInner(
   }
 
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const mask = createBootstrapSecretMasker(inputs);
+    const reason = formatMaskedOneLine(error, mask);
     if (completedExternalSideEffects.length > 0) {
       dependencies.core.warning(
-        `Completed external side effects before failure; these are not automatically rolled back: ${completedExternalSideEffects.join('; ')}`
+        formatMaskedOneLine(
+          `Completed external side effects before failure at stage ${rollbackTriggerStage} (cause: ${reason}); ` +
+            `these are not automatically rolled back: ${completedExternalSideEffects.join('; ')}. ` +
+            'Remediation: inspect and reconcile the listed concrete resources before rerun.',
+          mask
+        )
       );
     }
     await restorePreviousSpecContent(`${rollbackTriggerStage}: ${reason}`);
@@ -2918,8 +3030,23 @@ export async function runAction(
       });
       const teams = await probeGateway.getTeams();
       orgMode = teams.some(t => t.organizationId != null);
-    } catch {
+    } catch (error) {
       // Org-mode detection failure is not fatal; default to false
+      const mask = createBootstrapSecretMasker(inputs);
+      const cause = formatMaskedOneLine(error, mask);
+      const context = inputs.workspaceTeamId
+        ? `workspace-team-id ${inputs.workspaceTeamId}`
+        : inputs.repoSlug
+          ? `repository ${inputs.repoSlug}`
+          : `project ${inputs.projectName}`;
+      actionCore.warning(
+        formatMaskedOneLine(
+          `Could not probe org-mode teams for ${context}: ${cause}. ` +
+            'Impact: defaulting orgMode=false for adapter configuration. ' +
+            'Remediation: set workspace-team-id explicitly if org-mode workspace operations fail, or verify credential access to the ums teams endpoint.',
+          mask
+        )
+      );
     }
   }
 

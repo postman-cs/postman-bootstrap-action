@@ -96,7 +96,8 @@ describe('GitHubApiClient', () => {
 
   it('retries rate-limit-shaped responses with deterministic Retry-After delays', async () => {
     vi.useFakeTimers();
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -113,8 +114,9 @@ describe('GitHubApiClient', () => {
       )
       .mockResolvedValueOnce(jsonResponse({ value: 'ws-123' }));
 
+    const repository = 'postman-cs/bootstrap\u2028demo';
     const client = new GitHubApiClient({
-      repository: 'postman-cs/bootstrap-demo',
+      repository,
       token: 'primary-token',
       fetch: fetchMock
     });
@@ -129,6 +131,24 @@ describe('GitHubApiClient', () => {
         Authorization: 'Bearer primary-token'
       })
     });
+
+    expect(stdoutSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalledTimes(1);
+    const diagnostic = String(stderrSpy.mock.calls[0]?.[0] ?? '');
+    expect(diagnostic).toMatch(/GET/);
+    expect(diagnostic).toContain(
+      '/repos/postman-cs/bootstrap demo/actions/variables/POSTMAN_WORKSPACE_ID'
+    );
+    expect(diagnostic).toContain('repository postman-cs/bootstrap demo');
+    expect(diagnostic).toMatch(/status 403/);
+    expect(diagnostic).toContain('API rate limit exceeded');
+    expect(diagnostic).toMatch(/waiting 1s/);
+    expect(diagnostic).toMatch(/attempt 1\/5/);
+    expect(diagnostic).toMatch(/automatic retry/i);
+    expect(diagnostic).toMatch(/rate-limit and token permissions/i);
+    expect(diagnostic).not.toMatch(/[\r\n\u2028\u2029]/);
+    expect(diagnostic.split('\n')).toHaveLength(1);
+    expect(diagnostic).not.toContain('primary-token');
   });
 
   it('does not retry a plain 403 that is not rate-limit-shaped before fallback handling', async () => {

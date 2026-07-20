@@ -763,27 +763,39 @@ describe('Wave 2 create reconciliation', () => {
 
     it('persists a run-created EC root before population and cleans up only that id', async () => {
       const writes: PostmanResourcesState[] = [];
+      const core = createCoreStub();
+      const warnings: string[] = [];
+      core.warning = vi.fn((message: string) => {
+        warnings.push(message);
+      });
+      const populationError = new Error('population failed with secret pmak-live');
       const ecClient = {
-        createExtensibleCollection: vi.fn().mockResolvedValue('ec-run-created'),
+        createExtensibleCollection: vi.fn().mockResolvedValue('ec-run\u2028created'),
         deleteExtensibleCollection: vi.fn().mockResolvedValue(undefined),
         getExtensibleCollection: vi.fn(),
         populateFromTree: vi.fn().mockImplementation(async () => {
           expect(writes.at(-1)).toMatchObject({
             cloudResources: {
-              collections: { '../postman/collections/[Contract] Payments': 'ec-run-created' }
+              collections: {
+                '../postman/collections/[Contract] Payments': 'ec-run\u2028created'
+              }
             }
           });
-          throw new Error('population failed');
+          throw populationError;
         })
       };
 
       await expect(
         createExtensibleContractCollection(
           'ws-1',
-          { type: 'grpc', collection: { title: 'EC Contract' } } as never,
-          { projectName: 'Payments' } as never,
+          { type: 'grpc', collection: { title: 'EC\u2028Contract' } } as never,
           {
-            core: createCoreStub(),
+            projectName: 'Payments',
+            postmanApiKey: 'pmak-live',
+            postmanAccessToken: 'access-live'
+          } as never,
+          {
+            core,
             exec: createExecStub(),
             io: createIoStub(),
             postman: {} as never,
@@ -796,10 +808,77 @@ describe('Wave 2 create reconciliation', () => {
           },
           {}
         )
-      ).rejects.toThrow(/population failed/);
+      ).rejects.toBe(populationError);
 
       expect(ecClient.deleteExtensibleCollection).toHaveBeenCalledTimes(1);
-      expect(ecClient.deleteExtensibleCollection).toHaveBeenCalledWith('ec-run-created');
+      expect(ecClient.deleteExtensibleCollection).toHaveBeenCalledWith('ec-run\u2028created');
+      const cleanupWarning = warnings.find((warning) =>
+        warning.includes('Populating GRPC EC contract collection ec-run created')
+      );
+      expect(cleanupWarning).toBeDefined();
+      expect(cleanupWarning).toContain('(EC Contract)');
+      expect(cleanupWarning).toContain('population failed with secret [REDACTED]');
+      expect(cleanupWarning).not.toContain('pmak-live');
+      expect(cleanupWarning).toContain('cleanup deleted the partial collection');
+      expect(cleanupWarning).toContain('Remediation:');
+      expect(cleanupWarning).toMatch(/rerun/i);
+      expect(cleanupWarning).not.toMatch(/[\r\n\u2028\u2029]/);
+    });
+
+    it('warns with population and cleanup causes when EC cleanup also fails, then rethrows original', async () => {
+      const core = createCoreStub();
+      const warnings: string[] = [];
+      core.warning = vi.fn((message: string) => {
+        warnings.push(message);
+      });
+      const populationError = new Error('populate boom\nwith access-live');
+      const ecClient = {
+        createExtensibleCollection: vi.fn().mockResolvedValue('ec-orphan'),
+        deleteExtensibleCollection: vi
+          .fn()
+          .mockRejectedValue(new Error('delete denied\u2028for access-live')),
+        getExtensibleCollection: vi.fn(),
+        populateFromTree: vi.fn().mockRejectedValue(populationError)
+      };
+
+      await expect(
+        createExtensibleContractCollection(
+          'ws-1',
+          { type: 'grpc', collection: { title: 'Orphan\nContract' } } as never,
+          {
+            projectName: 'Payments',
+            postmanApiKey: 'pmak-live',
+            postmanAccessToken: 'access-live'
+          } as never,
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: {} as never,
+            ecClient: ecClient as never,
+            resourcesState: {
+              read: () => null,
+              write: vi.fn()
+            },
+            specFetcher: vi.fn()
+          },
+          {}
+        )
+      ).rejects.toBe(populationError);
+
+      expect(ecClient.deleteExtensibleCollection).toHaveBeenCalledWith('ec-orphan');
+      const cleanupWarning = warnings.find((warning) =>
+        warning.includes('Populating GRPC EC contract collection ec-orphan')
+      );
+      expect(cleanupWarning).toBeDefined();
+      expect(cleanupWarning).toContain('(Orphan Contract)');
+      expect(cleanupWarning).toContain('populate boom with [REDACTED]');
+      expect(cleanupWarning).toContain('cleanup also failed:');
+      expect(cleanupWarning).toContain('delete denied for [REDACTED]');
+      expect(cleanupWarning).not.toContain('access-live');
+      expect(cleanupWarning).toContain('Remediation: delete collection ec-orphan manually');
+      expect(cleanupWarning).toMatch(/rerun/i);
+      expect(cleanupWarning).not.toMatch(/[\r\n\u2028\u2029]/);
     });
   });
 

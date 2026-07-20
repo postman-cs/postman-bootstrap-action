@@ -48,9 +48,14 @@ The plain-env fallback (3) is what makes Jenkins [`withCredentials`](https://www
 
 ### Access-token-only keeps it self-contained
 
-Run with **only** `postman-access-token` (no `postman-api-key`) to keep the run free of any runtime downloads. Every asset operation — workspace, Spec Hub upload, collection generation, test injection, tagging, linking, sync — runs over the access-token gateway, which needs nothing *on the agent* beyond the binary (it still reaches the Postman gateway over the network).
+Run with **only** `postman-access-token` (no `postman-api-key`) and with the two optional download paths off (their defaults) to keep the run free of any runtime tool downloads. Every asset operation — workspace, Spec Hub upload, collection generation, test injection, tagging, linking, sync — runs over the access-token gateway, which needs nothing *on the agent* beyond the binary (it still reaches the Postman gateway over the network — see [Network requirements](#network-requirements)).
 
-Passing `postman-api-key` additionally enables **spec lint**, which downloads and installs the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-installation/) via `curl` at runtime. That is a network dependency and will fail on a `curl`-less or air-gapped agent. If you need lint in a locked-down environment, run it as a separate, explicitly-provisioned step rather than through this binary. Without a PMAK, lint is cleanly skipped (`{ "status": "skipped", "reason": "no postman-api-key" }`) and the run does not fail.
+Two features pull extra tooling onto the agent at runtime; both are off by default and must stay off (or be pre-provisioned) on a locked-down agent:
+
+- **Spec lint** — enabled by `postman-api-key`. Downloads and installs the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-installation/) via `curl` at runtime. Without a PMAK, lint is cleanly skipped (`{ "status": "skipped", "reason": "no postman-api-key" }`) and the run does not fail.
+- **Breaking-change check** — enabled by `breaking-change-mode` with a comparison source. Downloads the pinned `pb33f/openapi-changes` tarball from GitHub and shells out to `tar`. Leave `breaking-change-mode` at its default (`off`) to skip it, or pre-provision/mirror the tool. Access-token-only alone does **not** disable it.
+
+If you need either in a locked-down environment, run it as a separate, explicitly-provisioned step rather than through this binary.
 
 ### Minting an access token
 
@@ -88,12 +93,21 @@ Minting uses the PMAK only for this token exchange — it is **not** passed to t
 
 ## Network requirements
 
-The binary bundles its runtime, but the bootstrap is an online operation. The agent needs outbound network access (direct or via an HTTP/HTTPS proxy) to the Postman API and gateway for your region for the entire run — token minting is only the first call, and every subsequent workspace, Spec Hub, collection, tagging, and linking mutation goes over the network too.
+The binary bundles its runtime, but the bootstrap is an online operation. The agent needs outbound network access (direct or via an HTTP/HTTPS proxy) to Postman for the entire run — token minting is only the first call; every subsequent workspace, Spec Hub, collection, tagging, and linking mutation goes over the network too, and most of them hit the gateway/proxy hosts rather than the public API host.
 
-- **US:** `api.getpostman.com`
-- **EU:** `api.eu.postman.com`
+On agents that enforce an outbound allowlist, allow **all** of the following (prod defaults). The region only changes the API host; the gateway, Bifrost, and iapub hosts are the same for US and EU:
 
-Pre-minting the access token on a connected host and injecting it as `POSTMAN_ACCESS_TOKEN` removes the mint call from the agent, but **not** the requirement — the agent still must reach the Postman gateway to do the actual work. A host with no route to Postman (direct or proxied) cannot run the bootstrap. Only the package-registry and Node-runtime dependencies are eliminated; Postman connectivity is not.
+| Host | Purpose |
+| --- | --- |
+| `api.getpostman.com` (US) / `api.eu.postman.com` (EU) | Public API — token minting, some asset calls |
+| `bifrost-premium-https-v4.gw.postman.com` | Bifrost proxy — governance, linking, system envs |
+| `gateway.postman.com` | Access-token asset gateway — spec/collection operations |
+| `iapub.postman.co` | Session identity / team scope (`/api/sessions/current`) |
+| `go.postman.co` | Cold serial fallback for the Bifrost proxy (`/_api`) |
+
+Allowlisting only the API host is **not** enough: credential preflight and asset-gateway calls will fail even though minting succeeds. If you also enable lint or breaking-change checks, add `dl-cli.pstmn.io` and `github.com` / `objects.githubusercontent.com` respectively.
+
+Pre-minting the access token on a connected host and injecting it as `POSTMAN_ACCESS_TOKEN` removes the mint call from the agent, but **not** the requirement — the agent still must reach the gateway hosts above to do the actual work. A host with no route to Postman (direct or proxied) cannot run the bootstrap. Only the package-registry and Node-runtime dependencies are eliminated; Postman connectivity is not.
 
 ## Run
 
@@ -190,5 +204,7 @@ pipeline {
 ## Scope and limitations
 
 - **Platform:** linux-x64 (glibc) only. arm64/Windows/macOS targets are not built yet.
+- **Network:** not air-gapped — requires outbound access to the Postman API/gateway hosts for the whole run. See [Network requirements](#network-requirements).
 - **Lint:** requires the Postman CLI, which the binary installs via `curl` at runtime — not self-contained. Access-token-only runs skip lint cleanly.
+- **Breaking-change check:** downloads the `pb33f/openapi-changes` tarball at runtime when enabled. Off by default (`breaking-change-mode: off`); leave it off or pre-provision the tool on locked-down agents.
 - **Version:** the embedded `--version` and telemetry version are baked in at build time from the release tag; the versioned filename (`postman-bootstrap-<version>-linux-x64`) also carries it.

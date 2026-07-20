@@ -1,6 +1,8 @@
 # Self-contained binary (no npm / no Node)
 
-For CI environments that cannot install npm packages or a Node.js runtime — locked-down Jenkins, Bitbucket Pipelines on a bare agent, air-gapped build boxes — the bootstrap ships as a single self-contained executable. It is a [Node.js Single Executable Application](https://nodejs.org/api/single-executable-applications.html): the Node runtime and the entire bundle are baked into one file, so the target needs **no npm, no Node install, and no network access to a package registry**.
+For CI environments that cannot install npm packages or a Node.js runtime — locked-down Jenkins, Bitbucket Pipelines on a bare agent, boxes with no package-registry access — the bootstrap ships as a single self-contained executable. It is a [Node.js Single Executable Application](https://nodejs.org/api/single-executable-applications.html): the Node runtime and the entire bundle are baked into one file, so the target needs **no npm, no Node install, and no network access to a package registry**.
+
+"Self-contained" means the *runtime* is bundled — it is not network-isolated. The bootstrap calls Postman API and gateway endpoints throughout the run (see [Network requirements](#network-requirements)).
 
 The binary is built and smoke-tested natively in CI on every release (`.github/workflows/release.yml`) and attached as a GitHub Release asset. It carries the same code as the `action.yml` and npm CLI paths.
 
@@ -46,7 +48,7 @@ The plain-env fallback (3) is what makes Jenkins [`withCredentials`](https://www
 
 ### Access-token-only keeps it self-contained
 
-Run with **only** `postman-access-token` (no `postman-api-key`) to stay fully offline. Every asset operation — workspace, Spec Hub upload, collection generation, test injection, tagging, linking, sync — runs over the access-token gateway, which needs nothing beyond the binary.
+Run with **only** `postman-access-token` (no `postman-api-key`) to keep the run free of any runtime downloads. Every asset operation — workspace, Spec Hub upload, collection generation, test injection, tagging, linking, sync — runs over the access-token gateway, which needs nothing *on the agent* beyond the binary (it still reaches the Postman gateway over the network).
 
 Passing `postman-api-key` additionally enables **spec lint**, which downloads and installs the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-installation/) via `curl` at runtime. That is a network dependency and will fail on a `curl`-less or air-gapped agent. If you need lint in a locked-down environment, run it as a separate, explicitly-provisioned step rather than through this binary. Without a PMAK, lint is cleanly skipped (`{ "status": "skipped", "reason": "no postman-api-key" }`) and the run does not fail.
 
@@ -82,7 +84,16 @@ unset POSTMAN_API_KEY
 
 A token minted from the US endpoint is not valid against the EU API (and vice versa), so the mint base and `--postman-region` must match. Store the PMAK in your CI secret store and mint on demand; do not persist the access token.
 
-Minting uses the PMAK only for this token exchange — it is **not** passed to the binary as `--postman-api-key`, so the run stays access-token-only (no lint, no Postman CLI install). In a truly air-gapped environment that cannot reach the Postman API to mint, generate the token on a connected host and inject it as `POSTMAN_ACCESS_TOKEN`.
+Minting uses the PMAK only for this token exchange — it is **not** passed to the binary as `--postman-api-key`, so the run stays access-token-only (no lint, no Postman CLI install).
+
+## Network requirements
+
+The binary bundles its runtime, but the bootstrap is an online operation. The agent needs outbound network access (direct or via an HTTP/HTTPS proxy) to the Postman API and gateway for your region for the entire run — token minting is only the first call, and every subsequent workspace, Spec Hub, collection, tagging, and linking mutation goes over the network too.
+
+- **US:** `api.getpostman.com`
+- **EU:** `api.eu.postman.com`
+
+Pre-minting the access token on a connected host and injecting it as `POSTMAN_ACCESS_TOKEN` removes the mint call from the agent, but **not** the requirement — the agent still must reach the Postman gateway to do the actual work. A host with no route to Postman (direct or proxied) cannot run the bootstrap. Only the package-registry and Node-runtime dependencies are eliminated; Postman connectivity is not.
 
 ## Run
 

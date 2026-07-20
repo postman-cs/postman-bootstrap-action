@@ -266,6 +266,22 @@ bootstrap:
 
 The same command works verbatim on any Node 24 runner: Bitbucket Pipelines with a `node:24` image, or Azure DevOps after a `NodeTool@0` step with `versionSpec: '24.x'`.
 
+### Self-contained binary (no npm / no Node)
+
+For CI that cannot install npm or Node — locked-down Jenkins, bare Bitbucket agents, boxes with no package-registry access — a single self-contained executable is published as a GitHub Release asset. It bakes the Node runtime and the full bundle into one file, so the target needs no npm, no Node install, and no package-registry access. It is not network-isolated: the run still needs outbound access to the Postman API/gateway.
+
+```bash
+VERSION=2.9.10
+curl -fsSL -o postman-bootstrap \
+  "https://github.com/postman-cs/postman-bootstrap-action/releases/download/v${VERSION}/postman-bootstrap-${VERSION}-linux-x64"
+chmod +x postman-bootstrap
+
+export POSTMAN_ACCESS_TOKEN="<minted-token>"
+./postman-bootstrap --project-name core-payments --spec-path ./openapi.yaml --result-json bootstrap-result.json
+```
+
+Credentials resolve from a CLI flag, then the `INPUT_*` env var, then a plain `POSTMAN_ACCESS_TOKEN` / `POSTMAN_API_KEY` — so Jenkins `withCredentials` works with no flag. Access-token-only runs pull no extra tooling onto the agent **as long as the two optional download paths stay off** (their defaults): `postman-api-key` enables lint (installs the Postman CLI via `curl`), and `breaking-change-mode` with a comparison source downloads the `pb33f/openapi-changes` tarball. Current target is `linux-x64`. Full runbook, credential minting, the Postman host allowlist, and a Jenkins pipeline: [Self-contained binary](docs/self-contained-binary.md).
+
 ## How it works
 
 The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), generate or reuse baseline, smoke, and contract collections, inject generated tests, apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
@@ -322,7 +338,7 @@ The complete catalog of all 142 codes, grouped by layer with per-code remediatio
 ## Resources
 
 - npm package: [@postman-cse/onboarding-bootstrap](https://www.npmjs.com/package/@postman-cse/onboarding-bootstrap)
-- Docs in this repo: [credentials](docs/credentials.md), [spec handling](docs/spec-handling.md), [lifecycle modes](docs/lifecycle-and-operations.md), [team identity](docs/team-identity.md), [generated assertions](docs/generated-assertions.md), [contract error codes](docs/contract-error-codes.md)
+- Docs in this repo: [credentials](docs/credentials.md), [self-contained binary](docs/self-contained-binary.md), [spec handling](docs/spec-handling.md), [lifecycle modes](docs/lifecycle-and-operations.md), [team identity](docs/team-identity.md), [generated assertions](docs/generated-assertions.md), [contract error codes](docs/contract-error-codes.md)
 - Marketplace docs: [Support](SUPPORT.md), [Security Policy](SECURITY.md), [Release Policy](RELEASE_POLICY.md)
 - Postman references: [Postman API](https://learning.postman.com/docs/reference/postman-api/intro-api/), [API authentication](https://learning.postman.com/docs/reference/postman-api/authentication/), [service accounts](https://learning.postman.com/docs/administration/service-accounts/), [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), [generate collections](https://learning.postman.com/docs/design-apis/specifications/generate-collections/), [Postman CLI governance](https://learning.postman.com/docs/postman-cli/postman-cli-governance/)
 

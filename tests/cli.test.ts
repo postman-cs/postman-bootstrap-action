@@ -253,7 +253,7 @@ describe('toDotenv', () => {
     expect(dotenv).toContain("POSTMAN_BOOTSTRAP_LINT_SUMMARY_JSON='{\"errors\":0}'");
   });
 
-  it('round-trips hostile values without executing shell substitutions', async () => {
+  it.skipIf(process.platform === 'win32')('round-trips hostile values without executing shell substitutions', async () => {
     const dir = await makeTempDir('postman-bootstrap-dotenv-');
     const markerPath = path.join(dir, 'marker');
     const dotenvPath = path.join(dir, 'bootstrap.env');

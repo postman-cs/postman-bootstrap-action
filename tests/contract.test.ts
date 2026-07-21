@@ -60,8 +60,9 @@ describe('bootstrap action contract', () => {
     expect(packageManifest.scripts.bundle).toContain('--outfile=dist/index.cjs');
     expect(packageManifest.scripts.bundle).toContain('src/main.ts --bundle');
     expect(packageManifest.scripts.bundle).toContain('--outfile=dist/action.cjs');
-    expect(packageManifest.scripts.bundle).toContain("--banner:js='#!/usr/bin/env node'");
-    expect(packageManifest.scripts.bundle).toMatch(/chmod(?:\s+\+x|\s+755)\s+dist\/cli\.cjs/);
+    expect(packageManifest.scripts.bundle).toContain('--banner:js="#!/usr/bin/env node"');
+    expect(packageManifest.scripts.bundle).toContain("process.platform!=='win32'");
+    expect(packageManifest.scripts.bundle).toContain("chmodSync('dist/cli.cjs',0o755)");
     expect(packageManifest.scripts.build.match(/npm run typecheck/g) ?? []).toHaveLength(1);
     expect(packageManifest.scripts.build.match(/npm run bundle/g) ?? []).toHaveLength(1);
     expect(packageManifest.scripts['verify:dist:assert']).toBe(

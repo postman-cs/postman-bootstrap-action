@@ -159,7 +159,7 @@ describe('verify-dist-artifact canonical contract', () => {
     expect(result.stderr).toMatch(/missing Node shebang/);
   });
 
-  it('fails when cli.cjs is not executable on disk', async () => {
+  it.skipIf(process.platform === 'win32')('fails when cli.cjs is not executable on disk', async () => {
     const root = await makeTempDir('verify-dist-mode-');
     await writeFixture(root, { mode: 0o644 });
     const result = await runVerify(root);
@@ -207,7 +207,7 @@ describe('verify-dist-artifact canonical contract', () => {
     expect(result.stderr).toMatch(/dist census mismatch/);
   });
 
-  it('fails when an expected entrypoint is a symlink', async () => {
+  it.skipIf(process.platform === 'win32')('fails when an expected entrypoint is a symlink', async () => {
     const root = await makeTempDir('verify-dist-symlink-');
     const linked = CONFIG.census.find((name) => name !== 'cli.cjs') as string;
     await writeFixture(root, { symlinkEntry: linked });

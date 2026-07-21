@@ -18,9 +18,22 @@ const CAPABILITY_KEYS = probeModule.CAPABILITY_KEYS as string[];
 const REQUIRED_LEG_MODES = probeModule.REQUIRED_LEG_MODES as string[];
 const REQUIRED_PROBE_IDS = probeModule.REQUIRED_PROBE_IDS as string[];
 const validateMultifileSpecSyncReceipt = probeModule.validateMultifileSpecSyncReceipt as (
-  receipt: unknown,
-  options?: { expectedCommit?: string }
+  receipt: unknown
 ) => unknown;
+const assertMultifileSpecSyncReceiptSourceBinding =
+  probeModule.assertMultifileSpecSyncReceiptSourceBinding as (
+    receipt: unknown,
+    options: {
+      headCommit: string;
+      repoRoot?: string;
+      isAncestor?: (receiptCommit: string, headCommit: string) => boolean;
+      changedPaths?: string[];
+    }
+  ) => unknown;
+const isReleaseOnlyDriftPath = probeModule.isReleaseOnlyDriftPath as (relPath: string) => boolean;
+const assertReleaseOnlySourceDrift = probeModule.assertReleaseOnlySourceDrift as (
+  changedPaths: string[]
+) => boolean;
 const isTerminalGenerationSuccess = probeModule.isTerminalGenerationSuccess as (
   taskStatus: unknown
 ) => boolean;
@@ -462,14 +475,104 @@ describe('multifile-spec-sync receipt contract', () => {
     expect(accepted.capabilities.atomicBulk).toBe(true);
   });
 
-  it('requires live evidence receipt bound to current bootstrap commit with P01-P10 pass', () => {
+  it('classifies release-only drift paths and rejects behavior-bearing source drift', () => {
+    expect(isReleaseOnlyDriftPath('package.json')).toBe(true);
+    expect(isReleaseOnlyDriftPath('package-lock.json')).toBe(true);
+    expect(isReleaseOnlyDriftPath('CHANGELOG.md')).toBe(true);
+    expect(isReleaseOnlyDriftPath('validation/evidence/multifile-spec-sync.json')).toBe(true);
+    expect(isReleaseOnlyDriftPath('dist/index.cjs')).toBe(true);
+    expect(isReleaseOnlyDriftPath('docs/LIVE_TESTING_RUNBOOK.md')).toBe(true);
+    expect(isReleaseOnlyDriftPath('src/index.ts')).toBe(false);
+    expect(isReleaseOnlyDriftPath('action.yml')).toBe(false);
+    expect(isReleaseOnlyDriftPath('scripts/probe-multifile-spec-sync.mjs')).toBe(false);
+    expect(isReleaseOnlyDriftPath('tests/multifile-spec-sync-receipt.test.ts')).toBe(false);
+    expect(() =>
+      assertReleaseOnlySourceDrift([
+        'package.json',
+        'dist/cli.cjs',
+        'validation/evidence/multifile-spec-sync.json'
+      ])
+    ).not.toThrow();
+    expect(() => assertReleaseOnlySourceDrift(['src/lib/postman/spec-file-reconcile.ts'])).toThrow(
+      /behavior-bearing|stale/i
+    );
+  });
+
+  it('allows ancestor receipt commit only for release-only path drift', () => {
+    const receipt = completeReceipt({
+      commit: 'b'.repeat(40),
+      capabilities: {
+        ...falseCapabilities(),
+        multiFileCreate: true,
+        multiFileRead: true,
+        openapiGeneration: true
+      }
+    });
+    const head = 'c'.repeat(40);
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+        headCommit: head,
+        isAncestor: () => true,
+        changedPaths: [
+          'package.json',
+          'package-lock.json',
+          'dist/index.cjs',
+          'validation/evidence/multifile-spec-sync.json',
+          'README.md'
+        ]
+      })
+    ).not.toThrow();
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+        headCommit: head,
+        isAncestor: () => true,
+        changedPaths: ['src/index.ts']
+      })
+    ).toThrow(/behavior-bearing|stale/i);
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+        headCommit: head,
+        isAncestor: () => true,
+        changedPaths: ['action.yml']
+      })
+    ).toThrow(/behavior-bearing|stale/i);
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+        headCommit: head,
+        isAncestor: () => true,
+        changedPaths: ['scripts/probe-multifile-spec-sync.mjs']
+      })
+    ).toThrow(/behavior-bearing|stale/i);
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+        headCommit: head,
+        isAncestor: () => true,
+        changedPaths: ['tests/spec-file-reconcile.test.ts']
+      })
+    ).toThrow(/behavior-bearing|stale/i);
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+        headCommit: head,
+        isAncestor: () => false,
+        changedPaths: []
+      })
+    ).toThrow(/not an ancestor/i);
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+        headCommit: 'b'.repeat(40)
+      })
+    ).not.toThrow();
+  });
+
+  it('requires live evidence receipt bound to committed feature source with P01-P10 pass', () => {
     expect(existsSync(receiptPath)).toBe(true);
     const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as Receipt;
     const commit = currentBootstrapCommit();
-    const validated = validateMultifileSpecSyncReceipt(receipt, {
-      expectedCommit: commit
+    const validated = assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+      headCommit: commit,
+      repoRoot
     }) as Receipt;
-    expect(validated.bootstrapCommit).toBe(commit);
+    expect(validated.bootstrapCommit).toMatch(/^[a-f0-9]{40}$/);
     expect(validated.legs).toHaveLength(2);
     for (const leg of validated.legs) {
       for (const id of REQUIRED_PROBE_IDS) {

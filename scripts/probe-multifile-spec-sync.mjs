@@ -254,11 +254,12 @@ function shapeOf(value, depth = 0) {
 }
 
 /**
- * Validate a sanitized multifile Spec Hub probe receipt.
+ * Validate a sanitized multifile Spec Hub probe receipt (schema + matrix only).
+ * Intentionally git-free: source-commit binding belongs in
+ * {@link assertMultifileSpecSyncReceiptSourceBinding}.
  * @param {unknown} receipt
- * @param {{ expectedCommit?: string }} [options]
  */
-export function validateMultifileSpecSyncReceipt(receipt, options = {}) {
+export function validateMultifileSpecSyncReceipt(receipt) {
   const record = asRecord(receipt);
   if (!record) throw new Error('receipt must be an object');
   if (record.schemaVersion !== 1) throw new Error('receipt.schemaVersion must be 1');
@@ -267,11 +268,6 @@ export function validateMultifileSpecSyncReceipt(receipt, options = {}) {
   }
   if (typeof record.bootstrapCommit !== 'string' || !/^[a-f0-9]{40}$/.test(record.bootstrapCommit)) {
     throw new Error('receipt.bootstrapCommit must be a 40-char lowercase git sha');
-  }
-  if (options.expectedCommit && record.bootstrapCommit !== options.expectedCommit) {
-    throw new Error(
-      `receipt.bootstrapCommit ${record.bootstrapCommit} does not match current HEAD ${options.expectedCommit}`
-    );
   }
 
   const leak = containsSecretLeak(record);
@@ -395,6 +391,108 @@ export function validateMultifileSpecSyncReceipt(receipt, options = {}) {
   }
 
   return record;
+}
+
+/**
+ * Paths allowed to change after receipt.bootstrapCommit without invalidating
+ * live capability evidence. Anything under src/, action.yml, probe/scripts,
+ * capability-defining tests, or other production seams must not appear here.
+ * @param {string} relPath
+ */
+export function isReleaseOnlyDriftPath(relPath) {
+  const p = String(relPath || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '');
+  if (!p) return false;
+  if (p === 'package.json' || p === 'package-lock.json') return true;
+  if (p === 'README.md' || p === 'LICENSE' || p === 'LICENSE.md') return true;
+  if (p === 'CHANGELOG' || /^CHANGELOG(\.|[-_])/i.test(p)) return true;
+  if (p.startsWith('validation/evidence/')) return true;
+  if (p.startsWith('dist/')) return true;
+  // Release/docs metadata (markdown only).
+  if (p.startsWith('docs/') && /\.md$/i.test(p)) return true;
+  return false;
+}
+
+/**
+ * @param {string[]} changedPaths paths from `git diff --name-only receipt..HEAD`
+ */
+export function assertReleaseOnlySourceDrift(changedPaths) {
+  const paths = Array.isArray(changedPaths) ? changedPaths : [];
+  const offenders = paths
+    .map((entry) => String(entry || '').replace(/\\/g, '/').replace(/^\.\//, ''))
+    .filter((entry) => entry && !isReleaseOnlyDriftPath(entry));
+  if (offenders.length > 0) {
+    throw new Error(
+      `receipt bootstrapCommit is stale: behavior-bearing paths changed after receipt (${offenders.join(', ')})`
+    );
+  }
+  return true;
+}
+
+function gitIsAncestor(ancestor, descendant, repoRoot) {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', ancestor, descendant], {
+      cwd: repoRoot,
+      stdio: 'ignore'
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function gitChangedPaths(fromCommit, toCommit, repoRoot) {
+  return execFileSync('git', ['diff', '--name-only', `${fromCommit}..${toCommit}`], {
+    cwd: repoRoot,
+    encoding: 'utf8'
+  })
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Test/CLI wrapper: schema validation plus source-commit binding.
+ * Receipt bootstrapCommit identifies the committed production source probed.
+ * It may equal HEAD, or be an ancestor of HEAD only when every path in
+ * `git diff --name-only receiptCommit..HEAD` is release-only drift.
+ *
+ * @param {unknown} receipt
+ * @param {{
+ *   headCommit: string,
+ *   repoRoot?: string,
+ *   isAncestor?: (receiptCommit: string, headCommit: string) => boolean,
+ *   changedPaths?: string[],
+ * }} options
+ */
+export function assertMultifileSpecSyncReceiptSourceBinding(receipt, options = {}) {
+  const validated = validateMultifileSpecSyncReceipt(receipt);
+  const receiptCommit = validated.bootstrapCommit;
+  const headCommit = options.headCommit;
+  if (typeof headCommit !== 'string' || !/^[a-f0-9]{40}$/.test(headCommit)) {
+    throw new Error('headCommit must be a 40-char lowercase git sha');
+  }
+  if (receiptCommit === headCommit) {
+    return validated;
+  }
+
+  const repoRoot = options.repoRoot || REPO_ROOT;
+  const isAncestor =
+    typeof options.isAncestor === 'function'
+      ? options.isAncestor
+      : (ancestor, descendant) => gitIsAncestor(ancestor, descendant, repoRoot);
+
+  if (!isAncestor(receiptCommit, headCommit)) {
+    throw new Error(
+      `receipt.bootstrapCommit ${receiptCommit} is not an ancestor of HEAD ${headCommit}`
+    );
+  }
+
+  const changedPaths =
+    options.changedPaths ?? gitChangedPaths(receiptCommit, headCommit, repoRoot);
+  assertReleaseOnlySourceDrift(changedPaths);
+  return validated;
 }
 
 function createGateway(accessToken, orgMode, entityTeamId) {
@@ -967,9 +1065,7 @@ function loadExistingReceipt() {
 
 function writeReceipt(receipt) {
   mkdirSync(path.dirname(RECEIPT_PATH), { recursive: true });
-  const validated = validateMultifileSpecSyncReceipt(receipt, {
-    expectedCommit: receipt.bootstrapCommit
-  });
+  const validated = validateMultifileSpecSyncReceipt(receipt);
   writeFileSync(RECEIPT_PATH, `${JSON.stringify(validated, null, 2)}\n`, 'utf8');
 }
 

@@ -164,7 +164,7 @@ describe('ensurePostmanCli login region', () => {
 
     expect(execMock).toHaveBeenNthCalledWith(
       1,
-      'powershell.exe',
+      'pwsh.exe',
       [
         '-NoProfile',
         '-InputFormat',

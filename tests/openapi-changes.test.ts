@@ -150,15 +150,24 @@ describe('openapi-changes breaking-change check', () => {
     expect((await realpath(commandConfigPath)).startsWith(realRunnerTemp)).toBe(true);
     expect(commandConfigContent).toBe('{}\n');
     expect(dependencies.exec.getExecOutput).toHaveBeenCalledWith(
-      binaryPath,
+      expect.any(String),
       expect.arrayContaining(['report']),
       expect.objectContaining({ silent: true })
     );
     expect(dependencies.exec.getExecOutput).toHaveBeenCalledWith(
-      binaryPath,
+      expect.any(String),
       expect.arrayContaining(['summary']),
       expect.objectContaining({ silent: true })
     );
+    const getExecOutput = vi.mocked(dependencies.exec.getExecOutput);
+    const commandBinaryPaths = getExecOutput.mock.calls
+      .filter(([, args]) => args?.[0] === 'report' || args?.[0] === 'summary')
+      .map(([commandLine]) => commandLine);
+    expect(commandBinaryPaths).toHaveLength(2);
+    await expect(Promise.all(commandBinaryPaths.map((commandLine) => realpath(commandLine)))).resolves.toEqual([
+      await realpath(binaryPath),
+      await realpath(binaryPath)
+    ]);
   });
 
   it('skips without installing openapi-changes when the enabled mode has no comparison source', async () => {

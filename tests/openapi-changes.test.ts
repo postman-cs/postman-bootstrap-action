@@ -147,7 +147,7 @@ describe('openapi-changes breaking-change check', () => {
     expect(summary).not.toContain('Date:');
     expect(summary).not.toContain('/home/runner/work/_temp');
     expect(commandCurrentContent).toBe('{"openapi":"3.1.0","paths":{"/bundled":{}}}');
-    expect(commandConfigPath.startsWith(realRunnerTemp)).toBe(true);
+    expect((await realpath(commandConfigPath)).startsWith(realRunnerTemp)).toBe(true);
     expect(commandConfigContent).toBe('{}\n');
     expect(dependencies.exec.getExecOutput).toHaveBeenCalledWith(
       binaryPath,

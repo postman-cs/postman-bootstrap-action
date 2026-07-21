@@ -18,6 +18,12 @@ function npmRegistrySetupStep(): string {
 }
 
 describe('release workflow publishing contract', () => {
+  it('fetches full tag history before validating receipt ancestry', () => {
+    expect(releaseWorkflow).toMatch(
+      /validate:[\s\S]*?uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0/
+    );
+  });
+
   it('keeps v1 as the only rolling alias and v1.x as a zero-patch publish tag', () => {
     expect(releaseWorkflow).toContain('PUBLISH_TAGS=("$PKG_VERSION")');
     expect(releaseWorkflow).toContain('PUBLISH_TAGS+=("$MAJOR.$MINOR")');

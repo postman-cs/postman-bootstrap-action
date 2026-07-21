@@ -138,8 +138,8 @@ describe('openapi-changes breaking-change check', () => {
 
     expect(result.status).toBe('failed');
     expect(result.breakingChanges).toBe(1);
-    expect(result.summaryPath.startsWith(realRunnerTemp)).toBe(true);
-    expect(result.logPath.startsWith(realRunnerTemp)).toBe(true);
+    expect((await realpath(result.summaryPath)).startsWith(realRunnerTemp)).toBe(true);
+    expect((await realpath(result.logPath)).startsWith(realRunnerTemp)).toBe(true);
     const summary = await readFile(result.summaryPath, 'utf8');
     expect(summary).toContain('Status: failed');
     expect(summary).toContain('## Removed operation');

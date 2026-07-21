@@ -567,12 +567,18 @@ describe('package CLI bin', () => {
       await chmod(cliBinPath, 0o755);
     }
 
-    const execution = await runCommand('postman-bootstrap', ['--integration-backend', 'unsupported'], {
+    const execution = await runCommand(
+      process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : 'postman-bootstrap',
+      process.platform === 'win32'
+        ? ['/d', '/s', '/c', cliBinPath, '--integration-backend', 'unsupported']
+        : ['--integration-backend', 'unsupported'],
+      {
       cwd: packDir,
       env: {
         PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`
       }
-    });
+      }
+    );
 
     expect(execution.code).not.toBe(0);
     expect(execution.stdout).toBe('');

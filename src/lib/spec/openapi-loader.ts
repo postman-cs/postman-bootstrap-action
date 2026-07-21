@@ -411,6 +411,21 @@ async function buildLoadedSpec(
   };
 }
 
+/**
+ * Resolve Windows 8.3 short names (e.g. RUNNER~1) in local file paths so
+ * json-schema-ref-parser can correctly resolve relative $ref URLs. Without
+ * this, the parser double-URL-encodes the tilde, breaking all local refs.
+ */
+function resolveLocalFileUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  try {
+    const filePath = url.startsWith('file:') ? fileURLToPath(url) : url;
+    return pathToFileURL(realpathSync(filePath)).toString();
+  } catch {
+    return url;
+  }
+}
+
 export async function loadOpenApiContractSpec(
   specUrl: string,
   options: OpenApiLoaderOptions = {}
@@ -422,8 +437,9 @@ export async function loadOpenApiContractSpec(
   // root spec surfaces CONTRACT_SPEC_PARSE_FAILED / CONTRACT_UNSUPPORTED_OPENAPI_VERSION
   // rather than a downstream ref-fetch error.
   detectOpenApiVersion(parseOpenApiDocument(content));
-  await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, new Set([resourceUrl(specUrl)]), 0);
-  return buildLoadedSpec(content, specUrl, options, fetchText, budget);
+  const baseRef = resolveLocalFileUrl(specUrl);
+  await prefetchExternalRefs(content, resourceUrl(baseRef), fetchText, options, budget, new Set([resourceUrl(baseRef)]), 0);
+  return buildLoadedSpec(content, baseRef, options, fetchText, budget);
 }
 
 // spec-path is just "spec-url, but the bytes are already on disk in the
@@ -484,7 +500,8 @@ export async function loadOpenApiContractSpecFromPath(
     path.dirname(specPath.replace(/\\/g, '/')),
     definitionBundle.rootPath
   );
-  const baseRef = pathToFileURL(absolutePath).toString();
+  const resolvedPath = (() => { try { return realpathSync(absolutePath); } catch { return absolutePath; } })();
+  const baseRef = pathToFileURL(resolvedPath).toString();
   await prefetchExternalRefs(
     content,
     baseRef,

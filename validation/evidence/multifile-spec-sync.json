@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "testedAt": "2026-07-21T21:11:27.279Z",
-  "bootstrapCommit": "371394ede7747657eecbf1d577bb6a750e398825",
+  "testedAt": "2026-07-21T21:20:53.995Z",
+  "bootstrapCommit": "33881edb8cb40be04968099f84cb22d1d201b712",
   "legs": [
     {
       "mode": "nonorg",
@@ -75,7 +75,7 @@
             200,
             200,
             202,
-            200,
+            500,
             200
           ],
           "requestShape": "PATCH /specifications/:id/files/:uuid [{op:'replace',path:'/content',value}]",

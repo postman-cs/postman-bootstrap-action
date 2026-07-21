@@ -238,6 +238,73 @@ describe('bootstrap action contract', () => {
     ).toThrow(/Unsupported integration-backend/);
   });
 
+  it('places optional spec-files-json immediately after spec-path with empty default', () => {
+    const contractNames = contractInputNames;
+    const manifestNames = Object.keys(actionManifest.inputs);
+    expect(contractNames.indexOf('spec-files-json')).toBe(contractNames.indexOf('spec-path') + 1);
+    expect(manifestNames.indexOf('spec-files-json')).toBe(manifestNames.indexOf('spec-path') + 1);
+    expect(bootstrapActionContract.inputs['spec-files-json'].default).toBe('');
+    expect(actionManifest.inputs['spec-files-json'].default).toBe('');
+    expect(bootstrapActionContract.inputs['spec-files-json'].description).toMatch(/content-free/i);
+    expect(bootstrapActionContract.inputs['spec-files-json'].description).toMatch(/root must equal spec-path/i);
+    expect(bootstrapActionContract.inputs['spec-files-json'].description).toMatch(/not a directory mode/i);
+    expect(resolveInputs({}).specFilesJson).toBe('');
+  });
+
+  it('forwards raw spec-files-json and rejects inventory combined with spec-url', () => {
+    const inventory = '{"schemaVersion":1,"root":"openapi.yaml"}';
+    const withPath = resolveInputs({
+      INPUT_SPEC_PATH: 'openapi.yaml',
+      INPUT_SPEC_FILES_JSON: inventory
+    });
+    expect(withPath.specPath).toBe('openapi.yaml');
+    expect(withPath.specUrl).toBe('');
+    expect(withPath.specFilesJson).toBe(inventory);
+
+    expect(() =>
+      resolveInputs({
+        INPUT_SPEC_URL: publicSyntheticSpecUrl,
+        INPUT_SPEC_FILES_JSON: inventory
+      })
+    ).toThrow(/CONTRACT_DEFINITION_INVENTORY_WITH_URL/);
+
+    // Legacy mutual exclusion and HTTPS rules remain unchanged when inventory is empty.
+    expect(() =>
+      resolveInputs({
+        INPUT_SPEC_URL: publicSyntheticSpecUrl,
+        INPUT_SPEC_PATH: 'openapi.yaml'
+      })
+    ).toThrow(/not both/);
+    expect(
+      resolveInputs({
+        INPUT_SPEC_URL: publicSyntheticSpecUrl,
+        INPUT_SPEC_FILES_JSON: ''
+      }).specFilesJson
+    ).toBe('');
+  });
+
+  it('readActionInputs wires raw spec-files-json without parsing inventory schema', () => {
+    const inventory = '{"schemaVersion":1,"root":"apis/core/openapi.yaml","not-fully-valid":true}';
+    const getInputCalls: string[] = [];
+    const coreStub = {
+      getInput: (name: string) => {
+        getInputCalls.push(name);
+        const map: Record<string, string> = {
+          'project-name': 'my-api',
+          'spec-path': 'apis/core/openapi.yaml',
+          'spec-files-json': inventory,
+          'postman-api-key': 'pmak-test'
+        };
+        return map[name] ?? '';
+      },
+      setSecret: () => {}
+    };
+    const inputs = readActionInputs(coreStub);
+    expect(getInputCalls).toContain('spec-files-json');
+    expect(inputs.specPath).toBe('apis/core/openapi.yaml');
+    expect(inputs.specFilesJson).toBe(inventory);
+  });
+
   it('rejects non-HTTPS spec URLs', () => {
     expect(() =>
       resolveInputs({

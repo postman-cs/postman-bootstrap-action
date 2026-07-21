@@ -182,6 +182,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `workspace-team-id` | Numeric sub-team ID for org-mode workspace creation. Required when your Postman team is an org with multiple sub-teams. Run the action without this input to see available sub-teams listed in the error output. | no |  |
 | `spec-url` | HTTPS URL to the OpenAPI document to bootstrap. Provide either spec-url or spec-path. | no |  |
 | `spec-path` | Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path. | no |  |
+| `spec-files-json` | Optional content-free JSON inventory of multi-file definition members from discovery (schemaVersion 1). Empty by default. When set, inventory root must equal spec-path. Cannot be combined with spec-url. Not a directory mode — companions are listed explicitly; file content is never embedded. | no |  |
 | `protocol` | API spec protocol. auto (default) detects from content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly. | no | `auto` |
 | `protocol-endpoint-url` | Endpoint URL/authority used by generated non-OpenAPI requests (e.g. {{baseUrl}}/graphql, grpc://host:port). Supports Postman variable interpolation. Ignored for openapi. | no |  |
 | `openapi-version` | OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content. | no |  |

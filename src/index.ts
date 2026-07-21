@@ -2,7 +2,6 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { parse, stringify } from 'yaml';
 
@@ -47,6 +46,12 @@ import {
   AccessTokenProvider,
   mintAccessTokenIfNeeded as mintAccessTokenWithDiagnostics
 } from './lib/postman/token-provider.js';
+import {
+  definitionBundleToSnapshot,
+  MULTI_FILE_SPEC_SYNC_DEFAULT,
+  type SpecBundleMutationOutcome,
+  type SpecBundleSnapshot
+} from './lib/postman/spec-file-reconcile.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { detectRepoContext } from './lib/repo/context.js';
 import { retry } from './lib/retry.js';
@@ -54,6 +59,14 @@ import { createSecretMasker, createMutableSecretMasker, type SecretMasker } from
 import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
 import { resolveActionVersion } from './action-version.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
+import { acquireDefinitionBundle } from './lib/spec/acquire-definition-bundle.js';
+import {
+  createDefinitionBundle,
+  createDefinitionFile,
+  isOpenApiDefinitionFormat,
+  type DefinitionBundle,
+  type DefinitionFormat
+} from './lib/spec/definition-bundle.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
 import {
@@ -93,6 +106,8 @@ export interface ResolvedInputs {
   repoSlug?: string;
   specUrl: string;
   specPath?: string;
+  /** Raw optional discovery inventory JSON; parsed by definition acquisition (Wave 3). */
+  specFilesJson?: string;
   protocol: 'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi';
   protocolEndpointUrl?: string;
   openapiVersion: string;
@@ -225,6 +240,27 @@ export interface BootstrapExecutionDependencies {
     tagSpecVersion?(specId: string, name: string): Promise<{ id: string; name: string }>;
     listSpecVersionTags?(specId: string): Promise<Array<{ id: string; name: string }>>;
     deleteCollection?(collectionUid: string): Promise<void>;
+    deleteSpec?(specId: string): Promise<void>;
+    getSpecBundle?(specId: string, format: DefinitionFormat): Promise<DefinitionBundle>;
+    reconcileSpecBundle?(
+      specId: string,
+      target: DefinitionBundle
+    ): Promise<SpecBundleMutationOutcome>;
+    restoreSpecBundle?(
+      specId: string,
+      snapshot: SpecBundleSnapshot
+    ): Promise<SpecBundleMutationOutcome>;
+    uploadSpecBundle?(
+      workspaceId: string,
+      projectName: string,
+      bundle: DefinitionBundle,
+      openapiVersion?: '3.0' | '3.1' | string
+    ): Promise<{
+      specId: string;
+      created: boolean;
+      priorSnapshot: SpecBundleSnapshot | null;
+      outcome: SpecBundleMutationOutcome;
+    }>;
     injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
     adoptGeneratedCollection?(
       specId: string,
@@ -457,8 +493,14 @@ export function resolveInputs(
 
   const specUrl = getInput('spec-url', env) ?? '';
   const specPath = getInput('spec-path', env) ?? '';
+  const specFilesJson = getInput('spec-files-json', env) ?? '';
   if (specUrl && specPath) {
     throw new Error('Provide either spec-url or spec-path, not both.');
+  }
+  if (specFilesJson && specUrl) {
+    throw new Error(
+      'CONTRACT_DEFINITION_INVENTORY_WITH_URL: spec-files-json cannot be combined with spec-url'
+    );
   }
   if (specUrl) {
     try {
@@ -502,6 +544,7 @@ export function resolveInputs(
     repoSlug: repoContext.repoSlug || '',
     specUrl,
     specPath,
+    specFilesJson,
     protocol: parseEnumInput<'auto' | 'openapi' | 'graphql' | 'grpc' | 'soap' | 'asyncapi'>(
       'protocol',
       getInput('protocol', env),
@@ -811,6 +854,7 @@ export function readActionInputs(
     INPUT_REPO_URL: optionalInput(actionCore, 'repo-url'),
     INPUT_SPEC_URL: specUrl,
     INPUT_SPEC_PATH: specPath,
+    INPUT_SPEC_FILES_JSON: optionalInput(actionCore, 'spec-files-json') ?? '',
     INPUT_GOVERNANCE_MAPPING_JSON:
       optionalInput(actionCore, 'governance-mapping-json') ??
       bootstrapActionContract.inputs['governance-mapping-json'].default,
@@ -1710,6 +1754,116 @@ async function provisionWorkspace(
   };
 }
 
+function resolveWorkspaceRoot(): string {
+  return path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+}
+
+function definitionFormatToSpecType(format: DefinitionFormat): SpecType {
+  if (isOpenApiDefinitionFormat(format)) return 'openapi';
+  if (format === 'protobuf') return 'grpc';
+  if (format === 'wsdl') return 'soap';
+  if (format === 'graphql-sdl' || format === 'graphql-introspection-json') return 'graphql';
+  if (format === 'asyncapi-json' || format === 'asyncapi-yaml') return 'asyncapi';
+  if (format === 'mcp-json') return 'mcp';
+  throw new Error(`CONTRACT_DEFINITION_INVENTORY_INVALID: unsupported definition format ${format}`);
+}
+
+function assertMultiFileSpecSyncEnabled(bundle: DefinitionBundle): void {
+  if (bundle.files.size <= 1) return;
+  // Default-on is justified by the committed R5 receipt capability seam
+  // (MULTI_FILE_SPEC_SYNC_DEFAULT / resolveMultiFileSpecSyncDefaultFromReceipt).
+  // Kill switch POSTMAN_MULTI_FILE_SPEC_SYNC=off always wins.
+  const raw = (
+    process.env.POSTMAN_MULTI_FILE_SPEC_SYNC ?? MULTI_FILE_SPEC_SYNC_DEFAULT
+  )
+    .trim()
+    .toLowerCase();
+  if (raw === 'off' || raw === '0' || raw === 'false' || raw === 'no') {
+    throw new Error(
+      'CONTRACT_MULTI_FILE_SPEC_SYNC_DISABLED: multi-file Spec Hub sync is disabled by POSTMAN_MULTI_FILE_SPEC_SYNC=off; ' +
+        'unset the kill switch or provide a single-file definition'
+    );
+  }
+}
+
+function requireBundleGatewayOp<T>(fn: T | undefined, name: string): T {
+  if (!fn) {
+    throw new Error(
+      `${name} requires access-token gateway multi-file Spec Hub support (uploadSpecBundle/getSpecBundle/reconcileSpecBundle)`
+    );
+  }
+  return fn;
+}
+
+/** Return a new immutable bundle whose root content is replaced; companions stay exact bytes. */
+export function withReplacedRootContent(
+  bundle: DefinitionBundle,
+  rootContent: string
+): DefinitionBundle {
+  const rootBytes = Buffer.from(rootContent, 'utf8');
+  const files = [...bundle.files.values()].map((file) => {
+    if (file.path === bundle.rootPath) {
+      return createDefinitionFile({
+        path: file.path,
+        role: 'root',
+        bytes: Uint8Array.from(rootBytes)
+      });
+    }
+    return createDefinitionFile({
+      path: file.path,
+      role: file.role,
+      bytes: file.bytes
+    });
+  });
+  return createDefinitionBundle({
+    rootPath: bundle.rootPath,
+    format: bundle.format,
+    completeness: bundle.completeness,
+    provenance: {
+      source: bundle.provenance.source,
+      ...(bundle.provenance.provider ? { provider: bundle.provenance.provider } : {}),
+      evidence: [...bundle.provenance.evidence]
+    },
+    files
+  });
+}
+
+/**
+ * Persist workspace identity after provision without recording new spec/collection
+ * outputs. Existing cloudResources from the prior read remain intact for
+ * resolution and crash-safe reread; new spec-id/collection ids are recorded only
+ * after verified sync + generation/linking.
+ */
+function persistWorkspaceOnlyState(
+  stateStore: { write(state: PostmanResourcesState): void },
+  resourcesState: PostmanResourcesState,
+  inputs: ResolvedInputs,
+  outputs: PlannedOutputs,
+  persistWorkspaceId: boolean,
+  assetProjectName: string,
+  releaseLabel?: string
+): void {
+  if (!persistWorkspaceId || !outputs['workspace-id']) return;
+  // Intentionally omit spec-id / collection outputs so recordCurrentBootstrapResources
+  // updates workspace only.
+  const workspaceOutputs: PlannedOutputs = {
+    ...outputs,
+    'spec-id': '',
+    'baseline-collection-id': '',
+    'smoke-collection-id': '',
+    'contract-collection-id': ''
+  };
+  recordCurrentBootstrapResources({
+    assetProjectName,
+    inputs,
+    outputs: workspaceOutputs,
+    persistWorkspaceId,
+    releaseLabel,
+    resourcesState
+  });
+  stateStore.write(resourcesState);
+}
+
 /**
  * Human-readable note on whether a generated protocol collection executes in the
  * Postman CLI runner, used in the bootstrap log after the collection is built.
@@ -1738,13 +1892,56 @@ async function runProtocolBootstrap(
   inputs: ResolvedInputs,
   dependencies: BootstrapExecutionDependencies,
   outputs: PlannedOutputs,
-  telemetry: TelemetryContext
+  telemetry: TelemetryContext,
+  definitionBundle?: DefinitionBundle
 ): Promise<PlannedOutputs> {
   const workspaceName = createWorkspaceName(inputs);
   const aboutText = `Auto-provisioned by Postman for ${inputs.projectName}`;
   const stateStore = resolveResourcesStateStore(dependencies);
   const resourcesState = stateStore.read();
   const writableResourcesState = resourcesState ?? {};
+
+  // Bundle-only: use grpc_service_config.json only when already a DefinitionBundle
+  // member. Never probe, stat, or read an adjacent/symlinked sibling from disk.
+  let grpcServiceConfigJson: string | undefined;
+  if (specType === 'grpc') {
+    const fromBundle = definitionBundle?.files.get('grpc_service_config.json')?.content;
+    if (fromBundle) {
+      grpcServiceConfigJson = fromBundle;
+      dependencies.core.info(
+        'Found gRPC service config in definition bundle; validating it against the proto contract'
+      );
+    }
+  }
+
+  // Prebuild before workspace side effects so missing/invalid closure fails cleanly.
+  const built = await runGroup(
+    dependencies.core,
+    `Build ${specType.toUpperCase()} Contract Collection`,
+    async () =>
+      buildProtocolCollection(specType, rawSpecContent, {
+        name: inputs.projectName,
+        endpointUrl: inputs.protocolEndpointUrl,
+        schemaLocation: inputs.specPath || inputs.specUrl,
+        grpcServiceConfigJson,
+        definitionBundle
+      })
+  );
+
+  for (const warning of built.warnings) {
+    dependencies.core.warning(warning);
+  }
+
+  dependencies.core.info(
+    `Generated ${built.operationCount} ${specType} contract item(s) (${built.format}). ` +
+      protocolExecutionNote(specType, built.runnableInCi)
+  );
+
+  if (built.format !== 'v3-ec') {
+    throw new Error(
+      `CONTRACT_COLLECTION_FORMAT_UNSUPPORTED: protocol builder returned ${built.format}; only v3-ec collections are created (access-token EC API)`
+    );
+  }
 
   const provisioned = await provisionWorkspace(
     inputs,
@@ -1758,83 +1955,15 @@ async function runProtocolBootstrap(
   const workspaceId = provisioned.workspaceId;
   const persistWorkspaceId = provisioned.persistable;
   outputs['workspace-id'] = workspaceId || '';
-  recordCurrentBootstrapResources({
-    assetProjectName: inputs.projectName,
+  persistWorkspaceOnlyState(
+    stateStore,
+    writableResourcesState,
     inputs,
     outputs,
     persistWorkspaceId,
-    resourcesState: writableResourcesState
-  });
-  stateStore.write(writableResourcesState);
-  // gRPC service configs conventionally ship as a JSON file next to the proto
-  // (grpc_service_config.json). When present it is linted against the parsed
-  // contract (method selectors, retry/hedging policies, timeouts, LB policies);
-  // absence is not an error.
-  let grpcServiceConfigJson: string | undefined;
-  if (specType === 'grpc' && inputs.specPath) {
-    const workspaceRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
-    const serviceConfigPath = path.join(path.dirname(path.resolve(workspaceRoot, inputs.specPath)), 'grpc_service_config.json');
-    try {
-      grpcServiceConfigJson = readFileSync(serviceConfigPath, 'utf8');
-      dependencies.core.info(`Found gRPC service config at ${serviceConfigPath}; validating it against the proto contract`);
-    } catch {
-      // No service config alongside the proto; nothing to lint.
-    }
-  }
-
-
-  // WSDL descriptions may split across files via wsdl:import/xsd:import with
-  // relative locations. When the spec came from disk, sibling documents are
-  // resolved from the spec's directory (never above it, never over the
-  // network) so import-scope conformance checks can run; absence of a file
-  // simply skips the resolution-dependent checks.
-  let wsdlImportResolver: ((location: string) => string | undefined) | undefined;
-  if (specType === 'soap' && inputs.specPath) {
-    const workspaceRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
-    const specDir = path.dirname(path.resolve(workspaceRoot, inputs.specPath));
-    wsdlImportResolver = (location: string): string | undefined => {
-      if (/^[a-z][a-z0-9+.-]*:/i.test(location)) return undefined;
-      const resolved = path.resolve(specDir, location);
-      if (!resolved.startsWith(specDir + path.sep)) return undefined;
-      try {
-        return readFileSync(resolved, 'utf8');
-      } catch {
-        return undefined;
-      }
-    };
-  }
-
-  const built = await runGroup(
-    dependencies.core,
-    `Build ${specType.toUpperCase()} Contract Collection`,
-    async () =>
-      buildProtocolCollection(specType, rawSpecContent, {
-        name: inputs.projectName,
-        endpointUrl: inputs.protocolEndpointUrl,
-        schemaLocation: inputs.specPath || inputs.specUrl,
-        grpcServiceConfigJson,
-        wsdlImportResolver
-      })
+    inputs.projectName
   );
 
-  for (const warning of built.warnings) {
-    dependencies.core.warning(warning);
-  }
-
-  dependencies.core.info(
-    `Generated ${built.operationCount} ${specType} contract item(s) (${built.format}). ` + protocolExecutionNote(specType, built.runnableInCi)
-  );
-
-  // Every protocol builder emits a v3/Extensible Collection (graphql/soap are
-  // transformed from v2 via runtime.models; gRPC is EC-native), so the contract
-  // collection is always created through the access-token gateway EC API. The
-  // public v2.1.0 collections endpoint (PMAK) has been retired — a builder that
-  // returned v2.1.0 would fail loudly here rather than silently reach for PMAK.
-  if (built.format !== 'v3-ec') {
-    throw new Error(
-      `CONTRACT_COLLECTION_FORMAT_UNSUPPORTED: protocol builder returned ${built.format}; only v3-ec collections are created (access-token EC API)`
-    );
-  }
   const contractCollectionId = await createExtensibleContractCollection(
     workspaceId || '',
     built,
@@ -1850,21 +1979,14 @@ async function runProtocolBootstrap(
     contract: contractCollectionId
   });
 
-  if (built.format !== 'v3-ec') {
-    await runGroup(
-      dependencies.core,
-      'Tag Contract Collection',
-      async () => {
-        try {
-          await dependencies.postman.tagCollection(contractCollectionId, ['generated-contract']);
-        } catch (error) {
-          dependencies.core.warning(
-            `Failed to tag contract collection ${contractCollectionId}: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
-    );
-  }
+  recordCurrentBootstrapResources({
+    assetProjectName: inputs.projectName,
+    inputs,
+    outputs,
+    persistWorkspaceId,
+    resourcesState: writableResourcesState
+  });
+  stateStore.write(writableResourcesState);
 
   for (const [name, value] of Object.entries(outputs)) {
     dependencies.core.setOutput(name, value);
@@ -2122,14 +2244,9 @@ async function runBootstrapInner(
 
   // The Postman CLI authenticates with the PMAK and only powers the spec lint.
   // Without a postman-api-key the lint is skipped, so the CLI install is too.
+  // Install is deferred until after confined acquisition + protocol/OpenAPI
+  // preflight so path/closure failures never touch CLI, workspace, or Postman.
   const lintEnabled = Boolean(inputs.postmanApiKey);
-  if (lintEnabled) {
-    await runGroup(dependencies.core, 'Install Postman CLI', async () => {
-      await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
-    });
-  } else {
-    dependencies.core.info('Skipping Postman CLI install: no postman-api-key (spec lint is skipped).');
-  }
 
   let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
   if (!inputs.specId && specId) {
@@ -2138,48 +2255,71 @@ async function runBootstrapInner(
 
   let previousSpecContent: string | undefined;
   let previousSpecRollbackHash: string | undefined;
+  let previousBundleSnapshot: SpecBundleSnapshot | undefined;
+  let createdNewSpec = false;
   let specContentUnchanged = false;
   let detectedOpenapiVersion: '3.0' | '3.1' = '3.0';
   let contractIndex: ContractIndex | undefined;
   let sourceSpecContent = '';
   let sourceTypeNullPaths: string[] = [];
   let preserveSourceSpecBytes = false;
+  let sourceDefinitionBundle: DefinitionBundle | undefined;
+  let uploadDefinitionBundle: DefinitionBundle | undefined;
 
-  // Detect the spec protocol before any OpenAPI-specific work. Only `openapi`
-  // flows through Spec Hub; graphql/grpc/soap are handled by the protocol path.
-  // The URL read goes through the same SSRF-guarded fetch the OpenAPI loader
-  // uses (so private-host/redirect protections still fire); a custom injected
-  // fetcher (tests) is delegated to verbatim.
-  const rawSpecContent = await runGroup(
+  // Acquire a confined DefinitionBundle (local) or safe single-root content (URL)
+  // before any side effects. Inventory is rejected with spec-url at input resolve.
+  const acquired = await runGroup(
     dependencies.core,
     'Read API Spec',
     async () => {
       if (inputs.specPath) {
-        const workspaceRoot = path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
-        return readFileSync(path.resolve(workspaceRoot, inputs.specPath), 'utf8');
+        const bundle = await acquireDefinitionBundle({
+          workspaceRoot: resolveWorkspaceRoot(),
+          specPath: inputs.specPath,
+          specFilesJson: inputs.specFilesJson
+        });
+        const root = bundle.files.get(bundle.rootPath);
+        if (!root) {
+          throw new Error('CONTRACT_DEFINITION_ROOT_MISMATCH: acquired bundle is missing its root file');
+        }
+        return { bundle, rawSpecContent: root.content };
       }
-      if (dependencies.specFetcher === fetch) {
-        return safeFetchText(inputs.specUrl, { depth: 0 });
+      if (inputs.specFilesJson) {
+        throw new Error(
+          'CONTRACT_DEFINITION_INVENTORY_WITH_URL: spec-files-json cannot be combined with spec-url'
+        );
       }
-      return fetchSpecDocument(inputs.specUrl, dependencies.specFetcher);
+      const rawSpecContent =
+        dependencies.specFetcher === fetch
+          ? await safeFetchText(inputs.specUrl, { depth: 0 })
+          : await fetchSpecDocument(inputs.specUrl, dependencies.specFetcher);
+      return { bundle: undefined, rawSpecContent };
     }
   );
+  sourceDefinitionBundle = acquired.bundle;
+  const rawSpecContent = acquired.rawSpecContent;
   const specSourceName = inputs.specPath || inputs.specUrl;
   const resolvedSpecType: SpecType =
     inputs.protocol && inputs.protocol !== 'auto'
       ? inputs.protocol
-      : detectSpecType(rawSpecContent, specSourceName);
+      : sourceDefinitionBundle
+        ? definitionFormatToSpecType(sourceDefinitionBundle.format)
+        : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== 'openapi') {
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
+    // Protocol collections are local EC generation; protobuf never uploads to Spec Hub.
     return runProtocolBootstrap(
       resolvedSpecType,
       rawSpecContent,
       inputs,
       dependencies,
       outputs,
-      telemetry
+      telemetry,
+      sourceDefinitionBundle
     );
   }
+
+  const useMultiFileSync = Boolean(sourceDefinitionBundle && sourceDefinitionBundle.files.size > 1);
 
   const specContent = await runGroup(
     dependencies.core,
@@ -2202,6 +2342,8 @@ async function runBootstrapInner(
       const rootKey = inputs.specPath ? undefined : normalizeRef(inputs.specUrl);
       const loaderOptions = {
         preserveOas30TypeNull: Boolean(inputs.preserveOas30TypeNull),
+        definitionBundle: sourceDefinitionBundle,
+        specFilesJson: inputs.specFilesJson,
         fetchText: async (url: string, fetchOptions: Parameters<typeof safeFetchText>[1]) => {
           if (rootKey && normalizeRef(url) === rootKey) return rawSpecContent;
           if (dependencies.specFetcher === fetch) return safeFetchText(url, fetchOptions);
@@ -2211,9 +2353,14 @@ async function runBootstrapInner(
       const loaded = inputs.specPath
         ? await loadOpenApiContractSpecFromPath(inputs.specPath, loaderOptions)
         : await loadOpenApiContractSpec(inputs.specUrl, loaderOptions);
+      if (loaded.definitionBundle) {
+        sourceDefinitionBundle = loaded.definitionBundle;
+      }
       sourceSpecContent = loaded.content;
       sourceTypeNullPaths = loaded.sourceTypeNullPaths;
       preserveSourceSpecBytes = sourceTypeNullPaths.length > 0;
+      // Contract validation/index uses the bundled document; Spec Hub sync keeps
+      // the original file tree (root may later receive normalize/branch markers).
       const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
         dependencies.core.warning(msg)
       );
@@ -2231,23 +2378,49 @@ async function runBootstrapInner(
       }
 
       if (specId) {
-        const previousRaw = await dependencies.postman.getSpecContent(specId);
-        if (!previousRaw) {
-          throw new Error(
-            `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
-          );
-        }
-        previousSpecContent = preserveSourceSpecBytes
-          ? previousRaw
-          : normalizeSpecDocument(previousRaw, (msg) =>
-            dependencies.core.warning(`Previous spec normalization: ${msg}`)
-          );
-        previousSpecRollbackHash = createHash('sha256').update(previousSpecContent).digest('hex');
-        const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
-        if (existingSpecType !== incomingSpecType) {
-          throw new Error(
-            `Existing Spec Hub spec version ${existingSpecType.replace('OPENAPI:', '')} cannot be updated with OpenAPI ${detectedOpenapiVersion} content; clear spec-id to create a fresh spec`
-          );
+        if (useMultiFileSync && sourceDefinitionBundle) {
+          const priorBundle = await requireBundleGatewayOp(
+            dependencies.postman.getSpecBundle,
+            'getSpecBundle'
+          )(specId, sourceDefinitionBundle.format);
+          previousBundleSnapshot = definitionBundleToSnapshot(priorBundle);
+          previousSpecRollbackHash = priorBundle.digest;
+          const previousRoot = priorBundle.files.get(priorBundle.rootPath)?.content;
+          if (!previousRoot) {
+            throw new Error(
+              `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
+            );
+          }
+          previousSpecContent = preserveSourceSpecBytes
+            ? previousRoot
+            : normalizeSpecDocument(previousRoot, (msg) =>
+              dependencies.core.warning(`Previous spec normalization: ${msg}`)
+            );
+          const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
+          if (existingSpecType !== incomingSpecType) {
+            throw new Error(
+              `Existing Spec Hub spec version ${existingSpecType.replace('OPENAPI:', '')} cannot be updated with OpenAPI ${detectedOpenapiVersion} content; clear spec-id to create a fresh spec`
+            );
+          }
+        } else {
+          const previousRaw = await dependencies.postman.getSpecContent(specId);
+          if (!previousRaw) {
+            throw new Error(
+              `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
+            );
+          }
+          previousSpecContent = preserveSourceSpecBytes
+            ? previousRaw
+            : normalizeSpecDocument(previousRaw, (msg) =>
+              dependencies.core.warning(`Previous spec normalization: ${msg}`)
+            );
+          previousSpecRollbackHash = createHash('sha256').update(previousSpecContent).digest('hex');
+          const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
+          if (existingSpecType !== incomingSpecType) {
+            throw new Error(
+              `Existing Spec Hub spec version ${existingSpecType.replace('OPENAPI:', '')} cannot be updated with OpenAPI ${detectedOpenapiVersion} content; clear spec-id to create a fresh spec`
+            );
+          }
         }
       }
 
@@ -2270,6 +2443,7 @@ async function runBootstrapInner(
     async () => (dependencies.openApiChanges ?? runOpenApiBreakingChangeCheck)(
       {
         baselineSpecPath: inputs.breakingBaselineSpecPath,
+        // Breaking checks retain the original source tree/root, not upload markers.
         currentSourceContent: sourceSpecContent,
         currentUploadContent: specContent,
         logPath: inputs.breakingLogPath,
@@ -2302,6 +2476,20 @@ async function runBootstrapInner(
     branchDecision,
     inputs.repoUrl
   );
+  if (sourceDefinitionBundle && useMultiFileSync) {
+    // Final immutable upload bundle: companions keep exact source bytes; only
+    // the root receives normalize/branch-marker changes.
+    uploadDefinitionBundle = withReplacedRootContent(sourceDefinitionBundle, uploadSpecContent);
+    assertMultiFileSpecSyncEnabled(uploadDefinitionBundle);
+  }
+
+  if (lintEnabled) {
+    await runGroup(dependencies.core, 'Install Postman CLI', async () => {
+      await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
+    });
+  } else {
+    dependencies.core.info('Skipping Postman CLI install: no postman-api-key (spec lint is skipped).');
+  }
 
   const provisioned = await provisionWorkspace(
     inputs,
@@ -2315,15 +2503,16 @@ async function runBootstrapInner(
   const workspaceId = provisioned.workspaceId;
   const persistWorkspaceId = provisioned.persistable;
   outputs['workspace-id'] = workspaceId || '';
-  recordCurrentBootstrapResources({
-    assetProjectName: collectionAssetProjectName,
+  // Workspace-only state may persist immediately; spec/collection ids wait.
+  persistWorkspaceOnlyState(
+    stateStore,
+    writableResourcesState,
     inputs,
     outputs,
     persistWorkspaceId,
-    releaseLabel,
-    resourcesState: writableResourcesState
-  });
-  stateStore.write(writableResourcesState);
+    collectionAssetProjectName,
+    releaseLabel
+  );
 
   let baselineCollectionId = inputs.baselineCollectionId;
   let smokeCollectionId = inputs.smokeCollectionId;
@@ -2401,30 +2590,90 @@ async function runBootstrapInner(
     return await fn();
   };
   const restorePreviousSpecContent = async (reason: string): Promise<void> => {
-    if (!isSpecUpdate || !specId || previousSpecContent === undefined) return;
+    if (!specId) return;
+    if (createdNewSpec) {
+      if (!dependencies.postman.deleteSpec) {
+        dependencies.core.warning(
+          `Incomplete new Spec Hub specification ${specId} was left after failure (${reason}); deleteSpec is unavailable for cleanup`
+        );
+        return;
+      }
+      try {
+        await runGroup(dependencies.core, 'Delete Failed New Spec', async () => {
+          await retry(
+            async () => {
+              try {
+                await dependencies.postman.deleteSpec!(specId || '');
+              } catch (deleteError) {
+                // Peer election or a prior cleanup may have already removed the
+                // loser; 404 is successful idempotent deletion.
+                if (deleteError instanceof HttpError && deleteError.status === 404) return;
+                const status = (deleteError as { status?: unknown })?.status;
+                if (status === 404) return;
+                throw deleteError;
+              }
+            },
+            {
+              maxAttempts: 3,
+              delayMs: 1000
+            }
+          );
+        });
+        dependencies.core.warning(
+          `Deleted incomplete new Spec Hub specification ${specId} after failure (${reason})`
+        );
+      } catch (cleanupError) {
+        throw new Error(
+          `CONTRACT_SPEC_ROLLBACK_FAILED: Failed to delete incomplete new Spec Hub specification ${specId} after ${reason}. ` +
+            `digest=${previousSpecRollbackHash || uploadDefinitionBundle?.digest || '<unknown>'}. ` +
+            `Rollback error: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+          { cause: cleanupError }
+        );
+      }
+      return;
+    }
+    if (!isSpecUpdate) return;
     try {
       await runGroup(
         dependencies.core,
         'Restore Previous Spec Content',
         async () => {
           await retry(
-            async () => dependencies.postman.updateSpec(
-              specId || '',
-              previousSpecContent || '',
-              workspaceId
-            ),
+            async () => {
+              if (previousBundleSnapshot) {
+                const outcome = await requireBundleGatewayOp(
+                  dependencies.postman.restoreSpecBundle,
+                  'restoreSpecBundle'
+                )(specId || '', previousBundleSnapshot);
+                if (outcome.status !== 'ok' || outcome.verifiedDigest !== previousBundleSnapshot.digest) {
+                  throw new Error(
+                    `restoreSpecBundle verification failed (expected digest ${previousBundleSnapshot.digest})`
+                  );
+                }
+                return;
+              }
+              if (previousSpecContent === undefined) {
+                throw new Error('No previous Spec Hub snapshot available for restore');
+              }
+              await dependencies.postman.updateSpec(
+                specId || '',
+                previousSpecContent || '',
+                workspaceId
+              );
+            },
             { maxAttempts: 3, delayMs: 1000 }
           );
         }
       );
       dependencies.core.warning(
-        `Restored previous Spec Hub content for ${specId} after failure (${reason}); previous content sha256=${previousSpecRollbackHash || '<unknown>'}`
+        `Restored previous Spec Hub content for ${specId} after failure (${reason}); ` +
+          `previous content sha256=${previousSpecRollbackHash || '<unknown>'}`
       );
     } catch (rollbackError) {
       throw new Error(
         `CONTRACT_SPEC_ROLLBACK_FAILED: Failed to restore previous Spec Hub content for ${specId} after ${reason}. ` +
-        `Manually restore content with sha256=${previousSpecRollbackHash || '<unknown>'}. ` +
-        `Rollback error: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+          `Manually restore content with sha256=${previousSpecRollbackHash || '<unknown>'}. ` +
+          `Rollback error: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
         { cause: rollbackError }
       );
     }
@@ -2437,9 +2686,50 @@ async function runBootstrapInner(
       dependencies.core,
       specId ? 'Update Spec in Spec Hub' : 'Upload Spec to Spec Hub',
       async () => {
-        if (specId) {
-          // Content-hash no-op skip (native versioning): identical content
-          // means no new changelog group — skip the upload and the tag.
+        const assetName = createAssetProjectName(
+          inputs,
+          inputs.specSyncMode === 'version' ? releaseLabel : undefined
+        );
+        if (useMultiFileSync && uploadDefinitionBundle) {
+          if (specId) {
+            const outcome: SpecBundleMutationOutcome = await requireBundleGatewayOp(
+              dependencies.postman.reconcileSpecBundle,
+              'reconcileSpecBundle'
+            )(specId, uploadDefinitionBundle);
+            previousBundleSnapshot = outcome.priorSnapshot;
+            previousSpecRollbackHash = outcome.priorSnapshot.digest;
+            if (outcome.status === 'verification-needed') {
+              throw new Error(
+                `Spec Hub multi-file reconcile needs verification for ${specId}: ${outcome.reason}`
+              );
+            }
+            if (!outcome.changed) {
+              specContentUnchanged = true;
+              dependencies.core.info(
+                `Spec content unchanged (full-set digest match); skipping Spec Hub update and version tag for ${specId}.`
+              );
+            } else {
+              dependencies.core.info(
+                `Updated multi-file spec ${specId} (detected version: ${detectedOpenapiVersion}; digest ${outcome.verifiedDigest}).`
+              );
+            }
+          } else {
+            const uploaded = await requireBundleGatewayOp(
+              dependencies.postman.uploadSpecBundle,
+              'uploadSpecBundle'
+            )(workspaceId || '', assetName, uploadDefinitionBundle, detectedOpenapiVersion);
+            if (uploaded.outcome.status === 'verification-needed') {
+              throw new Error(
+                `Spec Hub multi-file create needs verification: ${uploaded.outcome.reason}`
+              );
+            }
+            specId = uploaded.specId;
+            createdNewSpec = uploaded.created;
+            previousBundleSnapshot = uploaded.priorSnapshot ?? undefined;
+            previousSpecRollbackHash = uploaded.priorSnapshot?.digest || '';
+          }
+        } else if (specId) {
+          // Single-file wrapper path (URL and local one-file).
           if (
             previousSpecContent !== undefined &&
             createHash('sha256').update(uploadSpecContent).digest('hex') ===
@@ -2452,32 +2742,23 @@ async function runBootstrapInner(
           } else {
             dependencies.core.info(
               `Updating existing spec ${specId} (detected version: ${detectedOpenapiVersion}). ` +
-              `Note: the spec type (OPENAPI:3.0 / OPENAPI:3.1) is set at creation and cannot be changed on update. ` +
-              `If you changed OpenAPI versions, clear the spec-id input to create a fresh spec.`
+                `Note: the spec type (OPENAPI:3.0 / OPENAPI:3.1) is set at creation and cannot be changed on update. ` +
+                `If you changed OpenAPI versions, clear the spec-id input to create a fresh spec.`
             );
             await dependencies.postman.updateSpec(specId, uploadSpecContent, workspaceId);
           }
         } else {
           specId = await dependencies.postman.uploadSpec(
             workspaceId || '',
-            createAssetProjectName(
-              inputs,
-              inputs.specSyncMode === 'version' ? releaseLabel : undefined
-            ),
+            assetName,
             uploadSpecContent,
             detectedOpenapiVersion
           );
+          createdNewSpec = true;
         }
         outputs['spec-id'] = specId;
-        recordCurrentBootstrapResources({
-          assetProjectName: collectionAssetProjectName,
-          inputs,
-          outputs,
-          persistWorkspaceId,
-          releaseLabel,
-          resourcesState: writableResourcesState
-        });
-        stateStore.write(writableResourcesState);
+        // Defer resources-state persistence of spec-id until verified sync +
+        // generation/linking succeed (workspace-only state already written).
       }
     )
   );
@@ -2629,6 +2910,8 @@ async function runBootstrapInner(
           dependencies.core.info(
             `Generated ${describeGeneratedCollection(prefix)} collection: ${outputs[outputKey]}`
           );
+          // Spec/collection resources state is deferred until verified sync +
+          // generation/linking succeed (see end of try).
           recordCurrentBootstrapResources({
             assetProjectName,
             inputs,
@@ -2637,7 +2920,6 @@ async function runBootstrapInner(
             releaseLabel,
             resourcesState: writableResourcesState
           });
-          stateStore.write(writableResourcesState);
         };
 
         await ensureCollection(BASELINE_COLLECTION_PREFIX, baselineCollectionId, 'baseline-collection-id');
@@ -2711,7 +2993,6 @@ async function runBootstrapInner(
     releaseLabel,
     resourcesState: writableResourcesState
   });
-  stateStore.write(writableResourcesState);
 
   outputs['collections-json'] = JSON.stringify({
     baseline: outputs['baseline-collection-id'],
@@ -2775,6 +3056,9 @@ async function runBootstrapInner(
         dependencies.core,
         'Sync Additional Collections',
         async () => {
+          // Mutate in-memory resource maps only. Durable writes wait for the
+          // final commit after linking/sync succeeds (standalone helper callers
+          // still persist via the default writeResourcesState).
           recordCurrentBootstrapResources({
             assetProjectName: collectionAssetProjectName,
             inputs,
@@ -2788,7 +3072,7 @@ async function runBootstrapInner(
             core: dependencies.core,
             postman: dependencies.postman,
             resourcesState: writableResourcesState,
-            writeResourcesState: stateStore.write,
+            writeResourcesState: () => undefined,
             workspaceId: workspaceId || ''
           });
           for (const result of additionalResults) {
@@ -2862,6 +3146,19 @@ async function runBootstrapInner(
     }
   }
 
+  // Persist spec-id + collection resources only after verified sync and
+  // generation/linking succeed. Workspace-only state was written earlier.
+  recordCurrentBootstrapResources({
+    assetProjectName: collectionAssetProjectName,
+    inputs,
+    outputs,
+    persistWorkspaceId,
+    releaseLabel,
+    resourcesState: writableResourcesState
+  });
+  stateStore.write(writableResourcesState);
+  createdNewSpec = false;
+
   } catch (error) {
     const mask = createBootstrapSecretMasker(inputs);
     const reason = formatMaskedOneLine(error, mask);
@@ -2907,13 +3204,21 @@ export async function runGatedValidation(
   let validated = false;
   try {
     let content: string | undefined;
+    let bundle: DefinitionBundle | undefined;
     if (inputs.specPath) {
-      content = readFileSync(inputs.specPath, 'utf8');
+      bundle = await acquireDefinitionBundle({
+        workspaceRoot: resolveWorkspaceRoot(),
+        specPath: inputs.specPath,
+        specFilesJson: inputs.specFilesJson
+      });
+      content = bundle.files.get(bundle.rootPath)?.content;
     } else if (inputs.specUrl) {
       content = await safeFetchText(inputs.specUrl, { depth: 0 });
     }
     if (content) {
-      const specType = detectSpecType(content, inputs.specPath);
+      const specType = bundle
+        ? definitionFormatToSpecType(bundle.format)
+        : detectSpecType(content, inputs.specPath);
       if (specType === 'openapi') {
         const document = parseOpenApiDocument(content);
         const index = buildContractIndex(document);
@@ -3100,8 +3405,13 @@ export function createRoutingPostmanClient(options: {
         void _orgMode;
       },
       uploadSpec: requireAccessToken('uploadSpec'),
+      uploadSpecBundle: requireAccessToken('uploadSpecBundle'),
       updateSpec: requireAccessToken('updateSpec'),
       getSpecContent: requireAccessToken('getSpecContent'),
+      getSpecBundle: requireAccessToken('getSpecBundle'),
+      reconcileSpecBundle: requireAccessToken('reconcileSpecBundle'),
+      restoreSpecBundle: requireAccessToken('restoreSpecBundle'),
+      deleteSpec: requireAccessToken('deleteSpec'),
       generateCollection: requireAccessToken('generateCollection'),
       adoptGeneratedCollection: requireAccessToken('adoptGeneratedCollection'),
       createWorkspace: requireAccessToken('createWorkspace'),
@@ -3132,6 +3442,8 @@ export function createRoutingPostmanClient(options: {
     // not a reason to reach for the API key.
     uploadSpec: (workspaceId, projectName, specContent, openapiVersion) =>
       gateway.uploadSpec(workspaceId, projectName, specContent, openapiVersion ?? '3.0'),
+    uploadSpecBundle: (workspaceId, projectName, bundle, openapiVersion) =>
+      gateway.uploadSpecBundle(workspaceId, projectName, bundle, openapiVersion ?? '3.0'),
     generateCollection: (specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) =>
       gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
     adoptGeneratedCollection: (specId, projectName, prefix, preferredId) =>
@@ -3139,6 +3451,10 @@ export function createRoutingPostmanClient(options: {
     updateSpec: (specId, specContent, workspaceId) =>
       gateway.updateSpec(specId, specContent, workspaceId),
     getSpecContent: (specId) => gateway.getSpecContent(specId),
+    getSpecBundle: (specId, format) => gateway.getSpecBundle(specId, format),
+    reconcileSpecBundle: (specId, target) => gateway.reconcileSpecBundle(specId, target),
+    restoreSpecBundle: (specId, snapshot) => gateway.restoreSpecBundle(specId, snapshot),
+    deleteSpec: (specId) => gateway.deleteSpec(specId),
     createWorkspace: (name, about, targetTeamId) =>
       gateway.createWorkspace(name, about, targetTeamId),
     getWorkspaceVisibility: (workspaceId) => gateway.getWorkspaceVisibility(workspaceId),

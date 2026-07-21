@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -165,6 +166,47 @@ describe('parseCliArgs', () => {
     expect(config.inputEnv.INPUT_POSTMAN_STACK).toBe('beta');
     expect(config.resultJsonPath).toBe('tmp/result.json');
     expect(config.dotenvPath).toBe('tmp/result.env');
+  });
+
+  it('maps --spec-files-json into INPUT_SPEC_FILES_JSON after spec-path in the CLI surface', () => {
+    const inventory = '{"schemaVersion":1,"root":"openapi.yaml"}';
+    const cliSource = readFileSync(path.join(repoRoot, 'src/cli.ts'), 'utf8');
+    const match = cliSource.match(/const cliInputNames = \[([^\]]*)\]/);
+    expect(match).toBeTruthy();
+    const names = [...match![1].matchAll(/'([^']+)'/g)].map((entry) => entry[1]);
+    expect(names.indexOf('spec-files-json')).toBe(names.indexOf('spec-path') + 1);
+
+    const config = parseCliArgs(
+      [
+        '--project-name',
+        'demo',
+        '--spec-path',
+        'openapi.yaml',
+        '--spec-files-json',
+        inventory
+      ],
+      {}
+    );
+    expect(config.inputEnv.INPUT_SPEC_PATH).toBe('openapi.yaml');
+    expect(config.inputEnv.INPUT_SPEC_FILES_JSON).toBe(inventory);
+
+    const resolved = resolveInputs(config.inputEnv);
+    expect(resolved.specPath).toBe('openapi.yaml');
+    expect(resolved.specFilesJson).toBe(inventory);
+
+    expect(() =>
+      resolveInputs(
+        parseCliArgs(
+          [
+            '--spec-url',
+            'https://example.test/openapi.yaml',
+            '--spec-files-json',
+            inventory
+          ],
+          {}
+        ).inputEnv
+      )
+    ).toThrow(/CONTRACT_DEFINITION_INVENTORY_WITH_URL/);
   });
 
   it('maps every public action input and ignores legacy aliases', () => {

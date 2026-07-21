@@ -19,11 +19,23 @@ These codes fail the run.
 | `CONTRACT_SPEC_FETCH_BLOCKED` | Spec URL, ref URL, DNS result, redirect, or socket destination was not allowed. | Use public HTTPS spec/ref URLs that do not resolve to private or local networks. |
 | `CONTRACT_SPEC_FETCH_FAILED` | Allowed HTTPS fetch failed or redirected too many times. | Check availability, status codes, and redirect chains. |
 | `CONTRACT_REF_LIMIT_EXCEEDED` | External ref count exceeded the configured limit. | Reduce external ref fan-out or bundle the spec upstream. |
+| `CONTRACT_REF_COUNT_EXCEEDED` | Local definition closure exceeded the maximum member count (101 including root). | Reduce companion files or split the definition. |
 | `CONTRACT_REF_DEPTH_EXCEEDED` | Ref nesting exceeded the configured limit. | Flatten recursive/deep ref chains. |
 | `CONTRACT_REF_SIZE_EXCEEDED` | A fetched resource or total fetched bytes exceeded limits. | Reduce spec/ref size or pre-bundle the document. |
 | `CONTRACT_SPEC_PARSE_FAILED` | The fetched document was not valid JSON/YAML object content. | Fix the source document syntax. |
+| `CONTRACT_SPEC_PATH_ESCAPE` | A `spec-path` or local relative `$ref`/`import` escaped the workspace or bundle base. | Keep every local member under `dirname(spec-path)` with relative POSIX paths only. |
+| `CONTRACT_SPEC_PATH_NOT_FILE` | `spec-path` resolved to a directory or non-regular file. | Point `spec-path` at a single regular file. |
+| `CONTRACT_SPEC_PATH_SYMLINK` | A definition root or member path was a symlink. | Replace symlinks with real files inside the workspace. |
 | `CONTRACT_SPEC_READ_FAILED` | The `spec-path` file could not be read from the workspace. | Verify the file exists at the configured path and that the workflow checked out the branch that contains it. |
 | `CONTRACT_SPEC_VALIDATION_FAILED` | The bundled document failed OpenAPI validation. | Fix [OpenAPI validation](https://learning.postman.com/docs/design-apis/specifications/validate-a-specification/) errors. |
+| `CONTRACT_DEFINITION_ENCODING_INVALID` | A definition member was not valid UTF-8. | Re-encode the file as UTF-8 without a conflicting BOM rewrite. |
+| `CONTRACT_DEFINITION_INVENTORY_INVALID` | Optional `spec-files-json` failed schema, sort, reachability, or one-root rules. | Emit the exact inventory schema with sorted workspace-relative paths. |
+| `CONTRACT_DEFINITION_INVENTORY_WITH_URL` | Non-empty `spec-files-json` was provided together with `spec-url`. | Use `spec-path` with the discovery inventory, or omit `spec-files-json` for HTTPS specs. |
+| `CONTRACT_DEFINITION_ROOT_MISMATCH` | Inventory `root` did not match `spec-path` or the sole root file role. | Align inventory root, `spec-path`, and the single `role: root` entry. |
+| `CONTRACT_DEFINITION_DUPLICATE_PATH` | Inventory or bundle paths collided after NFC/case folding. | Use distinct POSIX paths; do not rely on case-only differences. |
+| `CONTRACT_DEFINITION_MEMBER_MISMATCH` | An inventoried member's on-disk size or sha256 did not match inventory metadata. | Regenerate inventory from the written bytes. |
+| `CONTRACT_DEFINITION_CLOSURE_INCOMPLETE` | A required local ref/import was missing, escaping, or not covered by inventory. | Include every reachable companion or fix the broken relative reference. |
+| `CONTRACT_MCP_MULTIFILE_UNSUPPORTED` | An MCP definition inventory or bundle contained more than one member. | MCP accepts exactly one root document; omit companions or split servers. |
 | `CONTRACT_OAS30_TYPE_NULL_UNSUPPORTED` | The opt-in OpenAPI 3.0 compatibility mode found `type: null` outside a two-member `oneOf` containing one normal schema and one null-only schema. | Use the supported nullable pair or leave the compatibility mode disabled and provide a valid OpenAPI 3.0 document. |
 | `CONTRACT_UNSUPPORTED_OPENAPI_VERSION` | The document was not OpenAPI 3.0 or 3.1. | Provide an OpenAPI 3.0/3.1 document. |
 
@@ -221,5 +233,7 @@ These codes fail the run.
 | --- | --- | --- |
 | `CONTRACT_COLLECTION_FORMAT_UNSUPPORTED` | A protocol collection builder returned a non-v3 format; only v3/Extensible Collections are created (access-token EC API). | File a bug; the builder must emit v3-ec. No v2 collection is ever created. |
 | `CONTRACT_COLLECTION_ID_COLLISION` | Baseline, smoke, and contract IDs were not pairwise distinct. | Pass distinct collection IDs or clear stale IDs. |
+| `CONTRACT_MULTI_FILE_SPEC_SYNC_DISABLED` | `POSTMAN_MULTI_FILE_SPEC_SYNC=off` blocked a multi-file Spec Hub sync before mutation. | Unset the kill switch, or provide a single-file definition. Single-file runs ignore the switch. |
 | `CONTRACT_PLAN_MISSING` | Contract instrumentation ran without a preflight-generated contract plan. | Rerun with dynamic contract preflight enabled and report the failure if it persists. |
-| `CONTRACT_SPEC_ROLLBACK_FAILED` | Best-effort previous spec restoration failed after a later error. | Restore the previous spec content manually using the emitted SHA-256. |
+| `CONTRACT_SPEC_ROOT_PATH_CHANGE_UNSUPPORTED` | An existing Spec Hub definition's root path differs from the incoming bundle root; root relocation is not supported in place. | Clear `spec-id` (and matching resources state) so a fresh multi-file spec can be created. |
+| `CONTRACT_SPEC_ROLLBACK_FAILED` | Best-effort previous full-set Spec Hub restoration failed after a later error. | Restore the previous file set manually using the emitted digest and stage. |

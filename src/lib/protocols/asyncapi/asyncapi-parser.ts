@@ -22,6 +22,15 @@
 // dispatch marks these collections runnableInCi:false.
 
 import { Parser, DiagnosticSeverity } from '@postman/asyncapi-parser';
+import { parse as parseYaml } from 'yaml';
+
+import type { DefinitionBundle } from '../../spec/definition-bundle.js';
+import { DEFINITION_BUNDLE_LIMITS } from '../../spec/definition-bundle.js';
+import {
+  closureIncomplete,
+  readBundleMember,
+  resolveBundleRelativeKey
+} from '../definition-bundle-support.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -109,7 +118,155 @@ export interface AsyncApiParseOptions {
   // Endpoint override applied when the document declares no usable server url.
   endpointUrl?: string;
   // Test-only Parser override; production uses the bundled parser.
-  parser?: { parse(input: string): Promise<{ document?: unknown; diagnostics?: unknown[] }> };
+  parser?: { parse(input: string, options?: unknown): Promise<{ document?: unknown; diagnostics?: unknown[] }> };
+  /** Validated multi-file closure; relative $refs resolve from bundle keys only. */
+  definitionBundle?: DefinitionBundle;
+}
+
+function collectExternalRefs(node: unknown, refs: Set<string>): void {
+  if (Array.isArray(node)) {
+    node.forEach((entry) => collectExternalRefs(entry, refs));
+    return;
+  }
+  const record = asRecord(node);
+  if (!record) return;
+  const ref = typeof record.$ref === 'string' ? record.$ref : '';
+  if (ref && !ref.startsWith('#')) {
+    const target = ref.split('#', 1)[0] ?? '';
+    if (target) refs.add(target);
+  }
+  for (const value of Object.values(record)) {
+    collectExternalRefs(value, refs);
+  }
+}
+
+function parseAsyncApiDocument(content: string): unknown {
+  try {
+    return JSON.parse(content) as unknown;
+  } catch {
+    try {
+      return parseYaml(content) as unknown;
+    } catch {
+      return null;
+    }
+  }
+}
+
+/**
+ * Map a spectral/asyncapi file URI to an exact bundle-relative key.
+ * Never guesses by basename/suffix — ambiguous same-basename paths must fail
+ * rather than select arbitrarily.
+ */
+function exactBundleKeyFromFileUri(uri: { path?: () => string; toString?: () => string } | string, bundle: DefinitionBundle): string {
+  const raw = typeof uri === 'string' ? uri : String(uri.path?.() ?? uri.toString?.() ?? uri);
+  let path = raw.replace(/^file:\/\//i, '').replace(/\\/g, '/');
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // Keep undecoded path when percent-decoding fails.
+  }
+  path = path.replace(/^\/+/, '');
+  if (!path) {
+    closureIncomplete(`Empty AsyncAPI file reference: ${raw}`);
+  }
+  if (bundle.files.has(path)) return path;
+  // Spectral resolves refs against the document source (file:///<rootPath>), so
+  // the URI path is already the bundle-relative identity. Refuse suffix/basename
+  // fallbacks that would collide on same-basename members.
+  closureIncomplete(`Missing AsyncAPI member ${path}`);
+}
+
+function assertAsyncApiBundleClosure(bundle: DefinitionBundle, rootContent: string): void {
+  if (bundle.completeness !== 'full') {
+    closureIncomplete('AsyncAPI requires a full definition bundle (completeness must be full)');
+  }
+
+  const visited = new Set<string>();
+  const queue: Array<{ key: string; content: string; depth: number }> = [
+    { key: bundle.rootPath, content: rootContent, depth: 0 }
+  ];
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (visited.has(current.key)) continue;
+    visited.add(current.key);
+
+    if (current.depth > DEFINITION_BUNDLE_LIMITS.maxDepth) {
+      throw new Error(
+        `CONTRACT_REF_DEPTH_EXCEEDED: AsyncAPI ref depth exceeded ${DEFINITION_BUNDLE_LIMITS.maxDepth}`
+      );
+    }
+
+    const document = parseAsyncApiDocument(current.content);
+    const refs = new Set<string>();
+    if (document !== null) {
+      collectExternalRefs(document, refs);
+    } else {
+      // Unparseable dependency: still surface $ref strings for closure checks.
+      for (const match of current.content.matchAll(/\$ref\s*:\s*['"]?([^'"\s#]+)/g)) {
+        const target = match[1] ?? '';
+        if (target && !target.startsWith('#')) refs.add(target);
+      }
+      for (const match of current.content.matchAll(/"\$ref"\s*:\s*"([^"#]+)/g)) {
+        const target = match[1] ?? '';
+        if (target && !target.startsWith('#')) refs.add(target);
+      }
+    }
+
+    for (const target of refs) {
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)) {
+        closureIncomplete(`Remote AsyncAPI reference is not allowed in a confined bundle: ${target}`);
+      }
+      // Resolve relative to the importing document, not the bundle root.
+      const key = resolveBundleRelativeKey(current.key, target);
+      if (!bundle.files.has(key)) {
+        closureIncomplete(`Missing AsyncAPI member ${target}`);
+      }
+      if (visited.has(key)) continue;
+      if (current.depth + 1 > DEFINITION_BUNDLE_LIMITS.maxDepth) {
+        throw new Error(
+          `CONTRACT_REF_DEPTH_EXCEEDED: AsyncAPI ref depth exceeded ${DEFINITION_BUNDLE_LIMITS.maxDepth}`
+        );
+      }
+      queue.push({ key, content: readBundleMember(bundle, key), depth: current.depth + 1 });
+    }
+  }
+}
+
+function createBundleBackedParser(bundle: DefinitionBundle): Parser {
+  return new Parser({
+    __unstable: {
+      resolver: {
+        resolvers: [
+          {
+            schema: 'file',
+            order: 1,
+            canRead: true,
+            read: (uri) => {
+              const key = exactBundleKeyFromFileUri(uri, bundle);
+              return readBundleMember(bundle, key);
+            }
+          },
+          {
+            schema: 'http',
+            order: 1,
+            canRead: () => false,
+            read: () => {
+              closureIncomplete('HTTP AsyncAPI references are not allowed in a confined bundle');
+            }
+          },
+          {
+            schema: 'https',
+            order: 1,
+            canRead: () => false,
+            read: () => {
+              closureIncomplete('HTTPS AsyncAPI references are not allowed in a confined bundle');
+            }
+          }
+        ]
+      }
+    }
+  });
 }
 
 const SOCKETIO_PROTOCOLS = new Set(['socketio', 'socket.io', 'sio']);
@@ -544,11 +701,19 @@ export async function parseAsyncApi(content: string, options: AsyncApiParseOptio
     throw new Error('ASYNCAPI_EMPTY_INPUT: AsyncAPI source is empty');
   }
 
-  const parser = options.parser ?? new Parser();
+  if (options.definitionBundle) {
+    assertAsyncApiBundleClosure(options.definitionBundle, content);
+  }
+
+  const parser = options.parser
+    ?? (options.definitionBundle ? createBundleBackedParser(options.definitionBundle) : new Parser());
   let output: { document?: unknown; diagnostics?: unknown[] };
   try {
-    output = await parser.parse(content);
+    output = options.definitionBundle
+      ? await parser.parse(content, { source: `file:///${options.definitionBundle.rootPath}` })
+      : await parser.parse(content);
   } catch (error) {
+    if (error instanceof Error && /^CONTRACT_/.test(error.message)) throw error;
     throw new Error(`ASYNCAPI_PARSE_FAILED: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 

@@ -214,6 +214,10 @@ function bundleFileForUrl(
   return bundle.files.get(relative);
 }
 
+function undoRefParserPercentDoubleEncoding(fileUrl: string): string {
+  return fileUrl.replace(/%25(?=[0-9a-f]{2})/gi, '%');
+}
+
 export function detectOpenApiVersion(doc: JsonRecord): OpenApiVersion {
   if (doc.swagger === '2.0') {
     throw new Error('CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (found swagger 2.0)');
@@ -332,7 +336,13 @@ async function bundleSpec(
             order: 1,
             canRead: (file: { url: string }) => file.url.startsWith('file:'),
             read: (file: { url: string }) => {
-              const matched = bundleFileForUrl(localBundle, file.url, baseUrl);
+              const matched =
+                bundleFileForUrl(localBundle, file.url, baseUrl)
+                ?? bundleFileForUrl(
+                  localBundle,
+                  undoRefParserPercentDoubleEncoding(file.url),
+                  baseUrl
+                );
               if (!matched) {
                 throw new Error(`CONTRACT_DEFINITION_CLOSURE_INCOMPLETE: Missing local OpenAPI ref ${file.url}`);
               }
@@ -411,6 +421,17 @@ async function buildLoadedSpec(
   };
 }
 
+/** Canonicalize local roots before constructing the base file URL. */
+function resolveLocalFileUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  try {
+    const filePath = url.startsWith('file:') ? fileURLToPath(url) : url;
+    return pathToFileURL(realpathSync(filePath)).toString();
+  } catch {
+    return url;
+  }
+}
+
 export async function loadOpenApiContractSpec(
   specUrl: string,
   options: OpenApiLoaderOptions = {}
@@ -422,8 +443,9 @@ export async function loadOpenApiContractSpec(
   // root spec surfaces CONTRACT_SPEC_PARSE_FAILED / CONTRACT_UNSUPPORTED_OPENAPI_VERSION
   // rather than a downstream ref-fetch error.
   detectOpenApiVersion(parseOpenApiDocument(content));
-  await prefetchExternalRefs(content, resourceUrl(specUrl), fetchText, options, budget, new Set([resourceUrl(specUrl)]), 0);
-  return buildLoadedSpec(content, specUrl, options, fetchText, budget);
+  const baseRef = resolveLocalFileUrl(specUrl);
+  await prefetchExternalRefs(content, resourceUrl(baseRef), fetchText, options, budget, new Set([resourceUrl(baseRef)]), 0);
+  return buildLoadedSpec(content, baseRef, options, fetchText, budget);
 }
 
 // spec-path is just "spec-url, but the bytes are already on disk in the
@@ -484,7 +506,8 @@ export async function loadOpenApiContractSpecFromPath(
     path.dirname(specPath.replace(/\\/g, '/')),
     definitionBundle.rootPath
   );
-  const baseRef = pathToFileURL(absolutePath).toString();
+  const resolvedPath = (() => { try { return realpathSync(absolutePath); } catch { return absolutePath; } })();
+  const baseRef = pathToFileURL(resolvedPath).toString();
   await prefetchExternalRefs(
     content,
     baseRef,

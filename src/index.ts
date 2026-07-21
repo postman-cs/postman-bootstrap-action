@@ -987,7 +987,7 @@ export async function ensurePostmanCli(
     };
     if (platform === 'win32') {
       await dependencies.exec.exec(
-        'powershell.exe',
+        'pwsh.exe',
         [
           '-NoProfile',
           '-InputFormat',

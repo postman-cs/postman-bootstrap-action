@@ -16,6 +16,8 @@ import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tempDirs: string[] = [];
+const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
+const npmCliArgs = process.platform === 'win32' ? [process.env.npm_execpath ?? ''] : [];
 
 type CliOutputs = {
   'workspace-id': string;
@@ -512,7 +514,7 @@ describe('package CLI bin', () => {
     const packDir = await makeTempDir('postman-bootstrap-pack-');
     const prefixDir = await makeTempDir('postman-bootstrap-prefix-');
 
-    const packResult = await execFileAsync('npm', ['pack', '--json', '--pack-destination', packDir], {
+    const packResult = await execFileAsync(npmCommand, [...npmCliArgs, 'pack', '--json', '--pack-destination', packDir], {
       cwd: repoRoot,
       encoding: 'utf8',
       env: {
@@ -565,12 +567,18 @@ describe('package CLI bin', () => {
       await chmod(cliBinPath, 0o755);
     }
 
-    const execution = await runCommand('postman-bootstrap', ['--integration-backend', 'unsupported'], {
+    const execution = await runCommand(
+      process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : 'postman-bootstrap',
+      process.platform === 'win32'
+        ? ['/d', '/s', '/c', cliBinPath, '--integration-backend', 'unsupported']
+        : ['--integration-backend', 'unsupported'],
+      {
       cwd: packDir,
       env: {
         PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ''}`
       }
-    });
+      }
+    );
 
     expect(execution.code).not.toBe(0);
     expect(execution.stdout).toBe('');

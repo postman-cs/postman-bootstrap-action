@@ -5,6 +5,14 @@ import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
 import { __resetIdentityMemo, resolveSessionIdentity } from '../src/lib/postman/credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from '../src/lib/postman/error-advice.js';
+import {
+  createDefinitionBundle,
+  createDefinitionFile
+} from '../src/lib/spec/definition-bundle.js';
+import {
+  definitionBundleToSnapshot,
+  type SpecReconcileCapabilityPolicy
+} from '../src/lib/postman/spec-file-reconcile.js';
 
 interface Envelope {
   service: string;
@@ -31,7 +39,11 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
  */
 function makeClient(
   handler: (env: Envelope, callIndex: number) => Response,
-  clientOptions?: { generationPollAttempts?: number; generationPollDelayMs?: number }
+  clientOptions?: {
+    generationPollAttempts?: number;
+    generationPollDelayMs?: number;
+    reconcileCapabilityPolicy?: SpecReconcileCapabilityPolicy;
+  }
 ): { client: PostmanGatewayAssetsClient; gateway: AccessTokenGatewayClient; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   let i = 0;
@@ -95,11 +107,14 @@ describe('PostmanGatewayAssetsClient', () => {
 
     it('elects one winner and removes concurrently created duplicate specs', async () => {
       let listCalls = 0;
+      let deletedB = false;
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path.includes('/specifications?')) {
           listCalls += 1;
           if (listCalls === 1) return jsonResponse({ data: [] });
-          if (listCalls === 2) {
+          // Keep both IDs list-visible until election deletes the loser so the
+          // stable-set quiet streak can observe the concurrent pair.
+          if (!deletedB) {
             return jsonResponse({
               data: [
                 { id: 'spec-a', name: 'Payments' },
@@ -110,7 +125,10 @@ describe('PostmanGatewayAssetsClient', () => {
           return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
         }
         if (env.method === 'post') return jsonResponse({ data: { id: 'spec-b' } });
-        if (env.method === 'delete') return jsonResponse({ data: { id: 'spec-b' } });
+        if (env.method === 'delete' && env.path === '/specifications/spec-b') {
+          deletedB = true;
+          return jsonResponse({ data: { id: 'spec-b' } });
+        }
         if (env.path === '/specifications/spec-a/files') {
           return jsonResponse({ data: [{ id: 'root-a', type: 'ROOT' }] });
         }
@@ -139,14 +157,17 @@ describe('PostmanGatewayAssetsClient', () => {
 
     it('waits for a delayed concurrent spec to become list-visible before generation', async () => {
       let listCalls = 0;
+      let deletedB = false;
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path.includes('/specifications?')) {
           listCalls += 1;
           if (listCalls === 1) return jsonResponse({ data: [] });
-          if (listCalls === 2) {
+          // First post-create observations are still a singleton; peer appears
+          // after the historic single-settle window (listCalls >= 4).
+          if (listCalls <= 3) {
             return jsonResponse({ data: [{ id: 'spec-b', name: 'Payments' }] });
           }
-          if (listCalls === 3) {
+          if (!deletedB) {
             return jsonResponse({
               data: [
                 { id: 'spec-a', name: 'Payments' },
@@ -157,7 +178,10 @@ describe('PostmanGatewayAssetsClient', () => {
           return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
         }
         if (env.method === 'post') return jsonResponse({ data: { id: 'spec-b' } });
-        if (env.method === 'delete') return jsonResponse({ data: { id: 'spec-b' } });
+        if (env.method === 'delete' && env.path === '/specifications/spec-b') {
+          deletedB = true;
+          return jsonResponse({ data: { id: 'spec-b' } });
+        }
         if (env.path === '/specifications/spec-a/files') {
           return jsonResponse({ data: [{ id: 'root-a', type: 'ROOT' }] });
         }
@@ -1854,6 +1878,867 @@ describe('PostmanGatewayAssetsClient', () => {
       // A naive split on the first hyphen would corrupt this to
       // '2222-3333-4444-555555555555'; the strict guard preserves it.
       expect(del?.path).toBe('/v3/collections/11111111-2222-3333-4444-555555555555');
+    });
+  });
+
+  describe('multi-file Spec Hub bundle sync (R6)', () => {
+    const rootContent = 'openapi: 3.0.3\ninfo:\n  title: t\n  version: 1.0.0\n';
+    const petV1 = 'type: object\nexample: bundle-v1\n';
+    const petV2 = 'type: object\nexample: bundle-v2\n';
+    const errorYaml = 'type: object\nproperties:\n  code:\n    type: string\n';
+
+    function defFile(path: string, role: 'root' | 'dependency', content: string) {
+      return createDefinitionFile({
+        path,
+        role,
+        bytes: new TextEncoder().encode(content)
+      });
+    }
+
+    function openApiBundle(files: ReturnType<typeof defFile>[]) {
+      const root = files.find((entry) => entry.role === 'root');
+      if (!root) throw new Error('missing root');
+      return createDefinitionBundle({
+        rootPath: root.path,
+        format: 'openapi-yaml',
+        completeness: 'full',
+        provenance: { source: 'spec-path', evidence: ['test'] },
+        files
+      });
+    }
+
+    function timeout500(): Response {
+      return jsonResponse(
+        { error: { name: 'ESOCKETTIMEDOUT', message: 'socket hang up' } },
+        { status: 500, statusText: 'Internal Server Error' }
+      );
+    }
+
+    function cloudState(
+      files: Array<{
+        id: string;
+        path: string;
+        type: 'ROOT' | 'DEFAULT';
+        content: string;
+        parentId?: string;
+      }>
+    ) {
+      const byId = new Map(files.map((file) => [file.id, file]));
+      return (env: Envelope): Response => {
+        if (env.method === 'get' && env.path.endsWith('/files') && !env.path.includes('/files/')) {
+          return jsonResponse({
+            data: files.map(({ id, path, type, parentId }) => ({
+              id,
+              path,
+              type,
+              ...(parentId ? { parentId } : {})
+            }))
+          });
+        }
+        const fileMatch = env.path.match(/\/files\/([^/?]+)/);
+        if (env.method === 'get' && fileMatch) {
+          const file = byId.get(fileMatch[1]!);
+          if (!file) return jsonResponse({ error: 'not found' }, { status: 404 });
+          return jsonResponse({ data: { id: file.id, content: file.content } });
+        }
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'get' && /^\/specifications\/[^/]+$/.test(env.path)) {
+          return jsonResponse({ data: { id: 'spec-1' } });
+        }
+        return jsonResponse({});
+      };
+    }
+
+    function filesListCalls(calls: RecordedCall[]): RecordedCall[] {
+      return calls.filter(
+        (call) =>
+          call.method === 'get' &&
+          call.path.endsWith('/files') &&
+          !/\/files\/[^/?]+/.test(call.path)
+      );
+    }
+
+    it('uploadSpecBundle posts the exact multi-file create shape and verifies digest', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      let created = false;
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const base = cloudState(files);
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/specifications?')) {
+          created = true;
+          return jsonResponse({ data: { id: 'spec-1' } }, { status: 201 });
+        }
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({ data: created ? [{ id: 'spec-1', name: 'Payments' }] : [] });
+        }
+        return base(env);
+      });
+
+      const result = await client.uploadSpecBundle('ws-1', 'Payments', target, '3.0');
+      expect(result.specId).toBe('spec-1');
+      expect(result.created).toBe(true);
+      expect(result.outcome.status).toBe('ok');
+
+      const create = calls.find(
+        (call) => call.method === 'post' && call.path.startsWith('/specifications?')
+      );
+      expect(create?.body).toEqual({
+        name: 'Payments',
+        type: 'OPENAPI:3.0',
+        files: [
+          { path: 'components/pet.yaml', content: petV1, type: 'DEFAULT' },
+          { path: 'openapi.yaml', content: rootContent, type: 'ROOT' }
+        ]
+      });
+      expect(calls.some((call) => call.path.includes('/bulk-files'))).toBe(false);
+    });
+
+    it('uploadSpecBundle waits for a delayed peer before electing; loser is not returned and created reflects election', async () => {
+      // Models the live nonorg dual-preview race: after create, the first settle
+      // read still shows only our singleton; a peer same-name spec becomes
+      // list-visible later. Stable lowest ID must win; created is true only when
+      // the elected winner is the spec this runner POSTed.
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const peerFiles = [
+        { id: 'root-a', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-a', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const ourFiles = [
+        { id: 'root-b', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-b', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      let listCalls = 0;
+      let deletedB = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/specifications?')) {
+          return jsonResponse({ data: { id: 'spec-b' } }, { status: 201 });
+        }
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          listCalls += 1;
+          // 1: pre-create empty
+          if (listCalls === 1) return jsonResponse({ data: [] });
+          // 2-3: post-create + first settle still singleton (current bug acceptance window)
+          if (listCalls <= 3) {
+            return jsonResponse({ data: [{ id: 'spec-b', name: 'Payments' }] });
+          }
+          // 4+: peer becomes visible; after election deletes, only winner remains
+          if (deletedB > 0) {
+            return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
+          }
+          return jsonResponse({
+            data: [
+              { id: 'spec-a', name: 'Payments' },
+              { id: 'spec-b', name: 'Payments' }
+            ]
+          });
+        }
+        if (env.method === 'delete' && env.path === '/specifications/spec-b') {
+          deletedB += 1;
+          // Peer may already have deleted the loser — second delete is 404.
+          if (deletedB > 1) {
+            return jsonResponse({ error: { name: 'notFound', message: 'gone' } }, { status: 404 });
+          }
+          return jsonResponse({ data: { id: 'spec-b' } });
+        }
+        if (env.method === 'delete' && env.path === '/specifications/spec-a') {
+          throw new Error('elected peer must not be whole-deleted');
+        }
+        if (env.path.includes('/specifications/spec-a/')) {
+          return cloudState(peerFiles)(env);
+        }
+        if (env.path.includes('/specifications/spec-b/')) {
+          return cloudState(ourFiles)(env);
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-a') {
+          return jsonResponse({ data: { id: 'spec-a' } });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      const result = await client.uploadSpecBundle('ws-1', 'Payments', target, '3.0');
+      expect(result.specId).toBe('spec-a');
+      expect(result.created).toBe(false);
+      expect(result.outcome.status).toBe('ok');
+      expect(listCalls).toBeGreaterThan(3);
+      expect(calls).toContainEqual(
+        expect.objectContaining({ method: 'delete', path: '/specifications/spec-b' })
+      );
+      expect(calls.some((call) => call.method === 'delete' && call.path === '/specifications/spec-a')).toBe(
+        false
+      );
+    });
+
+    it('uploadSpecBundle sets created:true only when this runner owns the elected winner', async () => {
+      // Winner-owner race: this runner created the lowest-ID winner. A peer loser
+      // becomes list-visible, but this runner must never DELETE the peer ID —
+      // peer self-cleanup is observed on bounded subsequent list polls.
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const winnerFiles = [
+        { id: 'root-a', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-a', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      let listCalls = 0;
+      let dualListCount = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/specifications?')) {
+          return jsonResponse({ data: { id: 'spec-a' } }, { status: 201 });
+        }
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          listCalls += 1;
+          if (listCalls === 1) return jsonResponse({ data: [] });
+          if (listCalls <= 3) {
+            return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
+          }
+          dualListCount += 1;
+          // Quiet dual set (two polls), then peer self-cleans on later converge polls.
+          if (dualListCount > 3) {
+            return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
+          }
+          return jsonResponse({
+            data: [
+              { id: 'spec-a', name: 'Payments' },
+              { id: 'spec-b', name: 'Payments' }
+            ]
+          });
+        }
+        if (env.method === 'delete' && env.path === '/specifications/spec-b') {
+          throw new Error('peer-created loser must not be deleted by winner owner');
+        }
+        if (env.path.includes('/specifications/spec-a/')) {
+          return cloudState(winnerFiles)(env);
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-a') {
+          return jsonResponse({ data: { id: 'spec-a' } });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      const result = await client.uploadSpecBundle('ws-1', 'Payments', target, '3.0');
+      expect(result.specId).toBe('spec-a');
+      expect(result.created).toBe(true);
+      expect(result.outcome.status).toBe('ok');
+      expect(listCalls).toBeGreaterThan(3);
+      expect(calls.some((call) => call.method === 'delete' && call.path === '/specifications/spec-b')).toBe(
+        false
+      );
+      expect(calls.some((call) => call.method === 'delete' && call.path === '/specifications/spec-a')).toBe(
+        false
+      );
+    });
+
+    it('deleteSpec treats 404 as successful idempotent deletion', async () => {
+      const { client } = makeClient((env) => {
+        if (env.method === 'delete' && env.path === '/specifications/spec-gone') {
+          return jsonResponse({ error: { name: 'notFound' } }, { status: 404 });
+        }
+        return jsonResponse({ data: {} });
+      });
+      await expect(client.deleteSpec('spec-gone')).resolves.toBeUndefined();
+    });
+
+    it('reconcileSpecBundle is a no-op when the full-set digest matches', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const { client, calls } = makeClient(
+        cloudState([
+          { id: 'root-id', path: 'openapi.yaml', type: 'ROOT', content: rootContent },
+          { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT', content: petV1 }
+        ])
+      );
+
+      const outcome = await client.reconcileSpecBundle('spec-1', target);
+      expect(outcome).toMatchObject({ status: 'ok', changed: false, verifiedDigest: target.digest });
+      expect(calls.some((call) => call.path.includes('/bulk-files'))).toBe(false);
+      expect(calls.some((call) => call.method === 'patch')).toBe(false);
+      expect(calls.some((call) => call.method === 'delete')).toBe(false);
+    });
+
+    it('reconciles companion-only update via atomic bulk-files', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV2)
+      ]);
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const base = cloudState(files);
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/specifications/spec-1/bulk-files') {
+          files[1]!.content = petV2;
+          return jsonResponse({ data: { update: [{ id: 'pet-id' }] } }, { status: 201 });
+        }
+        return base(env);
+      });
+
+      const outcome = await client.reconcileSpecBundle('spec-1', target);
+      expect(outcome.status).toBe('ok');
+      expect(outcome.changed).toBe(true);
+      if (outcome.status === 'ok') expect(outcome.verifiedDigest).toBe(target.digest);
+      expect(outcome.priorSnapshot.digest).not.toBe(target.digest);
+
+      const bulk = calls.find((call) => call.path === '/specifications/spec-1/bulk-files');
+      expect(bulk?.body).toEqual({
+        update: [{ id: 'pet-id', content: petV2 }]
+      });
+    });
+
+    it('reconciles add and delete via atomic bulk-files', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/error.yaml', 'dependency', errorYaml)
+      ]);
+      let files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/specifications/spec-1/bulk-files') {
+          files = [
+            { id: 'root-id', path: 'openapi.yaml', type: 'ROOT', content: rootContent },
+            { id: 'error-id', path: 'components/error.yaml', type: 'DEFAULT', content: errorYaml }
+          ];
+          return jsonResponse({ data: { create: [{ id: 'error-id' }] } }, { status: 201 });
+        }
+        return cloudState(files)(env);
+      });
+
+      const outcome = await client.reconcileSpecBundle('spec-1', target);
+      expect(outcome.status).toBe('ok');
+      expect(outcome.changed).toBe(true);
+
+      const bulk = calls.find((call) => call.path === '/specifications/spec-1/bulk-files');
+      expect(bulk?.body).toEqual({
+        create: [{ path: 'components/error.yaml', content: errorYaml, type: 'DEFAULT' }],
+        delete: [{ id: 'pet-id' }]
+      });
+    });
+
+    it('atomic bulk failure readback does not claim success when digest unchanged', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV2)
+      ]);
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/specifications/spec-1/bulk-files') {
+          return jsonResponse(
+            { error: { name: 'badRequest', status: 400, title: 'invalid delete' } },
+            { status: 400 }
+          );
+        }
+        return cloudState(files)(env);
+      });
+
+      await expect(client.reconcileSpecBundle('spec-1', target)).rejects.toThrow(/400/);
+      expect(calls.filter((call) => call.path.endsWith('/files')).length).toBeGreaterThan(1);
+      expect(calls.filter((call) => call.path.includes('/bulk-files')).length).toBe(1);
+    });
+
+    it('ambiguous bulk timeout returns verification-needed after readback (no blind retry)', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV2)
+      ]);
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/specifications/spec-1/bulk-files') {
+          return timeout500();
+        }
+        return cloudState(files)(env);
+      });
+
+      const outcome = await client.reconcileSpecBundle('spec-1', target);
+      expect(outcome.status).toBe('verification-needed');
+      if (outcome.status === 'verification-needed') {
+        expect(outcome.targetDigest).toBe(target.digest);
+        expect(outcome.reason).toBe('ambiguous-bulk-modify');
+      }
+      expect(calls.filter((call) => call.path.includes('/bulk-files')).length).toBe(1);
+    });
+
+    it('root path change throws CONTRACT_SPEC_ROOT_PATH_CHANGE_UNSUPPORTED without mutation', async () => {
+      const target = openApiBundle([
+        defFile('index.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const { client, calls } = makeClient(
+        cloudState([
+          { id: 'root-id', path: 'openapi.yaml', type: 'ROOT', content: rootContent },
+          { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT', content: petV1 }
+        ])
+      );
+
+      await expect(client.reconcileSpecBundle('spec-1', target)).rejects.toThrow(
+        /CONTRACT_SPEC_ROOT_PATH_CHANGE_UNSUPPORTED/
+      );
+      expect(calls.some((call) => call.path.includes('/bulk-files'))).toBe(false);
+      expect(calls.some((call) => call.method === 'patch' || call.method === 'delete')).toBe(false);
+    });
+
+    it('restoreSpecBundle reconciles the prior snapshot and verifies digest', async () => {
+      const prior = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const snapshot = definitionBundleToSnapshot(prior);
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV2 }
+      ];
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/specifications/spec-1/bulk-files') {
+          files[1]!.content = petV1;
+          return jsonResponse({ data: {} }, { status: 201 });
+        }
+        return cloudState(files)(env);
+      });
+
+      const outcome = await client.restoreSpecBundle('spec-1', snapshot);
+      expect(outcome.status).toBe('ok');
+      expect(outcome.changed).toBe(true);
+      if (outcome.status === 'ok') expect(outcome.verifiedDigest).toBe(prior.digest);
+    });
+
+    it('rejects duplicate cloud paths on readback', async () => {
+      const { client } = makeClient(() =>
+        jsonResponse({
+          data: [
+            { id: 'a', path: 'openapi.yaml', type: 'ROOT' },
+            { id: 'b', path: 'OpenAPI.yaml', type: 'DEFAULT' }
+          ]
+        })
+      );
+      await expect(client.getSpecBundle('spec-1', 'openapi-yaml')).rejects.toThrow(
+        /CONTRACT_DEFINITION_DUPLICATE_PATH/
+      );
+    });
+
+    it('keeps uploadSpec/updateSpec/getSpecContent as one-file wrappers', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'post' && env.path.startsWith('/specifications?')) {
+          return jsonResponse({ data: { id: 'spec-1' } });
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-1/files') {
+          return jsonResponse({ data: [{ id: 'file-1', type: 'ROOT', path: 'index.yaml' }] });
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-1/files/file-1') {
+          return jsonResponse({ data: { id: 'file-1', content: 'openapi: 3.0.3' } });
+        }
+        if (env.method === 'patch') return jsonResponse({ data: { id: 'file-1' } });
+        return jsonResponse({ data: { id: 'spec-1' } });
+      });
+
+      await client.uploadSpec('ws-9', 'Legacy', 'openapi: 3.0.3', '3.0');
+      await client.updateSpec('spec-1', 'openapi: 3.0.3\n');
+      await client.getSpecContent('spec-1');
+
+      const create = calls.find(
+        (call) => call.method === 'post' && call.path.startsWith('/specifications?')
+      );
+      expect(create?.body).toMatchObject({
+        files: [{ path: 'index.yaml', type: 'ROOT', content: 'openapi: 3.0.3' }]
+      });
+      expect(calls.some((call) => call.path.includes('/bulk-files'))).toBe(false);
+      const patch = calls.find((call) => call.method === 'patch');
+      expect(patch?.path).toBe('/specifications/spec-1/files/file-1');
+      expect(patch?.body).toEqual([{ op: 'replace', path: '/content', value: 'openapi: 3.0.3\n' }]);
+    });
+
+    it('bulkModify=false applies sorted non-root upserts, root last, then sorted deletes', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', `${rootContent}#v2\n`),
+        defFile('components/error.yaml', 'dependency', errorYaml),
+        defFile('components/zoo.yaml', 'dependency', 'type: string\n')
+      ]);
+      let files: Array<{
+        id: string;
+        path: string;
+        type: 'ROOT' | 'DEFAULT';
+        content: string;
+        parentId?: string;
+      }> = [
+        {
+          id: 'root-id',
+          path: 'openapi.yaml',
+          type: 'ROOT',
+          content: rootContent,
+          parentId: 'folder-root'
+        },
+        {
+          id: 'pet-id',
+          path: 'components/pet.yaml',
+          type: 'DEFAULT',
+          content: petV1,
+          parentId: 'folder-components'
+        },
+        {
+          id: 'zoo-id',
+          path: 'components/zoo.yaml',
+          type: 'DEFAULT',
+          content: 'type: number\n',
+          parentId: 'folder-components'
+        }
+      ];
+      const mutationOrder: string[] = [];
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.method === 'post' && env.path === '/specifications/spec-1/files') {
+            const body = env.body as { name: string; content: string; parentId?: string };
+            mutationOrder.push(`create:${body.name}`);
+            files = [
+              ...files.filter((file) => file.path !== `components/${body.name}`),
+              {
+                id: 'error-id',
+                path: 'components/error.yaml',
+                type: 'DEFAULT',
+                content: body.content,
+                ...(body.parentId ? { parentId: body.parentId } : {})
+              }
+            ];
+            return jsonResponse({ data: { id: 'error-id' } }, { status: 201 });
+          }
+          if (env.method === 'patch' && env.path.includes('/files/')) {
+            const id = env.path.split('/').pop()!;
+            mutationOrder.push(`update:${id}`);
+            const patch = env.body as Array<{ value: string }>;
+            files = files.map((file) =>
+              file.id === id ? { ...file, content: patch[0]!.value } : file
+            );
+            return jsonResponse({ data: { id } });
+          }
+          if (env.method === 'delete' && env.path.includes('/files/')) {
+            const id = env.path.split('/').pop()!;
+            mutationOrder.push(`delete:${id}`);
+            files = files.filter((file) => file.id !== id);
+            return jsonResponse({ data: {} });
+          }
+          return cloudState(files)(env);
+        },
+        {
+          reconcileCapabilityPolicy: {
+            bulkModify: false,
+            atomicBulk: false,
+            rootPathChange: false
+          }
+        }
+      );
+
+      const outcome = await client.reconcileSpecBundle('spec-1', target);
+      expect(outcome.status).toBe('ok');
+      expect(outcome.changed).toBe(true);
+      expect(mutationOrder).toEqual([
+        'create:error.yaml',
+        'update:zoo-id',
+        'update:root-id',
+        'delete:pet-id'
+      ]);
+      expect(calls.some((call) => call.path.includes('/bulk-files'))).toBe(false);
+      const createBody = calls.find(
+        (call) => call.method === 'post' && call.path === '/specifications/spec-1/files'
+      )?.body;
+      expect(createBody).toEqual({
+        name: 'error.yaml',
+        content: errorYaml,
+        type: 'DEFAULT',
+        parentId: 'folder-components'
+      });
+      expect(filesListCalls(calls)).toHaveLength(2);
+    });
+
+    it('atomicBulk=false returns verification-needed with prior snapshot after bulk failure', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV2)
+      ]);
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.method === 'post' && env.path === '/specifications/spec-1/bulk-files') {
+            return jsonResponse(
+              { error: { name: 'badRequest', status: 400, title: 'invalid delete' } },
+              { status: 400 }
+            );
+          }
+          return cloudState(files)(env);
+        },
+        {
+          reconcileCapabilityPolicy: {
+            bulkModify: true,
+            atomicBulk: false,
+            rootPathChange: false
+          }
+        }
+      );
+
+      const outcome = await client.reconcileSpecBundle('spec-1', target);
+      expect(outcome.status).toBe('verification-needed');
+      if (outcome.status === 'verification-needed') {
+        expect(outcome.reason).toBe('non-atomic-bulk-modify');
+        expect(outcome.targetDigest).toBe(target.digest);
+        expect(outcome.priorSnapshot.files.map((file) => file.path).sort()).toEqual([
+          'components/pet.yaml',
+          'openapi.yaml'
+        ]);
+        expect(outcome.priorSnapshot.digest).not.toBe(target.digest);
+      }
+      expect(calls.filter((call) => call.path.includes('/bulk-files'))).toHaveLength(1);
+    });
+
+    it('rootPathChange=false rejects root path change with zero mutations', async () => {
+      const target = openApiBundle([
+        defFile('index.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const { client, calls } = makeClient(
+        cloudState([
+          { id: 'root-id', path: 'openapi.yaml', type: 'ROOT', content: rootContent },
+          { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT', content: petV1 }
+        ]),
+        {
+          reconcileCapabilityPolicy: {
+            bulkModify: true,
+            atomicBulk: true,
+            rootPathChange: false
+          }
+        }
+      );
+
+      await expect(client.reconcileSpecBundle('spec-1', target)).rejects.toThrow(
+        /CONTRACT_SPEC_ROOT_PATH_CHANGE_UNSUPPORTED/
+      );
+      expect(calls.some((call) => call.path.includes('/bulk-files'))).toBe(false);
+      expect(calls.some((call) => call.method === 'patch' || call.method === 'delete')).toBe(false);
+      expect(filesListCalls(calls)).toHaveLength(1);
+    });
+
+    it('post-create list throw whole-deletes the new spec and preserves the original failure', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      let listCalls = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/specifications?')) {
+          return jsonResponse({ data: { id: 'spec-new' } }, { status: 201 });
+        }
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          listCalls += 1;
+          if (listCalls === 1) return jsonResponse({ data: [] });
+          return jsonResponse(
+            { error: { name: 'serverError', message: 'list exploded' } },
+            { status: 500 }
+          );
+        }
+        if (env.method === 'delete' && env.path === '/specifications/spec-new') {
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.uploadSpecBundle('ws-1', 'Payments', target, '3.0')).rejects.toThrow(
+        /500|list exploded|Internal Server Error/
+      );
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          method: 'delete',
+          path: '/specifications/spec-new'
+        })
+      );
+    });
+
+    it('post-create detail GET throw whole-deletes the new spec', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      let created = false;
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/specifications?')) {
+          created = true;
+          return jsonResponse({ data: { id: 'spec-new' } }, { status: 201 });
+        }
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({ data: created ? [{ id: 'spec-new', name: 'Payments' }] : [] });
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-new') {
+          return jsonResponse(
+            { error: { name: 'serverError', message: 'detail failed' } },
+            { status: 500 }
+          );
+        }
+        if (env.method === 'delete' && env.path === '/specifications/spec-new') {
+          return jsonResponse({ data: {} });
+        }
+        return cloudState(files)(env);
+      });
+
+      await expect(client.uploadSpecBundle('ws-1', 'Payments', target, '3.0')).rejects.toThrow(/500/);
+      expect(calls).toContainEqual(
+        expect.objectContaining({ method: 'delete', path: '/specifications/spec-new' })
+      );
+    });
+
+    it('post-create readback throw whole-deletes; cleanup failure does not claim success', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      let created = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/specifications?')) {
+          created = true;
+          return jsonResponse({ data: { id: 'spec-new' } }, { status: 201 });
+        }
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({ data: created ? [{ id: 'spec-new', name: 'Payments' }] : [] });
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-new/files') {
+          return jsonResponse(
+            { error: { name: 'serverError', message: 'files list failed' } },
+            { status: 500 }
+          );
+        }
+        if (env.method === 'delete' && env.path === '/specifications/spec-new') {
+          return jsonResponse(
+            { error: { name: 'serverError', message: 'delete failed' } },
+            { status: 500 }
+          );
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.uploadSpecBundle('ws-1', 'Payments', target, '3.0')).rejects.toThrow(
+        /whole-delete cleanup also failed/
+      );
+    });
+
+    it('adopted existing specs are never whole-deleted on reconcile failure', async () => {
+      const target = openApiBundle([
+        defFile('index.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({ data: [{ id: 'spec-adopted', name: 'Payments' }] });
+        }
+        if (env.path.includes('/specifications/spec-adopted/files')) {
+          return cloudState([
+            { id: 'root-id', path: 'openapi.yaml', type: 'ROOT', content: rootContent },
+            { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT', content: petV1 }
+          ])(env);
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.uploadSpecBundle('ws-1', 'Payments', target, '3.0')).rejects.toThrow(
+        /CONTRACT_SPEC_ROOT_PATH_CHANGE_UNSUPPORTED/
+      );
+      expect(calls.some((call) => call.method === 'delete')).toBe(false);
+    });
+
+    it('changed reconcile issues exactly one initial files list plus one verification list', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV2)
+      ]);
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/specifications/spec-1/bulk-files') {
+          files[1]!.content = petV2;
+          return jsonResponse({ data: {} }, { status: 201 });
+        }
+        return cloudState(files)(env);
+      });
+
+      await client.reconcileSpecBundle('spec-1', target);
+      expect(filesListCalls(calls)).toHaveLength(2);
+    });
+
+    it('no-op digest match issues exactly one files list and zero mutations', async () => {
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const { client, calls } = makeClient(
+        cloudState([
+          { id: 'root-id', path: 'openapi.yaml', type: 'ROOT', content: rootContent },
+          { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT', content: petV1 }
+        ])
+      );
+
+      const outcome = await client.reconcileSpecBundle('spec-1', target);
+      expect(outcome).toMatchObject({ status: 'ok', changed: false, verifiedDigest: target.digest });
+      expect(filesListCalls(calls)).toHaveLength(1);
+      expect(calls.some((call) => call.path.includes('/bulk-files'))).toBe(false);
+      expect(calls.some((call) => call.method === 'post')).toBe(false);
+      expect(calls.some((call) => call.method === 'patch')).toBe(false);
+      expect(calls.some((call) => call.method === 'delete')).toBe(false);
+    });
+
+    it('priorSnapshot is an exact rollback snapshot of the pre-mutation full set', async () => {
+      const prior = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV1)
+      ]);
+      const target = openApiBundle([
+        defFile('openapi.yaml', 'root', rootContent),
+        defFile('components/pet.yaml', 'dependency', petV2)
+      ]);
+      const files = [
+        { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' as const, content: rootContent },
+        { id: 'pet-id', path: 'components/pet.yaml', type: 'DEFAULT' as const, content: petV1 }
+      ];
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path === '/specifications/spec-1/bulk-files') {
+          files[1]!.content = petV2;
+          return jsonResponse({ data: {} }, { status: 201 });
+        }
+        return cloudState(files)(env);
+      });
+
+      const outcome = await client.reconcileSpecBundle('spec-1', target);
+      expect(outcome.priorSnapshot).toEqual(definitionBundleToSnapshot(prior));
+      expect(outcome.priorSnapshot.digest).toBe(prior.digest);
+      expect(outcome.priorSnapshot.files).toEqual([
+        expect.objectContaining({ path: 'components/pet.yaml', content: petV1 }),
+        expect.objectContaining({ path: 'openapi.yaml', content: rootContent })
+      ]);
     });
   });
 

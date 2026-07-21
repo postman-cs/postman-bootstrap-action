@@ -18,6 +18,29 @@ import {
 } from './local-view-contract.js';
 import { planContractItemScripts } from '../spec/collection-contracts.js';
 import type { ContractIndex } from '../spec/contract-index.js';
+import type { DefinitionBundle, DefinitionFormat } from '../spec/definition-bundle.js';
+import {
+  assertNoCloudPathCollisions,
+  assertSameRootPath,
+  buildBulkFilesBody,
+  buildMultiFileCreateBody,
+  cloudMembersToDefinitionBundle,
+  contentFromGatewayFileRead,
+  DEFAULT_SPEC_RECONCILE_CAPABILITY_POLICY,
+  definitionBundleToSnapshot,
+  listFilesFromGatewayResponse,
+  orderPerFileReconcileOps,
+  perFileCreateName,
+  planHasMutations,
+  planSpecFileReconcile,
+  resolvePerFileCreateParentId,
+  snapshotToDefinitionBundle,
+  validateSpecReconcileCapabilityPolicy,
+  type CloudSpecFileMeta,
+  type SpecBundleMutationOutcome,
+  type SpecBundleSnapshot,
+  type SpecReconcileCapabilityPolicy
+} from './spec-file-reconcile.js';
 
 function asItemArray(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? (value as JsonRecord[]) : [];
@@ -172,6 +195,12 @@ export interface PostmanGatewayAssetsClientOptions {
   generationPollAttempts?: number;
   generationPollDelayMs?: number;
   createIdentity?: () => string;
+  /**
+   * Validated Spec Hub reconcile capability policy. Defaults are the live-proven
+   * R5 values (bulkModify=true, atomicBulk=true, rootPathChange=false). Injectable
+   * for tests; never loaded from external mutable state at runtime.
+   */
+  reconcileCapabilityPolicy?: SpecReconcileCapabilityPolicy;
 }
 
 /**
@@ -190,6 +219,16 @@ export class PostmanGatewayAssetsClient {
   private static readonly GENERATION_LOCKED_MAX_RETRIES = 5;
   private static readonly DEFAULT_GENERATION_POLL_ATTEMPTS = 90;
   private static readonly DEFAULT_GENERATION_POLL_DELAY_MS = 2000;
+  /** Post-create exact-name polls before a singleton may be accepted as final. */
+  private static readonly SPEC_CREATE_STABLE_MAX_POLLS = 10;
+  /** Consecutive identical normalized ID sets required before acting on the set. */
+  private static readonly SPEC_CREATE_STABLE_QUIET_STREAK = 2;
+  /**
+   * Minimum poll index (0-based) before a quiet singleton is accepted. Forces at
+   * least three observations so a peer that becomes list-visible after the first
+   * settle read is still observed (live nonorg dual-preview race).
+   */
+  private static readonly SPEC_CREATE_SINGLETON_MIN_POLL_INDEX = 2;
 
   private readonly gateway: AccessTokenGatewayClient;
   private readonly sleep: (delayMs: number) => Promise<void>;
@@ -197,6 +236,7 @@ export class PostmanGatewayAssetsClient {
   private readonly generationPollAttempts: number;
   private readonly generationPollDelayMs: number;
   private readonly createIdentity: () => string;
+  private readonly reconcileCapabilityPolicy: SpecReconcileCapabilityPolicy;
 
   constructor(options: PostmanGatewayAssetsClientOptions) {
     this.gateway = options.gateway;
@@ -214,6 +254,9 @@ export class PostmanGatewayAssetsClient {
       process.env.POSTMAN_GENERATION_POLL_DELAY_MS,
       PostmanGatewayAssetsClient.DEFAULT_GENERATION_POLL_DELAY_MS,
       0
+    );
+    this.reconcileCapabilityPolicy = validateSpecReconcileCapabilityPolicy(
+      options.reconcileCapabilityPolicy ?? DEFAULT_SPEC_RECONCILE_CAPABILITY_POLICY
     );
   }
 
@@ -311,60 +354,23 @@ export class PostmanGatewayAssetsClient {
       if (!match) throw error;
       created = { data: { id: match.id } };
     }
-    let specId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
-    if (!specId) {
+    const createdSpecId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
+    if (!createdSpecId) {
       throw new Error('Spec upload did not return an ID');
     }
     // A concurrent same-identity create may have won between lookup and POST.
-    // Re-list before proceeding so a duplicate is never silently retained.
-    let matches = await this.findSpecificationsByExactName(workspaceId, projectName);
-    if (before.length === 0 && matches.length <= 1) {
-      // Cross-run creates become list-visible slightly after their POST returns.
-      // Give the identity index one bounded settle window before treating a
-      // singleton as final; otherwise a runner can start generation on a spec a
-      // peer is about to classify as the losing duplicate and delete.
-      await this.sleep(1000);
-      const settled = await this.findSpecificationsByExactName(workspaceId, projectName);
-      if (settled.length > 0) matches = settled;
-    }
-    if (matches.length > 1 && before.length === 0) {
-      // Two runners can both observe zero then POST. Every exact match is new in
-      // this create window, so elect the stable lowest id and delete only the
-      // concurrently appeared losers. Both runners elect the same winner; 404
-      // during duplicate cleanup means the peer already removed it.
-      for (const duplicate of matches.slice(1)) {
-        try {
-          await this.deleteSpecification(duplicate.id);
-        } catch (error) {
-          if (!(error instanceof HttpError && error.status === 404)) throw error;
-        }
-      }
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        matches = await this.findSpecificationsByExactName(workspaceId, projectName);
-        if (matches.length <= 1) break;
-        await this.sleep(250 * (attempt + 1));
-      }
-      const converged = adoptExactMatch(
-        `specification:${workspaceId}:${projectName}`,
-        matches,
-        (entry) => entry.id
-      );
-      if (!converged) {
-        throw new Error(`Concurrent specification create for ${projectName} did not converge`);
-      }
-      specId = converged.id;
-      // The winner may have been created by the peer. Last writer wins for the
-      // same branch identity, which is safe and ensures this run's content lands.
-      if (specId !== String(asRecord(created?.data)?.id ?? created?.id ?? '').trim()) {
-        await this.updateSpec(specId, specContent, workspaceId);
-      }
-    } else {
-      const verified = adoptExactMatch(
-        `specification:${workspaceId}:${projectName}`,
-        matches,
-        (entry) => entry.id
-      );
-      if (verified) specId = verified.id;
+    // Stable-set election before proceeding so a duplicate is never retained and
+    // generation never targets a loser a peer is about to delete.
+    const specId = await this.electStableNewSpecificationIdentity(
+      workspaceId,
+      projectName,
+      before,
+      createdSpecId
+    );
+    // The winner may have been created by the peer. Last writer wins for the
+    // same branch identity, which is safe and ensures this run's content lands.
+    if (specId !== createdSpecId) {
+      await this.updateSpec(specId, specContent, workspaceId);
     }
     // Preflight the read so a generate immediately after create does not race.
     await this.gateway.requestJson<JsonRecord>({
@@ -375,13 +381,114 @@ export class PostmanGatewayAssetsClient {
     return specId;
   }
 
+  /**
+   * Delete an entire Spec Hub specification. Used for concurrent-create
+   * election cleanup and for orchestrator whole-spec cleanup when a brand-new
+   * create fails after mutation (lint/generation/linking). 404 means a peer
+   * already removed it — treat as successful idempotent deletion.
+   */
+  async deleteSpec(specId: string): Promise<void> {
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'specification',
+        method: 'delete',
+        path: `/specifications/${specId}`,
+        retry: 'none'
+      });
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) return;
+      throw error;
+    }
+  }
+
+  /**
+   * After a create when the pre-create exact-name list was empty, poll until the
+   * normalized ID set is quiet and elect the stable lowest ID. Each runner may
+   * delete only its own created loser; never deletes a peer-created ID or any
+   * ID observed in `before`. Winner-owners wait boundedly for peers to
+   * self-clean. Bounded and fake-timer compatible (attempt/streak based).
+   */
+  private async electStableNewSpecificationIdentity(
+    workspaceId: string,
+    projectName: string,
+    before: Array<{ id: string; name: string }>,
+    createdSpecId: string
+  ): Promise<string> {
+    const identityKey = `specification:${workspaceId}:${projectName}`;
+
+    // Pre-existing exact-name rows were observed before create: never run the
+    // concurrent-loser delete path against them (ambiguity is handled by adopt).
+    if (before.length > 0) {
+      const matches = await this.findSpecificationsByExactName(workspaceId, projectName);
+      const verified = adoptExactMatch(identityKey, matches, (entry) => entry.id);
+      return verified?.id ?? createdSpecId;
+    }
+
+    let matches: Array<{ id: string; name: string }> = [];
+    let lastSetKey: string | null = null;
+    let quietStreak = 0;
+    for (
+      let poll = 0;
+      poll < PostmanGatewayAssetsClient.SPEC_CREATE_STABLE_MAX_POLLS;
+      poll += 1
+    ) {
+      matches = await this.findSpecificationsByExactName(workspaceId, projectName);
+      const setKey = matches.map((entry) => entry.id).join('\0');
+      if (setKey === lastSetKey) {
+        quietStreak += 1;
+      } else {
+        lastSetKey = setKey;
+        quietStreak = 1;
+      }
+
+      const quietEnough =
+        quietStreak >= PostmanGatewayAssetsClient.SPEC_CREATE_STABLE_QUIET_STREAK;
+      if (quietEnough && matches.length > 1) {
+        break;
+      }
+      if (
+        quietEnough &&
+        matches.length === 1 &&
+        poll >= PostmanGatewayAssetsClient.SPEC_CREATE_SINGLETON_MIN_POLL_INDEX
+      ) {
+        break;
+      }
+      await this.sleep(poll === 0 ? 1000 : 250);
+    }
+
+    if (matches.length > 1) {
+      // Exact-name set is sorted ascending; lowest ID is the stable winner.
+      // Never loop-delete all matches — only the runner that created a loser
+      // may delete that loser. Winner-owners wait for peer self-cleanup.
+      const winnerId = matches[0]!.id;
+      if (createdSpecId !== winnerId) {
+        if (matches.some((entry) => entry.id === createdSpecId)) {
+          await this.deleteSpecification(createdSpecId);
+        }
+      }
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        matches = await this.findSpecificationsByExactName(workspaceId, projectName);
+        if (matches.length <= 1) break;
+        await this.sleep(250 * (attempt + 1));
+      }
+      if (matches.length > 1) {
+        throw new Error(
+          `Concurrent specification create for ${projectName} did not converge`
+        );
+      }
+      const converged = adoptExactMatch(identityKey, matches, (entry) => entry.id);
+      if (!converged) {
+        throw new Error(`Concurrent specification create for ${projectName} did not converge`);
+      }
+      return converged.id;
+    }
+
+    const verified = adoptExactMatch(identityKey, matches, (entry) => entry.id);
+    return verified?.id ?? createdSpecId;
+  }
+
   private async deleteSpecification(specId: string): Promise<void> {
-    await this.gateway.requestJson<JsonRecord>({
-      service: 'specification',
-      method: 'delete',
-      path: `/specifications/${specId}`,
-      retry: 'none'
-    });
+    await this.deleteSpec(specId);
   }
 
   async findSpecificationsByExactName(
@@ -456,6 +563,432 @@ export class PostmanGatewayAssetsClient {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Create (or adopt+reconcile) a multi-file OpenAPI Spec Hub definition from a
+   * DefinitionBundle. Uses the R5-proven create shape
+   * `{name,type:'OPENAPI:3.x',files:[{path,content,type:'ROOT'|'DEFAULT'}]}`.
+   * Returns the prior/empty snapshot surface for orchestrator rollback; a brand
+   * new create that fails verification is whole-deleted (not per-file rolled back).
+   */
+  async uploadSpecBundle(
+    workspaceId: string,
+    projectName: string,
+    bundle: DefinitionBundle,
+    openapiVersion: '3.0' | '3.1' | string = '3.0'
+  ): Promise<{
+    specId: string;
+    created: boolean;
+    priorSnapshot: SpecBundleSnapshot | null;
+    outcome: SpecBundleMutationOutcome;
+  }> {
+    const before = await this.findSpecificationsByExactName(workspaceId, projectName);
+    const existing = adoptExactMatch(
+      `specification:${workspaceId}:${projectName}`,
+      before,
+      (entry) => entry.id
+    );
+    if (existing) {
+      const outcome = await this.reconcileSpecBundle(existing.id, bundle);
+      return {
+        specId: existing.id,
+        created: false,
+        priorSnapshot: outcome.priorSnapshot,
+        outcome
+      };
+    }
+
+    const body = buildMultiFileCreateBody({ name: projectName, openapiVersion, bundle });
+    let created: JsonRecord | null;
+    try {
+      created = await this.gateway.requestJson<JsonRecord>({
+        service: 'specification',
+        method: 'post',
+        path: `/specifications?containerType=workspace&containerId=${workspaceId}`,
+        retry: 'none',
+        body
+      });
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) throw error;
+      const match = adoptExactMatch(
+        `specification:${workspaceId}:${projectName}`,
+        await this.findSpecificationsByExactName(workspaceId, projectName),
+        (entry) => entry.id
+      );
+      if (!match) {
+        return {
+          specId: '',
+          created: false,
+          priorSnapshot: null,
+          outcome: {
+            status: 'verification-needed',
+            changed: true,
+            priorSnapshot: {
+              schemaVersion: 1,
+              rootPath: bundle.rootPath,
+              format: bundle.format,
+              files: [],
+              digest: ''
+            },
+            targetDigest: bundle.digest,
+            reason: 'ambiguous-create-without-list-match',
+            cause: error
+          }
+        };
+      }
+      const outcome = await this.reconcileSpecBundle(match.id, bundle);
+      return {
+        specId: match.id,
+        created: false,
+        priorSnapshot: outcome.priorSnapshot,
+        outcome
+      };
+    }
+
+    const createdSpecId = String(asRecord(created?.data)?.id ?? created?.id ?? '').trim();
+    if (!createdSpecId) {
+      throw new Error('Spec bundle upload did not return an ID');
+    }
+
+    // After a new spec ID is known, any election/readback/detail failure must
+    // whole-delete only the newly created spec (never an elected/adopted peer).
+    try {
+      const specId = await this.electStableNewSpecificationIdentity(
+        workspaceId,
+        projectName,
+        before,
+        createdSpecId
+      );
+      const weCreatedWinner = specId === createdSpecId;
+
+      // Lost the election: land our content on the peer winner and surface
+      // created:false so orchestrator rollback never deletes the elected peer.
+      if (!weCreatedWinner) {
+        const outcome = await this.reconcileSpecBundle(specId, bundle);
+        return {
+          specId,
+          created: false,
+          priorSnapshot: outcome.priorSnapshot,
+          outcome
+        };
+      }
+
+      const readback = await this.getSpecBundle(specId, bundle.format);
+      if (readback.digest !== bundle.digest) {
+        throw new Error(
+          `Spec Hub bundle verify failed after create for ${specId}: expected digest ${bundle.digest}, got ${readback.digest}`
+        );
+      }
+
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'specification',
+        method: 'get',
+        path: `/specifications/${specId}`
+      });
+
+      const priorSnapshot: SpecBundleSnapshot = {
+        schemaVersion: 1,
+        rootPath: bundle.rootPath,
+        format: bundle.format,
+        files: [],
+        digest: ''
+      };
+      return {
+        specId,
+        created: true,
+        priorSnapshot,
+        outcome: {
+          status: 'ok',
+          changed: true,
+          priorSnapshot,
+          verifiedDigest: readback.digest
+        }
+      };
+    } catch (error) {
+      let cleanupFailed: unknown;
+      try {
+        // Idempotent: 404 (peer already deleted the loser) is success.
+        await this.deleteSpecification(createdSpecId);
+      } catch (cleanupError) {
+        cleanupFailed = cleanupError;
+      }
+      if (cleanupFailed) {
+        const original =
+          error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `${original}; newly created spec ${createdSpecId} whole-delete cleanup also failed`,
+          { cause: error }
+        );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * List every Spec Hub definition member and read content by UUID
+   * (`GET .../files/:uuid?fields=content`). Normalizes paths/roles and computes
+   * a DefinitionBundle-compatible full-set digest. Rejects cloud
+   * duplicate/case-colliding paths.
+   */
+  async getSpecBundle(specId: string, format: DefinitionFormat): Promise<DefinitionBundle> {
+    const loaded = await this.loadSpecBundleState(specId, format);
+    return loaded.bundle;
+  }
+
+  /**
+   * One files-list plus per-file content reads. Retains file IDs/metadata so
+   * reconcile planning does not issue a duplicate pre-mutation list.
+   */
+  private async loadSpecBundleState(
+    specId: string,
+    format: DefinitionFormat
+  ): Promise<{
+    bundle: DefinitionBundle;
+    metas: CloudSpecFileMeta[];
+    contentById: Map<string, string>;
+  }> {
+    const listed = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'get',
+      path: `/specifications/${specId}/files`
+    });
+    const metas = listFilesFromGatewayResponse(listed);
+    assertNoCloudPathCollisions(metas);
+
+    const members: Array<{ path: string; type: string; content: string }> = [];
+    const contentById = new Map<string, string>();
+    for (const meta of metas) {
+      const file = await this.gateway.requestJson<JsonRecord>({
+        service: 'specification',
+        method: 'get',
+        path: `/specifications/${specId}/files/${meta.id}`,
+        query: { fields: 'content' }
+      });
+      const content = contentFromGatewayFileRead(file);
+      if (content === undefined) {
+        throw new Error(
+          `CONTRACT_DEFINITION_CLOSURE_INCOMPLETE: Spec Hub file ${meta.path} returned no content`
+        );
+      }
+      contentById.set(meta.id, content);
+      members.push({ path: meta.path, type: meta.type, content });
+    }
+
+    return {
+      bundle: cloudMembersToDefinitionBundle({ format, members }),
+      metas,
+      contentById
+    };
+  }
+
+  /**
+   * Reconcile Spec Hub to the exact target path set. Digest-equal → zero
+   * mutations (one initial list only). Changed sets use the capability policy:
+   * bulk when bulkModify=true, otherwise ordered per-file fallback. Always
+   * full-set readback-verifies after mutation. Non-atomic/ambiguous failures
+   * read back and surface rollback-capable verification-needed without blind
+   * retries. Root path change throws when rootPathChange=false.
+   */
+  async reconcileSpecBundle(
+    specId: string,
+    target: DefinitionBundle
+  ): Promise<SpecBundleMutationOutcome> {
+    const policy = this.reconcileCapabilityPolicy;
+    const priorState = await this.loadSpecBundleState(specId, target.format);
+    const prior = priorState.bundle;
+    const priorSnapshot = definitionBundleToSnapshot(prior);
+
+    if (prior.digest === target.digest) {
+      return {
+        status: 'ok',
+        changed: false,
+        priorSnapshot,
+        verifiedDigest: prior.digest
+      };
+    }
+
+    if (!policy.rootPathChange) {
+      assertSameRootPath(prior.rootPath, target.rootPath);
+    } else if (prior.rootPath !== target.rootPath) {
+      // rootPathChange=true is not live-proven; refuse rather than invent a path.
+      throw new Error(
+        'CONTRACT_SPEC_ROOT_PATH_CHANGE_UNSUPPORTED: rootPathChange=true is not implemented; clear spec-id to recreate'
+      );
+    }
+
+    // Reuse IDs/metadata from the initial snapshot/list — no second pre-mutation list.
+    const metas = priorState.metas;
+    const plan = planSpecFileReconcile({
+      cloud: metas,
+      cloudContentById: priorState.contentById,
+      target
+    });
+
+    if (!planHasMutations(plan)) {
+      // Path sets matched but digest differed only if content maps were incomplete.
+      const verified = await this.getSpecBundle(specId, target.format);
+      if (verified.digest === target.digest) {
+        return {
+          status: 'ok',
+          changed: false,
+          priorSnapshot,
+          verifiedDigest: verified.digest
+        };
+      }
+      throw new Error(
+        `Spec Hub bundle verify failed: empty plan but digest still mismatches (expected ${target.digest}, got ${verified.digest})`
+      );
+    }
+
+    const mutationResult = policy.bulkModify
+      ? await this.applyBulkSpecFileReconcile(specId, target, plan, priorSnapshot)
+      : await this.applyPerFileSpecFileReconcile(specId, target, plan, metas, priorSnapshot);
+
+    if (mutationResult) return mutationResult;
+
+    const verified = await this.getSpecBundle(specId, target.format);
+    if (verified.digest !== target.digest) {
+      throw new Error(
+        `Spec Hub bundle verify failed after reconcile: expected digest ${target.digest}, got ${verified.digest}`
+      );
+    }
+    return {
+      status: 'ok',
+      changed: true,
+      priorSnapshot,
+      verifiedDigest: verified.digest
+    };
+  }
+
+  /**
+   * Atomic/non-atomic bulk path. Always read back before any retry; never blind
+   * resend. When atomicBulk=false, definitive HTTP failures still surface
+   * verification-needed with the prior snapshot for orchestrator rollback.
+   */
+  private async applyBulkSpecFileReconcile(
+    specId: string,
+    target: DefinitionBundle,
+    plan: ReturnType<typeof planSpecFileReconcile>,
+    priorSnapshot: SpecBundleSnapshot
+  ): Promise<SpecBundleMutationOutcome | null> {
+    const bulkBody = buildBulkFilesBody(plan);
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'specification',
+        method: 'post',
+        path: `/specifications/${specId}/bulk-files`,
+        retry: 'none',
+        body: bulkBody
+      });
+      return null;
+    } catch (error) {
+      const readback = await this.getSpecBundle(specId, target.format).catch(() => null);
+      if (readback && readback.digest === target.digest) {
+        return {
+          status: 'ok',
+          changed: true,
+          priorSnapshot,
+          verifiedDigest: readback.digest
+        };
+      }
+      if (isAmbiguousTransportError(error) || !this.reconcileCapabilityPolicy.atomicBulk) {
+        return {
+          status: 'verification-needed',
+          changed: true,
+          priorSnapshot,
+          targetDigest: target.digest,
+          reason: isAmbiguousTransportError(error)
+            ? 'ambiguous-bulk-modify'
+            : 'non-atomic-bulk-modify',
+          cause: error
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Per-file fallback order: sorted non-root creates/updates, root content
+   * update last, then sorted stale non-root deletes. Each path uses
+   * retry:'none'; ambiguous/partial failures read back and return
+   * verification-needed without blind retries.
+   */
+  private async applyPerFileSpecFileReconcile(
+    specId: string,
+    target: DefinitionBundle,
+    plan: ReturnType<typeof planSpecFileReconcile>,
+    metas: CloudSpecFileMeta[],
+    priorSnapshot: SpecBundleSnapshot
+  ): Promise<SpecBundleMutationOutcome | null> {
+    const ops = orderPerFileReconcileOps({ plan, cloud: metas });
+    try {
+      for (const op of ops) {
+        if (op.kind === 'create') {
+          const parentId = resolvePerFileCreateParentId(metas, op.path);
+          await this.gateway.requestJson<JsonRecord>({
+            service: 'specification',
+            method: 'post',
+            path: `/specifications/${specId}/files`,
+            retry: 'none',
+            body: {
+              name: perFileCreateName(op.path),
+              content: op.content,
+              type: 'DEFAULT',
+              ...(parentId ? { parentId } : {})
+            }
+          });
+        } else if (op.kind === 'update') {
+          await this.gateway.requestJson<JsonRecord>({
+            service: 'specification',
+            method: 'patch',
+            path: `/specifications/${specId}/files/${op.id}`,
+            retry: 'none',
+            body: [{ op: 'replace', path: '/content', value: op.content }]
+          });
+        } else {
+          await this.gateway.requestJson<JsonRecord>({
+            service: 'specification',
+            method: 'delete',
+            path: `/specifications/${specId}/files/${op.id}`,
+            retry: 'none'
+          });
+        }
+      }
+      return null;
+    } catch (error) {
+      const readback = await this.getSpecBundle(specId, target.format).catch(() => null);
+      if (readback && readback.digest === target.digest) {
+        return {
+          status: 'ok',
+          changed: true,
+          priorSnapshot,
+          verifiedDigest: readback.digest
+        };
+      }
+      return {
+        status: 'verification-needed',
+        changed: true,
+        priorSnapshot,
+        targetDigest: target.digest,
+        reason: isAmbiguousTransportError(error)
+          ? 'ambiguous-per-file-modify'
+          : 'per-file-modify-incomplete',
+        cause: error
+      };
+    }
+  }
+
+  /**
+   * Restore a prior full-set snapshot (orchestrator rollback). Reconciles the
+   * snapshot bytes/roles and verifies the snapshot digest.
+   */
+  async restoreSpecBundle(
+    specId: string,
+    snapshot: SpecBundleSnapshot
+  ): Promise<SpecBundleMutationOutcome> {
+    const target = snapshotToDefinitionBundle(snapshot);
+    return this.reconcileSpecBundle(specId, target);
   }
 
   /**

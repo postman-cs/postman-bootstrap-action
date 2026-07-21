@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -357,22 +357,20 @@ components:
         writeFileSync(join(outside, 'openapi.yaml'), baseSpec);
         await expect(
           loadOpenApiContractSpecFromPath(join(outside, 'openapi.yaml'))
-        ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+        ).rejects.toThrow('CONTRACT_SPEC_PATH_ESCAPE');
         await expect(
           loadOpenApiContractSpecFromPath('../outside/openapi.yaml')
-        ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+        ).rejects.toThrow('CONTRACT_SPEC_PATH_ESCAPE');
       } finally {
         rmSync(outside, { recursive: true, force: true });
       }
     });
 
-    it('wraps directory targets and other read failures as CONTRACT_SPEC_READ_FAILED', async () => {
+    it('rejects directory targets as CONTRACT_SPEC_PATH_NOT_FILE', async () => {
       mkdirSync(join(workspaceDir, 'apis/svc'), { recursive: true });
-      // Pointing spec-path at a directory: realpath/stat succeed but
-      // readFile rejects with EISDIR. Should surface the contract error.
       await expect(
         loadOpenApiContractSpecFromPath('apis/svc')
-      ).rejects.toThrow('CONTRACT_SPEC_READ_FAILED');
+      ).rejects.toThrow('CONTRACT_SPEC_PATH_NOT_FILE');
     });
 
     it('rejects oversized local specs before parsing', async () => {
@@ -449,8 +447,8 @@ properties:
       ).rejects.toThrow('CONTRACT_REF_DEPTH_EXCEEDED');
     });
 
-    it('rejects local-file $refs with CONTRACT_SPEC_FETCH_BLOCKED', async () => {
-      writeSpec('apis/svc/sibling.yaml', 'type: object\n');
+    it('acquires confined local-file $refs into the definition bundle', async () => {
+      writeSpec('apis/svc/sibling.yaml', 'type: object\nproperties:\n  id:\n    type: integer\n');
       writeSpec(
         'apis/svc/openapi.yaml',
         `openapi: 3.0.3
@@ -467,11 +465,34 @@ paths:
                 $ref: './sibling.yaml'
 `
       );
-      // No mock fetchText - exercise the real safeFetchText so the
-      // protocol guard fires and surfaces the documented contract error.
+      const fetchText = vi.fn();
+      const loaded = await loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml', { fetchText });
+      expect(fetchText).not.toHaveBeenCalled();
+      expect(loaded.definitionBundle?.files.size).toBe(2);
+      expect(loaded.definitionBundle?.files.get('sibling.yaml')?.content).toContain('type: object');
+      expect(loaded.contractIndex.operations[0]?.path).toBe('/pets');
+    });
+
+    it('rejects escaping local-file $refs during confined acquisition', async () => {
+      writeSpec(
+        'apis/svc/openapi.yaml',
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '../../outside.yaml'
+`
+      );
       await expect(
         loadOpenApiContractSpecFromPath('apis/svc/openapi.yaml')
-      ).rejects.toThrow('CONTRACT_SPEC_FETCH_BLOCKED');
+      ).rejects.toThrow(/CONTRACT_SPEC_PATH_ESCAPE|CONTRACT_DEFINITION_CLOSURE_INCOMPLETE/);
     });
 
     it('rejects non-HTTPS external $refs with CONTRACT_SPEC_FETCH_BLOCKED', async () => {
@@ -3019,6 +3040,197 @@ paths:
     expect(run([{ key: 'tag', value: 'ok' }])).toBe('pass');
     expect(run([{ key: 'tag', value: 'x' }])).toBe('fail');
     expect(run([{ key: 'tag', value: '' }])).toBe('pass');
+  });
+
+  describe('definition bundle acquisition hardening (C1/C3)', () => {
+    let workspaceDir = '';
+
+    beforeEach(() => {
+      workspaceDir = realpathSync(mkdtempSync(join(tmpdir(), 'def-acq-')));
+    });
+
+    afterEach(() => {
+      rmSync(workspaceDir, { recursive: true, force: true });
+    });
+
+    const writeRel = (relPath: string, body: string | Buffer): void => {
+      const full = join(workspaceDir, relPath);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, body);
+    };
+
+    it('acquires observable protobuf/WSDL/AsyncAPI companion members through confined closure', async () => {
+      const { acquireDefinitionBundle } = await import('../src/lib/spec/acquire-definition-bundle.js');
+
+      writeRel(
+        'svc/types.proto',
+        'syntax = "proto3";\npackage t;\nmessage M { string a = 1; }\n'
+      );
+      writeRel(
+        'svc/service.proto',
+        'syntax = "proto3";\npackage t;\nimport "types.proto";\nservice S { rpc G(M) returns (M); }\n'
+      );
+      const proto = await acquireDefinitionBundle({
+        workspaceRoot: workspaceDir,
+        specPath: 'svc/service.proto'
+      });
+      expect([...proto.files.keys()].sort()).toEqual(['service.proto', 'types.proto']);
+
+      writeRel(
+        'soap/types.xsd',
+        '<?xml version="1.0"?><schema xmlns="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:t"><element name="E" type="string"/></schema>'
+      );
+      writeRel(
+        'soap/root.wsdl',
+        `<?xml version="1.0"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+  xmlns:tns="urn:r" targetNamespace="urn:r">
+  <types><schema xmlns="http://www.w3.org/2001/XMLSchema">
+    <import namespace="urn:t" schemaLocation="types.xsd"/>
+  </schema></types>
+  <message name="M"><part name="b" element="E"/></message>
+  <portType name="P"><operation name="Op"><input message="tns:M"/></operation></portType>
+  <binding name="B" type="tns:P">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+    <operation name="Op"><soap:operation soapAction="urn:Op"/><input><soap:body use="literal"/></input></operation>
+  </binding>
+  <service name="S"><port name="Port" binding="tns:B">
+    <soap:address location="https://example.test/soap"/>
+  </port></service>
+</definitions>`
+      );
+      const wsdl = await acquireDefinitionBundle({
+        workspaceRoot: workspaceDir,
+        specPath: 'soap/root.wsdl'
+      });
+      expect([...wsdl.files.keys()].sort()).toEqual(['root.wsdl', 'types.xsd']);
+
+      writeRel('async/messages.yaml', 'Msg:\n  payload:\n    type: object\n');
+      writeRel(
+        'async/asyncapi.yaml',
+        `asyncapi: 2.6.0
+info: { title: T, version: 1.0.0 }
+channels:
+  c:
+    publish:
+      message:
+        $ref: './messages.yaml#/Msg'
+`
+      );
+      const asyncapi = await acquireDefinitionBundle({
+        workspaceRoot: workspaceDir,
+        specPath: 'async/asyncapi.yaml'
+      });
+      expect([...asyncapi.files.keys()].sort()).toEqual(['asyncapi.yaml', 'messages.yaml']);
+    });
+
+    it('keeps returned DefinitionBundle map/bytes mutations from altering digest', async () => {
+      const { acquireDefinitionBundle } = await import('../src/lib/spec/acquire-definition-bundle.js');
+      const { computeDefinitionBundleDigest } = await import('../src/lib/spec/definition-bundle.js');
+      writeRel(
+        'openapi.yaml',
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /x:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: './dep.yaml' }
+`
+      );
+      writeRel('dep.yaml', 'type: string\n');
+      const bundle = await acquireDefinitionBundle({
+        workspaceRoot: workspaceDir,
+        specPath: 'openapi.yaml'
+      });
+      const before = bundle.digest;
+      const dep = bundle.files.get('dep.yaml')!;
+      dep.bytes[0] = 0x41;
+      expect(bundle.files.get('dep.yaml')?.content).toBe('type: string\n');
+      expect(bundle.digest).toBe(before);
+      expect(bundle.digest).toBe(
+        computeDefinitionBundleDigest({
+          schemaVersion: 1,
+          rootPath: bundle.rootPath,
+          format: bundle.format,
+          files: bundle.files
+        })
+      );
+      expect('set' in bundle.files).toBe(false);
+      expect(bundle.files.size).toBe(2);
+    });
+
+    it('never reads a symlinked or out-of-bundle grpc_service_config.json sibling', async () => {
+      const { acquireDefinitionBundle } = await import('../src/lib/spec/acquire-definition-bundle.js');
+      const { buildProtocolCollection } = await import('../src/lib/protocols/dispatch.js');
+
+      writeRel(
+        'svc/service.proto',
+        'syntax = "proto3";\npackage t;\nservice S { rpc G(M) returns (M); }\nmessage M { string a = 1; }\n'
+      );
+      const outside = realpathSync(mkdtempSync(join(tmpdir(), 'grpc-cfg-outside-')));
+      try {
+        writeFileSync(
+          join(outside, 'grpc_service_config.json'),
+          JSON.stringify({ methodConfig: [{ name: [{ service: 't.S' }], timeout: '1s' }] })
+        );
+        symlinkSync(
+          join(outside, 'grpc_service_config.json'),
+          join(workspaceDir, 'svc/grpc_service_config.json')
+        );
+
+        const bundle = await acquireDefinitionBundle({
+          workspaceRoot: workspaceDir,
+          specPath: 'svc/service.proto'
+        });
+        // Symlinked sibling is rejected by confined acquisition and stays out of the bundle.
+        expect(bundle.files.has('grpc_service_config.json')).toBe(false);
+
+        // Bundle-only optional config: absent member means no config is supplied.
+        const fromBundle = bundle.files.get('grpc_service_config.json')?.content;
+        expect(fromBundle).toBeUndefined();
+        const built = await buildProtocolCollection('grpc', bundle.files.get('service.proto')!.content, {
+          name: 'svc',
+          definitionBundle: bundle,
+          grpcServiceConfigJson: fromBundle
+        });
+        expect(built.operationCount).toBeGreaterThan(0);
+        // No absolute outside path should appear in builder warnings either.
+        expect(built.warnings.join('\n')).not.toContain(outside);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('does not acquire an unreferenced regular adjacent grpc_service_config.json', async () => {
+      const { acquireDefinitionBundle } = await import('../src/lib/spec/acquire-definition-bundle.js');
+      writeRel(
+        'svc/service.proto',
+        'syntax = "proto3";\npackage t;\nservice S { rpc G(M) returns (M); }\nmessage M { string a = 1; }\n'
+      );
+      const marker = 'UNREFERENCED_GRPC_SERVICE_CONFIG_MARKER';
+      writeRel(
+        'svc/grpc_service_config.json',
+        JSON.stringify({ methodConfig: [{ name: [{ service: 't.S' }], timeout: '1s' }], marker })
+      );
+      const cfgPath = join(workspaceDir, 'svc/grpc_service_config.json');
+      const before = statSync(cfgPath);
+      const bundle = await acquireDefinitionBundle({
+        workspaceRoot: workspaceDir,
+        specPath: 'svc/service.proto'
+      });
+      // Without inventory, only root/import closure members open — not sibling metadata.
+      expect([...bundle.files.keys()]).toEqual(['service.proto']);
+      expect(bundle.files.has('grpc_service_config.json')).toBe(false);
+      expect(JSON.stringify([...bundle.files.values()].map((f) => f.content))).not.toContain(marker);
+      const after = statSync(cfgPath);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(after.size).toBe(before.size);
+    });
   });
 
   it('documents dynamic contract tests and every emitted CONTRACT code in the error-code catalog', () => {

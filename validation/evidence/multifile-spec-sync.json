@@ -1,0 +1,639 @@
+{
+  "schemaVersion": 1,
+  "testedAt": "2026-07-20T23:03:29.387Z",
+  "bootstrapCommit": "5c7e3bd50b85b2ea9acd8123f325219a24434acc",
+  "legs": [
+    {
+      "mode": "nonorg",
+      "teamId": "10490519",
+      "results": [
+        {
+          "id": "P01",
+          "passed": true,
+          "httpStatuses": [
+            201,
+            200
+          ],
+          "requestShape": "POST /specifications?containerType=workspace&containerId=<workspaceId> {name,type:'OPENAPI:3.0',files:[{path,content,type:'ROOT'|'DEFAULT'}]}",
+          "responseShape": "{\"data\":{\"createdAt\":\"string(24)\",\"createdBy\":\"redacted\",\"id\":\"string(36)\",\"name\":\"string(36)\",\"ownerId\":\"redacted\",\"ownerType\":\"string(4)\",\"type\":\"string(11)\",\"updatedAt\":\"string(24)\",\"updatedBy\":\"redacted\"},\"meta\":{\"action\":\"string(6)\",\"model\":\"string(13)\"}}",
+          "observed": {
+            "fileCount": 2,
+            "paths": [
+              "components/pet.yaml",
+              "openapi.yaml"
+            ],
+            "rootCount": 1,
+            "hasUuids": true
+          }
+        },
+        {
+          "id": "P02",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            200
+          ],
+          "requestShape": "GET /specifications/:id/files/:fileId?fields=content",
+          "responseShape": "content+id",
+          "observed": {
+            "comparisons": [
+              {
+                "path": "openapi.yaml",
+                "role": "ROOT",
+                "exactBytes": true,
+                "contentLength": 362
+              },
+              {
+                "path": "components/pet.yaml",
+                "role": "DEFAULT",
+                "exactBytes": true,
+                "contentLength": 91
+              }
+            ]
+          }
+        },
+        {
+          "id": "P03",
+          "passed": true,
+          "httpStatuses": [
+            202,
+            200,
+            200
+          ],
+          "requestShape": "POST /specifications/:id/collections + task poll; collection example readback",
+          "responseShape": "{\"taskStatus\":\"completed\",\"collectionShape\":{\"data\":{\"$kind\":\"string(10)\",\"createdAt\":\"string(24)\",\"createdBy\":\"redacted\",\"description\":\"string(0)\",\"id\":\"string(45)\",\"items\":[{\"$kind\":\"string(10)\",\"id\":\"string(45)\"},\"…x1\"],\"name\":\"string(38)\",\"references\":{},\"type\":\"string(10)\",\"updatedAt\":\"string(24)\",\"updatedBy\":\"redacted\",\"variables\":[{\"key\":\"string(7)\",\"secret\":\"redacted\",\"value\":\"string(1)\"},\"…x1\"]}}}",
+          "observed": {
+            "taskStatus": "completed",
+            "foundSentinelV1": true,
+            "exampleReadback": "public-collections"
+          }
+        },
+        {
+          "id": "P04",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            200,
+            202,
+            200,
+            200
+          ],
+          "requestShape": "PATCH /specifications/:id/files/:uuid [{op:'replace',path:'/content',value}]",
+          "responseShape": "patched+generated",
+          "observed": {
+            "readbackChanged": true,
+            "foundBundleV2": true,
+            "foundBundleV1": false,
+            "taskStatus": "completed"
+          }
+        },
+        {
+          "id": "P05",
+          "passed": true,
+          "httpStatuses": [
+            201,
+            200
+          ],
+          "requestShape": "POST /specifications/:id/files {name:'error.yaml',content,type:'DEFAULT',parentId:<components-folder-uuid>}",
+          "responseShape": "{\"data\":{\"createdAt\":\"string(24)\",\"createdBy\":\"redacted\",\"id\":\"string(36)\",\"name\":\"string(10)\",\"updatedAt\":\"string(24)\",\"updatedBy\":\"redacted\"},\"meta\":{\"action\":\"string(6)\",\"model\":\"string(17)\"}}",
+          "observed": {
+            "pathPresent": true,
+            "exactBytes": true,
+            "identifier": "uuid",
+            "fixedContractAccepted": true,
+            "fixedRequestShape": "{name:'error.yaml',content,type:'DEFAULT',parentId:<components-folder-uuid>}",
+            "parentIdResolved": true
+          }
+        },
+        {
+          "id": "P06",
+          "passed": true,
+          "httpStatuses": [
+            200
+          ],
+          "requestShape": "DELETE /specifications/:id/files/:uuid",
+          "responseShape": "deleted",
+          "observed": {
+            "absentAfterDelete": true
+          }
+        },
+        {
+          "id": "P07",
+          "passed": true,
+          "httpStatuses": [
+            201,
+            200
+          ],
+          "requestShape": "POST /specifications/:id/bulk-files {create:[{path,content,type:'DEFAULT'}],update:[{id,content}],delete:[{id}]}",
+          "responseShape": "{\"data\":{\"create\":[{\"id\":\"string(36)\"},\"…x1\"]},\"meta\":{\"action\":\"string(10)\",\"model\":\"string(17)\"}}",
+          "observed": {
+            "bulkAccepted": true,
+            "effectsVisibleTogether": true,
+            "pathCount": 3,
+            "createdPathPresent": true,
+            "seedDeleted": true
+          }
+        },
+        {
+          "id": "P08",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            400
+          ],
+          "requestShape": "PATCH /files/:uuid [{op:'replace',path:'/type',value:'ROOT'|'DEFAULT'}]",
+          "responseShape": "role-update",
+          "observed": {
+            "rootPathChange": false,
+            "ordering": "unsupported",
+            "finalRootCount": 1,
+            "finalRootPath": "openapi.yaml"
+          }
+        },
+        {
+          "id": "P09",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            201,
+            400,
+            201,
+            201
+          ],
+          "requestShape": "bulk create nested path; per-file name(+parentId) for encoded/duplicate/NFC",
+          "responseShape": "per-candidate statuses",
+          "observed": {
+            "nestedAccepted": true,
+            "encodedAccepted": true,
+            "duplicateRejected": true,
+            "nfcAccepted": true,
+            "nfdAccepted": true,
+            "clientRejectsCollisionsLocally": true,
+            "pathCount": 7
+          }
+        },
+        {
+          "id": "P10",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            400,
+            200,
+            200,
+            404
+          ],
+          "requestShape": "bulk fail: update+delete(nonexistent); full-set path/role/hash readback; per-file: valid PATCH then PATCH nonexistent uuid",
+          "responseShape": "failure-statuses+full-set-readback",
+          "observed": {
+            "bulkStatus": 400,
+            "bulkLanded": false,
+            "fullSetUnchanged": true,
+            "perFileValidLanded": true,
+            "perFileInvalidStatus": 404,
+            "atomicBulkProven": true,
+            "memberCount": 7,
+            "beforeSnapshot": [
+              {
+                "path": "components/bulk-new.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "6ee196817aa923a17bd8ee8623a465b4c4dd7ec23892039ba138c0769a3adcbb"
+              },
+              {
+                "path": "components/cafeé.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
+              },
+              {
+                "path": "components/cafeé.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
+              },
+              {
+                "path": "components/nested/deep.yaml",
+                "role": "DEFAULT",
+                "byteLength": 14,
+                "hash": "db402bbf6a94714694590a7069dce816e37655605249bffdec816474cc2996e8"
+              },
+              {
+                "path": "components/pet.yaml",
+                "role": "DEFAULT",
+                "byteLength": 91,
+                "hash": "6afdd6801a33e01fdad04a19dd405b9fc33dddcf6778201ab9e253269d694390"
+              },
+              {
+                "path": "components/with space.yaml",
+                "role": "DEFAULT",
+                "byteLength": 14,
+                "hash": "3c7ff022eceae2e7133d916d5b95d37fcdc0c7c684d52e7f25cc820557d08470"
+              },
+              {
+                "path": "openapi.yaml",
+                "role": "ROOT",
+                "byteLength": 362,
+                "hash": "01097c3c3e9b3d76dde54e3a210cb79902bca1265cedcb6280e4096ad5bef2fa"
+              }
+            ],
+            "afterSnapshot": [
+              {
+                "path": "components/bulk-new.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "6ee196817aa923a17bd8ee8623a465b4c4dd7ec23892039ba138c0769a3adcbb"
+              },
+              {
+                "path": "components/cafeé.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
+              },
+              {
+                "path": "components/cafeé.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
+              },
+              {
+                "path": "components/nested/deep.yaml",
+                "role": "DEFAULT",
+                "byteLength": 14,
+                "hash": "db402bbf6a94714694590a7069dce816e37655605249bffdec816474cc2996e8"
+              },
+              {
+                "path": "components/pet.yaml",
+                "role": "DEFAULT",
+                "byteLength": 91,
+                "hash": "6afdd6801a33e01fdad04a19dd405b9fc33dddcf6778201ab9e253269d694390"
+              },
+              {
+                "path": "components/with space.yaml",
+                "role": "DEFAULT",
+                "byteLength": 14,
+                "hash": "3c7ff022eceae2e7133d916d5b95d37fcdc0c7c684d52e7f25cc820557d08470"
+              },
+              {
+                "path": "openapi.yaml",
+                "role": "ROOT",
+                "byteLength": 362,
+                "hash": "01097c3c3e9b3d76dde54e3a210cb79902bca1265cedcb6280e4096ad5bef2fa"
+              }
+            ],
+            "partialApplicationOrder": [
+              "per-file-valid-patch-applied",
+              "per-file-invalid-patch-rejected"
+            ]
+          }
+        },
+        {
+          "id": "P11",
+          "passed": false,
+          "httpStatuses": [
+            400
+          ],
+          "requestShape": "POST /specifications type:'PROTOBUF' files ROOT+DEFAULT; POST .../collections",
+          "responseShape": "{\"error\":{\"detail\":\"string(36)\",\"name\":\"string(18)\",\"status\":400,\"title\":\"string(18)\"}}",
+          "observed": {
+            "acceptedSpecType": "rejected",
+            "paths": [],
+            "generationTaskStatus": "skipped",
+            "generated": false
+          }
+        }
+      ],
+      "teardown": {
+        "residue": false,
+        "deletedKinds": [
+          "collection:204",
+          "collection:204",
+          "specification:200",
+          "workspace:200",
+          "workspace-readback:404"
+        ]
+      }
+    },
+    {
+      "mode": "org",
+      "teamId": "13347347",
+      "results": [
+        {
+          "id": "P01",
+          "passed": true,
+          "httpStatuses": [
+            201,
+            200
+          ],
+          "requestShape": "POST /specifications?containerType=workspace&containerId=<workspaceId> {name,type:'OPENAPI:3.0',files:[{path,content,type:'ROOT'|'DEFAULT'}]}",
+          "responseShape": "{\"data\":{\"createdAt\":\"string(24)\",\"createdBy\":\"redacted\",\"id\":\"string(36)\",\"name\":\"string(36)\",\"ownerId\":\"redacted\",\"ownerType\":\"string(4)\",\"type\":\"string(11)\",\"updatedAt\":\"string(24)\",\"updatedBy\":\"redacted\"},\"meta\":{\"action\":\"string(6)\",\"model\":\"string(13)\"}}",
+          "observed": {
+            "fileCount": 2,
+            "paths": [
+              "components/pet.yaml",
+              "openapi.yaml"
+            ],
+            "rootCount": 1,
+            "hasUuids": true
+          }
+        },
+        {
+          "id": "P02",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            200
+          ],
+          "requestShape": "GET /specifications/:id/files/:fileId?fields=content",
+          "responseShape": "content+id",
+          "observed": {
+            "comparisons": [
+              {
+                "path": "openapi.yaml",
+                "role": "ROOT",
+                "exactBytes": true,
+                "contentLength": 362
+              },
+              {
+                "path": "components/pet.yaml",
+                "role": "DEFAULT",
+                "exactBytes": true,
+                "contentLength": 91
+              }
+            ]
+          }
+        },
+        {
+          "id": "P03",
+          "passed": true,
+          "httpStatuses": [
+            202,
+            200,
+            200
+          ],
+          "requestShape": "POST /specifications/:id/collections + task poll; collection example readback",
+          "responseShape": "{\"taskStatus\":\"completed\",\"collectionShape\":{\"data\":{\"$kind\":\"string(10)\",\"createdAt\":\"string(24)\",\"createdBy\":\"redacted\",\"description\":\"string(0)\",\"id\":\"string(45)\",\"items\":[{\"$kind\":\"string(10)\",\"id\":\"string(45)\"},\"…x1\"],\"name\":\"string(38)\",\"references\":{},\"type\":\"string(10)\",\"updatedAt\":\"string(24)\",\"updatedBy\":\"redacted\",\"variables\":[{\"key\":\"string(7)\",\"secret\":\"redacted\",\"value\":\"string(1)\"},\"…x1\"]}}}",
+          "observed": {
+            "taskStatus": "completed",
+            "foundSentinelV1": true,
+            "exampleReadback": "public-collections"
+          }
+        },
+        {
+          "id": "P04",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            200,
+            202,
+            500,
+            200
+          ],
+          "requestShape": "PATCH /specifications/:id/files/:uuid [{op:'replace',path:'/content',value}]",
+          "responseShape": "patched+generated",
+          "observed": {
+            "readbackChanged": true,
+            "foundBundleV2": true,
+            "foundBundleV1": false,
+            "taskStatus": "completed"
+          }
+        },
+        {
+          "id": "P05",
+          "passed": true,
+          "httpStatuses": [
+            201,
+            200
+          ],
+          "requestShape": "POST /specifications/:id/files {name:'error.yaml',content,type:'DEFAULT',parentId:<components-folder-uuid>}",
+          "responseShape": "{\"data\":{\"createdAt\":\"string(24)\",\"createdBy\":\"redacted\",\"id\":\"string(36)\",\"name\":\"string(10)\",\"updatedAt\":\"string(24)\",\"updatedBy\":\"redacted\"},\"meta\":{\"action\":\"string(6)\",\"model\":\"string(17)\"}}",
+          "observed": {
+            "pathPresent": true,
+            "exactBytes": true,
+            "identifier": "uuid",
+            "fixedContractAccepted": true,
+            "fixedRequestShape": "{name:'error.yaml',content,type:'DEFAULT',parentId:<components-folder-uuid>}",
+            "parentIdResolved": true
+          }
+        },
+        {
+          "id": "P06",
+          "passed": true,
+          "httpStatuses": [
+            200
+          ],
+          "requestShape": "DELETE /specifications/:id/files/:uuid",
+          "responseShape": "deleted",
+          "observed": {
+            "absentAfterDelete": true
+          }
+        },
+        {
+          "id": "P07",
+          "passed": true,
+          "httpStatuses": [
+            201,
+            200
+          ],
+          "requestShape": "POST /specifications/:id/bulk-files {create:[{path,content,type:'DEFAULT'}],update:[{id,content}],delete:[{id}]}",
+          "responseShape": "{\"data\":{\"create\":[{\"id\":\"string(36)\"},\"…x1\"]},\"meta\":{\"action\":\"string(10)\",\"model\":\"string(17)\"}}",
+          "observed": {
+            "bulkAccepted": true,
+            "effectsVisibleTogether": true,
+            "pathCount": 3,
+            "createdPathPresent": true,
+            "seedDeleted": true
+          }
+        },
+        {
+          "id": "P08",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            400
+          ],
+          "requestShape": "PATCH /files/:uuid [{op:'replace',path:'/type',value:'ROOT'|'DEFAULT'}]",
+          "responseShape": "role-update",
+          "observed": {
+            "rootPathChange": false,
+            "ordering": "unsupported",
+            "finalRootCount": 1,
+            "finalRootPath": "openapi.yaml"
+          }
+        },
+        {
+          "id": "P09",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            201,
+            400,
+            201,
+            201
+          ],
+          "requestShape": "bulk create nested path; per-file name(+parentId) for encoded/duplicate/NFC",
+          "responseShape": "per-candidate statuses",
+          "observed": {
+            "nestedAccepted": true,
+            "encodedAccepted": true,
+            "duplicateRejected": true,
+            "nfcAccepted": true,
+            "nfdAccepted": true,
+            "clientRejectsCollisionsLocally": true,
+            "pathCount": 7
+          }
+        },
+        {
+          "id": "P10",
+          "passed": true,
+          "httpStatuses": [
+            200,
+            400,
+            200,
+            200,
+            404
+          ],
+          "requestShape": "bulk fail: update+delete(nonexistent); full-set path/role/hash readback; per-file: valid PATCH then PATCH nonexistent uuid",
+          "responseShape": "failure-statuses+full-set-readback",
+          "observed": {
+            "bulkStatus": 400,
+            "bulkLanded": false,
+            "fullSetUnchanged": true,
+            "perFileValidLanded": true,
+            "perFileInvalidStatus": 404,
+            "atomicBulkProven": true,
+            "memberCount": 7,
+            "beforeSnapshot": [
+              {
+                "path": "components/bulk-new.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "6ee196817aa923a17bd8ee8623a465b4c4dd7ec23892039ba138c0769a3adcbb"
+              },
+              {
+                "path": "components/cafeé.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
+              },
+              {
+                "path": "components/cafeé.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
+              },
+              {
+                "path": "components/nested/deep.yaml",
+                "role": "DEFAULT",
+                "byteLength": 14,
+                "hash": "db402bbf6a94714694590a7069dce816e37655605249bffdec816474cc2996e8"
+              },
+              {
+                "path": "components/pet.yaml",
+                "role": "DEFAULT",
+                "byteLength": 91,
+                "hash": "6afdd6801a33e01fdad04a19dd405b9fc33dddcf6778201ab9e253269d694390"
+              },
+              {
+                "path": "components/with space.yaml",
+                "role": "DEFAULT",
+                "byteLength": 14,
+                "hash": "3c7ff022eceae2e7133d916d5b95d37fcdc0c7c684d52e7f25cc820557d08470"
+              },
+              {
+                "path": "openapi.yaml",
+                "role": "ROOT",
+                "byteLength": 362,
+                "hash": "01097c3c3e9b3d76dde54e3a210cb79902bca1265cedcb6280e4096ad5bef2fa"
+              }
+            ],
+            "afterSnapshot": [
+              {
+                "path": "components/bulk-new.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "6ee196817aa923a17bd8ee8623a465b4c4dd7ec23892039ba138c0769a3adcbb"
+              },
+              {
+                "path": "components/cafeé.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
+              },
+              {
+                "path": "components/cafeé.yaml",
+                "role": "DEFAULT",
+                "byteLength": 13,
+                "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
+              },
+              {
+                "path": "components/nested/deep.yaml",
+                "role": "DEFAULT",
+                "byteLength": 14,
+                "hash": "db402bbf6a94714694590a7069dce816e37655605249bffdec816474cc2996e8"
+              },
+              {
+                "path": "components/pet.yaml",
+                "role": "DEFAULT",
+                "byteLength": 91,
+                "hash": "6afdd6801a33e01fdad04a19dd405b9fc33dddcf6778201ab9e253269d694390"
+              },
+              {
+                "path": "components/with space.yaml",
+                "role": "DEFAULT",
+                "byteLength": 14,
+                "hash": "3c7ff022eceae2e7133d916d5b95d37fcdc0c7c684d52e7f25cc820557d08470"
+              },
+              {
+                "path": "openapi.yaml",
+                "role": "ROOT",
+                "byteLength": 362,
+                "hash": "01097c3c3e9b3d76dde54e3a210cb79902bca1265cedcb6280e4096ad5bef2fa"
+              }
+            ],
+            "partialApplicationOrder": [
+              "per-file-valid-patch-applied",
+              "per-file-invalid-patch-rejected"
+            ]
+          }
+        },
+        {
+          "id": "P11",
+          "passed": false,
+          "httpStatuses": [
+            400
+          ],
+          "requestShape": "POST /specifications type:'PROTOBUF' files ROOT+DEFAULT; POST .../collections",
+          "responseShape": "{\"error\":{\"detail\":\"string(36)\",\"name\":\"string(18)\",\"status\":400,\"title\":\"string(18)\"}}",
+          "observed": {
+            "acceptedSpecType": "rejected",
+            "paths": [],
+            "generationTaskStatus": "skipped",
+            "generated": false
+          }
+        }
+      ],
+      "teardown": {
+        "residue": false,
+        "deletedKinds": [
+          "collection:204",
+          "collection:204",
+          "specification:200",
+          "workspace:200",
+          "workspace-readback:404"
+        ]
+      }
+    }
+  ],
+  "capabilities": {
+    "multiFileCreate": true,
+    "multiFileRead": true,
+    "perFileCreate": true,
+    "perFilePatch": true,
+    "perFileDelete": true,
+    "bulkModify": true,
+    "atomicBulk": true,
+    "rootPathChange": false,
+    "openapiGeneration": true,
+    "protobufGeneration": false
+  }
+}

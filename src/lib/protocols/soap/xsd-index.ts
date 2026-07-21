@@ -1,12 +1,15 @@
-// Minimal inline-XSD component index over the wsdl:types schemas of a single
-// WSDL document. Deterministic and offline: xsd:import/include/redefine are
-// never fetched, so the index marks itself incomplete when any appear and
-// consumers (instrumenter wrapper-child assertions) skip rather than guess.
+// Minimal XSD component index over wsdl:types schemas. Deterministic and
+// offline: with no resolver, xsd:import/include/redefine mark the index
+// incomplete so consumers skip rather than guess. When a resolver is supplied
+// (DefinitionBundle or legacy import resolver), relative schema locations are
+// followed recursively and their global elements participate.
 // Only plain xsd:sequence content models one level deep are indexed;
 // all/choice/wildcard/derived content yields no child metadata so the
 // generated assertions never fail on shapes the index cannot prove.
 // Assertable extras carried per element: required/fixed attribute uses and
 // enumeration facets of same-schema simple types.
+
+import { XMLParser } from 'fast-xml-parser';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -221,54 +224,164 @@ function sequenceChildren(complexType: JsonRecord | null, scopes: JsonRecord[], 
 }
 
 /**
- * Build the inline-XSD index from a parsed WSDL definitions/description node.
- * Deterministic: schemas and elements preserve document order.
+ * Resolve an xsd:import/include/redefine schemaLocation relative to the file
+ * that contains it. Returns the normalized resolved key (for visit tracking)
+ * and document content. Legacy resolvers may echo the raw location as the key.
  */
-export function buildXsdIndex(docNode: JsonRecord): XsdSchemaIndex {
+export type XsdImportResolver = (
+  location: string,
+  fromKey: string
+) => { key: string; content: string } | undefined;
+
+function parseSchemaDocument(content: string): JsonRecord | null {
+  try {
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+      textNodeName: '#text',
+      removeNSPrefix: false
+    });
+    return asRecord(parser.parse(content));
+  } catch {
+    return null;
+  }
+}
+
+function schemaRootFromDocument(parsed: JsonRecord | null): JsonRecord | null {
+  if (!parsed) return null;
+  const direct = asRecord(child(parsed, 'schema'));
+  if (direct) return direct;
+  // Some parsers surface the schema as the document root under a namespaced key.
+  for (const key of Object.keys(parsed)) {
+    if (key.startsWith('@_') || key === '#text') continue;
+    if (localName(key) === 'schema') {
+      const record = asRecord(parsed[key]);
+      if (record) return record;
+    }
+  }
+  return null;
+}
+
+function indexSchemaNode(
+  schema: JsonRecord,
+  scopes: JsonRecord[],
+  index: XsdSchemaIndex
+): void {
+  const tns = attr(schema, 'targetNamespace');
+  const qualified = attr(schema, 'elementFormDefault') === 'qualified';
+  const complexTypes = new Map<string, JsonRecord>();
+  for (const complexType of children(schema, 'complexType')) {
+    const name = attr(complexType, 'name');
+    if (!name) continue;
+    complexTypes.set(name, complexType);
+    index.typeLocalNames.add(name);
+  }
+  const simpleTypes = new Map<string, SimpleTypeFacets>();
+  for (const simpleType of children(schema, 'simpleType')) {
+    const name = attr(simpleType, 'name');
+    if (!name) continue;
+    index.typeLocalNames.add(name);
+    simpleTypes.set(name, simpleTypeFacets(simpleType, [...scopes, simpleType]));
+  }
+  for (const el of children(schema, 'element')) {
+    const name = attr(el, 'name');
+    if (!name) continue;
+    const inline = asRecord(child(el, 'complexType'));
+    const typeQName = attr(el, 'type');
+    const named = typeQName && namespaceForPrefix([...scopes, el], prefixOf(typeQName)) !== XSD_NS
+      ? complexTypes.get(localName(typeQName)) ?? null
+      : null;
+    index.elements.set(tns + '|' + name, {
+      name,
+      namespace: tns,
+      nillable: /^(true|1)$/.test(attr(el, 'nillable')),
+      childrenQualified: qualified,
+      attributes: attributeUses(inline ?? named),
+      children: sequenceChildren(inline ?? named, [...scopes, el], tns, simpleTypes)
+    });
+  }
+}
+
+function followSchemaImports(
+  schema: JsonRecord,
+  scopes: JsonRecord[],
+  index: XsdSchemaIndex,
+  resolveImport: XsdImportResolver | undefined,
+  visited: Set<string>,
+  strict: boolean,
+  fromKey: string
+): void {
+  const locations: string[] = [];
+  for (const kind of ['import', 'include', 'redefine'] as const) {
+    for (const node of children(schema, kind)) {
+      const location = attr(node, 'schemaLocation');
+      if (location) locations.push(location);
+    }
+  }
+  if (locations.length === 0) return;
+  if (!resolveImport) {
+    index.complete = false;
+    return;
+  }
+  for (const location of locations) {
+    if (/^[a-z][a-z0-9+.-]*:/i.test(location)) {
+      if (strict) {
+        throw new Error(`CONTRACT_DEFINITION_CLOSURE_INCOMPLETE: Remote XSD reference is not allowed: ${location}`);
+      }
+      index.complete = false;
+      continue;
+    }
+    const resolved = resolveImport(location, fromKey);
+    if (resolved === undefined) {
+      if (strict) {
+        throw new Error(`CONTRACT_DEFINITION_CLOSURE_INCOMPLETE: Missing XSD member ${location}`);
+      }
+      index.complete = false;
+      continue;
+    }
+    // Visit by normalized resolved path so the same relative schemaLocation from
+    // two different importers is not collapsed, and cycles are keyed by identity.
+    if (visited.has(resolved.key)) continue;
+    visited.add(resolved.key);
+    const schemaNode = schemaRootFromDocument(parseSchemaDocument(resolved.content));
+    if (!schemaNode) {
+      if (strict) {
+        throw new Error(`CONTRACT_DEFINITION_CLOSURE_INCOMPLETE: XSD member ${location} is not a schema document`);
+      }
+      index.complete = false;
+      continue;
+    }
+    indexSchemaNode(schemaNode, [...scopes, schemaNode], index);
+    followSchemaImports(schemaNode, [...scopes, schemaNode], index, resolveImport, visited, strict, resolved.key);
+  }
+}
+
+/**
+ * Build the XSD index from a parsed WSDL definitions/description node.
+ * Deterministic: schemas and elements preserve document order.
+ * Nested xsd:import/include/redefine resolve relative to the containing file
+ * (`originKey` for inline wsdl:types schemas; the resolved schema key thereafter).
+ */
+export function buildXsdIndex(
+  docNode: JsonRecord,
+  opts?: { resolveImport?: XsdImportResolver; strictClosure?: boolean; originKey?: string }
+): XsdSchemaIndex {
   const index: XsdSchemaIndex = { complete: true, elements: new Map(), typeLocalNames: new Set() };
+  const resolveImport = opts?.resolveImport;
+  const strict = opts?.strictClosure === true;
+  const originKey = opts?.originKey ?? '';
+  const visited = new Set<string>();
+
   for (const types of children(docNode, 'types')) {
     for (const schema of children(types, 'schema')) {
       const scopes = [docNode, types, schema];
-      const tns = attr(schema, 'targetNamespace');
-      if (children(schema, 'import').length > 0 || children(schema, 'include').length > 0 || children(schema, 'redefine').length > 0) {
-        index.complete = false;
-      }
-      const qualified = attr(schema, 'elementFormDefault') === 'qualified';
-      const complexTypes = new Map<string, JsonRecord>();
-      for (const complexType of children(schema, 'complexType')) {
-        const name = attr(complexType, 'name');
-        if (!name) continue;
-        complexTypes.set(name, complexType);
-        index.typeLocalNames.add(name);
-      }
-      const simpleTypes = new Map<string, SimpleTypeFacets>();
-      for (const simpleType of children(schema, 'simpleType')) {
-        const name = attr(simpleType, 'name');
-        if (!name) continue;
-        index.typeLocalNames.add(name);
-        simpleTypes.set(name, simpleTypeFacets(simpleType, [...scopes, simpleType]));
-      }
-      for (const el of children(schema, 'element')) {
-        const name = attr(el, 'name');
-        if (!name) continue;
-        const inline = asRecord(child(el, 'complexType'));
-        const typeQName = attr(el, 'type');
-        const named = typeQName && namespaceForPrefix([...scopes, el], prefixOf(typeQName)) !== XSD_NS
-          ? complexTypes.get(localName(typeQName)) ?? null
-          : null;
-        index.elements.set(tns + '|' + name, {
-          name,
-          namespace: tns,
-          nillable: /^(true|1)$/.test(attr(el, 'nillable')),
-          childrenQualified: qualified,
-          attributes: attributeUses(inline ?? named),
-          children: sequenceChildren(inline ?? named, [...scopes, el], tns, simpleTypes)
-        });
-      }
+      indexSchemaNode(schema, scopes, index);
+      followSchemaImports(schema, scopes, index, resolveImport, visited, strict, originKey);
     }
   }
-  // wsdl:import at the top level can carry schemas this offline pass never sees.
-  if (children(docNode, 'import').length > 0) index.complete = false;
+  // wsdl:import at the top level can carry schemas this offline pass never sees
+  // unless a resolver is supplied (WSDL merge happens in parseWsdl).
+  if (!resolveImport && children(docNode, 'import').length > 0) index.complete = false;
   return index;
 }
 

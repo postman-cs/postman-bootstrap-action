@@ -21,12 +21,28 @@ type JsonRecord = Record<string, unknown>;
 // `custom` parameter of `loadProtoModule` / `deps.protobuf` of `parseProtoSchema`.
 import * as protobufjs from '@postman/protobufjs';
 
+import type { DefinitionBundle } from '../../spec/definition-bundle.js';
+import {
+  closureIncomplete,
+  isWellKnownProtoImport,
+  resolveBundleRelativeKey
+} from '../definition-bundle-support.js';
+
 // Mirrors the protobufjs reflection surface we depend on, kept minimal so the
 // parser stays decoupled from the concrete dependency version and so the same
 // code path works whether the dependency resolves to `protobufjs` or
 // `@postman/protobufjs` (the runtime fork). We only read; we never construct.
 export interface ProtoParseModule {
-  parse(source: string, options?: { keepCase?: boolean; alternateCommentMode?: boolean }): { root: ProtoNamespace; package: string | undefined };
+  parse(
+    source: string,
+    rootOrOptions?: ProtoNamespace | { keepCase?: boolean; alternateCommentMode?: boolean },
+    options?: { keepCase?: boolean; alternateCommentMode?: boolean }
+  ): {
+    root: ProtoNamespace;
+    package: string | undefined;
+    imports?: string[];
+    weakImports?: string[];
+  };
   Root: new () => ProtoNamespace;
   Service: unknown;
   Type: unknown;
@@ -995,6 +1011,70 @@ export interface ProtoParseDeps {
   // *_UNSPECIFIED, file declares a package. Off by default so structural
   // warnings stay actionable.
   conventionWarnings?: boolean;
+  /** Validated multi-file closure; when set, imports resolve from bundle keys only. */
+  definitionBundle?: DefinitionBundle;
+}
+
+function resolveProtoImportKey(bundle: DefinitionBundle, fromKey: string, target: string): string | null {
+  if (bundle.files.has(target)) return target;
+  try {
+    const relative = resolveBundleRelativeKey(fromKey, target);
+    if (bundle.files.has(relative)) return relative;
+  } catch {
+    // Relative join may reject absolute-looking targets; fall through.
+  }
+  if (isWellKnownProtoImport(target)) return null;
+  closureIncomplete(`Missing protobuf import ${target}`);
+}
+
+function loadProtoRootFromBundle(
+  protobuf: ProtoParseModule,
+  bundle: DefinitionBundle,
+  rootContent: string
+): { root: ProtoNamespace; package: string | undefined } {
+  const root = new protobuf.Root();
+  const queue: string[] = [bundle.rootPath];
+  const seen = new Set<string>();
+  let pkg: string | undefined;
+
+  while (queue.length > 0) {
+    const key = queue.shift()!;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    let source: string;
+    if (key === bundle.rootPath) {
+      source = rootContent;
+    } else {
+      const file = bundle.files.get(key);
+      if (!file) {
+        if (isWellKnownProtoImport(key)) continue;
+        closureIncomplete(`Missing protobuf import ${key}`);
+      }
+      source = file.content;
+    }
+
+    let parsed: {
+      root: ProtoNamespace;
+      package: string | undefined;
+      imports?: string[];
+      weakImports?: string[];
+    };
+    try {
+      parsed = protobuf.parse(source, root, { keepCase: true, alternateCommentMode: true });
+    } catch (error) {
+      throw new Error(`PROTO_PARSE_FAILED: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    if (key === bundle.rootPath) pkg = parsed.package;
+
+    const imports = [...(parsed.imports ?? []), ...(parsed.weakImports ?? [])];
+    for (const target of imports) {
+      const resolved = resolveProtoImportKey(bundle, key, target);
+      if (resolved) queue.push(resolved);
+    }
+  }
+
+  return { root, package: pkg };
 }
 
 export function parseProtoSchema(content: string, deps?: ProtoParseDeps): GrpcContractIndex {
@@ -1002,11 +1082,15 @@ export function parseProtoSchema(content: string, deps?: ProtoParseDeps): GrpcCo
     throw new Error('PROTO_EMPTY_INPUT: .proto source is empty');
   }
   const protobuf = loadProtoModule(deps?.protobuf);
+  const bundle = deps?.definitionBundle;
 
   let parsed: { root: ProtoNamespace; package: string | undefined };
   try {
-    parsed = protobuf.parse(content, { keepCase: true, alternateCommentMode: true });
+    parsed = bundle
+      ? loadProtoRootFromBundle(protobuf, bundle, content)
+      : protobuf.parse(content, { keepCase: true, alternateCommentMode: true });
   } catch (error) {
+    if (error instanceof Error && /^CONTRACT_/.test(error.message)) throw error;
     throw new Error(`PROTO_PARSE_FAILED: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 
@@ -1033,7 +1117,9 @@ export function parseProtoSchema(content: string, deps?: ProtoParseDeps): GrpcCo
   }
   // Import surface: a standalone parse does not resolve imported files, so
   // cross-file rules (import public visibility, proto2 enums referenced from
-  // proto3 messages) are disclosed rather than silently skipped.
+  // proto3 messages) are disclosed rather than silently skipped. A full
+  // DefinitionBundle resolves imports from bundle keys and must not emit the
+  // unresolved disclosure.
   const importStatements = [...withoutComments.matchAll(/^\s*import\s+(public\s+|weak\s+)?"([^"]+)"\s*;/gm)];
   const seenImports = new Set<string>();
   for (const statement of importStatements) {
@@ -1046,7 +1132,7 @@ export function parseProtoSchema(content: string, deps?: ProtoParseDeps): GrpcCo
       warnings.push(`GRPC_IMPORT_WEAK: "${target}" uses import weak, which is Google-internal and ignored or rejected by most toolchains (protobuf language guide)`);
     }
   }
-  if (importStatements.length > 0) {
+  if (!bundle && importStatements.length > 0) {
     warnings.push(`GRPC_IMPORT_UNRESOLVED_DISCLOSURE: ${importStatements.length} import statement(s) are not resolved by this single-file parse; cross-file rules (import public visibility, proto2 enum references from proto3) are not asserted and imported types degrade to PROTO_FIELD_TYPE_UNRESOLVED`);
   }
   const conventions = deps?.conventionWarnings === true;

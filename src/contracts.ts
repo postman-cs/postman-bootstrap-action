@@ -108,6 +108,12 @@ export const bootstrapActionContract: ActionContract = {
       description: 'Local filesystem path to the OpenAPI document (read from the workspace). Provide either spec-url or spec-path.',
       required: false
     },
+    'spec-files-json': {
+      description:
+        'Optional content-free JSON inventory of multi-file definition members from discovery (schemaVersion 1). Empty by default. When set, inventory root must equal spec-path. Cannot be combined with spec-url. Not a directory mode — companions are listed explicitly; file content is never embedded.',
+      required: false,
+      default: ''
+    },
     'protocol': {
       description:
         'API spec protocol. auto (default) detects from the spec content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), soap (WSDL), and asyncapi (AsyncAPI 2.x WebSocket/Socket.IO) build and instrument a Postman collection directly.',

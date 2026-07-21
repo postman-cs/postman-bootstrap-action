@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { HttpError } from '../src/lib/http-error.js';
 import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 import {
   readResourcesState,
@@ -21,6 +22,12 @@ import {
   type IOLike,
   type ResolvedInputs
 } from '../src/index.js';
+import {
+  createDefinitionBundle,
+  createDefinitionFile
+} from '../src/lib/spec/definition-bundle.js';
+import { definitionBundleToSnapshot } from '../src/lib/postman/spec-file-reconcile.js';
+import { createHash as createNodeHash } from 'node:crypto';
 
 const VALID_SPEC_31 = `{
   "openapi": "3.1.0",
@@ -142,6 +149,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     workspaceAdminUserIds: '101,102',
     repoUrl: 'https://github.com/postman-cs/bootstrap-action-test',
     specUrl: 'https://example.test/openapi.yaml',
+    specFilesJson: '',
     protocol: 'auto',
     openapiVersion: '',
     breakingChangeMode: 'off',
@@ -248,6 +256,11 @@ function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
     })
     : undefined;
   return {
+    deleteSpec: vi.fn().mockResolvedValue(undefined),
+    getSpecBundle: vi.fn(),
+    reconcileSpecBundle: vi.fn(),
+    restoreSpecBundle: vi.fn(),
+    uploadSpecBundle: vi.fn(),
     ...postman,
     ...(generateCollection ? { generateCollection } : {}),
     getCollection,
@@ -261,6 +274,7 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     createCollection: vi.fn().mockResolvedValue('col-created'),
     createWorkspace: vi.fn(),
     deleteCollection: vi.fn().mockResolvedValue(undefined),
+    deleteSpec: vi.fn().mockResolvedValue(undefined),
     findWorkspacesByName: vi.fn().mockResolvedValue([]),
     generateCollection: vi
       .fn()
@@ -271,6 +285,7 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
       }),
     getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
     getCollection: vi.fn().mockResolvedValue(createGeneratedContractCollection()),
+    getSpecBundle: vi.fn(),
     getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31),
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
@@ -278,10 +293,13 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+    reconcileSpecBundle: vi.fn(),
+    restoreSpecBundle: vi.fn(),
     tagCollection: vi.fn().mockResolvedValue(undefined),
     updateCollection: vi.fn().mockResolvedValue(undefined),
     updateSpec: vi.fn().mockResolvedValue(undefined),
     uploadSpec: vi.fn(),
+    uploadSpecBundle: vi.fn(),
     ...overrides
   };
 }
@@ -778,6 +796,68 @@ components:
             }
           }
         });
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('does not persist spec/collection state when linking fails after additional collections sync', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-additional-link-fail-'));
+    mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(createCuratedCollection('Payments curated'), null, 2)
+    );
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+
+    const writes: Array<Record<string, unknown>> = [];
+    try {
+      await withCwd(workspace, async () => {
+        const postman = createRollbackPostman({
+          createCollection: vi.fn().mockResolvedValue('col-payments-created')
+        });
+        const internalIntegration = createRollbackIntegration({
+          linkCollectionsToSpecification: vi.fn().mockRejectedValue(new Error('link failed after additional'))
+        });
+
+        await expect(
+          runExistingSpecBootstrap(postman, {
+            internalIntegration,
+            resourcesState: {
+              read: () => null,
+              write: (state) => {
+                writes.push(structuredClone(state) as Record<string, unknown>);
+              }
+            },
+            inputs: {
+              additionalCollectionsDir: 'postman/curated',
+              baselineCollectionId: 'col-baseline-existing',
+              collectionSyncMode: 'version',
+              contractCollectionId: 'col-contract-existing',
+              releaseLabel: 'v1',
+              smokeCollectionId: 'col-smoke-existing',
+              specPath: 'openapi.yaml',
+              specUrl: ''
+            }
+          })
+        ).rejects.toThrow(/link failed after additional/);
+
+        expect(postman.createCollection).toHaveBeenCalled();
+        // Intermediate additional-collection callbacks must not persist
+        // spec-id or generated/additional collection resource state.
+        for (const state of writes) {
+          const cloud = (state.cloudResources ?? state.canonical) as
+            | {
+                specs?: Record<string, string>;
+                collections?: Record<string, string>;
+                additionalCollections?: Record<string, string>;
+              }
+            | undefined;
+          expect(cloud?.specs ?? {}).toEqual({});
+          expect(cloud?.collections ?? {}).toEqual({});
+          expect(cloud?.additionalCollections ?? {}).toEqual({});
+        }
       });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -1373,7 +1453,7 @@ paths:
     }
   });
 
-  it('does not attempt rollback for new spec uploads when a later failure occurs', async () => {
+  it('deletes a failed new spec upload and does not restore via updateSpec', async () => {
     const { core, outputs } = createCoreStub();
     const postman = createRollbackPostman({
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
@@ -1399,9 +1479,1061 @@ paths:
       VALID_SPEC_31,
       '3.1'
     );
+    expect(postman.deleteSpec).toHaveBeenCalledWith('spec-new');
     expect(postman.getSpecContent).not.toHaveBeenCalled();
     expect(postman.updateSpec).not.toHaveBeenCalled();
     expect(outputs).toEqual({});
+  });
+
+  describe('Wave 3 multi-file orchestrator (R1/R3/R6)', () => {
+    const ROOT_OAS = `openapi: 3.1.0
+info:
+  title: Multi
+  version: 1.0.0
+paths:
+  /pets:
+    post:
+      summary: create pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./components/pet.yaml
+      responses:
+        '200':
+          description: OK
+`;
+    const PET_V1 = `type: object
+properties:
+  name:
+    type: string
+    example: bundle-v1
+required: [name]
+`;
+    const PET_V2 = `type: object
+properties:
+  name:
+    type: string
+    example: bundle-v2
+required: [name]
+`;
+
+    function writeMultiFileFixture(dir: string, petContent = PET_V1): void {
+      mkdirSync(join(dir, 'components'), { recursive: true });
+      writeFileSync(join(dir, 'openapi.yaml'), ROOT_OAS);
+      writeFileSync(join(dir, 'components/pet.yaml'), petContent);
+    }
+
+    function multiFilePriorSnapshot(petContent: string, rootPath = 'openapi.yaml') {
+      const rootBody =
+        rootPath === 'openapi.yaml'
+          ? ROOT_OAS
+          : ROOT_OAS; // same bytes; only the Spec Hub path key differs
+      const bundle = createDefinitionBundle({
+        rootPath,
+        format: 'openapi-yaml',
+        completeness: 'full',
+        provenance: { source: 'spec-path', evidence: [] },
+        files: [
+          createDefinitionFile({
+            path: rootPath,
+            role: 'root',
+            bytes: Buffer.from(rootBody, 'utf8')
+          }),
+          createDefinitionFile({
+            path: 'components/pet.yaml',
+            role: 'dependency',
+            bytes: Buffer.from(petContent, 'utf8')
+          })
+        ]
+      });
+      return { bundle, snapshot: definitionBundleToSnapshot(bundle) };
+    }
+
+    it('R1: path escape fails before CLI, workspace, state, or Postman calls', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-escape-'));
+      const writes: unknown[] = [];
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-x' }),
+        uploadSpec: vi.fn().mockResolvedValue('spec-x'),
+        uploadSpecBundle: vi.fn().mockResolvedValue({
+          specId: 'spec-x',
+          created: true,
+          priorSnapshot: null,
+          outcome: { status: 'ok', changed: true, priorSnapshot: { schemaVersion: 1, rootPath: 'x', format: 'openapi-yaml', files: [], digest: '' }, verifiedDigest: 'x' }
+        })
+      });
+      const execStub = createExecStub();
+      try {
+        await withCwd(workspace, async () => {
+          await expect(
+            runBootstrap(
+              createInputs({
+                specPath: '../outside.yaml',
+                specUrl: '',
+                workspaceId: undefined
+              }),
+              {
+                core: createCoreStub().core,
+                exec: execStub,
+                io: createIoStub(),
+                postman,
+                resourcesState: {
+                  read: () => null,
+                  write: (state) => {
+                    writes.push(state);
+                  }
+                },
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow(/CONTRACT_SPEC_PATH_ESCAPE/);
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(postman.createWorkspace).not.toHaveBeenCalled();
+      expect(postman.uploadSpec).not.toHaveBeenCalled();
+      expect(postman.uploadSpecBundle).not.toHaveBeenCalled();
+      expect(execStub.exec).not.toHaveBeenCalled();
+      expect(writes).toHaveLength(0);
+    });
+
+    it('R1: absolute file:///outside OpenAPI ref fails before CLI, workspace, state, or Postman calls', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-abs-file-ref-'));
+      mkdirSync(join(workspace, 'apis/svc/components'), { recursive: true });
+      writeFileSync(
+        join(workspace, 'apis/svc/openapi.yaml'),
+        `openapi: 3.0.3
+info: { title: T, version: 1.0.0 }
+paths:
+  /pets:
+    get:
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: 'file:///outside/evil/components/pet.yaml'
+`
+      );
+      writeFileSync(
+        join(workspace, 'apis/svc/components/pet.yaml'),
+        'type: object\nproperties:\n  name:\n    type: string\n'
+      );
+      const writes: unknown[] = [];
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-x' }),
+        uploadSpec: vi.fn().mockResolvedValue('spec-x'),
+        uploadSpecBundle: vi.fn()
+      });
+      const execStub = createExecStub();
+      const { core, infos } = createCoreStub();
+      try {
+        await withCwd(workspace, async () => {
+          await expect(
+            runBootstrap(
+              createInputs({
+                specPath: 'apis/svc/openapi.yaml',
+                specUrl: '',
+                workspaceId: undefined
+              }),
+              {
+                core,
+                exec: execStub,
+                io: createIoStub(),
+                postman,
+                resourcesState: {
+                  read: () => null,
+                  write: (state) => {
+                    writes.push(state);
+                  }
+                },
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow(/CONTRACT_DEFINITION_CLOSURE_INCOMPLETE/);
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(postman.createWorkspace).not.toHaveBeenCalled();
+      expect(postman.uploadSpec).not.toHaveBeenCalled();
+      expect(postman.uploadSpecBundle).not.toHaveBeenCalled();
+      expect(execStub.exec).not.toHaveBeenCalled();
+      expect(writes).toHaveLength(0);
+      expect(infos.join('\n')).not.toContain('/outside/evil');
+    });
+
+    it('R3: adjacent/symlinked grpc_service_config.json outside the bundle is never read or logged', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-grpc-cfg-'));
+      const outside = mkdtempSync(join(tmpdir(), 'bootstrap-w3-grpc-cfg-outside-'));
+      mkdirSync(join(workspace, 'apis/grpc'), { recursive: true });
+      writeFileSync(
+        join(workspace, 'apis/grpc/service.proto'),
+        'syntax = "proto3";\npackage t;\nservice S { rpc G(M) returns (M); }\nmessage M { string a = 1; }\n'
+      );
+      writeFileSync(
+        join(outside, 'grpc_service_config.json'),
+        JSON.stringify({ methodConfig: [{ name: [{ service: 'leaked.Service' }], timeout: '99s' }] })
+      );
+      symlinkSync(join(outside, 'grpc_service_config.json'), join(workspace, 'apis/grpc/grpc_service_config.json'));
+
+      const { core, infos } = createCoreStub();
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-grpc' }),
+        createCollection: vi.fn().mockResolvedValue('col-grpc'),
+        uploadSpec: vi.fn(),
+        uploadSpecBundle: vi.fn()
+      });
+      try {
+        await withCwd(workspace, async () => {
+          // Protocol bootstrap should succeed without consuming the symlinked sibling.
+          await runBootstrap(
+            createInputs({
+              protocol: 'grpc',
+              specPath: 'apis/grpc/service.proto',
+              specUrl: '',
+              workspaceId: 'ws-grpc',
+              baselineCollectionId: undefined,
+              smokeCollectionId: undefined,
+              contractCollectionId: undefined
+            }),
+            {
+              core,
+              exec: createExecStub(),
+              io: createIoStub(),
+              postman: withContractHelpers(postman),
+              ecClient: {
+                createExtensibleCollection: vi.fn().mockResolvedValue('col-grpc'),
+                populateFromTree: vi.fn().mockResolvedValue(undefined),
+                getExtensibleCollection: vi.fn(),
+                deleteExtensibleCollection: vi.fn(),
+                listExtensibleCollectionItems: vi.fn().mockResolvedValue([]),
+                configureTeamContext: vi.fn()
+              },
+              specFetcher: vi.fn<typeof fetch>()
+            }
+          );
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+        rmSync(outside, { recursive: true, force: true });
+      }
+      const logged = infos.join('\n');
+      expect(logged).not.toContain(outside);
+      expect(logged).not.toMatch(/Found gRPC service config at /);
+      expect(logged).not.toContain('leaked.Service');
+    });
+
+    it('R3: regular adjacent grpc_service_config.json is never acquired, read, or logged', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-grpc-cfg-reg-'));
+      mkdirSync(join(workspace, 'apis/grpc'), { recursive: true });
+      writeFileSync(
+        join(workspace, 'apis/grpc/service.proto'),
+        'syntax = "proto3";\npackage t;\nservice S { rpc G(M) returns (M); }\nmessage M { string a = 1; }\n'
+      );
+      const marker = 'REGULAR_ADJACENT_GRPC_CFG_MARKER';
+      const cfgPath = join(workspace, 'apis/grpc/grpc_service_config.json');
+      writeFileSync(
+        cfgPath,
+        JSON.stringify({ methodConfig: [{ name: [{ service: 'adjacent.Service' }], timeout: '99s' }], marker })
+      );
+      const before = statSync(cfgPath);
+
+      const { core, infos } = createCoreStub();
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-grpc-reg' }),
+        createCollection: vi.fn().mockResolvedValue('col-grpc-reg'),
+        uploadSpec: vi.fn(),
+        uploadSpecBundle: vi.fn()
+      });
+      try {
+        await withCwd(workspace, async () => {
+          await runBootstrap(
+            createInputs({
+              protocol: 'grpc',
+              specPath: 'apis/grpc/service.proto',
+              specUrl: '',
+              workspaceId: 'ws-grpc-reg',
+              baselineCollectionId: undefined,
+              smokeCollectionId: undefined,
+              contractCollectionId: undefined
+            }),
+            {
+              core,
+              exec: createExecStub(),
+              io: createIoStub(),
+              postman: withContractHelpers(postman),
+              ecClient: {
+                createExtensibleCollection: vi.fn().mockResolvedValue('col-grpc-reg'),
+                populateFromTree: vi.fn().mockResolvedValue(undefined),
+                getExtensibleCollection: vi.fn(),
+                deleteExtensibleCollection: vi.fn(),
+                listExtensibleCollectionItems: vi.fn().mockResolvedValue([]),
+                configureTeamContext: vi.fn()
+              },
+              specFetcher: vi.fn<typeof fetch>()
+            }
+          );
+        });
+        const after = statSync(cfgPath);
+        expect(after.mtimeMs).toBe(before.mtimeMs);
+        expect(after.size).toBe(before.size);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      const logged = infos.join('\n');
+      expect(logged).not.toMatch(/Found gRPC service config/);
+      expect(logged).not.toContain('adjacent.Service');
+      expect(logged).not.toContain(marker);
+    });
+
+    it('R1: directory/symlink/count/size/encoding/inventory failures leave no Postman or state side effects', async () => {
+      const cases: Array<{
+        label: string;
+        setup: (workspace: string) => void;
+        inputs: Partial<ResolvedInputs>;
+        pattern: RegExp;
+      }> = [
+        {
+          label: 'directory root',
+          setup: (workspace) => {
+            mkdirSync(join(workspace, 'apis/svc'), { recursive: true });
+          },
+          inputs: { specPath: 'apis/svc', specUrl: '', workspaceId: undefined },
+          pattern: /CONTRACT_SPEC_PATH_NOT_FILE/
+        },
+        {
+          label: 'symlink root',
+          setup: (workspace) => {
+            mkdirSync(join(workspace, 'apis/svc'), { recursive: true });
+            writeFileSync(join(workspace, 'apis/svc/target.yaml'), VALID_SPEC_31);
+            symlinkSync(join(workspace, 'apis/svc/target.yaml'), join(workspace, 'apis/svc/linked.yaml'));
+          },
+          inputs: { specPath: 'apis/svc/linked.yaml', specUrl: '', workspaceId: undefined },
+          pattern: /CONTRACT_SPEC_PATH_SYMLINK/
+        },
+        {
+          label: 'oversize root',
+          setup: (workspace) => {
+            mkdirSync(join(workspace, 'apis/svc'), { recursive: true });
+            writeFileSync(join(workspace, 'apis/svc/big.yaml'), Buffer.alloc(25 * 1024 * 1024 + 1, 0x61));
+          },
+          inputs: { specPath: 'apis/svc/big.yaml', specUrl: '', workspaceId: undefined },
+          pattern: /CONTRACT_REF_SIZE_EXCEEDED/
+        },
+        {
+          label: 'invalid UTF-8 root',
+          setup: (workspace) => {
+            mkdirSync(join(workspace, 'apis/svc'), { recursive: true });
+            writeFileSync(join(workspace, 'apis/svc/bad.yaml'), Buffer.from([0xff, 0xfe, 0xfd]));
+          },
+          inputs: { specPath: 'apis/svc/bad.yaml', specUrl: '', workspaceId: undefined },
+          pattern: /CONTRACT_DEFINITION_ENCODING_INVALID/
+        },
+        {
+          label: 'invalid inventory JSON',
+          setup: (workspace) => {
+            mkdirSync(join(workspace, 'apis/svc'), { recursive: true });
+            writeFileSync(join(workspace, 'apis/svc/openapi.yaml'), VALID_SPEC_31);
+          },
+          inputs: {
+            specPath: 'apis/svc/openapi.yaml',
+            specUrl: '',
+            workspaceId: undefined,
+            specFilesJson: '{'
+          },
+          pattern: /CONTRACT_DEFINITION_INVENTORY_INVALID/
+        },
+        {
+          label: 'inventory over-count',
+          setup: (workspace) => {
+            mkdirSync(join(workspace, 'apis/many'), { recursive: true });
+            writeFileSync(join(workspace, 'apis/many/openapi.yaml'), VALID_SPEC_31);
+          },
+          inputs: {
+            specPath: 'apis/many/openapi.yaml',
+            specUrl: '',
+            workspaceId: undefined,
+            specFilesJson: JSON.stringify({
+              schemaVersion: 1,
+              root: 'apis/many/openapi.yaml',
+              format: 'openapi-json',
+              completeness: 'full',
+              provenance: { kind: 'provider', provider: 'aws' },
+              files: Array.from({ length: 102 }, (_v, i) => ({
+                path: i === 0 ? 'apis/many/openapi.yaml' : `apis/many/d${String(i).padStart(3, '0')}.yaml`,
+                role: i === 0 ? 'root' : 'dependency',
+                bytes: i === 0 ? Buffer.byteLength(VALID_SPEC_31, 'utf8') : 1,
+                sha256: 'a'.repeat(64)
+              })).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+            })
+          },
+          pattern: /CONTRACT_REF_COUNT_EXCEEDED/
+        }
+      ];
+
+      for (const testCase of cases) {
+        const workspace = mkdtempSync(join(tmpdir(), `bootstrap-w3-${testCase.label.replace(/\s+/g, '-')}-`));
+        const writes: unknown[] = [];
+        const postman = createRollbackPostman({
+          createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-x' }),
+          uploadSpec: vi.fn().mockResolvedValue('spec-x'),
+          uploadSpecBundle: vi.fn()
+        });
+        const execStub = createExecStub();
+        try {
+          testCase.setup(workspace);
+          await withCwd(workspace, async () => {
+            await expect(
+              runBootstrap(createInputs(testCase.inputs), {
+                core: createCoreStub().core,
+                exec: execStub,
+                io: createIoStub(),
+                postman,
+                resourcesState: {
+                  read: () => null,
+                  write: (state) => {
+                    writes.push(state);
+                  }
+                },
+                specFetcher: vi.fn<typeof fetch>()
+              })
+            ).rejects.toThrow(testCase.pattern);
+          });
+        } finally {
+          rmSync(workspace, { recursive: true, force: true });
+        }
+        expect(postman.createWorkspace, testCase.label).not.toHaveBeenCalled();
+        expect(postman.uploadSpec, testCase.label).not.toHaveBeenCalled();
+        expect(postman.uploadSpecBundle, testCase.label).not.toHaveBeenCalled();
+        expect(execStub.exec, testCase.label).not.toHaveBeenCalled();
+        expect(writes, testCase.label).toHaveLength(0);
+      }
+    });
+
+    it('R1: local protobuf transitive companions are acquired before bootstrap side effects', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-proto-'));
+      mkdirSync(join(workspace, 'apis/grpc'), { recursive: true });
+      writeFileSync(
+        join(workspace, 'apis/grpc/types.proto'),
+        'syntax = "proto3";\npackage t;\nmessage M { string a = 1; }\n'
+      );
+      writeFileSync(
+        join(workspace, 'apis/grpc/service.proto'),
+        'syntax = "proto3";\npackage t;\nimport "types.proto";\nservice S { rpc G(M) returns (M); }\n'
+      );
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-proto' }),
+        uploadSpec: vi.fn(),
+        uploadSpecBundle: vi.fn()
+      });
+      const { acquireDefinitionBundle } = await import('../src/lib/spec/acquire-definition-bundle.js');
+      const bundle = await acquireDefinitionBundle({
+        workspaceRoot: workspace,
+        specPath: 'apis/grpc/service.proto'
+      });
+      expect([...bundle.files.keys()].sort()).toEqual(['service.proto', 'types.proto']);
+
+      try {
+        await withCwd(workspace, async () => {
+          // Missing companion must fail before workspace creation.
+          rmSync(join(workspace, 'apis/grpc/types.proto'));
+          await expect(
+            runBootstrap(
+              createInputs({
+                protocol: 'grpc',
+                specPath: 'apis/grpc/service.proto',
+                specUrl: '',
+                workspaceId: undefined
+              }),
+              {
+                core: createCoreStub().core,
+                exec: createExecStub(),
+                io: createIoStub(),
+                postman,
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow(/CONTRACT_DEFINITION_CLOSURE_INCOMPLETE/);
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(postman.createWorkspace).not.toHaveBeenCalled();
+    });
+
+    it('R3: MCP multi-file inventory fails before workspace creation', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-mcp-'));
+      mkdirSync(join(workspace, 'mcp'), { recursive: true });
+      writeFileSync(
+        join(workspace, 'mcp/server.json'),
+        JSON.stringify({
+          name: 'demo',
+          version: '1.0.0',
+          remotes: [{ type: 'sse', url: 'https://example.test/sse' }]
+        })
+      );
+      writeFileSync(join(workspace, 'mcp/extra.json'), '{}');
+      const serverBytes = readFileSync(join(workspace, 'mcp/server.json'));
+      const extraBytes = readFileSync(join(workspace, 'mcp/extra.json'));
+      const inventory = {
+        schemaVersion: 1,
+        root: 'mcp/server.json',
+        format: 'mcp-json',
+        completeness: 'full',
+        provenance: { kind: 'provider', provider: 'aws' },
+        files: [
+          {
+            path: 'mcp/extra.json',
+            role: 'dependency',
+            bytes: extraBytes.byteLength,
+            sha256: createNodeHash('sha256').update(extraBytes).digest('hex')
+          },
+          {
+            path: 'mcp/server.json',
+            role: 'root',
+            bytes: serverBytes.byteLength,
+            sha256: createNodeHash('sha256').update(serverBytes).digest('hex')
+          }
+        ]
+      };
+
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-mcp' })
+      });
+      try {
+        await withCwd(workspace, async () => {
+          await expect(
+            runBootstrap(
+              createInputs({
+                protocol: 'auto',
+                specPath: 'mcp/server.json',
+                specUrl: '',
+                specFilesJson: JSON.stringify(inventory)
+              }),
+              {
+                core: createCoreStub().core,
+                exec: createExecStub(),
+                io: createIoStub(),
+                postman,
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow(/CONTRACT_MCP_MULTIFILE_UNSUPPORTED/);
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(postman.createWorkspace).not.toHaveBeenCalled();
+    });
+
+    it('R6: changed companion defeats full-set no-op and calls reconcileSpecBundle', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-companion-'));
+      writeMultiFileFixture(workspace, PET_V2);
+      const prior = multiFilePriorSnapshot(PET_V1);
+      const target = multiFilePriorSnapshot(PET_V2);
+      const reconcileSpecBundle = vi.fn().mockResolvedValue({
+        status: 'ok',
+        changed: true,
+        priorSnapshot: prior.snapshot,
+        verifiedDigest: target.bundle.digest
+      });
+      const getSpecBundle = vi.fn().mockResolvedValue(prior.bundle);
+      const postman = createRollbackPostman({
+        getSpecBundle,
+        reconcileSpecBundle,
+        uploadSpec: vi.fn(),
+        updateSpec: vi.fn()
+      });
+      const { outputs } = createCoreStub();
+      try {
+        await withCwd(workspace, async () => {
+          const result = await runBootstrap(
+            createInputs({
+              specPath: 'openapi.yaml',
+              specUrl: '',
+              specId: 'spec-multi',
+              workspaceId: 'ws-existing',
+              baselineCollectionId: 'col-b',
+              smokeCollectionId: 'col-s',
+              contractCollectionId: 'col-c',
+              collectionSyncMode: 'refresh'
+            }),
+            {
+              core: createCoreStub().core,
+              exec: createExecStub(),
+              io: createIoStub(),
+              internalIntegration: createRollbackIntegration(),
+              postman: withContractHelpers(postman),
+              specFetcher: vi.fn<typeof fetch>()
+            }
+          );
+          outputs['spec-content-changed'] = result['spec-content-changed'] || '';
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(reconcileSpecBundle).toHaveBeenCalled();
+      expect(postman.updateSpec).not.toHaveBeenCalled();
+      expect(outputs['spec-content-changed']).toBe('true');
+    });
+
+    it('R6: removed companion reaches reconcileSpecBundle with a smaller target set', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-stale-'));
+      writeMultiFileFixture(workspace, PET_V1);
+      const ERROR_V1 = `type: object
+properties:
+  code:
+    type: string
+`;
+      const priorWithExtra = createDefinitionBundle({
+        rootPath: 'openapi.yaml',
+        format: 'openapi-yaml',
+        completeness: 'full',
+        provenance: { source: 'spec-path', evidence: [] },
+        files: [
+          createDefinitionFile({
+            path: 'openapi.yaml',
+            role: 'root',
+            bytes: Buffer.from(ROOT_OAS, 'utf8')
+          }),
+          createDefinitionFile({
+            path: 'components/error.yaml',
+            role: 'dependency',
+            bytes: Buffer.from(ERROR_V1, 'utf8')
+          }),
+          createDefinitionFile({
+            path: 'components/pet.yaml',
+            role: 'dependency',
+            bytes: Buffer.from(PET_V1, 'utf8')
+          })
+        ]
+      });
+      const priorSnapshot = definitionBundleToSnapshot(priorWithExtra);
+      const reconcileSpecBundle = vi.fn().mockImplementation(async (_id: string, target: { files: Map<string, unknown>; digest: string }) => ({
+        status: 'ok',
+        changed: true,
+        priorSnapshot,
+        verifiedDigest: target.digest
+      }));
+      const postman = createRollbackPostman({
+        getSpecBundle: vi.fn().mockResolvedValue(priorWithExtra),
+        reconcileSpecBundle,
+        updateSpec: vi.fn()
+      });
+      try {
+        await withCwd(workspace, async () => {
+          await runBootstrap(
+            createInputs({
+              specPath: 'openapi.yaml',
+              specUrl: '',
+              specId: 'spec-multi',
+              workspaceId: 'ws-existing',
+              baselineCollectionId: 'col-b',
+              smokeCollectionId: 'col-s',
+              contractCollectionId: 'col-c',
+              collectionSyncMode: 'refresh'
+            }),
+            {
+              core: createCoreStub().core,
+              exec: createExecStub(),
+              io: createIoStub(),
+              internalIntegration: createRollbackIntegration(),
+              postman: withContractHelpers(postman),
+              specFetcher: vi.fn<typeof fetch>()
+            }
+          );
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(reconcileSpecBundle).toHaveBeenCalled();
+      const target = reconcileSpecBundle.mock.calls[0]![1] as { files: Map<string, unknown> };
+      expect(target.files.has('components/pet.yaml')).toBe(true);
+      expect(target.files.has('components/error.yaml')).toBe(false);
+      expect(postman.updateSpec).not.toHaveBeenCalled();
+    });
+
+    it('R6: identical full set skips mutation and generation', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-noop-'));
+      writeMultiFileFixture(workspace, PET_V1);
+      const prior = multiFilePriorSnapshot(PET_V1);
+      // Upload bundle may differ after normalize/branch marker — force digest match via reconcile returning unchanged.
+      const reconcileSpecBundle = vi.fn().mockImplementation(async (_id: string, target: { digest: string }) => ({
+        status: 'ok',
+        changed: false,
+        priorSnapshot: { ...prior.snapshot, digest: target.digest },
+        verifiedDigest: target.digest
+      }));
+      const getSpecBundle = vi.fn().mockImplementation(async () => {
+        // Return a prior whose digest will be compared after upload bundle build;
+        // preflight uses this for version check. Root must parse as OAS 3.1.
+        return prior.bundle;
+      });
+      const postman = createRollbackPostman({
+        getSpecBundle,
+        reconcileSpecBundle,
+        generateCollection: vi.fn(),
+        updateSpec: vi.fn()
+      });
+      try {
+        await withCwd(workspace, async () => {
+          const result = await runBootstrap(
+            createInputs({
+              specPath: 'openapi.yaml',
+              specUrl: '',
+              specId: 'spec-multi',
+              workspaceId: 'ws-existing',
+              baselineCollectionId: 'col-b',
+              smokeCollectionId: 'col-s',
+              contractCollectionId: 'col-c',
+              collectionSyncMode: 'refresh'
+            }),
+            {
+              core: createCoreStub().core,
+              exec: createExecStub(),
+              io: createIoStub(),
+              postman: withContractHelpers(postman),
+              specFetcher: vi.fn<typeof fetch>()
+            }
+          );
+          expect(result['spec-content-changed']).toBe('false');
+          expect(postman.generateCollection).not.toHaveBeenCalled();
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(reconcileSpecBundle).toHaveBeenCalled();
+      expect(postman.updateSpec).not.toHaveBeenCalled();
+    });
+
+    it('R6: full-set rollback restores prior snapshot after generation failure', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-rollback-'));
+      writeMultiFileFixture(workspace, PET_V2);
+      const prior = multiFilePriorSnapshot(PET_V1);
+      const target = multiFilePriorSnapshot(PET_V2);
+      const restoreSpecBundle = vi.fn().mockResolvedValue({
+        status: 'ok',
+        changed: true,
+        priorSnapshot: prior.snapshot,
+        verifiedDigest: prior.snapshot.digest
+      });
+      const postman = createRollbackPostman({
+        getSpecBundle: vi.fn().mockResolvedValue(prior.bundle),
+        reconcileSpecBundle: vi.fn().mockResolvedValue({
+          status: 'ok',
+          changed: true,
+          priorSnapshot: prior.snapshot,
+          verifiedDigest: target.bundle.digest
+        }),
+        restoreSpecBundle,
+        generateCollection: vi.fn().mockRejectedValue(new Error('generation refused')),
+        updateSpec: vi.fn()
+      });
+      try {
+        await withCwd(workspace, async () => {
+          await expect(
+            runBootstrap(
+              createInputs({
+                specPath: 'openapi.yaml',
+                specUrl: '',
+                specId: 'spec-multi',
+                workspaceId: 'ws-existing'
+              }),
+              {
+                core: createCoreStub().core,
+                exec: createExecStub(),
+                io: createIoStub(),
+                postman: withContractHelpers(postman),
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow('generation refused');
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(restoreSpecBundle).toHaveBeenCalledWith('spec-multi', prior.snapshot);
+      expect(postman.updateSpec).not.toHaveBeenCalled();
+    });
+
+    it('R6: failed new multi-file create deletes the whole spec and defers state', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-newfail-'));
+      writeMultiFileFixture(workspace, PET_V1);
+      const writes: Array<Record<string, unknown>> = [];
+      const emptyPrior = {
+        schemaVersion: 1 as const,
+        rootPath: 'openapi.yaml',
+        format: 'openapi-yaml' as const,
+        files: [],
+        digest: ''
+      };
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
+        uploadSpecBundle: vi.fn().mockResolvedValue({
+          specId: 'spec-new-multi',
+          created: true,
+          priorSnapshot: emptyPrior,
+          outcome: {
+            status: 'ok',
+            changed: true,
+            priorSnapshot: emptyPrior,
+            verifiedDigest: 'abc'
+          }
+        }),
+        generateCollection: vi.fn().mockRejectedValue(new Error('new multi generation failed')),
+        deleteSpec: vi.fn().mockResolvedValue(undefined)
+      });
+      try {
+        await withCwd(workspace, async () => {
+          await expect(
+            runBootstrap(
+              createInputs({
+                specPath: 'openapi.yaml',
+                specUrl: '',
+                workspaceId: undefined
+              }),
+              {
+                core: createCoreStub().core,
+                exec: createExecStub(),
+                io: createIoStub(),
+                postman: withContractHelpers(postman),
+                resourcesState: {
+                  read: () => null,
+                  write: (state) => {
+                    writes.push(state as Record<string, unknown>);
+                  }
+                },
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow('new multi generation failed');
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(postman.deleteSpec).toHaveBeenCalledWith('spec-new-multi');
+      expect(postman.uploadSpec).not.toHaveBeenCalled();
+      // Workspace-only writes may occur; no persisted spec-id after failure.
+      for (const state of writes) {
+        const specs = (state as { cloudResources?: { specs?: Record<string, string> } }).cloudResources?.specs;
+        if (specs) {
+          expect(Object.values(specs)).not.toContain('spec-new-multi');
+        }
+      }
+    });
+
+    it('R6: new-spec cleanup treats deleteSpec 404 as success and preserves generation error', async () => {
+      // Live dual-preview race: peer election deletes our loser while generation
+      // is in flight; cleanup DELETE then 404s and must not wrap as ROLLBACK_FAILED.
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-del404-'));
+      writeMultiFileFixture(workspace, PET_V1);
+      const emptyPrior = {
+        schemaVersion: 1 as const,
+        rootPath: 'openapi.yaml',
+        format: 'openapi-yaml' as const,
+        files: [],
+        digest: ''
+      };
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
+        uploadSpecBundle: vi.fn().mockResolvedValue({
+          specId: 'spec-loser',
+          created: true,
+          priorSnapshot: emptyPrior,
+          outcome: {
+            status: 'ok',
+            changed: true,
+            priorSnapshot: emptyPrior,
+            verifiedDigest: 'abc'
+          }
+        }),
+        generateCollection: vi.fn().mockRejectedValue(new Error('generation 403 after peer deleted loser')),
+        deleteSpec: vi.fn().mockRejectedValue(
+          new HttpError({
+            method: 'DELETE',
+            url: '/specifications/spec-loser',
+            status: 404,
+            statusText: 'Not Found',
+            responseBody: '{"error":{"name":"notFound"}}'
+          })
+        )
+      });
+      let caught: unknown;
+      try {
+        await withCwd(workspace, async () => {
+          try {
+            await runBootstrap(
+              createInputs({
+                specPath: 'openapi.yaml',
+                specUrl: '',
+                workspaceId: undefined
+              }),
+              {
+                core: createCoreStub().core,
+                exec: createExecStub(),
+                io: createIoStub(),
+                postman: withContractHelpers(postman),
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            );
+          } catch (error) {
+            caught = error;
+          }
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toContain('generation 403 after peer deleted loser');
+      expect((caught as Error).message).not.toContain('CONTRACT_SPEC_ROLLBACK_FAILED');
+      expect(postman.deleteSpec).toHaveBeenCalledWith('spec-loser');
+    });
+
+    it('R6: kill switch blocks multi-file before Spec Hub mutation', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-kill-'));
+      writeMultiFileFixture(workspace, PET_V1);
+      const previous = process.env.POSTMAN_MULTI_FILE_SPEC_SYNC;
+      process.env.POSTMAN_MULTI_FILE_SPEC_SYNC = 'off';
+      const postman = createRollbackPostman({
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-k' }),
+        uploadSpecBundle: vi.fn(),
+        reconcileSpecBundle: vi.fn(),
+        uploadSpec: vi.fn()
+      });
+      try {
+        await withCwd(workspace, async () => {
+          await expect(
+            runBootstrap(
+              createInputs({
+                specPath: 'openapi.yaml',
+                specUrl: '',
+                workspaceId: 'ws-existing'
+              }),
+              {
+                core: createCoreStub().core,
+                exec: createExecStub(),
+                io: createIoStub(),
+                postman: withContractHelpers(postman),
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow(/CONTRACT_MULTI_FILE_SPEC_SYNC_DISABLED/);
+        });
+      } finally {
+        if (previous === undefined) delete process.env.POSTMAN_MULTI_FILE_SPEC_SYNC;
+        else process.env.POSTMAN_MULTI_FILE_SPEC_SYNC = previous;
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(postman.uploadSpecBundle).not.toHaveBeenCalled();
+      expect(postman.reconcileSpecBundle).not.toHaveBeenCalled();
+      expect(postman.uploadSpec).not.toHaveBeenCalled();
+    });
+
+    it('R6: root path change fails before mutation and instructs clear spec-id', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-root-'));
+      writeMultiFileFixture(workspace, PET_V1);
+      const cloudPrior = multiFilePriorSnapshot(PET_V1, 'index.yaml');
+      const reconcileSpecBundle = vi.fn().mockRejectedValue(
+        new Error(
+          'CONTRACT_SPEC_ROOT_PATH_CHANGE_UNSUPPORTED: Spec Hub root path index.yaml cannot change to openapi.yaml; clear spec-id to create a fresh spec'
+        )
+      );
+      const postman = createRollbackPostman({
+        getSpecBundle: vi.fn().mockResolvedValue(cloudPrior.bundle),
+        reconcileSpecBundle,
+        updateSpec: vi.fn(),
+        uploadSpecBundle: vi.fn()
+      });
+      try {
+        await withCwd(workspace, async () => {
+          await expect(
+            runBootstrap(
+              createInputs({
+                specPath: 'openapi.yaml',
+                specUrl: '',
+                specId: 'spec-multi',
+                workspaceId: 'ws-existing'
+              }),
+              {
+                core: createCoreStub().core,
+                exec: createExecStub(),
+                io: createIoStub(),
+                postman: withContractHelpers(postman),
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow(/CONTRACT_SPEC_ROOT_PATH_CHANGE_UNSUPPORTED.*clear spec-id/s);
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      expect(reconcileSpecBundle).toHaveBeenCalled();
+      expect(postman.updateSpec).not.toHaveBeenCalled();
+      expect(postman.uploadSpecBundle).not.toHaveBeenCalled();
+    });
+
+    it('R6: state waits for generation — failed update does not persist spec-id', async () => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-w3-defer-'));
+      writeMultiFileFixture(workspace, PET_V2);
+      const prior = multiFilePriorSnapshot(PET_V1);
+      const target = multiFilePriorSnapshot(PET_V2);
+      const writes: Array<Record<string, unknown>> = [];
+      const postman = createRollbackPostman({
+        getSpecBundle: vi.fn().mockResolvedValue(prior.bundle),
+        reconcileSpecBundle: vi.fn().mockResolvedValue({
+          status: 'ok',
+          changed: true,
+          priorSnapshot: prior.snapshot,
+          verifiedDigest: target.bundle.digest
+        }),
+        restoreSpecBundle: vi.fn().mockResolvedValue({
+          status: 'ok',
+          changed: true,
+          priorSnapshot: prior.snapshot,
+          verifiedDigest: prior.snapshot.digest
+        }),
+        generateCollection: vi.fn().mockRejectedValue(new Error('gen boom')),
+        updateSpec: vi.fn()
+      });
+      try {
+        await withCwd(workspace, async () => {
+          await expect(
+            runBootstrap(
+              createInputs({
+                specPath: 'openapi.yaml',
+                specUrl: '',
+                specId: 'spec-multi',
+                workspaceId: 'ws-existing'
+              }),
+              {
+                core: createCoreStub().core,
+                exec: createExecStub(),
+                io: createIoStub(),
+                postman: withContractHelpers(postman),
+                resourcesState: {
+                  read: () => ({ workspace: { id: 'ws-existing' } }),
+                  write: (state) => {
+                    writes.push(JSON.parse(JSON.stringify(state)) as Record<string, unknown>);
+                  }
+                },
+                specFetcher: vi.fn<typeof fetch>()
+              }
+            )
+          ).rejects.toThrow('gen boom');
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      for (const state of writes) {
+        const specs = (state as { cloudResources?: { specs?: Record<string, string> } }).cloudResources?.specs;
+        expect(specs?.['../openapi.yaml'] ?? specs?.['openapi.yaml']).toBeUndefined();
+      }
+    });
   });
 
   it('validates normalized spec structure before upload or update', async () => {

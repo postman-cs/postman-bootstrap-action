@@ -45,6 +45,7 @@ Options:
   --version                      Show version and exit
   --result-json <path>           Write JSON result (default: postman-bootstrap-result.json)
   --dotenv-path <path>           Optional dotenv output path
+  --spec-files-json <json>       Optional content-free discovery inventory; root must equal --spec-path
   --<input-name> <value>         Action input as kebab-case flag (same names as action.yml)
 
 Examples:
@@ -139,6 +140,7 @@ const cliInputNames = [
   'project-name',
   'spec-url',
   'spec-path',
+  'spec-files-json',
   'protocol',
   'protocol-endpoint-url',
   'postman-api-key',

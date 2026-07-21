@@ -1,5 +1,11 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 
+import type { DefinitionBundle } from '../../spec/definition-bundle.js';
+import {
+  closureIncomplete,
+  createStrictBundleImportResolver,
+  resolveBundleRelativeKey
+} from '../definition-bundle-support.js';
 import { lintWsiConformance, type WsdlImportResolver } from './wsi-lints.js';
 import { buildXsdIndex, type XsdSchemaIndex } from './xsd-index.js';
 
@@ -220,17 +226,19 @@ function detectWsdlVersion(definitions: JsonRecord | null, description: JsonReco
   return '1.1';
 }
 
-function parseMessages11(definitions: JsonRecord): Map<string, SoapMessage> {
+function parseMessages11(...definitionNodes: JsonRecord[]): Map<string, SoapMessage> {
   const out = new Map<string, SoapMessage>();
-  for (const message of children(definitions, 'message')) {
-    const name = attr(message, 'name');
-    if (!name) continue;
-    const parts: SoapMessagePart[] = children(message, 'part').map((part) => ({
-      name: attr(part, 'name'),
-      element: attr(part, 'element') || undefined,
-      type: attr(part, 'type') || undefined
-    }));
-    out.set(name, { name, parts });
+  for (const definitions of definitionNodes) {
+    for (const message of children(definitions, 'message')) {
+      const name = attr(message, 'name');
+      if (!name || out.has(name)) continue;
+      const parts: SoapMessagePart[] = children(message, 'part').map((part) => ({
+        name: attr(part, 'name'),
+        element: attr(part, 'element') || undefined,
+        type: attr(part, 'type') || undefined
+      }));
+      out.set(name, { name, parts });
+    }
   }
   return out;
 }
@@ -301,12 +309,13 @@ function headerFaultDecls(
 }
 
 function parseSoapBindings11(
-  definitions: JsonRecord,
+  definitionNodes: JsonRecord[],
   messages: Map<string, SoapMessage>,
   warnings: string[]
 ): Map<string, Map<string, BindingOp11>> {
   // bindingName -> operationName -> { soapAction, soapVersion, style, use, ... }
   const out = new Map<string, Map<string, BindingOp11>>();
+  for (const definitions of definitionNodes) {
   for (const binding of children(definitions, 'binding')) {
     const bindingName = attr(binding, 'name');
     if (!bindingName) continue;
@@ -379,7 +388,8 @@ function parseSoapBindings11(
         encodingStyle
       });
     }
-    out.set(bindingName, ops);
+    if (!out.has(bindingName)) out.set(bindingName, ops);
+  }
   }
   return out;
 }
@@ -425,26 +435,31 @@ function resolveResponseElement(
 }
 
 function parseServices11(
-  definitions: JsonRecord,
+  definitionNodes: JsonRecord[],
   messages: Map<string, SoapMessage>,
   bindings: Map<string, Map<string, BindingOp11>>,
   warnings: string[]
 ): SoapService[] {
+  const rootDefinitions = definitionNodes[0] ?? {};
   const portTypes = new Map<string, JsonRecord>();
-  for (const portType of children(definitions, 'portType')) {
-    const name = attr(portType, 'name');
-    if (name) portTypes.set(name, portType);
+  for (const definitions of definitionNodes) {
+    for (const portType of children(definitions, 'portType')) {
+      const name = attr(portType, 'name');
+      if (name && !portTypes.has(name)) portTypes.set(name, portType);
+    }
   }
 
   // Map binding name -> portType name for endpoint/operation correlation.
   const bindingToPortType = new Map<string, string>();
-  for (const binding of children(definitions, 'binding')) {
-    const name = attr(binding, 'name');
-    const type = localName(attr(binding, 'type'));
-    if (name && type) bindingToPortType.set(name, type);
+  for (const definitions of definitionNodes) {
+    for (const binding of children(definitions, 'binding')) {
+      const name = attr(binding, 'name');
+      const type = localName(attr(binding, 'type'));
+      if (name && type && !bindingToPortType.has(name)) bindingToPortType.set(name, type);
+    }
   }
 
-  const buildOperations = (portTypeName: string): SoapOperation[] => {
+  const buildOperations = (portTypeName: string, scopeDefinitions: JsonRecord): SoapOperation[] => {
     const portType = portTypes.get(portTypeName);
     if (!portType) return [];
     return children(portType, 'operation').map((operation) => {
@@ -460,7 +475,7 @@ function parseServices11(
       if (outputRef && !output) opWarnings.push(`SOAP_MESSAGE_UNRESOLVED: output message ${outputRef} for operation ${name} not found`);
       if (!outputRef) opWarnings.push(`SOAP_OPERATION_ONE_WAY: operation ${name} declares no output message; response assertions limited to transport`);
       const bindingOp = lookupBindingOp(bindings, name);
-      const resolved = resolveResponseElement(output, [definitions]);
+      const resolved = resolveResponseElement(output, [scopeDefinitions, ...definitionNodes]);
       if (resolved.warning) opWarnings.push(resolved.warning);
       let outputBodyPartCount: number | undefined;
       const partsAttr = bindingOp?.outputBodyParts;
@@ -498,34 +513,36 @@ function parseServices11(
   };
 
   const services: SoapService[] = [];
-  for (const service of children(definitions, 'service')) {
-    const serviceName = attr(service, 'name');
-    const ports = children(service, 'port');
-    let endpoint = '';
-    const operationsByPortType: SoapOperation[] = [];
-    const seenPortTypes = new Set<string>();
-    for (const port of ports) {
-      const bindingName = localName(attr(port, 'binding'));
-      const address = asRecord(child(port, 'address'));
-      const location = attr(address, 'location');
-      if (location && !endpoint) endpoint = location;
-      const portTypeName = bindingToPortType.get(bindingName);
-      if (portTypeName && !seenPortTypes.has(portTypeName)) {
-        seenPortTypes.add(portTypeName);
-        operationsByPortType.push(...buildOperations(portTypeName));
+  for (const definitions of definitionNodes) {
+    for (const service of children(definitions, 'service')) {
+      const serviceName = attr(service, 'name');
+      const ports = children(service, 'port');
+      let endpoint = '';
+      const operationsByPortType: SoapOperation[] = [];
+      const seenPortTypes = new Set<string>();
+      for (const port of ports) {
+        const bindingName = localName(attr(port, 'binding'));
+        const address = asRecord(child(port, 'address'));
+        const location = attr(address, 'location');
+        if (location && !endpoint) endpoint = location;
+        const portTypeName = bindingToPortType.get(bindingName);
+        if (portTypeName && !seenPortTypes.has(portTypeName)) {
+          seenPortTypes.add(portTypeName);
+          operationsByPortType.push(...buildOperations(portTypeName, definitions));
+        }
       }
+      if (!endpoint) warnings.push(`SOAP_ENDPOINT_MISSING: service ${serviceName} has no soap:address location; request URL left as placeholder`);
+      services.push({ name: serviceName, endpoint, operations: operationsByPortType });
     }
-    if (!endpoint) warnings.push(`SOAP_ENDPOINT_MISSING: service ${serviceName} has no soap:address location; request URL left as placeholder`);
-    services.push({ name: serviceName, endpoint, operations: operationsByPortType });
   }
 
   // WSDL with no <service> still has portTypes/bindings; surface them as a
   // synthetic service so operations are never silently dropped.
   if (services.length === 0 && portTypes.size > 0) {
     const operations: SoapOperation[] = [];
-    for (const portTypeName of portTypes.keys()) operations.push(...buildOperations(portTypeName));
+    for (const portTypeName of portTypes.keys()) operations.push(...buildOperations(portTypeName, rootDefinitions));
     warnings.push('SOAP_SERVICE_MISSING: WSDL declares no <service>; emitting operations under a synthetic service with placeholder endpoint');
-    services.push({ name: attr(definitions, 'name') || 'Service', endpoint: '', operations });
+    services.push({ name: attr(rootDefinitions, 'name') || 'Service', endpoint: '', operations });
   }
 
   return services;
@@ -952,16 +969,9 @@ function lintWsdl11(definitions: JsonRecord, messages: Map<string, SoapMessage>,
   }
 }
 
-/**
- * Parse a WSDL 1.1 or 2.0 document into a typed SOAP contract index.
- * Deterministic: services and operations preserve document order.
- */
-export function parseWsdl(content: string, opts?: { resolveImport?: WsdlImportResolver }): SoapContractIndex {
+function parseWsdlDocument(content: string): { root: JsonRecord; definitions: JsonRecord | null; description: JsonRecord | null } {
   const text = asString(content).trim();
   if (!text) throw new Error('SOAP_EMPTY_WSDL: WSDL content is empty');
-  // Well-formedness gate: malformed XML fails fast with a line number. Full
-  // WSDL/XSD schema validation needs a validator bundle and stays out of the
-  // offline scope; structural conformance is covered by the SOAP_WSI_* lints.
   const validation = XMLValidator.validate(text);
   if (validation !== true) {
     throw new Error(`SOAP_WSDL_XML_INVALID: WSDL is not well-formed XML: ${validation.err.msg} (line ${validation.err.line})`);
@@ -974,28 +984,179 @@ export function parseWsdl(content: string, opts?: { resolveImport?: WsdlImportRe
     throw new Error(`SOAP_WSDL_PARSE_ERROR: ${(error as Error).message}`, { cause: error });
   }
   if (!root) throw new Error('SOAP_WSDL_PARSE_ERROR: document did not parse to an element');
+  return {
+    root,
+    definitions: asRecord(child(root, 'definitions')),
+    description: asRecord(child(root, 'description'))
+  };
+}
 
-  const definitions = asRecord(child(root, 'definitions'));
-  const description = asRecord(child(root, 'description'));
+interface WsdlDocumentEntry {
+  key: string;
+  definitions: JsonRecord;
+}
+
+function collectImportedWsdlDocuments(
+  rootDefinitions: JsonRecord,
+  resolveImport: WsdlImportResolver | undefined,
+  bundle: DefinitionBundle | undefined,
+  strict: boolean
+): WsdlDocumentEntry[] {
+  const rootKey = bundle?.rootPath ?? '';
+  const documents: WsdlDocumentEntry[] = [{ key: rootKey, definitions: rootDefinitions }];
+  if (!resolveImport && !bundle) return documents;
+
+  const queue: WsdlDocumentEntry[] = [{ key: rootKey, definitions: rootDefinitions }];
+  const seenLocations = new Set<string>([rootKey]);
+  const strictResolver = bundle ? createStrictBundleImportResolver(bundle) : null;
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const imp of children(current.definitions, 'import')) {
+      const location = attr(imp, 'location');
+      if (!location) {
+        if (strict) closureIncomplete('wsdl:import is missing a location attribute');
+        continue;
+      }
+      if (/^[a-z][a-z0-9+.-]*:/i.test(location)) {
+        if (strict) closureIncomplete(`Remote WSDL reference is not allowed: ${location}`);
+        continue;
+      }
+
+      let locationKey = location;
+      let importedContent: string | undefined;
+      if (bundle && strictResolver) {
+        locationKey = resolveBundleRelativeKey(current.key || bundle.rootPath, location);
+        if (seenLocations.has(locationKey)) continue;
+        importedContent = strictResolver.resolveFrom(current.key || bundle.rootPath, location);
+      } else if (resolveImport) {
+        if (seenLocations.has(location)) continue;
+        locationKey = location;
+        importedContent = resolveImport(location);
+      }
+      if (seenLocations.has(locationKey)) continue;
+      seenLocations.add(locationKey);
+
+      if (importedContent === undefined) {
+        if (strict) closureIncomplete(`Missing WSDL member ${location}`);
+        continue;
+      }
+
+      const parsed = parseWsdlDocument(importedContent);
+      if (!parsed.definitions) {
+        if (strict) closureIncomplete(`wsdl:import location ${location} is not a WSDL definitions document`);
+        continue;
+      }
+      const entry = { key: locationKey, definitions: parsed.definitions };
+      documents.push(entry);
+      queue.push(entry);
+    }
+  }
+  return documents;
+}
+
+/**
+ * Origin-correct XSD resolver: every nested schemaLocation resolves relative to
+ * the file that contains the import/include/redefine, never by probing sibling
+ * WSDL documents or basename guessing.
+ */
+function createOriginAwareXsdResolver(
+  bundle: DefinitionBundle | undefined,
+  resolveImport: WsdlImportResolver | undefined
+): ((location: string, fromKey: string) => { key: string; content: string } | undefined) | undefined {
+  if (!bundle && !resolveImport) return undefined;
+  const strictResolver = bundle ? createStrictBundleImportResolver(bundle) : null;
+  return (location: string, fromKey: string): { key: string; content: string } | undefined => {
+    if (/^[a-z][a-z0-9+.-]*:/i.test(location)) {
+      if (bundle) closureIncomplete(`Remote XSD reference is not allowed: ${location}`);
+      return undefined;
+    }
+    if (strictResolver && bundle) {
+      const origin = fromKey || bundle.rootPath;
+      const key = strictResolver.resolveKeyFrom(origin, location);
+      return { key, content: strictResolver.resolveFrom(origin, location) };
+    }
+    const content = resolveImport?.(location);
+    if (content === undefined) return undefined;
+    // Legacy resolvers are location-keyed; preserve that identity for visit tracking.
+    return { key: location, content };
+  };
+}
+
+/**
+ * Parse a WSDL 1.1 or 2.0 document into a typed SOAP contract index.
+ * Deterministic: services and operations preserve document order.
+ */
+export function parseWsdl(
+  content: string,
+  opts?: { resolveImport?: WsdlImportResolver; definitionBundle?: DefinitionBundle }
+): SoapContractIndex {
+  const text = asString(content).trim();
+  if (!text) throw new Error('SOAP_EMPTY_WSDL: WSDL content is empty');
+  const parsedRoot = parseWsdlDocument(text);
+  const definitions = parsedRoot.definitions;
+  const description = parsedRoot.description;
   if (!definitions && !description) {
     throw new Error('SOAP_WSDL_ROOT_INVALID: expected a WSDL <definitions> (1.1) or <description> (2.0) root element');
   }
 
+  const bundle = opts?.definitionBundle;
+  const strict = Boolean(bundle);
+  const resolveImport = bundle
+    ? (location: string): string | undefined => {
+        try {
+          return createStrictBundleImportResolver(bundle).resolveFromRoot(location);
+        } catch {
+          return undefined;
+        }
+      }
+    : opts?.resolveImport;
+
   const wsdlVersion = detectWsdlVersion(definitions, description);
   const warnings: string[] = [];
-  warnings.push(...lintWsiConformance(text, opts?.resolveImport));
+  warnings.push(...lintWsiConformance(text, resolveImport));
   const docNode = (definitions ?? description) as JsonRecord;
   const targetNamespace = attr(docNode, 'targetNamespace');
   const declaresAddressing = detectAddressing(docNode);
-  const schemaIndex = buildXsdIndex(docNode);
 
   let services: SoapService[];
+  let schemaIndex: XsdSchemaIndex;
   if (definitions) {
-    const messages = parseMessages11(definitions);
-    const bindings = parseSoapBindings11(definitions, messages, warnings);
+    const wsdlDocs = collectImportedWsdlDocuments(definitions, resolveImport, bundle, strict);
+    const definitionNodes = wsdlDocs.map((entry) => entry.definitions);
+    const xsdResolver = createOriginAwareXsdResolver(bundle, resolveImport);
+    const rootOrigin = wsdlDocs[0]?.key || bundle?.rootPath || '';
+    schemaIndex = buildXsdIndex(docNode, {
+      resolveImport: xsdResolver,
+      strictClosure: strict,
+      originKey: rootOrigin
+    });
+    // Also index schemas declared inside imported WSDL documents, each relative
+    // to that document's normalized bundle key (not the root).
+    for (const entry of wsdlDocs.slice(1)) {
+      const importedIndex = buildXsdIndex(entry.definitions, {
+        resolveImport: xsdResolver,
+        strictClosure: strict,
+        originKey: entry.key
+      });
+      for (const [key, value] of importedIndex.elements) {
+        if (!schemaIndex.elements.has(key)) schemaIndex.elements.set(key, value);
+      }
+      for (const typeName of importedIndex.typeLocalNames) schemaIndex.typeLocalNames.add(typeName);
+      if (!importedIndex.complete) schemaIndex.complete = false;
+    }
+
+    const messages = parseMessages11(...definitionNodes);
+    const bindings = parseSoapBindings11(definitionNodes, messages, warnings);
     lintWsdl11(definitions, messages, warnings);
-    services = parseServices11(definitions, messages, bindings, warnings);
+    services = parseServices11(definitionNodes, messages, bindings, warnings);
   } else {
+    const xsdResolver = createOriginAwareXsdResolver(bundle, resolveImport);
+    schemaIndex = buildXsdIndex(docNode, {
+      resolveImport: xsdResolver,
+      strictClosure: strict,
+      originKey: bundle?.rootPath || ''
+    });
     services = parseServices20(description as JsonRecord, warnings);
   }
 

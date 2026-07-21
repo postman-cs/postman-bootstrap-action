@@ -26,7 +26,9 @@ import {
   parseMcpServerSpec
 } from './mcp/index.js';
 import { convertV2CollectionToEc } from './v2-to-ec.js';
+import { mcpMultifileUnsupported } from './definition-bundle-support.js';
 import type { SpecType } from '../spec/detect-spec-type.js';
+import type { DefinitionBundle } from '../spec/definition-bundle.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -54,6 +56,12 @@ export interface ProtocolBuildOptions {
   grpcServiceConfigJson?: string;
   /** Resolves relative wsdl:import/xsd:import locations to sibling documents. */
   wsdlImportResolver?: (location: string) => string | undefined;
+  /**
+   * Validated multi-file definition closure. When present, protocol parsers
+   * resolve imports/$refs from bundle keys only. Raw `content` remains the
+   * root document for single-file compatibility until Wave 3 wiring.
+   */
+  definitionBundle?: DefinitionBundle;
 }
 
 export interface ProtocolCollectionResult {
@@ -99,7 +107,10 @@ export async function buildProtocolCollection(
 ): Promise<ProtocolCollectionResult> {
   switch (type) {
     case 'asyncapi': {
-      const index = await parseAsyncApi(content, { endpointUrl: options.endpointUrl });
+      const index = await parseAsyncApi(content, {
+        endpointUrl: options.endpointUrl,
+        definitionBundle: options.definitionBundle
+      });
       const collection = buildAsyncApiCollection(index, {
         name: options.name ? `${options.name} Contract` : undefined
       });
@@ -115,6 +126,9 @@ export async function buildProtocolCollection(
       };
     }
     case 'mcp': {
+      if (options.definitionBundle && options.definitionBundle.files.size > 1) {
+        mcpMultifileUnsupported('MCP accepts exactly one root definition file');
+      }
       const index = parseMcpServerSpec(content);
       const collection = buildMcpCollection(index, {
         name: options.name ? `${options.name} Contract` : undefined
@@ -132,6 +146,8 @@ export async function buildProtocolCollection(
       };
     }
     case 'graphql': {
+      // GraphQL remains the current single-file parser; multi-file SDL composition
+      // stays in discovery. A one-file bundle does not change ordering.
       const index = parseGraphQLSchema(content, { service: options.name });
       const collection = buildGraphQLCollection(index, {
         name: options.name ? `${options.name} Contract` : undefined,
@@ -148,7 +164,10 @@ export async function buildProtocolCollection(
       };
     }
     case 'soap': {
-      const index = parseWsdl(content, { resolveImport: options.wsdlImportResolver });
+      const index = parseWsdl(content, {
+        resolveImport: options.definitionBundle ? undefined : options.wsdlImportResolver,
+        definitionBundle: options.definitionBundle
+      });
       const collection = buildSoapCollection(index, {
         collectionName: options.name,
         schemaLocation: options.schemaLocation
@@ -165,7 +184,10 @@ export async function buildProtocolCollection(
       };
     }
     case 'grpc': {
-      const index = parseProtoSchema(content, options.protobuf ? { protobuf: options.protobuf } : undefined);
+      const index = parseProtoSchema(content, {
+        ...(options.protobuf ? { protobuf: options.protobuf } : {}),
+        ...(options.definitionBundle ? { definitionBundle: options.definitionBundle } : {})
+      });
       const serviceConfigWarnings = options.grpcServiceConfigJson !== undefined
         ? lintGrpcServiceConfig(options.grpcServiceConfigJson, index)
         : [];

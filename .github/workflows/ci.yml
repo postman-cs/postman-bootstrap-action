@@ -94,3 +94,30 @@ jobs:
         with:
           name: expected-dist
           path: dist/
+
+  windows:
+    name: Windows gate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Install Postman CLI
+        shell: powershell
+        run: |
+          $env:POSTMAN_CLI_INSTALL_URL = 'https://dl-cli.pstmn.io/install/win64.ps1'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Invoke-Expression ((New-Object Net.WebClient).DownloadString($env:POSTMAN_CLI_INSTALL_URL))
+          & "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\postman.exe" --version
+      - run: npm run lint
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run bundle
+      - run: npm run verify:dist:assert
+      - run: npm run test:integration

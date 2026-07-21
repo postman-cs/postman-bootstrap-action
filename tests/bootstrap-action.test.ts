@@ -521,7 +521,7 @@ describe('bootstrap action', () => {
       specFetcher
     });
 
-    expect(execStub.exec).toHaveBeenCalledWith('postman', [
+    expect(execStub.exec).toHaveBeenCalledWith('/usr/local/bin/postman', [
       'login',
       '--with-api-key',
       'pmak-test'

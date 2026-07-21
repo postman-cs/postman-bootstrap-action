@@ -60,8 +60,9 @@ describe('bootstrap action contract', () => {
     expect(packageManifest.scripts.bundle).toContain('--outfile=dist/index.cjs');
     expect(packageManifest.scripts.bundle).toContain('src/main.ts --bundle');
     expect(packageManifest.scripts.bundle).toContain('--outfile=dist/action.cjs');
-    expect(packageManifest.scripts.bundle).toContain("--banner:js='#!/usr/bin/env node'");
-    expect(packageManifest.scripts.bundle).toMatch(/chmod(?:\s+\+x|\s+755)\s+dist\/cli\.cjs/);
+    expect(packageManifest.scripts.bundle).toContain('--banner:js="#!/usr/bin/env node"');
+    expect(packageManifest.scripts.bundle).toContain("process.platform!=='win32'");
+    expect(packageManifest.scripts.bundle).toContain("chmodSync('dist/cli.cjs',0o755)");
     expect(packageManifest.scripts.build.match(/npm run typecheck/g) ?? []).toHaveLength(1);
     expect(packageManifest.scripts.build.match(/npm run bundle/g) ?? []).toHaveLength(1);
     expect(packageManifest.scripts['verify:dist:assert']).toBe(
@@ -190,14 +191,20 @@ describe('bootstrap action contract', () => {
     expect(prod.postmanApiBase).toBe('https://api.getpostman.com');
     expect(prod.postmanBifrostBase).toBe('https://bifrost-premium-https-v4.gw.postman.com');
     expect(prod.postmanGatewayBase).toBe('https://gateway.postman.com');
-    expect(prod.postmanCliInstallUrl).toBe('https://dl-cli.pstmn.io/install/unix.sh');
+    const expectedProdCliUrl = process.platform === 'win32'
+      ? 'https://dl-cli.pstmn.io/install/win64.ps1'
+      : 'https://dl-cli.pstmn.io/install/unix.sh';
+    expect(prod.postmanCliInstallUrl).toBe(expectedProdCliUrl);
 
     const beta = resolveInputs({ INPUT_POSTMAN_STACK: 'beta' });
     expect(beta.postmanStack).toBe('beta');
     expect(beta.postmanApiBase).toBe('https://api.getpostman-beta.com');
     expect(beta.postmanBifrostBase).toBe('https://bifrost-https-v4.gw.postman-beta.com');
     expect(beta.postmanGatewayBase).toBe('https://gateway.postman-beta.com');
-    expect(beta.postmanCliInstallUrl).toBe('https://dl-cli.pstmn-beta.io/install/unix.sh');
+    const expectedBetaCliUrl = process.platform === 'win32'
+      ? 'https://dl-cli.pstmn-beta.io/install/win64.ps1'
+      : 'https://dl-cli.pstmn-beta.io/install/unix.sh';
+    expect(beta.postmanCliInstallUrl).toBe(expectedBetaCliUrl);
 
     const betaWithLegacyOverrides = resolveInputs({
       INPUT_POSTMAN_STACK: 'beta',

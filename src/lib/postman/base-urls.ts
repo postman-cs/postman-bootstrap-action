@@ -8,6 +8,7 @@ export interface PostmanEndpointProfile {
    * primary Bifrost edge fails transiently. Same envelope, same auth. */
   fallbackBaseUrl: string;
   cliInstallUrl: string;
+  cliWindowsInstallUrl: string;
   gatewayBaseUrl: string;
   iapubBaseUrl: string;
 }
@@ -18,6 +19,7 @@ export const POSTMAN_ENDPOINT_PROFILES: Record<PostmanStack, PostmanEndpointProf
     bifrostBaseUrl: 'https://bifrost-premium-https-v4.gw.postman.com',
     fallbackBaseUrl: 'https://go.postman.co/_api',
     cliInstallUrl: 'https://dl-cli.pstmn.io/install/unix.sh',
+    cliWindowsInstallUrl: 'https://dl-cli.pstmn.io/install/win64.ps1',
     gatewayBaseUrl: 'https://gateway.postman.com',
     iapubBaseUrl: 'https://iapub.postman.co'
   },
@@ -26,10 +28,18 @@ export const POSTMAN_ENDPOINT_PROFILES: Record<PostmanStack, PostmanEndpointProf
     bifrostBaseUrl: 'https://bifrost-https-v4.gw.postman-beta.com',
     fallbackBaseUrl: 'https://go.postman-beta.co/_api',
     cliInstallUrl: 'https://dl-cli.pstmn-beta.io/install/unix.sh',
+    cliWindowsInstallUrl: 'https://dl-cli.pstmn-beta.io/install/win64.ps1',
     gatewayBaseUrl: 'https://gateway.postman-beta.com',
     iapubBaseUrl: 'https://iapub.postman.co'
   }
 };
+
+export function resolvePostmanCliInstallUrl(
+  profile: PostmanEndpointProfile,
+  platform: NodeJS.Platform = process.platform
+): string {
+  return platform === 'win32' ? profile.cliWindowsInstallUrl : profile.cliInstallUrl;
+}
 
 export function parsePostmanRegion(value: string | undefined): PostmanRegion {
   const normalized = String(value || 'us').trim().toLowerCase();

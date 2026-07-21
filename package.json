@@ -1,6 +1,6 @@
 {
   "name": "@postman-cse/onboarding-bootstrap",
-  "version": "2.10.1",
+  "version": "2.10.2",
   "description": "Bootstrap Postman workspaces, specs, and collections from OpenAPI.",
   "type": "module",
   "main": "dist/index.cjs",
@@ -18,7 +18,7 @@
   },
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
-    "bundle": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --banner:js='#!/usr/bin/env node' --outfile=dist/cli.cjs && chmod 755 dist/cli.cjs",
+    "bundle": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli.cjs && node -e \"if(process.platform!=='win32')require('node:fs').chmodSync('dist/cli.cjs',0o755)\"",
     "build": "npm run typecheck && npm run bundle",
     "build:sea": "bash scripts/build-sea.sh",
     "verify:dist:assert": "git diff --ignore-space-at-eol --text --exit-code -- dist && node scripts/verify-dist-artifact.mjs",

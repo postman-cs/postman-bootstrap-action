@@ -105,7 +105,7 @@ describe('ensurePostmanCli login region', () => {
 
   function loginArgsFrom(execMock: ReturnType<typeof vi.fn>): unknown[] | undefined {
     const call = execMock.mock.calls.find(
-      (entry) => entry[0] === 'postman' && Array.isArray(entry[1]) && entry[1][0] === 'login'
+      (entry) => Array.isArray(entry[1]) && entry[1][0] === 'login'
     );
     return call?.[1] as unknown[] | undefined;
   }
@@ -126,5 +126,65 @@ describe('ensurePostmanCli login region', () => {
       '--region',
       'eu'
     ]);
+  });
+
+  it('executes a preinstalled CLI through its resolved path', async () => {
+    const { deps, execMock } = makeDeps();
+    await expect(ensurePostmanCli(deps, 'PMAK-test', undefined, 'us')).resolves.toBe(
+      '/usr/bin/postman'
+    );
+    expect(execMock).toHaveBeenCalledWith(
+      '/usr/bin/postman',
+      ['login', '--with-api-key', 'PMAK-test']
+    );
+  });
+
+  it('installs the Windows binary with the official PowerShell installer and re-resolves it', async () => {
+    const execMock = vi.fn(async () => 0);
+    const which = vi
+      .fn()
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce('C:\\Users\\runneradmin\\AppData\\Local\\Microsoft\\WindowsApps\\postman.exe');
+    const deps = {
+      exec: { exec: execMock },
+      io: { which }
+    } as unknown as Parameters<typeof ensurePostmanCli>[0];
+
+    await expect(
+      ensurePostmanCli(
+        deps,
+        'PMAK-test',
+        'https://dl-cli.pstmn.io/install/win64.ps1',
+        'us',
+        'win32'
+      )
+    ).resolves.toBe(
+      'C:\\Users\\runneradmin\\AppData\\Local\\Microsoft\\WindowsApps\\postman.exe'
+    );
+
+    expect(execMock).toHaveBeenNthCalledWith(
+      1,
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-InputFormat',
+        'None',
+        '-ExecutionPolicy',
+        'AllSigned',
+        '-Command',
+        "[System.Net.ServicePointManager]::SecurityProtocol = 3072; iex ((New-Object System.Net.WebClient).DownloadString($env:POSTMAN_CLI_INSTALL_URL))"
+      ],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          POSTMAN_CLI_INSTALL_URL: 'https://dl-cli.pstmn.io/install/win64.ps1'
+        })
+      })
+    );
+    expect(which).toHaveBeenNthCalledWith(2, 'postman', true);
+    expect(execMock).toHaveBeenNthCalledWith(
+      2,
+      'C:\\Users\\runneradmin\\AppData\\Local\\Microsoft\\WindowsApps\\postman.exe',
+      ['login', '--with-api-key', 'PMAK-test']
+    );
   });
 });

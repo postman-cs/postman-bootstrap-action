@@ -329,6 +329,7 @@ function assertShebang() {
 }
 
 function assertDiskExecutable() {
+  if (process.platform === 'win32') return;
   const cliPath = path.join(root, CLI_REL);
   const mode = statSync(cliPath).mode;
   if ((mode & 0o111) === 0) {
@@ -382,6 +383,8 @@ function assertGitIndexExec() {
 
 function assertDirectHelpAndVersion() {
   const cliPath = path.join(root, CLI_REL);
+  const command = process.platform === 'win32' ? process.execPath : cliPath;
+  const cliArgs = process.platform === 'win32' ? [cliPath] : [];
   const sandbox = mkdtempSync(path.join(tmpdir(), 'verify-dist-sandbox-'));
   const homeDir = path.join(sandbox, 'home');
   const tmpDir = path.join(sandbox, 'tmp');
@@ -405,7 +408,7 @@ function assertDirectHelpAndVersion() {
     'i'
   );
   try {
-    const help = spawnSync(cliPath, ['--help'], {
+    const help = spawnSync(command, [...cliArgs, '--help'], {
       cwd: root,
       encoding: 'utf8',
       env: sandboxedEnv
@@ -420,7 +423,7 @@ function assertDirectHelpAndVersion() {
       fail(`direct ${CLI_REL} --help produced shell/exec errors`);
     }
 
-    const version = spawnSync(cliPath, ['--version'], {
+    const version = spawnSync(command, [...cliArgs, '--version'], {
       cwd: root,
       encoding: 'utf8',
       env: sandboxedEnv

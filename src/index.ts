@@ -25,6 +25,7 @@ import {
 import {
   parsePostmanRegion,
   parsePostmanStack,
+  resolvePostmanCliInstallUrl,
   resolvePostmanEndpointProfile,
   type PostmanRegion,
   type PostmanStack
@@ -585,7 +586,7 @@ export function resolveInputs(
     postmanBifrostBase: endpointProfile.bifrostBaseUrl,
     postmanFallbackBase: endpointProfile.fallbackBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
-    postmanCliInstallUrl: endpointProfile.cliInstallUrl,
+    postmanCliInstallUrl: resolvePostmanCliInstallUrl(endpointProfile),
     postmanIapubBase: endpointProfile.iapubBaseUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
@@ -969,22 +970,43 @@ function validateHttpsInstallUrl(url: string): string {
 export async function ensurePostmanCli(
   dependencies: Pick<BootstrapExecutionDependencies, 'exec' | 'io'>,
   postmanApiKey: string,
-  installUrl: string = 'https://dl-cli.pstmn.io/install/unix.sh',
-  postmanRegion = 'us'
-): Promise<void> {
-  const validatedUrl = validateHttpsInstallUrl(installUrl);
-  const existing = await dependencies.io.which('postman', false).catch(() => '');
-  if (!existing) {
-    await dependencies.exec.exec(
-      'sh',
-      ['-c', 'curl -fsSL "$POSTMAN_CLI_INSTALL_URL" | sh'],
-      {
-        env: {
-          ...process.env,
-          POSTMAN_CLI_INSTALL_URL: validatedUrl
-        }
-      }
-    );
+  installUrl?: string,
+  postmanRegion = 'us',
+  platform: NodeJS.Platform = process.platform
+): Promise<string> {
+  const defaultInstallUrl =
+    platform === 'win32'
+      ? 'https://dl-cli.pstmn.io/install/win64.ps1'
+      : 'https://dl-cli.pstmn.io/install/unix.sh';
+  const validatedUrl = validateHttpsInstallUrl(installUrl || defaultInstallUrl);
+  let cliPath = await dependencies.io.which('postman', false).catch(() => '');
+  if (!cliPath) {
+    const installEnv = {
+      ...process.env,
+      POSTMAN_CLI_INSTALL_URL: validatedUrl
+    };
+    if (platform === 'win32') {
+      await dependencies.exec.exec(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-InputFormat',
+          'None',
+          '-ExecutionPolicy',
+          'AllSigned',
+          '-Command',
+          '[System.Net.ServicePointManager]::SecurityProtocol = 3072; iex ((New-Object System.Net.WebClient).DownloadString($env:POSTMAN_CLI_INSTALL_URL))'
+        ],
+        { env: installEnv }
+      );
+    } else {
+      await dependencies.exec.exec(
+        'sh',
+        ['-c', 'curl -fsSL "$POSTMAN_CLI_INSTALL_URL" | sh'],
+        { env: installEnv }
+      );
+    }
+    cliPath = await dependencies.io.which('postman', true);
   }
 
   // The Postman CLI defaults to the us region and rejects an explicit `--region us`
@@ -994,17 +1016,19 @@ export async function ensurePostmanCli(
   if (postmanRegion === 'eu') {
     loginArgs.push('--region', 'eu');
   }
-  await dependencies.exec.exec('postman', loginArgs);
+  await dependencies.exec.exec(cliPath, loginArgs);
+  return cliPath;
 }
 
 export async function lintSpecViaCli(
   dependencies: Pick<BootstrapExecutionDependencies, 'exec'>,
   workspaceId: string,
   specId: string,
-  masker?: SecretMasker
+  masker?: SecretMasker,
+  postmanCliPath = 'postman'
 ): Promise<LintSummary> {
   const result = await dependencies.exec.getExecOutput(
-    'postman',
+    postmanCliPath,
     [
       'spec',
       'lint',
@@ -2483,9 +2507,15 @@ async function runBootstrapInner(
     assertMultiFileSpecSyncEnabled(uploadDefinitionBundle);
   }
 
+  let postmanCliPath = 'postman';
   if (lintEnabled) {
     await runGroup(dependencies.core, 'Install Postman CLI', async () => {
-      await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
+      postmanCliPath = await ensurePostmanCli(
+        dependencies,
+        inputs.postmanApiKey,
+        inputs.postmanCliInstallUrl,
+        inputs.postmanRegion
+      );
     });
   } else {
     dependencies.core.info('Skipping Postman CLI install: no postman-api-key (spec lint is skipped).');
@@ -2778,7 +2808,8 @@ async function runBootstrapInner(
             dependencies,
             workspaceId || '',
             outputs['spec-id'],
-            createBootstrapSecretMasker(inputs)
+            createBootstrapSecretMasker(inputs),
+            postmanCliPath
           )
       )
     );

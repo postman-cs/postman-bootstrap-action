@@ -54,10 +54,12 @@ function createDependencies(
   options: { onReportArgs?: (args: string[]) => Promise<void> | void } = {}
 ): OpenApiChangesDependencies {
   const getExecOutput = vi.fn(async (commandLine: string, args: string[] = []) => {
-    if (binaryPath && commandLine === binaryPath && args[0] === 'version') {
+    const isInstalledBinary = binaryPath
+      && path.basename(commandLine).toLowerCase() === path.basename(binaryPath).toLowerCase();
+    if (isInstalledBinary && args[0] === 'version') {
       return { exitCode: 0, stdout: '0.2.7\n', stderr: '' };
     }
-    if (binaryPath && commandLine === binaryPath && args[0] === 'report') {
+    if (isInstalledBinary && args[0] === 'report') {
       await options.onReportArgs?.(args);
       return {
         exitCode: 0,
@@ -65,7 +67,7 @@ function createDependencies(
         stderr: ''
       };
     }
-    if (binaryPath && commandLine === binaryPath && args[0] === 'summary') {
+    if (isInstalledBinary && args[0] === 'summary') {
       return {
         exitCode: 0,
         stdout: [

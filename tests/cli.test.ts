@@ -16,6 +16,8 @@ import { __resetIdentityMemo } from '../src/lib/postman/credential-identity.js';
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tempDirs: string[] = [];
+const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
+const npmCliArgs = process.platform === 'win32' ? [process.env.npm_execpath ?? ''] : [];
 
 type CliOutputs = {
   'workspace-id': string;
@@ -512,7 +514,7 @@ describe('package CLI bin', () => {
     const packDir = await makeTempDir('postman-bootstrap-pack-');
     const prefixDir = await makeTempDir('postman-bootstrap-prefix-');
 
-    const packResult = await execFileAsync('npm', ['pack', '--json', '--pack-destination', packDir], {
+    const packResult = await execFileAsync(npmCommand, [...npmCliArgs, 'pack', '--json', '--pack-destination', packDir], {
       cwd: repoRoot,
       encoding: 'utf8',
       env: {

@@ -214,6 +214,10 @@ function bundleFileForUrl(
   return bundle.files.get(relative);
 }
 
+function undoRefParserPercentDoubleEncoding(fileUrl: string): string {
+  return fileUrl.replace(/%25(?=[0-9a-f]{2})/gi, '%');
+}
+
 export function detectOpenApiVersion(doc: JsonRecord): OpenApiVersion {
   if (doc.swagger === '2.0') {
     throw new Error('CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (found swagger 2.0)');
@@ -332,7 +336,13 @@ async function bundleSpec(
             order: 1,
             canRead: (file: { url: string }) => file.url.startsWith('file:'),
             read: (file: { url: string }) => {
-              const matched = bundleFileForUrl(localBundle, file.url, baseUrl);
+              const matched =
+                bundleFileForUrl(localBundle, file.url, baseUrl)
+                ?? bundleFileForUrl(
+                  localBundle,
+                  undoRefParserPercentDoubleEncoding(file.url),
+                  baseUrl
+                );
               if (!matched) {
                 throw new Error(`CONTRACT_DEFINITION_CLOSURE_INCOMPLETE: Missing local OpenAPI ref ${file.url}`);
               }
@@ -411,11 +421,7 @@ async function buildLoadedSpec(
   };
 }
 
-/**
- * Resolve Windows 8.3 short names (e.g. RUNNER~1) in local file paths so
- * json-schema-ref-parser can correctly resolve relative $ref URLs. Without
- * this, the parser double-URL-encodes the tilde, breaking all local refs.
- */
+/** Canonicalize local roots before constructing the base file URL. */
 function resolveLocalFileUrl(url: string): string {
   if (/^https?:\/\//i.test(url)) return url;
   try {

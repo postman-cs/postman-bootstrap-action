@@ -17,7 +17,8 @@ describe('OpenAPI local definition bundle closure', () => {
   let originalWorkspace: string | undefined;
 
   beforeEach(() => {
-    workspaceDir = realpathSync(mkdtempSync(join(tmpdir(), 'oas-bundle-')));
+    workspaceDir = join(realpathSync(mkdtempSync(join(tmpdir(), 'oas-bundle-'))), 'RUNNER~1');
+    mkdirSync(workspaceDir);
     originalWorkspace = process.env.GITHUB_WORKSPACE;
     process.env.GITHUB_WORKSPACE = workspaceDir;
   });

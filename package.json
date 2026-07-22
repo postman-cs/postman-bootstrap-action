@@ -1,6 +1,6 @@
 {
   "name": "@postman-cse/onboarding-bootstrap",
-  "version": "2.10.5",
+  "version": "2.10.6",
   "description": "Bootstrap Postman workspaces, specs, and collections from OpenAPI.",
   "type": "module",
   "main": "dist/index.cjs",
@@ -26,7 +26,7 @@
     "docs:tables": "node scripts/render-action-tables.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "vitest run && node --test .github/scripts/wait-for-e2e-gate.test.mjs",
+    "test": "vitest run && node --test .github/scripts/dispatch-e2e-monitor.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:integration": "node integration/verify.mjs"
   },

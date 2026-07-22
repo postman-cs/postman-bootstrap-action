@@ -126,13 +126,13 @@ inputs:
     description: Fallback GitHub token used to read repository custom properties when github-token cannot
     required: false
   postman-api-key:
-    description: Postman service-account API key (PMAK). With a postman-access-token present, the PMAK is used ONLY to mint/re-mint the access token and to log in the Postman CLI for `spec lint` — never for an asset operation. When the key is absent, the CLI spec lint is skipped (governance errors are not enforced). CLI/binary usage may instead set the POSTMAN_API_KEY environment variable. Optional.
+    description: Postman service-account API key used only to preflight the mint credential with GET /me and mint or re-mint the short-lived postman-access-token. It is never used for asset or Postman CLI operations. Optional when postman-access-token is supplied.
     required: false
   postman-access-token:
-    description: Postman service-account access token (x-access-token). Primary credential — every asset operation (workspace create/visibility, spec upload/update, collection generation/read/mutation, test injection, tagging, team-scope) runs through the access-token gateway. Mint it with postman-resolve-service-token-action. CLI/binary usage may instead set the POSTMAN_ACCESS_TOKEN environment variable (e.g. Jenkins withCredentials). Optional only for legacy PMAK-only runs; supply it for the gateway path.
+    description: Postman service-account access token (x-access-token). Every identity and asset operation runs through the access-token gateway. Optional when postman-api-key is supplied for token minting. CLI/binary usage may instead set POSTMAN_ACCESS_TOKEN.
     required: false
   credential-preflight:
-    description: "Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created."
+    description: "Access-token session preflight policy. warn (default) continues with reactive diagnostics when session identity is unavailable; enforce fails before any workspace is created."
     required: false
     default: warn
   branch-strategy:
@@ -161,7 +161,7 @@ inputs:
     required: false
     default: Fallback
   postman-region:
-    description: Postman data residency region for public API and Postman CLI calls.
+    description: Postman data residency region for access-token minting and gateway calls.
     required: false
     default: us
   postman-stack:
@@ -186,7 +186,7 @@ outputs:
   collections-json:
     description: JSON summary of generated collections
   lint-summary-json:
-    description: 'JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }.'
+    description: JSON summary of validation findings. Bootstrap does not invoke an API-key-authenticated Postman CLI lint.
   breaking-change-status:
     description: OpenAPI breaking-change check status
   breaking-change-summary-json:

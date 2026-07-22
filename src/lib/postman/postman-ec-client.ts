@@ -5,6 +5,7 @@ import { HttpError } from '../http-error.js';
 import { retry } from '../retry.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
 import type { AccessTokenProvider } from './token-provider.js';
+import { postmanAppVersionProvider, type AppVersionProvider } from './app-version.js';
 import {
   adoptExactMatch,
   isAmbiguousTransportError
@@ -96,6 +97,7 @@ export interface PostmanExtensibleCollectionClientOptions {
    * surfaces in the run log without failing the create.
    */
   validationReporter?: (message: string) => void;
+  appVersionProvider?: AppVersionProvider;
 }
 
 export interface CreateExtensibleCollectionInput {
@@ -143,6 +145,7 @@ export class PostmanExtensibleCollectionClient {
   private readonly fetchImpl: typeof fetch;
   private readonly secretMasker: SecretMasker;
   private readonly validationReporter: (message: string) => void;
+  private readonly appVersionProvider: AppVersionProvider;
 
   constructor(options: PostmanExtensibleCollectionClientOptions) {
     this.accessToken = String(options.accessToken || '').trim();
@@ -163,6 +166,7 @@ export class PostmanExtensibleCollectionClient {
       options.secretMasker ?? createSecretMasker([this.accessToken]);
     this.validationReporter =
       options.validationReporter ?? ((message: string) => console.warn(message));
+    this.appVersionProvider = options.appVersionProvider ?? postmanAppVersionProvider;
   }
 
   /**
@@ -181,7 +185,7 @@ export class PostmanExtensibleCollectionClient {
     return this.tokenProvider ? this.tokenProvider.current() : this.accessToken;
   }
 
-  private requestHeaders(): Record<string, string> {
+  private requestHeaders(appVersion?: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-access-token': this.currentToken()
@@ -189,6 +193,7 @@ export class PostmanExtensibleCollectionClient {
     if (this.teamId && this.orgMode) {
       headers['x-entity-team-id'] = this.teamId;
     }
+    if (appVersion) headers['x-app-version'] = appVersion;
     return headers;
   }
 
@@ -200,7 +205,7 @@ export class PostmanExtensibleCollectionClient {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
     return this.fetchImpl(url, {
       method: 'POST',
-      headers: this.requestHeaders(),
+      headers: this.requestHeaders(await this.appVersionProvider.resolve()),
       body: JSON.stringify({
         service: 'collection',
         method: method.toLowerCase(),

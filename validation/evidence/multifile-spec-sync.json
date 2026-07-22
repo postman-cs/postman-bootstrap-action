@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "testedAt": "2026-07-21T21:36:26.345Z",
-  "bootstrapCommit": "dfee1b548b0e6dd90d16c63c564ac579eed736cf",
+  "testedAt": "2026-07-22T21:51:18.657Z",
+  "bootstrapCommit": "1789f592947aba73b0f6731592c740c8cef211ce",
   "legs": [
     {
       "mode": "nonorg",
@@ -57,11 +57,11 @@
           "passed": true,
           "httpStatuses": [
             202,
-            200,
+            403,
             200
           ],
           "requestShape": "POST /specifications/:id/collections + task poll; collection example readback",
-          "responseShape": "{\"taskStatus\":\"completed\",\"collectionShape\":{\"data\":{\"$kind\":\"string(10)\",\"createdAt\":\"string(24)\",\"createdBy\":\"redacted\",\"description\":\"string(0)\",\"id\":\"string(45)\",\"items\":[{\"$kind\":\"string(10)\",\"id\":\"string(45)\"},\"…x1\"],\"name\":\"string(38)\",\"references\":{},\"type\":\"string(10)\",\"updatedAt\":\"string(24)\",\"updatedBy\":\"redacted\",\"variables\":[{\"key\":\"string(7)\",\"secret\":\"redacted\",\"value\":\"string(1)\"},\"…x1\"]}}}",
+          "responseShape": "{\"taskStatus\":\"completed\",\"collectionShape\":{\"error\":{\"code\":\"string(9)\",\"message\":\"string(87)\"}}}",
           "observed": {
             "taskStatus": "completed",
             "foundSentinelV1": true,
@@ -75,7 +75,7 @@
             200,
             200,
             202,
-            200,
+            403,
             200
           ],
           "requestShape": "PATCH /specifications/:id/files/:uuid [{op:'replace',path:'/content',value}]",
@@ -367,11 +367,11 @@
           "passed": true,
           "httpStatuses": [
             202,
-            200,
+            403,
             200
           ],
           "requestShape": "POST /specifications/:id/collections + task poll; collection example readback",
-          "responseShape": "{\"taskStatus\":\"completed\",\"collectionShape\":{\"data\":{\"$kind\":\"string(10)\",\"createdAt\":\"string(24)\",\"createdBy\":\"redacted\",\"description\":\"string(0)\",\"id\":\"string(45)\",\"items\":[{\"$kind\":\"string(10)\",\"id\":\"string(45)\"},\"…x1\"],\"name\":\"string(38)\",\"references\":{},\"type\":\"string(10)\",\"updatedAt\":\"string(24)\",\"updatedBy\":\"redacted\",\"variables\":[{\"key\":\"string(7)\",\"secret\":\"redacted\",\"value\":\"string(1)\"},\"…x1\"]}}}",
+          "responseShape": "{\"taskStatus\":\"completed\",\"collectionShape\":{\"error\":{\"code\":\"string(9)\",\"message\":\"string(87)\"}}}",
           "observed": {
             "taskStatus": "completed",
             "foundSentinelV1": true,
@@ -385,7 +385,7 @@
             200,
             200,
             202,
-            500,
+            403,
             200
           ],
           "requestShape": "PATCH /specifications/:id/files/:uuid [{op:'replace',path:'/content',value}]",

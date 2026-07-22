@@ -55,4 +55,18 @@ describe('release workflow publishing contract', () => {
     expect(releaseWorkflow).toContain('git push origin "$MAJOR" --force');
     expect(releaseWorkflow.match(/^ {2}advance-major-alias:/gm) ?? []).toHaveLength(1);
   });
+
+  it('publishes on validate alone and monitors live e2e asynchronously after publish', () => {
+    expect(releaseWorkflow).not.toContain('live-e2e-gate:');
+    expect(releaseWorkflow).not.toContain('gate_required');
+    expect(releaseWorkflow).toMatch(/publish:\n\s+needs:\n\s+- validate\n/);
+    expect(releaseWorkflow).toContain("if: ${{ needs.validate.result == 'success' }}");
+    expect(releaseWorkflow).toMatch(/^ {2}dispatch-live-monitor:/m);
+    expect(releaseWorkflow).toMatch(
+      /dispatch-live-monitor:[\s\S]*?needs:\n\s+- validate\n\s+- publish/
+    );
+    expect(releaseWorkflow).toMatch(/dispatch-live-monitor:[\s\S]*?continue-on-error: true/);
+    expect(releaseWorkflow).toContain('node .github/scripts/dispatch-e2e-monitor.mjs');
+    expect(releaseWorkflow).not.toMatch(/advance-major-alias:[\s\S]*dispatch-live-monitor/);
+  });
 });

@@ -42,7 +42,7 @@ describe('contract: credential x team matrix', () => {
     // Workspace was created org-style: squad + team visibility in one POST...
     expect(fake.state.workspaceCreateBodies).toHaveLength(1);
     const body = fake.state.workspaceCreateBodies[0];
-    expect(body.squad).toBe(String(DEFAULT_SQUAD.id));
+    expect(body.squad).toBe(DEFAULT_SQUAD.id);
     expect(body.visibilityStatus).toBe('team');
     // ...and the personal->team flip (which 403s on org accounts) never ran.
     expect(fake.state.flipAttempts).toBe(0);
@@ -68,7 +68,7 @@ describe('contract: credential x team matrix', () => {
     expect(result.outputs['workspace-id']).toBe('ws-contract');
     expect(fake.state.mintCount).toBe(0);
     expect(fake.state.events.some((entry) => entry.startsWith('proxy:ums'))).toBe(true);
-    expect(fake.state.workspaceCreateBodies[0]?.squad).toBe(String(DEFAULT_SQUAD.id));
+    expect(fake.state.workspaceCreateBodies[0]?.squad).toBe(DEFAULT_SQUAD.id);
     expect(fake.state.flipAttempts).toBe(0);
   });
 
@@ -89,7 +89,7 @@ describe('contract: credential x team matrix', () => {
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
     expect(fake.state.mintCount).toBe(0);
-    expect(fake.state.workspaceCreateBodies[0]?.squad).toBe(String(DEFAULT_SQUAD.id));
+    expect(fake.state.workspaceCreateBodies[0]?.squad).toBe(DEFAULT_SQUAD.id);
     expect(fake.state.flipAttempts).toBe(0);
   });
 
@@ -157,7 +157,7 @@ describe('contract: credential x team matrix', () => {
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
-    expect(fake.state.workspaceCreateBodies[0]?.squad).toBe('132320');
+    expect(fake.state.workspaceCreateBodies[0]?.squad).toBe(132320);
     expect(fake.state.flipAttempts).toBe(0);
   });
 });

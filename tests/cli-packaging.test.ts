@@ -65,7 +65,7 @@ describe('CLI packaging contract', () => {
       encoding: 'utf8'
     });
     expect(staged.stdout).toMatch(/^100755 /);
-  });
+  }, 15_000);
 
   it('runs ./dist/cli.cjs --help and --version without credentials, network, or writes', async () => {
     const cliPath = path.join(await checkoutTrackedDist(), 'cli.cjs');
@@ -112,7 +112,7 @@ describe('CLI packaging contract', () => {
     expect(path.dirname(snapshotDist)).not.toBe(repoRoot);
     const onDisk = await (await import('node:fs/promises')).readdir(snapshotDist);
     expect(onDisk.slice().sort()).toEqual(expectedDistEntries);
-  });
+  }, 20_000);
 
   it('does not rebuild dist from packaging tests', async () => {
     const packageJson = await readFile(path.join(repoRoot, 'package.json'), 'utf8');

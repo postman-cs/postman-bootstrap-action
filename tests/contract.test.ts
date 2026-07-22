@@ -50,6 +50,13 @@ describe('bootstrap action contract', () => {
     expect(Object.keys(actionManifest.outputs)).toEqual(contractOutputNames);
   });
 
+  it('accepts PMAK only as an optional access-token mint credential', () => {
+    expect(contractInputNames).toContain('postman-access-token');
+    expect(actionManifest.inputs['postman-access-token']).toMatchObject({ required: false });
+    expect(contractInputNames).toContain('postman-api-key');
+    expect(actionManifest.inputs['postman-api-key']).toMatchObject({ required: false });
+  });
+
   it('keeps the action metadata on the committed Node 24 bundle', () => {
     expect(actionManifest.runs).toEqual({
       using: 'node24',
@@ -108,27 +115,26 @@ describe('bootstrap action contract', () => {
 
   });
 
-  it('resolves credentials from plain env with INPUT_ taking precedence', () => {
-    // Plain-env fallback so Jenkins `withCredentials` (POSTMAN_ACCESS_TOKEN /
-    // POSTMAN_API_KEY) works without the INPUT_ prefix, mirroring team-id.
+  it('resolves token-mint and access-token credentials with INPUT_ taking precedence', () => {
+    // Plain-env fallback supports Jenkins `withCredentials` without the INPUT_ prefix.
     const fromPlain = resolveInputs({
-      POSTMAN_ACCESS_TOKEN: 'pat-plain',
-      POSTMAN_API_KEY: 'pmak-plain'
+      POSTMAN_API_KEY: 'pmak-plain',
+      POSTMAN_ACCESS_TOKEN: 'pat-plain'
     });
-    expect(fromPlain.postmanAccessToken).toBe('pat-plain');
     expect(fromPlain.postmanApiKey).toBe('pmak-plain');
+    expect(fromPlain.postmanAccessToken).toBe('pat-plain');
 
     // An explicit INPUT_ (kebab flag / action input) wins over the plain-env fallback.
     const inputWins = resolveInputs({
-      INPUT_POSTMAN_ACCESS_TOKEN: 'pat-input',
-      POSTMAN_ACCESS_TOKEN: 'pat-plain',
       INPUT_POSTMAN_API_KEY: 'pmak-input',
-      POSTMAN_API_KEY: 'pmak-plain'
+      POSTMAN_API_KEY: 'pmak-plain',
+      INPUT_POSTMAN_ACCESS_TOKEN: 'pat-input',
+      POSTMAN_ACCESS_TOKEN: 'pat-plain'
     });
-    expect(inputWins.postmanAccessToken).toBe('pat-input');
     expect(inputWins.postmanApiKey).toBe('pmak-input');
+    expect(inputWins.postmanAccessToken).toBe('pat-input');
 
-    // No credentials: apiKey is empty string, accessToken undefined.
+    // Credential-free branch-gated validation remains supported.
     const none = resolveInputs({});
     expect(none.postmanApiKey).toBe('');
     expect(none.postmanAccessToken).toBeUndefined();
@@ -177,7 +183,7 @@ describe('bootstrap action contract', () => {
       .toThrow(/Unsupported request-name-source/);
   });
 
-  it('selects Postman endpoint profiles from postman-stack and postman-region inputs', () => {
+  it('selects access-token gateway endpoint profiles from postman-stack and postman-region inputs', () => {
     expect(bootstrapActionContract.inputs['postman-stack'].default).toBe('prod');
     expect(bootstrapActionContract.inputs['postman-stack'].allowedValues).toEqual(['prod', 'beta']);
     expect(bootstrapActionContract.inputs['postman-region'].default).toBe('us');
@@ -191,32 +197,20 @@ describe('bootstrap action contract', () => {
     expect(prod.postmanApiBase).toBe('https://api.getpostman.com');
     expect(prod.postmanBifrostBase).toBe('https://bifrost-premium-https-v4.gw.postman.com');
     expect(prod.postmanGatewayBase).toBe('https://gateway.postman.com');
-    const expectedProdCliUrl = process.platform === 'win32'
-      ? 'https://dl-cli.pstmn.io/install/win64.ps1'
-      : 'https://dl-cli.pstmn.io/install/unix.sh';
-    expect(prod.postmanCliInstallUrl).toBe(expectedProdCliUrl);
 
     const beta = resolveInputs({ INPUT_POSTMAN_STACK: 'beta' });
     expect(beta.postmanStack).toBe('beta');
     expect(beta.postmanApiBase).toBe('https://api.getpostman-beta.com');
     expect(beta.postmanBifrostBase).toBe('https://bifrost-https-v4.gw.postman-beta.com');
     expect(beta.postmanGatewayBase).toBe('https://gateway.postman-beta.com');
-    const expectedBetaCliUrl = process.platform === 'win32'
-      ? 'https://dl-cli.pstmn-beta.io/install/win64.ps1'
-      : 'https://dl-cli.pstmn-beta.io/install/unix.sh';
-    expect(beta.postmanCliInstallUrl).toBe(expectedBetaCliUrl);
 
     const betaWithLegacyOverrides = resolveInputs({
       INPUT_POSTMAN_STACK: 'beta',
-      INPUT_POSTMAN_API_BASE: 'https://override.example.com',
       INPUT_POSTMAN_BIFROST_BASE: 'https://override.example.com',
-      INPUT_POSTMAN_GATEWAY_BASE: 'https://override.example.com',
-      INPUT_POSTMAN_CLI_INSTALL_URL: 'https://override.example.com/install.sh'
+      INPUT_POSTMAN_GATEWAY_BASE: 'https://override.example.com'
     });
-    expect(betaWithLegacyOverrides.postmanApiBase).toBe(beta.postmanApiBase);
     expect(betaWithLegacyOverrides.postmanBifrostBase).toBe(beta.postmanBifrostBase);
     expect(betaWithLegacyOverrides.postmanGatewayBase).toBe(beta.postmanGatewayBase);
-    expect(betaWithLegacyOverrides.postmanCliInstallUrl).toBe(beta.postmanCliInstallUrl);
 
     const eu = resolveInputs({ INPUT_POSTMAN_REGION: 'eu' });
     expect(eu.postmanRegion).toBe('eu');
@@ -299,8 +293,7 @@ describe('bootstrap action contract', () => {
         const map: Record<string, string> = {
           'project-name': 'my-api',
           'spec-path': 'apis/core/openapi.yaml',
-          'spec-files-json': inventory,
-          'postman-api-key': 'pmak-test'
+          'spec-files-json': inventory
         };
         return map[name] ?? '';
       },
@@ -393,7 +386,6 @@ describe('bootstrap action contract', () => {
         const map: Record<string, string> = {
           'project-name': 'my-api',
           'spec-url': publicSyntheticSpecUrl,
-          'postman-api-key': 'pmak-test',
           'openapi-version': '3.1',
           'breaking-change-mode': 'previous-spec',
           'breaking-baseline-spec-path': 'specs/baseline.yaml',
@@ -424,7 +416,6 @@ describe('bootstrap action contract', () => {
         const map: Record<string, string> = {
           'project-name': 'my-api',
           'spec-url': publicSyntheticSpecUrl,
-          'postman-api-key': 'pmak-test',
           'postman-region': 'eu'
         };
         return map[name] ?? '';
@@ -434,7 +425,6 @@ describe('bootstrap action contract', () => {
     const inputs = readActionInputs(coreStub);
     expect(inputs.postmanRegion).toBe('eu');
     expect(inputs.postmanStack).toBe('prod');
-    expect(inputs.postmanApiBase).toBe('https://api.eu.postman.com');
     expect(calls.filter((name) => name === 'postman-region')).toHaveLength(1);
     expect(calls.filter((name) => name === 'postman-stack')).toHaveLength(1);
   });
@@ -445,7 +435,6 @@ describe('bootstrap action contract', () => {
         const map: Record<string, string> = {
           'project-name': 'my-api',
           'spec-url': publicSyntheticSpecUrl,
-          'postman-api-key': 'pmak-test',
           'postman-team-id': 'legacy-team'
         };
         return map[name] ?? '';
@@ -509,7 +498,7 @@ describe('bootstrap action contract', () => {
         INPUT_PROJECT_NAME: 'core-payments',
         INPUT_DOMAIN_CODE: 'AF',
         INPUT_SPEC_URL: publicSyntheticSpecUrl,
-        INPUT_POSTMAN_API_KEY: 'pmak-test'
+        INPUT_POSTMAN_ACCESS_TOKEN: 'access-token-test'
       })
     );
 
@@ -583,7 +572,6 @@ describe('bootstrap action contract', () => {
         const map: Record<string, string> = {
           'project-name': 'my-api',
           'spec-url': publicSyntheticSpecUrl,
-          'postman-api-key': 'pmak-test',
           'credential-preflight': 'enforce'
         };
         return map[name] ?? '';

@@ -196,16 +196,16 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `governance-mapping-json` | Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property. | no | `{}` |
 | `github-token` | GitHub token used to read the postman-governance-group repository custom property | no |  |
 | `gh-fallback-token` | Fallback GitHub token used to read repository custom properties when github-token cannot | no |  |
-| `postman-api-key` | Postman service-account API key (PMAK). With a postman-access-token present, the PMAK is used ONLY to mint/re-mint the access token and to log in the Postman CLI for `spec lint` — never for an asset operation. When the key is absent, the CLI spec lint is skipped (governance errors are not enforced). CLI/binary usage may instead set the POSTMAN_API_KEY environment variable. Optional. | no |  |
-| `postman-access-token` | Postman service-account access token (x-access-token). Primary credential — every asset operation (workspace create/visibility, spec upload/update, collection generation/read/mutation, test injection, tagging, team-scope) runs through the access-token gateway. Mint it with postman-resolve-service-token-action. CLI/binary usage may instead set the POSTMAN_ACCESS_TOKEN environment variable (e.g. Jenkins withCredentials). Optional only for legacy PMAK-only runs; supply it for the gateway path. | no |  |
-| `credential-preflight` | Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created. | no | `warn` |
+| `postman-api-key` | Postman service-account API key used only to preflight the mint credential with GET /me and mint or re-mint the short-lived postman-access-token. It is never used for asset or Postman CLI operations. Optional when postman-access-token is supplied. | no |  |
+| `postman-access-token` | Postman service-account access token (x-access-token). Every identity and asset operation runs through the access-token gateway. Optional when postman-api-key is supplied for token minting. CLI/binary usage may instead set POSTMAN_ACCESS_TOKEN. | no |  |
+| `credential-preflight` | Access-token session preflight policy. warn (default) continues with reactive diagnostics when session identity is unavailable; enforce fails before any workspace is created. | no | `warn` |
 | `branch-strategy` | Branch-aware sync strategy. legacy (default) keeps branch-blind behavior; publish-gate restricts canonical writes to the canonical branch and runs credential-free static validation on other branches; preview additionally maintains suffixed per-branch preview asset sets. | no | `legacy` |
 | `canonical-branch` | Explicit canonical branch (the sole writer of canonical assets). Defaults to the provider-resolved default branch; required on providers without a default-branch variable (Bitbucket, Azure DevOps) when branch-strategy is not legacy. | no |  |
 | `channels` | Comma-separated channel map for long-lived promotion branches, e.g. "develop=DEV, staging=STAGE, release/*=RC". Channel branches maintain prefix-named parallel asset sets and never mutate canonical assets. | no |  |
 | `folder-strategy` | Folder organization strategy for generated collections (Paths or Tags) | no | `Paths` |
 | `nested-folder-hierarchy` | When folder-strategy is Tags, enables nested folder hierarchy | no | `false` |
 | `request-name-source` | Determines how requests are named in generated collections (Fallback or URL) | no | `Fallback` |
-| `postman-region` | Postman data residency region for public API and Postman CLI calls. | no | `us` |
+| `postman-region` | Postman data residency region for access-token minting and gateway calls. | no | `us` |
 <!-- inputs-table:end -->
 
 ## Outputs
@@ -221,7 +221,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `smoke-collection-id` | Smoke collection ID | n/a | n/a |
 | `contract-collection-id` | Contract collection ID | n/a | n/a |
 | `collections-json` | JSON summary of generated collections | n/a | n/a |
-| `lint-summary-json` | JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }. | n/a | n/a |
+| `lint-summary-json` | JSON summary of validation findings. Bootstrap does not invoke an API-key-authenticated Postman CLI lint. | n/a | n/a |
 | `breaking-change-status` | OpenAPI breaking-change check status | n/a | n/a |
 | `breaking-change-summary-json` | JSON summary of the OpenAPI breaking-change check | n/a | n/a |
 | `sync-status` | Branch-aware sync status: synced, skipped-branch-gate, or empty under branch-strategy legacy. | n/a | n/a |
@@ -292,8 +292,8 @@ The action handles the bootstrap slice of the Postman onboarding workflow: creat
 - **Git providers:** workspace-to-repository linking supports GitHub and GitLab, cloud and self-hosted. See [Git Provider Support](docs/git-provider-support.md).
 - **Spec handling:** operation summaries are normalized before upload, `spec-url` fetches are SSRF-hardened HTTPS with pinned DNS, and breaking-change comparison runs before any Postman mutation when enabled. See [OpenAPI Spec Handling](docs/spec-handling.md).
 - **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, cloud spec-to-collection syncing, and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
-- **Credentials:** `postman-access-token` is the primary credential for every asset operation; the optional `postman-api-key` powers access-token minting and the Postman CLI `spec lint` login. See [Obtaining Credentials](docs/credentials.md).
-- **Protocol write split:** GraphQL and SOAP build v2.1.0 collections through the public collections API with `postman-api-key`. gRPC builds a v3/Extensible Collection through the gateway EC API, which is access-token only — so gRPC **hard-requires** `postman-access-token` and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when it is absent. See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
+- **Credentials:** `postman-access-token` authenticates every identity and asset operation; the optional `postman-api-key` is used only to preflight the mint credential with `GET /me` and mint or re-mint that token. See [Obtaining Credentials](docs/credentials.md).
+- **Protocol write path:** GraphQL and SOAP transform their v2 models into v3 Extensible Collections; gRPC builds the same format natively. Every protocol writes through the access-token EC API and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when no access token can be obtained. See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
 
 ## Dynamic contract tests
 
@@ -303,11 +303,10 @@ Full pipeline, validation scope, OpenAPI semantics, limits, and rollback behavio
 
 ## Enforcement layers and error codes
 
-The action enforces the OpenAPI contract at three points with three failure modes. The full architecture — what runs at bootstrap time versus inside the CI collection run, and why the same RFC rule appears in more than one layer — is in [Contract Enforcement Layers](docs/contract-enforcement-layers.md).
+The action enforces the OpenAPI contract at bootstrap time and inside the CI collection run. The full architecture is in [Contract Enforcement Layers](docs/contract-enforcement-layers.md).
 
 | Layer | When | Effect |
 | --- | --- | --- |
-| Postman CLI `spec lint` | Bootstrap | Fails the run on lint errors (PMAK-gated) |
 | Static document lints | Bootstrap | Warnings only: spec-shape defects and runtime-coverage disclosures, logged and never fatal |
 | Runtime contract tests | Every CI collection run | `pm.test()` pass/fail against the live response |
 

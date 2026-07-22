@@ -98,7 +98,7 @@ describe('AccessTokenProvider', () => {
     const provider = new AccessTokenProvider({ accessToken: 'tok', fetchImpl });
 
     expect(provider.canRefresh()).toBe(false);
-    await expect(provider.refresh()).rejects.toThrow(/cannot be refreshed/);
+    await expect(provider.refresh()).rejects.toThrow(/no token-mint credential/);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -112,7 +112,7 @@ describe('AccessTokenProvider', () => {
       sleep: async () => undefined
     });
 
-    await expect(provider.refresh()).rejects.toThrow(/PMAK rejected/);
+    await expect(provider.refresh()).rejects.toThrow(/postman-api-key was rejected/);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

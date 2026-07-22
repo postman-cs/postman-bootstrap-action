@@ -242,7 +242,6 @@ describe('parseCliArgs', () => {
     expect(config.inputEnv.INPUT_POSTMAN_TEAM_ID).toBeUndefined();
   });
 });
-
 describe('toDotenv', () => {
   it('formats planned outputs as POSTMAN_BOOTSTRAP_* dotenv pairs', () => {
     const dotenv = toDotenv(createCliOutputs({
@@ -311,6 +310,8 @@ describe('runCli', () => {
         'https://example.test/openapi.yaml',
         '--postman-api-key',
         'test-api-key',
+        '--postman-access-token',
+        'test-access-token',
         '--result-json',
         'tmp/cli-run-result.json'
       ],
@@ -411,6 +412,8 @@ describe('runCli', () => {
         'https://example.test/openapi.yaml',
         '--postman-api-key',
         'test-api-key',
+        '--postman-access-token',
+        'test-access-token',
         '--result-json',
         resultPath,
         '--dotenv-path',
@@ -632,24 +635,16 @@ describe('runCli credential preflight seam', () => {
     __resetIdentityMemo();
   });
 
-  function stubIdentityFetch(pmakTeam: number, sessionTeam: number): ReturnType<typeof vi.fn> {
+  function stubSessionFetch(sessionTeam: number, status = 200): ReturnType<typeof vi.fn> {
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      if (url.endsWith('/me')) {
-        return new Response(
-          JSON.stringify({
-            user: { id: 'u-pmak', fullName: 'PMAK User', teamId: pmakTeam, teamName: 'Alpha' }
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
-        );
-      }
       if (url.includes('/api/sessions/current')) {
         return new Response(
           JSON.stringify({
             identity: { team: sessionTeam, domain: 'beta' },
             data: { user: { id: 'u-sess' } }
           }),
-          { status: 200, headers: { 'content-type': 'application/json' } }
+          { status, headers: { 'content-type': 'application/json' } }
         );
       }
       throw new Error(`unexpected fetch in preflight seam test: ${url}`);
@@ -658,8 +653,8 @@ describe('runCli credential preflight seam', () => {
     return fetchMock;
   }
 
-  it('fails closed before bootstrap when enforce sees a cross-org team mismatch', async () => {
-    const fetchMock = stubIdentityFetch(111, 222);
+  it('fails closed before bootstrap when enforce sees an invalid access-token session', async () => {
+    const fetchMock = stubSessionFetch(222, 401);
     const executeBootstrap = vi.fn();
 
     await expect(
@@ -673,39 +668,18 @@ describe('runCli credential preflight seam', () => {
         ],
         { env: {}, executeBootstrap }
       )
-    ).rejects.toThrow(/credential preflight FAILED/);
+    ).rejects.toThrow(/invalid or expired/);
 
     expect(executeBootstrap).not.toHaveBeenCalled();
     const probed = fetchMock.mock.calls.map((call) => String(call[0]));
-    expect(probed.some((url) => url.endsWith('/me'))).toBe(true);
+    expect(probed.some((url) => url.endsWith('/me'))).toBe(false);
     expect(probed.some((url) => url.includes('/api/sessions/current'))).toBe(true);
     // The preflight verdict must precede any spec fetch.
     expect(probed.some((url) => url.includes('example.test'))).toBe(false);
   });
 
-  it('names both team ids in the enforce mismatch verdict', async () => {
-    stubIdentityFetch(111, 222);
-    let captured = '';
-    try {
-      await runCli(
-        [
-          '--project-name', 'preflight-demo',
-          '--spec-url', 'https://example.test/openapi.yaml',
-          '--postman-api-key', 'pmak-xyz',
-          '--postman-access-token', 'tok-xyz',
-          '--credential-preflight', 'enforce'
-        ],
-        { env: {}, executeBootstrap: vi.fn() }
-      );
-    } catch (error) {
-      captured = error instanceof Error ? error.message : String(error);
-    }
-    expect(captured).toContain('111');
-    expect(captured).toContain('222');
-  });
-
-  it('logs both identity lines and proceeds to bootstrap when teams match under warn', async () => {
-    stubIdentityFetch(333, 333);
+  it('uses PMAK only for minting and logs the access-token session identity', async () => {
+    const fetchMock = stubSessionFetch(333);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const executeBootstrap = vi.fn(async () => createCliOutputs());
     const dir = await makeTempDir('postman-bootstrap-preflight-ok-');
@@ -725,8 +699,8 @@ describe('runCli credential preflight seam', () => {
 
     expect(executeBootstrap).toHaveBeenCalledTimes(1);
     const logged = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(logged).toContain('postman: PMAK identity - ');
     expect(logged).toContain('postman: access-token session identity - ');
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).endsWith('/me'))).toBe(false);
     errorSpy.mockRestore();
   });
 
@@ -750,5 +724,58 @@ describe('runCli credential preflight seam', () => {
     ).rejects.toThrow(/Unsupported credential-preflight/);
 
     expect(executeBootstrap).not.toHaveBeenCalled();
+  });
+});
+
+describe('runCli publish-gate branch seam', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('exits cleanly with skipped-branch-gate and no network or credential mint on a GitHub feature branch', async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error('unexpected network call during publish-gate branch seam');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const executeBootstrap = vi.fn(async () => createCliOutputs());
+    const dir = await makeTempDir('postman-bootstrap-publish-gate-');
+    const fixtureSpec = path.join(repoRoot, 'tests/fixtures/e2e-spec.yaml');
+    await copyFile(fixtureSpec, path.join(dir, 'openapi.yaml'));
+
+    let stdout = '';
+    await withCwd(dir, async () => {
+      await runCli(
+        [
+          '--project-name', 'branch-gate',
+          '--spec-path', 'openapi.yaml',
+          '--postman-api-key', 'pmak-must-not-mint',
+          '--branch-strategy', 'publish-gate',
+          '--canonical-branch', 'main'
+        ],
+        {
+          env: {
+            GITHUB_ACTIONS: 'true',
+            GITHUB_REPOSITORY: 'postman-cs/postman-bootstrap-action',
+            GITHUB_REF_NAME: 'feature/branch-aware-e2e',
+            GITHUB_REF: 'refs/heads/feature/branch-aware-e2e'
+          },
+          executeBootstrap,
+          writeStdout: (chunk) => {
+            stdout += chunk;
+          }
+        }
+      );
+    });
+
+    const outputs = JSON.parse(stdout) as CliOutputs;
+    expect(outputs['sync-status']).toBe('skipped-branch-gate');
+    expect(outputs['workspace-id']).toBe('');
+    expect(outputs['spec-id']).toBe('');
+    expect(outputs['baseline-collection-id']).toBe('');
+    expect(outputs['smoke-collection-id']).toBe('');
+    expect(outputs['contract-collection-id']).toBe('');
+    expect(executeBootstrap).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

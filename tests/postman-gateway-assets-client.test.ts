@@ -42,7 +42,9 @@ function makeClient(
   clientOptions?: {
     generationPollAttempts?: number;
     generationPollDelayMs?: number;
+    createIdentity?: () => string;
     reconcileCapabilityPolicy?: SpecReconcileCapabilityPolicy;
+    sleep?: (delayMs: number) => Promise<void>;
   }
 ): { client: PostmanGatewayAssetsClient; gateway: AccessTokenGatewayClient; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
@@ -94,6 +96,24 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.at(-1)).toMatchObject({ service: 'specification', method: 'get', path: '/specifications/spec-1' });
     });
 
+    it('reports an uncontested spec create as rollback-owned', async () => {
+      let created = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({ data: created ? [{ id: 'spec-owned', name: 'Telecom' }] : [] });
+        }
+        if (env.method === 'post' && env.path.includes('/specifications?')) {
+          created = true;
+          return jsonResponse({ data: { id: 'spec-owned' } });
+        }
+        return jsonResponse({ data: { id: 'spec-owned' } });
+      });
+
+      await expect(
+        client.uploadSpecWithOutcome('ws-9', 'Telecom', 'openapi: 3.0.3', '3.0')
+      ).resolves.toEqual({ specId: 'spec-owned', created: true });
+    });
+
     it('maps 3.1 to OPENAPI:3.1 and rejects unsupported versions', async () => {
       const { client } = makeClient(() => jsonResponse({ data: { id: 's' } }));
       await client.uploadSpec('ws', 'n', 'x', '3.1');
@@ -137,8 +157,8 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       await expect(
-        client.uploadSpec('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
-      ).resolves.toBe('spec-a');
+        client.uploadSpecWithOutcome('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
+      ).resolves.toEqual({ specId: 'spec-a', created: false });
       expect(calls).toContainEqual(
         expect.objectContaining({
           service: 'specification',
@@ -200,6 +220,297 @@ describe('PostmanGatewayAssetsClient', () => {
   });
 
   describe('generateCollection', () => {
+    it('requests names from Spec Hub instead of hydrating an org-mode collection root', async () => {
+      const modelId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const collectionUid = `132319-${modelId}`;
+      let submittedName = '';
+      let currentName = '';
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (!submittedName) return jsonResponse({ data: [] });
+          return jsonResponse({
+            data: [{
+              collection: collectionUid,
+              ...(env.query?.fields === 'name' ? { name: currentName } : {})
+            }]
+          });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submittedName = String((env.body as { name?: unknown })?.name ?? '');
+          currentName = submittedName;
+          return jsonResponse({ data: { taskId: 'task-org' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          return jsonResponse({ data: { 'task-org': 'completed' } });
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+          currentName = '[Smoke] Telecom';
+          return jsonResponse({ data: { id: modelId } });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: `Access to ${modelId} denied` } },
+            { status: 403 }
+          );
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      client.configureTeamContext('132319', true);
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Smoke]', 'Tags', true, 'Fallback')
+      ).resolves.toBe(collectionUid);
+
+      const specListCalls = calls.filter(
+        (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+      );
+      expect(specListCalls.length).toBeGreaterThanOrEqual(3);
+      expect(specListCalls.every((call) => call.query?.fields === 'name')).toBe(true);
+      expect(specListCalls.every((call) => call.headers['x-entity-team-id'] === '132319')).toBe(true);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('requests names from Spec Hub before adopting an existing generated collection', async () => {
+      const collectionUid = '132319-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          return jsonResponse({
+            data: [{
+              collection: collectionUid,
+              ...(env.query?.fields === 'name' ? { name: '[Smoke] Telecom' } : {})
+            }]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      client.configureTeamContext('132319', true);
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Smoke]', 'Tags', true, 'Fallback')
+      ).resolves.toBe(collectionUid);
+
+      expect(calls.every((call) => call.method !== 'post')).toBe(true);
+      expect(calls.some((call) => call.service === 'collection')).toBe(false);
+      expect(calls[0]).toMatchObject({
+        service: 'specification',
+        method: 'get',
+        path: '/specifications/spec-1/collections',
+        query: { fields: 'name' },
+        headers: expect.objectContaining({ 'x-entity-team-id': '132319' })
+      });
+    });
+
+    it('ignores nameless Spec Hub relations instead of hydrating their collection roots', async () => {
+      const staleModelId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+      const staleUid = `132319-${staleModelId}`;
+      const generatedModelId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+      const generatedUid = `132319-${generatedModelId}`;
+      let submittedName = '';
+      let currentName = '';
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          return jsonResponse({
+            data: [
+              { collection: staleUid },
+              ...(submittedName ? [{ collection: generatedUid, name: currentName }] : [])
+            ]
+          });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submittedName = String((env.body as { name?: unknown })?.name ?? '');
+          currentName = submittedName;
+          return jsonResponse({ data: { taskId: 'task-nameless' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          return jsonResponse({ data: { 'task-nameless': 'completed' } });
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+          currentName = '[Smoke] Telecom';
+          return jsonResponse({ data: { id: generatedModelId } });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Smoke]', 'Tags', true, 'Fallback')
+      ).resolves.toBe(generatedUid);
+
+      expect(
+        calls
+          .filter(
+            (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+          )
+          .every((call) => call.query?.fields === 'name')
+      ).toBe(true);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('waits for Spec Hub name enrichment on a newly appeared relation after task completion', async () => {
+      const peerModelId = '11111111-1111-1111-1111-111111111111';
+      const peerUid = `132319-${peerModelId}`;
+      const generatedModelId = '22222222-2222-2222-2222-222222222222';
+      const generatedUid = `132319-${generatedModelId}`;
+      let submittedName = '';
+      let postTaskListReads = 0;
+      let enrichedName = '';
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+            if (!submittedName) {
+              return jsonResponse({ data: [{ collection: peerUid }] });
+            }
+            postTaskListReads += 1;
+            // Live race: relation appears immediately after task completion, but
+            // the exact submitted name lags for at least two authorized list reads.
+            if (postTaskListReads <= 2) {
+              return jsonResponse({
+                data: [{ collection: peerUid }, { collection: generatedUid }]
+              });
+            }
+            return jsonResponse({
+              data: [
+                { collection: peerUid },
+                { collection: generatedUid, name: enrichedName || submittedName }
+              ]
+            });
+          }
+          if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+            submittedName = String((env.body as { name?: unknown })?.name ?? '');
+            enrichedName = submittedName;
+            return jsonResponse({ data: { taskId: 'task-enrich' } }, { status: 202 });
+          }
+          if (env.path === '/tasks') {
+            return jsonResponse({ data: { 'task-enrich': 'completed' } });
+          }
+          if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+            enrichedName = '[Contract] Telecom';
+            return jsonResponse({ data: { id: generatedModelId } });
+          }
+          if (env.service === 'collection' && env.method === 'get') {
+            return jsonResponse(
+              { error: { code: 'FORBIDDEN', message: `Access to ${env.path} denied` } },
+              { status: 403 }
+            );
+          }
+          return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+        },
+        { generationPollDelayMs: 0 }
+      );
+      client.configureTeamContext('132319', true);
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(generatedUid);
+
+      expect(postTaskListReads).toBeGreaterThanOrEqual(3);
+      expect(submittedName).toBe('[Contract] Telecom [bootstrap:test-run]');
+      const specListCalls = calls.filter(
+        (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+      );
+      expect(specListCalls.every((call) => call.query?.fields === 'name')).toBe(true);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('re-POSTs once when an ambiguous generation 500 did not commit an exact-name relation', async () => {
+      const generatedModelId = '33333333-3333-3333-3333-333333333333';
+      let createPosts = 0;
+      const submittedNames: string[] = [];
+      let identities = 0;
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+            if (createPosts < 2) {
+              // First ambiguous POST never committed: settle window stays empty.
+              return jsonResponse({ data: [] });
+            }
+            const submittedName = submittedNames[1] ?? '';
+            return jsonResponse({
+              data: submittedName
+                ? [{ collection: generatedModelId, name: submittedName }]
+                : []
+            });
+          }
+          if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+            createPosts += 1;
+            submittedNames.push(String((env.body as { name?: unknown })?.name ?? ''));
+            if (createPosts === 1) {
+              return jsonResponse(
+                { error: { name: 'serverError', message: 'Something went wrong with the server' } },
+                { status: 500 }
+              );
+            }
+            return jsonResponse({ data: { taskId: 'task-repost' } }, { status: 202 });
+          }
+          if (env.path === '/tasks') {
+            return jsonResponse({ data: { 'task-repost': 'completed' } });
+          }
+          if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+            return jsonResponse({ data: { id: generatedModelId } });
+          }
+          if (env.service === 'collection' && env.method === 'get') {
+            return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
+          }
+          return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+        },
+        {
+          generationPollDelayMs: 0,
+          createIdentity: () => `attempt-${++identities}`
+        }
+      );
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(generatedModelId);
+
+      expect(createPosts).toBe(2);
+      expect(
+        calls.filter((call) => call.method === 'post' && call.path === '/specifications/spec-1/collections')
+      ).toHaveLength(2);
+      expect(submittedNames).toEqual([
+        '[Contract] Telecom [bootstrap:attempt-1]',
+        '[Contract] Telecom [bootstrap:attempt-2]'
+      ]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('uses the preferred collection identity when Spec Hub name enrichment lags', async () => {
+      const preferredUid = '132319-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+      const unrelatedUid = '132319-ffffffff-ffff-ffff-ffff-ffffffffffff';
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          return jsonResponse({
+            data: [
+              { collection: preferredUid },
+              { collection: unrelatedUid }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      client.configureTeamContext('132319', true);
+
+      await expect(
+        client.adoptGeneratedCollection('spec-1', 'Telecom', '[Smoke]', preferredUid)
+      ).resolves.toBe(preferredUid);
+
+      const specListCalls = calls.filter(
+        (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+      );
+      expect(specListCalls).toHaveLength(2);
+      expect(specListCalls.every((call) => call.query?.fields === 'name')).toBe(true);
+      expect(specListCalls.every((call) => call.headers['x-entity-team-id'] === '132319')).toBe(true);
+      expect(calls.some((call) => call.service === 'collection')).toBe(false);
+    });
+
     it('posts generate, polls the task to completion, and resolves the collection uid', async () => {
       let polls = 0;
       let posted = false;
@@ -1613,6 +1924,112 @@ describe('PostmanGatewayAssetsClient', () => {
         ).find((op) => op.path === '/scripts')?.value ?? [];
       expect(rootScripts.length).toBeGreaterThan(0);
       expect(rootScripts.every((script) => String(script.type).startsWith('http:'))).toBe(true);
+    });
+  });
+
+  describe('updateCollectionDescription', () => {
+    const modelId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const collectionUid = `132319-${modelId}`;
+    const description = 'branch:feature/preview';
+
+    it('succeeds with only the description PATCH when any collection-root GET would 403', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: `Access to ${modelId} denied` } },
+            { status: 403 }
+          );
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+          return jsonResponse({ data: { id: modelId } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.updateCollectionDescription(collectionUid, description)).resolves.toBeUndefined();
+
+      expect(calls).toEqual([
+        expect.objectContaining({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${modelId}`,
+          body: [{ op: 'add', path: '/description', value: description }]
+        })
+      ]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('retries a bounded description PATCH through 404 read-after-write lag, then succeeds', async () => {
+      let patchAttempts = 0;
+      const sleep = vi.fn(async () => undefined);
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.service === 'collection' && env.method === 'get') {
+            return jsonResponse(
+              { error: { code: 'FORBIDDEN', message: `Access to ${modelId} denied` } },
+              { status: 403 }
+            );
+          }
+          if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+            patchAttempts += 1;
+            return patchAttempts === 1
+              ? jsonResponse(
+                  { error: { code: 'RESOURCE_NOT_FOUND', message: 'Collection not found' } },
+                  { status: 404 }
+                )
+              : jsonResponse({ data: { id: modelId } });
+          }
+          return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+        },
+        { sleep }
+      );
+
+      await expect(client.updateCollectionDescription(collectionUid, description)).resolves.toBeUndefined();
+
+      expect(patchAttempts).toBe(2);
+      expect(sleep).toHaveBeenCalled();
+      const patches = calls.filter(
+        (call) => call.method === 'patch' && call.path === `/v3/collections/${modelId}`
+      );
+      expect(patches).toHaveLength(2);
+      expect(patches[0]?.body).toEqual([{ op: 'add', path: '/description', value: description }]);
+      expect(patches[1]?.body).toEqual([{ op: 'add', path: '/description', value: description }]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('treats a no-op description REJECTED_PATCH as already applied without any root GET', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: `Access to ${modelId} denied` } },
+            { status: 403 }
+          );
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+          return jsonResponse(
+            {
+              error: {
+                name: 'REJECTED_PATCH',
+                message: 'Patch must update at least one value'
+              }
+            },
+            { status: 400 }
+          );
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.updateCollectionDescription(collectionUid, description)).resolves.toBeUndefined();
+
+      expect(calls).toEqual([
+        expect.objectContaining({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${modelId}`,
+          body: [{ op: 'add', path: '/description', value: description }]
+        })
+      ]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
     });
   });
 

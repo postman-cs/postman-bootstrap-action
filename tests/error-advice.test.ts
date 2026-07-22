@@ -33,11 +33,11 @@ function bifrostHttpError(status: number, responseBody: string): HttpError {
 const UNAUTHENTICATED_ADVICE =
   'postman: Bifrost rejected the access token (UNAUTHENTICATED). ' +
   'Service-account access tokens expire after about 1 to 1.5 hours; this run likely outlived its token. ' +
-  'Re-mint a fresh token (postman-resolve-service-token-action, or POST https://api.getpostman.com/service-account-tokens) and re-run. ' +
+  'Re-mint a fresh token with postman-resolve-service-token-action and re-run. ' +
   'If it was just minted, confirm postman-access-token is the token for the same parent org as postman-api-key.';
 
 describe('error advice', () => {
-  it('UNAUTHENTICATED bare body -> "access token rejected ... re-mint via postman-resolve-service-token-action or POST /service-account-tokens"', () => {
+  it('UNAUTHENTICATED bare body recommends the service-token action', () => {
     const httpErr = bifrostHttpError(401, '{"error":{"code":"UNAUTHENTICATED"}}');
     const advised = adviseFromHttpError(httpErr, createContext());
 
@@ -77,7 +77,6 @@ describe('error advice', () => {
     expect(advised?.message).toContain('postman: Bifrost rejected the access token (authenticationError).');
     expect(advised?.message).toContain('expire after about 1 to 1.5 hours');
     expect(advised?.message).toContain('postman-resolve-service-token-action');
-    expect(advised?.message).toContain('POST https://api.getpostman.com/service-account-tokens');
     expect(advised?.message).toContain(
       'Underlying cause: HTTP 401: {"error":{"name":"authenticationError","message":"Invalid session"}}'
     );

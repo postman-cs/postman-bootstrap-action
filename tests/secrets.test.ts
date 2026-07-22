@@ -4,7 +4,6 @@ import { ConsoleReporter } from '../src/cli.js';
 import { HttpError } from '../src/lib/http-error.js';
 import {
   __resetIdentityMemo,
-  crossCheckIdentities,
   formatIdentityLine,
   runCredentialPreflight,
   type CredentialIdentity
@@ -84,18 +83,9 @@ describe('secret safety rails', () => {
 });
 
 const FAKE_TOKEN = 'fake-access-token-abc123';
-const API_BASE = 'https://api.getpostman.com';
 const IAPUB_BASE = 'https://iapub.postman.co';
 
 function sampleIdentities() {
-  const pmak: CredentialIdentity = {
-    source: 'pmak/me',
-    userId: '12345678',
-    fullName: 'Ada Lovelace',
-    teamId: '10490519',
-    teamName: 'jared-demo',
-    teamDomain: 'jared-demo'
-  };
   const session: CredentialIdentity = {
     source: 'iapub/sessions',
     teamId: '13347347',
@@ -103,7 +93,7 @@ function sampleIdentities() {
     roles: ['collection-editor'],
     consumerType: 'service_account'
   };
-  return { pmak, session };
+  return { session };
 }
 
 function sampleAdviceContext(mask: SecretMasker): ErrorAdviceContext {
@@ -123,30 +113,10 @@ function preflightJson(body: unknown, status = 200): Response {
 }
 
 async function collectDiagnosticLines(mask: SecretMasker): Promise<string[]> {
-  const { pmak, session } = sampleIdentities();
+  const { session } = sampleIdentities();
   const lines: string[] = [];
 
-  lines.push(formatIdentityLine(pmak, mask));
   lines.push(formatIdentityLine(session, mask));
-  lines.push(crossCheckIdentities({ pmak, session, mode: 'warn', mask }).message);
-  lines.push(crossCheckIdentities({ pmak, session, mode: 'enforce', mask }).message);
-  lines.push(
-    crossCheckIdentities({ pmak, session: { ...session, teamId: '10490519' }, mode: 'warn', mask })
-      .message
-  );
-  lines.push(
-    crossCheckIdentities({
-      pmak,
-      session: { ...session, teamId: '10490519' },
-      workspaceTeamId: '132319',
-      mode: 'enforce',
-      mask
-    }).message
-  );
-  lines.push(
-    crossCheckIdentities({ pmak: { ...pmak, teamId: undefined }, session, mode: 'enforce', mask })
-      .message
-  );
 
   const ctx = sampleAdviceContext(mask);
   const reactiveInputs: Array<[number, string]> = [
@@ -175,23 +145,17 @@ async function collectDiagnosticLines(mask: SecretMasker): Promise<string[]> {
       captured.push(message);
     }
   };
-  const happyFetch = (async (input: RequestInfo | URL) =>
-    String(input).endsWith('/me')
-      ? preflightJson({
-          user: { id: 1, fullName: 'Ada Lovelace', teamId: 10490519, teamName: 'jared-demo' }
-        })
-      : preflightJson({
-          identity: { team: 13347347, domain: 'field-services-v12-demo' },
-          data: { user: { id: 2, roles: ['collection-editor'] } },
-          consumerType: 'service_account'
-        })) as typeof fetch;
+  const happyFetch = (async () =>
+    preflightJson({
+      identity: { team: 13347347, domain: 'field-services-v12-demo' },
+      data: { user: { id: 2, roles: ['collection-editor'] } },
+      consumerType: 'service_account'
+    })) as typeof fetch;
   const failingFetch = (async () => preflightJson({ error: 'denied' }, 404)) as typeof fetch;
 
   __resetIdentityMemo();
   await runCredentialPreflight({
-    apiBaseUrl: API_BASE,
     iapubBaseUrl: IAPUB_BASE,
-    postmanApiKey: 'pmak-style-1',
     postmanAccessToken: 'token-style-1',
     mode: 'warn',
     mask,
@@ -200,9 +164,7 @@ async function collectDiagnosticLines(mask: SecretMasker): Promise<string[]> {
   });
   __resetIdentityMemo();
   await runCredentialPreflight({
-    apiBaseUrl: API_BASE,
     iapubBaseUrl: IAPUB_BASE,
-    postmanApiKey: 'pmak-style-2',
     postmanAccessToken: 'token-style-2',
     mode: 'warn',
     mask,
@@ -211,9 +173,7 @@ async function collectDiagnosticLines(mask: SecretMasker): Promise<string[]> {
   });
   __resetIdentityMemo();
   await runCredentialPreflight({
-    apiBaseUrl: API_BASE,
     iapubBaseUrl: IAPUB_BASE,
-    postmanApiKey: 'pmak-style-3',
     mode: 'warn',
     mask,
     log,
@@ -233,7 +193,7 @@ describe('diagnostic style-ban and leak grep', () => {
     const mask = createSecretMasker([FAKE_TOKEN]);
     const lines = await collectDiagnosticLines(mask);
 
-    expect(lines.length).toBeGreaterThanOrEqual(15);
+    expect(lines.length).toBeGreaterThanOrEqual(10);
     for (const line of lines) {
       expect(line).not.toContain('Bearer ');
       expect(line).not.toContain('x-access-token:');
@@ -255,16 +215,9 @@ describe('CLI ConsoleReporter masking path (AC7)', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const reporter = new ConsoleReporter();
-      const { pmak, session } = sampleIdentities();
+      const { session } = sampleIdentities();
       const tokenBearingLines = [
-        formatIdentityLine({ ...pmak, fullName: FAKE_TOKEN }, mask),
         formatIdentityLine({ ...session, teamDomain: FAKE_TOKEN }, mask),
-        crossCheckIdentities({
-          pmak: { ...pmak, teamName: FAKE_TOKEN },
-          session,
-          mode: 'warn',
-          mask
-        }).message,
         adviseFromHttpError(
           new HttpError({
             method: 'POST',
@@ -302,10 +255,10 @@ describe('CLI ConsoleReporter masking path (AC7)', () => {
 
     const line = formatIdentityLine(
       {
-        source: 'pmak/me',
+        source: 'iapub/sessions',
         userId: '1',
-        fullName: FAKE_TOKEN,
-        teamId: '10490519'
+        teamId: '10490519',
+        teamDomain: FAKE_TOKEN
       },
       mask
     );
@@ -338,12 +291,7 @@ describe('CLI ConsoleReporter masking path (AC7)', () => {
       const reporter = new ConsoleReporter();
       const mask = createSecretMasker([]);
       const fetchImpl = (async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.endsWith('/me')) {
-          return preflightJson({
-            user: { id: 1, teamId: 10490519, teamName: 'jared-demo' }
-          });
-        }
+        void input;
         return preflightJson({
           identity: { team: 10490519, domain: 'jared-demo' },
           data: { user: { id: 2, roles: ['admin'], token: FAKE_TOKEN } },
@@ -353,9 +301,7 @@ describe('CLI ConsoleReporter masking path (AC7)', () => {
       }) as typeof fetch;
 
       await runCredentialPreflight({
-        apiBaseUrl: API_BASE,
         iapubBaseUrl: IAPUB_BASE,
-        postmanApiKey: 'pmak-iapub-token-case',
         postmanAccessToken: 'token-iapub-token-case',
         mode: 'warn',
         mask,

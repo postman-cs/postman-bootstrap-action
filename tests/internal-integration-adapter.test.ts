@@ -748,7 +748,6 @@ describe('internal integration adapter error advice', () => {
     const message = thrown instanceof Error ? thrown.message : String(thrown);
     expect(message).toContain('Bifrost rejected the access token (UNAUTHENTICATED)');
     expect(message).toContain('postman-resolve-service-token-action');
-    expect(message).toContain('POST https://api.getpostman.com/service-account-tokens');
   });
 
   it('governance 403 yields role/team guidance', async () => {

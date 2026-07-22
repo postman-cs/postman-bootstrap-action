@@ -219,6 +219,13 @@ export class PostmanGatewayAssetsClient {
   private static readonly GENERATION_LOCKED_MAX_RETRIES = 5;
   private static readonly DEFAULT_GENERATION_POLL_ATTEMPTS = 90;
   private static readonly DEFAULT_GENERATION_POLL_DELAY_MS = 2000;
+  /**
+   * Bounded Spec Hub relation/name-enrichment polls after generation task
+   * completion or an ambiguous create POST. Kept far below the full task
+   * budget so a nameless newly-appeared relation can settle without waiting
+   * the full ~180s generation poll window.
+   */
+  private static readonly GENERATION_RELATION_SETTLE_MAX_POLLS = 10;
   /** Post-create exact-name polls before a singleton may be accepted as final. */
   private static readonly SPEC_CREATE_STABLE_MAX_POLLS = 10;
   /** Consecutive identical normalized ID sets required before acting on the set. */
@@ -312,6 +319,22 @@ export class PostmanGatewayAssetsClient {
     specContent: string,
     openapiVersion: '3.0' | '3.1' | string = '3.0'
   ): Promise<string> {
+    const outcome = await this.uploadSpecWithOutcome(
+      workspaceId,
+      projectName,
+      specContent,
+      openapiVersion
+    );
+    return outcome.specId;
+  }
+
+  /** Upload or adopt a single-file spec and report rollback ownership. */
+  async uploadSpecWithOutcome(
+    workspaceId: string,
+    projectName: string,
+    specContent: string,
+    openapiVersion: '3.0' | '3.1' | string = '3.0'
+  ): Promise<{ specId: string; created: boolean }> {
     if (openapiVersion !== '3.0' && openapiVersion !== '3.1') {
       throw new Error(`uploadSpec: unsupported openapiVersion "${openapiVersion}". Expected '3.0' or '3.1'.`);
     }
@@ -328,10 +351,11 @@ export class PostmanGatewayAssetsClient {
       // Adoption is resolution, not success: a same-identity spec from a prior
       // run still needs the incoming content before collection generation.
       await this.updateSpec(existing.id, specContent, workspaceId);
-      return existing.id;
+      return { specId: existing.id, created: false };
     }
     const specType = openapiVersion === '3.1' ? 'OPENAPI:3.1' : 'OPENAPI:3.0';
     let created: JsonRecord | null;
+    let createdByThisRun = true;
     try {
       created = await this.gateway.requestJson<JsonRecord>({
         service: 'specification',
@@ -346,6 +370,7 @@ export class PostmanGatewayAssetsClient {
       });
     } catch (error) {
       if (!isAmbiguousTransportError(error)) throw error;
+      createdByThisRun = false;
       const match = adoptExactMatch(
         `specification:${workspaceId}:${projectName}`,
         await this.findSpecificationsByExactName(workspaceId, projectName),
@@ -378,7 +403,10 @@ export class PostmanGatewayAssetsClient {
       method: 'get',
       path: `/specifications/${specId}`
     });
-    return specId;
+    return {
+      specId,
+      created: createdByThisRun && specId === createdSpecId
+    };
   }
 
   /**
@@ -1098,21 +1126,23 @@ export class PostmanGatewayAssetsClient {
       } catch (error) {
         if (!isAmbiguousTransportError(error)) throw error;
         const beforeIds = new Set(before.map((entry) => entry.id));
-        const appeared = (await this.listGeneratedCollectionRefs(specId)).filter(
-          (entry) => !beforeIds.has(entry.id)
-        );
-        const exactAppeared = await this.filterGeneratedCollectionsByExactName(
-          appeared,
+        const matchId = await this.awaitExactAppearedGeneratedCollection(
+          specId,
+          beforeIds,
           submittedName
         );
-        const match = adoptExactMatch(
-          `generated-collection:${specId}:${submittedName}`,
-          exactAppeared,
-          (entry) => entry.id
-        );
-        if (!match) throw error;
-        await this.renameGeneratedCollection(match.id, name);
-        return this.convergeGeneratedCollections(specId, name, match.id);
+        if (matchId) {
+          await this.renameGeneratedCollection(matchId, name);
+          return this.convergeGeneratedCollections(specId, name, matchId);
+        }
+        // Ambiguous POST with no exact accepted relation after the settle
+        // window: allow the outer loop's one fresh re-POST. Surface on the
+        // final attempt so a durable failure is not masked.
+        if (taskAttempt === 0) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          continue;
+        }
+        throw error;
       }
 
       let taskFailed = false;
@@ -1145,17 +1175,11 @@ export class PostmanGatewayAssetsClient {
       }
 
       const beforeIds = new Set(before.map((entry) => entry.id));
-      const after = await this.listGeneratedCollectionRefs(specId);
-      const appeared = after.filter((entry) => !beforeIds.has(entry.id));
-      const candidates = await this.filterGeneratedCollectionsByExactName(
-        appeared,
+      const uid = await this.awaitExactAppearedGeneratedCollection(
+        specId,
+        beforeIds,
         submittedName
       );
-      const uid = adoptExactMatch(
-        `generated-collection:${specId}:${submittedName}`,
-        candidates,
-        (entry) => entry.id
-      )?.id;
       if (!uid) {
         throw new Error(`Collection generation did not yield a collection uid for ${prefix}`);
       }
@@ -1163,6 +1187,41 @@ export class PostmanGatewayAssetsClient {
       return this.convergeGeneratedCollections(specId, name, uid);
     }
     throw lastError ?? new Error(`Collection generation task failed for ${prefix}`);
+  }
+
+  /**
+   * Poll Spec Hub collection relations until the exact unique submitted name
+   * appears among IDs that were not present before this generation attempt.
+   * Never hydrates a collection root and never adopts a nameless peer ID —
+   * concurrent branch-aware previews can also appear nameless while enriching.
+   */
+  private async awaitExactAppearedGeneratedCollection(
+    specId: string,
+    beforeIds: ReadonlySet<string>,
+    submittedName: string
+  ): Promise<string | undefined> {
+    for (
+      let poll = 0;
+      poll < PostmanGatewayAssetsClient.GENERATION_RELATION_SETTLE_MAX_POLLS;
+      poll += 1
+    ) {
+      if (poll > 0) {
+        await this.sleep(this.generationPollDelayMs);
+      }
+      const after = await this.listGeneratedCollectionRefs(specId);
+      const appeared = after.filter((entry) => !beforeIds.has(entry.id));
+      const candidates = await this.filterGeneratedCollectionsByExactName(
+        appeared,
+        submittedName
+      );
+      const match = adoptExactMatch(
+        `generated-collection:${specId}:${submittedName}`,
+        candidates,
+        (entry) => entry.id
+      );
+      if (match) return match.id;
+    }
+    return undefined;
   }
 
   /**
@@ -1194,29 +1253,19 @@ export class PostmanGatewayAssetsClient {
     preferredId: string
   ): Promise<string> {
     const tempPrefix = `${finalName} [bootstrap:`;
-    const hydrate = async () => {
+    const preferredModelId = this.bareModelId(preferredId);
+    const listKnownIdentities = async () => {
       const linked = await this.listGeneratedCollectionRefs(specId);
-      return Promise.all(
-        linked.map(async (entry) => {
-          if (entry.name) return { id: entry.id, name: entry.name };
-          try {
-            const collection = await this.gateway.requestJson<JsonRecord>({
-              service: 'collection',
-              method: 'get',
-              path: `/v3/collections/${this.bareModelId(entry.id)}`
-            });
-            return {
-              id: entry.id,
-              name: String(asRecord(collection?.data)?.name ?? '').trim()
-            };
-          } catch (error) {
-            if (error instanceof HttpError && error.status === 404) {
-              return { id: entry.id, name: '' };
-            }
-            throw error;
-          }
-        })
-      );
+      return linked.map((entry) => {
+        if (entry.name) return { id: entry.id, name: entry.name };
+        // The caller has already renamed its preferred collection. Keep that
+        // identity during transient Spec Hub name-enrichment lag, but never
+        // infer or delete another nameless relation.
+        if (preferredModelId && this.bareModelId(entry.id) === preferredModelId) {
+          return { id: entry.id, name: finalName };
+        }
+        return { id: entry.id, name: '' };
+      });
     };
 
     const selectSameIdentity = (
@@ -1229,14 +1278,14 @@ export class PostmanGatewayAssetsClient {
         )
         .sort((a, b) => a.id.localeCompare(b.id));
 
-    let sameIdentity = selectSameIdentity(await hydrate());
+    let sameIdentity = selectSameIdentity(await listKnownIdentities());
     if (sameIdentity.length === 0) return preferredId;
 
     // Solo observation is not final under dual-trigger: a peer may still be
     // renaming its temp into this identity. One short settle catches that.
     if (sameIdentity.length === 1) {
       await this.sleep(1000);
-      sameIdentity = selectSameIdentity(await hydrate());
+      sameIdentity = selectSameIdentity(await listKnownIdentities());
       if (sameIdentity.length === 0) return preferredId;
     }
 
@@ -1262,7 +1311,7 @@ export class PostmanGatewayAssetsClient {
     // We won. Give peers a beat to self-delete, then sweep remaining orphans.
     if (sameIdentity.length > 1) {
       await this.sleep(1500);
-      sameIdentity = selectSameIdentity(await hydrate());
+      sameIdentity = selectSameIdentity(await listKnownIdentities());
       for (const duplicate of sameIdentity) {
         if (duplicate.id === winner.id) continue;
         try {
@@ -1316,7 +1365,10 @@ export class PostmanGatewayAssetsClient {
     const list = await this.gateway.requestJson<JsonRecord>({
       service: 'specification',
       method: 'get',
-      path: `/specifications/${specId}/collections`
+      path: `/specifications/${specId}/collections`,
+      // Spec Hub returns relation IDs only by default. Request the name here so
+      // org-mode service accounts do not need a forbidden collection-root read.
+      query: { fields: 'name' }
     });
     const entries = Array.isArray(asRecord(list)?.data) ? (asRecord(list)!.data as unknown[]) : [];
     const results: Array<{ id: string; name?: string }> = [];
@@ -1334,19 +1386,9 @@ export class PostmanGatewayAssetsClient {
     entries: Array<{ id: string; name?: string }>,
     expectedName: string
   ): Promise<Array<{ id: string; name: string }>> {
-    const hydrated = await Promise.all(entries.map(async (entry) => {
-      if (entry.name) return { id: entry.id, name: entry.name };
-      const collection = await this.gateway.requestJson<JsonRecord>({
-        service: 'collection',
-        method: 'get',
-        path: `/v3/collections/${this.bareModelId(entry.id)}`
-      });
-      return {
-        id: entry.id,
-        name: String(asRecord(collection?.data)?.name ?? '').trim()
-      };
-    }));
-    return hydrated.filter((entry) => entry.name === expectedName);
+    return entries.flatMap((entry) =>
+      entry.name === expectedName ? [{ id: entry.id, name: entry.name }] : []
+    );
   }
 
   private async renameGeneratedCollection(collectionId: string, name: string): Promise<void> {
@@ -2556,13 +2598,43 @@ export class PostmanGatewayAssetsClient {
     return rawId;
   }
 
-  /** Patch only the durable collection description without reconciling its item tree. */
+  /**
+   * Patch only the durable collection description without reconciling its item tree.
+   *
+   * Generated collections authorize the description PATCH for the service-account
+   * access token, but collection-root GET often 403s (live on org and non-org).
+   * Issue the idempotent description JSON-Patch directly — no root preflight /
+   * readback. Retry only 404 read-after-write lag (same bounded budget as the
+   * former getCollectionRoot preflight). A no-op REJECTED_PATCH for this single
+   * add /description op means the intended value is already present.
+   */
   async updateCollectionDescription(collectionUid: string, description: string): Promise<void> {
     const cid = this.bareModelId(collectionUid);
-    // Read-back first: a freshly generated/renamed collection can transiently 404
-    // on the v3 surface (read-after-write lag); getCollectionRoot retries through it.
-    await this.getCollectionRoot(cid);
-    await this.applyCollectionLevelSettings(cid, { description });
+    const ops = [{ op: 'add', path: '/description', value: description }];
+    try {
+      await retry(
+        () =>
+          this.gateway.requestJson<JsonRecord>({
+            service: 'collection',
+            method: 'patch',
+            path: `/v3/collections/${cid}`,
+            // Fixed-path add is idempotent; transient downstream timeouts are safe.
+            retry: 'safe',
+            body: ops
+          }),
+        {
+          maxAttempts: 6,
+          delayMs: 1000,
+          backoffMultiplier: 2,
+          maxDelayMs: 8000,
+          sleep: this.sleep,
+          shouldRetry: (error) => error instanceof HttpError && error.status === 404
+        }
+      );
+    } catch (error) {
+      if (isRejectedPatchError(error)) return;
+      throw error;
+    }
   }
 
   /**

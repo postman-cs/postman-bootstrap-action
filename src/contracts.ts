@@ -183,17 +183,16 @@ export const bootstrapActionContract: ActionContract = {
       required: false
     },
     'postman-api-key': {
-      description:
-        'Postman API key for bootstrap operations and the Postman CLI spec lint. Optional: with a postman-access-token, asset operations run access-token-primary; when the key is absent the CLI spec lint is skipped (governance errors are not enforced).',
+      description: 'Postman service-account API key used only to mint or re-mint the short-lived access token.',
       required: false
     },
     'postman-access-token': {
-      description: 'Postman access token used for governance and workspace mutations.',
+      description: 'Postman service-account access token used for every identity and asset operation.',
       required: false
     },
     'credential-preflight': {
       description:
-        'Credential identity preflight policy. warn (default) logs a note and continues when postman-api-key and postman-access-token resolve to different parent orgs; enforce fails the run on that condition before any workspace is created.',
+        'Access-token session preflight policy. warn (default) continues when session identity is unavailable; enforce fails before any workspace is created.',
       required: false,
       default: 'warn',
       allowedValues: ['enforce', 'warn']
@@ -277,8 +276,7 @@ export const bootstrapActionContract: ActionContract = {
       description: 'JSON summary of generated collections.'
     },
     'lint-summary-json': {
-      description:
-        'JSON summary of lint errors and warnings. When postman-api-key is absent the CLI lint is skipped and this is { status: "skipped", reason: "no postman-api-key" }.'
+      description: 'JSON summary of validation findings. Bootstrap does not invoke the Postman CLI lint.'
     },
     'breaking-change-status': {
       description: 'OpenAPI breaking-change check status.'

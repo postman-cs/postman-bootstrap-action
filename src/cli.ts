@@ -7,7 +7,6 @@ import path from 'node:path';
 import {
   createBootstrapDependencies,
   decideBranchTier,
-  mintAccessTokenIfNeeded,
   resolveInputs,
   runGatedValidation,
   type ResolvedInputs,
@@ -18,6 +17,7 @@ import {
 } from './index.js';
 import { BRANCH_DECISION_ENV, serializeBranchDecision } from './lib/repo/branch-decision.js';
 import { runCredentialPreflight } from './lib/postman/credential-identity.js';
+import { mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
 import { createSecretMasker } from './lib/secrets.js';
 
 interface CliConfig {
@@ -462,17 +462,14 @@ export async function runCli(
 
   const dependencies = createCliDependencies(inputs);
 
-  // Proactive credential preflight: resolve and cross-check both identities
-  // once, before any spec fetch or write. The CLI entry must run this exactly
-  // as runAction does, or dist/cli.cjs (what CI and the e2e harness invoke)
-  // would skip the preflight that dist/index.cjs performs.
+  if (!inputs.postmanAccessToken) {
+    throw new Error('Could not obtain postman-access-token from the configured postman-api-key.');
+  }
+
+  // Resolve the access-token session once before any spec fetch or write.
   await runCredentialPreflight({
-    apiBaseUrl: inputs.postmanApiBase,
     iapubBaseUrl: inputs.postmanIapubBase,
-    postmanApiKey: inputs.postmanApiKey,
     postmanAccessToken: inputs.postmanAccessToken,
-    workspaceTeamId: inputs.workspaceTeamId,
-    explicitTeamId: inputs.teamId || undefined,
     mode: inputs.credentialPreflight,
     mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
     log: dependencies.core

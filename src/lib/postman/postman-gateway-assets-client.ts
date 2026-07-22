@@ -217,6 +217,9 @@ export interface PostmanGatewayAssetsClientOptions {
  */
 export class PostmanGatewayAssetsClient {
   private static readonly GENERATION_LOCKED_MAX_RETRIES = 5;
+  private static readonly GENERATED_COLLECTION_READBACK_MAX_RETRIES = 10;
+  private static readonly GENERATED_COLLECTION_READBACK_BASE_DELAY_MS = 750;
+  private static readonly GENERATED_COLLECTION_READBACK_MAX_DELAY_MS = 5000;
   private static readonly DEFAULT_GENERATION_POLL_ATTEMPTS = 90;
   private static readonly DEFAULT_GENERATION_POLL_DELAY_MS = 2000;
   /** Post-create exact-name polls before a singleton may be accepted as final. */
@@ -1200,11 +1203,7 @@ export class PostmanGatewayAssetsClient {
         linked.map(async (entry) => {
           if (entry.name) return { id: entry.id, name: entry.name };
           try {
-            const collection = await this.gateway.requestJson<JsonRecord>({
-              service: 'collection',
-              method: 'get',
-              path: `/v3/collections/${this.bareModelId(entry.id)}`
-            });
+            const collection = await this.readGeneratedCollectionRoot(entry.id);
             return {
               id: entry.id,
               name: String(asRecord(collection?.data)?.name ?? '').trim()
@@ -1336,17 +1335,44 @@ export class PostmanGatewayAssetsClient {
   ): Promise<Array<{ id: string; name: string }>> {
     const hydrated = await Promise.all(entries.map(async (entry) => {
       if (entry.name) return { id: entry.id, name: entry.name };
-      const collection = await this.gateway.requestJson<JsonRecord>({
-        service: 'collection',
-        method: 'get',
-        path: `/v3/collections/${this.bareModelId(entry.id)}`
-      });
+      const collection = await this.readGeneratedCollectionRoot(entry.id);
       return {
         id: entry.id,
         name: String(asRecord(collection?.data)?.name ?? '').trim()
       };
     }));
     return hydrated.filter((entry) => entry.name === expectedName);
+  }
+
+  private async readGeneratedCollectionRoot(collectionId: string): Promise<JsonRecord | null> {
+    const cid = this.bareModelId(collectionId);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'get',
+          path: `/v3/collections/${cid}`
+        });
+      } catch (error) {
+        const eventuallyConsistentRead =
+          error instanceof HttpError &&
+          (error.status === 403 || error.status === 404);
+        if (
+          !eventuallyConsistentRead ||
+          attempt >= PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_RETRIES
+        ) {
+          throw error;
+        }
+        await this.sleep(
+          fullJitterDelayMs(
+            attempt,
+            PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_BASE_DELAY_MS,
+            PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_DELAY_MS,
+            this.random
+          )
+        );
+      }
+    }
   }
 
   private async renameGeneratedCollection(collectionId: string, name: string): Promise<void> {

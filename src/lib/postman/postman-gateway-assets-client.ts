@@ -217,8 +217,8 @@ export interface PostmanGatewayAssetsClientOptions {
  */
 export class PostmanGatewayAssetsClient {
   private static readonly GENERATION_LOCKED_MAX_RETRIES = 5;
-  private static readonly GENERATED_COLLECTION_READBACK_MAX_RETRIES = 10;
-  private static readonly GENERATED_COLLECTION_READBACK_BASE_DELAY_MS = 750;
+  private static readonly GENERATED_COLLECTION_READBACK_MAX_RETRIES = 30;
+  private static readonly GENERATED_COLLECTION_READBACK_BASE_DELAY_MS = 1000;
   private static readonly GENERATED_COLLECTION_READBACK_MAX_DELAY_MS = 5000;
   private static readonly DEFAULT_GENERATION_POLL_ATTEMPTS = 90;
   private static readonly DEFAULT_GENERATION_POLL_DELAY_MS = 2000;
@@ -1363,14 +1363,17 @@ export class PostmanGatewayAssetsClient {
         ) {
           throw error;
         }
-        await this.sleep(
-          fullJitterDelayMs(
-            attempt,
-            PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_BASE_DELAY_MS,
-            PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_DELAY_MS,
-            this.random
-          )
+        const delayMs = fullJitterDelayMs(
+          attempt,
+          PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_BASE_DELAY_MS,
+          PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_DELAY_MS,
+          this.random
         );
+        console.warn(
+          `[postman-bootstrap-action] generated collection readback returned ${error.status} for ${cid}; ` +
+          `retrying in ${delayMs}ms (${attempt + 1}/${PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_RETRIES})`
+        );
+        await this.sleep(delayMs);
       }
     }
   }

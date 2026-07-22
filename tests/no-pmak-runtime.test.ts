@@ -10,6 +10,15 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
+function relativeSourcePath(filePath: string, cwd: string): string {
+  const normalizedFilePath = filePath.replace(/\\/g, '/');
+  const normalizedCwd = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+  const prefix = `${normalizedCwd}/`;
+  return normalizedFilePath.startsWith(prefix)
+    ? normalizedFilePath.slice(prefix.length)
+    : normalizedFilePath;
+}
+
 describe('bootstrap PMAK boundary', () => {
   it('accepts PMAK only as an access-token mint credential', () => {
     const manifest = readFileSync(join(process.cwd(), 'action.yml'), 'utf8');
@@ -25,7 +34,7 @@ describe('bootstrap PMAK boundary', () => {
     const files = sourceFiles(join(process.cwd(), 'src'));
     const violations = files.flatMap((path) => {
       const source = readFileSync(path, 'utf8');
-      const relative = path.replace(`${process.cwd()}/`, '');
+      const relative = relativeSourcePath(path, process.cwd());
       if (
         relative === 'src/lib/postman/token-provider.ts' ||
         relative === 'src/lib/postman/pmak-diagnostics.ts' ||
@@ -52,5 +61,14 @@ describe('bootstrap PMAK boundary', () => {
       .map((path) => readFileSync(path, 'utf8'))
       .join('\n');
     expect(source).not.toMatch(/--with-api-key/i);
+  });
+
+  it('normalizes Windows source paths before applying the allowlist', () => {
+    expect(
+      relativeSourcePath(
+        'D:\\a\\postman-bootstrap-action\\postman-bootstrap-action\\src\\lib\\postman\\token-provider.ts',
+        'D:\\a\\postman-bootstrap-action\\postman-bootstrap-action'
+      )
+    ).toBe('src/lib/postman/token-provider.ts');
   });
 });

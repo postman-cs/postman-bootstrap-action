@@ -730,6 +730,7 @@ describe('runCli credential preflight seam', () => {
 describe('runCli publish-gate branch seam', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it('exits cleanly with skipped-branch-gate and no network or credential mint on a GitHub feature branch', async () => {
@@ -742,6 +743,7 @@ describe('runCli publish-gate branch seam', () => {
     const dir = await makeTempDir('postman-bootstrap-publish-gate-');
     const fixtureSpec = path.join(repoRoot, 'tests/fixtures/e2e-spec.yaml');
     await copyFile(fixtureSpec, path.join(dir, 'openapi.yaml'));
+    vi.stubEnv('GITHUB_WORKSPACE', dir);
 
     let stdout = '';
     await withCwd(dir, async () => {

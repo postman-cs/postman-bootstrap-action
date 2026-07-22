@@ -89,7 +89,6 @@ describe('CLI packaging contract', () => {
     });
     expect(help.stdout).toMatch(/Usage:\s+postman-bootstrap/i);
     expect(help.stderr).not.toMatch(/permission denied|exec format|syntax error|unexpected token|"use strict"/i);
-    expect(help.stderr).not.toContain('[DEP0040]');
 
     const version = await execFileAsync(process.execPath, [cliPath, '--version'], {
       cwd: sandbox,

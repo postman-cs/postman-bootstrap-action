@@ -21,7 +21,7 @@ describe('bootstrap PMAK boundary', () => {
     expect(manifest).toContain('postman-access-token:');
   });
 
-  it('uses PMAK only in the token provider mint request', () => {
+  it('uses PMAK only in the token provider preflight and mint requests', () => {
     const files = sourceFiles(join(process.cwd(), 'src'));
     const violations = files.flatMap((path) => {
       const source = readFileSync(path, 'utf8');
@@ -42,8 +42,8 @@ describe('bootstrap PMAK boundary', () => {
       'utf8'
     );
     expect(provider).toContain('/service-account-tokens');
+    expect(provider).toContain('/me');
     expect(provider).toMatch(/['"]x-api-key['"]:\s*this\.apiKey/i);
-    expect(provider).not.toContain('/me');
   });
 
   it('never authenticates the Postman CLI with PMAK', () => {

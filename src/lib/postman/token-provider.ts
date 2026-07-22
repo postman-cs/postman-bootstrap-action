@@ -34,7 +34,7 @@ function extractAccessToken(payload: unknown): string | undefined {
   return undefined;
 }
 
-/** Holds the live access token and renews it only through the token mint endpoint. */
+/** Holds the live access token and renews it after validating the mint credential. */
 export class AccessTokenProvider {
   private token: string;
   private readonly apiKey: string;
@@ -78,16 +78,33 @@ export class AccessTokenProvider {
         'postman: the access token is invalid or expired and no token-mint credential is available. Re-run postman-resolve-service-token-action and retry.'
       );
     }
-    const token = await retry(() => this.mintOnce(), {
+    const retryOptions = {
       maxAttempts: this.maxAttempts,
       delayMs: 1000,
       backoffMultiplier: 2,
       ...(this.sleep ? { sleep: this.sleep } : {}),
-      shouldRetry: (error) => !(error instanceof MintError && error.permanent)
-    });
+      shouldRetry: (error: unknown) => !(error instanceof MintError && error.permanent)
+    };
+    await retry(() => this.preflightMintCredential(), retryOptions);
+    const token = await retry(() => this.mintOnce(), retryOptions);
     this.token = token;
     this.onToken?.(token);
     return token;
+  }
+
+  private async preflightMintCredential(): Promise<void> {
+    const response = await this.fetchImpl(`${this.apiBaseUrl}/me`, {
+      method: 'GET',
+      headers: { 'x-api-key': this.apiKey }
+    });
+    if (response.ok) return;
+    const rejected = response.status === 401 || response.status === 403;
+    throw new MintError(
+      rejected
+        ? `postman: postman-api-key preflight GET /me was rejected (HTTP ${response.status}).`
+        : `postman: postman-api-key preflight GET /me failed (HTTP ${response.status}).`,
+      rejected
+    );
   }
 
   private async mintOnce(): Promise<string> {

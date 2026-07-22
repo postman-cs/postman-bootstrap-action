@@ -126,7 +126,7 @@ inputs:
     description: Fallback GitHub token used to read repository custom properties when github-token cannot
     required: false
   postman-api-key:
-    description: Postman service-account API key used only to mint or re-mint the short-lived postman-access-token. It is never used for identity, asset, or Postman CLI operations. Optional when postman-access-token is supplied.
+    description: Postman service-account API key used only to preflight the mint credential with GET /me and mint or re-mint the short-lived postman-access-token. It is never used for asset or Postman CLI operations. Optional when postman-access-token is supplied.
     required: false
   postman-access-token:
     description: Postman service-account access token (x-access-token). Every identity and asset operation runs through the access-token gateway. Optional when postman-api-key is supplied for token minting. CLI/binary usage may instead set POSTMAN_ACCESS_TOKEN.

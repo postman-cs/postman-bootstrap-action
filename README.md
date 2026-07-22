@@ -196,7 +196,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `governance-mapping-json` | Legacy JSON map of business domain to governance group name. Prefer governance-group or the postman-governance-group repository custom property. | no | `{}` |
 | `github-token` | GitHub token used to read the postman-governance-group repository custom property | no |  |
 | `gh-fallback-token` | Fallback GitHub token used to read repository custom properties when github-token cannot | no |  |
-| `postman-api-key` | Postman service-account API key used only to mint or re-mint the short-lived postman-access-token. It is never used for identity, asset, or Postman CLI operations. Optional when postman-access-token is supplied. | no |  |
+| `postman-api-key` | Postman service-account API key used only to preflight the mint credential with GET /me and mint or re-mint the short-lived postman-access-token. It is never used for asset or Postman CLI operations. Optional when postman-access-token is supplied. | no |  |
 | `postman-access-token` | Postman service-account access token (x-access-token). Every identity and asset operation runs through the access-token gateway. Optional when postman-api-key is supplied for token minting. CLI/binary usage may instead set POSTMAN_ACCESS_TOKEN. | no |  |
 | `credential-preflight` | Access-token session preflight policy. warn (default) continues with reactive diagnostics when session identity is unavailable; enforce fails before any workspace is created. | no | `warn` |
 | `branch-strategy` | Branch-aware sync strategy. legacy (default) keeps branch-blind behavior; publish-gate restricts canonical writes to the canonical branch and runs credential-free static validation on other branches; preview additionally maintains suffixed per-branch preview asset sets. | no | `legacy` |
@@ -292,7 +292,7 @@ The action handles the bootstrap slice of the Postman onboarding workflow: creat
 - **Git providers:** workspace-to-repository linking supports GitHub and GitLab, cloud and self-hosted. See [Git Provider Support](docs/git-provider-support.md).
 - **Spec handling:** operation summaries are normalized before upload, `spec-url` fetches are SSRF-hardened HTTPS with pinned DNS, and breaking-change comparison runs before any Postman mutation when enabled. See [OpenAPI Spec Handling](docs/spec-handling.md).
 - **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, cloud spec-to-collection syncing, and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
-- **Credentials:** `postman-access-token` authenticates every identity and asset operation; the optional `postman-api-key` is used only to mint or re-mint that token. See [Obtaining Credentials](docs/credentials.md).
+- **Credentials:** `postman-access-token` authenticates every identity and asset operation; the optional `postman-api-key` is used only to preflight the mint credential with `GET /me` and mint or re-mint that token. See [Obtaining Credentials](docs/credentials.md).
 - **Protocol write path:** GraphQL and SOAP transform their v2 models into v3 Extensible Collections; gRPC builds the same format natively. Every protocol writes through the access-token EC API and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when no access token can be obtained. See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
 
 ## Dynamic contract tests

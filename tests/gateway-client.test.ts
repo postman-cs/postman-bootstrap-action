@@ -76,6 +76,8 @@ describe('AccessTokenGatewayClient', () => {
       .fn<typeof fetch>()
       // first proxy call: token expired
       .mockResolvedValueOnce(new Response('{"error":"UNAUTHENTICATED"}', { status: 401 }))
+      // PMAK preflight before re-mint
+      .mockResolvedValueOnce(jsonResponse({ user: { id: 123, teamId: 456 } }))
       // re-mint call
       .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-fresh' }))
       // retried proxy call: success
@@ -95,9 +97,9 @@ describe('AccessTokenGatewayClient', () => {
     });
 
     expect(result).toEqual({ ok: true });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     // The retried proxy call carries the refreshed token.
-    const retried = fetchImpl.mock.calls[2]?.[1] as RequestInit;
+    const retried = fetchImpl.mock.calls[3]?.[1] as RequestInit;
     expect((retried.headers as Record<string, string>)['x-access-token']).toBe('tok-fresh');
   });
 
@@ -132,6 +134,7 @@ describe('AccessTokenGatewayClient', () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response('UNAUTHENTICATED', { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse({ user: { id: 123, teamId: 456 } }))
       .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-fresh-secret' }))
       .mockResolvedValueOnce(new Response('failure leaking tok-fresh-secret', { status: 500 }));
     const masker = createMutableSecretMasker([]);

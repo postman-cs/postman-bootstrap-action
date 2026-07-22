@@ -7,8 +7,12 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe('mintAccessTokenIfNeeded', () => {
-  it('uses PMAK only to mint a missing access token', async () => {
-    const fetchImpl = vi.fn(async () => response({ access_token: 'PMAT-minted' }));
+  it('preflights the PMAK before minting a missing access token', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith('/me')
+        ? response({ user: { id: 123, teamId: 456 } })
+        : response({ access_token: 'PMAT-minted' })
+    );
     const inputs = {
       postmanAccessToken: '',
       postmanApiKey: 'PMAK-key',
@@ -21,8 +25,17 @@ describe('mintAccessTokenIfNeeded', () => {
 
     expect(inputs.postmanAccessToken).toBe('PMAT-minted');
     expect(setSecret).toHaveBeenCalledWith('PMAT-minted');
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl).toHaveBeenCalledWith(
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://api.getpostman.com/me',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ 'x-api-key': 'PMAK-key' })
+      })
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
       'https://api.getpostman.com/service-account-tokens',
       expect.objectContaining({
         method: 'POST',
@@ -49,8 +62,12 @@ describe('mintAccessTokenIfNeeded', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('reports a disabled service-account feature without probing identity', async () => {
-    const fetchImpl = vi.fn(async () => response('service accounts not enabled', 400));
+  it('reports a disabled service-account feature after a successful preflight', async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith('/me')
+        ? response({ user: { id: 123, teamId: 456 } })
+        : response('service accounts not enabled', 400)
+    );
     const inputs = {
       postmanAccessToken: '',
       postmanApiKey: 'PMAK-key',
@@ -60,7 +77,7 @@ describe('mintAccessTokenIfNeeded', () => {
 
     await mintAccessTokenIfNeeded(inputs, log, undefined, fetchImpl as unknown as typeof fetch);
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(log.warning).toHaveBeenCalledWith(expect.stringContaining('service accounts are not enabled'));
   });
 });

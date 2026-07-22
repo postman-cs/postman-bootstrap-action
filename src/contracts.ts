@@ -183,7 +183,7 @@ export const bootstrapActionContract: ActionContract = {
       required: false
     },
     'postman-api-key': {
-      description: 'Postman service-account API key used only to mint or re-mint the short-lived access token.',
+      description: 'Postman service-account API key used only to preflight the mint credential with GET /me and mint or re-mint the short-lived access token.',
       required: false
     },
     'postman-access-token': {

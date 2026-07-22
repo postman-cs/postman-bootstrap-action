@@ -1321,7 +1321,7 @@ export class PostmanGatewayAssetsClient {
     const results: Array<{ id: string; name?: string }> = [];
     for (const raw of entries) {
       const entry = asRecord(raw);
-      const id = String(entry?.collection ?? entry?.collectionId ?? entry?.id ?? entry?.uid ?? '').trim();
+      const id = String(entry?.uid ?? entry?.collection ?? entry?.collectionId ?? entry?.id ?? '').trim();
       if (!id) continue;
       const entryName = String(entry?.name ?? entry?.title ?? '').trim();
       results.push({ id, ...(entryName ? { name: entryName } : {}) });
@@ -1345,37 +1345,52 @@ export class PostmanGatewayAssetsClient {
   }
 
   private async readGeneratedCollectionRoot(collectionId: string): Promise<JsonRecord | null> {
-    const cid = this.bareModelId(collectionId);
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        return await this.gateway.requestJson<JsonRecord>({
-          service: 'collection',
-          method: 'get',
-          path: `/v3/collections/${cid}`
-        });
-      } catch (error) {
-        const eventuallyConsistentRead =
-          error instanceof HttpError &&
-          (error.status === 403 || error.status === 404);
-        if (
-          !eventuallyConsistentRead ||
-          attempt >= PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_RETRIES
-        ) {
-          throw error;
-        }
-        const delayMs = fullJitterDelayMs(
-          attempt,
-          PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_BASE_DELAY_MS,
-          PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_DELAY_MS,
-          this.random
-        );
-        console.warn(
-          `[postman-bootstrap-action] generated collection readback returned ${error.status} for ${cid}; ` +
-          `retrying in ${delayMs}ms (${attempt + 1}/${PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_RETRIES})`
-        );
-        await this.sleep(delayMs);
-      }
+    const collectionIds = this.generatedCollectionRootReadIds(collectionId);
+    if (collectionIds.length === 0) {
+      throw new Error('Generated collection readback received an empty collection id');
     }
+    for (let attempt = 0; ; attempt += 1) {
+      let lastReadError: unknown;
+      const statuses: string[] = [];
+      for (const cid of collectionIds) {
+        try {
+          return await this.gateway.requestJson<JsonRecord>({
+            service: 'collection',
+            method: 'get',
+            path: `/v3/collections/${cid}`
+          });
+        } catch (error) {
+          const eventuallyConsistentRead =
+            error instanceof HttpError &&
+            (error.status === 403 || error.status === 404);
+          if (!eventuallyConsistentRead) {
+            throw error;
+          }
+          lastReadError = error;
+          statuses.push(`${cid}:${error.status}`);
+        }
+      }
+      if (attempt >= PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_RETRIES) {
+        throw lastReadError ?? new Error('Generated collection readback failed without an HTTP error');
+      }
+      const delayMs = fullJitterDelayMs(
+        attempt,
+        PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_BASE_DELAY_MS,
+        PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_DELAY_MS,
+        this.random
+      );
+      console.warn(
+        `[postman-bootstrap-action] generated collection readback returned ${statuses.join(', ')}; ` +
+        `retrying in ${delayMs}ms (${attempt + 1}/${PostmanGatewayAssetsClient.GENERATED_COLLECTION_READBACK_MAX_RETRIES})`
+      );
+      await this.sleep(delayMs);
+    }
+  }
+
+  private generatedCollectionRootReadIds(collectionId: string): string[] {
+    const raw = String(collectionId ?? '').trim();
+    const bare = this.bareModelId(raw);
+    return Array.from(new Set([raw, bare].filter(Boolean)));
   }
 
   private async renameGeneratedCollection(collectionId: string, name: string): Promise<void> {

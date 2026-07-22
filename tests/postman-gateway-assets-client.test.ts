@@ -417,6 +417,85 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
     });
 
+    it('keeps the former ~18s relation-settle budget for late exact-name enrichment', async () => {
+      const generatedModelId = '12121212-1212-1212-1212-121212121212';
+      const generatedUid = `132319-${generatedModelId}`;
+      let submittedName = '';
+      let settleReads = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (!submittedName) return jsonResponse({ data: [] });
+          settleReads += 1;
+          // The relation is visible but nameless through 18 observations; it
+          // receives the exact submitted name on the nineteenth (~18 seconds).
+          return jsonResponse({
+            data: [{
+              collection: generatedUid,
+              ...(settleReads > 18 ? { name: submittedName } : {})
+            }]
+          });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submittedName = String((env.body as { name?: unknown })?.name ?? '');
+          return jsonResponse({ data: { taskId: 'task-late-enrichment' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          return jsonResponse({ data: { 'task-late-enrichment': 'completed' } });
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+          return jsonResponse({ data: { id: generatedModelId } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      const delays: number[] = [];
+      (client as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => {
+        delays.push(ms);
+      };
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(generatedUid);
+
+      // Subsequent converge reads may follow the successful nineteenth settle
+      // observation, so assert the relation-enrichment boundary rather than a
+      // total list-call count.
+      expect(settleReads).toBeGreaterThanOrEqual(19);
+      // One adaptive task-poll delay, then 18 one-second relation-settle
+      // sleeps. The final 1s delay belongs to winner convergence, not settling.
+      expect(delays.slice(1, 19)).toEqual(Array(18).fill(1000));
+      expect(delays.slice(19)).toEqual([1000]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('caps post-completion name enrichment at 20 observations with 1s settle sleeps', async () => {
+      let submitted = false;
+      let settleReads = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (submitted) settleReads += 1;
+          return jsonResponse({ data: submitted ? [{ collection: '132319-nameless' }] : [] });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submitted = true;
+          return jsonResponse({ data: { taskId: 'task-settle-cap' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { 'task-settle-cap': 'completed' } });
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      const delays: number[] = [];
+      (client as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => {
+        delays.push(ms);
+      };
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).rejects.toThrow(/did not yield a collection uid/);
+
+      expect(settleReads).toBe(20);
+      // The first delay polls the completed task; settling has 19 1s intervals.
+      expect(delays.slice(1)).toEqual(Array(19).fill(1000));
+    });
+
     it('re-POSTs once when an ambiguous generation 500 did not commit an exact-name relation', async () => {
       const generatedModelId = '33333333-3333-3333-3333-333333333333';
       let createPosts = 0;

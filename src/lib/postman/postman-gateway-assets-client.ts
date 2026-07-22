@@ -225,9 +225,10 @@ export class PostmanGatewayAssetsClient {
    * Bounded Spec Hub relation/name-enrichment polls after generation task
    * completion or an ambiguous create POST. Kept far below the full task
    * budget so a nameless newly-appeared relation can settle without waiting
-   * the full ~180s generation poll window.
+   * the full ~180s generation poll window. At the fixed 1s cadence this
+   * preserves the former roughly-18-second observation window.
    */
-  private static readonly GENERATION_RELATION_SETTLE_MAX_POLLS = 10;
+  private static readonly GENERATION_RELATION_SETTLE_MAX_POLLS = 20;
   /** Post-create exact-name polls before a singleton may be accepted as final. */
   private static readonly SPEC_CREATE_STABLE_MAX_POLLS = 10;
   /** Consecutive identical normalized ID sets required before acting on the set. */

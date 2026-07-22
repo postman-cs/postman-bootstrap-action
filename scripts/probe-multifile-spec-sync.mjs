@@ -223,7 +223,7 @@ function containsSecretLeak(value) {
   return null;
 }
 
-function shapeOf(value, depth = 0) {
+export function shapeOf(value, depth = 0) {
   if (depth > 4) return '…';
   if (value === null || value === undefined) return String(value);
   if (typeof value === 'string') return `string(${value.length})`;
@@ -235,8 +235,11 @@ function shapeOf(value, depth = 0) {
   if (!record) return typeof value;
   const outShape = {};
   for (const key of Object.keys(record).sort()) {
+    // The receipt leak gate rejects request-id key names even when their values
+    // are redacted, so omit them entirely from structural response summaries.
+    if (/request[_-]?id/i.test(key)) continue;
     if (
-      /content|token|cookie|authorization|password|secret|createdBy|updatedBy|ownerId|userId|requestId/i.test(
+      /content|token|cookie|authorization|password|secret|createdBy|updatedBy|ownerId|userId/i.test(
         key
       )
     ) {

@@ -14,7 +14,8 @@ type PatternId = 'newman' | 'pmak-header' | 'pmak-cli-login';
  * banned because it cannot run Collection v3.
  */
 const ALLOWLIST: Record<string, PatternId[]> = {
-  'src/lib/postman/token-provider.ts': ['pmak-header']
+  'src/lib/postman/token-provider.ts': ['pmak-header'],
+  'src/lib/postman/pmak-diagnostics.ts': ['pmak-header']
 };
 
 type Violation = { file: string; line: number; pattern: PatternId; text: string };

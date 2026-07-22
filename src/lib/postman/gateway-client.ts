@@ -4,6 +4,7 @@ import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import type { SecretMasker } from '../secrets.js';
 import { createSecretMasker } from '../secrets.js';
 import type { AccessTokenProvider } from './token-provider.js';
+import { postmanAppVersionProvider, type AppVersionProvider } from './app-version.js';
 
 export type GatewayMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
@@ -49,6 +50,7 @@ export interface AccessTokenGatewayClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
   /** Injectable RNG for deterministic jitter in tests (default Math.random). */
   randomImpl?: () => number;
+  appVersionProvider?: AppVersionProvider;
 }
 
 function isExpiredAuthError(status: number, body: string): boolean {
@@ -153,6 +155,7 @@ export class AccessTokenGatewayClient {
   private readonly requestTimeoutMs: number;
   private readonly sleepImpl: (ms: number) => Promise<void>;
   private readonly randomImpl: () => number;
+  private readonly appVersionProvider: AppVersionProvider;
 
   constructor(options: AccessTokenGatewayClientOptions) {
     this.tokenProvider = options.tokenProvider;
@@ -173,6 +176,7 @@ export class AccessTokenGatewayClient {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.sleepImpl = options.sleepImpl ?? defaultSleep;
     this.randomImpl = options.randomImpl ?? Math.random;
+    this.appVersionProvider = options.appVersionProvider ?? postmanAppVersionProvider;
   }
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
@@ -180,15 +184,16 @@ export class AccessTokenGatewayClient {
     this.orgMode = orgMode;
   }
 
-  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  private buildHeaders(extra?: Record<string, string>, appVersion?: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'x-access-token': this.tokenProvider.current(),
       ...(extra || {})
     };
+    headers['x-access-token'] = this.tokenProvider.current();
     if (this.teamId && this.orgMode) {
       headers['x-entity-team-id'] = this.teamId;
     }
+    if (appVersion) headers['x-app-version'] = appVersion;
     return headers;
   }
 
@@ -199,7 +204,7 @@ export class AccessTokenGatewayClient {
     try {
       return await this.fetchImpl(url, {
         method: 'POST',
-        headers: this.buildHeaders(request.headers),
+        headers: this.buildHeaders(request.headers, await this.appVersionProvider.resolve()),
         signal: controller.signal,
         body: JSON.stringify({
           service: request.service,

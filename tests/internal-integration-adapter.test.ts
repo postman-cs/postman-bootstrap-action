@@ -19,7 +19,6 @@ describe('internal integration adapter', () => {
   it('routes governance assignment through the Bifrost ruleset proxy', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ version: '12.10.0' }))
       .mockResolvedValueOnce(
         jsonResponse({
           workspaceGroups: [{ id: 'group-1', name: 'Core Banking' }]
@@ -31,7 +30,8 @@ describe('internal integration adapter', () => {
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
-      fetchImpl
+      fetchImpl,
+      appVersionProvider: { resolve: async () => '12.10.0' }
     });
 
     await adapter.assignWorkspaceToGovernanceGroup(
@@ -40,14 +40,9 @@ describe('internal integration adapter', () => {
       JSON.stringify({ 'core-banking': 'Core Banking' })
     );
 
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      'https://dl.pstmn.io/update/status?currentVersion=12.0.0&platform=osx_arm64',
-      expect.objectContaining({ method: 'GET' })
-    );
-    expect(fetchImpl).toHaveBeenNthCalledWith(
-      2,
       'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
       expect.objectContaining({
         method: 'POST',
@@ -65,7 +60,7 @@ describe('internal integration adapter', () => {
       })
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      3,
+      2,
       'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
       expect.objectContaining({
         method: 'POST',
@@ -383,7 +378,6 @@ describe('internal integration adapter', () => {
   it('honors custom bifrostBaseUrl and gatewayBaseUrl overrides for beta stacks', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ version: '12.10.0' }))
       .mockResolvedValueOnce(
         jsonResponse({
           workspaceGroups: [{ id: 'group-beta', name: 'Core Banking' }]
@@ -399,7 +393,8 @@ describe('internal integration adapter', () => {
       orgMode: true,
       bifrostBaseUrl: 'https://bifrost-https-v4.gw.postman-beta.com/',
       gatewayBaseUrl: 'https://gateway.postman-beta.com/',
-      fetchImpl
+      fetchImpl,
+      appVersionProvider: { resolve: async () => '12.10.0' }
     });
 
     await adapter.assignWorkspaceToGovernanceGroup(
@@ -409,12 +404,12 @@ describe('internal integration adapter', () => {
     );
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      2,
+      1,
       'https://bifrost-https-v4.gw.postman-beta.com/ws/proxy',
       expect.any(Object)
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      3,
+      2,
       'https://bifrost-https-v4.gw.postman-beta.com/ws/proxy',
       expect.objectContaining({ method: 'POST' })
     );
@@ -422,7 +417,7 @@ describe('internal integration adapter', () => {
     await adapter.syncCollection('spec-beta', 'col-beta');
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
-      4,
+      3,
       'https://bifrost-https-v4.gw.postman-beta.com/ws/proxy',
       expect.any(Object)
     );
@@ -718,13 +713,13 @@ describe('internal integration adapter error advice', () => {
   function createGovernanceAdapter(listResponse: Response) {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ version: '12.10.0' }))
       .mockResolvedValueOnce(listResponse);
     return createInternalIntegrationAdapter({
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
-      fetchImpl
+      fetchImpl,
+      appVersionProvider: { resolve: async () => '12.10.0' }
     });
   }
 
@@ -779,7 +774,6 @@ describe('internal integration adapter error advice', () => {
   it('wires a per-request AbortSignal deadline onto every outbound fetch', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ version: '12.10.0' }))
       .mockResolvedValueOnce(jsonResponse({ workspaceGroups: [{ id: 'group-1', name: 'Core Banking' }] }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
 
@@ -787,7 +781,8 @@ describe('internal integration adapter error advice', () => {
       backend: 'bifrost',
       accessToken: 'token-123',
       teamId: '11430732',
-      fetchImpl
+      fetchImpl,
+      appVersionProvider: { resolve: async () => '12.10.0' }
     });
 
     await adapter.assignWorkspaceToGovernanceGroup(
@@ -796,8 +791,8 @@ describe('internal integration adapter error advice', () => {
       JSON.stringify({ 'core-banking': 'Core Banking' })
     );
 
-    // Every call (app-version GET + both proxy POSTs) carries an AbortSignal so a
-    // hung endpoint aborts on the deadline instead of blocking forever.
+    // Every proxy call carries an AbortSignal so a hung endpoint aborts on the
+    // deadline instead of blocking forever.
     for (const call of fetchImpl.mock.calls) {
       const init = call[1] as RequestInit;
       expect(init.signal).toBeInstanceOf(AbortSignal);

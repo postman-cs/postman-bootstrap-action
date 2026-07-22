@@ -59,6 +59,17 @@ describe('AccessTokenProvider', () => {
     );
   });
 
+  it('permits minting after any valid PMAK /me response', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ account: 'valid' })))
+      .mockResolvedValueOnce(tokenResponse('tok-new'));
+    const provider = new AccessTokenProvider({ apiKey: 'PMAK-123', fetchImpl });
+
+    await expect(provider.refresh()).resolves.toBe('tok-new');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('reads access_token from the session.token shape', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -102,7 +113,8 @@ describe('AccessTokenProvider', () => {
 
     expect(await provider.refresh()).toBe('tok-1');
     expect(await provider.refresh()).toBe('tok-2');
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    // A successful /me preflight is cached across this provider lifecycle.
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
   it('invokes onToken with each minted token (for setSecret + masking)', async () => {
@@ -192,5 +204,57 @@ describe('AccessTokenProvider', () => {
       ME_URL,
       MINT_URL
     ]);
+  });
+
+  it('does not share a successful preflight between independent providers', async () => {
+    const firstFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(meResponse())
+      .mockResolvedValueOnce(tokenResponse('tok-first'));
+    const secondFetch = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(meResponse())
+      .mockResolvedValueOnce(tokenResponse('tok-second'));
+
+    await expect(new AccessTokenProvider({ apiKey: 'PMAK', fetchImpl: firstFetch }).refresh()).resolves.toBe('tok-first');
+    await expect(new AccessTokenProvider({ apiKey: 'PMAK', fetchImpl: secondFetch }).refresh()).resolves.toBe('tok-second');
+
+    expect(firstFetch).toHaveBeenCalledTimes(2);
+    expect(secondFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('classifies a rejected personal PMAK without leaking credentials or response content', async () => {
+    const apiKey = 'PMAK-secret\nkey';
+    const accessToken = 'PMAT-secret\ttoken';
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user: { username: 'person' } })))
+      .mockResolvedValueOnce(new Response(`denied ${apiKey} ${accessToken}`, { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user: { username: 'person' } })));
+    const provider = new AccessTokenProvider({ apiKey, accessToken, fetchImpl, sleep: async () => undefined });
+
+    const error = await provider.refresh().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/Personal API key detected/);
+    expect((error as Error).message).not.toMatch(/PMAK-secret|PMAT-secret|\n|\t/);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('classifies a rejected service-account PMAK after a valid preflight', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user: { username: null, email: null } })))
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ user: { username: null, email: null } })));
+    const provider = new AccessTokenProvider({ apiKey: 'PMAK', fetchImpl, sleep: async () => undefined });
+
+    await expect(provider.refresh()).rejects.toThrow(/lacks permission to mint access tokens/);
+    expect(fetchImpl.mock.calls.map(([input]) => String(input))).toEqual([ME_URL, MINT_URL, ME_URL]);
+  });
+
+  it('classifies an invalid PMAK when it becomes invalid after preflight', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(meResponse())
+      .mockResolvedValueOnce(new Response('forbidden', { status: 403 }))
+      .mockResolvedValueOnce(new Response('invalid', { status: 401 }));
+    const provider = new AccessTokenProvider({ apiKey: 'PMAK', fetchImpl, sleep: async () => undefined });
+
+    await expect(provider.refresh()).rejects.toThrow(/invalid, disabled, or expired/);
   });
 });

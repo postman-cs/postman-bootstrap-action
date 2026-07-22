@@ -41,6 +41,7 @@ import {
   type SpecBundleSnapshot,
   type SpecReconcileCapabilityPolicy
 } from './spec-file-reconcile.js';
+import { parseSpecTreePage, specTreeNextCursor } from './spec-tree.js';
 
 function asItemArray(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? (value as JsonRecord[]) : [];
@@ -194,6 +195,7 @@ export interface PostmanGatewayAssetsClientOptions {
   // the options are not passed explicitly.
   generationPollAttempts?: number;
   generationPollDelayMs?: number;
+  now?: () => number;
   createIdentity?: () => string;
   /**
    * Validated Spec Hub reconcile capability policy. Defaults are the live-proven
@@ -242,6 +244,7 @@ export class PostmanGatewayAssetsClient {
   private readonly random: () => number;
   private readonly generationPollAttempts: number;
   private readonly generationPollDelayMs: number;
+  private readonly now: () => number;
   private readonly createIdentity: () => string;
   private readonly reconcileCapabilityPolicy: SpecReconcileCapabilityPolicy;
 
@@ -262,6 +265,7 @@ export class PostmanGatewayAssetsClient {
       PostmanGatewayAssetsClient.DEFAULT_GENERATION_POLL_DELAY_MS,
       0
     );
+    this.now = options.now ?? Date.now;
     this.reconcileCapabilityPolicy = validateSpecReconcileCapabilityPolicy(
       options.reconcileCapabilityPolicy ?? DEFAULT_SPEC_RECONCILE_CAPABILITY_POLICY
     );
@@ -776,6 +780,41 @@ export class PostmanGatewayAssetsClient {
     metas: CloudSpecFileMeta[];
     contentById: Map<string, string>;
   }> {
+    if (process.env.POSTMAN_SPEC_TREE_FAST_PATH !== 'off') {
+      try {
+        const members: Array<{ path: string; type: string; content: string }> = [];
+        const metas: CloudSpecFileMeta[] = [];
+        const contentById = new Map<string, string>();
+        const cursors = new Set<string>();
+        let cursor = '';
+        for (let page = 0; ; page += 1) {
+          if (page >= 100) throw new Error('SPEC_TREE_PAGE_LIMIT_EXCEEDED');
+          const tree = await this.gateway.requestJson<JsonRecord>({
+            service: 'specification', method: 'get', path: `/specifications/${specId}/tree`,
+            query: { fields: 'id,name,type,path,parentId,fileType,content', limit: 100, ...(cursor ? { cursor } : {}) }
+          });
+          const files = parseSpecTreePage(tree);
+          for (const file of files) {
+            metas.push({ id: file.id, path: file.path, type: file.type, ...(file.parentId ? { parentId: file.parentId } : {}) });
+            contentById.set(file.id, file.content);
+            members.push({ path: file.path, type: file.type, content: file.content });
+          }
+          const next = specTreeNextCursor(tree);
+          if (!next) {
+            assertNoCloudPathCollisions(metas);
+            return { bundle: cloudMembersToDefinitionBundle({ format, members }), metas, contentById };
+          }
+          if (cursors.has(next)) throw new Error('SPEC_TREE_CURSOR_REPEATED');
+          cursors.add(next);
+          cursor = next;
+        }
+      } catch (error) {
+        if (
+          !(error instanceof HttpError && [403, 404, 405, 501].includes(error.status)) &&
+          !(error instanceof Error && error.message === 'SPEC_TREE_INCOMPLETE')
+        ) throw error;
+      }
+    }
     const listed = await this.gateway.requestJson<JsonRecord>({
       service: 'specification',
       method: 'get',
@@ -1147,8 +1186,13 @@ export class PostmanGatewayAssetsClient {
 
       let taskFailed = false;
       if (taskId) {
+        const deadline = this.now() + 180_000;
         for (let attempt = 0; attempt < this.generationPollAttempts; attempt += 1) {
-          await this.sleep(this.generationPollDelayMs);
+          const fixed = process.env.POSTMAN_GENERATION_POLL_MODE === 'fixed';
+          const delay = fixed ? this.generationPollDelayMs : Math.min(16_000, 2_000 * Math.pow(2, attempt));
+          const remaining = deadline - this.now();
+          if (remaining <= 0) throw new Error('COLLECTION_GENERATION_TIMEOUT');
+          await this.sleep(Math.min(delay, remaining));
           const task = await this.gateway.requestJson<JsonRecord>({
             service: 'specification',
             method: 'get',
@@ -1165,8 +1209,9 @@ export class PostmanGatewayAssetsClient {
             break;
           }
           if (attempt === this.generationPollAttempts - 1) {
-            throw new Error(`Collection generation timed out for ${prefix}`);
+            throw new Error(`COLLECTION_GENERATION_TIMEOUT: Collection generation timed out for ${prefix}`);
           }
+          if (this.now() >= deadline) throw new Error('COLLECTION_GENERATION_TIMEOUT');
         }
       }
       if (taskFailed) {
@@ -1206,7 +1251,7 @@ export class PostmanGatewayAssetsClient {
       poll += 1
     ) {
       if (poll > 0) {
-        await this.sleep(this.generationPollDelayMs);
+        await this.sleep(1000);
       }
       const after = await this.listGeneratedCollectionRefs(specId);
       const appeared = after.filter((entry) => !beforeIds.has(entry.id));
@@ -1453,7 +1498,7 @@ export class PostmanGatewayAssetsClient {
         body: {
           name,
           visibilityStatus: 'team',
-          squad: squadId,
+          squad: targetTeamId,
           roles: {
             group: { [squadId]: ['WORKSPACE_VIEWER_V9'] }
           }

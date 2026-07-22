@@ -28,6 +28,7 @@ describe('bootstrap PMAK boundary', () => {
       const relative = path.replace(`${process.cwd()}/`, '');
       if (
         relative === 'src/lib/postman/token-provider.ts' ||
+        relative === 'src/lib/postman/pmak-diagnostics.ts' ||
         relative === 'src/lib/secrets.ts'
       ) return [];
       return [/['"]x-api-key['"]/i, /service-account-tokens/i, /--with-api-key/i]

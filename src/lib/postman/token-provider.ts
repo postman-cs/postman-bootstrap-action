@@ -1,5 +1,6 @@
 import { retry } from '../retry.js';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
+import { formatRejectedMint, inspectPmakIdentity, maskPmakDiagnostic, type PmakDiagnosticResult } from './pmak-diagnostics.js';
 
 export interface AccessTokenProviderOptions {
   accessToken?: string;
@@ -13,11 +14,13 @@ export interface AccessTokenProviderOptions {
 
 class MintError extends Error {
   readonly permanent: boolean;
+  readonly status?: number;
 
-  constructor(message: string, permanent: boolean) {
+  constructor(message: string, permanent: boolean, status?: number) {
     super(message);
     this.name = 'MintError';
     this.permanent = permanent;
+    this.status = status;
   }
 }
 
@@ -44,6 +47,7 @@ export class AccessTokenProvider {
   private readonly onToken?: (token: string) => void;
   private readonly sleep?: (delayMs: number) => Promise<void>;
   private inflight?: Promise<string>;
+  private preflightIdentity?: PmakDiagnosticResult;
 
   constructor(options: AccessTokenProviderOptions) {
     this.token = String(options.accessToken || '').trim();
@@ -86,25 +90,35 @@ export class AccessTokenProvider {
       shouldRetry: (error: unknown) => !(error instanceof MintError && error.permanent)
     };
     await retry(() => this.preflightMintCredential(), retryOptions);
-    const token = await retry(() => this.mintOnce(), retryOptions);
+    let token: string;
+    try {
+      token = await retry(() => this.mintOnce(), retryOptions);
+    } catch (error) {
+      if (error instanceof MintError && (error.status === 401 || error.status === 403)) {
+        const original = maskPmakDiagnostic(error.message, [this.apiKey, this.token]);
+        const result = await inspectPmakIdentity({
+          apiBaseUrl: this.apiBaseUrl,
+          apiKey: this.apiKey,
+          fetchImpl: this.fetchImpl
+        });
+        throw new MintError(formatRejectedMint(original, result), error.permanent, error.status);
+      }
+      throw error;
+    }
     this.token = token;
     this.onToken?.(token);
     return token;
   }
 
   private async preflightMintCredential(): Promise<void> {
-    const response = await this.fetchImpl(`${this.apiBaseUrl}/me`, {
-      method: 'GET',
-      headers: { 'x-api-key': this.apiKey }
-    });
-    if (response.ok) return;
-    const rejected = response.status === 401 || response.status === 403;
-    throw new MintError(
-      rejected
-        ? `postman: postman-api-key preflight GET /me was rejected (HTTP ${response.status}).`
-        : `postman: postman-api-key preflight GET /me failed (HTTP ${response.status}).`,
-      rejected
-    );
+    if (this.preflightIdentity) return;
+    const result = await inspectPmakIdentity({ apiBaseUrl: this.apiBaseUrl, apiKey: this.apiKey, fetchImpl: this.fetchImpl, mode: 'preflight' });
+    if (result.kind === 'personal' || result.kind === 'service-account') {
+      this.preflightIdentity = result;
+      return;
+    }
+    if (result.kind === 'invalid') throw new MintError(formatRejectedMint('postman: postman-api-key preflight GET /me was rejected (HTTP ' + result.status + ').', result), true, result.status);
+    throw new MintError('postman: postman-api-key preflight GET /me failed.', false);
   }
 
   private async mintOnce(): Promise<string> {
@@ -121,18 +135,18 @@ export class AccessTokenProvider {
       if (response.status === 400 && body.toLowerCase().includes('service accounts not enabled')) {
         throw new MintError(
           'postman: access-token mint failed because service accounts are not enabled for this team.',
-          true
+          true, response.status
         );
       }
       if (response.status === 401 || response.status === 403) {
         throw new MintError(
           `postman: access-token mint failed because the postman-api-key was rejected (HTTP ${response.status}).`,
-          true
+          true, response.status
         );
       }
       throw new MintError(
         `postman: access-token mint failed (service-account-tokens HTTP ${response.status}).`,
-        false
+        false, response.status
       );
     }
     let parsed: unknown;

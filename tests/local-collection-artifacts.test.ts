@@ -552,8 +552,20 @@ describe('local collection artifacts', () => {
   });
 
   describe('directoryTraversalIdentity', () => {
-    it('gives distinct keys for distinct canonical paths when inode is numeric or bigint zero', () => {
+    it('gives distinct keys for distinct Win32 canonical paths even when nonzero dev+ino collide', () => {
       const canonicalize = (absolutePath: string) => absolutePath;
+      const collidingStat = { dev: 2, ino: 42 };
+      expect(
+        directoryTraversalIdentity('C:\\repo\\collections', collidingStat, {
+          canonicalize,
+          platform: 'win32'
+        })
+      ).not.toBe(
+        directoryTraversalIdentity('C:\\repo\\collections\\nested', collidingStat, {
+          canonicalize,
+          platform: 'win32'
+        })
+      );
       expect(
         directoryTraversalIdentity('C:\\repo\\collections', { dev: 0, ino: 0 }, {
           canonicalize,
@@ -565,20 +577,9 @@ describe('local collection artifacts', () => {
           platform: 'win32'
         })
       );
-      expect(
-        directoryTraversalIdentity('/repo/collections', { dev: 0, ino: 0n }, {
-          canonicalize,
-          platform: 'linux'
-        })
-      ).not.toBe(
-        directoryTraversalIdentity('/repo/collections/nested', { dev: 0, ino: 0n }, {
-          canonicalize,
-          platform: 'linux'
-        })
-      );
     });
 
-    it('collapses alias paths that resolve to the same canonical path when inode is zero', () => {
+    it('collapses Win32 alias paths that resolve to the same canonical path regardless of inode', () => {
       const canonicalize = (absolutePath: string) => {
         if (absolutePath === 'C:\\repo\\junction' || absolutePath === 'C:\\repo\\target') {
           return 'C:\\repo\\target';
@@ -586,12 +587,12 @@ describe('local collection artifacts', () => {
         return absolutePath;
       };
       expect(
-        directoryTraversalIdentity('C:\\repo\\junction', { dev: 0, ino: 0 }, {
+        directoryTraversalIdentity('C:\\repo\\junction', { dev: 3, ino: 99 }, {
           canonicalize,
           platform: 'win32'
         })
       ).toBe(
-        directoryTraversalIdentity('C:\\repo\\target', { dev: 0, ino: 0 }, {
+        directoryTraversalIdentity('C:\\repo\\target', { dev: 3, ino: 99 }, {
           canonicalize,
           platform: 'win32'
         })
@@ -609,17 +610,49 @@ describe('local collection artifacts', () => {
       );
     });
 
-    it('keeps nonzero same dev+ino identity independent of path', () => {
+    it('keeps POSIX nonzero same dev+ino identity path-independent without calling canonicalize', () => {
+      let canonicalizeCalls = 0;
+      const canonicalize = () => {
+        canonicalizeCalls += 1;
+        return '/should-not-be-used';
+      };
       const stat = { dev: 16777220, ino: 12345678 };
-      expect(directoryTraversalIdentity('/tmp/a', stat)).toBe(directoryTraversalIdentity('/other/b', stat));
-      expect(directoryTraversalIdentity('/tmp/a', stat)).toBe('16777220:12345678');
-      expect(directoryTraversalIdentity('/tmp/a', { dev: 1n, ino: 2n })).toBe('1:2');
       expect(
-        directoryTraversalIdentity('/tmp/a', { dev: 1, ino: 2 }, {
-          canonicalize: () => '/canonical/a',
-          platform: 'win32'
+        directoryTraversalIdentity('/tmp/a', stat, { canonicalize, platform: 'linux' })
+      ).toBe(directoryTraversalIdentity('/other/b', stat, { canonicalize, platform: 'linux' }));
+      expect(directoryTraversalIdentity('/tmp/a', stat, { canonicalize, platform: 'linux' })).toBe(
+        '16777220:12345678'
+      );
+      expect(directoryTraversalIdentity('/tmp/a', { dev: 1n, ino: 2n }, { canonicalize, platform: 'darwin' })).toBe(
+        '1:2'
+      );
+      expect(canonicalizeCalls).toBe(0);
+    });
+
+    it('uses canonical path for POSIX zero inode', () => {
+      const canonicalize = (absolutePath: string) => absolutePath;
+      expect(
+        directoryTraversalIdentity('/repo/collections', { dev: 0, ino: 0 }, {
+          canonicalize,
+          platform: 'linux'
         })
-      ).toBe('1:2');
+      ).not.toBe(
+        directoryTraversalIdentity('/repo/collections/nested', { dev: 0, ino: 0 }, {
+          canonicalize,
+          platform: 'linux'
+        })
+      );
+      expect(
+        directoryTraversalIdentity('/repo/collections', { dev: 0, ino: 0n }, {
+          canonicalize,
+          platform: 'darwin'
+        })
+      ).not.toBe(
+        directoryTraversalIdentity('/repo/collections/nested', { dev: 0, ino: 0n }, {
+          canonicalize,
+          platform: 'darwin'
+        })
+      );
     });
   });
 

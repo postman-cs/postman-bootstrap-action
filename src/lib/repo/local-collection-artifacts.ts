@@ -369,21 +369,22 @@ function isZeroInode(ino: number | bigint): boolean {
 
 /**
  * Stable directory identity for iterative cycle detection during tree walks.
- * Prefer filesystem inode identity when available; when ino is numeric/bigint
- * zero (notably Windows), fall back to native realpath identity so ordinary
- * nested directories stay distinct while junction/canonical aliases collapse.
- * Canonical path identity is lowercased on win32 only.
+ * On win32, always use native realpath identity (lowercased): Windows may report
+ * nonzero but non-unique `dev:ino`, which falsely collapses distinct directories.
+ * On non-Windows, prefer filesystem inode identity when ino is nonzero; when ino
+ * is numeric/bigint zero, fall back to native realpath so ordinary nested
+ * directories stay distinct while canonical aliases collapse.
  */
 export function directoryTraversalIdentity(
   absolutePath: string,
   stat: { dev: number | bigint; ino: number | bigint },
   deps: DirectoryTraversalIdentityDeps = {}
 ): string {
-  if (!isZeroInode(stat.ino)) {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== 'win32' && !isZeroInode(stat.ino)) {
     return inodeKey(stat);
   }
   const canonicalize = deps.canonicalize ?? ((p: string) => realpathSync.native(p));
-  const platform = deps.platform ?? process.platform;
   const canonical = canonicalize(absolutePath);
   return platform === 'win32' ? canonical.toLowerCase() : canonical;
 }

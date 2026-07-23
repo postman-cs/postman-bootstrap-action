@@ -546,6 +546,78 @@ describe('AccessTokenGatewayClient', () => {
       expect(sleep).toHaveBeenCalledWith(2000);
     });
 
+    it('rate-limit mode retries only 429 for an unsafe mutation', async () => {
+      const rateLimitedFetch = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response('{"error":{"message":"rate limited"}}', {
+            status: 429,
+            headers: { 'Retry-After': '2' }
+          })
+        )
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      const sleep = vi.fn(async () => undefined);
+      const rateLimitedClient = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl: rateLimitedFetch,
+        sleepImpl: sleep
+      });
+
+      await expect(
+        rateLimitedClient.requestJson({
+          service: 'sync',
+          method: 'post',
+          path: '/collection/import',
+          retry: 'rate-limit'
+        })
+      ).resolves.toEqual({ ok: true });
+      expect(rateLimitedFetch).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledWith(2000);
+
+      const serverErrorFetch = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response('{"error":"Internal Server Error"}', { status: 500 })
+      );
+      const serverErrorClient = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl: serverErrorFetch,
+        sleepImpl: sleep
+      });
+      await expect(
+        serverErrorClient.requestJson({
+          service: 'sync',
+          method: 'post',
+          path: '/collection/import',
+          retry: 'rate-limit'
+        })
+      ).rejects.toThrow(/500/);
+      expect(serverErrorFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries an ordinary 500 for a safe read', async () => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(
+          new Response('{"error":"Internal Server Error"}', { status: 500 })
+        )
+        .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      const sleep = vi.fn(async () => undefined);
+      const client = new AccessTokenGatewayClient({
+        tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+        fetchImpl,
+        sleepImpl: sleep
+      });
+
+      await expect(
+        client.requestJson({
+          service: 'collection',
+          method: 'get',
+          path: '/v3/collections/?workspace=ws-1',
+          retry: 'safe'
+        })
+      ).resolves.toEqual({ ok: true });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
     it('caps a large Retry-After at the backoff ceiling', async () => {
       const fetchImpl = vi
         .fn<typeof fetch>()

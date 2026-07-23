@@ -3756,8 +3756,9 @@ describe('PostmanGatewayAssetsClient', () => {
       const inventoryCalls = requestJson.mock.calls
         .map(([options]) => options)
         .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
-      expect(inventoryCalls.length).toBeGreaterThan(0);
-      expect(inventoryCalls.every((options) => options.retry === 'none')).toBe(true);
+      expect(inventoryCalls.length).toBeGreaterThan(1);
+      expect(inventoryCalls[0]?.retry).toBe('none');
+      expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
     });
 
     it('accepts the live Sync import envelope model_id / data.info._postman_id (Q11)', async () => {
@@ -3905,8 +3906,9 @@ describe('PostmanGatewayAssetsClient', () => {
       const inventoryCalls = requestJson.mock.calls
         .map(([options]) => options)
         .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
-      expect(inventoryCalls.length).toBeGreaterThan(0);
-      expect(inventoryCalls.every((options) => options.retry === 'none')).toBe(true);
+      expect(inventoryCalls.length).toBeGreaterThan(1);
+      expect(inventoryCalls[0]?.retry).toBe('none');
+      expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
       expect(inventory.some((entry) => entry.id === 'col-imported' && entry.name === 'Payments')).toBe(
         true
       );
@@ -4039,8 +4041,9 @@ describe('PostmanGatewayAssetsClient', () => {
       const inventoryCalls = requestJson.mock.calls
         .map(([options]) => options)
         .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
-      expect(inventoryCalls.length).toBeGreaterThan(0);
-      expect(inventoryCalls.every((options) => options.retry === 'none')).toBe(true);
+      expect(inventoryCalls.length).toBeGreaterThan(1);
+      expect(inventoryCalls[0]?.retry).toBe('none');
+      expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
       // Rename settle sleeps [250,500], then election observes the full settle window.
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         250, 500, 250, 500, 750, 1000, 1250
@@ -4100,7 +4103,8 @@ describe('PostmanGatewayAssetsClient', () => {
       const inventoryCalls = requestJson.mock.calls
         .map(([options]) => options)
         .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
-      expect(inventoryCalls.every((options) => options.retry === 'none')).toBe(true);
+      expect(inventoryCalls[0]?.retry).toBe('none');
+      expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
       expect(
         requestJson.mock.calls.filter(
           ([options]) => options.service === 'collection' && options.method === 'patch'
@@ -4139,6 +4143,77 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(result.journaledRootIds).toContain('owned-temp');
       expect(result.journaledRootIds).not.toContain('peer-final');
       expect(calls.some((call) => call.path === '/collection/import')).toBe(true);
+    });
+
+    it('retries a rate-limited import without treating it as an ambiguous commit', async () => {
+      const inventory: Array<{ id: string; name: string }> = [];
+      let importAttempts = 0;
+      const { client, gateway, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          importAttempts += 1;
+          if (importAttempts === 1) {
+            return jsonResponse(
+              { error: { message: 'rate limited' } },
+              { status: 429, headers: { 'Retry-After': '0' } }
+            );
+          }
+          const body = env.body as { info?: { name?: string } };
+          inventory.push({ id: 'owned-import', name: String(body.info?.name || '') });
+          return jsonResponse({ data: { id: 'owned-import', uid: 'owned-import' } });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: inventory });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          inventory[0]!.name = 'Payments';
+          return jsonResponse({ data: { id: 'owned-import' } });
+        }
+        return jsonResponse({ data: { ok: true } });
+      });
+      const requestJson = vi.spyOn(gateway, 'requestJson');
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
+        collectionId: 'owned-import'
+      });
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(2);
+      const importCalls = requestJson.mock.calls
+        .map(([options]) => options)
+        .filter((options) => options.path === '/collection/import');
+      expect(importCalls.every((options) => options.retry === 'rate-limit')).toBe(true);
+    });
+
+    it('retries a transient post-import inventory 500 without resending the import', async () => {
+      const inventory: Array<{ id: string; name: string }> = [];
+      let imported = false;
+      let postImportInventoryReads = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          const body = env.body as { info?: { name?: string } };
+          inventory.push({ id: 'owned-import', name: String(body.info?.name || '') });
+          return jsonResponse({ data: { id: 'owned-import', uid: 'owned-import' } });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          if (imported) {
+            postImportInventoryReads += 1;
+            if (postImportInventoryReads === 1) {
+              return jsonResponse({ error: 'Internal Server Error' }, { status: 500 });
+            }
+          }
+          return jsonResponse({ data: inventory });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          inventory[0]!.name = 'Payments';
+          return jsonResponse({ data: { id: 'owned-import' } });
+        }
+        return jsonResponse({ data: { ok: true } });
+      });
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
+        collectionId: 'owned-import'
+      });
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(postImportInventoryReads).toBeGreaterThan(1);
     });
 
     it('fails closed after one pre-snapshot 500 with zero import mutation', async () => {

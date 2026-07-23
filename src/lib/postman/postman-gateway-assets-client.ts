@@ -1576,11 +1576,11 @@ export class PostmanGatewayAssetsClient {
 
   /**
    * Local Sync-import canonical rename: one PATCH with retry:'none'. On
-   * ambiguous transport/5xx only, poll no-retry workspace inventory until the
+   * ambiguous transport/5xx only, poll safe-read workspace inventory until the
    * exact same normalized collection identity shows the exact requested final
    * name, or the settle budget is exhausted. Never resend PATCH, never
-   * fallback, never adopt a final-name peer. Inventory GET errors surface
-   * immediately. Generation callers keep {@link renameGeneratedCollection}.
+   * fallback, never adopt a final-name peer. Generation callers keep
+   * {@link renameGeneratedCollection}.
    */
   private async renameImportedCollectionCanonical(
     workspaceId: string,
@@ -1609,7 +1609,7 @@ export class PostmanGatewayAssetsClient {
       const preferredIdentity = normalizeCollectionModelIdentity(collectionId);
       const delays = PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
       for (let observation = 0; observation <= delays.length; observation += 1) {
-        const matches = await this.findCollectionsByExactName(workspaceId, finalName, 'none');
+        const matches = await this.findCollectionsByExactName(workspaceId, finalName, 'safe');
         const committed = matches.find(
           (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
         );
@@ -2720,7 +2720,7 @@ export class PostmanGatewayAssetsClient {
   async findCollectionsByExactName(
     workspaceId: string,
     name: string,
-    retryPolicy?: 'safe' | 'none'
+    retryPolicy?: 'safe' | 'rate-limit' | 'none'
   ): Promise<Array<{ id: string; name: string }>> {
     const entries = await this.listWorkspaceCollections(workspaceId, retryPolicy);
     return entries
@@ -2730,7 +2730,7 @@ export class PostmanGatewayAssetsClient {
 
   private async listWorkspaceCollections(
     workspaceId: string,
-    retryPolicy?: 'safe' | 'none'
+    retryPolicy?: 'safe' | 'rate-limit' | 'none'
   ): Promise<Array<{ id: string; name: string }>> {
     const response = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
@@ -2967,7 +2967,7 @@ export class PostmanGatewayAssetsClient {
         method: 'post',
         path: '/collection/import',
         query: { workspace: workspaceId, format: '2.1.0' },
-        retry: 'none',
+        retry: 'rate-limit',
         body: importPayload
       });
     } catch (error) {
@@ -2977,7 +2977,7 @@ export class PostmanGatewayAssetsClient {
       // Reconcile only the exact run-unique temp identity — never final-name peers.
       const match = adoptExactMatch(
         `collection-import:${workspaceId}:${tempName}`,
-        await this.findCollectionsByExactName(workspaceId, tempName, 'none'),
+        await this.findCollectionsByExactName(workspaceId, tempName, 'safe'),
         (entry) => entry.id
       );
       if (!match) {
@@ -3191,7 +3191,7 @@ export class PostmanGatewayAssetsClient {
     // Observe the full settle window so a delayed concurrent peer final is not
     // missed after own UID becomes visible. Never early-break on first sighting.
     for (let observation = 0; observation <= delays.length; observation += 1) {
-      const inventory = await this.listWorkspaceCollections(workspaceId, 'none');
+      const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
       eligible = inventory
         .filter((entry) => entry.name === finalName)
         .filter(

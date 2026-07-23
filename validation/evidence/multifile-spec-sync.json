@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "testedAt": "2026-07-23T14:19:14.640Z",
-  "bootstrapCommit": "4d3858de79e1490a3021ac69ac71808b7493a676",
+  "bootstrapCommit": "f063a653497f4d46236c654c8c2be77933236e53",
   "legs": [
     {
       "mode": "nonorg",
@@ -125,7 +125,7 @@
             200
           ],
           "requestShape": "POST /specifications/:id/bulk-files {create:[{path,content,type:'DEFAULT'}],update:[{id,content}],delete:[{id}]}",
-          "responseShape": "{\"data\":{\"create\":[{\"id\":\"string(36)\"},\"\u2026x1\"]},\"meta\":{\"action\":\"string(10)\",\"model\":\"string(17)\"}}",
+          "responseShape": "{\"data\":{\"create\":[{\"id\":\"string(36)\"},\"…x1\"]},\"meta\":{\"action\":\"string(10)\",\"model\":\"string(17)\"}}",
           "observed": {
             "bulkAccepted": true,
             "effectsVisibleTogether": true,
@@ -200,13 +200,13 @@
                 "hash": "6ee196817aa923a17bd8ee8623a465b4c4dd7ec23892039ba138c0769a3adcbb"
               },
               {
-                "path": "components/cafee\u0301.yaml",
+                "path": "components/cafeé.yaml",
                 "role": "DEFAULT",
                 "byteLength": 13,
                 "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
               },
               {
-                "path": "components/cafe\u00e9.yaml",
+                "path": "components/cafeé.yaml",
                 "role": "DEFAULT",
                 "byteLength": 13,
                 "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
@@ -244,13 +244,13 @@
                 "hash": "6ee196817aa923a17bd8ee8623a465b4c4dd7ec23892039ba138c0769a3adcbb"
               },
               {
-                "path": "components/cafee\u0301.yaml",
+                "path": "components/cafeé.yaml",
                 "role": "DEFAULT",
                 "byteLength": 13,
                 "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
               },
               {
-                "path": "components/cafe\u00e9.yaml",
+                "path": "components/cafeé.yaml",
                 "role": "DEFAULT",
                 "byteLength": 13,
                 "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
@@ -435,7 +435,7 @@
             200
           ],
           "requestShape": "POST /specifications/:id/bulk-files {create:[{path,content,type:'DEFAULT'}],update:[{id,content}],delete:[{id}]}",
-          "responseShape": "{\"data\":{\"create\":[{\"id\":\"string(36)\"},\"\u2026x1\"]},\"meta\":{\"action\":\"string(10)\",\"model\":\"string(17)\"}}",
+          "responseShape": "{\"data\":{\"create\":[{\"id\":\"string(36)\"},\"…x1\"]},\"meta\":{\"action\":\"string(10)\",\"model\":\"string(17)\"}}",
           "observed": {
             "bulkAccepted": true,
             "effectsVisibleTogether": true,
@@ -510,13 +510,13 @@
                 "hash": "6ee196817aa923a17bd8ee8623a465b4c4dd7ec23892039ba138c0769a3adcbb"
               },
               {
-                "path": "components/cafee\u0301.yaml",
+                "path": "components/cafeé.yaml",
                 "role": "DEFAULT",
                 "byteLength": 13,
                 "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
               },
               {
-                "path": "components/cafe\u00e9.yaml",
+                "path": "components/cafeé.yaml",
                 "role": "DEFAULT",
                 "byteLength": 13,
                 "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
@@ -554,13 +554,13 @@
                 "hash": "6ee196817aa923a17bd8ee8623a465b4c4dd7ec23892039ba138c0769a3adcbb"
               },
               {
-                "path": "components/cafee\u0301.yaml",
+                "path": "components/cafeé.yaml",
                 "role": "DEFAULT",
                 "byteLength": 13,
                 "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"
               },
               {
-                "path": "components/cafe\u00e9.yaml",
+                "path": "components/cafeé.yaml",
                 "role": "DEFAULT",
                 "byteLength": 13,
                 "hash": "7a16e9ec7ffd96fcb37f5c5e839b2e7ea32e488091a0d010f359377968d23f44"

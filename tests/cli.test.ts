@@ -291,7 +291,7 @@ describe('ConsoleReporter', () => {
 
     expect(stderrSpy).toHaveBeenNthCalledWith(1, 'hello');
     expect(stderrSpy).toHaveBeenNthCalledWith(2, 'warning: careful');
-    expect(stderrSpy).toHaveBeenNthCalledWith(3, '[group] work');
+    expect(stderrSpy).toHaveBeenNthCalledWith(3, expect.stringMatching(/^\[bootstrap timing\] \{"stage":"work","ms":\d+,"status":"ok"\}$/));
 
     stderrSpy.mockRestore();
   });

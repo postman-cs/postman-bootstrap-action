@@ -1190,7 +1190,7 @@ paths:
         internalIntegration?: ReturnType<typeof createRollbackIntegration>
       ) => {
         expect(postman.tagCollection).toHaveBeenCalled();
-        expect(internalIntegration?.syncCollection).toHaveBeenCalledTimes(2);
+        expect(internalIntegration?.syncCollection).toHaveBeenCalledTimes(3);
       },
       failure: 'sync failed',
       integrationOverrides: {
@@ -3024,7 +3024,7 @@ paths:
     ).rejects.toThrow('second sync failed');
 
     expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
-    expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(2);
+    expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(3);
     const sideEffectWarning = warnings.find(
       (warning) =>
         warning.includes('Completed external side effects before failure')
@@ -3035,6 +3035,30 @@ paths:
     expect(sideEffectWarning).toContain('cause: second sync failed');
     expect(sideEffectWarning).toContain('Remediation: inspect and reconcile');
     expect(sideEffectWarning).not.toMatch(/[\r\n\u2028\u2029]/);
+  });
+
+  it('waits for every linked sync before failure handling and records settled siblings', async () => {
+    const { core, warnings } = createCoreStub();
+    const postman = createRollbackPostman();
+    let releaseLast!: () => void;
+    const lastPending = new Promise<void>((resolve) => { releaseLast = resolve; });
+    const internalIntegration = createRollbackIntegration({
+      syncCollection: vi.fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('deferred sync failure'))
+        .mockImplementationOnce(() => lastPending)
+    });
+
+    const run = runExistingSpecBootstrap(postman, { core, internalIntegration });
+    await vi.waitFor(() => expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(3));
+    await Promise.resolve();
+    expect(warnings.some((warning) => warning.includes('Completed external side effects before failure'))).toBe(false);
+
+    releaseLast();
+    await expect(run).rejects.toThrow('deferred sync failure');
+    const sideEffectWarning = warnings.find((warning) => warning.includes('Completed external side effects before failure'));
+    expect(sideEffectWarning).toContain('syncCollection(spec-existing, col-baseline-generated)');
+    expect(sideEffectWarning).toContain('syncCollection(spec-existing, col-contract-generated)');
   });
 
   it('version mode reuses the current ref resources.yaml mappings instead of a release manifest', async () => {

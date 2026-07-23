@@ -1,6 +1,7 @@
 import { retry } from '../retry.js';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { formatRejectedMint, inspectPmakIdentity, maskPmakDiagnostic, type PmakDiagnosticResult } from './pmak-diagnostics.js';
+import type { RetryEvent } from './gateway-client.js';
 
 export interface AccessTokenProviderOptions {
   accessToken?: string;
@@ -10,6 +11,7 @@ export interface AccessTokenProviderOptions {
   maxAttempts?: number;
   onToken?: (token: string) => void;
   sleep?: (delayMs: number) => Promise<void>;
+  onRetry?: (event: RetryEvent) => void;
 }
 
 class MintError extends Error {
@@ -46,6 +48,7 @@ export class AccessTokenProvider {
   private readonly maxAttempts: number;
   private readonly onToken?: (token: string) => void;
   private readonly sleep?: (delayMs: number) => Promise<void>;
+  private readonly onRetry?: (event: RetryEvent) => void;
   private inflight?: Promise<string>;
   private preflightIdentity?: PmakDiagnosticResult;
 
@@ -59,6 +62,7 @@ export class AccessTokenProvider {
     this.maxAttempts = Math.max(1, options.maxAttempts ?? 2);
     this.onToken = options.onToken;
     this.sleep = options.sleep;
+    this.onRetry = options.onRetry;
   }
 
   current(): string {
@@ -87,6 +91,14 @@ export class AccessTokenProvider {
       delayMs: 1000,
       backoffMultiplier: 2,
       ...(this.sleep ? { sleep: this.sleep } : {}),
+      onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: unknown }) => {
+        this.onRetry?.({
+          class: error instanceof MintError && error.status !== undefined ? 'http' : 'transport',
+          ...(error instanceof MintError && error.status !== undefined ? { status: error.status } : {}),
+          attempt: attempt + 1,
+          delay: delayMs
+        });
+      },
       shouldRetry: (error: unknown) => !(error instanceof MintError && error.permanent)
     };
     await retry(() => this.preflightMintCredential(), retryOptions);
@@ -173,14 +185,16 @@ export async function mintAccessTokenIfNeeded(
   inputs: { postmanAccessToken?: string; postmanApiKey?: string; postmanApiBase?: string },
   log: MintLog,
   setSecret?: (secret: string) => void,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  onRetry?: (event: RetryEvent) => void
 ): Promise<void> {
   if (inputs.postmanAccessToken || !inputs.postmanApiKey) return;
   const provider = new AccessTokenProvider({
     apiKey: inputs.postmanApiKey,
     apiBaseUrl: inputs.postmanApiBase,
     fetchImpl,
-    onToken: (token) => setSecret?.(token)
+    onToken: (token) => setSecret?.(token),
+    onRetry
   });
   try {
     inputs.postmanAccessToken = await provider.refresh();

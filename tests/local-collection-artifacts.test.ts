@@ -15,6 +15,7 @@ import {
   confineEmittedRelativePath,
   confineRepoRelativePath,
   deriveArtifactSafeCollectionName,
+  directoryTraversalIdentity,
   finalizeLocalOpenApiArtifactManifest,
   materializeLocalCollectionArtifacts,
   persistLocalOpenApiArtifactManifest,
@@ -548,6 +549,78 @@ describe('local collection artifacts', () => {
         .update('\0')
         .digest('hex')
     );
+  });
+
+  describe('directoryTraversalIdentity', () => {
+    it('gives distinct keys for distinct canonical paths when inode is numeric or bigint zero', () => {
+      const canonicalize = (absolutePath: string) => absolutePath;
+      expect(
+        directoryTraversalIdentity('C:\\repo\\collections', { dev: 0, ino: 0 }, {
+          canonicalize,
+          platform: 'win32'
+        })
+      ).not.toBe(
+        directoryTraversalIdentity('C:\\repo\\collections\\nested', { dev: 0, ino: 0 }, {
+          canonicalize,
+          platform: 'win32'
+        })
+      );
+      expect(
+        directoryTraversalIdentity('/repo/collections', { dev: 0, ino: 0n }, {
+          canonicalize,
+          platform: 'linux'
+        })
+      ).not.toBe(
+        directoryTraversalIdentity('/repo/collections/nested', { dev: 0, ino: 0n }, {
+          canonicalize,
+          platform: 'linux'
+        })
+      );
+    });
+
+    it('collapses alias paths that resolve to the same canonical path when inode is zero', () => {
+      const canonicalize = (absolutePath: string) => {
+        if (absolutePath === 'C:\\repo\\junction' || absolutePath === 'C:\\repo\\target') {
+          return 'C:\\repo\\target';
+        }
+        return absolutePath;
+      };
+      expect(
+        directoryTraversalIdentity('C:\\repo\\junction', { dev: 0, ino: 0 }, {
+          canonicalize,
+          platform: 'win32'
+        })
+      ).toBe(
+        directoryTraversalIdentity('C:\\repo\\target', { dev: 0, ino: 0 }, {
+          canonicalize,
+          platform: 'win32'
+        })
+      );
+      expect(
+        directoryTraversalIdentity('C:\\repo\\Alias', { dev: 0, ino: 0n }, {
+          canonicalize: () => 'C:\\Repo\\Target',
+          platform: 'win32'
+        })
+      ).toBe(
+        directoryTraversalIdentity('C:\\repo\\other', { dev: 0, ino: 0n }, {
+          canonicalize: () => 'c:\\repo\\target',
+          platform: 'win32'
+        })
+      );
+    });
+
+    it('keeps nonzero same dev+ino identity independent of path', () => {
+      const stat = { dev: 16777220, ino: 12345678 };
+      expect(directoryTraversalIdentity('/tmp/a', stat)).toBe(directoryTraversalIdentity('/other/b', stat));
+      expect(directoryTraversalIdentity('/tmp/a', stat)).toBe('16777220:12345678');
+      expect(directoryTraversalIdentity('/tmp/a', { dev: 1n, ino: 2n })).toBe('1:2');
+      expect(
+        directoryTraversalIdentity('/tmp/a', { dev: 1, ino: 2 }, {
+          canonicalize: () => '/canonical/a',
+          platform: 'win32'
+        })
+      ).toBe('1:2');
+    });
   });
 
   it('materializes collection artifacts for names longer than 160 characters without truncation or alteration', async () => {

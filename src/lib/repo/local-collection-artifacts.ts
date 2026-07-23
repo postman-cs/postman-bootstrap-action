@@ -356,6 +356,38 @@ function inodeKey(stat: { dev: number | bigint; ino: number | bigint }): string 
   return `${String(stat.dev)}:${String(stat.ino)}`;
 }
 
+export type DirectoryTraversalIdentityDeps = {
+  /** Test seam; production default is `realpathSync.native`. */
+  canonicalize?: (absolutePath: string) => string;
+  /** Test seam; production default is `process.platform`. */
+  platform?: NodeJS.Platform;
+};
+
+function isZeroInode(ino: number | bigint): boolean {
+  return typeof ino === 'bigint' ? ino === 0n : ino === 0;
+}
+
+/**
+ * Stable directory identity for iterative cycle detection during tree walks.
+ * Prefer filesystem inode identity when available; when ino is numeric/bigint
+ * zero (notably Windows), fall back to native realpath identity so ordinary
+ * nested directories stay distinct while junction/canonical aliases collapse.
+ * Canonical path identity is lowercased on win32 only.
+ */
+export function directoryTraversalIdentity(
+  absolutePath: string,
+  stat: { dev: number | bigint; ino: number | bigint },
+  deps: DirectoryTraversalIdentityDeps = {}
+): string {
+  if (!isZeroInode(stat.ino)) {
+    return inodeKey(stat);
+  }
+  const canonicalize = deps.canonicalize ?? ((p: string) => realpathSync.native(p));
+  const platform = deps.platform ?? process.platform;
+  const canonical = canonicalize(absolutePath);
+  return platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
 async function assertNoSymlinksInTree(absPath: string, fieldName: string): Promise<void> {
   let stat;
   try {
@@ -370,7 +402,7 @@ async function assertNoSymlinksInTree(absPath: string, fieldName: string): Promi
   if (!stat.isDirectory()) return;
 
   const stack: string[] = [absPath];
-  const seen = new Set<string>([inodeKey(stat)]);
+  const seen = new Set<string>([directoryTraversalIdentity(absPath, stat)]);
   while (stack.length > 0) {
     const dir = stack.pop()!;
     let entries: Dirent[];
@@ -389,7 +421,7 @@ async function assertNoSymlinksInTree(absPath: string, fieldName: string): Promi
       }
       if (entry.isDirectory()) {
         const childStat = await fs.lstat(child);
-        const key = inodeKey(childStat);
+        const key = directoryTraversalIdentity(child, childStat);
         if (seen.has(key)) {
           throw new LocalCollectionArtifactsError(
             `${fieldName} contains a directory cycle at ${toPosix(path.relative(absPath, child)) || entry.name}`
@@ -418,7 +450,7 @@ async function listRegularFilesRelative(dir: string, base: string): Promise<stri
 
   const out: string[] = [];
   const stack: string[] = [dir];
-  const seen = new Set<string>([inodeKey(rootStat)]);
+  const seen = new Set<string>([directoryTraversalIdentity(dir, rootStat)]);
   while (stack.length > 0) {
     const current = stack.pop()!;
     let entries: Dirent[];
@@ -436,7 +468,7 @@ async function listRegularFilesRelative(dir: string, base: string): Promise<stri
       }
       if (entry.isDirectory()) {
         const childStat = await fs.lstat(abs);
-        const key = inodeKey(childStat);
+        const key = directoryTraversalIdentity(abs, childStat);
         if (seen.has(key)) {
           throw new LocalCollectionArtifactsError(
             `owned tree contains a directory cycle at ${toPosix(path.relative(base, abs))}`

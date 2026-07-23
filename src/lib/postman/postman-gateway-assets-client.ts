@@ -242,11 +242,42 @@ export class PostmanGatewayAssetsClient {
    */
   private static readonly SPEC_CREATE_SINGLETON_MIN_POLL_INDEX = 2;
   /**
-   * Finite liveness budget for local Sync-import rename commit visibility and
-   * concurrent final-name election. Shared so both seams observe the same
-   * remote-convergence window; never a size/depth rejection cap.
+   * Bounded org eventual-consistency settle schedule for local Sync-import rename
+   * commit visibility and concurrent final-name election on canonical/channel/legacy
+   * final names. Each delay is one observation gap while org list visibility
+   * catches up to a late peer; 3.75s total budget. Shared so both seams observe
+   * the same remote-convergence window; never a size/depth rejection cap.
    */
-  private static readonly IMPORT_IDENTITY_SETTLE_DELAYS_MS = [250, 500, 750, 1000, 1250] as const;
+  private static readonly IMPORT_IDENTITY_SETTLE_DELAYS_MS = [
+    250, 500, 750, 1000, 1250
+  ] as const;
+  /**
+   * Extended settle schedule for branch-preview final names only
+   * (`previewAssetName` contract: `<base> @<branch-slug>`). 18s total budget
+   * covers the live nonorg dual-preview race where a peer final may appear after
+   * the standard window.
+   */
+  private static readonly IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS = [
+    250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000
+  ] as const;
+  /** Matches {@link previewAssetName}: final name ends with ` @<non-whitespace slug>`. */
+  private static readonly PREVIEW_ASSET_NAME_SUFFIX = / @\S+$/;
+
+  private static importIdentitySettleDelaysForFinalName(
+    finalName: string
+  ): readonly number[] {
+    return PostmanGatewayAssetsClient.PREVIEW_ASSET_NAME_SUFFIX.test(finalName)
+      ? PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
+      : PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+  }
+  /**
+   * Bounded eventual-consistency verification after a successful owned-root delete.
+   * Only HTTP 404 proves absence; stale post-delete GET visibility is polled
+   * across the full schedule (9s total) before failing closed.
+   */
+  private static readonly DELETE_ABSENCE_SETTLE_DELAYS_MS = [
+    250, 500, 750, 1000, 1500, 2000, 3000
+  ] as const;
 
   private readonly gateway: AccessTokenGatewayClient;
   private readonly sleep: (delayMs: number) => Promise<void>;
@@ -1608,7 +1639,8 @@ export class PostmanGatewayAssetsClient {
       }
       if (!isAmbiguousTransportError(error)) throw error;
       const preferredIdentity = normalizeCollectionModelIdentity(collectionId);
-      const delays = PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+      const delays =
+        PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
       for (let observation = 0; observation <= delays.length; observation += 1) {
         const matches = await this.findCollectionsByExactName(workspaceId, finalName, 'safe');
         const committed = matches.find(
@@ -3101,13 +3133,14 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Prove a collection root is gone. Only HTTP 404 counts. Bounded safe-read
-   * retries that still end non-404 fail closed (caller surfaces sanitized id).
+   * Prove a collection root is gone. Only HTTP 404 counts. Each observation is
+   * one retry:'none' GET; stale post-delete visibility and transient >=500
+   * errors share the bounded DELETE_ABSENCE settle schedule before failing closed.
    */
   private async verifyCollectionAbsent404(collectionId: string): Promise<boolean> {
     const path = `/v3/collections/${this.bareModelId(collectionId)}`;
-    const maxAttempts = 3;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const delays = PostmanGatewayAssetsClient.DELETE_ABSENCE_SETTLE_DELAYS_MS;
+    for (let observation = 0; observation <= delays.length; observation += 1) {
       try {
         await this.gateway.requestJson<JsonRecord>({
           service: 'collection',
@@ -3115,14 +3148,17 @@ export class PostmanGatewayAssetsClient {
           path,
           retry: 'none'
         });
-        // Still present.
+        if (observation < delays.length) {
+          await this.sleep(delays[observation]!);
+          continue;
+        }
         return false;
       } catch (error) {
         if (error instanceof HttpError && error.status === 404) {
           return true;
         }
-        if (error instanceof HttpError && error.status >= 500 && attempt + 1 < maxAttempts) {
-          await this.sleep(fullJitterDelayMs(attempt, 50, 200, Math.random));
+        if (error instanceof HttpError && error.status >= 500 && observation < delays.length) {
+          await this.sleep(delays[observation]!);
           continue;
         }
         return false;
@@ -3190,7 +3226,8 @@ export class PostmanGatewayAssetsClient {
     staleFinalIdentities: ReadonlySet<string>
   ): Promise<string> {
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
-    const delays = PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+    const delays =
+      PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
     let eligible: Array<{ id: string; name: string }> = [];
     let ownCanonical: { id: string; name: string } | undefined;
 
@@ -3220,12 +3257,9 @@ export class PostmanGatewayAssetsClient {
 
     const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
     if (preferredIdentity !== winnerIdentity) {
-      // True peer won: delete only the run-owned root (match by bare model id).
-      try {
-        await this.deleteCollection(ownCanonical.id);
-      } catch (error) {
-        if (!(error instanceof HttpError && error.status === 404)) throw error;
-      }
+      // True peer won: delete only the run-owned root and verify absence before
+      // returning the winner inventory UID.
+      await this.deleteVerifiedRunOwnedCollections([ownCanonical.id]);
       return winner.id;
     }
 

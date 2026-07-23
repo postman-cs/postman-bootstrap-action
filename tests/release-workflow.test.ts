@@ -98,7 +98,7 @@ describe('release workflow publishing contract', () => {
   it('keeps an artifact-only publisher with trusted inline verifier before secrets or mutation', () => {
     const publish = job('publish');
     expect(publish).toMatch(/permissions:\n {6}contents: write\n {6}id-token: write/);
-    expect(publish).toContain('actions/download-artifact@v7');
+    expect(publish).toContain('actions/download-artifact@v8');
     expect(publish).toContain('name: release-${{ github.run_id }}-${{ github.run_attempt }}');
     expect(publish).not.toContain('actions/checkout');
     expect(publish).not.toContain('npm ci');

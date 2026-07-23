@@ -3304,12 +3304,12 @@ export class PostmanGatewayAssetsClient {
     }
 
     const winner = eligible[0]!;
-
     const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
     if (preferredIdentity !== winnerIdentity) {
       // True peer won: delete only the run-owned loser and verify absence before
       // returning the peer winner so the caller drops journal ownership only
-      // after the owned root is confirmed gone.
+      // after the owned root is confirmed gone. Winners never delete peers here —
+      // that races a peer still inside its election window.
       await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
       return winner.id;
     }
@@ -3317,6 +3317,41 @@ export class PostmanGatewayAssetsClient {
     // Same root (bare Sync model_id vs canonical <owner>-<model_id>): return the
     // inventory UID so downstream tagging and relation writes never see bare id.
     return ownCanonical.id;
+  }
+
+  /**
+   * After concurrent preview imports, collapse duplicate finals to the lowest UID.
+   * Safe once peers have finished rename+elect: deletes only higher UIDs still
+   * sharing the exact final name. Returns the surviving id per final name.
+   */
+  async reconcileDuplicateFinalCollections(
+    workspaceId: string,
+    finalNames: string[]
+  ): Promise<Record<string, string>> {
+    const uniqueNames = [...new Set(finalNames.map((n) => String(n || '').trim()).filter(Boolean))];
+    const winners: Record<string, string> = {};
+    if (uniqueNames.length === 0) return winners;
+    const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
+    for (const finalName of uniqueNames) {
+      const matches = inventory
+        .filter((entry) => entry.name === finalName)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      if (matches.length === 0) continue;
+      const winnerId = matches[0]!.id;
+      winners[finalName] = winnerId;
+      if (matches.length === 1) continue;
+      const losers = matches.slice(1).map((entry) => entry.id);
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, losers);
+      for (const id of losers) {
+        const identity = normalizeCollectionModelIdentity(id);
+        for (let i = inventory.length - 1; i >= 0; i -= 1) {
+          if (normalizeCollectionModelIdentity(inventory[i]!.id) === identity) {
+            inventory.splice(i, 1);
+          }
+        }
+      }
+    }
+    return winners;
   }
 
   private hasSameBranchAssetMarker(

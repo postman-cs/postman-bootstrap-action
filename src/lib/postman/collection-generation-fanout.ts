@@ -41,6 +41,7 @@ export interface CollectionGenerationFanoutPostman {
   }>;
   deleteSpec?(specId: string): Promise<void>;
   deleteCollection?(collectionId: string): Promise<void>;
+  waitForGeneratedCollectionLinks?(specId: string, collectionIds: string[]): Promise<void>;
 }
 
 export interface CollectionGenerationFanoutIntegration {
@@ -379,6 +380,10 @@ export async function generateCollectionsWithSpecFanout(
     await options.integration!.linkCollectionsToSpecification(
       options.canonicalSpecId,
       temporaryCollections.map((entry) => ({ collectionId: entry.collectionId }))
+    );
+    await options.postman.waitForGeneratedCollectionLinks?.(
+      options.canonicalSpecId,
+      temporaryCollections.map((entry) => entry.collectionId)
     );
   } catch (error) {
     return compensateBeforeLink(

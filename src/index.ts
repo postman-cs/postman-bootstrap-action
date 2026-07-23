@@ -274,6 +274,7 @@ export interface BootstrapExecutionDependencies {
       prefix: string,
       preferredId?: string
     ): Promise<string>;
+    waitForGeneratedCollectionLinks?(specId: string, collectionIds: string[]): Promise<void>;
     createCollection?(
       workspaceId: string,
       collection: unknown,
@@ -3310,6 +3311,7 @@ export function createRoutingPostmanClient(options: {
       deleteSpec: requireAccessToken('deleteSpec'),
       generateCollection: requireAccessToken('generateCollection'),
       adoptGeneratedCollection: requireAccessToken('adoptGeneratedCollection'),
+      waitForGeneratedCollectionLinks: requireAccessToken('waitForGeneratedCollectionLinks'),
       createWorkspace: requireAccessToken('createWorkspace'),
       getWorkspaceVisibility: requireAccessToken('getWorkspaceVisibility'),
       getWorkspaceGitRepoUrl: requireAccessToken('getWorkspaceGitRepoUrl'),
@@ -3341,6 +3343,8 @@ export function createRoutingPostmanClient(options: {
       gateway.generateCollection(specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource),
     adoptGeneratedCollection: (specId, projectName, prefix, preferredId) =>
       gateway.adoptGeneratedCollection(specId, projectName, prefix, preferredId),
+    waitForGeneratedCollectionLinks: (specId, collectionIds) =>
+      gateway.waitForGeneratedCollectionLinks(specId, collectionIds),
     updateSpec: (specId, specContent, workspaceId) =>
       gateway.updateSpec(specId, specContent, workspaceId),
     getSpecContent: (specId) => gateway.getSpecContent(specId),

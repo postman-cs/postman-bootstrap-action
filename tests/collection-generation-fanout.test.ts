@@ -58,6 +58,9 @@ describe('collection generation fan-out', () => {
         pending.set(role, task);
         return task.promise;
       }),
+      waitForGeneratedCollectionLinks: vi.fn(async () => {
+        events.push('stable');
+      }),
       uploadSpecWithOutcome: vi
         .fn()
         .mockResolvedValueOnce({ specId: 'spec-smoke-temp', created: true })
@@ -93,7 +96,38 @@ describe('collection generation fan-out', () => {
       ])
     );
     expect(events.indexOf('link')).toBeLessThan(events.indexOf('delete:spec-smoke-temp'));
+    expect(events.indexOf('stable')).toBeLessThan(events.indexOf('delete:spec-smoke-temp'));
     expect(events.indexOf('link')).toBeLessThan(events.indexOf('delete:spec-contract-temp'));
+  });
+
+  it('compensates temporary resources when canonical link stability never appears', async () => {
+    const postman = {
+      deleteCollection: vi.fn(async () => undefined),
+      deleteSpec: vi.fn(async () => undefined),
+      generateCollection: vi.fn(async (_specId: string, _name: string, prefix: string) =>
+        prefix || 'collection-baseline'
+      ),
+      uploadSpecWithOutcome: vi
+        .fn()
+        .mockResolvedValueOnce({ specId: 'spec-smoke-temp', created: true })
+        .mockResolvedValueOnce({ specId: 'spec-contract-temp', created: true }),
+      waitForGeneratedCollectionLinks: vi.fn(async () => {
+        throw new Error('links never stabilized');
+      })
+    };
+
+    await expect(
+      generateCollectionsWithSpecFanout(
+        baseOptions({
+          integration: { linkCollectionsToSpecification: vi.fn(async () => undefined) },
+          postman
+        })
+      )
+    ).rejects.toThrow('links never stabilized');
+    expect(postman.deleteCollection).toHaveBeenCalledWith('[Smoke]');
+    expect(postman.deleteCollection).toHaveBeenCalledWith('[Contract]');
+    expect(postman.deleteSpec).toHaveBeenCalledWith('spec-smoke-temp');
+    expect(postman.deleteSpec).toHaveBeenCalledWith('spec-contract-temp');
   });
 
   it('starts canonical generation and both temporary uploads in parallel', async () => {

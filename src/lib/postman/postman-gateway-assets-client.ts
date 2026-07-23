@@ -3125,9 +3125,17 @@ export class PostmanGatewayAssetsClient {
     collectionIds: string[]
   ): Promise<void> {
     const unique = [...new Set(collectionIds.map((id) => String(id || '').trim()).filter(Boolean))];
+    const delays = PostmanGatewayAssetsClient.DELETE_ABSENCE_SETTLE_DELAYS_MS;
     for (const id of unique) {
-      await this.deleteCollection(id);
-      const verifiedAbsent = await this.verifyCollectionAbsent(workspaceId, id);
+      // Re-issue DELETE between absence observations. Gateway may return 500 for
+      // already-cascaded deletes OR for failed deletes; only inventory/404 prove gone.
+      let verifiedAbsent = false;
+      for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+        await this.deleteCollection(id);
+        verifiedAbsent = await this.verifyCollectionAbsentOnce(workspaceId, id);
+        if (verifiedAbsent) break;
+        if (attempt < delays.length) await this.sleep(delays[attempt]!);
+      }
       if (!verifiedAbsent) {
         throw new Error(
           `LOCAL_OPENAPI_CLEANUP_FAILED: owned collection ${id} absence unverifiable after delete`
@@ -3137,64 +3145,51 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Prove a collection root is gone. HTTP 404 on root GET proves absence.
-   * Root GET 403 or stale post-delete GET 200 fall back to workspace inventory
-   * with normalized identity comparison (never treating 403 alone as absence).
-   * Transient >=500 shares the bounded DELETE_ABSENCE settle schedule before
-   * failing closed.
+   * Prove a collection root is gone across the DELETE_ABSENCE settle window.
+   * Single-shot observations live in verifyCollectionAbsentOnce.
    */
   private async verifyCollectionAbsent(
     workspaceId: string,
     collectionId: string
   ): Promise<boolean> {
-    const path = `/v3/collections/${this.bareModelId(collectionId)}`;
-    const targetIdentity = normalizeCollectionModelIdentity(collectionId);
     const delays = PostmanGatewayAssetsClient.DELETE_ABSENCE_SETTLE_DELAYS_MS;
     for (let observation = 0; observation <= delays.length; observation += 1) {
-      try {
-        await this.gateway.requestJson<JsonRecord>({
-          service: 'collection',
-          method: 'get',
-          path,
-          retry: 'none'
-        });
-        // Root GET can lag after a successful delete. Inventory is the
-        // workspace-scoped truth for whether the identity still exists.
-        const inventoryAbsent = await this.inventoryOmitsNormalizedIdentity(
-          workspaceId,
-          targetIdentity
-        );
-        if (inventoryAbsent === true) return true;
-        if (observation < delays.length) {
-          await this.sleep(delays[observation]!);
-          continue;
-        }
-        return false;
-      } catch (error) {
-        if (error instanceof HttpError && error.status === 404) {
-          return true;
-        }
-        if (error instanceof HttpError && error.status === 403) {
-          const inventoryAbsent = await this.inventoryOmitsNormalizedIdentity(
-            workspaceId,
-            targetIdentity
-          );
-          if (inventoryAbsent === true) return true;
-          if (inventoryAbsent === null) return false;
-          if (observation < delays.length) {
-            await this.sleep(delays[observation]!);
-            continue;
-          }
-          return false;
-        }
-        if (error instanceof HttpError && error.status >= 500 && observation < delays.length) {
-          await this.sleep(delays[observation]!);
-          continue;
-        }
-        return false;
-      }
+      if (await this.verifyCollectionAbsentOnce(workspaceId, collectionId)) return true;
+      if (observation < delays.length) await this.sleep(delays[observation]!);
     }
     return false;
+  }
+
+  /**
+   * Single absence observation. 404 proves gone. GET 200/403 fall back to
+   * workspace inventory (never treating 403 alone as absence). Transient
+   * >=500 is not absence.
+   */
+  private async verifyCollectionAbsentOnce(
+    workspaceId: string,
+    collectionId: string
+  ): Promise<boolean> {
+    const path = `/v3/collections/${this.bareModelId(collectionId)}`;
+    const targetIdentity = normalizeCollectionModelIdentity(collectionId);
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'get',
+        path,
+        retry: 'none'
+      });
+      // Root GET can lag after a successful delete. Inventory is the
+      // workspace-scoped truth for whether the identity still exists.
+      return (await this.inventoryOmitsNormalizedIdentity(workspaceId, targetIdentity)) === true;
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) {
+        return true;
+      }
+      if (error instanceof HttpError && error.status === 403) {
+        return (await this.inventoryOmitsNormalizedIdentity(workspaceId, targetIdentity)) === true;
+      }
+      return false;
+    }
   }
 
   /**
@@ -3312,14 +3307,10 @@ export class PostmanGatewayAssetsClient {
 
     const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
     if (preferredIdentity !== winnerIdentity) {
-      // True peer won: prefer verified loser cleanup, but never fail
-      // import-finalize when a concurrent peer already owns the final name.
-      // Orphan roots are recovered by run-scoped teardown / later GC.
-      try {
-        await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
-      } catch {
-        await this.deleteCollection(ownCanonical.id).catch(() => undefined);
-      }
+      // True peer won: delete only the run-owned loser and verify absence before
+      // returning the peer winner so the caller drops journal ownership only
+      // after the owned root is confirmed gone.
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
       return winner.id;
     }
 

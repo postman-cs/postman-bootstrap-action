@@ -48,7 +48,8 @@ describe('release workflow publishing contract', () => {
   it('uses unprivileged verify permissions, one bundle, exact gate set, and pinned actionlint', () => {
     const verify = job('verify-package');
     expect(verify).toMatch(/permissions:\n {6}contents: read/);
-    expect(verify).not.toContain('NPM_TOKEN');
+    expect(verify).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
+    expect((verify.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(1);
     expect(verify).not.toContain('id-token: write');
     expect((verify.match(/npm ci/g) ?? []).length).toBe(1);
     expect((verify.match(/npm run bundle/g) ?? []).length).toBe(1);
@@ -63,6 +64,7 @@ describe('release workflow publishing contract', () => {
     expect(verify).toContain('ACTIONLINT_BIN=$RUNNER_TEMP/actionlint');
     expect(verify).not.toContain('actions/setup-go');
     expect(verify).not.toContain('go install github.com/rhysd/actionlint');
+    expect(verify.slice(verify.indexOf('name: Run gates'))).not.toContain('NPM_TOKEN');
   });
 
   it('stages deterministic SEA allowlist, verifies before upload, and names artifacts by run identity', () => {
@@ -79,14 +81,15 @@ describe('release workflow publishing contract', () => {
     expect(verify).toContain('env -i PATH=/nonexistent');
     expect(verify).toContain('NODE_OPTIONS=--invalid-node-option');
     expect(verify).toContain(
-      'node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$RUNNER_TEMP/sea-proxy-result.json"'
+      'node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$PWD/sea-proxy-result.json"'
     );
     expect(verify).toContain('bifrost-premium-https-v4.gw.postman.com:443');
     expect(verify).toContain('--project-name sea-proxy-smoke');
     expect(verify).toContain('--spec-path tests/fixtures/e2e-spec.yaml');
     expect(verify).toContain('--postman-access-token sea-proxy-smoke-token');
     expect(verify).toContain('--credential-preflight warn');
-    expect(verify).toContain('--result-json "$RUNNER_TEMP/sea-proxy-result.json"');
+    expect(verify).toContain('--result-json "$PWD/sea-proxy-result.json"');
+    expect(verify).not.toContain('--result-json "$RUNNER_TEMP/sea-proxy-result.json"');
     expect(verify).toContain('cd "$(dirname "$BIN")"');
     expect(verify).toContain('shasum -a 256 "$(basename "$BIN")" > "$(basename "$BIN").sha256"');
     expect(verify).not.toMatch(/shasum -a 256 "\$BIN" > "\$BIN\.sha256"/);
@@ -117,6 +120,7 @@ describe('release workflow publishing contract', () => {
     assertOrder('npm publish ./release.tgz --provenance --access public', 'softprops/action-gh-release', publish);
     expect(publish).toContain('release.tgz\n            release-manifest.json\n            postman-bootstrap-*-linux-x64\n            postman-bootstrap-*-linux-x64.sha256');
     expect(publish).not.toContain('release-artifacts/*');
+    expect(publish.slice(0, publish.indexOf('name: Publish npm package or verify existing identity'))).not.toContain('NPM_TOKEN');
   });
 
   it('fail-closes npm lookup on non-E404, computes SRI before GitHub, and keeps non-cancelling concurrency', () => {

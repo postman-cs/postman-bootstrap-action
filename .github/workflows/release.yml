@@ -68,6 +68,8 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Install Postman CLI
         run: curl -o- "https://dl-cli.pstmn.io/install/unix.sh" | sh
       - run: postman --version
@@ -93,7 +95,7 @@ jobs:
           test "$(env -i PATH=/nonexistent "$BIN" --version)" = "$VERSION"
           env NODE_OPTIONS=--invalid-node-option "$BIN" >/tmp/sea-node-options.out 2>&1 || true
           grep -q "is required" /tmp/sea-node-options.out
-          node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$RUNNER_TEMP/sea-proxy-result.json"
+          node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$PWD/sea-proxy-result.json"
           (
             cd "$(dirname "$BIN")"
             shasum -a 256 "$(basename "$BIN")" > "$(basename "$BIN").sha256"

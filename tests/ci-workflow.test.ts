@@ -80,13 +80,45 @@ describe('CI workflow dist/pack race contract', () => {
     expect(ciWorkflow).toContain('install/win64.ps1');
   });
 
-  it('never injects NPM_TOKEN into PR-capable workflows', () => {
-    expect(ciWorkflow).not.toMatch(/NODE_AUTH_TOKEN\s*:/);
-    expect(ciWorkflow).not.toContain('secrets.NPM_TOKEN');
-    expect(ciWorkflow).not.toContain('NPM_TOKEN');
-    expect(seaWorkflow).not.toMatch(/NODE_AUTH_TOKEN\s*:/);
-    expect(seaWorkflow).not.toContain('secrets.NPM_TOKEN');
-    expect(seaWorkflow).not.toContain('NPM_TOKEN');
+  it('confines the locked-registry token to npm ci install steps', () => {
+    expect(linux).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
+    expect(windows).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
+    expect(seaWorkflow).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
+    expect((ciWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(2);
+    expect((seaWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(1);
+    expect(namedStep(linux, 'Run gates')).not.toContain('NPM_TOKEN');
+    expect(namedStep(windows, 'Run gates')).not.toContain('NPM_TOKEN');
+    expect(namedStep(seaWorkflow, 'Upload SEA binary artifact')).not.toContain('NPM_TOKEN');
+  });
+
+  it('keeps locked @postman runtime deps restricted so NPM_TOKEN remains justified', () => {
+    // Step-local NPM_TOKEN on npm ci is an exception for private @postman packages.
+    // If these stop being restricted (or leave the lock), remove workflow tokens.
+    const lock = JSON.parse(readFileSync(join(process.cwd(), 'package-lock.json'), 'utf8')) as {
+      packages: Record<string, { name?: string; resolved?: string; dependencies?: Record<string, string> }>;
+    };
+    const modelsKey = 'node_modules/@postman/runtime.models';
+    const stdKey = 'node_modules/@postman/runtime.std';
+    const modelsLock = lock.packages[modelsKey];
+    const stdLock = lock.packages[stdKey];
+    expect(modelsLock).toBeDefined();
+    expect(stdLock).toBeDefined();
+    expect(modelsLock!.dependencies?.['@postman/runtime.std']).toBeDefined();
+    expect(modelsLock!.resolved).toMatch(/\/@postman\/runtime\.models\/-/);
+    expect(stdLock!.resolved).toMatch(/\/@postman\/runtime\.std\/-/);
+
+    const modelsPkg = JSON.parse(
+      readFileSync(join(process.cwd(), modelsKey, 'package.json'), 'utf8'),
+    ) as { name: string; publishConfig?: { access?: string }; dependencies?: Record<string, string> };
+    const stdPkg = JSON.parse(readFileSync(join(process.cwd(), stdKey, 'package.json'), 'utf8')) as {
+      name: string;
+      publishConfig?: { access?: string };
+    };
+    expect(modelsPkg.name).toBe('@postman/runtime.models');
+    expect(stdPkg.name).toBe('@postman/runtime.std');
+    expect(modelsPkg.dependencies?.['@postman/runtime.std']).toBeDefined();
+    expect(modelsPkg.publishConfig?.access).toBe('restricted');
+    expect(stdPkg.publishConfig?.access).toBe('restricted');
   });
 
   it('keeps exact PR-only concurrency on CI and SEA', () => {
@@ -182,14 +214,15 @@ describe('SEA binary workflow contract', () => {
     expect(seaWorkflow).toContain('grep -q "is required" /tmp/sea-node-options.out');
 
     expect(seaWorkflow).toContain(
-      'node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$RUNNER_TEMP/sea-proxy-result.json"',
+      'node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$PWD/sea-proxy-result.json"',
     );
     expect(seaWorkflow).toContain('bifrost-premium-https-v4.gw.postman.com:443');
     expect(seaWorkflow).toContain('--project-name sea-proxy-smoke');
     expect(seaWorkflow).toContain('--spec-path tests/fixtures/e2e-spec.yaml');
     expect(seaWorkflow).toContain('--postman-access-token sea-proxy-smoke-token');
     expect(seaWorkflow).toContain('--credential-preflight warn');
-    expect(seaWorkflow).toContain('--result-json "$RUNNER_TEMP/sea-proxy-result.json"');
+    expect(seaWorkflow).toContain('--result-json "$PWD/sea-proxy-result.json"');
+    expect(seaWorkflow).not.toContain('--result-json "$RUNNER_TEMP/sea-proxy-result.json"');
 
     expect(seaWorkflow).toContain('cd "$(dirname "$BIN")"');
     expect(seaWorkflow).toContain('shasum -a 256 "$(basename "$BIN")" > "$(basename "$BIN").sha256"');

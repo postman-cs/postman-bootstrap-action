@@ -36,21 +36,32 @@ export function compareReleaseVersions(a, b) {
   return 0;
 }
 
-function main() {
-  const [, , left, right] = process.argv;
+/**
+ * CLI entry for comparing two immutable release versions.
+ * @param {string[]} [argv=process.argv]
+ * @param {(chunk: string | Uint8Array) => unknown} [writeStdout=process.stdout.write.bind(process.stdout)]
+ * @param {(chunk: string | Uint8Array) => unknown} [writeStderr=process.stderr.write.bind(process.stderr)]
+ * @returns {0|1}
+ */
+export function main(
+  argv = process.argv,
+  writeStdout = process.stdout.write.bind(process.stdout),
+  writeStderr = process.stderr.write.bind(process.stderr),
+) {
+  const [, , left, right] = argv;
   if (left === undefined || right === undefined) {
-    console.error('Usage: node scripts/compare-release-versions.mjs <x.y.z> <x.y.z>');
-    process.exitCode = 1;
-    return;
+    writeStderr('Usage: node scripts/compare-release-versions.mjs <x.y.z> <x.y.z>\n');
+    return 1;
   }
   try {
-    process.stdout.write(`${compareReleaseVersions(left, right)}\n`);
+    writeStdout(`${compareReleaseVersions(left, right)}\n`);
+    return 0;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
+    writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main();
+  process.exitCode = main();
 }

@@ -517,9 +517,15 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       // Peer dual-trigger already finished sync for this collection. Treat as
       // success so concurrent preview runners converge without failing.
       if (
-        response.status === 400 &&
-        /already in sync/i.test(bodyText)
+        response.status === 400 && /already in sync/i.test(bodyText)
       ) {
+        return;
+      }
+
+      const syncInProgress = /collection\s+sync\s+(?:is\s+)?(?:already\s+)?in\s+progress/i.test(
+        bodyText
+      );
+      if (response.status === 423 && syncInProgress) {
         return;
       }
 
@@ -534,8 +540,8 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
 
-      // Peer dual-trigger holds the per-spec collection-sync lock. Wait and
-      // retry; once the peer finishes, a second sync is safe/idempotent.
+      // Unrelated locks still follow the bounded retry contract. A proven
+      // collection-sync lock converges above without waiting for the peer.
       if (
         httpErr.status === 423 &&
         lockedAttempt < BifrostInternalIntegrationAdapter.SYNC_LOCKED_MAX_RETRIES

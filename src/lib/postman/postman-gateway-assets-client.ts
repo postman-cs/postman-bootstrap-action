@@ -1325,6 +1325,32 @@ export class PostmanGatewayAssetsClient {
     return this.convergeGeneratedCollections(specId, name, preferredId);
   }
 
+  async waitForGeneratedCollectionLinks(
+    specId: string,
+    collectionIds: string[]
+  ): Promise<void> {
+    const expected = new Set(collectionIds.map((id) => this.bareModelId(id)).filter(Boolean));
+    if (expected.size === 0) return;
+    let consecutive = 0;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const linked = new Set(
+        (await this.listGeneratedCollectionRefs(specId))
+          .map((entry) => this.bareModelId(entry.id))
+          .filter(Boolean)
+      );
+      if ([...expected].every((id) => linked.has(id))) {
+        consecutive += 1;
+        if (consecutive >= 2) return;
+      } else {
+        consecutive = 0;
+      }
+      if (attempt < 11) await this.sleep(1000);
+    }
+    throw new Error(
+      `CONTRACT_COLLECTION_LINK_NOT_STABLE: generated collections ${[...expected].join(', ')} did not stabilize on specification ${specId}`
+    );
+  }
+
   /**
    * Concurrent dual-trigger previews can each generate+rename the same final
    * collection identity. Elect the stable lowest-id winner.

@@ -522,13 +522,6 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         return;
       }
 
-      const syncInProgress = /collection\s+sync\s+(?:is\s+)?(?:already\s+)?in\s+progress/i.test(
-        bodyText
-      );
-      if (response.status === 423 && syncInProgress) {
-        return;
-      }
-
       const httpErr = await HttpError.fromResponse(response, {
         method: 'POST',
         requestHeaders: {
@@ -540,8 +533,8 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
 
-      // Unrelated locks still follow the bounded retry contract. A proven
-      // collection-sync lock converges above without waiting for the peer.
+      // A per-spec lock does not prove this collection's sync was accepted.
+      // Retry every 423 until this request succeeds or the bounded budget ends.
       if (
         httpErr.status === 423 &&
         lockedAttempt < BifrostInternalIntegrationAdapter.SYNC_LOCKED_MAX_RETRIES

@@ -246,21 +246,24 @@ describe('internal integration adapter', () => {
     );
   });
 
-  it('accepts a proven peer collection-sync 423 without retrying', async () => {
+  it('retries an in-progress collection-sync 423 until this collection is accepted', async () => {
     const sleep = vi.fn(async () => undefined);
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse(
-        {
-          error: {
-            name: 'actionLockedError',
-            status: 423,
-            title: 'Collection sync in progress',
-            detail: 'Collection sync is already in progress for the specification.'
-          }
-        },
-        { status: 423, statusText: 'Locked' }
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: {
+              name: 'actionLockedError',
+              status: 423,
+              title: 'Collection sync in progress',
+              detail: 'Collection sync is already in progress for the specification.'
+            }
+          },
+          { status: 423, statusText: 'Locked' }
+        )
       )
-    );
+      .mockResolvedValueOnce(jsonResponse({ data: { taskId: 'task-2' } }));
 
     const adapter = createInternalIntegrationAdapter({
       backend: 'bifrost',
@@ -272,8 +275,8 @@ describe('internal integration adapter', () => {
     });
 
     await expect(adapter.syncCollection('spec-123', 'col-1')).resolves.toBeUndefined();
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(sleep).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2000);
   });
 
   it('retains bounded retries for an unrelated 423 collection sync lock', async () => {

@@ -308,6 +308,8 @@ describe('branch-aware bootstrap runs', () => {
     delete process.env[BRANCH_DECISION_ENV];
     vi.stubEnv('GITHUB_ACTIONS', 'true');
     vi.stubEnv('GITHUB_REF', 'refs/heads/main');
+    vi.stubEnv('GITHUB_HEAD_REF', '');
+    vi.stubEnv('GITHUB_BASE_REF', '');
     vi.stubEnv('POSTMAN_API_KEY', '');
     vi.stubEnv('POSTMAN_ACCESS_TOKEN', '');
     const core = createCoreStub();

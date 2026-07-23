@@ -4874,6 +4874,87 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(entries).toHaveLength(2);
     });
 
+    it('reconcileDuplicateFinalCollections hydrates omitted org markers from v2.1 export', async () => {
+      const low = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const high = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const entries = [
+        { id: high, name: 'Payments @feature-x' },
+        { id: low, name: 'Payments @feature-x' }
+      ];
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          const bare = String(env.path).split('/').at(-2);
+          return jsonResponse({
+            data: {
+              collection: {
+                ...v21Collection,
+                info: { ...v21Collection.info, _postman_id: bare, description: marker }
+              }
+            }
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          const bare = String(env.path).split('/').pop();
+          const idx = entries.findIndex((entry) => entry.id.endsWith(String(bare)));
+          if (idx >= 0) entries.splice(idx, 1);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.startsWith('/v3/collections/')
+        ) {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-org', [
+          { finalName: 'Payments @feature-x', desiredDescription: marker }
+        ])
+      ).resolves.toEqual({ 'Payments @feature-x': low });
+      expect(deleted).toEqual([`/v3/collections/${high.slice(4)}`]);
+    });
+
+    it('reconcileDuplicateFinalCollections leaves unprovable org candidates untouched', async () => {
+      const entries = [
+        { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: 'Payments @feature-x' },
+        { id: '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: 'Payments @feature-x' }
+      ];
+      const deleted: string[] = [];
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ error: 'forbidden' }, { status: 403 });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-org', [
+          { finalName: 'Payments @feature-x', desiredDescription: marker }
+        ])
+      ).resolves.toEqual({});
+      expect(deleted).toEqual([]);
+      expect(entries).toHaveLength(2);
+    });
+
     it('deleteVerifiedRunOwnedCollections accepts DELETE 500 only after absence is proven', async () => {
       const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
       let rootReads = 0;

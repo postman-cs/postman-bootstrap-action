@@ -3323,10 +3323,25 @@ export class PostmanGatewayAssetsClient {
     if (uniqueCandidates.size === 0) return winners;
     const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
     for (const [finalName, desiredDescription] of uniqueCandidates) {
-      const matches = inventory
-        .filter((entry) => entry.name === finalName)
-        .filter((entry) => this.hasSameBranchAssetMarker(entry.description, desiredDescription))
-        .sort((a, b) => a.id.localeCompare(b.id));
+      const matches: Array<{ id: string; name: string; description?: string }> = [];
+      for (const entry of inventory.filter((candidate) => candidate.name === finalName)) {
+        let description = entry.description;
+        if (!description) {
+          // Org inventory omits root descriptions. The export route remains
+          // readable for generated collections and carries info.description.
+          // If export cannot prove ownership, leave the candidate untouched.
+          try {
+            const exported = await this.exportCollectionAsV21(entry.id);
+            description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
+          } catch {
+            description = undefined;
+          }
+        }
+        if (this.hasSameBranchAssetMarker(description, desiredDescription)) {
+          matches.push({ ...entry, ...(description ? { description } : {}) });
+        }
+      }
+      matches.sort((a, b) => a.id.localeCompare(b.id));
       if (matches.length === 0) continue;
       const winnerId = matches[0]!.id;
       winners[finalName] = winnerId;

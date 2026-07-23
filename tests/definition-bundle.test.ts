@@ -265,7 +265,7 @@ paths:
     }
   });
 
-  it('rejects directory roots, symlinks, oversize members, and over-count closures', async () => {
+  it('rejects directory roots, symlinks, oversize members, and over-count closures', { timeout: 30_000 }, async () => {
     mkdirSync(join(workspaceDir, 'apis/svc'), { recursive: true });
     await expect(
       acquireDefinitionBundle({

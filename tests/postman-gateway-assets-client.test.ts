@@ -4129,6 +4129,56 @@ describe('PostmanGatewayAssetsClient', () => {
       ).toHaveLength(1);
     });
 
+    it('returns elected peer even when loser cleanup absence cannot be verified', async () => {
+      const ownBare = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const ownId = `300-${ownBare}`;
+      const peerId = '100-11111111-1111-1111-1111-111111111111';
+      let imported = false;
+      const deleted: string[] = [];
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          return jsonResponse({ data: { id: ownId } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.includes('?workspace=')
+        ) {
+          if (!imported) return jsonResponse({ data: [] });
+          return jsonResponse({
+            data: [
+              { id: peerId, name: 'Payments' },
+              { id: ownId, name: 'Payments' }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${ownBare}`
+        ) {
+          return jsonResponse({ data: { id: ownId, name: 'Payments' } });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
+      expect(result.collectionId).toBe(peerId);
+      expect(deleted.length).toBeGreaterThanOrEqual(1);
+      expect(deleted[0]).toBe(`/v3/collections/${ownBare}`);
+    });
+
     it('elects lower peer final only after observations beyond the historic six-read/3.75s election window', async () => {
       const finalName = PREVIEW_FINAL_NAME;
       const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
@@ -4136,6 +4186,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const peerId = '200-11111111-1111-1111-1111-111111111111';
       let imported = false;
       let electionObs = 0;
+      let cleanupInventoryReads = 0;
       let ownRootReads = 0;
       const deleted: string[] = [];
       const sleep = vi.fn(async (delayMs: number) => {
@@ -4155,6 +4206,15 @@ describe('PostmanGatewayAssetsClient', () => {
           env.path.includes('?workspace=')
         ) {
           if (!imported) return jsonResponse({ data: [] });
+          if (deleted.length > 0) {
+            cleanupInventoryReads += 1;
+            return jsonResponse({
+              data: [
+                { id: peerId, name: finalName },
+                { id: ownId, name: finalName }
+              ]
+            });
+          }
           electionObs += 1;
           // Own preview final is visible first; lower peer final appears only
           // after the historic six-observation / 3.75s standard election budget.
@@ -4192,6 +4252,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
       expect(ownRootReads).toBe(2);
       expect(electionObs).toBe(PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+      expect(cleanupInventoryReads).toBe(1);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
@@ -4679,7 +4740,7 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ data: { ok: true } });
       });
 
-      await client.deleteVerifiedRunOwnedCollections([
+      await client.deleteVerifiedRunOwnedCollections('ws-1', [
         'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
         'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -4702,7 +4763,7 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       await expect(
-        client.deleteVerifiedRunOwnedCollections(['cccccccc-cccc-cccc-cccc-cccccccccccc'])
+        client.deleteVerifiedRunOwnedCollections('ws-1', ['cccccccc-cccc-cccc-cccc-cccccccccccc'])
       ).rejects.toThrow(/LOCAL_OPENAPI_CLEANUP_FAILED: owned collection cccccccc-cccc-cccc-cccc-cccccccccccc absence unverifiable/);
     });
 
@@ -4723,17 +4784,27 @@ describe('PostmanGatewayAssetsClient', () => {
           }
           return jsonResponse({ error: 'missing' }, { status: 404 });
         }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === '/v3/collections/?workspace=ws-1'
+        ) {
+          // Stale root GET still sees the collection; inventory already dropped it.
+          return jsonResponse({ data: [] });
+        }
         return jsonResponse({ data: { ok: true } });
       }, { sleep });
 
-      await expect(client.deleteVerifiedRunOwnedCollections([id])).resolves.toBeUndefined();
-      expect(rootReads).toBe(2);
-      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([DELETE_ABSENCE_SETTLE_DELAYS_MS[0]]);
+      await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).resolves.toBeUndefined();
+      // Inventory proves absence on first stale GET 200 — no settle sleep needed.
+      expect(rootReads).toBe(1);
+      expect(sleep).not.toHaveBeenCalled();
     });
 
     it('deleteVerifiedRunOwnedCollections rejects bounded readback when collection never becomes absent', async () => {
       const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
       let rootReads = 0;
+      let inventoryReads = 0;
       const sleep = vi.fn(async (delayMs: number) => {
         void delayMs;
       });
@@ -4745,13 +4816,174 @@ describe('PostmanGatewayAssetsClient', () => {
           rootReads += 1;
           return jsonResponse({ data: { id, name: 'Still here' } });
         }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === '/v3/collections/?workspace=ws-1'
+        ) {
+          inventoryReads += 1;
+          return jsonResponse({ data: [{ id, name: 'Still here' }] });
+        }
         return jsonResponse({ data: { ok: true } });
       }, { sleep });
 
-      await expect(client.deleteVerifiedRunOwnedCollections([id])).rejects.toThrow(
+      await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).rejects.toThrow(
         /LOCAL_OPENAPI_CLEANUP_FAILED: owned collection eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee absence unverifiable/
       );
       expect(rootReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
+      expect(inventoryReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([...DELETE_ABSENCE_SETTLE_DELAYS_MS]);
+    });
+
+    it('deleteVerifiedRunOwnedCollections resolves when root GET 403 and inventory omits normalized identity', async () => {
+      const bareId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const peerId = '99999999-ffff-ffff-ffff-ffffffffffff';
+      let rootReads = 0;
+      let inventoryReads = 0;
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'delete' && env.path === `/v3/collections/${bareId}`) {
+          return jsonResponse({ data: { ok: true } });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path === `/v3/collections/${bareId}`) {
+          rootReads += 1;
+          return jsonResponse({ error: 'forbidden' }, { status: 403 });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === '/v3/collections/?workspace=ws-403-absent'
+        ) {
+          inventoryReads += 1;
+          return jsonResponse({
+            data: [{ id: peerId, name: 'Peer collection' }]
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      await expect(
+        client.deleteVerifiedRunOwnedCollections('ws-403-absent', [bareId])
+      ).resolves.toBeUndefined();
+
+      expect(rootReads).toBe(1);
+      expect(inventoryReads).toBe(1);
+      expect(sleep).not.toHaveBeenCalled();
+      expect(
+        calls.filter(
+          (call) =>
+            call.service === 'collection' &&
+            call.method === 'delete' &&
+            call.path !== `/v3/collections/${bareId}`
+        )
+      ).toHaveLength(0);
+      expect(
+        calls.filter(
+          (call) =>
+            call.service === 'collection' &&
+            call.method === 'get' &&
+            call.path === '/v3/collections/?workspace=ws-403-absent'
+        )
+      ).toHaveLength(1);
+    });
+
+    it('deleteVerifiedRunOwnedCollections settles when root GET 403 until canonical inventory identity disappears', async () => {
+      const bareId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+      const canonicalId = `87654321-${bareId}`;
+      let rootReads = 0;
+      let inventoryReads = 0;
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'delete' && env.path === `/v3/collections/${bareId}`) {
+          return jsonResponse({ data: { ok: true } });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path === `/v3/collections/${bareId}`) {
+          rootReads += 1;
+          return jsonResponse({ error: 'forbidden' }, { status: 403 });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === '/v3/collections/?workspace=ws-403-settle'
+        ) {
+          inventoryReads += 1;
+          return jsonResponse({
+            data:
+              inventoryReads < 3
+                ? [{ id: canonicalId, name: 'Payments @feature-x' }]
+                : []
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      await expect(
+        client.deleteVerifiedRunOwnedCollections('ws-403-settle', [bareId])
+      ).resolves.toBeUndefined();
+
+      expect(rootReads).toBe(3);
+      expect(inventoryReads).toBe(3);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        DELETE_ABSENCE_SETTLE_DELAYS_MS[0],
+        DELETE_ABSENCE_SETTLE_DELAYS_MS[1]
+      ]);
+      expect(
+        calls.filter(
+          (call) =>
+            call.service === 'collection' &&
+            call.method === 'get' &&
+            call.path === '/v3/collections/?workspace=ws-403-settle'
+        )
+      ).toHaveLength(3);
+      expect(
+        calls.filter(
+          (call) =>
+            call.service === 'collection' &&
+            call.method === 'delete' &&
+            call.path !== `/v3/collections/${bareId}`
+        )
+      ).toHaveLength(0);
+    });
+
+    it('deleteVerifiedRunOwnedCollections fails closed when root GET 403 and inventory keeps normalized identity', async () => {
+      const bareId = 'cccccccc-dddd-eeee-ffff-000000000001';
+      const canonicalId = `11111111-${bareId}`;
+      let rootReads = 0;
+      let inventoryReads = 0;
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'delete' && env.path === `/v3/collections/${bareId}`) {
+          return jsonResponse({ data: { ok: true } });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path === `/v3/collections/${bareId}`) {
+          rootReads += 1;
+          return jsonResponse({ error: 'forbidden' }, { status: 403 });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === '/v3/collections/?workspace=ws-403-still'
+        ) {
+          inventoryReads += 1;
+          return jsonResponse({ data: [{ id: canonicalId, name: 'Payments @feature-x' }] });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      await expect(
+        client.deleteVerifiedRunOwnedCollections('ws-403-still', [bareId])
+      ).rejects.toThrow(
+        /LOCAL_OPENAPI_CLEANUP_FAILED: owned collection cccccccc-dddd-eeee-ffff-000000000001 absence unverifiable/
+      );
+
+      expect(rootReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
+      expect(inventoryReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([...DELETE_ABSENCE_SETTLE_DELAYS_MS]);
     });
   });

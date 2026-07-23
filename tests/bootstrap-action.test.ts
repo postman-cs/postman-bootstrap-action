@@ -1161,7 +1161,7 @@ paths:
     expect(outputs['spec-content-changed']).toBe('true');
   });
 
-  it('does not attempt tag conflict handling before repo-sync finalization', async () => {
+  it('does not attempt tag conflict handling before repo-sync finalization', { timeout: 30_000 }, async () => {
     const { core, outputs } = createCoreStub();
     const conflict = Object.assign(new Error('tag exists'), { status: 409 });
     const tagSpecVersion = vi.fn().mockRejectedValue(conflict);

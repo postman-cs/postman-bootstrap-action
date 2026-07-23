@@ -246,24 +246,21 @@ describe('internal integration adapter', () => {
     );
   });
 
-  it('retries collection sync when a peer holds the 423 sync lock', async () => {
+  it('accepts a proven peer collection-sync 423 without retrying', async () => {
     const sleep = vi.fn(async () => undefined);
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        jsonResponse(
-          {
-            error: {
-              name: 'actionLockedError',
-              status: 423,
-              title: 'Collection sync in progress',
-              detail: 'Collection sync is already in progress for the specification.'
-            }
-          },
-          { status: 423, statusText: 'Locked' }
-        )
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            name: 'actionLockedError',
+            status: 423,
+            title: 'Collection sync in progress',
+            detail: 'Collection sync is already in progress for the specification.'
+          }
+        },
+        { status: 423, statusText: 'Locked' }
       )
-      .mockResolvedValueOnce(jsonResponse({ data: { taskId: 'task-2' } }));
+    );
 
     const adapter = createInternalIntegrationAdapter({
       backend: 'bifrost',
@@ -275,8 +272,35 @@ describe('internal integration adapter', () => {
     });
 
     await expect(adapter.syncCollection('spec-123', 'col-1')).resolves.toBeUndefined();
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledWith(2000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('retains bounded retries for an unrelated 423 collection sync lock', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      jsonResponse(
+        { error: { name: 'actionLockedError', status: 423, title: 'Workspace is locked' } },
+        { status: 423, statusText: 'Locked' }
+      )
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    await expect(adapter.syncCollection('spec-123', 'col-1')).rejects.toMatchObject({
+      status: 423
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(7);
+    expect(sleep).toHaveBeenCalledTimes(6);
+    expect(sleep).toHaveBeenNthCalledWith(1, 2000);
+    expect(sleep).toHaveBeenNthCalledWith(6, 64000);
   });
 
   it('treats collection already-in-sync as success for concurrent dual-trigger', async () => {

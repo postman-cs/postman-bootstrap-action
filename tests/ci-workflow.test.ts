@@ -36,9 +36,10 @@ describe('CI workflow dist/pack race contract', () => {
   it('supersedes only older pull-request runs and queues Windows read-only gates', () => {
     expect(ciWorkflow).toContain('group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
     expect(ciWorkflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
-    expect(ciWorkflow).toMatch(/windows:[\s\S]*?npm run bundle[\s\S]*?Run gates/);
+    expect(ciWorkflow).toMatch(/windows:[\s\S]*?Run gates/);
     expect(ciWorkflow).toMatch(/windows:[\s\S]*?run-windows-gates\.ps1/);
     expect(ciWorkflow).toMatch(/windows:[\s\S]*?'integ\|\|\|npm\|\|\|run\|\|\|test:integration'/);
+    expect(windows).not.toContain('npm run bundle');
   });
 
   it('uses the pinned actionlint binary without Go setup', () => {
@@ -48,13 +49,13 @@ describe('CI workflow dist/pack race contract', () => {
     expect(ciWorkflow).not.toContain('go install github.com/rhysd/actionlint');
   });
 
-  it('gates immutable dist on Linux and Windows', () => {
+  it('gates immutable dist on Linux and keeps Windows as a runtime-only lane', () => {
     // Regression for the parallel race where `npm run verify:dist` deleted
     // dist/ while tests/cli.test.ts ran `npm pack`.
     expect(ciWorkflow).toMatch(/run: npm run bundle[\s\S]*?- name: Run gates/);
     expect(ciWorkflow).not.toMatch(/run: npm run build/);
     expect(linux).toContain('npm run typecheck');
-    expect(windows).toContain("'typecheck|||npm|||run|||typecheck'");
+    expect(windows).not.toContain("'typecheck|||npm|||run|||typecheck'");
 
     const runGates = namedStep(linux, 'Run gates');
     expect(runGates).toContain('run test');
@@ -78,17 +79,20 @@ describe('CI workflow dist/pack race contract', () => {
     expect(upload).toContain('path: dist/');
     expect(ciWorkflow).toContain('name: Windows gate');
     expect(ciWorkflow).toContain('runs-on: windows-latest');
-    expect(ciWorkflow).toContain('install/win64.ps1');
+    expect(windows).not.toContain('install/win64.ps1');
   });
 
   it('confines the locked-registry token to npm ci install steps', () => {
     expect(linux).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
-    expect(windows).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
+    expect(windows).toMatch(
+      /if: steps\.windows-node-modules\.outputs\.cache-hit != 'true'\n {8}run: npm ci --prefer-offline --no-audit --no-fund\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/,
+    );
     expect(seaWorkflow).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
     expect((ciWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(2);
     expect((seaWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(1);
     expect(namedStep(linux, 'Run gates')).not.toContain('NPM_TOKEN');
     expect(namedStep(windows, 'Run gates')).not.toContain('NPM_TOKEN');
+    expect(namedStep(windows, 'Install Postman CLI')).not.toContain('NPM_TOKEN');
     expect(namedStep(seaWorkflow, 'Upload SEA binary artifact')).not.toContain('NPM_TOKEN');
   });
 
@@ -167,41 +171,117 @@ describe('CI workflow dist/pack race contract', () => {
   it('installs pinned actionlint 1.7.11 into $RUNNER_TEMP without Go', () => {
     const install = namedStep(linux, 'Install actionlint');
     expect(install.length).toBeGreaterThan(0);
+    expect(install).toContain(
+      'https://raw.githubusercontent.com/rhysd/actionlint/393031adb9afb225ee52ae2ccd7a5af5525e03e8/scripts/download-actionlint.bash',
+    );
     expect(install).toContain('download-actionlint.bash) 1.7.11 "$RUNNER_TEMP"');
+    expect(install.match(/393031adb9afb225ee52ae2ccd7a5af5525e03e8/)?.[0]).toHaveLength(40);
     expect(install).toContain('ACTIONLINT_BIN=$RUNNER_TEMP/actionlint');
+    expect(ciWorkflow).not.toContain('/main/scripts/download-actionlint.bash');
     expect(ciWorkflow).not.toContain('actions/setup-go');
     expect(ciWorkflow).not.toContain('go install github.com/rhysd/actionlint');
     expect(ciWorkflow).not.toMatch(/\bgo install\b/);
   });
 
-  it('retains Windows with Postman CLI, one pre-queue bundle, and exact lint/test/typecheck/dist/integ set', () => {
+  it('retains Windows with exact caches, versioned CLI, and test+integ max-two gates', () => {
     expect(windows).toContain('name: Windows gate');
     expect(windows).toContain('runs-on: windows-latest');
-    expect(windows).toContain('install/win64.ps1');
-    expect(windows).toContain('postman.exe');
-    expect(windows.match(/^\s*- run: npm run bundle\s*$/gm) ?? []).toHaveLength(1);
-    expect(windows.indexOf('- run: npm run bundle')).toBeLessThan(windows.indexOf('- name: Run gates'));
+    expect(windows).toContain('fetch-depth: 0');
+    expect(windows).toContain('filter: blob:none');
+    expect(windows).not.toContain('cache: npm');
+
+    expect(windows).toContain('id: windows-node-modules');
+    expect(windows).toContain('id: windows-postman-cli');
+    expect(windows).toContain('id: postman-cli-version');
+    expect(
+      (windows.match(/actions\/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4\.2\.0/g) ?? []).length,
+    ).toBe(2);
+    const repositoryIdentity = '${{ github.event.pull_request.head.repo.full_name || github.repository }}';
+    const nodeModulesKey =
+      'node-modules-Windows-Node-24-' + repositoryIdentity + "-${{ hashFiles('package-lock.json') }}";
+    const postmanCliKey =
+      'postman-cli-${{ steps.postman-cli-version.outputs.version }}-Windows-${{ runner.arch }}-' +
+      repositoryIdentity;
+    expect(windows).toContain(`key: ${nodeModulesKey}`);
+    expect(windows).toContain(
+      `key: ${postmanCliKey}`,
+    );
+    for (const key of [nodeModulesKey, postmanCliKey]) {
+      const baseRepositoryKey = key.replace(repositoryIdentity, 'postman-cs/postman-bootstrap-action');
+      const forkRepositoryKey = key.replace(repositoryIdentity, 'untrusted-fork/postman-bootstrap-action');
+      expect(baseRepositoryKey).not.toBe(forkRepositoryKey);
+    }
+    expect(windows).toContain('path: node_modules');
+    expect(windows).toContain('path: ${{ runner.temp }}\\postman-cli');
+    expect(windows).not.toContain('restore-keys');
+
+    expect(windows).toContain("if: steps.windows-node-modules.outputs.cache-hit != 'true'");
+    expect(windows).toContain('npm ci --prefer-offline --no-audit --no-fund');
+    expect(windows).toContain("if: steps.windows-postman-cli.outputs.cache-hit != 'true'");
+
+    const resolveCli = namedStep(windows, 'Resolve Postman CLI version');
+    expect(resolveCli).toContain('npm view postman-cli version --json');
+    expect(resolveCli).toContain('^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$');
+    expect(resolveCli).toContain('GITHUB_OUTPUT');
+    expect(resolveCli).toContain('version=$version');
+
+    const installCli = namedStep(windows, 'Install Postman CLI');
+    expect(installCli).toContain(
+      'npm install "postman-cli@${{ steps.postman-cli-version.outputs.version }}" --prefix "${{ runner.temp }}\\postman-cli" --no-save --no-audit --no-fund',
+    );
+    expect(installCli).not.toContain('win64.ps1');
+    expect(installCli).not.toContain('postman.exe');
+    expect(installCli).not.toContain('--no-optional');
+    expect(installCli).not.toContain('postman.cmd');
+
+    const addCliPath = namedStep(windows, 'Add Postman CLI to PATH');
+    expect(addCliPath).toContain('GITHUB_PATH');
+    expect(addCliPath).toContain(
+      'node_modules\\@postman\\pm-bin-windows-x64\\bin\\postman.exe',
+    );
+    expect(addCliPath).toContain('Test-Path -LiteralPath $exe -PathType Leaf');
+    expect(addCliPath).toContain('Split-Path -Parent $exe');
+    expect(addCliPath).toContain('& $exe --version');
+    expect(addCliPath).toContain('--version');
+    expect(addCliPath).not.toContain('postman.cmd');
+    expect(addCliPath).not.toContain('node_modules\\.bin');
+    expect(addCliPath).not.toContain('win64.ps1');
+    expect(addCliPath).not.toContain('dl-cli.pstmn.io');
+    expect(addCliPath).not.toMatch(/\bif:/);
 
     const runGates = namedStep(windows, 'Run gates');
     expect(runGates).toContain('.github/scripts/run-windows-gates.ps1');
     expect(runGates).toContain('-GateJson $gates');
-    expect(runGates).toContain("'lint|||npm|||run|||lint'");
     expect(runGates).toContain("'test|||npm|||test'");
-    expect(runGates).toContain("'typecheck|||npm|||run|||typecheck'");
-    expect(runGates).toContain("'dist|||npm|||run|||verify:dist:assert'");
     expect(runGates).toContain("'integ|||npm|||run|||test:integration'");
+    expect(runGates.match(/'[^']+\|\|\|[^']+'/g) ?? []).toEqual([
+      "'test|||npm|||test'",
+      "'integ|||npm|||run|||test:integration'",
+    ]);
+    expect(runGates).not.toMatch(/\bif:/);
     expect(windowsGateHelper).toContain('[int]$MaxParallelGates = 2');
     expect(windowsGateHelper).toContain('Start-ThreadJob');
+    expect(windowsGateHelper).toContain('ValidateRange(1, 2)');
     expect(windowsGateHelper).toContain("$ErrorActionPreference = 'Continue'");
     expect(windowsGateHelper).toContain('Receive-Job -Job $completed -ErrorAction Continue 2>&1');
     expect(windowsGateHelper).toContain('::group::$name');
     expect(windowsGateHelper).toContain('gate:$name=pass');
     expect(windowsGateHelper).toContain('gate:$name=fail');
+
+    expect(windows).not.toContain('npm run bundle');
+    expect(windows).not.toContain('npm run build');
+    expect(windows).not.toContain("'lint|||npm|||run|||lint'");
+    expect(windows).not.toContain("'typecheck|||npm|||run|||typecheck'");
+    expect(windows).not.toContain("'dist|||npm|||run|||verify:dist:assert'");
+    expect(windows).not.toContain('actionlint');
+    expect(windows).not.toContain('commitlint');
+    expect(windows).not.toContain('install/win64.ps1');
+    expect(windows).not.toContain('postman.cmd');
+    expect(windows).toContain(
+      'node_modules\\@postman\\pm-bin-windows-x64\\bin\\postman.exe',
+    );
     expect(runGates).not.toContain('continue-on-error');
-    expect(runGates).not.toContain('npm run build');
     expect(runGates).not.toMatch(/npm run verify:dist(?:\s|$|"|')/);
-    expect(runGates).not.toContain('actionlint');
-    expect(runGates).not.toContain('commitlint');
   });
 });
 

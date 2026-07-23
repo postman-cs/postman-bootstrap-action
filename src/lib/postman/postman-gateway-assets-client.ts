@@ -3312,10 +3312,14 @@ export class PostmanGatewayAssetsClient {
 
     const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
     if (preferredIdentity !== winnerIdentity) {
-      // True peer won: delete only the run-owned loser and verify absence before
-      // returning the peer winner so the caller drops journal ownership only
-      // after the owned root is confirmed gone.
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
+      // True peer won: prefer verified loser cleanup, but never fail
+      // import-finalize when a concurrent peer already owns the final name.
+      // Orphan roots are recovered by run-scoped teardown / later GC.
+      try {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
+      } catch {
+        await this.deleteCollection(ownCanonical.id).catch(() => undefined);
+      }
       return winner.id;
     }
 

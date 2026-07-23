@@ -6,8 +6,8 @@ param(
   [int]$MaxParallelGates = 2
 )
 
-# Native stderr is diagnostic output, not a gate failure. GitHub sets Stop by
-# default, so receive it silently and use the native process exit code instead.
+# Native stderr is diagnostic output, not a gate failure. Collect it for the
+# gate's log group and use the native process exit code as the result.
 $ErrorActionPreference = 'Continue'
 $Gate = @($GateJson | ConvertFrom-Json)
 $running = @()

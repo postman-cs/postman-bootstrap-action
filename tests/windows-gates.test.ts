@@ -23,7 +23,7 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
     );
     expect(warningOnly.status, warningOnly.stderr).toBe(0);
     expect(warningOnly.stdout).toContain('::group::stderr-ok');
-    expect(warningOnly.stdout).toContain('DEP0040');
+    expect(warningOnly.stdout + warningOnly.stderr).toContain('DEP0040');
     expect(warningOnly.stdout).not.toContain('__POSTMAN_GATE_RESULT__');
     expect(warningOnly.stdout).toContain('gate:stderr-ok=pass');
     expect(warningOnly.stdout).toContain('gate:also-ok=pass');

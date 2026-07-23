@@ -15,7 +15,6 @@ export type JsonRecord = Record<string, unknown>;
 export type CollectionRole = 'baseline' | 'smoke' | 'contract';
 
 export const LOCAL_OPENAPI_CONVERSION_FAILED = 'LOCAL_OPENAPI_CONVERSION_FAILED' as const;
-export const LOCAL_OPENAPI_WHOLE_IMPORT_MAX_BYTES = 16_000_000;
 
 export type LocalOpenApiConversionStage =
   | 'validate-input'
@@ -304,8 +303,11 @@ export async function generateLocalOpenApiRolePayloads(
   }
 
   try {
+    // Local whole-import has no documented Postman whole-payload byte ceiling.
+    // Pass the explicit no-limit sentinel so instrumentation does not fall back
+    // to the unrelated default 4 MiB collection-update guard.
     const instrumented = instrumentContractCollection(contract, options.contractIndex, {
-      maxCollectionUpdateBytes: LOCAL_OPENAPI_WHOLE_IMPORT_MAX_BYTES
+      maxCollectionUpdateBytes: false
     });
     contract = instrumented.collection;
     warnings.push(...instrumented.warnings);

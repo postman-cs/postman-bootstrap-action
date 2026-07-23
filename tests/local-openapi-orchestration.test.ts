@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -15,6 +15,7 @@ import {
   type LocalOpenApiOperationCounts,
   type ResolvedInputs
 } from '../src/index.js';
+import * as localCollectionArtifacts from '../src/lib/repo/local-collection-artifacts.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -285,6 +286,20 @@ describe('local OpenAPI orchestration', () => {
       const core = createCoreStub();
       const postman = buildPostman(events);
       const internalIntegration = buildIntegration(events);
+      const originalMaterialize = localCollectionArtifacts.materializeLocalCollectionArtifacts;
+      const originalPersist = localCollectionArtifacts.persistLocalOpenApiArtifactManifest;
+      vi.spyOn(localCollectionArtifacts, 'materializeLocalCollectionArtifacts').mockImplementation(
+        async (...args) => {
+          events.push('materialize');
+          return originalMaterialize(...args);
+        }
+      );
+      vi.spyOn(localCollectionArtifacts, 'persistLocalOpenApiArtifactManifest').mockImplementation(
+        async (...args) => {
+          events.push('persist-manifest');
+          return originalPersist(...args);
+        }
+      );
 
       const outputs = await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
         core,
@@ -306,16 +321,20 @@ describe('local OpenAPI orchestration', () => {
       expect(postman.injectContractTests).not.toHaveBeenCalled();
       expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
 
+      const materializeIdx = events.indexOf('materialize');
       const importIdx = events.findIndex((e) => e.startsWith('import:'));
       const linkIdx = events.findIndex((e) => e.startsWith('link:'));
       const settleIdx = events.findIndex((e) => e.startsWith('settle:'));
       const readbackIdx = events.indexOf('readback');
       const tagIdx = events.findIndex((e) => e.startsWith('tag:'));
-      expect(importIdx).toBeGreaterThanOrEqual(0);
+      const persistIdx = events.indexOf('persist-manifest');
+      expect(materializeIdx).toBeGreaterThanOrEqual(0);
+      expect(importIdx).toBeGreaterThan(materializeIdx);
       expect(linkIdx).toBeGreaterThan(importIdx);
       expect(settleIdx).toBeGreaterThan(linkIdx);
       expect(readbackIdx).toBeGreaterThan(settleIdx);
       expect(tagIdx).toBeGreaterThan(readbackIdx);
+      expect(persistIdx).toBeGreaterThan(tagIdx);
 
       const ledger = JSON.parse(
         await readFile(path.join(repoRoot, '.postman/bootstrap-openapi-operation-ledger.json'), 'utf8')
@@ -352,6 +371,159 @@ describe('local OpenAPI orchestration', () => {
         'col-contract',
         'col-smoke'
       ]);
+    });
+  });
+
+  it('compensates journaled fresh imports on link failure before resources/manifest persist', async () => {
+    await withRepo(async (repoRoot) => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const internalIntegration = buildIntegration(events);
+      internalIntegration.linkCollectionsToSpecification = vi.fn().mockRejectedValue(new Error('link boom'));
+      let durableState: Record<string, unknown> | null = null;
+      const resourcesState = {
+        read: () => durableState as never,
+        write: (state: Record<string, unknown>) => {
+          durableState = structuredClone(state);
+        }
+      };
+      const originalPersist = localCollectionArtifacts.persistLocalOpenApiArtifactManifest;
+      vi.spyOn(localCollectionArtifacts, 'persistLocalOpenApiArtifactManifest').mockImplementation(
+        async (...args) => {
+          events.push('persist-manifest');
+          return originalPersist(...args);
+        }
+      );
+
+      await expect(
+        runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+          core,
+          exec: createExecStub(),
+          io: { which: async () => 'tool' },
+          internalIntegration,
+          postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+          resourcesState,
+          specFetcher: vi.fn()
+        })
+      ).rejects.toThrow(/link boom/);
+
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledTimes(1);
+      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith([
+        'col-baseline',
+        'col-smoke',
+        'col-contract'
+      ]);
+      expect(postman.tagCollection).not.toHaveBeenCalled();
+      const collections =
+        (durableState as { cloudResources?: { collections?: Record<string, unknown> } } | null)
+          ?.cloudResources?.collections ?? {};
+      expect(Object.keys(collections)).toHaveLength(0);
+      expect(events).not.toContain('persist-manifest');
+      await expect(
+        access(path.join(repoRoot, '.postman/local-openapi-artifact-manifest.json'))
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+
+  it('compensates only the fresh import when mixed deep-update + import hits tag failure', async () => {
+    await withRepo(async (repoRoot) => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const internalIntegration = buildIntegration(events);
+      postman.tagCollection = vi.fn().mockRejectedValue(new Error('tag boom'));
+      let durableState: Record<string, unknown> | null = null;
+      const resourcesState = {
+        read: () => durableState as never,
+        write: (state: Record<string, unknown>) => {
+          durableState = structuredClone(state);
+        }
+      };
+      const originalPersist = localCollectionArtifacts.persistLocalOpenApiArtifactManifest;
+      vi.spyOn(localCollectionArtifacts, 'persistLocalOpenApiArtifactManifest').mockImplementation(
+        async (...args) => {
+          events.push('persist-manifest');
+          return originalPersist(...args);
+        }
+      );
+
+      await expect(
+        runBootstrap(
+          createInputs({
+            workspaceId: 'ws-1',
+            baselineCollectionId: 'col-baseline-existing',
+            collectionSyncMode: 'refresh'
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: { which: async () => 'tool' },
+            internalIntegration,
+            postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+            resourcesState,
+            specFetcher: vi.fn()
+          }
+        )
+      ).rejects.toThrow(/tag boom/);
+
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(1);
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledWith(
+        'col-baseline-existing',
+        expect.anything(),
+        expect.any(String)
+      );
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(2);
+      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledTimes(1);
+      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith(['col-smoke', 'col-contract']);
+      const collections =
+        (durableState as { cloudResources?: { collections?: Record<string, unknown> } } | null)
+          ?.cloudResources?.collections ?? {};
+      expect(Object.keys(collections)).toHaveLength(0);
+      expect(events).not.toContain('persist-manifest');
+      await expect(
+        access(path.join(repoRoot, '.postman/local-openapi-artifact-manifest.json'))
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+  });
+
+  it('persists the local OpenAPI artifact manifest only after tag success', async () => {
+    await withRepo(async (repoRoot) => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const internalIntegration = buildIntegration(events);
+      const originalPersist = localCollectionArtifacts.persistLocalOpenApiArtifactManifest;
+      vi.spyOn(localCollectionArtifacts, 'persistLocalOpenApiArtifactManifest').mockImplementation(
+        async (...args) => {
+          events.push('persist-manifest');
+          return originalPersist(...args);
+        }
+      );
+
+      await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+        core,
+        exec: createExecStub(),
+        io: { which: async () => 'tool' },
+        internalIntegration,
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState: {
+          read: () => null,
+          write: () => undefined
+        },
+        specFetcher: vi.fn()
+      });
+
+      const tagIdx = events.findIndex((e) => e.startsWith('tag:'));
+      const persistIdx = events.indexOf('persist-manifest');
+      expect(tagIdx).toBeGreaterThanOrEqual(0);
+      expect(persistIdx).toBeGreaterThan(tagIdx);
+      const manifestRaw = await readFile(
+        path.join(repoRoot, '.postman/local-openapi-artifact-manifest.json'),
+        'utf8'
+      );
+      expect(JSON.parse(manifestRaw)).toMatchObject({ schemaVersion: 1 });
     });
   });
 
@@ -609,6 +781,115 @@ describe('local OpenAPI orchestration', () => {
         })
       ).rejects.toThrow(/LOCAL_OPENAPI_LINK_READBACK_FAILED: collection .* syncOptions mismatch/);
 
+      expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
+      expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+      expect(postman.tagCollection).not.toHaveBeenCalled();
+    });
+  });
+
+  it('accepts nested requested options as a requested subset with wrapped leaf values', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const internalIntegration = buildIntegration(events);
+      internalIntegration.settleSpecificationCollectionRelations = vi.fn(
+        async (_specId: string, expectedIds: string[]) => {
+          const linked = (
+            internalIntegration.linkCollectionsToSpecification as ReturnType<typeof vi.fn>
+          ).mock.calls[0]?.[1] as Array<{
+            collectionId: string;
+            options?: Record<string, unknown>;
+            syncOptions?: { syncExamples: boolean };
+          }>;
+          return {
+            relations: expectedIds.map((collectionId) => {
+              const requested = linked.find((entry) => entry.collectionId === collectionId);
+              return {
+                collectionId,
+                state: 'in-sync',
+                options: {
+                  value: {
+                    ...(requested?.options ?? {}),
+                    serverNestedDefault: true
+                  },
+                  isDisabled: false,
+                  reason: ''
+                },
+                syncOptions: {
+                  syncExamples: { value: true, isDisabled: false, reason: '' },
+                  deleteOrphanedRequests: { value: false, isDisabled: false, reason: '' }
+                }
+              };
+            }),
+            attempts: 1
+          };
+        }
+      );
+
+      await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+        core,
+        exec: createExecStub(),
+        io: { which: async () => 'tool' },
+        internalIntegration,
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState: {
+          read: () => null,
+          write: () => undefined
+        },
+        specFetcher: vi.fn()
+      });
+
+      expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
+      expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+      expect(postman.tagCollection).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  it('fails closed when requested syncExamples is absent from server readback', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const internalIntegration = buildIntegration(events);
+      internalIntegration.settleSpecificationCollectionRelations = vi.fn(
+        async (_specId: string, expectedIds: string[]) => {
+          const linked = (
+            internalIntegration.linkCollectionsToSpecification as ReturnType<typeof vi.fn>
+          ).mock.calls[0]?.[1] as Array<{
+            collectionId: string;
+            options?: Record<string, unknown>;
+          }>;
+          return {
+            relations: expectedIds.map((collectionId) => ({
+              collectionId,
+              state: 'out-of-sync',
+              options: linked.find((entry) => entry.collectionId === collectionId)?.options,
+              syncOptions: {
+                deleteOrphanedRequests: { value: false, isDisabled: false, reason: '' }
+              }
+            })),
+            attempts: 1
+          };
+        }
+      );
+
+      await expect(
+        runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+          core,
+          exec: createExecStub(),
+          io: { which: async () => 'tool' },
+          internalIntegration,
+          postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+          resourcesState: {
+            read: () => null,
+            write: () => undefined
+          },
+          specFetcher: vi.fn()
+        })
+      ).rejects.toThrow(/LOCAL_OPENAPI_LINK_READBACK_FAILED: collection .* syncOptions mismatch/);
+
+      expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
       expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
       expect(postman.tagCollection).not.toHaveBeenCalled();
     });

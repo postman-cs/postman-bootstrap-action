@@ -240,6 +240,12 @@ export class PostmanGatewayAssetsClient {
    * settle read is still observed (live nonorg dual-preview race).
    */
   private static readonly SPEC_CREATE_SINGLETON_MIN_POLL_INDEX = 2;
+  /**
+   * Finite liveness budget for local Sync-import rename commit visibility and
+   * concurrent final-name election. Shared so both seams observe the same
+   * remote-convergence window; never a size/depth rejection cap.
+   */
+  private static readonly IMPORT_IDENTITY_SETTLE_DELAYS_MS = [250, 500, 750, 1000, 1250] as const;
 
   private readonly gateway: AccessTokenGatewayClient;
   private readonly sleep: (delayMs: number) => Promise<void>;
@@ -1563,6 +1569,54 @@ export class PostmanGatewayAssetsClient {
         )
       ) {
         return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Local Sync-import canonical rename: one PATCH with retry:'none'. On
+   * ambiguous transport/5xx only, poll no-retry workspace inventory until the
+   * exact same normalized collection identity shows the exact requested final
+   * name, or the settle budget is exhausted. Never resend PATCH, never
+   * fallback, never adopt a final-name peer. Inventory GET errors surface
+   * immediately. Generation callers keep {@link renameGeneratedCollection}.
+   */
+  private async renameImportedCollectionCanonical(
+    workspaceId: string,
+    collectionId: string,
+    finalName: string
+  ): Promise<void> {
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'patch',
+        path: `/v3/collections/${this.bareModelId(collectionId)}`,
+        retry: 'none',
+        body: [{ op: 'replace', path: '/name', value: finalName }]
+      });
+    } catch (error) {
+      if (
+        error instanceof HttpError &&
+        error.status === 400 &&
+        /must update at least one|REJECTED_PATCH/i.test(
+          `${error.message}\n${error.responseBody ?? ''}`
+        )
+      ) {
+        return;
+      }
+      if (!isAmbiguousTransportError(error)) throw error;
+      const preferredIdentity = normalizeCollectionModelIdentity(collectionId);
+      const delays = PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+      for (let observation = 0; observation <= delays.length; observation += 1) {
+        const matches = await this.findCollectionsByExactName(workspaceId, finalName, 'none');
+        const committed = matches.find(
+          (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
+        );
+        if (committed) return;
+        if (observation < delays.length) {
+          await this.sleep(delays[observation]!);
+        }
       }
       throw error;
     }
@@ -2939,7 +2993,7 @@ export class PostmanGatewayAssetsClient {
     journal(rawId);
 
     try {
-      await this.renameGeneratedCollection(rawId, desiredName);
+      await this.renameImportedCollectionCanonical(workspaceId, rawId, desiredName);
       const electedId = await this.electImportedCollectionIdentity(
         workspaceId,
         desiredName,
@@ -3130,10 +3184,12 @@ export class PostmanGatewayAssetsClient {
     staleFinalIdentities: ReadonlySet<string>
   ): Promise<string> {
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
-    const delays = [250, 500, 750, 1000, 1250] as const;
+    const delays = PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
     let eligible: Array<{ id: string; name: string }> = [];
     let ownCanonical: { id: string; name: string } | undefined;
 
+    // Observe the full settle window so a delayed concurrent peer final is not
+    // missed after own UID becomes visible. Never early-break on first sighting.
     for (let observation = 0; observation <= delays.length; observation += 1) {
       const inventory = await this.listWorkspaceCollections(workspaceId, 'none');
       eligible = inventory
@@ -3145,7 +3201,6 @@ export class PostmanGatewayAssetsClient {
       ownCanonical = eligible.find(
         (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
       );
-      if (ownCanonical) break;
       if (observation < delays.length) await this.sleep(delays[observation]!);
     }
 

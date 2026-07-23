@@ -190,7 +190,8 @@ Generated scripts are scanned before upload:
 - `new Function` is forbidden.
 - Scripts above 256 KiB emit a warning.
 - Scripts above 900 KiB fail.
-- Instrumented collection updates above 4 MiB fail.
+- Instrumented collection updates above 4 MiB fail for callers that keep the default update guard.
+- Local OpenAPI whole-import generation opts out of that update guard via an explicit internal no-limit sentinel (`maxCollectionUpdateBytes: false`). Official Postman docs do not document an exact whole-import byte ceiling, so local role instrumentation does not invent one.
 
 ## What dynamic contract tests do not prove
 
@@ -227,9 +228,9 @@ Common failure categories:
 
 For existing spec updates, the action captures the previous normalized spec content and SHA-256 before mutation. If a later required step fails after the update, the action attempts to restore the previous Spec Hub content. If that restore fails, `CONTRACT_SPEC_ROLLBACK_FAILED` includes the previous content SHA-256 for manual restoration.
 
-Refresh mode also tracks temporary generated collections. If refresh fails after temporary collection generation, the action attempts to delete those temporary collections.
+Refresh mode tracks run-owned fresh imports from local conversion. If link or tags fail after a fresh import, the action deletes those journaled collections and restores local artifact trees; deep-updated existing IDs are never deleted.
 
-Optional workspace enrichment steps such as governance assignment warn and continue; required spec, lint, collection generation, instrumentation, tagging, linking, and sync failures stop the bootstrap path.
+Optional workspace enrichment steps such as governance assignment warn and continue; required spec, lint, local conversion/import/deep-update, tagging, and linking failures stop the bootstrap path.
 
 ## Source map
 

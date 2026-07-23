@@ -13,7 +13,12 @@ export interface ContractInstrumentationResult {
 }
 
 export interface ContractInstrumentationLimits {
-  maxCollectionUpdateBytes?: number;
+  /**
+   * Soft/hard collection size gate for instrumented payloads.
+   * Pass `false` for an explicit internal no-limit sentinel (local whole-import
+   * generation). Omitting the field keeps the default 4 MiB update guard.
+   */
+  maxCollectionUpdateBytes?: number | false;
 }
 
 export const CONTRACT_SIZE_LIMITS = {
@@ -1704,8 +1709,14 @@ export function instrumentContractCollection(
   index: ContractIndex,
   limits: ContractInstrumentationLimits = {}
 ): ContractInstrumentationResult {
-  const maxCollectionUpdateBytes = limits.maxCollectionUpdateBytes ?? CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes;
-  if (!Number.isSafeInteger(maxCollectionUpdateBytes) || maxCollectionUpdateBytes <= 0) {
+  const maxCollectionUpdateBytes =
+    limits.maxCollectionUpdateBytes === false
+      ? false
+      : (limits.maxCollectionUpdateBytes ?? CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes);
+  if (
+    maxCollectionUpdateBytes !== false &&
+    (!Number.isSafeInteger(maxCollectionUpdateBytes) || maxCollectionUpdateBytes <= 0)
+  ) {
     throw new Error('CONTRACT_COLLECTION_SIZE_EXCEEDED: Contract collection size limit must be a finite positive bounded integer');
   }
   const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
@@ -1751,9 +1762,11 @@ export function instrumentContractCollection(
   (collection.item as JsonRecord[]).unshift(createSecretsResolverItem());
   scanExecutableScripts(collection, warnings);
 
-  const bytes = Buffer.byteLength(JSON.stringify(collection), 'utf8');
-  if (bytes > maxCollectionUpdateBytes) {
-    throw new Error(`CONTRACT_COLLECTION_SIZE_EXCEEDED: Instrumented contract collection exceeded ${maxCollectionUpdateBytes} bytes`);
+  if (maxCollectionUpdateBytes !== false) {
+    const bytes = Buffer.byteLength(JSON.stringify(collection), 'utf8');
+    if (bytes > maxCollectionUpdateBytes) {
+      throw new Error(`CONTRACT_COLLECTION_SIZE_EXCEEDED: Instrumented contract collection exceeded ${maxCollectionUpdateBytes} bytes`);
+    }
   }
   return { collection, warnings };
 }

@@ -3853,6 +3853,261 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(inventory.some((entry) => entry.id === canonicalId && entry.name === 'Payments')).toBe(true);
     });
 
+    it('accepts import rename after ambiguous 500 only via same-UID final-name inventory readback', async () => {
+      const inventory: Array<{ id: string; name: string }> = [];
+      let renamePatches = 0;
+      const { client, gateway, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          const body = env.body as { info?: { name?: string } };
+          inventory.push({ id: 'col-imported', name: String(body.info?.name || '') });
+          return jsonResponse({ data: { id: 'col-imported', uid: 'col-imported' } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          String(env.path).startsWith('/v3/collections/?workspace=')
+        ) {
+          return jsonResponse({ data: inventory });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          renamePatches += 1;
+          const ops = env.body as Array<{ path?: string; value?: string }>;
+          const nameOp = ops.find((op) => op.path === '/name');
+          // Commit the final name server-side, then return an ambiguous 500.
+          if (nameOp?.value) {
+            const hit = inventory.find((entry) => entry.id === 'col-imported');
+            if (hit) hit.name = String(nameOp.value);
+          }
+          return jsonResponse(
+            { error: { details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+            { status: 500 }
+          );
+        }
+        return jsonResponse({ data: { ok: true } });
+      });
+      const requestJson = vi.spyOn(gateway, 'requestJson');
+
+      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
+      expect(result.collectionId).toBe('col-imported');
+      expect(result.journaledRootIds).toEqual(['col-imported']);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(renamePatches).toBe(1);
+      const renameCalls = requestJson.mock.calls
+        .map(([options]) => options)
+        .filter(
+          (options) =>
+            options.service === 'collection' &&
+            options.method === 'patch' &&
+            String(options.path).includes('/v3/collections/')
+        );
+      expect(renameCalls).toHaveLength(1);
+      expect(renameCalls[0]?.retry).toBe('none');
+      const inventoryCalls = requestJson.mock.calls
+        .map(([options]) => options)
+        .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
+      expect(inventoryCalls.length).toBeGreaterThan(0);
+      expect(inventoryCalls.every((options) => options.retry === 'none')).toBe(true);
+      expect(inventory.some((entry) => entry.id === 'col-imported' && entry.name === 'Payments')).toBe(
+        true
+      );
+    });
+
+    it('fails closed on ambiguous rename 500 without same-UID final-name commit and never resends PATCH', async () => {
+      const peerId = 'peer-final';
+      const ownId = 'col-imported';
+      let ownedName = 'Payments [bootstrap:test-run]';
+      let renamePatches = 0;
+      const { client, gateway, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          const body = env.body as { info?: { name?: string } };
+          ownedName = String(body.info?.name || ownedName);
+          return jsonResponse({ data: { id: ownId, uid: ownId } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          String(env.path).startsWith('/v3/collections/?workspace=')
+        ) {
+          return jsonResponse({
+            data: [
+              { id: peerId, name: 'Payments' },
+              { id: ownId, name: ownedName }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          renamePatches += 1;
+          // Ambiguous 500 without committing the exact same UID/name.
+          return jsonResponse(
+            { error: { details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+            { status: 500 }
+          );
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          return jsonResponse({ data: { ok: true } });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ data: { ok: true } });
+      });
+      const requestJson = vi.spyOn(gateway, 'requestJson');
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+        /LOCAL_OPENAPI_IMPORT_FAILED/
+      );
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(renamePatches).toBe(1);
+      const renameCalls = requestJson.mock.calls
+        .map(([options]) => options)
+        .filter(
+          (options) =>
+            options.service === 'collection' &&
+            options.method === 'patch' &&
+            String(options.path).includes('/v3/collections/')
+        );
+      expect(renameCalls).toHaveLength(1);
+      expect(renameCalls[0]?.retry).toBe('none');
+      // Peer final-name identity must never be adopted after an unproven rename.
+      expect(
+        requestJson.mock.calls.some(
+          ([options]) =>
+            options.service === 'collection' &&
+            options.method === 'delete' &&
+            String(options.path).includes(peerId)
+        )
+      ).toBe(false);
+    });
+
+    it('polls same-UID final-name inventory after ambiguous rename 500 until delayed commit appears', async () => {
+      const ownId = 'col-imported';
+      let tempName = 'Payments [bootstrap:test-run]';
+      let renamedAttempted = false;
+      let postRenameInventoryReads = 0;
+      let renamePatches = 0;
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client, gateway, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          const body = env.body as { info?: { name?: string } };
+          tempName = String(body.info?.name || tempName);
+          return jsonResponse({ data: { id: ownId, uid: ownId } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          String(env.path).startsWith('/v3/collections/?workspace=')
+        ) {
+          if (!renamedAttempted) {
+            return jsonResponse({ data: [{ id: ownId, name: tempName }] });
+          }
+          postRenameInventoryReads += 1;
+          // Commit is durable after PATCH but list lag hides the final name at first.
+          if (postRenameInventoryReads < 3) {
+            return jsonResponse({ data: [{ id: ownId, name: tempName }] });
+          }
+          return jsonResponse({ data: [{ id: ownId, name: 'Payments' }] });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          renamePatches += 1;
+          renamedAttempted = true;
+          return jsonResponse(
+            { error: { details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+            { status: 500 }
+          );
+        }
+        return jsonResponse({ data: { ok: true } });
+      }, { sleep });
+      const requestJson = vi.spyOn(gateway, 'requestJson');
+
+      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
+      expect(result.collectionId).toBe(ownId);
+      expect(result.journaledRootIds).toEqual([ownId]);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(renamePatches).toBe(1);
+      const renameCalls = requestJson.mock.calls
+        .map(([options]) => options)
+        .filter(
+          (options) =>
+            options.service === 'collection' &&
+            options.method === 'patch' &&
+            String(options.path).includes('/v3/collections/')
+        );
+      expect(renameCalls).toHaveLength(1);
+      expect(renameCalls[0]?.retry).toBe('none');
+      const inventoryCalls = requestJson.mock.calls
+        .map(([options]) => options)
+        .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
+      expect(inventoryCalls.length).toBeGreaterThan(0);
+      expect(inventoryCalls.every((options) => options.retry === 'none')).toBe(true);
+      // Rename settle sleeps [250,500], then election observes the full settle window.
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        250, 500, 250, 500, 750, 1000, 1250
+      ]);
+    });
+
+    it('elects lowest peer final UID when own appears first and peer becomes visible later', async () => {
+      const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+      const ownId = `300-${ownBare}`;
+      const peerId = '200-11111111-1111-1111-1111-111111111111';
+      let imported = false;
+      let electionObs = 0;
+      const deleted: string[] = [];
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client, gateway, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          return jsonResponse({ data: { id: ownId } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.includes('?workspace=')
+        ) {
+          if (!imported) return jsonResponse({ data: [] });
+          electionObs += 1;
+          // Own canonical final is visible first; lower peer final appears later.
+          if (electionObs < 3) {
+            return jsonResponse({ data: [{ id: ownId, name: 'Payments' }] });
+          }
+          return jsonResponse({
+            data: [
+              { id: peerId, name: 'Payments' },
+              { id: ownId, name: 'Payments' }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+      const requestJson = vi.spyOn(gateway, 'requestJson');
+
+      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
+      expect(result.collectionId).toBe(peerId);
+      expect(result.journaledRootIds).toEqual([]);
+      expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500, 750, 1000, 1250]);
+      const inventoryCalls = requestJson.mock.calls
+        .map(([options]) => options)
+        .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
+      expect(inventoryCalls.every((options) => options.retry === 'none')).toBe(true);
+      expect(
+        requestJson.mock.calls.filter(
+          ([options]) => options.service === 'collection' && options.method === 'patch'
+        )
+      ).toHaveLength(1);
+    });
+
     it('reconciles ambiguous import only by exact temp name', async () => {
       let listed = false;
       let importAttempted = false;
@@ -3943,7 +4198,7 @@ describe('PostmanGatewayAssetsClient', () => {
         collectionId: canonicalId,
         journaledRootIds: [canonicalId]
       });
-      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500]);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500, 750, 1000, 1250]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
     });
 

@@ -912,6 +912,10 @@ paths:
       item: [{ request: { method: 'GET', url: { path: ['pets'] } }, description: 'x'.repeat(explicitLimit) }]
     }, indexFrom(BASE_SPEC), { maxCollectionUpdateBytes: explicitLimit })).toThrow(`CONTRACT_COLLECTION_SIZE_EXCEEDED: Instrumented contract collection exceeded ${explicitLimit} bytes`);
 
+    expect(() => instrumentContractCollection({
+      item: [{ request: { method: 'GET', url: { path: ['pets'] } }, description: 'x'.repeat(CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes) }]
+    }, indexFrom(BASE_SPEC), { maxCollectionUpdateBytes: false })).not.toThrow();
+
     for (const maxCollectionUpdateBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
       expect(() => instrumentContractCollection(
         { item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] },

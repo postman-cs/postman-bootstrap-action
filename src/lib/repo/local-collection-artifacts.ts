@@ -163,8 +163,8 @@ export async function persistLocalOpenApiArtifactManifest(
 
 type SnapshotEntry =
   | { kind: 'missing'; path: string }
-  | { kind: 'file'; path: string; bytes: Buffer }
-  | { kind: 'directory'; path: string; files: Array<{ relative: string; bytes: Buffer }> };
+  | { kind: 'file'; path: string; snapshotFile: string }
+  | { kind: 'directory'; path: string; snapshotDir: string };
 
 type WorkflowPair = {
   spec: string;
@@ -175,36 +175,22 @@ type WorkflowPair = {
 
 // Preview asset names use `@branch` suffixes (e.g. `Payments @feature-x`).
 const SAFE_COLLECTION_NAME = /^[A-Za-z0-9._@[\] -]+$/;
-const MAX_COLLECTION_NAME_LENGTH = 160;
-const LOSSY_NAME_DIGEST_LENGTH = 12;
 
 /**
  * Derive a stable filesystem/resource-key segment without changing the Postman
- * display name. Already-safe names are identity-preserving; lossy names carry a
- * digest of the original so distinct display names cannot collapse together.
+ * display name. Already-safe names are identity-preserving at any length; path-
+ * unsafe or otherwise degenerate names map to a fixed `collection-<sha256>`
+ * segment so arbitrary input length is supported without a truncation/rejection
+ * cap. Distinct originals remain distinct via the full digest.
  */
 export function deriveArtifactSafeCollectionName(displayName: string): string {
   const original = String(displayName ?? '');
   const trimmed = original.trim();
-  if (trimmed && trimmed.length <= MAX_COLLECTION_NAME_LENGTH && SAFE_COLLECTION_NAME.test(trimmed)) {
+  if (trimmed && SAFE_COLLECTION_NAME.test(trimmed)) {
     return trimmed;
   }
-
-  const digest = createHash('sha256').update(original).digest('hex').slice(0, LOSSY_NAME_DIGEST_LENGTH);
-  const suffix = `-${digest}`;
-  const stem = trimmed
-    .replace(/[^A-Za-z0-9._@[\] -]+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^[ ._-]+|[ ._-]+$/g, '')
-    .slice(0, MAX_COLLECTION_NAME_LENGTH - suffix.length)
-    .replace(/[ ._-]+$/g, '');
-  const derived = `${stem}${suffix}`;
-  if (!stem || derived.length > MAX_COLLECTION_NAME_LENGTH || !SAFE_COLLECTION_NAME.test(derived)) {
-    throw new LocalCollectionArtifactsError(
-      `displayName cannot produce a safe collection segment; received ${displayName}`
-    );
-  }
-  return derived;
+  const digest = createHash('sha256').update(original).digest('hex');
+  return `collection-${digest}`;
 }
 
 function asArray<T>(value: T[] | null | undefined): T[] {
@@ -366,6 +352,10 @@ function postmanRelative(repoRelativePath: string): string {
   return toPosix(path.posix.relative('.postman', repoRelativePath));
 }
 
+function inodeKey(stat: { dev: number | bigint; ino: number | bigint }): string {
+  return `${String(stat.dev)}:${String(stat.ino)}`;
+}
+
 async function assertNoSymlinksInTree(absPath: string, fieldName: string): Promise<void> {
   let stat;
   try {
@@ -379,12 +369,15 @@ async function assertNoSymlinksInTree(absPath: string, fieldName: string): Promi
   }
   if (!stat.isDirectory()) return;
 
-  const walk = async (dir: string): Promise<void> => {
+  const stack: string[] = [absPath];
+  const seen = new Set<string>([inodeKey(stat)]);
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
     let entries: Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return;
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') continue;
       throw error;
     }
     for (const entry of entries) {
@@ -395,32 +388,65 @@ async function assertNoSymlinksInTree(absPath: string, fieldName: string): Promi
         );
       }
       if (entry.isDirectory()) {
-        await walk(child);
+        const childStat = await fs.lstat(child);
+        const key = inodeKey(childStat);
+        if (seen.has(key)) {
+          throw new LocalCollectionArtifactsError(
+            `${fieldName} contains a directory cycle at ${toPosix(path.relative(absPath, child)) || entry.name}`
+          );
+        }
+        seen.add(key);
+        stack.push(child);
       }
     }
-  };
-  await walk(absPath);
+  }
 }
 
 async function listRegularFilesRelative(dir: string, base: string): Promise<string[]> {
-  let entries: Dirent[];
+  let rootStat;
   try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
+    rootStat = await fs.lstat(dir);
   } catch {
     return [];
   }
+  if (rootStat.isSymbolicLink()) {
+    throw new LocalCollectionArtifactsError(
+      `owned tree contains symlink ${toPosix(path.relative(base, dir)) || '.'}; refusing to read or write through links`
+    );
+  }
+  if (!rootStat.isDirectory()) return [];
+
   const out: string[] = [];
-  for (const entry of entries) {
-    const abs = path.join(dir, entry.name);
-    if (entry.isSymbolicLink()) {
-      throw new LocalCollectionArtifactsError(
-        `owned tree contains symlink ${toPosix(path.relative(base, abs))}; refusing to read or write through links`
-      );
+  const stack: string[] = [dir];
+  const seen = new Set<string>([inodeKey(rootStat)]);
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
     }
-    if (entry.isDirectory()) {
-      out.push(...(await listRegularFilesRelative(abs, base)));
-    } else if (entry.isFile()) {
-      out.push(toPosix(path.relative(base, abs)));
+    for (const entry of entries) {
+      const abs = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new LocalCollectionArtifactsError(
+          `owned tree contains symlink ${toPosix(path.relative(base, abs))}; refusing to read or write through links`
+        );
+      }
+      if (entry.isDirectory()) {
+        const childStat = await fs.lstat(abs);
+        const key = inodeKey(childStat);
+        if (seen.has(key)) {
+          throw new LocalCollectionArtifactsError(
+            `owned tree contains a directory cycle at ${toPosix(path.relative(base, abs))}`
+          );
+        }
+        seen.add(key);
+        stack.push(abs);
+      } else if (entry.isFile()) {
+        out.push(toPosix(path.relative(base, abs)));
+      }
     }
   }
   return out;
@@ -433,6 +459,27 @@ export function computeArtifactDigest(files: Array<{ relative: string; bytes: Bu
     hash.update(file.relative);
     hash.update('\0');
     hash.update(typeof file.bytes === 'string' ? Buffer.from(file.bytes, 'utf8') : file.bytes);
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
+
+/** Sequential streaming digest of an on-disk tree (path+NUL+bytes+NUL), matching `computeArtifactDigest`. */
+export async function computeArtifactDigestFromTree(absDir: string): Promise<string> {
+  const relatives = (await listRegularFilesRelative(absDir, absDir)).sort((a, b) => a.localeCompare(b));
+  const hash = createHash('sha256');
+  for (const relative of relatives) {
+    hash.update(relative);
+    hash.update('\0');
+    const handle = await fs.open(path.join(absDir, relative), 'r');
+    try {
+      const stream = handle.createReadStream();
+      for await (const chunk of stream) {
+        hash.update(chunk as Buffer);
+      }
+    } finally {
+      await handle.close();
+    }
     hash.update('\0');
   }
   return hash.digest('hex');
@@ -474,19 +521,24 @@ function validateSplitFiles(files: SplitCollectionFile[], stageRoot: string): Sp
   });
 }
 
-async function snapshotPath(absPath: string): Promise<SnapshotEntry> {
+async function snapshotPath(
+  absPath: string,
+  snapshotStoreDir: string,
+  label: string
+): Promise<SnapshotEntry> {
   await assertNoSymlinksInTree(absPath, absPath);
+  const store = path.join(snapshotStoreDir, label);
   try {
     const stat = await fs.lstat(absPath);
     if (stat.isDirectory()) {
-      const files: Array<{ relative: string; bytes: Buffer }> = [];
-      for (const relative of await listRegularFilesRelative(absPath, absPath)) {
-        files.push({ relative, bytes: await fs.readFile(path.join(absPath, relative)) });
-      }
-      return { kind: 'directory', path: absPath, files };
+      await fs.rm(store, { recursive: true, force: true });
+      await copyDir(absPath, store);
+      return { kind: 'directory', path: absPath, snapshotDir: store };
     }
     if (stat.isFile()) {
-      return { kind: 'file', path: absPath, bytes: await fs.readFile(absPath) };
+      await fs.mkdir(path.dirname(store), { recursive: true });
+      await fs.copyFile(absPath, store);
+      return { kind: 'file', path: absPath, snapshotFile: store };
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
@@ -504,31 +556,41 @@ async function restoreSnapshot(entry: SnapshotEntry): Promise<void> {
   }
   if (entry.kind === 'file') {
     await fs.mkdir(path.dirname(entry.path), { recursive: true });
-    await fs.writeFile(entry.path, entry.bytes);
+    await fs.copyFile(entry.snapshotFile, entry.path);
     return;
   }
   await fs.rm(entry.path, { recursive: true, force: true });
-  await fs.mkdir(entry.path, { recursive: true });
-  for (const file of entry.files) {
-    const dest = path.join(entry.path, file.relative);
-    await fs.mkdir(path.dirname(dest), { recursive: true });
-    await fs.writeFile(dest, file.bytes);
-  }
+  await copyDir(entry.snapshotDir, entry.path);
 }
 
 async function copyDir(source: string, destination: string): Promise<void> {
   await fs.mkdir(destination, { recursive: true });
-  const entries = await fs.readdir(source, { withFileTypes: true });
-  for (const entry of entries) {
-    const from = path.join(source, entry.name);
-    const to = path.join(destination, entry.name);
-    if (entry.isSymbolicLink()) {
-      throw new LocalCollectionArtifactsError('refusing to copy symlink while staging collection artifacts');
-    }
-    if (entry.isDirectory()) {
-      await copyDir(from, to);
-    } else if (entry.isFile()) {
-      await fs.copyFile(from, to);
+  const stack: Array<{ from: string; to: string }> = [{ from: source, to: destination }];
+  const seen = new Set<string>();
+  const sourceStat = await fs.lstat(source);
+  seen.add(inodeKey(sourceStat));
+
+  while (stack.length > 0) {
+    const { from, to } = stack.pop()!;
+    const entries = await fs.readdir(from, { withFileTypes: true });
+    for (const entry of entries) {
+      const childFrom = path.join(from, entry.name);
+      const childTo = path.join(to, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new LocalCollectionArtifactsError('refusing to copy symlink while staging collection artifacts');
+      }
+      if (entry.isDirectory()) {
+        const childStat = await fs.lstat(childFrom);
+        const key = inodeKey(childStat);
+        if (seen.has(key)) {
+          throw new LocalCollectionArtifactsError('refusing to copy a directory cycle while staging collection artifacts');
+        }
+        seen.add(key);
+        await fs.mkdir(childTo, { recursive: true });
+        stack.push({ from: childFrom, to: childTo });
+      } else if (entry.isFile()) {
+        await fs.copyFile(childFrom, childTo);
+      }
     }
   }
 }
@@ -780,10 +842,12 @@ export async function materializeLocalCollectionArtifacts(
   }
 
   const snapshots: SnapshotEntry[] = [];
-  for (const plan of rolePlans) {
-    snapshots.push(await snapshotPath(plan.absCollectionPath));
+  const snapshotStoreRoot = path.join(runTempDir, 'snapshots', randomUUID());
+  await fs.mkdir(snapshotStoreRoot, { recursive: true });
+  for (const [index, plan] of rolePlans.entries()) {
+    snapshots.push(await snapshotPath(plan.absCollectionPath, snapshotStoreRoot, `role-${index}-${plan.role}`));
   }
-  snapshots.push(await snapshotPath(workflowsAbs));
+  snapshots.push(await snapshotPath(workflowsAbs, snapshotStoreRoot, 'workflows'));
 
   const restore = async (): Promise<void> => {
     for (const entry of snapshots) {
@@ -811,14 +875,7 @@ export async function materializeLocalCollectionArtifacts(
         rename
       });
       await assertNoSymlinksInTree(plan.absCollectionPath, plan.collectionPath);
-      const writtenRelatives = await listRegularFilesRelative(plan.absCollectionPath, plan.absCollectionPath);
-      const written = await Promise.all(
-        writtenRelatives.map(async (relative) => ({
-          relative,
-          bytes: await fs.readFile(path.join(plan.absCollectionPath, relative))
-        }))
-      );
-      const artifactDigest = computeArtifactDigest(written);
+      const artifactDigest = await computeArtifactDigestFromTree(plan.absCollectionPath);
       manifest.push({
         role: plan.role,
         collectionPath: plan.collectionPath,

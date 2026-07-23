@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { parse, stringify } from 'yaml';
@@ -58,6 +58,7 @@ import {
   deriveArtifactSafeCollectionName,
   materializeLocalCollectionArtifacts,
   persistLocalOpenApiArtifactManifest,
+  type FinalizedLocalOpenApiArtifactManifest,
   type MaterializeLocalCollectionArtifactsResult
 } from './lib/repo/local-collection-artifacts.js';
 import { retry } from './lib/retry.js';
@@ -227,13 +228,13 @@ export interface BootstrapExecutionDependencies {
   internalIntegration?: Pick<
     InternalIntegrationAdapter,
     | 'assignWorkspaceToGovernanceGroup'
-    | 'configureTeamContext'
     | 'linkCollectionsToSpecification'
     | 'syncCollection'
   > &
     Partial<
       Pick<
         InternalIntegrationAdapter,
+        | 'configureTeamContext'
         | 'findWorkspaceForRepo'
         | 'listSpecificationCollectionRelations'
         | 'settleSpecificationCollectionRelations'
@@ -287,6 +288,8 @@ export interface BootstrapExecutionDependencies {
       specContent: string,
       openapiVersion?: '3.0' | '3.1' | string
     ): Promise<{ specId: string; created: boolean }>;
+    patchCollectionScripts?(collectionUid: string, scripts: unknown): Promise<void>;
+    patchItemScripts?(collectionUid: string, itemId: string, scripts: unknown): Promise<void>;
     injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
     adoptGeneratedCollection?(
       specId: string,
@@ -300,6 +303,14 @@ export interface BootstrapExecutionDependencies {
       collection: unknown,
       options?: { onRootCreated?: (id: string) => void | Promise<void> }
     ): Promise<string>;
+    createRunOwnedCollection?(
+      workspaceId: string,
+      collection: unknown,
+      finalName: string
+    ): Promise<{
+      collectionId: string;
+      journaledRootIds: string[];
+    }>;
     updateCollection?(collectionUid: string, collection: unknown): Promise<void>;
     updateCollectionDescription?(collectionUid: string, description: string): Promise<void>;
     importV2Collection?(
@@ -309,7 +320,7 @@ export interface BootstrapExecutionDependencies {
     ): Promise<{
       collectionId: string;
       journaledRootIds: string[];
-      deleteVerifiedCleanup: (ids?: string[]) => Promise<void>;
+      deleteVerifiedCleanup?: (ids?: string[]) => Promise<void>;
     }>;
     deepUpdateV2Collection?(
       collectionUid: string,
@@ -1717,55 +1728,92 @@ function resolveWorkspaceRoot(): string {
   return path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
 }
 
-/** Stable deep equality for link readback of generation options / syncOptions. */
-function deepJsonEqual(actual: unknown, expected: unknown): boolean {
-  if (actual === expected) return true;
-  if (actual === null || expected === null) return actual === expected;
-  if (typeof actual !== typeof expected) return false;
-  if (typeof actual !== 'object') return false;
-  if (Array.isArray(actual) || Array.isArray(expected)) {
-    if (!Array.isArray(actual) || !Array.isArray(expected)) return false;
-    if (actual.length !== expected.length) return false;
-    return actual.every((value, index) => deepJsonEqual(value, expected[index]));
+function primitiveMatches(actual: unknown, requested: unknown): boolean {
+  if (actual === requested) return true;
+  if (typeof requested === 'boolean' && typeof actual === 'string') {
+    const lower = actual.trim().toLowerCase();
+    if (lower === 'true') return requested === true;
+    if (lower === 'false') return requested === false;
   }
-  const actualRecord = actual as Record<string, unknown>;
-  const expectedRecord = expected as Record<string, unknown>;
-  const actualKeys = Object.keys(actualRecord).sort();
-  const expectedKeys = Object.keys(expectedRecord).sort();
-  if (actualKeys.length !== expectedKeys.length) return false;
-  if (actualKeys.some((key, index) => key !== expectedKeys[index])) return false;
-  return actualKeys.every((key) => deepJsonEqual(actualRecord[key], expectedRecord[key]));
+  if (typeof requested === 'number' && typeof actual === 'string' && actual.trim() !== '') {
+    const num = Number(actual.trim());
+    if (!Number.isNaN(num)) return num === requested;
+  }
+  return false;
 }
 
-/** Requires every requested semantic while tolerating server-added object defaults/metadata. */
+/**
+ * Recursively verifies that every key/value in `requested` is semantically present in `actual`.
+ * Tolerates server-added defaults, extra metadata fields, and wrapper objects `{ value: X, ... }` or `{ enabled: X, ... }`.
+ * Fails closed if a requested key is missing or semantically differs.
+ */
 function includesRequestedJsonSemantics(actual: unknown, requested: unknown): boolean {
   if (actual === requested) return true;
-  if (actual === null || requested === null) return actual === requested;
-  if (typeof actual !== typeof requested) return false;
-  if (typeof actual !== 'object') return false;
-  if (Array.isArray(actual) || Array.isArray(requested)) {
-    return deepJsonEqual(actual, requested);
+
+  // 1. Primitive requested value (boolean, string, number, null, undefined)
+  if (requested === null || requested === undefined || typeof requested !== 'object') {
+    if (primitiveMatches(actual, requested)) return true;
+    if (typeof actual === 'object' && actual !== null && !Array.isArray(actual)) {
+      const record = actual as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(record, 'value')) {
+        return includesRequestedJsonSemantics(record.value, requested);
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(record, 'enabled') &&
+        (typeof record.enabled === 'boolean' || typeof record.enabled === 'string' || typeof record.enabled === 'object')
+      ) {
+        return includesRequestedJsonSemantics(record.enabled, requested);
+      }
+    }
+    return false;
   }
+
+  // 2. Array requested value
+  if (Array.isArray(requested)) {
+    if (Array.isArray(actual)) {
+      if (actual.length !== requested.length) return false;
+      return actual.every((item, index) =>
+        includesRequestedJsonSemantics(item, requested[index])
+      );
+    }
+    if (typeof actual === 'object' && actual !== null) {
+      const record = actual as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(record, 'value')) {
+        return includesRequestedJsonSemantics(record.value, requested);
+      }
+    }
+    return false;
+  }
+
+  // 3. Object requested value (Record<string, unknown>)
+  if (typeof actual !== 'object' || actual === null || Array.isArray(actual)) {
+    return false;
+  }
+
   const actualRecord = actual as Record<string, unknown>;
   const requestedRecord = requested as Record<string, unknown>;
-  return Object.keys(requestedRecord).every(
+  const requestedKeys = Object.keys(requestedRecord);
+
+  // Try direct key match on actualRecord
+  const directMatch = requestedKeys.every(
     (key) =>
       Object.prototype.hasOwnProperty.call(actualRecord, key) &&
       includesRequestedJsonSemantics(actualRecord[key], requestedRecord[key])
   );
-}
+  if (directMatch) return true;
 
-function extractSyncExamplesValue(syncOptions: unknown): boolean | undefined {
-  if (!syncOptions || typeof syncOptions !== 'object' || Array.isArray(syncOptions)) {
-    return undefined;
+  // If direct match failed, but actualRecord has a wrapper envelope, try matching against the envelope value
+  if (Object.prototype.hasOwnProperty.call(actualRecord, 'value')) {
+    return includesRequestedJsonSemantics(actualRecord.value, requested);
   }
-  const syncExamples = (syncOptions as Record<string, unknown>).syncExamples;
-  if (typeof syncExamples === 'boolean') return syncExamples;
-  if (!syncExamples || typeof syncExamples !== 'object' || Array.isArray(syncExamples)) {
-    return undefined;
+  if (
+    Object.prototype.hasOwnProperty.call(actualRecord, 'enabled') &&
+    (typeof actualRecord.enabled === 'boolean' || typeof actualRecord.enabled === 'string' || typeof actualRecord.enabled === 'object')
+  ) {
+    return includesRequestedJsonSemantics(actualRecord.enabled, requested);
   }
-  const value = (syncExamples as Record<string, unknown>).value;
-  return typeof value === 'boolean' ? value : undefined;
+
+  return false;
 }
 
 function definitionFormatToSpecType(format: DefinitionFormat): SpecType {
@@ -2678,6 +2726,51 @@ async function runBootstrapInner(
     }
   };
 
+  // Run-owned fresh-import ledger stays live through link readback + tags so
+  // failures before resources persist can compensate journaled imports only.
+  // Declared outside try so catch can invoke compensation.
+  const ownedLedger: string[] = [];
+  let artifactRestore: (() => Promise<void>) | undefined;
+  let localOpenApiRepoRoot: string | undefined;
+  let pendingFinalizedLocalOpenApiManifest: FinalizedLocalOpenApiArtifactManifest | undefined;
+  let ownedLocalOpenApiCompensated = false;
+
+  const compensateOwnedLocalOpenApiImports = async (stage: string): Promise<void> => {
+    if (ownedLocalOpenApiCompensated) return;
+    ownedLocalOpenApiCompensated = true;
+    const mask = createBootstrapSecretMasker(inputs);
+    if (ownedLedger.length > 0 && dependencies.postman.deleteVerifiedRunOwnedCollections) {
+      try {
+        await dependencies.postman.deleteVerifiedRunOwnedCollections([...ownedLedger]);
+      } catch (cleanupError) {
+        dependencies.core.warning(
+          formatMaskedOneLine(
+            `Owned OpenAPI import cleanup failed at ${stage}: ${formatMaskedOneLine(cleanupError, mask)}`,
+            mask
+          )
+        );
+      }
+    }
+    if (artifactRestore) {
+      await artifactRestore().catch(() => undefined);
+      artifactRestore = undefined;
+    }
+    if (localOpenApiRepoRoot) {
+      await rm(path.join(localOpenApiRepoRoot, '.postman', 'local-openapi-artifact-manifest.json'), {
+        force: true
+      }).catch(() => undefined);
+    }
+  };
+
+  const failOwned = async (stage: string, cause: unknown): Promise<never> => {
+    const mask = createBootstrapSecretMasker(inputs);
+    const sanitizedCause = formatMaskedOneLine(cause, mask).slice(0, 240);
+    await compensateOwnedLocalOpenApiImports(stage);
+    throw new Error(
+      `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`
+    );
+  };
+
   try {
   await runRollbackStage(
     specId ? 'Update Spec in Spec Hub' : 'Upload Spec to Spec Hub',
@@ -2882,8 +2975,6 @@ async function runBootstrapInner(
         };
         localOpenApiGenerationOptions = buildLocalOpenApiConversionOptions(conversionOptions);
 
-        const ownedLedger: string[] = [];
-        let artifactRestore: (() => Promise<void>) | undefined;
         const counts: LocalOpenApiOperationCounts = {
           localConversion: 0,
           wholeCollectionImport: 0,
@@ -2904,29 +2995,6 @@ async function runBootstrapInner(
         let importCount = 0;
         let updateCount = 0;
 
-        const failOwned = async (stage: string, cause: unknown): Promise<never> => {
-          const mask = createBootstrapSecretMasker(inputs);
-          const sanitizedCause = formatMaskedOneLine(cause, mask).slice(0, 240);
-          if (ownedLedger.length > 0 && dependencies.postman.deleteVerifiedRunOwnedCollections) {
-            try {
-              await dependencies.postman.deleteVerifiedRunOwnedCollections([...ownedLedger]);
-            } catch (cleanupError) {
-              dependencies.core.warning(
-                formatMaskedOneLine(
-                  `Owned OpenAPI import cleanup failed at ${stage}: ${formatMaskedOneLine(cleanupError, mask)}`,
-                  mask
-                )
-              );
-            }
-          }
-          if (artifactRestore) {
-            await artifactRestore().catch(() => undefined);
-          }
-          throw new Error(
-            `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`
-          );
-        };
-
         let payloads: LocalOpenApiRolePayloads;
         const conversionStarted = Date.now();
         try {
@@ -2942,6 +3010,7 @@ async function runBootstrapInner(
         }
 
         const repoRoot = resolveWorkspaceRoot();
+        localOpenApiRepoRoot = repoRoot;
         const runTempDir = await mkdtemp(path.join(process.env.RUNNER_TEMP || tmpdir(), 'bootstrap-local-openapi-'));
         let materialized: MaterializeLocalCollectionArtifactsResult;
         try {
@@ -3068,7 +3137,8 @@ async function runBootstrapInner(
           smoke: outputs['smoke-collection-id'],
           contract: outputs['contract-collection-id']
         });
-        await persistLocalOpenApiArtifactManifest(repoRoot, finalized);
+        // Persist only after verified link readback + tags succeed (before resources write).
+        pendingFinalizedLocalOpenApiManifest = finalized;
         outputs['prebuilt-collections-json'] = JSON.stringify(finalized);
 
         const phase: 'fresh' | 'changed-deep-update' | 'mixed-import-deep-update' =
@@ -3261,7 +3331,7 @@ async function runBootstrapInner(
                   `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} options mismatch`
                 );
               }
-              if (extractSyncExamplesValue(row.syncOptions) !== expectedSyncOptions.syncExamples) {
+              if (!includesRequestedJsonSemantics(row.syncOptions, expectedSyncOptions)) {
                 throw new Error(
                   `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} syncOptions mismatch`
                 );
@@ -3325,6 +3395,14 @@ async function runBootstrapInner(
     )
   );
 
+  // Persist digest-bound manifest with cloud IDs only after link readback + tags.
+  if (pendingFinalizedLocalOpenApiManifest && localOpenApiRepoRoot) {
+    await persistLocalOpenApiArtifactManifest(
+      localOpenApiRepoRoot,
+      pendingFinalizedLocalOpenApiManifest
+    );
+  }
+
   // Persist spec-id + collection resources only after verified linking.
   // generation/linking succeed. Workspace-only state was written earlier.
   recordCurrentBootstrapResources({
@@ -3341,6 +3419,9 @@ async function runBootstrapInner(
   } catch (error) {
     const mask = createBootstrapSecretMasker(inputs);
     const reason = formatMaskedOneLine(error, mask);
+    // Link/tag (or any post-import) failure before resources persist: compensate
+    // journaled fresh imports only, restore local trees/workflows, drop manifest.
+    await compensateOwnedLocalOpenApiImports(rollbackTriggerStage);
     if (completedExternalSideEffects.length > 0) {
       dependencies.core.warning(
         formatMaskedOneLine(

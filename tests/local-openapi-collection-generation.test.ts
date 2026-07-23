@@ -8,7 +8,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
 import {
   LOCAL_OPENAPI_CONVERSION_FAILED,
-  LOCAL_OPENAPI_WHOLE_IMPORT_MAX_BYTES,
   LocalOpenApiConversionError,
   buildLocalOpenApiConversionOptions,
   computePayloadDigest,
@@ -244,7 +243,7 @@ describe('local OpenAPI role payload generation', () => {
     expect([owners.name, ownerId.name, pets.name]).toEqual(['owners', '{ownerId}', 'pets']);
   });
 
-  it('converts 101 operations once into complete roles under the bounded local whole-import cap', async () => {
+  it('converts 101 operations once into complete roles without inventing a whole-import byte cap', async () => {
     const operationCount = 101;
     const paths = Object.fromEntries(Array.from({ length: operationCount }, (_value, index) => [
       `/operation-${index}`,
@@ -279,8 +278,9 @@ describe('local OpenAPI role payload generation', () => {
     expect(smokeScripts.some((entry) => entry.source.includes('Status code is not an error'))).toBe(true);
     expect(contractScripts.some((entry) => entry.source.includes('pm.test'))).toBe(true);
     const contractBytes = Buffer.byteLength(JSON.stringify(result.roles.contract.collection), 'utf8');
+    // Local whole-import opts out of the unrelated 4 MiB update guard; large
+    // valid contract payloads must succeed without an invented whole-import cap.
     expect(contractBytes).toBeGreaterThan(4_000_000);
-    expect(contractBytes).toBeLessThanOrEqual(LOCAL_OPENAPI_WHOLE_IMPORT_MAX_BYTES);
   });
 
   it('assigns disjoint structural Sync IDs across role clones from one conversion (Q12)', async () => {

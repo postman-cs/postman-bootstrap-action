@@ -121,14 +121,35 @@ function harmlessSplitter(): CollectionSplitter {
 }
 
 describe('local collection artifacts', () => {
+  it('pins cross-package artifact digest wire format against the shared golden constant', () => {
+    // Same golden constant is asserted in cse/postman-repo-sync-action tests to pin
+    // the cross-action wire format (relative + NUL + bytes + NUL, sorted by localeCompare).
+    expect(
+      computeArtifactDigest([
+        { relative: 'postman/collections/demo/request.yaml', bytes: '$kind: Request\nname: r1\n' },
+        {
+          relative: 'postman/collections/demo/.resources/definition.yaml',
+          bytes: '$kind: Definition\nname: demo\n'
+        }
+      ])
+    ).toBe('ca388562133f1214ae6662ea655da203221bfcb914a4e42eecab7b8b28458674');
+  });
+
   it('derives deterministic collision-safe artifact names while preserving safe names exactly', () => {
     expect(deriveArtifactSafeCollectionName('Payments API')).toBe('Payments API');
+    const longSafe = `Payments ${'API '.repeat(80).trim()}`;
+    expect(longSafe.length).toBeGreaterThan(160);
+    expect(deriveArtifactSafeCollectionName(longSafe)).toBe(longSafe);
     const colon = deriveArtifactSafeCollectionName('Payments:A');
     const dash = deriveArtifactSafeCollectionName('Payments-A');
-    expect(colon).toMatch(/^[A-Za-z0-9._@[\] -]+$/);
+    expect(colon).toMatch(/^collection-[a-f0-9]{64}$/);
     expect(colon).not.toBe(dash);
     expect(deriveArtifactSafeCollectionName('Payments:A')).toBe(colon);
-    expect(deriveArtifactSafeCollectionName(`${'x'.repeat(200)}:tail`).length).toBeLessThanOrEqual(160);
+    const longUnsafe = `${'x'.repeat(200)}:tail`;
+    expect(deriveArtifactSafeCollectionName(longUnsafe)).toMatch(/^collection-[a-f0-9]{64}$/);
+    expect(deriveArtifactSafeCollectionName(longUnsafe)).toBe(
+      deriveArtifactSafeCollectionName(longUnsafe)
+    );
   });
 
   it('pins @postman/v3.export and emits runtime.models→v3.export trees', async () => {
@@ -527,5 +548,64 @@ describe('local collection artifacts', () => {
         .update('\0')
         .digest('hex')
     );
+  });
+
+  it('materializes collection artifacts for names longer than 160 characters without truncation or alteration', async () => {
+    const { repoRoot, runTempDir, cleanup } = await makeRepo();
+    try {
+      const longName = `[Smoke] Enterprise Core Services ${'Collection Name Segment '.repeat(6).trim()}`;
+      expect(longName.length).toBeGreaterThan(160);
+
+      const roles = await roleInputs();
+      const longNameRole = {
+        ...roles[1]!,
+        collectionName: longName
+      };
+
+      const result = await materializeLocalCollectionArtifacts({
+        repoRoot,
+        runTempDir,
+        roles: [longNameRole]
+      });
+
+      expect(result.manifest).toHaveLength(1);
+      const entry = result.manifest[0]!;
+      expect(entry.collectionPath).toBe(`postman/collections/${longName}`);
+      expect(entry.collectionPath.length).toBeGreaterThan(160);
+
+      const definition = await readFile(
+        path.join(repoRoot, entry.collectionPath, '.resources', 'definition.yaml'),
+        'utf8'
+      );
+      expect(definition).toContain('$kind: collection');
+
+      const confined = confineRepoRelativePath(repoRoot, entry.collectionPath, 'longCollectionPath');
+      expect(confined).toBe(`postman/collections/${longName}`);
+
+      const longUnsafeDisplayName = `Enterprise Core Services: ${'Subservice '.repeat(15).trim()}`;
+      expect(longUnsafeDisplayName.length).toBeGreaterThan(160);
+      const safeSegment = deriveArtifactSafeCollectionName(longUnsafeDisplayName);
+      expect(safeSegment).toMatch(/^collection-[a-f0-9]{64}$/);
+
+      const unsafeRole = {
+        ...roles[0]!,
+        collectionName: safeSegment
+      };
+
+      const unsafeResult = await materializeLocalCollectionArtifacts({
+        repoRoot,
+        runTempDir,
+        roles: [unsafeRole]
+      });
+
+      expect(unsafeResult.manifest[0]!.collectionPath).toBe(`postman/collections/${safeSegment}`);
+      const unsafeDef = await readFile(
+        path.join(repoRoot, unsafeResult.manifest[0]!.collectionPath, '.resources', 'definition.yaml'),
+        'utf8'
+      );
+      expect(unsafeDef).toContain('$kind: collection');
+    } finally {
+      await cleanup();
+    }
   });
 });

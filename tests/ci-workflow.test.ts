@@ -220,12 +220,22 @@ describe('CI workflow dist/pack race contract', () => {
     );
     expect(installCli).not.toContain('win64.ps1');
     expect(installCli).not.toContain('postman.exe');
+    expect(installCli).not.toContain('--no-optional');
+    expect(installCli).not.toContain('postman.cmd');
 
     const addCliPath = namedStep(windows, 'Add Postman CLI to PATH');
     expect(addCliPath).toContain('GITHUB_PATH');
-    expect(addCliPath).toContain('node_modules\\.bin');
-    expect(addCliPath).toContain('postman.cmd');
+    expect(addCliPath).toContain(
+      'node_modules\\@postman\\pm-bin-windows-x64\\bin\\postman.exe',
+    );
+    expect(addCliPath).toContain('Test-Path -LiteralPath $exe -PathType Leaf');
+    expect(addCliPath).toContain('Split-Path -Parent $exe');
+    expect(addCliPath).toContain('& $exe --version');
     expect(addCliPath).toContain('--version');
+    expect(addCliPath).not.toContain('postman.cmd');
+    expect(addCliPath).not.toContain('node_modules\\.bin');
+    expect(addCliPath).not.toContain('win64.ps1');
+    expect(addCliPath).not.toContain('dl-cli.pstmn.io');
     expect(addCliPath).not.toMatch(/\bif:/);
 
     const runGates = namedStep(windows, 'Run gates');
@@ -255,7 +265,10 @@ describe('CI workflow dist/pack race contract', () => {
     expect(windows).not.toContain('actionlint');
     expect(windows).not.toContain('commitlint');
     expect(windows).not.toContain('install/win64.ps1');
-    expect(windows).not.toContain('postman.exe');
+    expect(windows).not.toContain('postman.cmd');
+    expect(windows).toContain(
+      'node_modules\\@postman\\pm-bin-windows-x64\\bin\\postman.exe',
+    );
     expect(runGates).not.toContain('continue-on-error');
     expect(runGates).not.toMatch(/npm run verify:dist(?:\s|$|"|')/);
   });

@@ -151,9 +151,13 @@ jobs:
       - name: Add Postman CLI to PATH
         shell: pwsh
         run: |
-          $bin = Join-Path "${{ runner.temp }}\postman-cli" 'node_modules\.bin'
-          Add-Content -Path $env:GITHUB_PATH -Value $bin
-          & (Join-Path $bin 'postman.cmd') --version
+          $exe = Join-Path "${{ runner.temp }}\postman-cli" 'node_modules\@postman\pm-bin-windows-x64\bin\postman.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "Expected versioned Postman CLI executable at $exe"
+          }
+          $dir = Split-Path -Parent $exe
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+          & $exe --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run gates
         shell: pwsh

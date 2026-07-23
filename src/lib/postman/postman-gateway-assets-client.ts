@@ -272,8 +272,10 @@ export class PostmanGatewayAssetsClient {
   }
   /**
    * Bounded eventual-consistency verification after a successful owned-root delete.
-   * Only HTTP 404 proves absence; stale post-delete GET visibility is polled
-   * across the full schedule (9s total) before failing closed.
+   * HTTP 404 on collection-root GET proves absence; service-account sessions that
+   * 403 on root GET fall back to workspace inventory with normalized identity
+   * comparison. Stale post-delete visibility is polled across the full schedule
+   * (9s total) before failing closed.
    */
   private static readonly DELETE_ABSENCE_SETTLE_DELAYS_MS = [
     250, 500, 750, 1000, 1500, 2000, 3000
@@ -3055,11 +3057,11 @@ export class PostmanGatewayAssetsClient {
         collectionId: electedId,
         journaledRootIds: [...journaledRootIds],
         deleteVerifiedCleanup: async (ids) => {
-          await this.deleteVerifiedRunOwnedCollections(ids ?? journaledRootIds);
+          await this.deleteVerifiedRunOwnedCollections(workspaceId, ids ?? journaledRootIds);
         }
       };
     } catch (error) {
-      await this.deleteVerifiedRunOwnedCollections(journaledRootIds).catch(() => undefined);
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => undefined);
       throw this.sanitizeImportError('import-finalize', error);
     }
   }
@@ -3118,12 +3120,14 @@ export class PostmanGatewayAssetsClient {
   }
 
   /** Delete and verify absence of only the supplied run-owned collection roots. */
-  async deleteVerifiedRunOwnedCollections(collectionIds: string[]): Promise<void> {
+  async deleteVerifiedRunOwnedCollections(
+    workspaceId: string,
+    collectionIds: string[]
+  ): Promise<void> {
     const unique = [...new Set(collectionIds.map((id) => String(id || '').trim()).filter(Boolean))];
     for (const id of unique) {
       await this.deleteCollection(id);
-      // Verified absence means GET 404 only. 500/ambiguous never counts as deleted.
-      const verifiedAbsent = await this.verifyCollectionAbsent404(id);
+      const verifiedAbsent = await this.verifyCollectionAbsent(workspaceId, id);
       if (!verifiedAbsent) {
         throw new Error(
           `LOCAL_OPENAPI_CLEANUP_FAILED: owned collection ${id} absence unverifiable after delete`
@@ -3133,12 +3137,17 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Prove a collection root is gone. Only HTTP 404 counts. Each observation is
-   * one retry:'none' GET; stale post-delete visibility and transient >=500
-   * errors share the bounded DELETE_ABSENCE settle schedule before failing closed.
+   * Prove a collection root is gone. HTTP 404 on root GET proves absence; root
+   * GET 403 falls back to workspace inventory with normalized identity comparison
+   * (never treating 403 alone as absence). Root GET 200 and transient >=500 share
+   * the bounded DELETE_ABSENCE settle schedule before failing closed.
    */
-  private async verifyCollectionAbsent404(collectionId: string): Promise<boolean> {
+  private async verifyCollectionAbsent(
+    workspaceId: string,
+    collectionId: string
+  ): Promise<boolean> {
     const path = `/v3/collections/${this.bareModelId(collectionId)}`;
+    const targetIdentity = normalizeCollectionModelIdentity(collectionId);
     const delays = PostmanGatewayAssetsClient.DELETE_ABSENCE_SETTLE_DELAYS_MS;
     for (let observation = 0; observation <= delays.length; observation += 1) {
       try {
@@ -3157,6 +3166,21 @@ export class PostmanGatewayAssetsClient {
         if (error instanceof HttpError && error.status === 404) {
           return true;
         }
+        if (error instanceof HttpError && error.status === 403) {
+          try {
+            const inventory = await this.listWorkspaceCollections(workspaceId, 'none');
+            if (!this.isNormalizedIdentityPresentInInventory(inventory, targetIdentity)) {
+              return true;
+            }
+          } catch {
+            return false;
+          }
+          if (observation < delays.length) {
+            await this.sleep(delays[observation]!);
+            continue;
+          }
+          return false;
+        }
         if (error instanceof HttpError && error.status >= 500 && observation < delays.length) {
           await this.sleep(delays[observation]!);
           continue;
@@ -3165,6 +3189,15 @@ export class PostmanGatewayAssetsClient {
       }
     }
     return false;
+  }
+
+  private isNormalizedIdentityPresentInInventory(
+    inventory: Array<{ id: string; name: string; description?: string }>,
+    targetIdentity: string
+  ): boolean {
+    return inventory.some(
+      (entry) => normalizeCollectionModelIdentity(entry.id) === targetIdentity
+    );
   }
 
   private prepareV2ImportPayload(collection: unknown, forceName?: string): JsonRecord {
@@ -3259,7 +3292,7 @@ export class PostmanGatewayAssetsClient {
     if (preferredIdentity !== winnerIdentity) {
       // True peer won: delete only the run-owned root and verify absence before
       // returning the winner inventory UID.
-      await this.deleteVerifiedRunOwnedCollections([ownCanonical.id]);
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
       return winner.id;
     }
 

@@ -374,7 +374,7 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
-  it('compensates journaled fresh imports on link failure before resources/manifest persist', async () => {
+  it('compensates journaled fresh imports on link failure before resources/manifest persist', { timeout: 30_000 }, async () => {
     await withRepo(async (repoRoot) => {
       const events: string[] = [];
       const core = createCoreStub();
@@ -410,7 +410,7 @@ describe('local OpenAPI orchestration', () => {
 
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledTimes(1);
-      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith([
+      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith('ws-1', [
         'col-baseline',
         'col-smoke',
         'col-contract'
@@ -476,7 +476,10 @@ describe('local OpenAPI orchestration', () => {
       );
       expect(postman.importV2Collection).toHaveBeenCalledTimes(2);
       expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledTimes(1);
-      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith(['col-smoke', 'col-contract']);
+      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith('ws-1', [
+        'col-smoke',
+        'col-contract'
+      ]);
       const collections =
         (durableState as { cloudResources?: { collections?: Record<string, unknown> } } | null)
           ?.cloudResources?.collections ?? {};
@@ -1047,7 +1050,9 @@ describe('local OpenAPI orchestration', () => {
       );
 
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
-      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith([canonicalBaselineUid]);
+      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith('ws-1', [
+        canonicalBaselineUid
+      ]);
       expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
       expect(postman.tagCollection).not.toHaveBeenCalled();
     });

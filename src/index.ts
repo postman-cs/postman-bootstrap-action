@@ -327,7 +327,7 @@ export interface BootstrapExecutionDependencies {
       collection: unknown,
       expectedPayloadDigest: string
     ): Promise<string>;
-    deleteVerifiedRunOwnedCollections?(collectionIds: string[]): Promise<void>;
+    deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
   };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,
@@ -2746,7 +2746,7 @@ async function runBootstrapInner(
     const mask = createBootstrapSecretMasker(inputs);
     if (ownedLedger.length > 0 && dependencies.postman.deleteVerifiedRunOwnedCollections) {
       try {
-        await dependencies.postman.deleteVerifiedRunOwnedCollections([...ownedLedger]);
+        await dependencies.postman.deleteVerifiedRunOwnedCollections(workspaceId || '', [...ownedLedger]);
       } catch (cleanupError) {
         dependencies.core.warning(
           formatMaskedOneLine(
@@ -3760,8 +3760,8 @@ export function createRoutingPostmanClient(options: {
       gateway.importV2Collection(workspaceId, collection, finalName),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) =>
       gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
-    deleteVerifiedRunOwnedCollections: (collectionIds) =>
-      gateway.deleteVerifiedRunOwnedCollections(collectionIds)
+    deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
+      gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds)
   };
 }
 

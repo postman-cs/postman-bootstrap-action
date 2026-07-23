@@ -4129,7 +4129,7 @@ describe('PostmanGatewayAssetsClient', () => {
       ).toHaveLength(1);
     });
 
-    it('returns elected peer even when loser cleanup absence cannot be verified', async () => {
+    it('import-finalize fails when elected-loser cleanup cannot be verified', async () => {
       const ownBare = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
       const ownId = `300-${ownBare}`;
       const peerId = '100-11111111-1111-1111-1111-111111111111';
@@ -4173,10 +4173,48 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       }, { sleep });
 
-      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
-      expect(result.collectionId).toBe(peerId);
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+        /LOCAL_OPENAPI_IMPORT_FAILED: stage=import-finalize cause=LOCAL_OPENAPI_CLEANUP_FAILED/
+      );
       expect(deleted.length).toBeGreaterThanOrEqual(1);
-      expect(deleted[0]).toBe(`/v3/collections/${ownBare}`);
+      expect(deleted.every((path) => path === `/v3/collections/${ownBare}`)).toBe(true);
+    });
+
+    it('deleteVerifiedRunOwnedCollections re-issues DELETE until inventory omits identity', async () => {
+      const id = 'ffffffff-aaaa-bbbb-cccc-dddddddddddd';
+      let deletes = 0;
+      let rootReads = 0;
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'delete') {
+          deletes += 1;
+          return jsonResponse({ data: { ok: true } });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path === `/v3/collections/${id}`) {
+          rootReads += 1;
+          if (deletes < 3) return jsonResponse({ data: { id, name: 'Still here' } });
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === '/v3/collections/?workspace=ws-1'
+        ) {
+          if (deletes < 3) return jsonResponse({ data: [{ id, name: 'Still here' }] });
+          return jsonResponse({ data: [] });
+        }
+        return jsonResponse({ data: { ok: true } });
+      }, { sleep });
+
+      await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).resolves.toBeUndefined();
+      expect(deletes).toBe(3);
+      expect(rootReads).toBe(3);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        DELETE_ABSENCE_SETTLE_DELAYS_MS[0],
+        DELETE_ABSENCE_SETTLE_DELAYS_MS[1]
+      ]);
     });
 
     it('elects lower peer final only after observations beyond the historic six-read/3.75s election window', async () => {
@@ -4249,7 +4287,12 @@ describe('PostmanGatewayAssetsClient', () => {
       const result = await client.importV2Collection('ws-1', v21Collection, finalName);
       expect(result.collectionId).toBe(peerId);
       expect(result.journaledRootIds).toEqual([]);
-      expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
+      // First DELETE leaves a stale root GET 200 + inventory hit; second DELETE
+      // then observes 404 absence.
+      expect(deleted).toEqual([
+        `/v3/collections/${ownBare}`,
+        `/v3/collections/${ownBare}`
+      ]);
       expect(ownRootReads).toBe(2);
       expect(electionObs).toBe(PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
       expect(cleanupInventoryReads).toBe(1);

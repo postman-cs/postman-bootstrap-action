@@ -16,7 +16,61 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  normalize-receipt:
+    name: Normalize multifile receipt
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    outputs:
+      updated: ${{ steps.rebind.outputs.updated }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Plan receipt normalization
+        id: rebind
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node .github/scripts/rebind-multifile-receipt.mjs --write
+      - name: Rebuild and validate normalized receipt
+        if: steps.rebind.outputs.updated == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm ci
+          npm run bundle
+          git add validation/evidence/multifile-spec-sync.json dist/action.cjs dist/cli.cjs dist/index.cjs
+          changed="$(git diff --cached --name-only | LC_ALL=C sort)"
+          expected="$(printf '%s\n' dist/action.cjs dist/cli.cjs dist/index.cjs validation/evidence/multifile-spec-sync.json | LC_ALL=C sort)"
+          if [ "$changed" != "$expected" ]; then
+            echo "::error::Receipt normalization changed files outside its exact allowlist"
+            printf 'changed:\n%s\n' "$changed"
+            exit 1
+          fi
+          npx vitest run tests/ci-receipt-rebind.test.ts tests/multifile-spec-sync-receipt.test.ts
+          npm run verify:dist:assert
+      - name: Commit normalized receipt and dispatch fresh checks
+        if: steps.rebind.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "chore: rebind multifile receipt to source"
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
+          gh workflow run ci.yml --ref "$GITHUB_HEAD_REF"
+          gh workflow run sea-binary.yml --ref "$GITHUB_HEAD_REF"
+
   gate:
+    needs: normalize-receipt
+    if: ${{ always() && (needs.normalize-receipt.result == 'success' || needs.normalize-receipt.result == 'skipped') && needs.normalize-receipt.outputs.updated != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -101,6 +155,8 @@ jobs:
 
   windows:
     name: Windows gate
+    needs: normalize-receipt
+    if: ${{ always() && (needs.normalize-receipt.result == 'success' || needs.normalize-receipt.result == 'skipped') && needs.normalize-receipt.outputs.updated != 'true' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -163,8 +219,8 @@ jobs:
         shell: pwsh
         run: |
           $gates = @(
-            'test|||npm|||test'
-            'integ|||npm|||run|||test:integration'
+            'test|||node|||--run|||test'
+            'integ|||node|||--run|||test:integration'
           ) | ConvertTo-Json -Compress
           & .github/scripts/run-windows-gates.ps1 -GateJson $gates
           exit $LASTEXITCODE

@@ -3708,7 +3708,8 @@ describe('PostmanGatewayAssetsClient', () => {
       info: {
         name: 'Payments',
         schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
-        _postman_id: '11111111-1111-1111-1111-111111111111'
+        _postman_id: '11111111-1111-1111-1111-111111111111',
+        description: ''
       },
       item: [
         {
@@ -4111,6 +4112,85 @@ describe('PostmanGatewayAssetsClient', () => {
         )
       ).toHaveLength(1);
     });
+
+    it.each(['Payments', '[Smoke] Payments'])(
+      'concurrent preview imports converge on one %s collection despite a staggered pre-snapshot',
+      async (finalName) => {
+        const entries: Array<{ id: string; name: string; description: string }> = [];
+        const own = {
+          a: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+          b: '200-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+        };
+        let releaseA!: () => void;
+        const aAtElection = new Promise<void>((resolve) => { releaseA = resolve; });
+        let releaseB!: () => void;
+        const bRenamed = new Promise<void>((resolve) => { releaseB = resolve; });
+
+        const handler = (env: Envelope): Response => {
+          if (env.service === 'sync' && env.path === '/collection/import') {
+            const body = env.body as { info?: { name?: string; description?: string } };
+            const runner = String(body.info?.name).includes('runner-a') ? 'a' : 'b';
+            entries.push({
+              id: own[runner],
+              name: String(body.info?.name),
+              description: String(body.info?.description)
+            });
+            return jsonResponse({ model_id: own[runner].slice(4) });
+          }
+          if (env.service === 'collection' && env.method === 'patch') {
+            const bare = String(env.path).split('/').pop();
+            const hit = entries.find((entry) => entry.id.endsWith(String(bare)));
+            if (hit) hit.name = finalName;
+            if (hit?.id === own.b) releaseB();
+            return jsonResponse({ data: {} });
+          }
+          if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+            return jsonResponse({ data: entries });
+          }
+          if (env.service === 'collection' && env.method === 'delete') {
+            const bare = String(env.path).split('/').pop();
+            const index = entries.findIndex((entry) => entry.id.endsWith(String(bare)));
+            if (index >= 0) entries.splice(index, 1);
+            return jsonResponse({ data: {} });
+          }
+          return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+        };
+
+        let aSleepCount = 0;
+        const clientA = makeClient(handler, {
+          createIdentity: () => 'runner-a',
+          sleep: async () => {
+            aSleepCount += 1;
+            if (aSleepCount === 1) {
+              releaseA();
+              await bRenamed;
+            }
+          }
+        }).client;
+        const clientB = makeClient(handler, {
+          createIdentity: () => 'runner-b',
+          sleep: async () => undefined
+        }).client;
+        const previewA = structuredClone(v21Collection) as typeof v21Collection & {
+          info: typeof v21Collection.info & { description: string };
+        };
+        const previewB = structuredClone(v21Collection) as typeof previewA;
+        previewA.info.description =
+          'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+        previewB.info.description = previewA.info.description.replaceAll('00:00:00', '00:00:01');
+
+        const first = clientA.importV2Collection('ws-1', previewA, finalName);
+        await aAtElection;
+        const second = clientB.importV2Collection('ws-1', previewB, finalName);
+        const [a, b] = await Promise.all([first, second]);
+
+        expect(a.collectionId).toBe(own.a);
+        expect(b.collectionId).toBe(own.a);
+        expect(entries).toEqual([
+          expect.objectContaining({ id: own.a, name: finalName })
+        ]);
+      }
+    );
 
     it('reconciles ambiguous import only by exact temp name', async () => {
       let listed = false;

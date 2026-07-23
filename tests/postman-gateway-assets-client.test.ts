@@ -566,6 +566,52 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.filter((c) => c.path === '/tasks').length).toBe(2);
     });
 
+    it('waits through eventual task authorization after an accepted generation', async () => {
+      let taskReads = 0;
+      let posted = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path.endsWith('/collections')) {
+          posted = true;
+          return jsonResponse({ data: { taskId: 'task-eventual' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          taskReads += 1;
+          if (taskReads === 1) return jsonResponse({ error: { name: 'permissionError' } }, { status: 403 });
+          if (taskReads === 2) return jsonResponse({ error: { name: 'notFoundError' } }, { status: 404 });
+          return jsonResponse({ data: { 'task-eventual': 'completed' } });
+        }
+        return jsonResponse({ data: posted ? [{ collection: 'uid-eventual', name: 'P [bootstrap:test-run]' }] : [] });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '', 'None', true, 'Fallback')
+      ).resolves.toBe('uid-eventual');
+      expect(taskReads).toBe(3);
+    });
+
+    it('waits for a newly uploaded specification collection relation route to become readable', async () => {
+      let listReads = 0;
+      let posted = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          listReads += 1;
+          if (listReads <= 2) return jsonResponse({ error: { name: 'notFoundError' } }, { status: 404 });
+          return jsonResponse({ data: posted ? [{ collection: 'uid-readable', name: 'P [bootstrap:test-run]' }] : [] });
+        }
+        if (env.method === 'post' && env.path.endsWith('/collections')) {
+          posted = true;
+          return jsonResponse({ data: { taskId: 'task-readable' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { 'task-readable': 'completed' } });
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '', 'None', true, 'Fallback')
+      ).resolves.toBe('uid-readable');
+      expect(listReads).toBeGreaterThanOrEqual(4);
+    });
+
     it('omits nestedFolderHierarchy when folderStrategy is not Tags', async () => {
       let posted = false;
       const { client, calls } = makeClient((env) => {

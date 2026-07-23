@@ -12,7 +12,6 @@ import {
 } from '../src/lib/postman/additional-collections.js';
 import {
   applyOas30TypeNullLintCompatibility,
-  lintSpecViaCli,
   normalizeSpecDocument,
   readActionInputs,
   runAction,
@@ -173,7 +172,6 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     postmanBifrostBase: 'https://bifrost-premium-https-v4.gw.postman.com',
     postmanFallbackBase: 'https://go.postman.co/_api',
     postmanGatewayBase: 'https://gateway.postman.com',
-    postmanCliInstallUrl: 'https://dl-cli.pstmn.io/install/unix.sh',
     postmanIapubBase: 'https://iapub.postman.co',
     githubRefName: undefined,
     githubHeadRef: undefined,
@@ -521,11 +519,7 @@ describe('bootstrap action', () => {
       specFetcher
     });
 
-    expect(execStub.exec).toHaveBeenCalledWith('postman', [
-      'login',
-      '--with-api-key',
-      'pmak-test'
-    ]);
+    expect(execStub.exec).not.toHaveBeenCalled();
     expect(internalIntegration.assignWorkspaceToGovernanceGroup).toHaveBeenCalledWith(
       'ws-123',
       'core-banking',
@@ -578,10 +572,8 @@ describe('bootstrap action', () => {
     );
     expect(outputs['lint-summary-json']).toBe(
       JSON.stringify({
-        errors: 0,
-        total: 0,
-        violations: [],
-        warnings: 0
+        status: 'skipped',
+        reason: 'bootstrap does not invoke the Postman CLI lint'
       })
     );
   });
@@ -716,14 +708,7 @@ components:
     const postman = createRollbackPostman({
       uploadSpec: vi.fn().mockResolvedValue('spec-nullable')
     });
-    const lintPath = '$.components.schemas.Criteria.properties.value.oneOf[1].type';
-    const execStub = createExecStub(JSON.stringify({
-      violations: [{
-        severity: 'ERROR',
-        issue: '"type" property must be equal to one of the allowed values',
-        path: lintPath
-      }]
-    }));
+    const execStub = createExecStub();
 
     const result = await runBootstrap(
       createInputs({
@@ -746,8 +731,13 @@ components:
       source,
       '3.0'
     );
-    expect(result['lint-summary-json']).toContain('"errors":0');
-    expect(result['lint-summary-json']).toContain('"severity":"WARNING"');
+    expect(result['lint-summary-json']).toBe(
+      JSON.stringify({
+        status: 'skipped',
+        reason: 'bootstrap does not invoke the Postman CLI lint'
+      })
+    );
+    expect(execStub.getExecOutput).not.toHaveBeenCalled();
   });
 
   it('persists current bootstrap resource state before additional collection mappings', async () => {
@@ -1029,115 +1019,6 @@ paths:
       paths: Record<string, { get: { responses: Record<string, { description?: string }> } }>;
     };
     expect(uploaded.paths['/payments']?.get.responses['200']?.description).toBe('OK');
-  });
-
-  it('fails when spec lint returns errors', async () => {
-    const { core } = createCoreStub();
-    const execStub = createExecStub(
-      JSON.stringify({
-        violations: [
-          {
-            issue: 'Missing operationId',
-            path: '$.paths./payments.get',
-            severity: 'ERROR'
-          }
-        ]
-      })
-    );
-    const ioStub = createIoStub();
-    const postman = {
-      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
-      findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi.fn(),
-      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-      getTeams: vi.fn().mockResolvedValue([]),
-      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-      injectContractTests: vi.fn().mockResolvedValue([]),
-      injectTests: vi.fn(),
-      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-      tagCollection: vi.fn(),
-      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
-      updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
-    };
-
-    await expect(
-      runBootstrap(createInputs(), {
-        core,
-        exec: execStub,
-        io: ioStub,
-        postman: withContractHelpers(postman),
-        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-          new Response(VALID_SPEC_31, { status: 200 })
-        )
-      })
-    ).rejects.toThrow('Spec lint found 1 errors');
-
-    expect(postman.generateCollection).not.toHaveBeenCalled();
-  });
-
-  it('restores previous spec content when lint fails after an update', async () => {
-    const { core } = createCoreStub();
-    const execStub = createExecStub(
-      JSON.stringify({
-        violations: [
-          {
-            issue: 'Broken schema',
-            path: '$.paths./payments.get',
-            severity: 'ERROR'
-          }
-        ]
-      })
-    );
-    const ioStub = createIoStub();
-    const postman = {
-      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-      createWorkspace: vi.fn(),
-      findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi.fn(),
-      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-      getTeams: vi.fn().mockResolvedValue([]),
-      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31),
-      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-      injectContractTests: vi.fn().mockResolvedValue([]),
-      injectTests: vi.fn(),
-      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-      tagCollection: vi.fn(),
-      uploadSpec: vi.fn(),
-      updateSpec: vi.fn().mockResolvedValue(undefined)
-    };
-
-    await expect(
-      runBootstrap(
-        createInputs({ workspaceId: 'ws-existing', specId: 'spec-existing' }),
-        {
-          core,
-          exec: execStub,
-          io: ioStub,
-          postman: withContractHelpers(postman),
-          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-            new Response(VALID_SPEC_31, { status: 200 })
-          )
-        }
-      )
-    ).rejects.toThrow('Spec lint found 1 errors');
-
-    expect(postman.getSpecContent).toHaveBeenCalledWith('spec-existing');
-    expect(postman.updateSpec).toHaveBeenNthCalledWith(
-      1,
-      'spec-existing',
-      VALID_SPEC_31,
-      'ws-existing'
-    );
-    expect(postman.updateSpec).toHaveBeenNthCalledWith(
-      2,
-      'spec-existing',
-      PREVIOUS_SPEC_31,
-      'ws-existing'
-    );
   });
 
   it('skips spec update, version tag, and rollback when existing content hash matches (no-op sync)', async () => {
@@ -1482,6 +1363,42 @@ paths:
     expect(postman.deleteSpec).toHaveBeenCalledWith('spec-new');
     expect(postman.getSpecContent).not.toHaveBeenCalled();
     expect(postman.updateSpec).not.toHaveBeenCalled();
+    expect(outputs).toEqual({});
+  });
+
+  it('does not delete an elected peer spec when a downstream stage fails', async () => {
+    const { core, outputs } = createCoreStub();
+    const uploadSpecWithOutcome = vi.fn().mockResolvedValue({
+      specId: 'spec-peer',
+      created: false
+    });
+    const postman = createRollbackPostman({
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
+      generateCollection: vi.fn().mockRejectedValue(new Error('peer generation failed')),
+      uploadSpec: vi.fn().mockRejectedValue(new Error('legacy uploadSpec must not be called')),
+      uploadSpecWithOutcome
+    });
+
+    await expect(
+      runBootstrap(createInputs(), {
+        core,
+        exec: createExecStub(),
+        io: createIoStub(),
+        postman,
+        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+          new Response(VALID_SPEC_31, { status: 200 })
+        )
+      })
+    ).rejects.toThrow('peer generation failed');
+
+    expect(uploadSpecWithOutcome).toHaveBeenCalledWith(
+      'ws-new',
+      'core-payments',
+      VALID_SPEC_31,
+      '3.1'
+    );
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.deleteSpec).not.toHaveBeenCalled();
     expect(outputs).toEqual({});
   });
 
@@ -3832,53 +3749,8 @@ paths:
     expect(existsSync('.postman/releases.yaml')).toBe(false);
   });
 
-  it('emits warnings for lint violations but does not fail', async () => {
-    const { core, warnings } = createCoreStub();
-    const execStub = createExecStub(
-      JSON.stringify({
-        violations: [
-          { issue: 'Missing description', path: '$.paths./payments.get', severity: 'WARNING' }
-        ]
-      })
-    );
-    const ioStub = createIoStub();
-    const postman = {
-      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
-      findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi.fn().mockResolvedValue('col-id'),
-      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-      getTeams: vi.fn().mockResolvedValue([]),
-      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-      injectContractTests: vi.fn().mockResolvedValue([]),
-      injectTests: vi.fn().mockResolvedValue(undefined),
-      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-      tagCollection: vi.fn().mockResolvedValue(undefined),
-      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
-      updateSpec: vi.fn().mockResolvedValue(undefined),
-      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
-    };
-
-    const result = await runBootstrap(createInputs(), {
-      core,
-      exec: execStub,
-      io: ioStub,
-      postman: withContractHelpers(postman),
-      specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
-        new Response(VALID_SPEC_31, { status: 200 })
-      )
-    });
-
-    expect(result['workspace-id']).toBe('ws-123');
-    expect(warnings.some((w) => w.includes('Missing description'))).toBe(true);
-    const lintSummary = JSON.parse(result['lint-summary-json']);
-    expect(lintSummary.warnings).toBe(1);
-    expect(lintSummary.errors).toBe(0);
-  });
-
-  it('skips the CLI lint and warns when postman-api-key is absent (access-token-only)', async () => {
-    const { core, warnings } = createCoreStub();
+  it('never invokes the Postman CLI lint, including when a PMAK is present', async () => {
+    const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
     const postman = {
@@ -3900,7 +3772,7 @@ paths:
     };
 
     const result = await runBootstrap(
-      createInputs({ postmanApiKey: '', postmanAccessToken: 'pat-only' }),
+      createInputs(),
       {
         core,
         exec: execStub,
@@ -3915,10 +3787,8 @@ paths:
     expect(result['workspace-id']).toBe('ws-123');
     expect(JSON.parse(result['lint-summary-json'])).toEqual({
       status: 'skipped',
-      reason: 'no postman-api-key'
+      reason: 'bootstrap does not invoke the Postman CLI lint'
     });
-    expect(warnings.some((w) => w.includes('lint skipped'))).toBe(true);
-    // No PMAK -> the Postman CLI is never installed or invoked for lint.
     expect(ioStub.which).not.toHaveBeenCalled();
     expect(execStub.getExecOutput).not.toHaveBeenCalled();
   });
@@ -4167,102 +4037,7 @@ paths:
   });
 });
 
-describe('lintSpecViaCli', () => {
-  it('parses warning and error counts from postman cli json output', async () => {
-    const summary = await lintSpecViaCli(
-      {
-        exec: createExecStub(
-          JSON.stringify({
-            violations: [
-              { severity: 'ERROR', issue: 'broken' },
-              { severity: 'WARNING', issue: 'warn' }
-            ]
-          })
-        )
-      },
-      'ws-123',
-      'spec-123'
-    );
-
-    expect(summary).toEqual({
-      errors: 1,
-      violations: [
-        { severity: 'ERROR', issue: 'broken' },
-        { severity: 'WARNING', issue: 'warn' }
-      ],
-      warnings: 1
-    });
-  });
-
-  it('masks multiline stderr and names spec/workspace on nonzero lint exit', async () => {
-    const masker = (input: string) => input.split('pmak-secret').join('[REDACTED]');
-    const exec: ExecLike = {
-      exec: vi.fn().mockResolvedValue(0),
-      getExecOutput: vi.fn().mockResolvedValue({
-        exitCode: 2,
-        stdout: '',
-        stderr: 'login failed\nwith key pmak-secret\u2028and token'
-      })
-    };
-
-    const rejection = await lintSpecViaCli(
-      { exec },
-      'ws\nlint',
-      'spec\u2028lint',
-      masker
-    ).catch((error: unknown) => error);
-    expect(rejection).toBeInstanceOf(Error);
-    const message = (rejection as Error).message;
-    expect(message).toContain('spec spec lint');
-    expect(message).toContain('workspace ws lint');
-    expect(message).toContain('[REDACTED]');
-    expect(message).not.toContain('pmak-secret');
-    expect(message).toContain('Remediation:');
-    expect(message).not.toMatch(/[\r\n\u2028\u2029]/);
-    expect(exec.getExecOutput).toHaveBeenCalledWith(
-      'postman',
-      [
-        'spec',
-        'lint',
-        'spec\u2028lint',
-        '--workspace-id',
-        'ws\nlint',
-        '--report-events',
-        '-o',
-        'json'
-      ],
-      { ignoreReturnCode: true }
-    );
-  });
-
-  it('masks multiline invalid JSON stdout/stderr and names spec/workspace', async () => {
-    const masker = (input: string) => input.split('access-secret').join('[REDACTED]');
-    const exec: ExecLike = {
-      exec: vi.fn().mockResolvedValue(0),
-      getExecOutput: vi.fn().mockResolvedValue({
-        exitCode: 0,
-        stdout: 'not-json\naccess-secret',
-        stderr: 'parser blew up\u2029access-secret'
-      })
-    };
-
-    const rejection = await lintSpecViaCli(
-      { exec },
-      'ws\u2029lint',
-      'spec\rlint',
-      masker
-    ).catch((error: unknown) => error);
-    expect(rejection).toBeInstanceOf(Error);
-    const message = (rejection as Error).message;
-    expect(message).toContain('not valid JSON');
-    expect(message).toContain('spec spec lint');
-    expect(message).toContain('workspace ws lint');
-    expect(message).toContain('[REDACTED]');
-    expect(message).not.toContain('access-secret');
-    expect(message).toContain('Remediation:');
-    expect(message).not.toMatch(/[\r\n\u2028\u2029]/);
-  });
-
+describe('OpenAPI 3.0 lint compatibility', () => {
   it('downgrades only the accepted OpenAPI 3.0 type null lint finding', () => {
     const summary = applyOas30TypeNullLintCompatibility(
       {
@@ -5143,7 +4918,7 @@ describe('runAction credential preflight', () => {
     return router as typeof fetch;
   }
 
-  it('runAction logs PMAK and session identity lines before the first workspace call', async () => {
+  it('runAction logs access-token session identity before the first workspace call', async () => {
     const events: string[] = [];
     vi.stubGlobal('fetch', createRunActionFetchRouter({ events }));
     const { core, infos, outputs } = createRunActionCore(baseInputValues(), events);
@@ -5151,19 +4926,15 @@ describe('runAction credential preflight', () => {
     await runAction(core, createExecStub(), createIoStub());
 
     expect(outputs['workspace-id']).toBe('ws-runaction');
-    const pmakLineIndex = events.findIndex((entry) =>
-      entry.startsWith('info:postman: PMAK identity')
-    );
     const sessionLineIndex = events.findIndex((entry) =>
       entry.startsWith('info:postman: access-token session identity')
     );
     const createWorkspaceIndex = events.findIndex(
       (entry) => entry === 'proxy:workspaces POST /workspaces'
     );
-    expect(pmakLineIndex).toBeGreaterThanOrEqual(0);
-    expect(sessionLineIndex).toBeGreaterThan(pmakLineIndex);
+    expect(sessionLineIndex).toBeGreaterThanOrEqual(0);
     expect(createWorkspaceIndex).toBeGreaterThan(sessionLineIndex);
-    expect(infos.some((line) => line.includes('credential preflight OK'))).toBe(true);
+    expect(infos.some((line) => line.includes('PMAK identity'))).toBe(false);
   }, 30000);
 
   it('runAction warns with context and defaults orgMode=false when the early org-mode probe fails', async () => {
@@ -5249,7 +5020,7 @@ describe('runAction credential preflight', () => {
     // Asset ops are gateway-only, so with no mintable token the run cannot
     // proceed; the eager mint surfaces the actionable warning before it fails.
     await expect(runAction(core, createExecStub(), createIoStub())).rejects.toThrow(
-      /service accounts are not enabled/
+      /Could not obtain postman-access-token/
     );
     expect(
       warnings.some((line) => line.includes('could not mint an access token from the postman-api-key'))
@@ -5257,85 +5028,20 @@ describe('runAction credential preflight', () => {
   }, 30000);
 
 
-  it('runAction completes when /me and iapub both 404 (preflight non-fatal)', async () => {
+  it('runAction completes when iapub returns 404 under warn mode', async () => {
     const events: string[] = [];
     vi.stubGlobal(
       'fetch',
-      createRunActionFetchRouter({ events, meStatus: 404, sessionStatus: 404 })
+      createRunActionFetchRouter({ events, sessionStatus: 404 })
     );
     const { core, warnings, outputs } = createRunActionCore(baseInputValues(), events);
 
     await runAction(core, createExecStub(), createIoStub());
 
     expect(outputs['workspace-id']).toBe('ws-runaction');
-    expect(
-      warnings.some((line) => line.includes('could not resolve PMAK identity'))
-    ).toBe(true);
+    expect(warnings.some((line) => line.includes('PMAK identity'))).toBe(false);
     expect(
       warnings.some((line) => line.includes('could not resolve the access-token session identity'))
-    ).toBe(true);
-  }, 30000);
-
-  it('runAction under credential-preflight=enforce FAILS fast with both parent-org ids named when injected /me teamId differs from iapub identity.team', async () => {
-    const events: string[] = [];
-    vi.stubGlobal(
-      'fetch',
-      createRunActionFetchRouter({
-        events,
-        meUser: { id: 1, fullName: 'Ada Lovelace', teamId: 10490519, teamName: 'jared-demo' },
-        sessionBody: {
-          identity: { team: 13347347, domain: 'field-services-v12-demo' },
-          data: { user: { id: 2, roles: ['admin'] } },
-          consumerType: 'service_account'
-        }
-      })
-    );
-    const { core } = createRunActionCore(
-      baseInputValues({ 'credential-preflight': 'enforce' }),
-      events
-    );
-
-    let thrown: unknown;
-    try {
-      await runAction(core, createExecStub(), createIoStub());
-    } catch (error) {
-      thrown = error;
-    }
-    expect(thrown).toBeInstanceOf(Error);
-    const message = thrown instanceof Error ? thrown.message : String(thrown);
-    expect(message).toContain('credential preflight FAILED');
-    expect(message).toContain('10490519');
-    expect(message).toContain('13347347');
-    expect(
-      events.some((entry) => entry === 'proxy:workspaces POST /workspaces')
-    ).toBe(false);
-  });
-
-  it('runAction under the default (warn) logs a NOTE and continues on that same mismatch (does not fail)', async () => {
-    const events: string[] = [];
-    vi.stubGlobal(
-      'fetch',
-      createRunActionFetchRouter({
-        events,
-        meUser: { id: 1, fullName: 'Ada Lovelace', teamId: 10490519, teamName: 'jared-demo' },
-        sessionBody: {
-          identity: { team: 13347347, domain: 'field-services-v12-demo' },
-          data: { user: { id: 2, roles: ['admin'] } },
-          consumerType: 'service_account'
-        }
-      })
-    );
-    const { core, warnings, outputs } = createRunActionCore(baseInputValues(), events);
-
-    await runAction(core, createExecStub(), createIoStub());
-
-    expect(outputs['workspace-id']).toBe('ws-runaction');
-    const note = warnings.find((line) => line.includes('credential preflight note'));
-    expect(note).toBeDefined();
-    expect(note).toContain('10490519');
-    expect(note).toContain('13347347');
-    expect(
-      events.some((entry) => entry === 'proxy:workspaces POST /workspaces')
     ).toBe(true);
   }, 30000);
 
@@ -5410,7 +5116,7 @@ describe('runAction credential preflight', () => {
     expect(thrown).toBeInstanceOf(Error);
     const message = thrown instanceof Error ? thrown.message : String(thrown);
     expect(message).toContain('Bifrost rejected the access token (UNAUTHENTICATED)');
-    expect(message).toContain('POST https://api.getpostman.com/service-account-tokens');
+    expect(message).toContain('postman-resolve-service-token-action');
     expect(events.some((entry) => entry.includes('iapub.postman.co'))).toBe(true);
   });
 });

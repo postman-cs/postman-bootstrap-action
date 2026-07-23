@@ -54,10 +54,12 @@ function createDependencies(
   options: { onReportArgs?: (args: string[]) => Promise<void> | void } = {}
 ): OpenApiChangesDependencies {
   const getExecOutput = vi.fn(async (commandLine: string, args: string[] = []) => {
-    if (binaryPath && commandLine === binaryPath && args[0] === 'version') {
+    const isInstalledBinary = binaryPath
+      && path.basename(commandLine).toLowerCase() === path.basename(binaryPath).toLowerCase();
+    if (isInstalledBinary && args[0] === 'version') {
       return { exitCode: 0, stdout: '0.2.7\n', stderr: '' };
     }
-    if (binaryPath && commandLine === binaryPath && args[0] === 'report') {
+    if (isInstalledBinary && args[0] === 'report') {
       await options.onReportArgs?.(args);
       return {
         exitCode: 0,
@@ -65,7 +67,7 @@ function createDependencies(
         stderr: ''
       };
     }
-    if (binaryPath && commandLine === binaryPath && args[0] === 'summary') {
+    if (isInstalledBinary && args[0] === 'summary') {
       return {
         exitCode: 0,
         stdout: [
@@ -136,8 +138,8 @@ describe('openapi-changes breaking-change check', () => {
 
     expect(result.status).toBe('failed');
     expect(result.breakingChanges).toBe(1);
-    expect(result.summaryPath.startsWith(realRunnerTemp)).toBe(true);
-    expect(result.logPath.startsWith(realRunnerTemp)).toBe(true);
+    expect((await realpath(result.summaryPath)).startsWith(realRunnerTemp)).toBe(true);
+    expect((await realpath(result.logPath)).startsWith(realRunnerTemp)).toBe(true);
     const summary = await readFile(result.summaryPath, 'utf8');
     expect(summary).toContain('Status: failed');
     expect(summary).toContain('## Removed operation');
@@ -145,18 +147,27 @@ describe('openapi-changes breaking-change check', () => {
     expect(summary).not.toContain('Date:');
     expect(summary).not.toContain('/home/runner/work/_temp');
     expect(commandCurrentContent).toBe('{"openapi":"3.1.0","paths":{"/bundled":{}}}');
-    expect(commandConfigPath.startsWith(realRunnerTemp)).toBe(true);
+    expect((await realpath(commandConfigPath)).startsWith(realRunnerTemp)).toBe(true);
     expect(commandConfigContent).toBe('{}\n');
     expect(dependencies.exec.getExecOutput).toHaveBeenCalledWith(
-      binaryPath,
+      expect.any(String),
       expect.arrayContaining(['report']),
       expect.objectContaining({ silent: true })
     );
     expect(dependencies.exec.getExecOutput).toHaveBeenCalledWith(
-      binaryPath,
+      expect.any(String),
       expect.arrayContaining(['summary']),
       expect.objectContaining({ silent: true })
     );
+    const getExecOutput = vi.mocked(dependencies.exec.getExecOutput);
+    const commandBinaryPaths = getExecOutput.mock.calls
+      .filter(([, args]) => args?.[0] === 'report' || args?.[0] === 'summary')
+      .map(([commandLine]) => commandLine);
+    expect(commandBinaryPaths).toHaveLength(2);
+    await expect(Promise.all(commandBinaryPaths.map((commandLine) => realpath(commandLine)))).resolves.toEqual([
+      await realpath(binaryPath),
+      await realpath(binaryPath)
+    ]);
   });
 
   it('skips without installing openapi-changes when the enabled mode has no comparison source', async () => {

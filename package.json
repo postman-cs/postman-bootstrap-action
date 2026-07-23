@@ -1,6 +1,6 @@
 {
   "name": "@postman-cse/onboarding-bootstrap",
-  "version": "2.10.1",
+  "version": "2.10.7",
   "description": "Bootstrap Postman workspaces, specs, and collections from OpenAPI.",
   "type": "module",
   "main": "dist/index.cjs",
@@ -18,7 +18,7 @@
   },
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
-    "bundle": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --define:__SEA_VERSION__=undefined --banner:js='#!/usr/bin/env node' --outfile=dist/cli.cjs && chmod 755 dist/cli.cjs",
+    "bundle": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --alias:punycode=punycode/ --define:__SEA_VERSION__=undefined --outfile=dist/index.cjs && esbuild src/main.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --alias:punycode=punycode/ --define:__SEA_VERSION__=undefined --outfile=dist/action.cjs && esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --alias:jsonc-parser=jsonc-parser/lib/esm/main.js --alias:punycode=punycode/ --define:__SEA_VERSION__=undefined --banner:js=\"#!/usr/bin/env node\" --outfile=dist/cli.cjs && node -e \"if(process.platform!=='win32')require('node:fs').chmodSync('dist/cli.cjs',0o755)\" && node -e \"const {spawnSync}=require('node:child_process');const result=spawnSync(process.execPath,['--trace-deprecation','dist/cli.cjs','--help'],{encoding:'utf8'});if(result.status!==0||result.stderr.includes('[DEP0040]')){process.stderr.write(result.stderr);process.exit(1)}\"",
     "build": "npm run typecheck && npm run bundle",
     "build:sea": "bash scripts/build-sea.sh",
     "verify:dist:assert": "git diff --ignore-space-at-eol --text --exit-code -- dist && node scripts/verify-dist-artifact.mjs",
@@ -26,7 +26,7 @@
     "docs:tables": "node scripts/render-action-tables.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "vitest run && node --test .github/scripts/wait-for-e2e-gate.test.mjs",
+    "test": "vitest run && node --test .github/scripts/dispatch-e2e-monitor.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:integration": "node integration/verify.mjs"
   },
@@ -51,10 +51,11 @@
     "@readme/openapi-parser": "^6.1.2",
     "fast-xml-parser": "^5.7.0",
     "graphql": "^17.0.1",
-    "undici": "^6.27.0"
+    "punycode": "^2.3.1",
+    "undici": "^8.8.0"
   },
   "overrides": {
-    "undici": "^6.27.0",
+    "undici": "^8.8.0",
     "picomatch": ">=4.0.4",
     "lodash": "^4.18.1",
     "uuid": "^11.1.1",

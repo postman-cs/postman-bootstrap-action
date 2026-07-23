@@ -42,13 +42,22 @@ function makeClient(
   clientOptions?: {
     generationPollAttempts?: number;
     generationPollDelayMs?: number;
+    createIdentity?: () => string;
     reconcileCapabilityPolicy?: SpecReconcileCapabilityPolicy;
+    sleep?: (delayMs: number) => Promise<void>;
   }
 ): { client: PostmanGatewayAssetsClient; gateway: AccessTokenGatewayClient; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   let i = 0;
-  const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
-    const env = JSON.parse(String((init as RequestInit).body)) as Envelope;
+  const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+    const requestUrl = new URL(String(url));
+    const env = requestUrl.pathname === '/ws/proxy'
+      ? JSON.parse(String((init as RequestInit).body)) as Envelope
+      : {
+          service: 'direct',
+          method: String((init as RequestInit).method ?? 'GET').toLowerCase(),
+          path: `${requestUrl.pathname}${requestUrl.search}`
+        };
     const headers = Object.fromEntries(
       new Headers((init as RequestInit).headers).entries()
     ) as Record<string, string>;
@@ -94,6 +103,24 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.at(-1)).toMatchObject({ service: 'specification', method: 'get', path: '/specifications/spec-1' });
     });
 
+    it('reports an uncontested spec create as rollback-owned', async () => {
+      let created = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({ data: created ? [{ id: 'spec-owned', name: 'Telecom' }] : [] });
+        }
+        if (env.method === 'post' && env.path.includes('/specifications?')) {
+          created = true;
+          return jsonResponse({ data: { id: 'spec-owned' } });
+        }
+        return jsonResponse({ data: { id: 'spec-owned' } });
+      });
+
+      await expect(
+        client.uploadSpecWithOutcome('ws-9', 'Telecom', 'openapi: 3.0.3', '3.0')
+      ).resolves.toEqual({ specId: 'spec-owned', created: true });
+    });
+
     it('maps 3.1 to OPENAPI:3.1 and rejects unsupported versions', async () => {
       const { client } = makeClient(() => jsonResponse({ data: { id: 's' } }));
       await client.uploadSpec('ws', 'n', 'x', '3.1');
@@ -137,8 +164,8 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       await expect(
-        client.uploadSpec('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
-      ).resolves.toBe('spec-a');
+        client.uploadSpecWithOutcome('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
+      ).resolves.toEqual({ specId: 'spec-a', created: false });
       expect(calls).toContainEqual(
         expect.objectContaining({
           service: 'specification',
@@ -197,9 +224,431 @@ describe('PostmanGatewayAssetsClient', () => {
         expect.objectContaining({ method: 'delete', path: '/specifications/spec-b' })
       );
     });
+
+    it('does not claim exclusive rollback ownership after its winner is shared with a peer', async () => {
+      let listCalls = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          listCalls += 1;
+          if (listCalls === 1) return jsonResponse({ data: [] });
+          if (listCalls <= 3) {
+            return jsonResponse({
+              data: [
+                { id: 'spec-a', name: 'Payments' },
+                { id: 'spec-b', name: 'Payments' }
+              ]
+            });
+          }
+          return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
+        }
+        if (env.method === 'post') return jsonResponse({ data: { id: 'spec-a' } });
+        if (env.method === 'delete') {
+          return jsonResponse({ error: 'winner must not delete a peer-owned spec' }, { status: 500 });
+        }
+        return jsonResponse({ data: { id: 'spec-a' } });
+      });
+
+      await expect(
+        client.uploadSpecWithOutcome('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
+      ).resolves.toEqual({ specId: 'spec-a', created: false });
+      expect(calls.some((call) => call.method === 'delete')).toBe(false);
+    });
   });
 
   describe('generateCollection', () => {
+    it('hydrates generated names through the app sync route instead of the forbidden v3 root', async () => {
+      const modelId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const collectionUid = `132319-${modelId}`;
+      let submittedName = '';
+      let currentName = '';
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (!submittedName) return jsonResponse({ data: [] });
+          return jsonResponse({
+            data: [{ collection: collectionUid, state: 'in-sync', options: {}, syncOptions: {} }]
+          });
+        }
+        if (env.service === 'direct') {
+          return jsonResponse({
+            entities: [{ data: { uid: collectionUid, name: currentName }, revision: '1' }]
+          });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submittedName = String((env.body as { name?: unknown })?.name ?? '');
+          currentName = submittedName;
+          return jsonResponse({ data: { taskId: 'task-org' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          return jsonResponse({ data: { 'task-org': 'completed' } });
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+          currentName = '[Smoke] Telecom';
+          return jsonResponse({ data: { id: modelId } });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: `Access to ${modelId} denied` } },
+            { status: 403 }
+          );
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      client.configureTeamContext('132319', true);
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Smoke]', 'Tags', true, 'Fallback')
+      ).resolves.toBe(collectionUid);
+
+      const specListCalls = calls.filter(
+        (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+      );
+      expect(specListCalls.length).toBeGreaterThanOrEqual(3);
+      expect(specListCalls.every((call) => call.query?.fields === 'syncOptions,options')).toBe(true);
+      expect(specListCalls.every((call) => call.headers['x-entity-team-id'] === '132319')).toBe(true);
+      expect(calls).toContainEqual(expect.objectContaining({
+        service: 'direct',
+        method: 'get',
+        path: `/collection/${collectionUid}/sync?since_id=0&favorite=true&exclude=response%2Crequest`
+      }));
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('hydrates names through the app sync route before adopting an existing collection', async () => {
+      const collectionUid = '132319-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          return jsonResponse({
+            data: [{ collection: collectionUid, state: 'in-sync', options: {}, syncOptions: {} }]
+          });
+        }
+        if (env.service === 'direct') {
+          return jsonResponse({ entities: [{ data: { name: '[Smoke] Telecom' }, revision: '1' }] });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      client.configureTeamContext('132319', true);
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Smoke]', 'Tags', true, 'Fallback')
+      ).resolves.toBe(collectionUid);
+
+      expect(calls.every((call) => call.method !== 'post')).toBe(true);
+      expect(calls.some((call) => call.service === 'collection')).toBe(false);
+      expect(calls[0]).toMatchObject({
+        service: 'specification',
+        method: 'get',
+        path: '/specifications/spec-1/collections',
+        query: { fields: 'syncOptions,options' },
+        headers: expect.objectContaining({ 'x-entity-team-id': '132319' })
+      });
+    });
+
+    it('hydrates nameless Spec Hub relations without reading v3 collection roots', async () => {
+      const staleModelId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+      const staleUid = `132319-${staleModelId}`;
+      const generatedModelId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+      const generatedUid = `132319-${generatedModelId}`;
+      let submittedName = '';
+      let currentName = '';
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          return jsonResponse({
+            data: [
+              { collection: staleUid },
+              ...(submittedName ? [{ collection: generatedUid, name: currentName }] : [])
+            ]
+          });
+        }
+        if (env.service === 'direct') {
+          const name = env.path.includes(generatedUid) ? currentName : '[Baseline] Other';
+          return jsonResponse({ entities: [{ data: { name }, revision: '1' }] });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submittedName = String((env.body as { name?: unknown })?.name ?? '');
+          currentName = submittedName;
+          return jsonResponse({ data: { taskId: 'task-nameless' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          return jsonResponse({ data: { 'task-nameless': 'completed' } });
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+          currentName = '[Smoke] Telecom';
+          return jsonResponse({ data: { id: generatedModelId } });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Smoke]', 'Tags', true, 'Fallback')
+      ).resolves.toBe(generatedUid);
+
+      expect(
+        calls
+          .filter(
+            (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+          )
+          .every((call) => call.query?.fields === 'syncOptions,options')
+      ).toBe(true);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('waits for direct sync name hydration on a newly appeared relation', async () => {
+      const peerModelId = '11111111-1111-1111-1111-111111111111';
+      const peerUid = `132319-${peerModelId}`;
+      const generatedModelId = '22222222-2222-2222-2222-222222222222';
+      const generatedUid = `132319-${generatedModelId}`;
+      let submittedName = '';
+      let postTaskListReads = 0;
+      let enrichedName = '';
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+            if (!submittedName) {
+              return jsonResponse({ data: [{ collection: peerUid }] });
+            }
+            postTaskListReads += 1;
+            // Live race: relation appears immediately after task completion, but
+            // direct sync hydration lags for at least two authorized list reads.
+            if (postTaskListReads <= 2) {
+              return jsonResponse({
+                data: [{ collection: peerUid }, { collection: generatedUid }]
+              });
+            }
+            return jsonResponse({
+              data: [
+                { collection: peerUid },
+                { collection: generatedUid }
+              ]
+            });
+          }
+          if (env.service === 'direct') {
+            const name = env.path.includes(generatedUid) && postTaskListReads > 2
+              ? enrichedName || submittedName
+              : env.path.includes(peerUid) ? '[Baseline] Other' : '';
+            return jsonResponse({ entities: [{ data: { name }, revision: '1' }] });
+          }
+          if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+            submittedName = String((env.body as { name?: unknown })?.name ?? '');
+            enrichedName = submittedName;
+            return jsonResponse({ data: { taskId: 'task-enrich' } }, { status: 202 });
+          }
+          if (env.path === '/tasks') {
+            return jsonResponse({ data: { 'task-enrich': 'completed' } });
+          }
+          if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+            enrichedName = '[Contract] Telecom';
+            return jsonResponse({ data: { id: generatedModelId } });
+          }
+          if (env.service === 'collection' && env.method === 'get') {
+            return jsonResponse(
+              { error: { code: 'FORBIDDEN', message: `Access to ${env.path} denied` } },
+              { status: 403 }
+            );
+          }
+          return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+        },
+        { generationPollDelayMs: 0 }
+      );
+      client.configureTeamContext('132319', true);
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(generatedUid);
+
+      expect(postTaskListReads).toBeGreaterThanOrEqual(3);
+      expect(submittedName).toBe('[Contract] Telecom [bootstrap:test-run]');
+      const specListCalls = calls.filter(
+        (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+      );
+      expect(specListCalls.every((call) => call.query?.fields === 'syncOptions,options')).toBe(true);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('adopts the sole peer final after its own temporary relation disappears', async () => {
+      const peerUid = '132319-34343434-3434-3434-3434-343434343434';
+      let submitted = false;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (!submitted) return jsonResponse({ data: [] });
+          return jsonResponse({ data: [{ collection: peerUid, name: '[Contract] Telecom' }] });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submitted = true;
+          return jsonResponse({ data: { taskId: 'task-peer-final' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          return jsonResponse({ data: { 'task-peer-final': 'completed' } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(peerUid);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('adopts the sole hydrated peer final after its own temporary relation disappears', async () => {
+      const peerModelId = '34343434-3434-3434-3434-343434343434';
+      const peerUid = `132319-${peerModelId}`;
+      let submitted = false;
+      let postTaskReads = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (!submitted) return jsonResponse({ data: [] });
+          postTaskReads += 1;
+          return jsonResponse({ data: [{ collection: peerUid }] });
+        }
+        if (env.service === 'direct') {
+          return jsonResponse({ entities: [{ data: { name: '[Contract] Telecom' } }] });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submitted = true;
+          return jsonResponse({ data: { taskId: 'task-peer-final' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { 'task-peer-final': 'completed' } });
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      const delays: number[] = [];
+      (client as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => {
+        delays.push(ms);
+      };
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(peerUid);
+
+      expect(postTaskReads).toBeGreaterThanOrEqual(21);
+      expect(delays.slice(1, 20)).toEqual(Array(19).fill(1000));
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('caps post-completion name enrichment before one final peer lookup', async () => {
+      let submitted = false;
+      let settleReads = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (submitted) settleReads += 1;
+          return jsonResponse({ data: submitted ? [{ collection: '132319-nameless' }] : [] });
+        }
+        if (env.service === 'direct') return jsonResponse({ entities: [{ data: { name: '' } }] });
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submitted = true;
+          return jsonResponse({ data: { taskId: 'task-settle-cap' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { 'task-settle-cap': 'completed' } });
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).rejects.toThrow(/did not yield a collection uid/);
+      expect(settleReads).toBe(21);
+    });
+
+    it('re-POSTs once when an ambiguous generation 500 did not commit an exact-name relation', async () => {
+      const generatedModelId = '33333333-3333-3333-3333-333333333333';
+      let createPosts = 0;
+      const submittedNames: string[] = [];
+      let identities = 0;
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+            if (createPosts < 2) {
+              // First ambiguous POST never committed: settle window stays empty.
+              return jsonResponse({ data: [] });
+            }
+            const submittedName = submittedNames[1] ?? '';
+            return jsonResponse({
+              data: submittedName
+                ? [{ collection: generatedModelId, name: submittedName }]
+                : []
+            });
+          }
+          if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+            createPosts += 1;
+            submittedNames.push(String((env.body as { name?: unknown })?.name ?? ''));
+            if (createPosts === 1) {
+              return jsonResponse(
+                { error: { name: 'serverError', message: 'Something went wrong with the server' } },
+                { status: 500 }
+              );
+            }
+            return jsonResponse({ data: { taskId: 'task-repost' } }, { status: 202 });
+          }
+          if (env.path === '/tasks') {
+            return jsonResponse({ data: { 'task-repost': 'completed' } });
+          }
+          if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+            return jsonResponse({ data: { id: generatedModelId } });
+          }
+          if (env.service === 'collection' && env.method === 'get') {
+            return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
+          }
+          return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+        },
+        {
+          generationPollDelayMs: 0,
+          createIdentity: () => `attempt-${++identities}`
+        }
+      );
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(generatedModelId);
+
+      expect(createPosts).toBe(2);
+      expect(
+        calls.filter((call) => call.method === 'post' && call.path === '/specifications/spec-1/collections')
+      ).toHaveLength(2);
+      expect(submittedNames).toEqual([
+        '[Contract] Telecom [bootstrap:attempt-1]',
+        '[Contract] Telecom [bootstrap:attempt-2]'
+      ]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('uses the preferred collection identity when Spec Hub name enrichment lags', async () => {
+      const preferredUid = '132319-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+      const unrelatedUid = '132319-ffffffff-ffff-ffff-ffff-ffffffffffff';
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          return jsonResponse({
+            data: [
+              { collection: preferredUid },
+              { collection: unrelatedUid }
+            ]
+          });
+        }
+        if (env.service === 'direct') {
+          return jsonResponse({ entities: [{ data: { name: '' }, revision: '1' }] });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      client.configureTeamContext('132319', true);
+
+      await expect(
+        client.adoptGeneratedCollection('spec-1', 'Telecom', '[Smoke]', preferredUid)
+      ).resolves.toBe(preferredUid);
+
+      const specListCalls = calls.filter(
+        (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+      );
+      expect(specListCalls).toHaveLength(2);
+      expect(specListCalls.every((call) => call.query?.fields === 'syncOptions,options')).toBe(true);
+      expect(specListCalls.every((call) => call.headers['x-entity-team-id'] === '132319')).toBe(true);
+      expect(calls.some((call) => call.service === 'collection')).toBe(false);
+    });
+
     it('posts generate, polls the task to completion, and resolves the collection uid', async () => {
       let polls = 0;
       let posted = false;
@@ -226,6 +675,52 @@ describe('PostmanGatewayAssetsClient', () => {
         nestedFolderHierarchy: true
       });
       expect(calls.filter((c) => c.path === '/tasks').length).toBe(2);
+    });
+
+    it('waits through eventual task authorization after an accepted generation', async () => {
+      let taskReads = 0;
+      let posted = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path.endsWith('/collections')) {
+          posted = true;
+          return jsonResponse({ data: { taskId: 'task-eventual' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          taskReads += 1;
+          if (taskReads === 1) return jsonResponse({ error: { name: 'permissionError' } }, { status: 403 });
+          if (taskReads === 2) return jsonResponse({ error: { name: 'notFoundError' } }, { status: 404 });
+          return jsonResponse({ data: { 'task-eventual': 'completed' } });
+        }
+        return jsonResponse({ data: posted ? [{ collection: 'uid-eventual', name: 'P [bootstrap:test-run]' }] : [] });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '', 'None', true, 'Fallback')
+      ).resolves.toBe('uid-eventual');
+      expect(taskReads).toBe(3);
+    });
+
+    it('waits for a newly uploaded specification collection relation route to become readable', async () => {
+      let listReads = 0;
+      let posted = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          listReads += 1;
+          if (listReads <= 2) return jsonResponse({ error: { name: 'notFoundError' } }, { status: 404 });
+          return jsonResponse({ data: posted ? [{ collection: 'uid-readable', name: 'P [bootstrap:test-run]' }] : [] });
+        }
+        if (env.method === 'post' && env.path.endsWith('/collections')) {
+          posted = true;
+          return jsonResponse({ data: { taskId: 'task-readable' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { 'task-readable': 'completed' } });
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '', 'None', true, 'Fallback')
+      ).resolves.toBe('uid-readable');
+      expect(listReads).toBeGreaterThanOrEqual(4);
     });
 
     it('omits nestedFolderHierarchy when folderStrategy is not Tags', async () => {
@@ -310,7 +805,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(posts).toBe(1);
     });
 
-    it('deletes concurrent same-identity generated collections after rename', async () => {
+    it('does not delete peer-owned generated collections after winning convergence', async () => {
       let posted = false;
       const deleted = new Set<string>();
       const ours = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -348,7 +843,7 @@ describe('PostmanGatewayAssetsClient', () => {
       await expect(
         client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', false, 'Fallback')
       ).resolves.toBe(ours);
-      expect([...deleted]).toEqual(expect.arrayContaining([peerFinal, peerTemp]));
+      expect([...deleted]).toEqual([]);
     });
 
     it('throws when the generation task reports failure', async () => {
@@ -470,7 +965,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(create?.body).toEqual({
         name: 'Org WS',
         visibilityStatus: 'team',
-        squad: '132319',
+        squad: 132319,
         roles: { group: { '132319': ['WORKSPACE_VIEWER_V9'] } }
       });
       expect(calls.some((c) => c.path.includes('/visibility'))).toBe(false);
@@ -1616,6 +2111,112 @@ describe('PostmanGatewayAssetsClient', () => {
     });
   });
 
+  describe('updateCollectionDescription', () => {
+    const modelId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const collectionUid = `132319-${modelId}`;
+    const description = 'branch:feature/preview';
+
+    it('succeeds with only the description PATCH when any collection-root GET would 403', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: `Access to ${modelId} denied` } },
+            { status: 403 }
+          );
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+          return jsonResponse({ data: { id: modelId } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.updateCollectionDescription(collectionUid, description)).resolves.toBeUndefined();
+
+      expect(calls).toEqual([
+        expect.objectContaining({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${modelId}`,
+          body: [{ op: 'add', path: '/description', value: description }]
+        })
+      ]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('retries a bounded description PATCH through 404 read-after-write lag, then succeeds', async () => {
+      let patchAttempts = 0;
+      const sleep = vi.fn(async () => undefined);
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.service === 'collection' && env.method === 'get') {
+            return jsonResponse(
+              { error: { code: 'FORBIDDEN', message: `Access to ${modelId} denied` } },
+              { status: 403 }
+            );
+          }
+          if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+            patchAttempts += 1;
+            return patchAttempts === 1
+              ? jsonResponse(
+                  { error: { code: 'RESOURCE_NOT_FOUND', message: 'Collection not found' } },
+                  { status: 404 }
+                )
+              : jsonResponse({ data: { id: modelId } });
+          }
+          return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+        },
+        { sleep }
+      );
+
+      await expect(client.updateCollectionDescription(collectionUid, description)).resolves.toBeUndefined();
+
+      expect(patchAttempts).toBe(2);
+      expect(sleep).toHaveBeenCalled();
+      const patches = calls.filter(
+        (call) => call.method === 'patch' && call.path === `/v3/collections/${modelId}`
+      );
+      expect(patches).toHaveLength(2);
+      expect(patches[0]?.body).toEqual([{ op: 'add', path: '/description', value: description }]);
+      expect(patches[1]?.body).toEqual([{ op: 'add', path: '/description', value: description }]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('treats a no-op description REJECTED_PATCH as already applied without any root GET', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: `Access to ${modelId} denied` } },
+            { status: 403 }
+          );
+        }
+        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+          return jsonResponse(
+            {
+              error: {
+                name: 'REJECTED_PATCH',
+                message: 'Patch must update at least one value'
+              }
+            },
+            { status: 400 }
+          );
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.updateCollectionDescription(collectionUid, description)).resolves.toBeUndefined();
+
+      expect(calls).toEqual([
+        expect.objectContaining({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${modelId}`,
+          body: [{ op: 'add', path: '/description', value: description }]
+        })
+      ]);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+  });
+
   describe('createWorkspace non-org flip 403 safety net', () => {
     it('maps a flip-path 403 (addWorkspaceLevelTeamRoles) to the org-account workspace-team-id guidance', async () => {
       const { client } = makeClient((env) => {
@@ -2079,7 +2680,7 @@ describe('PostmanGatewayAssetsClient', () => {
       );
     });
 
-    it('uploadSpecBundle sets created:true only when this runner owns the elected winner', async () => {
+    it('uploadSpecBundle relinquishes rollback ownership when its elected winner is shared', async () => {
       // Winner-owner race: this runner created the lowest-ID winner. A peer loser
       // becomes list-visible, but this runner must never DELETE the peer ID —
       // peer self-cleanup is observed on bounded subsequent list polls.
@@ -2129,7 +2730,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       const result = await client.uploadSpecBundle('ws-1', 'Payments', target, '3.0');
       expect(result.specId).toBe('spec-a');
-      expect(result.created).toBe(true);
+      expect(result.created).toBe(false);
       expect(result.outcome.status).toBe('ok');
       expect(listCalls).toBeGreaterThan(3);
       expect(calls.some((call) => call.method === 'delete' && call.path === '/specifications/spec-b')).toBe(
@@ -2742,4 +3343,309 @@ describe('PostmanGatewayAssetsClient', () => {
     });
   });
 
+  describe('spec-tree fast path (loadSpecBundleState)', () => {
+    const rootContent = 'openapi: 3.0.3\ninfo:\n  title: t\n  version: 1.0.0\n';
+    const petContent = 'type: object\nexample: tree-fast-path\n';
+
+    function treePageResponse(page: { data: unknown[]; meta?: { cursor?: { next?: string } } }): Response {
+      return jsonResponse(page);
+    }
+
+    function legacyFilesResponse(files: Array<{ id: string; path: string; type: string }>): Response {
+      return jsonResponse({ data: files });
+    }
+
+    function legacyFileContentResponse(id: string, content: string): Response {
+      return jsonResponse({ data: { id, content } });
+    }
+
+    it('uses the paginated tree endpoint and preserves root/default members with parentId', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.path === '/specifications/spec-1/tree') {
+          return treePageResponse({
+            data: [
+              { type: 'FOLDER', id: 'folder-1', path: 'components' },
+              { type: 'FILE', id: 'root-id', path: 'openapi.yaml', fileType: 'ROOT', content: rootContent },
+              { type: 'FILE', id: 'pet-id', path: 'components/pet.yaml', parentId: 'folder-1', fileType: 'YAML', content: petContent }
+            ],
+            meta: { cursor: {} }
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      const bundle = await client.getSpecBundle('spec-1', 'openapi-yaml');
+      expect(bundle.files.size).toBe(2);
+      const root = Array.from(bundle.files.values()).find((f) => f.path === 'openapi.yaml');
+      const dep = Array.from(bundle.files.values()).find((f) => f.path === 'components/pet.yaml');
+      expect(root?.role).toBe('root');
+      expect(root?.content).toBe(rootContent);
+      expect(dep?.role).toBe('dependency');
+      expect(dep?.content).toBe(petContent);
+
+      // Tree endpoint was hit with the expected fields/cursor query shape.
+      const treeCall = calls.find((c) => c.path === '/specifications/spec-1/tree');
+      expect(treeCall).toBeDefined();
+      expect(treeCall?.query).toMatchObject({
+        fields: 'id,name,type,path,parentId,fileType,content',
+        limit: 100
+      });
+      // Legacy per-file content reads did NOT happen.
+      expect(calls.some((c) => /\/files\/[^/?]+/.test(c.path))).toBe(false);
+    });
+
+    it('follows cursor pagination across multiple tree pages', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.path === '/specifications/spec-1/tree') {
+          const cursor = String(env.query?.cursor ?? '');
+          if (!cursor) {
+            return treePageResponse({
+              data: [{ type: 'FILE', id: 'root-id', path: 'openapi.yaml', fileType: 'ROOT', content: rootContent }],
+              meta: { cursor: { next: 'page-2' } }
+            });
+          }
+          if (cursor === 'page-2') {
+            return treePageResponse({
+              data: [{ type: 'FILE', id: 'pet-id', path: 'components/pet.yaml', fileType: 'YAML', content: petContent }],
+              meta: { cursor: {} }
+            });
+          }
+          return jsonResponse({ error: 'unexpected cursor' }, { status: 500 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      const bundle = await client.getSpecBundle('spec-1', 'openapi-yaml');
+      expect(bundle.files.size).toBe(2);
+      expect(Array.from(bundle.files.values()).map((f) => f.path).sort()).toEqual(['components/pet.yaml', 'openapi.yaml']);
+
+      const treeCalls = calls.filter((c) => c.path === '/specifications/spec-1/tree');
+      expect(treeCalls).toHaveLength(2);
+      // First call has no cursor (spread omits it when empty); second carries the page-2 cursor.
+      expect(treeCalls[0].query).not.toHaveProperty('cursor');
+      expect(treeCalls[1].query).toMatchObject({ cursor: 'page-2' });
+    });
+
+    it('falls back to the legacy files-list-plus-content path when the tree 404s', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.path === '/specifications/spec-1/tree') {
+          return jsonResponse({ error: 'tree not found' }, { status: 404 });
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-1/files') {
+          return legacyFilesResponse([
+            { id: 'root-id', path: 'openapi.yaml', type: 'ROOT' }
+          ]);
+        }
+        if (env.path === '/specifications/spec-1/files/root-id') {
+          return legacyFileContentResponse('root-id', rootContent);
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      const bundle = await client.getSpecBundle('spec-1', 'openapi-yaml');
+      expect(bundle.files.size).toBe(1);
+      expect(bundle.files.get(bundle.rootPath)!.path).toBe('openapi.yaml');
+      expect(bundle.files.get(bundle.rootPath)!.content).toBe(rootContent);
+
+      // Legacy path was exercised.
+      expect(calls.some((c) => c.path === '/specifications/spec-1/files')).toBe(true);
+      expect(calls.some((c) => c.path === '/specifications/spec-1/files/root-id')).toBe(true);
+    });
+
+    it('falls back to the legacy path when the tree response is structurally incomplete', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.path === '/specifications/spec-1/tree') {
+          // Missing `data` array -> SPEC_TREE_INCOMPLETE -> fallback.
+          return jsonResponse({ meta: {} });
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-1/files') {
+          return legacyFilesResponse([{ id: 'root-id', path: 'openapi.yaml', type: 'ROOT' }]);
+        }
+        if (env.path === '/specifications/spec-1/files/root-id') {
+          return legacyFileContentResponse('root-id', rootContent);
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      const bundle = await client.getSpecBundle('spec-1', 'openapi-yaml');
+      expect(bundle.files.get(bundle.rootPath)!.content).toBe(rootContent);
+      expect(calls.some((c) => c.path === '/specifications/spec-1/files')).toBe(true);
+    });
+
+    it('throws instead of falling back when a tree cursor repeats (loop protection)', async () => {
+      const { client } = makeClient((env) => {
+        if (env.path === '/specifications/spec-1/tree') {
+          return treePageResponse({
+            data: [{ type: 'FILE', id: 'root-id', path: 'openapi.yaml', fileType: 'ROOT', content: rootContent }],
+            meta: { cursor: { next: 'stuck' } }
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(client.getSpecBundle('spec-1', 'openapi-yaml')).rejects.toThrow(/SPEC_TREE_CURSOR_REPEATED/);
+    });
+
+    it('throws instead of falling back when the tree exceeds the page limit', async () => {
+      let pages = 0;
+      const { client } = makeClient((env) => {
+        if (env.path === '/specifications/spec-1/tree') {
+          pages += 1;
+          return treePageResponse({
+            data: [{ type: 'FILE', id: `f-${pages}`, path: `a/${pages}.yaml`, fileType: 'YAML', content: 'x' }],
+            meta: { cursor: { next: `c-${pages}` } }
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(client.getSpecBundle('spec-1', 'openapi-yaml')).rejects.toThrow(/SPEC_TREE_PAGE_LIMIT_EXCEEDED/);
+      // The loop checks page >= 100 before issuing the 101st request, so exactly
+      // 100 tree pages are served before the limit fires.
+      expect(pages).toBe(100);
+    });
+
+    it('throws on an unsafe tree path instead of falling back', async () => {
+      const { client } = makeClient((env) => {
+        if (env.path === '/specifications/spec-1/tree') {
+          return treePageResponse({
+            data: [{ type: 'FILE', id: 'root-id', path: '../../escape.yaml', fileType: 'ROOT', content: rootContent }],
+            meta: { cursor: {} }
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(client.getSpecBundle('spec-1', 'openapi-yaml')).rejects.toThrow(/ESCAPE/);
+    });
+
+    it('skips the tree fast path entirely when POSTMAN_SPEC_TREE_FAST_PATH=off', async () => {
+      vi.stubEnv('POSTMAN_SPEC_TREE_FAST_PATH', 'off');
+      try {
+        const { client, calls } = makeClient((env) => {
+          if (env.path === '/specifications/spec-1/tree') {
+            return jsonResponse({ error: 'tree should not be called' }, { status: 500 });
+          }
+          if (env.method === 'get' && env.path === '/specifications/spec-1/files') {
+            return legacyFilesResponse([{ id: 'root-id', path: 'openapi.yaml', type: 'ROOT' }]);
+          }
+          if (env.path === '/specifications/spec-1/files/root-id') {
+            return legacyFileContentResponse('root-id', rootContent);
+          }
+          return jsonResponse({ error: 'unexpected' }, { status: 500 });
+        });
+
+        const bundle = await client.getSpecBundle('spec-1', 'openapi-yaml');
+        expect(bundle.files.get(bundle.rootPath)!.content).toBe(rootContent);
+        expect(calls.some((c) => c.path === '/specifications/spec-1/tree')).toBe(false);
+        expect(calls.some((c) => c.path === '/specifications/spec-1/files')).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+  });
+
+  describe('generation poll deadline, backoff, and fixed rollback', () => {
+    function makeGenerationClient(opts: {
+      taskId: string;
+      statusByPoll: Record<number, string>;
+      clientOptions?: { generationPollAttempts?: number; generationPollDelayMs?: number };
+    }) {
+      const { taskId, statusByPoll, clientOptions } = opts;
+      let taskPollIndex = 0;
+      let submittedName = '';
+      let taskCompleted = false;
+      const { client, calls } = makeClient(
+        (env) => {
+          if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+            submittedName = String((env.body as { name?: unknown })?.name ?? '');
+            return jsonResponse({ data: { taskId } }, { status: 202 });
+          }
+          if (env.path === '/tasks') {
+            const status = statusByPoll[taskPollIndex] ?? 'in-progress';
+            taskPollIndex += 1;
+            if (status === 'completed') taskCompleted = true;
+            return jsonResponse({ data: { [taskId]: status } });
+          }
+          if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+            // After the task completes, the generated collection relation appears.
+            if (taskCompleted) {
+              return jsonResponse({ data: [{ collection: 'uid-gen', name: submittedName }] });
+            }
+            return jsonResponse({ data: [] });
+          }
+          if (env.method === 'patch' && env.path.startsWith('/v3/collections/')) {
+            return jsonResponse({ data: { id: 'uid-gen' } });
+          }
+          return jsonResponse({ data: [] });
+        },
+        { createIdentity: () => 'test-run', ...clientOptions }
+      );
+      return { client, calls, getSubmittedName: () => submittedName };
+    }
+
+    it('uses exponential delays by default (no real waits with injected sleep)', async () => {
+      const delays: number[] = [];
+      const { client } = makeGenerationClient({
+        taskId: 't-exp',
+        statusByPoll: { 0: 'in-progress', 1: 'in-progress', 2: 'completed' },
+        clientOptions: { generationPollAttempts: 5, generationPollDelayMs: 1000 }
+      });
+      (client as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => {
+        delays.push(ms);
+      };
+      const now = 0;
+      (client as unknown as { now: () => number }).now = () => now;
+
+      await client.generateCollection('spec-1', 'P', '', 'Tags', false, 'Fallback');
+
+      // The task-poll loop sleeps BEFORE each task request, including the one
+      // that returns 'completed'. The separate post-completion relation settle
+      // remains a fixed 1s cadence and must not be counted as task polling.
+      expect(delays.slice(0, 3)).toEqual([2000, 4000, 8000]);
+      expect(delays.slice(3)).toEqual([1000]);
+    });
+
+    it('rolls back to fixed delays when POSTMAN_GENERATION_POLL_MODE=fixed', async () => {
+      vi.stubEnv('POSTMAN_GENERATION_POLL_MODE', 'fixed');
+      try {
+        const delays: number[] = [];
+        const { client } = makeGenerationClient({
+          taskId: 't-fixed',
+          statusByPoll: { 0: 'in-progress', 1: 'completed' },
+          clientOptions: { generationPollAttempts: 5, generationPollDelayMs: 500 }
+        });
+        (client as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => { delays.push(ms); };
+        const now = 0;
+        (client as unknown as { now: () => number }).now = () => now;
+
+        await client.generateCollection('spec-1', 'P', '', 'Tags', false, 'Fallback');
+
+        // Fixed mode uses the configured generationPollDelayMs (500) for each
+        // task poll; relation settling remains independently fixed at 1s.
+        expect(delays.slice(0, 2)).toEqual([500, 500]);
+        expect(delays.slice(2)).toEqual([1000]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('throws COLLECTION_GENERATION_TIMEOUT when the 180s deadline elapses', async () => {
+      const { client } = makeGenerationClient({
+        taskId: 't-deadline',
+        statusByPoll: { 0: 'in-progress', 1: 'in-progress', 2: 'in-progress', 3: 'in-progress', 4: 'in-progress' },
+        clientOptions: { generationPollAttempts: 90, generationPollDelayMs: 0 }
+      });
+      let now = 0;
+      (client as unknown as { now: () => number }).now = () => now;
+      (client as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => {
+        // Advance time by the requested delay so the 180s deadline eventually elapses.
+        now += ms;
+      };
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '', 'Tags', false, 'Fallback')
+      ).rejects.toThrow(/COLLECTION_GENERATION_TIMEOUT/);
+    });
+  });
 });

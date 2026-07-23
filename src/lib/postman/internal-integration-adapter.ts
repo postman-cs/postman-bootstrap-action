@@ -5,6 +5,7 @@ import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { adviseFromHttpError, type ErrorAdviceContext } from './error-advice.js';
 import type { AccessTokenProvider } from './token-provider.js';
+import { postmanAppVersionProvider, type AppVersionProvider } from './app-version.js';
 
 export type InternalIntegrationBackend = 'bifrost';
 
@@ -41,6 +42,7 @@ export interface InternalIntegrationAdapterOptions {
   /** Injectable delay for lock-retry loops (tests). Defaults to setTimeout. */
   sleep?: (delayMs: number) => Promise<void>;
   teamId: string;
+  appVersionProvider?: AppVersionProvider;
 }
 
 export interface InternalIntegrationAdapter {
@@ -75,17 +77,15 @@ export interface InternalIntegrationAdapter {
 }
 
 class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
-  private static readonly MINIMUM_POSTMAN_APP_VERSION = '12.0.0';
-  /** Per-request wall-clock deadline (ms) so a hung Bifrost proxy or app-version
-   * endpoint aborts rather than blocking the run forever. */
+  /** Per-request wall-clock deadline (ms) so a hung Bifrost proxy aborts rather
+   * than blocking the run forever. */
   private static readonly REQUEST_TIMEOUT_MS = 30_000;
-  private static readonly POSTMAN_APP_VERSION_URL = `https://dl.pstmn.io/update/status?currentVersion=${BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION}&platform=osx_arm64`;
   /** Concurrent dual-trigger previews share one spec; peer sync holds a 423 lock. */
   private static readonly SYNC_LOCKED_MAX_RETRIES = 6;
 
   private readonly accessToken: string;
   private readonly tokenProvider?: AccessTokenProvider;
-  private appVersionPromise?: Promise<string>;
+  private readonly appVersionProvider: AppVersionProvider;
   private readonly bifrostBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly gatewayBaseUrl: string;
@@ -110,6 +110,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     this.sleep =
       options.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
     this.teamId = String(options.teamId || '').trim();
+    this.appVersionProvider = options.appVersionProvider ?? postmanAppVersionProvider;
   }
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
@@ -161,15 +162,16 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     method: string,
     requestPath: string,
     body?: unknown,
-    options: { appVersion?: string; query?: Record<string, unknown> } = {}
+    options: { query?: Record<string, unknown> } = {}
   ): Promise<Response> {
     const url = `${this.bifrostBaseUrl}/ws/proxy`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'x-access-token': this.currentToken()
     };
-    if (options.appVersion) {
-      headers['x-app-version'] = options.appVersion;
+    const appVersion = await this.appVersionProvider.resolve();
+    if (appVersion) {
+      headers['x-app-version'] = appVersion;
     }
     if (this.teamId && this.orgMode) {
       headers['x-entity-team-id'] = this.teamId;
@@ -186,27 +188,6 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         ...(body !== undefined ? { body } : {})
       })
     });
-  }
-
-  private resolvePostmanAppVersion(): Promise<string> {
-    this.appVersionPromise ??= (async () => {
-      try {
-        const response = await this.fetchWithDeadline(
-          BifrostInternalIntegrationAdapter.POSTMAN_APP_VERSION_URL,
-          { method: 'GET' }
-        );
-        if (!response.ok) {
-          return BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
-        }
-        const payload = (await response.json()) as { version?: unknown };
-        const version = String(payload.version || '').trim();
-        return version || BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
-      } catch {
-        return BifrostInternalIntegrationAdapter.MINIMUM_POSTMAN_APP_VERSION;
-      }
-    })();
-
-    return this.appVersionPromise;
   }
 
   async assignWorkspaceToGovernanceGroup(
@@ -229,13 +210,12 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       return;
     }
 
-    const appVersion = await this.resolvePostmanAppVersion();
     const listResponse = await this.proxyRequest(
       'ruleset',
       'get',
       '/configure/workspace-groups',
       undefined,
-      { appVersion, query: { tag: 'governance' } }
+      { query: { tag: 'governance' } }
     );
 
     if (!listResponse.ok) {
@@ -244,7 +224,6 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         requestHeaders: {
           'Content-Type': 'application/json',
           'x-access-token': this.currentToken(),
-          'x-app-version': appVersion,
           ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
         },
         secretValues: [this.currentToken()],
@@ -278,8 +257,7 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
           add: [],
           remove: []
         }
-      },
-      { appVersion }
+      }
     );
 
     if (!patchResponse.ok) {
@@ -288,7 +266,6 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         requestHeaders: {
           'Content-Type': 'application/json',
           'x-access-token': this.currentToken(),
-          'x-app-version': appVersion,
           ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
         },
         secretValues: [this.currentToken()],

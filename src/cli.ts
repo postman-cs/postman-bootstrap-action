@@ -1,15 +1,12 @@
+import * as actionExec from '@actions/exec';
+import * as io from '@actions/io';
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { promisify } from 'node:util';
-
-import * as io from '@actions/io';
 
 import {
   createBootstrapDependencies,
   decideBranchTier,
-  mintAccessTokenIfNeeded,
   resolveInputs,
   runGatedValidation,
   type ResolvedInputs,
@@ -20,6 +17,7 @@ import {
 } from './index.js';
 import { BRANCH_DECISION_ENV, serializeBranchDecision } from './lib/repo/branch-decision.js';
 import { runCredentialPreflight } from './lib/postman/credential-identity.js';
+import { mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
 import { createSecretMasker } from './lib/secrets.js';
 
 interface CliConfig {
@@ -185,8 +183,6 @@ const cliInputNames = [
   'postman-stack'
 ] as const;
 
-const execFileAsync = promisify(execFile);
-
 function toCommandLabel(commandLine: string, args: string[], secretMasker: (value: string) => string): string {
   const rendered = [commandLine, ...args].join(' ');
   return secretMasker(rendered);
@@ -214,17 +210,20 @@ export function createCliExec(secretMasker: (value: string) => string): ExecLike
     options?: Parameters<ExecLike['getExecOutput']>[2]
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
     const cwd = options?.cwd;
-    const env = options?.env ? { ...process.env, ...options.env } : process.env;
+    const env = Object.fromEntries(
+      Object.entries(options?.env ? { ...process.env, ...options.env } : process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined
+      )
+    );
     const commandLabel = toCommandLabel(commandLine, args, secretMasker);
     process.stderr.write(`[command] ${commandLabel}\n`);
 
     try {
-      const result = await execFileAsync(commandLine, args, {
+      const result = await actionExec.getExecOutput(commandLine, args, {
+        ...options,
         cwd,
         env,
-        encoding: 'utf8',
-        maxBuffer: 20 * 1024 * 1024,
-        windowsHide: true
+        silent: true
       });
       const stdout = String(result.stdout ?? '');
       const stderr = String(result.stderr ?? '');
@@ -463,17 +462,14 @@ export async function runCli(
 
   const dependencies = createCliDependencies(inputs);
 
-  // Proactive credential preflight: resolve and cross-check both identities
-  // once, before any spec fetch or write. The CLI entry must run this exactly
-  // as runAction does, or dist/cli.cjs (what CI and the e2e harness invoke)
-  // would skip the preflight that dist/index.cjs performs.
+  if (!inputs.postmanAccessToken) {
+    throw new Error('Could not obtain postman-access-token from the configured postman-api-key.');
+  }
+
+  // Resolve the access-token session once before any spec fetch or write.
   await runCredentialPreflight({
-    apiBaseUrl: inputs.postmanApiBase,
     iapubBaseUrl: inputs.postmanIapubBase,
-    postmanApiKey: inputs.postmanApiKey,
     postmanAccessToken: inputs.postmanAccessToken,
-    workspaceTeamId: inputs.workspaceTeamId,
-    explicitTeamId: inputs.teamId || undefined,
     mode: inputs.credentialPreflight,
     mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
     log: dependencies.core

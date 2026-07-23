@@ -9,20 +9,13 @@ const SRC_ROOT = join(ACTION_ROOT, 'src');
 type PatternId = 'newman' | 'pmak-header' | 'pmak-cli-login';
 
 /**
- * Sanctioned PMAK / Postman-CLI sites. PMAK survives ONLY for:
- *   1. minting/re-minting the service-account access token (token-provider mint POST),
- *   2. Insights linking (akita rejects service accounts — insights action only),
- *   3. `postman login --with-api-key` (the Postman CLI has no access-token login),
- * plus the user-approved read-only `GET /me` identity preflight (credential-identity)
- * and repo-sync's CI-key reuse-vs-mint /me check. Every Postman ASSET op runs on the
- * access-token gateway; a new `x-api-key:` header or `--with-api-key` outside this list
- * is a forbidden PMAK asset op. Newman is banned everywhere (never allowlisted): it
- * cannot run Collection v3, so only the Postman CLI (`postman collection run`) is allowed.
+ * PMAK survives only for minting/re-minting the service-account access token.
+ * Every identity and asset operation runs with the access token. Newman remains
+ * banned because it cannot run Collection v3.
  */
 const ALLOWLIST: Record<string, PatternId[]> = {
-  'src/index.ts': ['pmak-cli-login'],
-  'src/lib/postman/credential-identity.ts': ['pmak-header'],
-  'src/lib/postman/token-provider.ts': ['pmak-header']
+  'src/lib/postman/token-provider.ts': ['pmak-header'],
+  'src/lib/postman/pmak-diagnostics.ts': ['pmak-header']
 };
 
 type Violation = { file: string; line: number; pattern: PatternId; text: string };

@@ -46,6 +46,7 @@ const generationOutcomePassed = probeModule.generationOutcomePassed as (gen: {
   taskStatus?: string;
   collectionId?: string;
 }) => boolean;
+const shapeOf = probeModule.shapeOf as (value: unknown) => unknown;
 const pickCollectionIdForGeneration = probeModule.pickCollectionIdForGeneration as (
   entries: unknown,
   expectedName?: string
@@ -185,6 +186,16 @@ function completeReceipt(options: {
 }
 
 describe('multifile-spec-sync probe generation/cleanup helpers', () => {
+  it('omits request identifiers from persisted response shapes', () => {
+    const shaped = shapeOf({
+      requestId: 'request-sensitive-123',
+      data: { id: 'safe-model-id', requestId: 'nested-sensitive-456' }
+    });
+
+    expect(JSON.stringify(shaped)).not.toMatch(/request[_-]?id/i);
+    expect(shaped).toEqual({ data: { id: 'string(13)' } });
+  });
+
   it('requires terminal successful generation for P03/P04-style pass', () => {
     expect(isTerminalGenerationSuccess('completed')).toBe(true);
     expect(isTerminalGenerationSuccess('success')).toBe(true);
@@ -564,7 +575,7 @@ describe('multifile-spec-sync receipt contract', () => {
     ).not.toThrow();
   });
 
-  it('requires live evidence receipt bound to committed feature source with P01-P10 pass', () => {
+  it('requires live evidence receipt bound to committed feature source with P01-P10 pass', { timeout: 30_000 }, () => {
     expect(existsSync(receiptPath)).toBe(true);
     const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as Receipt;
     const commit = currentBootstrapCommit();

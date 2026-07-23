@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: sea-binary-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
@@ -50,15 +54,26 @@ jobs:
           # Hermetic runtime: sea-config.json sets execArgvExtension=none, so the
           # binary must ignore ambient NODE_OPTIONS. A bogus flag node would reject
           # at startup must NOT reach the runtime -- --version still prints cleanly.
-          hardened="$(NODE_OPTIONS='--this-flag-does-not-exist' "$BIN" --version 2>/dev/null || true)"
+          hardened="$(NODE_OPTIONS=--invalid-node-option "$BIN" --version 2>/dev/null || true)"
           echo "hardened --version -> $hardened"
           if [ "$hardened" != "$VERSION" ]; then
             echo "::error::SEA honored ambient NODE_OPTIONS; expected execArgvExtension=none to ignore it"
             exit 1
           fi
+      - name: Smoke test SEA proxy routing
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          BIN="$PWD/build/sea/postman-bootstrap-${VERSION}-linux-x64"
+          node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$PWD/sea-proxy-result.json"
+          (
+            cd "$(dirname "$BIN")"
+            shasum -a 256 "$(basename "$BIN")" > "$(basename "$BIN").sha256"
+          )
       - name: Upload SEA binary artifact
         uses: actions/upload-artifact@v7
         with:
           name: postman-bootstrap-linux-x64
-          path: build/sea/postman-bootstrap-*-linux-x64
+          path: |
+            build/sea/postman-bootstrap-*-linux-x64
+            build/sea/postman-bootstrap-*-linux-x64.sha256
           if-no-files-found: error

@@ -34,18 +34,26 @@ import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { buildSync } from 'esbuild';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BOOT = dirname(HERE);
 const WORK = join(HERE, '.work');
 mkdirSync(WORK, { recursive: true });
-const ESBUILD = join(BOOT, 'node_modules/.bin/esbuild');
-
 function bundle(srcRel) {
   const src = join(HERE, srcRel);
   const out = join(WORK, srcRel.split('/').pop().replace(/\.mts$/, '.cjs'));
-  execFileSync(ESBUILD, [src, '--bundle', '--platform=node', '--target=node24', '--format=cjs',
-    '--alias:jsonc-parser=jsonc-parser/lib/esm/main.js', '--outfile=' + out], { cwd: BOOT, stdio: ['ignore', 'ignore', 'ignore'] });
+  buildSync({
+    absWorkingDir: BOOT,
+    alias: { 'jsonc-parser': 'jsonc-parser/lib/esm/main.js', punycode: 'punycode/' },
+    bundle: true,
+    entryPoints: [src],
+    format: 'cjs',
+    logLevel: 'silent',
+    outfile: out,
+    platform: 'node',
+    target: 'node24'
+  });
   return out;
 }
 

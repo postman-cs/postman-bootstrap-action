@@ -12,12 +12,18 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 const GATEWAY = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
+const DIRECT_COLLECTION =
+  'https://bifrost-premium-https-v4.gw.postman.com/collection/132319-collection-1/sync?since_id=0&favorite=true&exclude=response%2Crequest';
 
 describe('AccessTokenGatewayClient', () => {
   it('sends the proxy envelope with the live access token', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ ok: true }));
     const provider = new AccessTokenProvider({ accessToken: 'tok-1' });
-    const client = new AccessTokenGatewayClient({ tokenProvider: provider, fetchImpl });
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: provider,
+      fetchImpl,
+      appVersionProvider: { resolve: async () => '12.21.1' }
+    });
 
     await client.requestJson({
       service: 'specification',
@@ -32,7 +38,8 @@ describe('AccessTokenGatewayClient', () => {
         method: 'POST',
         headers: expect.objectContaining({
           'Content-Type': 'application/json',
-          'x-access-token': 'tok-1'
+          'x-access-token': 'tok-1',
+          'x-app-version': '12.21.1'
         }),
         body: JSON.stringify({
           service: 'specification',
@@ -42,6 +49,20 @@ describe('AccessTokenGatewayClient', () => {
         })
       })
     );
+  });
+
+  it('omits x-app-version when the injected provider disables it', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({ ok: true }));
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+      fetchImpl,
+      appVersionProvider: { resolve: async () => undefined }
+    });
+
+    await client.requestJson({ service: 'workspaces', method: 'get', path: '/workspaces' });
+
+    const headers = (fetchImpl.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
+    expect(headers['x-app-version']).toBeUndefined();
   });
 
   it('adds x-entity-team-id only in org-mode', async () => {
@@ -71,11 +92,43 @@ describe('AccessTokenGatewayClient', () => {
     expect(headers['x-entity-team-id']).toBeUndefined();
   });
 
+  it('reads the app collection sync route directly with org service-account headers', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      entities: [{ data: { name: 'Payments' }, revision: '1' }]
+    }));
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+      teamId: '132319',
+      orgMode: true,
+      fetchImpl,
+      appVersionProvider: { resolve: async () => '12.21.1' }
+    });
+
+    const result = await client.requestDirectJson(
+      '/collection/132319-collection-1/sync?since_id=0&favorite=true&exclude=response%2Crequest'
+    );
+
+    expect(result).toMatchObject({ entities: [{ data: { name: 'Payments' } }] });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      DIRECT_COLLECTION,
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'x-access-token': 'tok',
+          'x-entity-team-id': '132319',
+          'x-app-version': '12.21.1'
+        })
+      })
+    );
+  });
+
   it('refreshes the token on UNAUTHENTICATED and retries once with the new token', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       // first proxy call: token expired
       .mockResolvedValueOnce(new Response('{"error":"UNAUTHENTICATED"}', { status: 401 }))
+      // PMAK preflight before re-mint
+      .mockResolvedValueOnce(jsonResponse({ user: { id: 123, teamId: 456 } }))
       // re-mint call
       .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-fresh' }))
       // retried proxy call: success
@@ -95,9 +148,9 @@ describe('AccessTokenGatewayClient', () => {
     });
 
     expect(result).toEqual({ ok: true });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     // The retried proxy call carries the refreshed token.
-    const retried = fetchImpl.mock.calls[2]?.[1] as RequestInit;
+    const retried = fetchImpl.mock.calls[3]?.[1] as RequestInit;
     expect((retried.headers as Record<string, string>)['x-access-token']).toBe('tok-fresh');
   });
 
@@ -132,6 +185,7 @@ describe('AccessTokenGatewayClient', () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(new Response('UNAUTHENTICATED', { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse({ user: { id: 123, teamId: 456 } }))
       .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-fresh-secret' }))
       .mockResolvedValueOnce(new Response('failure leaking tok-fresh-secret', { status: 500 }));
     const masker = createMutableSecretMasker([]);

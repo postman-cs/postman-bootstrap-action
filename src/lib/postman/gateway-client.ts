@@ -4,6 +4,7 @@ import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import type { SecretMasker } from '../secrets.js';
 import { createSecretMasker } from '../secrets.js';
 import type { AccessTokenProvider } from './token-provider.js';
+import { postmanAppVersionProvider, type AppVersionProvider } from './app-version.js';
 
 export type GatewayMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
@@ -49,6 +50,7 @@ export interface AccessTokenGatewayClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
   /** Injectable RNG for deterministic jitter in tests (default Math.random). */
   randomImpl?: () => number;
+  appVersionProvider?: AppVersionProvider;
 }
 
 function isExpiredAuthError(status: number, body: string): boolean {
@@ -153,6 +155,7 @@ export class AccessTokenGatewayClient {
   private readonly requestTimeoutMs: number;
   private readonly sleepImpl: (ms: number) => Promise<void>;
   private readonly randomImpl: () => number;
+  private readonly appVersionProvider: AppVersionProvider;
 
   constructor(options: AccessTokenGatewayClientOptions) {
     this.tokenProvider = options.tokenProvider;
@@ -173,6 +176,7 @@ export class AccessTokenGatewayClient {
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.sleepImpl = options.sleepImpl ?? defaultSleep;
     this.randomImpl = options.randomImpl ?? Math.random;
+    this.appVersionProvider = options.appVersionProvider ?? postmanAppVersionProvider;
   }
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
@@ -180,15 +184,16 @@ export class AccessTokenGatewayClient {
     this.orgMode = orgMode;
   }
 
-  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  private buildHeaders(extra?: Record<string, string>, appVersion?: string): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'x-access-token': this.tokenProvider.current(),
       ...(extra || {})
     };
+    headers['x-access-token'] = this.tokenProvider.current();
     if (this.teamId && this.orgMode) {
       headers['x-entity-team-id'] = this.teamId;
     }
+    if (appVersion) headers['x-app-version'] = appVersion;
     return headers;
   }
 
@@ -199,7 +204,7 @@ export class AccessTokenGatewayClient {
     try {
       return await this.fetchImpl(url, {
         method: 'POST',
-        headers: this.buildHeaders(request.headers),
+        headers: this.buildHeaders(request.headers, await this.appVersionProvider.resolve()),
         signal: controller.signal,
         body: JSON.stringify({
           service: request.service,
@@ -208,6 +213,20 @@ export class AccessTokenGatewayClient {
           ...(request.query !== undefined ? { query: request.query } : {}),
           ...(request.body !== undefined ? { body: request.body } : {})
         })
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async sendDirect(path: string): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    try {
+      return await this.fetchImpl(`${this.bifrostBaseUrl}${path}`, {
+        method: 'GET',
+        headers: this.buildHeaders(undefined, await this.appVersionProvider.resolve()),
+        signal: controller.signal
       });
     } finally {
       clearTimeout(timer);
@@ -400,6 +419,75 @@ export class AccessTokenGatewayClient {
     }
   }
 
+  /**
+   * Read an app-native Bifrost route that is not exposed through `/ws/proxy`.
+   * Collection sync hydration uses this path in the Postman app and supports
+   * org-mode service accounts that the v3 collection-root proxy rejects.
+   */
+  async requestDirectJson<T = Record<string, unknown>>(path: string): Promise<T | null> {
+    if (!path.startsWith('/')) {
+      throw new Error(`Direct Bifrost path must start with '/': ${path}`);
+    }
+    if (!this.tokenProvider.current() && this.tokenProvider.canRefresh()) {
+      await this.tokenProvider.refresh();
+    }
+
+    let attempt = 0;
+    for (;;) {
+      let response: Response;
+      try {
+        response = await this.sendDirect(path);
+      } catch (error) {
+        if (attempt < this.maxRetries) {
+          const delay = this.retryDelayMs(attempt);
+          attempt += 1;
+          await this.sleepImpl(delay);
+          continue;
+        }
+        throw error;
+      }
+
+      const body = await response.text().catch(() => '');
+      if (response.ok) {
+        if (!body.trim()) return null;
+        try {
+          return JSON.parse(body) as T;
+        } catch {
+          return null;
+        }
+      }
+
+      if (isExpiredAuthError(response.status, body) && this.tokenProvider.canRefresh()) {
+        await this.tokenProvider.refresh();
+        response = await this.sendDirect(path);
+        const refreshedBody = await response.text().catch(() => '');
+        if (response.ok) {
+          if (!refreshedBody.trim()) return null;
+          try {
+            return JSON.parse(refreshedBody) as T;
+          } catch {
+            return null;
+          }
+        }
+        throw this.toDirectHttpError(path, response, refreshedBody);
+      }
+
+      if (
+        isTransientGatewayError(response.status, body) &&
+        attempt < this.maxRetries
+      ) {
+        const delay = this.retryDelayMs(
+          attempt,
+          parseRetryAfterMs(response.headers.get('retry-after'))
+        );
+        attempt += 1;
+        await this.sleepImpl(delay);
+        continue;
+      }
+      throw this.toDirectHttpError(path, response, body);
+    }
+  }
+
   private toHttpError(
     request: GatewayRequest,
     response: Response,
@@ -427,6 +515,18 @@ export class AccessTokenGatewayClient {
       status,
       statusText: 'Inner Error',
       requestHeaders: this.buildHeaders(request.headers),
+      responseBody: this.secretMasker(body),
+      secretValues: [this.tokenProvider.current()]
+    });
+  }
+
+  private toDirectHttpError(path: string, response: Response, body: string): HttpError {
+    return new HttpError({
+      method: 'GET',
+      url: `${this.bifrostBaseUrl}${path}`,
+      status: response.status,
+      statusText: response.statusText,
+      requestHeaders: this.buildHeaders(),
       responseBody: this.secretMasker(body),
       secretValues: [this.tokenProvider.current()]
     });

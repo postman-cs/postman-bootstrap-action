@@ -25,7 +25,8 @@ describe('PostmanExtensibleCollectionClient', () => {
 
     const client = new PostmanExtensibleCollectionClient({
       accessToken: 'token-abc',
-      fetchImpl
+      fetchImpl,
+      appVersionProvider: { resolve: async () => '12.21.1' }
     });
 
     const id = await client.createExtensibleCollection('ws-1', { name: 'Telecom Contract' });
@@ -38,7 +39,8 @@ describe('PostmanExtensibleCollectionClient', () => {
         method: 'POST',
         headers: expect.objectContaining({
           'Content-Type': 'application/json',
-          'x-access-token': 'token-abc'
+          'x-access-token': 'token-abc',
+          'x-app-version': '12.21.1'
         }),
         body: JSON.stringify({
           service: 'collection',

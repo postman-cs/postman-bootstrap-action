@@ -42,10 +42,7 @@ import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
 import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
 import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
-import {
-  AccessTokenProvider,
-  mintAccessTokenIfNeeded as mintAccessTokenWithDiagnostics
-} from './lib/postman/token-provider.js';
+import { AccessTokenProvider, mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
 import {
   definitionBundleToSnapshot,
   MULTI_FILE_SPEC_SYNC_DEFAULT,
@@ -119,7 +116,7 @@ export interface ResolvedInputs {
   breakingSummaryPath?: string;
   breakingLogPath?: string;
   governanceMappingJson: string;
-  postmanApiKey: string;
+  postmanApiKey?: string;
   postmanAccessToken?: string;
   credentialPreflight: PreflightMode;
   integrationBackend: string;
@@ -128,11 +125,10 @@ export interface ResolvedInputs {
   requestNameSource: string;
   postmanRegion: PostmanRegion;
   postmanStack: PostmanStack;
-  postmanApiBase: string;
+  postmanApiBase?: string;
   postmanBifrostBase: string;
   postmanFallbackBase: string;
   postmanGatewayBase: string;
-  postmanCliInstallUrl: string;
   postmanIapubBase: string;
   githubRefName?: string;
   githubHeadRef?: string;
@@ -261,6 +257,12 @@ export interface BootstrapExecutionDependencies {
       priorSnapshot: SpecBundleSnapshot | null;
       outcome: SpecBundleMutationOutcome;
     }>;
+    uploadSpecWithOutcome?(
+      workspaceId: string,
+      projectName: string,
+      specContent: string,
+      openapiVersion?: '3.0' | '3.1' | string
+    ): Promise<{ specId: string; created: boolean }>;
     injectContractTests?(collectionUid: string, index: ContractIndex): Promise<string[]>;
     adoptGeneratedCollection?(
       specId: string,
@@ -585,7 +587,6 @@ export function resolveInputs(
     postmanBifrostBase: endpointProfile.bifrostBaseUrl,
     postmanFallbackBase: endpointProfile.fallbackBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
-    postmanCliInstallUrl: endpointProfile.cliInstallUrl,
     postmanIapubBase: endpointProfile.iapubBaseUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
@@ -749,7 +750,7 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
 
 function warnIfDeprecatedAccessToken(
   actionCore: Pick<CoreLike, 'warning'>,
-  inputs: Pick<ResolvedInputs, 'postmanAccessToken' | 'postmanApiKey'>
+  inputs: Pick<ResolvedInputs, 'postmanAccessToken'>
 ): void {
   if (!inputs.postmanAccessToken) {
     return;
@@ -759,7 +760,7 @@ function warnIfDeprecatedAccessToken(
   if (!consumerType || consumerType.toLowerCase() === 'service_account') {
     return;
   }
-  const mask = createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]);
+  const mask = createSecretMasker([inputs.postmanAccessToken]);
   actionCore.warning(
     mask(
       'postman: deprecation warning - postman-access-token resolved to consumerType ' +
@@ -768,28 +769,6 @@ function warnIfDeprecatedAccessToken(
         'The Postman CLI credential store populated by `postman login` is a legacy fallback for migration only.'
     )
   );
-}
-
-/**
- * Eagerly mint the short-lived service-account access token from the PMAK when
- * no postman-access-token was supplied. Mutates `inputs.postmanAccessToken` on
- * success so every downstream consumer (credential preflight, org-mode squad
- * probe, governance adapter, EC client, gateway) sees the token exactly as if
- * it had been provided. Mint failure is a warning, not fatal: the gateway
- * client still lazily re-mints on first use, and PMAK-only teams without
- * service accounts enabled keep the previous degraded-but-working behavior.
- */
-export async function mintAccessTokenIfNeeded(
-  inputs: Pick<ResolvedInputs, 'postmanAccessToken' | 'postmanApiKey' | 'postmanApiBase'> & {
-    postmanAccessToken?: string;
-  },
-  log: { info: (message: string) => void; warning: (message: string) => void },
-  setSecret?: (secret: string) => void
-): Promise<void> {
-  // Shared eager-mint with live-probed failure diagnosis (personal key vs
-  // permission gap vs invalid key vs feature disabled) lives beside the
-  // provider; bootstrap keeps this export for its CLI entry and tests.
-  await mintAccessTokenWithDiagnostics(inputs, log, setSecret);
 }
 
 function isLegacyAccessTokenDeprecationWarning(message: string): boolean {
@@ -810,7 +789,8 @@ export function readActionInputs(
   }
   // Credentials are validated only after BranchDecision resolution in runAction:
   // gated runs intentionally perform credential-free static validation.
-  const postmanApiKey = optionalInput(actionCore, 'postman-api-key') || process.env.POSTMAN_API_KEY || '';
+  const postmanApiKey =
+    optionalInput(actionCore, 'postman-api-key') || process.env.POSTMAN_API_KEY || '';
   const postmanAccessToken =
     optionalInput(actionCore, 'postman-access-token') || process.env.POSTMAN_ACCESS_TOKEN;
   const githubToken = optionalInput(actionCore, 'github-token') || process.env.GITHUB_TOKEN;
@@ -954,109 +934,6 @@ async function runGroup<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   return actionCore.group(name, fn);
-}
-
-function validateHttpsInstallUrl(url: string): string {
-  const safeUrlPattern = /^https:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~/?=&%-]+$/;
-  if (!safeUrlPattern.test(url)) {
-    throw new Error(
-      `postman-cli-install-url must be an https URL with safe characters; got: ${url}`
-    );
-  }
-  return url;
-}
-
-export async function ensurePostmanCli(
-  dependencies: Pick<BootstrapExecutionDependencies, 'exec' | 'io'>,
-  postmanApiKey: string,
-  installUrl: string = 'https://dl-cli.pstmn.io/install/unix.sh',
-  postmanRegion = 'us'
-): Promise<void> {
-  const validatedUrl = validateHttpsInstallUrl(installUrl);
-  const existing = await dependencies.io.which('postman', false).catch(() => '');
-  if (!existing) {
-    await dependencies.exec.exec(
-      'sh',
-      ['-c', 'curl -fsSL "$POSTMAN_CLI_INSTALL_URL" | sh'],
-      {
-        env: {
-          ...process.env,
-          POSTMAN_CLI_INSTALL_URL: validatedUrl
-        }
-      }
-    );
-  }
-
-  // The Postman CLI defaults to the us region and rejects an explicit `--region us`
-  // ("Invalid region provided"); only `--region eu` is accepted. Pass the flag only
-  // for eu so login works on every CLI version.
-  const loginArgs = ['login', '--with-api-key', postmanApiKey];
-  if (postmanRegion === 'eu') {
-    loginArgs.push('--region', 'eu');
-  }
-  await dependencies.exec.exec('postman', loginArgs);
-}
-
-export async function lintSpecViaCli(
-  dependencies: Pick<BootstrapExecutionDependencies, 'exec'>,
-  workspaceId: string,
-  specId: string,
-  masker?: SecretMasker
-): Promise<LintSummary> {
-  const result = await dependencies.exec.getExecOutput(
-    'postman',
-    [
-      'spec',
-      'lint',
-      specId,
-      '--workspace-id',
-      workspaceId || '',
-      '--report-events',
-      '-o',
-      'json'
-    ],
-    {
-      ignoreReturnCode: true
-    }
-  );
-
-  const workspaceLabel = workspaceId || '(none)';
-  if (result.exitCode !== 0 && !result.stdout.trim()) {
-    const cause = formatMaskedOneLine(result.stderr, masker);
-    throw new Error(
-      formatMaskedOneLine(
-        `Spec lint command failed for spec ${specId} in workspace ${workspaceLabel}: ${cause}. ` +
-          'Remediation: verify the Postman CLI can access the spec with the configured postman-api-key, then rerun.',
-        masker
-      )
-    );
-  }
-
-  let parsed: { violations?: LintViolation[] };
-  try {
-    parsed = JSON.parse(result.stdout || '{}') as { violations?: LintViolation[] };
-  } catch {
-    const stdoutCause = formatMaskedOneLine(result.stdout, masker);
-    const stderrCause = formatMaskedOneLine(result.stderr, masker);
-    throw new Error(
-      formatMaskedOneLine(
-        `Spec lint output is not valid JSON for spec ${specId} in workspace ${workspaceLabel}: ` +
-          `stdout=${stdoutCause}; stderr=${stderrCause}. ` +
-          'Remediation: verify the Postman CLI lint JSON report, then rerun with a working postman-api-key login.',
-        masker
-      )
-    );
-  }
-
-  const violations = parsed.violations || [];
-  const errors = violations.filter((entry) => entry.severity === 'ERROR').length;
-  const warnings = violations.filter((entry) => entry.severity === 'WARNING').length;
-
-  return {
-    errors,
-    violations,
-    warnings
-  };
 }
 
 function normalizeLintPath(value: string): string {
@@ -1388,12 +1265,8 @@ export async function runBootstrap(
   } catch (error) {
     telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion('failure');
-    // Asset ops run gateway-only. The gateway client already re-mints the token
-    // once and retries on an auth failure; this catch only sees the error that
-    // survived that automatic retry (PMAK rejected, wrong parent org, or no
-    // PMAK to re-mint from). Rewrite it with actionable re-mint/role guidance
-    // (no-op for non-HttpError or unrecognized bodies). Adapter-advised errors
-    // are already plain Errors, so they pass through untouched.
+    // Asset operations run gateway-only. Rewrite recognized HTTP failures with
+    // actionable token and role guidance; adapter-advised errors pass through.
     if (error instanceof HttpError) {
       const session = getMemoizedSessionIdentity();
       const advised = adviseFromHttpError(error, {
@@ -1404,7 +1277,7 @@ export async function runBootstrap(
         sessionConsumerType: session?.consumerType,
         workspaceTeamId: inputs.workspaceTeamId,
         explicitTeamId: inputs.teamId || undefined,
-        mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+        mask: createSecretMasker([inputs.postmanAccessToken])
       });
       if (advised) {
         throw advised;
@@ -1451,10 +1324,8 @@ async function provisionWorkspace(
   if (!teamId) {
     // Team scope comes from the access token's session (iapub
     // /api/sessions/current), resolved + memoized by the credential preflight
-    // both entrypoints run before this. It is the same team
-    // resolve-service-token derives. PMAK is reserved for minting the access
-    // token and the Postman CLI login, so it is never used to derive team scope
-    // (no GET /me here).
+    // both entrypoints run before this. It is the same team resolved by the
+    // service-token action.
     teamId = getMemoizedSessionIdentity()?.teamId || '';
   }
   telemetry.setTeamId(teamId);
@@ -1534,12 +1405,8 @@ async function provisionWorkspace(
 
   // Org-mode detection: only check if we need to create a workspace (not reuse existing)
   if (!workspaceId && !workspaceTeamId) {
-    // NOTE: intentionally no fail-fast on an unresolved session here. A stale
-    // access token (iapub 401) is recoverable: the gateway's AccessTokenProvider
-    // re-mints from the PMAK on the getTeams()/createWorkspace 401, so the run
-    // still succeeds. The org-account misleading-403 case is instead caught at
-    // the point it actually happens by adviseWorkspaceFlipForbidden (the
-    // create-path 403 -> workspace-team-id guidance safety net below).
+    // The org-account misleading-403 case is caught at the point it happens by
+    // adviseWorkspaceFlipForbidden below.
     try {
       const teams = await dependencies.postman.getTeams();
       if (teams.length > 1 && teams.every(t => t.organizationId == null)) {
@@ -1549,10 +1416,9 @@ async function provisionWorkspace(
           'If workspace creation fails, set workspace-team-id explicitly.'
         );
       }
-      // Org-mode is a property of the account, not of the key's scope. Any team
+      // Org-mode is a property of the account. Any team
       // carrying a non-null organizationId means the parent account is org-mode,
-      // even if the PMAK is scoped to a single sub-team (typical for service
-      // accounts). POST /workspaces at the org level rejects these keys too.
+      // even when the service account can operate in only one sub-team.
       const isOrgMode = teams.some(t => t.organizationId != null);
       if (isOrgMode) {
         ecOrgMode = true;
@@ -2242,12 +2108,6 @@ async function runBootstrapInner(
     resourcesState
   );
 
-  // The Postman CLI authenticates with the PMAK and only powers the spec lint.
-  // Without a postman-api-key the lint is skipped, so the CLI install is too.
-  // Install is deferred until after confined acquisition + protocol/OpenAPI
-  // preflight so path/closure failures never touch CLI, workspace, or Postman.
-  const lintEnabled = Boolean(inputs.postmanApiKey);
-
   let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
   if (!inputs.specId && specId) {
     dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
@@ -2481,14 +2341,6 @@ async function runBootstrapInner(
     // the root receives normalize/branch-marker changes.
     uploadDefinitionBundle = withReplacedRootContent(sourceDefinitionBundle, uploadSpecContent);
     assertMultiFileSpecSyncEnabled(uploadDefinitionBundle);
-  }
-
-  if (lintEnabled) {
-    await runGroup(dependencies.core, 'Install Postman CLI', async () => {
-      await ensurePostmanCli(dependencies, inputs.postmanApiKey, inputs.postmanCliInstallUrl, inputs.postmanRegion);
-    });
-  } else {
-    dependencies.core.info('Skipping Postman CLI install: no postman-api-key (spec lint is skipped).');
   }
 
   const provisioned = await provisionWorkspace(
@@ -2748,13 +2600,24 @@ async function runBootstrapInner(
             await dependencies.postman.updateSpec(specId, uploadSpecContent, workspaceId);
           }
         } else {
-          specId = await dependencies.postman.uploadSpec(
-            workspaceId || '',
-            assetName,
-            uploadSpecContent,
-            detectedOpenapiVersion
-          );
-          createdNewSpec = true;
+          if (dependencies.postman.uploadSpecWithOutcome) {
+            const uploaded = await dependencies.postman.uploadSpecWithOutcome(
+              workspaceId || '',
+              assetName,
+              uploadSpecContent,
+              detectedOpenapiVersion
+            );
+            specId = uploaded.specId;
+            createdNewSpec = uploaded.created;
+          } else {
+            specId = await dependencies.postman.uploadSpec(
+              workspaceId || '',
+              assetName,
+              uploadSpecContent,
+              detectedOpenapiVersion
+            );
+            createdNewSpec = true;
+          }
         }
         outputs['spec-id'] = specId;
         // Defer resources-state persistence of spec-id until verified sync +
@@ -2767,64 +2630,10 @@ async function runBootstrapInner(
   // onboarding run rather than only this spec upload.
   outputs['spec-content-changed'] = isCanonicalWriter && !specContentUnchanged ? 'true' : 'false';
 
-  if (lintEnabled) {
-    let lintSummary = await runRollbackStage(
-      'Lint Spec via Postman CLI',
-      async () => runGroup(
-        dependencies.core,
-        'Lint Spec via Postman CLI',
-        async () =>
-          lintSpecViaCli(
-            dependencies,
-            workspaceId || '',
-            outputs['spec-id'],
-            createBootstrapSecretMasker(inputs)
-          )
-      )
-    );
-    if (preserveSourceSpecBytes) {
-      const originalErrorCount = lintSummary.errors;
-      lintSummary = applyOas30TypeNullLintCompatibility(lintSummary, sourceTypeNullPaths);
-      const acceptedCount = originalErrorCount - lintSummary.errors;
-      if (acceptedCount > 0) {
-        dependencies.core.info(
-          `Accepted ${acceptedCount} Postman CLI type: null finding(s) covered by preserve-oas30-type-null`
-        );
-      }
-    }
-    outputs['lint-summary-json'] = JSON.stringify({
-      errors: lintSummary.errors,
-      total: lintSummary.violations.length,
-      violations: lintSummary.violations,
-      warnings: lintSummary.warnings
-    });
-
-    if (lintSummary.errors > 0) {
-      lintSummary.violations
-        .filter((entry) => entry.severity === 'ERROR')
-        .forEach((entry) => {
-          dependencies.core.error(`  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint error'}`);
-        });
-      throw new Error(`Spec lint found ${lintSummary.errors} errors`);
-    }
-
-    lintSummary.violations
-      .filter((entry) => entry.severity === 'WARNING')
-      .forEach((entry) => {
-        dependencies.core.warning(
-          `  ${entry.path || '<unknown>'}: ${entry.issue || 'Unknown lint warning'}`
-        );
-      });
-  } else {
-    // Access-token-only run: no PMAK to authenticate the Postman CLI, so the
-    // governance lint is skipped rather than hard-failing. Mirror the existing
-    // skipped-output shape and warn that governance errors are not enforced.
-    outputs['lint-summary-json'] = JSON.stringify({
-      status: 'skipped',
-      reason: 'no postman-api-key'
-    });
-    dependencies.core.warning('lint skipped: governance errors not enforced (no postman-api-key)');
-  }
+  outputs['lint-summary-json'] = JSON.stringify({
+    status: 'skipped',
+    reason: 'bootstrap does not invoke the Postman CLI lint'
+  });
 
   if (specContentUnchanged) {
     // A canonical no-op has no new spec changelog group. Keep the existing
@@ -2845,7 +2654,7 @@ async function runBootstrapInner(
         // Regenerate each spec-linked collection in place from the current spec
         // via the access-token `specification` sync route (preserving the
         // collection UID so persisted repo-var references stay valid), or generate
-        // a fresh one. Both are access-token gateway routes — PMAK is never used
+        // a fresh one. Both are access-token gateway routes.
         // and no v2 collection is read or written.
         const ensureCollection = async (
           prefix: GeneratedCollectionPrefix,
@@ -2964,8 +2773,8 @@ async function runBootstrapInner(
         // Contract test injection is v3-native over the access-token gateway:
         // list the generated collection's items, then PATCH each `http-request`
         // leaf's `/scripts` with the deterministic contract afterResponse script
-        // and prepend the secrets resolver. This retires the PMAK collection read
-        // + v2.1.0 collection PUT the dynamic-contract refresh used to perform.
+        // and prepend the secrets resolver. This avoids the collection export and
+        // v2.1.0 collection PUT the dynamic-contract refresh used to perform.
         if (!dependencies.postman.injectContractTests) {
           throw new Error(
             'Dynamic contract tests require injectContractTests support from the access-token gateway client'
@@ -3278,28 +3087,25 @@ export async function runAction(
     process.env[BRANCH_DECISION_ENV] = serializeBranchDecision(branchDecision);
   }
 
-  // PMAK-only runs: eagerly mint the short-lived access token from the service
-  // -account PMAK so the whole access-token surface (credential preflight
-  // diagnostics, org-mode squad probe, governance/internal-integration adapter,
-  // EC client) works exactly as when postman-access-token is supplied. Without
-  // this, org-mode detection silently defaults to false and the non-org
-  // create-then-flip-visibility path 403s on org service accounts.
-  await mintAccessTokenIfNeeded(inputs, {
-    info: (message) => actionCore.info(message),
-    warning: (message) => actionCore.warning(message)
-  }, (secret) => actionCore.setSecret(secret));
+  await mintAccessTokenIfNeeded(
+    inputs,
+    {
+      info: (message) => actionCore.info(message),
+      warning: (message) => actionCore.warning(message)
+    },
+    (secret) => actionCore.setSecret(secret)
+  );
+  if (!inputs.postmanAccessToken) {
+    throw new Error('Could not obtain postman-access-token from the configured postman-api-key.');
+  }
 
-  // Proactive credential preflight: resolve and cross-check both identities once,
-  // before any write. Independent of getTeams()/orgMode below.
+  // Resolve the access-token identity before any write. Independent of
+  // getTeams()/orgMode below.
   await runCredentialPreflight({
-    apiBaseUrl: inputs.postmanApiBase,
     iapubBaseUrl: inputs.postmanIapubBase,
-    postmanApiKey: inputs.postmanApiKey,
     postmanAccessToken: inputs.postmanAccessToken,
-    workspaceTeamId: inputs.workspaceTeamId,
-    explicitTeamId: inputs.teamId || undefined,
     mode: inputs.credentialPreflight,
-    mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
+    mask: createSecretMasker([inputs.postmanAccessToken]),
     log: {
       info: (message) => actionCore.info(message),
       warning: (message) => {
@@ -3313,15 +3119,15 @@ export async function runAction(
 
   // Early org-mode detection for proper adapter configuration. Enumerates squads
   // over the access-token gateway `ums` service (org id from the preflight's
-  // memoized session); a non-org account returns no squads. PMAK is never used
-  // for this (reserved for token mint + CLI login).
+  // memoized session); a non-org account returns no squads.
   let orgMode = false;
   if (inputs.postmanAccessToken) {
     try {
       const probeProvider = new AccessTokenProvider({
         accessToken: inputs.postmanAccessToken,
         apiKey: inputs.postmanApiKey,
-        apiBaseUrl: inputs.postmanApiBase
+        apiBaseUrl: inputs.postmanApiBase,
+        onToken: (token) => actionCore.setSecret(token)
       });
       const probeGateway = new PostmanGatewayAssetsClient({
         gateway: new AccessTokenGatewayClient({
@@ -3330,7 +3136,7 @@ export async function runAction(
           fallbackBaseUrl: inputs.postmanFallbackBase,
           teamId: inputs.teamId || '',
           orgMode: false,
-          secretMasker: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken])
+          secretMasker: createSecretMasker([inputs.postmanAccessToken])
         })
       });
       const teams = await probeGateway.getTeams();
@@ -3373,14 +3179,9 @@ export async function runAction(
 }
 
 /**
- * Build the routing `postman` facade. Every asset op routes through the
- * access-token gateway and NEVER touches PMAK — a gateway error surfaces rather
- * than masking it (the short-TTL service-account token is re-minted by the token
- * provider on a 401, so failures are real). PMAK is used only for minting/re-minting
- * the access token + the CLI spec-lint login; it is never an asset route. The
- * gateway is always constructed (from an access token, or minted from the PMAK),
- * so the no-gateway branch is unreachable in practice and rejects every asset op
- * rather than falling back to any PMAK route.
+ * Build the routing `postman` facade. Every asset operation routes through the
+ * access-token gateway. A gateway error surfaces rather than switching
+ * credentials or transports.
  */
 export function createRoutingPostmanClient(options: {
   gateway?: PostmanGatewayAssetsClient;
@@ -3389,22 +3190,21 @@ export function createRoutingPostmanClient(options: {
 
   const requireAccessToken = (operation: string) => async (): Promise<never> => {
     throw new Error(
-      `${operation} requires an access token: PMAK asset routes are retired. ` +
+      `${operation} requires an access token. ` +
         'Mint a service-account token with postman-resolve-service-token-action.'
     );
   };
 
   if (!gateway) {
-    // No access token and no PMAK to mint one from: every asset op is
-    // access-token-only, so reject rather than fall back to any PMAK route.
-    // Unreachable in practice — resolveInputs requires a credential and the
-    // gateway is minted from the PMAK when no access token is supplied.
+    // Writing runs validate the access token before constructing dependencies;
+    // keep this defensive facade for direct embedders.
     return {
       configureTeamContext: (_teamId: string, _orgMode: boolean): void => {
         void _teamId;
         void _orgMode;
       },
       uploadSpec: requireAccessToken('uploadSpec'),
+      uploadSpecWithOutcome: requireAccessToken('uploadSpecWithOutcome'),
       uploadSpecBundle: requireAccessToken('uploadSpecBundle'),
       updateSpec: requireAccessToken('updateSpec'),
       getSpecContent: requireAccessToken('getSpecContent'),
@@ -3434,14 +3234,11 @@ export function createRoutingPostmanClient(options: {
   }
 
   return {
-    // Gateway-only (verified live 200): every migrated asset op routes through the
-    // access-token gateway and NEVER falls back to PMAK, even on a gateway error.
-    // PMAK is reserved for minting/re-minting the access token + the CLI spec-lint
-    // login. The short-TTL service-account token is re-minted transparently by the
-    // token provider on a 401, so a gateway failure here is a real error to surface,
-    // not a reason to reach for the API key.
+    // Gateway-only: a failure here is authoritative and never switches credentials.
     uploadSpec: (workspaceId, projectName, specContent, openapiVersion) =>
       gateway.uploadSpec(workspaceId, projectName, specContent, openapiVersion ?? '3.0'),
+    uploadSpecWithOutcome: (workspaceId, projectName, specContent, openapiVersion) =>
+      gateway.uploadSpecWithOutcome(workspaceId, projectName, specContent, openapiVersion ?? '3.0'),
     uploadSpecBundle: (workspaceId, projectName, bundle, openapiVersion) =>
       gateway.uploadSpecBundle(workspaceId, projectName, bundle, openapiVersion ?? '3.0'),
     generateCollection: (specId, projectName, prefix, folderStrategy, nestedFolderHierarchy, requestNameSource) =>
@@ -3463,17 +3260,15 @@ export function createRoutingPostmanClient(options: {
     findWorkspacesByName: (name) => gateway.findWorkspacesByName(name),
     configureTeamContext: (teamId, orgMode) => gateway.configureTeamContext(teamId, orgMode),
 
-    // gateway-only (no PMAK fallback): asset mutation over the v3 collection-items
-    // + tagging surfaces (live-proven). PMAK is reserved for token minting, so
-    // these never fall back to the API key even when one is present.
+    // Gateway-only asset mutation over the v3 collection-items and tagging surfaces.
     injectTests: (collectionId, type) => gateway.injectTests(collectionId, type),
     tagSpecVersion: (specId, name) => gateway.tagSpecVersion(specId, name),
     listSpecVersionTags: (specId) => gateway.listSpecVersionTags(specId),
     tagCollection: (collectionId, tags) => gateway.tagCollection(collectionId, tags),
     // Sub-team (squad) enumeration over the gateway `ums` service. Access-token
-    // only — never PMAK — so org-mode detection no longer needs a PMAK GET /teams.
+    // only, so org-mode detection uses the session's parent organization.
     getTeams: () => gateway.getTeams(),
-    // gateway-only (no PMAK fallback): workspace roles + member resolution and the
+    // Gateway-only workspace roles, member resolution, and collection deletion.
     // v3 collection delete are live-proven (probe-workspace-roles-gateway.ts,
     // probe-god-members.ts, probe-collection-v3-crud.ts, 2026-06-30). Role values
     // are the string enum names the gateway requires (numeric ids are rejected).
@@ -3481,10 +3276,7 @@ export function createRoutingPostmanClient(options: {
     inviteRequesterToWorkspace: (workspaceId, email) => gateway.inviteRequesterToWorkspace(workspaceId, email),
     deleteCollection: (collectionUid) => gateway.deleteCollection(collectionUid),
 
-    // gateway-only (no PMAK fallback): v3-native contract test injection over the
-    // collection-items `/scripts` surface. Replaces the retired PMAK collection
-    // read + v2.1.0 collection PUT the dynamic-contract refresh used to perform,
-    // so no asset op ever reaches for the API key.
+    // Gateway-only v3-native contract test injection over `/scripts`.
     injectContractTests: (collectionUid, index) => gateway.injectContractTests(collectionUid, index),
     createCollection: (workspaceId, collection, options) =>
       gateway.createCollection(workspaceId, collection, options),
@@ -3499,16 +3291,12 @@ export function createBootstrapDependencies(
   factories: BootstrapDependencyFactories,
   orgMode = false
 ): BootstrapExecutionDependencies {
-  // Mutable masker: a mid-run access-token re-mint adds the new token here so the
-  // same masker instance already threaded into every client keeps redacting it.
   const mutableMasker = createMutableSecretMasker([
     inputs.postmanApiKey,
     inputs.postmanAccessToken
   ]);
   const secretMasker = mutableMasker.mask;
 
-  // Single source of the live access token. onToken registers each re-mint with
-  // the Actions log scrubber (when wired) and the mutable masker.
   const tokenProvider = new AccessTokenProvider({
     accessToken: inputs.postmanAccessToken,
     apiKey: inputs.postmanApiKey,
@@ -3519,11 +3307,7 @@ export function createBootstrapDependencies(
     }
   });
 
-  // Access-token asset path — the sole asset path. Built whenever any credential
-  // exists: from an access token directly, or minted from the PMAK on first use by
-  // the token provider. The PMAK is only ever the mint credential, never an asset
-  // route. resolveInputs guarantees one of the two, so this is always present.
-  const gatewayClient = (inputs.postmanAccessToken || inputs.postmanApiKey)
+  const gatewayClient = inputs.postmanAccessToken
     ? new AccessTokenGatewayClient({
         tokenProvider,
         bifrostBaseUrl: inputs.postmanBifrostBase,

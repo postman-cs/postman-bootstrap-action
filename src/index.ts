@@ -3052,7 +3052,7 @@ async function runBootstrapInner(
               kind: 'deep-update';
               collectionId: string;
             };
-        const roleWriteTasks = collectionRoles.map(async (role): Promise<RoleWriteResult> => {
+        const writeRole = async (role: (typeof collectionRoles)[number]): Promise<RoleWriteResult> => {
           const payload = payloads.roles[role.role];
           const finalName = roleNames[role.role];
           const useDeepUpdate =
@@ -3082,10 +3082,18 @@ async function runBootstrapInner(
             collectionId: imported.collectionId,
             journaledRootIds: [...imported.journaledRootIds]
           };
-        });
-        // Bounded structured concurrency: start all independent role writes,
-        // drain every task before cleanup/failure decisions.
-        const settledWrites = await Promise.allSettled(roleWriteTasks);
+        };
+        // These writes share one workspace mutation and inventory surface. Keep
+        // them serial to avoid self-generated import bursts, but continue after
+        // a failure so every started role has a settled cleanup decision.
+        const settledWrites: PromiseSettledResult<RoleWriteResult>[] = [];
+        for (const role of collectionRoles) {
+          try {
+            settledWrites.push({ status: 'fulfilled', value: await writeRole(role) });
+          } catch (reason) {
+            settledWrites.push({ status: 'rejected', reason });
+          }
+        }
         const importMs = Math.max(0, Date.now() - importStarted);
 
         const roleOrder = collectionRoles.map((role) => role.role);

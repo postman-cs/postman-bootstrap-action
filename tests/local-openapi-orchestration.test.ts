@@ -1173,7 +1173,7 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
-  it('starts all three role cloud writes concurrently (Q7)', async () => {
+  it('serializes all three role cloud writes within one workspace (Q7)', async () => {
     await withRepo(async () => {
       const events: string[] = [];
       const core = createCoreStub();
@@ -1210,7 +1210,7 @@ describe('local OpenAPI orchestration', () => {
         resourcesState: { read: () => null, write: () => undefined },
         specFetcher: vi.fn()
       });
-      expect(maxInFlight).toBe(3);
+      expect(maxInFlight).toBe(1);
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
     });
   });

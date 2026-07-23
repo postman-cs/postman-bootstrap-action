@@ -23,8 +23,9 @@ export interface GatewayRequest {
   body?: unknown;
   /** Extra route-specific headers (e.g. x-app-version, X-Entity-Type). */
   headers?: Record<string, string>;
-  /** Unsafe mutations must reconcile after an ambiguous response, not resend. */
-  retry?: 'safe' | 'none';
+  /** Unsafe mutations must reconcile after an ambiguous response, not resend.
+   * `rate-limit` retries only authoritative 429 backpressure, never transport/5xx. */
+  retry?: 'safe' | 'rate-limit' | 'none';
   /** Cold `/_api` fallback eligibility. `'auto'` opts an unsafe mutation in
    * (only valid after the caller has reconciled and knows the create is
    * absent); safe requests always fall back, unsafe requests never do unless
@@ -127,10 +128,8 @@ function detectInnerError(body: string): number | null {
  */
 function isTransientGatewayError(status: number, body: string): boolean {
   if (status === 429) return true;
-  if (status === 502 || status === 503 || status === 504) return true;
-  if (status >= 500 && (body.includes('ESOCKETTIMEDOUT') || body.includes('ETIMEDOUT') || body.includes('ECONNRESET') || body.includes('serverError') || body.includes('downstream'))) {
-    return true;
-  }
+  if (status >= 500) return true;
+  void body;
   return false;
 }
 
@@ -333,11 +332,10 @@ export class AccessTokenGatewayClient {
         const okBody = await response.text().catch(() => '');
         const innerStatus = detectInnerError(okBody);
         if (innerStatus !== null) {
-          if (
-            retryMode === 'safe' &&
-            isTransientGatewayError(innerStatus, okBody) &&
-            attempt < this.maxRetries
-          ) {
+          const retryInner =
+            (retryMode === 'safe' && isTransientGatewayError(innerStatus, okBody)) ||
+            (retryMode === 'rate-limit' && innerStatus === 429);
+          if (retryInner && attempt < this.maxRetries) {
             const delay = this.retryDelayMs(attempt);
             attempt += 1;
             this.onRetry?.({ class: 'inner', status: innerStatus, attempt, delay });
@@ -368,11 +366,10 @@ export class AccessTokenGatewayClient {
         throw this.toHttpError(request, response, retryBody);
       }
 
-      if (
-        retryMode === 'safe' &&
-        isTransientGatewayError(response.status, body) &&
-        attempt < this.maxRetries
-      ) {
+      const retryResponse =
+        (retryMode === 'safe' && isTransientGatewayError(response.status, body)) ||
+        (retryMode === 'rate-limit' && response.status === 429);
+      if (retryResponse && attempt < this.maxRetries) {
         const delay = this.retryDelayMs(
           attempt,
           parseRetryAfterMs(response.headers.get('retry-after'))

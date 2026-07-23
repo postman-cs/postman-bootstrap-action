@@ -498,6 +498,9 @@ describe('multifile-spec-sync receipt contract', () => {
     expect(isReleaseOnlyDriftPath('src/index.ts')).toBe(false);
     expect(isReleaseOnlyDriftPath('action.yml')).toBe(false);
     expect(isReleaseOnlyDriftPath('.github/workflows/release.yml')).toBe(false);
+    // Release publisher workflow + pin contract stay behavior-bearing for ancestry
+    // (unlike ci.yml / tests/ci-workflow.test.ts). Forces commit-only rebind.
+    expect(isReleaseOnlyDriftPath('tests/release-workflow.test.ts')).toBe(false);
     expect(isReleaseOnlyDriftPath('tests/contract.test.ts')).toBe(false);
     expect(isReleaseOnlyDriftPath('scripts/probe-multifile-spec-sync.mjs')).toBe(false);
     expect(isReleaseOnlyDriftPath('tests/multifile-spec-sync-receipt.test.ts')).toBe(false);
@@ -577,6 +580,74 @@ describe('multifile-spec-sync receipt contract', () => {
         headCommit: 'b'.repeat(40)
       })
     ).not.toThrow();
+  });
+
+  it('rejects release-workflow drift via ancestry and accepts commit-only rebind without rewriting live evidence', () => {
+    const liveCapabilities = {
+      ...falseCapabilities(),
+      multiFileCreate: true,
+      multiFileRead: true,
+      openapiGeneration: true
+    };
+    const receipt = completeReceipt({
+      commit: '7'.repeat(40),
+      capabilities: liveCapabilities
+    });
+    // Freeze the live evidence fields the rebind must preserve.
+    receipt.testedAt = '2026-07-23T13:47:30.030Z';
+    const originalTestedAt = receipt.testedAt;
+    const originalLegs = structuredClone(receipt.legs);
+    const originalCapabilities = structuredClone(receipt.capabilities);
+    const head = '5'.repeat(40);
+
+    // Incident-shaped set: release.yml + release-workflow pin contract offenders
+    // mixed with allowlisted dist/evidence noise (7e63b60..5564e6b class).
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(receipt, {
+        headCommit: head,
+        isAncestor: () => true,
+        changedPaths: [
+          '.github/workflows/release.yml',
+          'tests/release-workflow.test.ts',
+          'dist/action.cjs',
+          'dist/cli.cjs',
+          'dist/index.cjs',
+          'validation/evidence/multifile-spec-sync.json'
+        ]
+      })
+    ).toThrow(/behavior-bearing|stale/i);
+
+    expect(() =>
+      assertReleaseOnlySourceDrift([
+        '.github/workflows/release.yml',
+        'tests/release-workflow.test.ts',
+        'dist/index.cjs',
+        'validation/evidence/multifile-spec-sync.json'
+      ])
+    ).toThrow(/release\.yml|release-workflow\.test\.ts/);
+
+    // Commit-only rebind: update bootstrapCommit to HEAD; leave testedAt/legs alone.
+    const rebound: Receipt = {
+      ...receipt,
+      bootstrapCommit: head
+    };
+    expect(() =>
+      assertMultifileSpecSyncReceiptSourceBinding(rebound, {
+        headCommit: head,
+        // Even if offenders are injected, exact-HEAD short-circuits path checks.
+        isAncestor: () => true,
+        changedPaths: [
+          '.github/workflows/release.yml',
+          'tests/release-workflow.test.ts',
+          'dist/index.cjs',
+          'validation/evidence/multifile-spec-sync.json'
+        ]
+      })
+    ).not.toThrow();
+    expect(rebound.bootstrapCommit).toBe(head);
+    expect(rebound.testedAt).toBe(originalTestedAt);
+    expect(rebound.legs).toEqual(originalLegs);
+    expect(rebound.capabilities).toEqual(originalCapabilities);
   });
 
   it('requires live evidence receipt bound to committed feature source with P01-P10 pass', { timeout: 30_000 }, () => {

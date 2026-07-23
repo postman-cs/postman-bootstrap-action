@@ -3704,6 +3704,13 @@ describe('PostmanGatewayAssetsClient', () => {
   });
 
   describe('importV2Collection / deepUpdateV2Collection', () => {
+    const STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS = [250, 500, 750, 1000, 1250] as const;
+    const PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS = [
+      250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000
+    ] as const;
+    const DELETE_ABSENCE_SETTLE_DELAYS_MS = [250, 500, 750, 1000, 1500, 2000, 3000] as const;
+    const PREVIEW_FINAL_NAME = 'Payments @feature-x-abc123';
+
     const v21Collection = {
       info: {
         name: 'Payments',
@@ -4045,9 +4052,9 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(inventoryCalls.length).toBeGreaterThan(1);
       expect(inventoryCalls[0]?.retry).toBe('none');
       expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
-      // Rename settle sleeps [250,500], then election observes the full settle window.
+      // Rename settle sleeps [250,500], then election observes the standard settle window.
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-        250, 500, 250, 500, 750, 1000, 1250
+        250, 500, ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
       ]);
     });
 
@@ -4091,6 +4098,13 @@ describe('PostmanGatewayAssetsClient', () => {
           deleted.push(env.path);
           return jsonResponse({ data: {} });
         }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${ownBare}`
+        ) {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       }, { sleep });
       const requestJson = vi.spyOn(gateway, 'requestJson');
@@ -4100,7 +4114,9 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(result.journaledRootIds).toEqual([]);
       expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
-      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500, 750, 1000, 1250]);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+      ]);
       const inventoryCalls = requestJson.mock.calls
         .map(([options]) => options)
         .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
@@ -4113,7 +4129,149 @@ describe('PostmanGatewayAssetsClient', () => {
       ).toHaveLength(1);
     });
 
-    it.each(['Payments', '[Smoke] Payments'])(
+    it('elects lower peer final only after observations beyond the historic six-read/3.75s election window', async () => {
+      const finalName = PREVIEW_FINAL_NAME;
+      const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+      const ownId = `300-${ownBare}`;
+      const peerId = '200-11111111-1111-1111-1111-111111111111';
+      let imported = false;
+      let electionObs = 0;
+      let ownRootReads = 0;
+      const deleted: string[] = [];
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          return jsonResponse({ data: { id: ownId } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.includes('?workspace=')
+        ) {
+          if (!imported) return jsonResponse({ data: [] });
+          electionObs += 1;
+          // Own preview final is visible first; lower peer final appears only
+          // after the historic six-observation / 3.75s standard election budget.
+          if (electionObs < 7) {
+            return jsonResponse({ data: [{ id: ownId, name: finalName }] });
+          }
+          return jsonResponse({
+            data: [
+              { id: peerId, name: finalName },
+              { id: ownId, name: finalName }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${ownBare}`
+        ) {
+          ownRootReads += 1;
+          if (ownRootReads === 1) {
+            return jsonResponse({ data: { id: ownBare, name: finalName } });
+          }
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      const result = await client.importV2Collection('ws-1', v21Collection, finalName);
+      expect(result.collectionId).toBe(peerId);
+      expect(result.journaledRootIds).toEqual([]);
+      expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
+      expect(ownRootReads).toBe(2);
+      expect(electionObs).toBe(PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+        DELETE_ABSENCE_SETTLE_DELAYS_MS[0]
+      ]);
+      expect(
+        calls.filter(
+          (call) =>
+            call.service === 'collection' &&
+            call.method === 'delete' &&
+            String(call.path).includes('11111111-1111-1111-1111-111111111111')
+        )
+      ).toHaveLength(0);
+    });
+
+    it('keeps the standard import election budget when @ is present but not a preview suffix', async () => {
+      const finalName = 'Payments@feature-x-abc123';
+      const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+      const ownId = `300-${ownBare}`;
+      const peerId = '200-11111111-1111-1111-1111-111111111111';
+      let imported = false;
+      let electionObs = 0;
+      const deleted: string[] = [];
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          return jsonResponse({ data: { id: ownId } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.includes('?workspace=')
+        ) {
+          if (!imported) return jsonResponse({ data: [] });
+          electionObs += 1;
+          if (electionObs < 7) {
+            return jsonResponse({ data: [{ id: ownId, name: finalName }] });
+          }
+          return jsonResponse({
+            data: [
+              { id: peerId, name: finalName },
+              { id: ownId, name: finalName }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${ownBare}`
+        ) {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      const result = await client.importV2Collection('ws-1', v21Collection, finalName);
+      expect(result.collectionId).toBe(ownId);
+      expect(result.journaledRootIds).toEqual([ownId]);
+      expect(deleted).toEqual([]);
+      expect(electionObs).toBe(STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+      ]);
+    });
+
+    it.each([
+      'Payments @feature-x-abc123',
+      '[Smoke] Payments @feature-x-abc123'
+    ])(
       'concurrent preview imports converge on one %s collection despite a staggered pre-snapshot',
       async (finalName) => {
         const entries: Array<{ id: string; name: string; description: string }> = [];
@@ -4146,6 +4304,19 @@ describe('PostmanGatewayAssetsClient', () => {
           }
           if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
             return jsonResponse({ data: entries });
+          }
+          if (
+            env.service === 'collection' &&
+            env.method === 'get' &&
+            env.path.startsWith('/v3/collections/') &&
+            !env.path.includes('?workspace=')
+          ) {
+            const bare = String(env.path).replace('/v3/collections/', '');
+            const hit = entries.find((entry) => entry.id.endsWith(bare));
+            if (hit) {
+              return jsonResponse({ data: { id: hit.id, name: hit.name } });
+            }
+            return jsonResponse({ error: 'missing' }, { status: 404 });
           }
           if (env.service === 'collection' && env.method === 'delete') {
             const bare = String(env.path).split('/').pop();
@@ -4353,7 +4524,9 @@ describe('PostmanGatewayAssetsClient', () => {
         collectionId: canonicalId,
         journaledRootIds: [canonicalId]
       });
-      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500, 750, 1000, 1250]);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+      ]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
     });
 
@@ -4387,8 +4560,12 @@ describe('PostmanGatewayAssetsClient', () => {
         /inventory-visible/
       );
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
-      expect(calls.filter((call) => call.path === '/v3/collections/?workspace=ws-1')).toHaveLength(7);
-      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500, 750, 1000, 1250]);
+      expect(calls.filter((call) => call.path === '/v3/collections/?workspace=ws-1')).toHaveLength(
+        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 2
+      );
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+      ]);
       expect(deleted).toEqual([`/v3/collections/${bareId}`]);
     });
 
@@ -4420,6 +4597,13 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
           return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${ownBare}`
+        ) {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
         }
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       });
@@ -4520,6 +4704,55 @@ describe('PostmanGatewayAssetsClient', () => {
       await expect(
         client.deleteVerifiedRunOwnedCollections(['cccccccc-cccc-cccc-cccc-cccccccccccc'])
       ).rejects.toThrow(/LOCAL_OPENAPI_CLEANUP_FAILED: owned collection cccccccc-cccc-cccc-cccc-cccccccccccc absence unverifiable/);
+    });
+
+    it('deleteVerifiedRunOwnedCollections resolves after stale post-delete GET 200 then 404', async () => {
+      const id = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+      let rootReads = 0;
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'delete') {
+          return jsonResponse({ data: { ok: true } });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path === `/v3/collections/${id}`) {
+          rootReads += 1;
+          if (rootReads === 1) {
+            return jsonResponse({ data: { id, name: 'Payments' } });
+          }
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ data: { ok: true } });
+      }, { sleep });
+
+      await expect(client.deleteVerifiedRunOwnedCollections([id])).resolves.toBeUndefined();
+      expect(rootReads).toBe(2);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([DELETE_ABSENCE_SETTLE_DELAYS_MS[0]]);
+    });
+
+    it('deleteVerifiedRunOwnedCollections rejects bounded readback when collection never becomes absent', async () => {
+      const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+      let rootReads = 0;
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'delete') {
+          return jsonResponse({ data: { ok: true } });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path === `/v3/collections/${id}`) {
+          rootReads += 1;
+          return jsonResponse({ data: { id, name: 'Still here' } });
+        }
+        return jsonResponse({ data: { ok: true } });
+      }, { sleep });
+
+      await expect(client.deleteVerifiedRunOwnedCollections([id])).rejects.toThrow(
+        /LOCAL_OPENAPI_CLEANUP_FAILED: owned collection eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee absence unverifiable/
+      );
+      expect(rootReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([...DELETE_ABSENCE_SETTLE_DELAYS_MS]);
     });
   });
 });

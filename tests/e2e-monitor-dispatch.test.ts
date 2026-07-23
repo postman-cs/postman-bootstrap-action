@@ -9,23 +9,23 @@ const monitorScript = readFileSync(join(process.cwd(), '.github/scripts/dispatch
 describe('e2e monitor dispatch contract', () => {
   it('is post-publish, continue-on-error, and unused by the major alias job', () => {
     expect(releaseWorkflow).toMatch(
-      /dispatch-live-monitor:[\s\S]*?needs:\n\s+- validate\n\s+- publish/
+      /dispatch-live-monitor:[\s\S]*?needs: \[verify-package, publish\]/
     );
     expect(releaseWorkflow).toMatch(
       /dispatch-live-monitor:[\s\S]*?continue-on-error: true/
     );
     expect(releaseWorkflow).toMatch(
-      /dispatch-live-monitor:[\s\S]*?needs\.validate\.outputs\.npm_publish == 'true'/
+      /dispatch-live-monitor:[\s\S]*?needs\.verify-package\.outputs\.release_kind == 'immutable'/
     );
     expect(releaseWorkflow).toMatch(
-      /advance-major-alias:[\s\S]*?needs:\n\s+- validate\n\s+- publish\n/
+      /advance-major-alias:[\s\S]*?needs: \[verify-package, publish\]/
     );
     expect(releaseWorkflow).not.toMatch(/advance-major-alias:[\s\S]*dispatch-live-monitor/);
   });
 
-  it('keeps publish dependent only on successful validate', () => {
-    expect(releaseWorkflow).toMatch(/publish:\n\s+needs:\n\s+- validate\n/);
-    expect(releaseWorkflow).toContain("if: ${{ needs.validate.result == 'success' }}");
+  it('keeps publication dependent on immutable artifact verification', () => {
+    expect(releaseWorkflow).toContain('publish:\n    needs: [classify, verify-package]');
+    expect(releaseWorkflow).toContain("needs.classify.outputs.release_kind == 'immutable'");
     expect(releaseWorkflow).not.toContain('live-e2e-gate');
     expect(releaseWorkflow).not.toContain('gate_required');
   });

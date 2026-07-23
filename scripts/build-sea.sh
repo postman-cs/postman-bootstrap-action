@@ -39,8 +39,10 @@ echo "==> fetching pinned Node runtime v${NODE_VERSION} (linux-x64)"
 NODE_WORK="$OUT_DIR/node-dist"
 rm -rf "$NODE_WORK"
 mkdir -p "$NODE_WORK"
-curl -fsSL "${NODE_BASE_URL}/${NODE_TARBALL}" -o "$NODE_WORK/${NODE_TARBALL}"
-curl -fsSL "${NODE_BASE_URL}/SHASUMS256.txt" -o "$NODE_WORK/SHASUMS256.txt"
+curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 2 \
+  "${NODE_BASE_URL}/${NODE_TARBALL}" -o "$NODE_WORK/${NODE_TARBALL}"
+curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 --retry-delay 2 \
+  "${NODE_BASE_URL}/SHASUMS256.txt" -o "$NODE_WORK/SHASUMS256.txt"
 
 echo "==> verifying tarball against SHASUMS256.txt"
 ( cd "$NODE_WORK" && grep " ${NODE_TARBALL}\$" SHASUMS256.txt | shasum -a 256 -c - )

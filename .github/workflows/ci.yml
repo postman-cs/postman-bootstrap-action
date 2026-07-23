@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   gate:
     runs-on: ubuntu-latest
@@ -28,8 +32,6 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Install Postman CLI
         run: curl -o- "https://dl-cli.pstmn.io/install/unix.sh" | sh
       - run: postman --version
@@ -109,8 +111,6 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Install Postman CLI
         shell: pwsh
         run: |
@@ -118,9 +118,29 @@ jobs:
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           Invoke-Expression ((New-Object Net.WebClient).DownloadString($env:POSTMAN_CLI_INSTALL_URL))
           & "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\postman.exe" --version
-      - run: npm run lint
-      - run: npm test
-      - run: npm run typecheck
       - run: npm run bundle
-      - run: npm run verify:dist:assert
-      - run: npm run test:integration
+      - name: Run gates
+        shell: pwsh
+        run: |
+          $MAX_PARALLEL_GATES = 2
+          $gates = @{
+            lint = @('run', 'lint')
+            test = @('test')
+            typecheck = @('run', 'typecheck')
+            dist = @('run', 'verify:dist:assert')
+            integ = @('run', 'test:integration')
+          }
+          $runGate = {
+            param($npmArgs)
+            & npm @npmArgs
+            if ($LASTEXITCODE -ne 0) { throw "gate failed with exit code $LASTEXITCODE" }
+          }
+          $running = @(); $results = @{}
+          foreach ($name in $gates.Keys) {
+            while ($running.Count -ge $MAX_PARALLEL_GATES) {
+              $done = Wait-Job -Job $running -Any; $results[$done.Name] = $done.State; Receive-Job $done; Remove-Job $done; $running = @($running | Where-Object Id -ne $done.Id)
+            }
+            $running += Start-Job -Name $name -ScriptBlock $runGate -ArgumentList (,$gates[$name])
+          }
+          while ($running.Count) { $done = Wait-Job -Job $running -Any; $results[$done.Name] = $done.State; Receive-Job $done; Remove-Job $done; $running = @($running | Where-Object Id -ne $done.Id) }
+          $failed = $false; foreach ($name in $gates.Keys) { if ($results[$name] -eq 'Completed') { Write-Output "gate:$name=pass" } else { Write-Output "gate:$name=fail"; $failed = $true } }; if ($failed) { exit 1 }

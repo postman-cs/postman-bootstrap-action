@@ -45,7 +45,7 @@ function bundle(srcRel) {
   const out = join(WORK, srcRel.split('/').pop().replace(/\.mts$/, '.cjs'));
   buildSync({
     absWorkingDir: BOOT,
-    alias: { 'jsonc-parser': 'jsonc-parser/lib/esm/main.js' },
+    alias: { 'jsonc-parser': 'jsonc-parser/lib/esm/main.js', punycode: 'punycode/' },
     bundle: true,
     entryPoints: [src],
     format: 'cjs',

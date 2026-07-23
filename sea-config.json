@@ -1,5 +1,6 @@
 {
   "main": "build/sea/cli.cjs",
   "output": "build/sea/sea-prep.blob",
-  "disableExperimentalSEAWarning": true
+  "disableExperimentalSEAWarning": true,
+  "execArgvExtension": "none"
 }

@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   gate:
     runs-on: ubuntu-latest
@@ -118,9 +122,16 @@ jobs:
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           Invoke-Expression ((New-Object Net.WebClient).DownloadString($env:POSTMAN_CLI_INSTALL_URL))
           & "$env:USERPROFILE\AppData\Local\Microsoft\WindowsApps\postman.exe" --version
-      - run: npm run lint
-      - run: npm test
-      - run: npm run typecheck
       - run: npm run bundle
-      - run: npm run verify:dist:assert
-      - run: npm run test:integration
+      - name: Run gates
+        shell: pwsh
+        run: |
+          $gates = @(
+            'lint|||npm|||run|||lint'
+            'test|||npm|||test'
+            'typecheck|||npm|||run|||typecheck'
+            'dist|||npm|||run|||verify:dist:assert'
+            'integ|||npm|||run|||test:integration'
+          ) | ConvertTo-Json -Compress
+          & .github/scripts/run-windows-gates.ps1 -GateJson $gates
+          exit $LASTEXITCODE

@@ -15,5 +15,6 @@ describe('live e2e tiering contract', () => {
     expect(releaseWorkflow).toContain('continue-on-error: true');
     expect(releaseWorkflow).toContain('E2E_GATE_SUITE: smoke');
     expect(releaseWorkflow).toContain('node .github/scripts/dispatch-e2e-monitor.mjs');
+    expect(releaseWorkflow).toContain("needs.verify-package.outputs.release_kind == 'immutable'");
   });
 });

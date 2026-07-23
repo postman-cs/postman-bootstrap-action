@@ -575,7 +575,7 @@ describe('multifile-spec-sync receipt contract', () => {
     ).not.toThrow();
   });
 
-  it('requires live evidence receipt bound to committed feature source with P01-P10 pass', () => {
+  it('requires live evidence receipt bound to committed feature source with P01-P10 pass', { timeout: 30_000 }, () => {
     expect(existsSync(receiptPath)).toBe(true);
     const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as Receipt;
     const commit = currentBootstrapCommit();

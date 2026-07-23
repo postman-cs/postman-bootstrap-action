@@ -805,7 +805,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(posts).toBe(1);
     });
 
-    it('deletes concurrent same-identity generated collections after rename', async () => {
+    it('does not delete peer-owned generated collections after winning convergence', async () => {
       let posted = false;
       const deleted = new Set<string>();
       const ours = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
@@ -843,7 +843,7 @@ describe('PostmanGatewayAssetsClient', () => {
       await expect(
         client.generateCollection('spec-1', 'P', '[Smoke]', 'Tags', false, 'Fallback')
       ).resolves.toBe(ours);
-      expect([...deleted]).toEqual(expect.arrayContaining([peerFinal, peerTemp]));
+      expect([...deleted]).toEqual([]);
     });
 
     it('throws when the generation task reports failure', async () => {

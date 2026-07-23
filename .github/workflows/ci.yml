@@ -126,25 +126,12 @@ jobs:
       - name: Run gates
         shell: pwsh
         run: |
-          $MAX_PARALLEL_GATES = 2
-          $gates = @{
-            lint = @('run', 'lint')
-            test = @('test')
-            typecheck = @('run', 'typecheck')
-            dist = @('run', 'verify:dist:assert')
-            integ = @('run', 'test:integration')
-          }
-          $runGate = {
-            param($npmArgs)
-            & npm @npmArgs
-            if ($LASTEXITCODE -ne 0) { throw "gate failed with exit code $LASTEXITCODE" }
-          }
-          $running = @(); $results = @{}
-          foreach ($name in $gates.Keys) {
-            while ($running.Count -ge $MAX_PARALLEL_GATES) {
-              $done = Wait-Job -Job $running -Any; $results[$done.Name] = $done.State; Receive-Job $done; Remove-Job $done; $running = @($running | Where-Object Id -ne $done.Id)
-            }
-            $running += Start-Job -Name $name -ScriptBlock $runGate -ArgumentList (,$gates[$name])
-          }
-          while ($running.Count) { $done = Wait-Job -Job $running -Any; $results[$done.Name] = $done.State; Receive-Job $done; Remove-Job $done; $running = @($running | Where-Object Id -ne $done.Id) }
-          $failed = $false; foreach ($name in $gates.Keys) { if ($results[$name] -eq 'Completed') { Write-Output "gate:$name=pass" } else { Write-Output "gate:$name=fail"; $failed = $true } }; if ($failed) { exit 1 }
+          $gates = @(
+            'lint|||npm|||run|||lint'
+            'test|||npm|||test'
+            'typecheck|||npm|||run|||typecheck'
+            'dist|||npm|||run|||verify:dist:assert'
+            'integ|||npm|||run|||test:integration'
+          ) | ConvertTo-Json -Compress
+          & .github/scripts/run-windows-gates.ps1 -GateJson $gates
+          exit $LASTEXITCODE

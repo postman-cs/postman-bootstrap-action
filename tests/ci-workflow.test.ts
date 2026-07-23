@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const ciWorkflow = readFileSync(join(process.cwd(), '.github/workflows/ci.yml'), 'utf8');
 const seaWorkflow = readFileSync(join(process.cwd(), '.github/workflows/sea-binary.yml'), 'utf8');
+const windowsGateHelper = readFileSync(join(process.cwd(), '.github/scripts/run-windows-gates.ps1'), 'utf8');
 
 /** Extract one top-level job block: `  <id>:` through the next job header or EOF. */
 function jobText(workflow: string, jobId: string): string {
@@ -36,8 +37,8 @@ describe('CI workflow dist/pack race contract', () => {
     expect(ciWorkflow).toContain('group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
     expect(ciWorkflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
     expect(ciWorkflow).toMatch(/windows:[\s\S]*?npm run bundle[\s\S]*?Run gates/);
-    expect(ciWorkflow).toMatch(/windows:[\s\S]*?\$MAX_PARALLEL_GATES = 2/);
-    expect(ciWorkflow).toMatch(/windows:[\s\S]*?integ = @\('run', 'test:integration'\)/);
+    expect(ciWorkflow).toMatch(/windows:[\s\S]*?run-windows-gates\.ps1/);
+    expect(ciWorkflow).toMatch(/windows:[\s\S]*?'integ\|\|\|npm\|\|\|run\|\|\|test:integration'/);
   });
 
   it('uses the pinned actionlint binary without Go setup', () => {
@@ -53,7 +54,7 @@ describe('CI workflow dist/pack race contract', () => {
     expect(ciWorkflow).toMatch(/run: npm run bundle[\s\S]*?- name: Run gates/);
     expect(ciWorkflow).not.toMatch(/run: npm run build/);
     expect(linux).toContain('npm run typecheck');
-    expect(windows).toContain("typecheck = @('run', 'typecheck')");
+    expect(windows).toContain("'typecheck|||npm|||run|||typecheck'");
 
     const runGates = namedStep(linux, 'Run gates');
     expect(runGates).toContain('run test');
@@ -182,22 +183,20 @@ describe('CI workflow dist/pack race contract', () => {
     expect(windows.indexOf('- run: npm run bundle')).toBeLessThan(windows.indexOf('- name: Run gates'));
 
     const runGates = namedStep(windows, 'Run gates');
-    expect(runGates).toContain('shell: pwsh');
-    expect(runGates).toContain('$MAX_PARALLEL_GATES = 2');
-    expect(runGates).toContain('while ($running.Count -ge $MAX_PARALLEL_GATES)');
-    expect(runGates).toContain("lint = @('run', 'lint')");
-    expect(runGates).toContain("test = @('test')");
-    expect(runGates).toContain("typecheck = @('run', 'typecheck')");
-    expect(runGates).toContain("dist = @('run', 'verify:dist:assert')");
-    expect(runGates).toContain("integ = @('run', 'test:integration')");
-    expect(runGates).toContain('& npm @npmArgs');
-    expect(runGates).toContain('if ($LASTEXITCODE -ne 0) { throw "gate failed with exit code $LASTEXITCODE" }');
-    expect(runGates).toContain('Start-Job -Name $name -ScriptBlock $runGate -ArgumentList (,$gates[$name])');
-    expect(runGates).toContain('Receive-Job $done');
-    expect(runGates).toContain("if ($results[$name] -eq 'Completed') { Write-Output \"gate:$name=pass\" } else { Write-Output \"gate:$name=fail\"; $failed = $true }");
-    expect(runGates).toContain('if ($failed) { exit 1 }');
+    expect(runGates).toContain('.github/scripts/run-windows-gates.ps1');
+    expect(runGates).toContain('-GateJson $gates');
+    expect(runGates).toContain("'lint|||npm|||run|||lint'");
+    expect(runGates).toContain("'test|||npm|||test'");
+    expect(runGates).toContain("'typecheck|||npm|||run|||typecheck'");
+    expect(runGates).toContain("'dist|||npm|||run|||verify:dist:assert'");
+    expect(runGates).toContain("'integ|||npm|||run|||test:integration'");
+    expect(windowsGateHelper).toContain('[int]$MaxParallelGates = 2');
+    expect(windowsGateHelper).toContain('Start-ThreadJob');
+    expect(windowsGateHelper).toContain("$ErrorActionPreference = 'Continue'");
+    expect(windowsGateHelper).toContain('Receive-Job -Job $completed -ErrorAction SilentlyContinue');
+    expect(windowsGateHelper).toContain('gate:$name=pass');
+    expect(windowsGateHelper).toContain('gate:$name=fail');
     expect(runGates).not.toContain('continue-on-error');
-    expect(runGates).not.toContain('Invoke-Expression');
     expect(runGates).not.toContain('npm run build');
     expect(runGates).not.toMatch(/npm run verify:dist(?:\s|$|"|')/);
     expect(runGates).not.toContain('actionlint');

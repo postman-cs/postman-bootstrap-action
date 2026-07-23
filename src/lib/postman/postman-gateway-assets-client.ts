@@ -1324,9 +1324,9 @@ export class PostmanGatewayAssetsClient {
    * Concurrent dual-trigger previews can each generate+rename the same final
    * collection identity. Elect the stable lowest-id winner.
    *
-   * Losers only delete *their own* preferred collection (never a peer's still-
-   * in-use id). Winners wait briefly for peers to self-delete, then clean any
-   * leftover same-identity orphans (temps + extra finals).
+   * Losers only delete *their own* preferred collection. Winners wait briefly
+   * for peers to self-delete, but never delete a peer-owned id that may still be
+   * in use. Abandoned peer artifacts are left to preview GC.
    */
   private async convergeGeneratedCollections(
     specId: string,
@@ -1389,17 +1389,13 @@ export class PostmanGatewayAssetsClient {
       return winner.id;
     }
 
-    // We won. Give peers a beat to self-delete, then sweep remaining orphans.
+    // We won. Observe boundedly for peers to self-delete, but never remove an
+    // id we did not create: that peer may still be renaming or populating it.
     if (sameIdentity.length > 1) {
-      await this.sleep(1500);
-      sameIdentity = selectSameIdentity(await listKnownIdentities());
-      for (const duplicate of sameIdentity) {
-        if (duplicate.id === winner.id) continue;
-        try {
-          await this.deleteCollection(duplicate.id);
-        } catch (error) {
-          if (!(error instanceof HttpError && error.status === 404)) throw error;
-        }
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await this.sleep(250 * (attempt + 1));
+        sameIdentity = selectSameIdentity(await listKnownIdentities());
+        if (sameIdentity.length <= 1) break;
       }
     }
     return winner.id;

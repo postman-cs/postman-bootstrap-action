@@ -328,6 +328,10 @@ export interface BootstrapExecutionDependencies {
       expectedPayloadDigest: string
     ): Promise<string>;
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
+    reconcileDuplicateFinalCollections?(
+      workspaceId: string,
+      finalNames: string[]
+    ): Promise<Record<string, string>>;
   };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,
@@ -3145,6 +3149,45 @@ async function runBootstrapInner(
           );
         }
 
+        // Collapse duplicate finals left when concurrent peers both finished
+        // election before seeing each other. Keeps the lowest inventory UID.
+        if (
+          importCount > 0 &&
+          dependencies.postman.reconcileDuplicateFinalCollections &&
+          workspaceId
+        ) {
+          const importedFinalNames = collectionRoles
+            .filter((role) => fulfilledByRole.get(role.role)?.kind === 'import')
+            .map((role) => roleNames[role.role]);
+          try {
+            const winners = await dependencies.postman.reconcileDuplicateFinalCollections(
+              workspaceId,
+              importedFinalNames
+            );
+            for (const role of collectionRoles) {
+              const result = fulfilledByRole.get(role.role);
+              if (!result || result.kind !== 'import') continue;
+              const finalName = roleNames[role.role];
+              const winnerId = winners[finalName];
+              if (!winnerId) continue;
+              if (result.collectionId !== winnerId) {
+                // Peer kept a lower UID; rebind outputs to the reconciled winner
+                // and drop journal ownership of the deleted local root (do not
+                // claim the peer-owned winner).
+                for (const id of result.journaledRootIds) {
+                  const idx = ownedLedger.indexOf(id);
+                  if (idx >= 0) ownedLedger.splice(idx, 1);
+                }
+                result.journaledRootIds = [];
+                result.collectionId = winnerId;
+                outputs[result.outputKey] = winnerId;
+              }
+            }
+          } catch (error) {
+            await failOwned('cloud-collection-write', error);
+          }
+        }
+
         const finalized = finalizeLocalOpenApiArtifactManifest(materialized.manifest, {
           baseline: outputs['baseline-collection-id'],
           smoke: outputs['smoke-collection-id'],
@@ -3700,7 +3743,8 @@ export function createRoutingPostmanClient(options: {
       updateCollectionDescription: requireAccessToken('updateCollectionDescription'),
       importV2Collection: requireAccessToken('importV2Collection'),
       deepUpdateV2Collection: requireAccessToken('deepUpdateV2Collection'),
-      deleteVerifiedRunOwnedCollections: requireAccessToken('deleteVerifiedRunOwnedCollections')
+      deleteVerifiedRunOwnedCollections: requireAccessToken('deleteVerifiedRunOwnedCollections'),
+      reconcileDuplicateFinalCollections: requireAccessToken('reconcileDuplicateFinalCollections')
     };
   }
 
@@ -3761,7 +3805,9 @@ export function createRoutingPostmanClient(options: {
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) =>
       gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
-      gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds)
+      gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
+    reconcileDuplicateFinalCollections: (workspaceId, finalNames) =>
+      gateway.reconcileDuplicateFinalCollections(workspaceId, finalNames)
   };
 }
 

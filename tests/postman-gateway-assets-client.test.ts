@@ -4129,6 +4129,7 @@ describe('PostmanGatewayAssetsClient', () => {
       ).toHaveLength(1);
     });
 
+
     it('import-finalize fails when elected-loser cleanup cannot be verified', async () => {
       const ownBare = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
       const ownId = `300-${ownBare}`;
@@ -4792,6 +4793,53 @@ describe('PostmanGatewayAssetsClient', () => {
         '/v3/collections/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
         '/v3/collections/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
       ]);
+    });
+
+
+    it('reconcileDuplicateFinalCollections keeps lowest UID and deletes higher duplicates', async () => {
+      const low = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const high = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const entries = [
+        { id: high, name: 'Payments @feature-x' },
+        { id: low, name: 'Payments @feature-x' },
+        { id: '200-cccccccc-cccc-cccc-cccc-cccccccccccc', name: 'Other' }
+      ];
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          const bare = String(env.path).split('/').pop();
+          const idx = entries.findIndex((e) => e.id.endsWith(String(bare)));
+          if (idx >= 0) entries.splice(idx, 1);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.startsWith('/v3/collections/') &&
+          !env.path.includes('?workspace=')
+        ) {
+          const bare = String(env.path).replace('/v3/collections/', '');
+          const hit = entries.find((e) => e.id.endsWith(bare));
+          if (hit) return jsonResponse({ data: hit });
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      const winners = await client.reconcileDuplicateFinalCollections('ws-1', [
+        'Payments @feature-x',
+        'Missing'
+      ]);
+      expect(winners).toEqual({ 'Payments @feature-x': low });
+      expect(deleted).toEqual([`/v3/collections/${high.slice(4)}`]);
+      expect(entries.map((e) => e.id).sort()).toEqual([
+        '200-cccccccc-cccc-cccc-cccc-cccccccccccc',
+        low
+      ].sort());
     });
 
     it('deleteVerifiedRunOwnedCollections fails closed when absence is only HTTP 500', async () => {

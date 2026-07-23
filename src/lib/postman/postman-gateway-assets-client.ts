@@ -219,6 +219,7 @@ export interface PostmanGatewayAssetsClientOptions {
  */
 export class PostmanGatewayAssetsClient {
   private static readonly GENERATION_LOCKED_MAX_RETRIES = 5;
+  private static readonly GENERATION_OBSERVATION_MAX_RETRIES = 4;
   private static readonly DEFAULT_GENERATION_POLL_ATTEMPTS = 90;
   private static readonly DEFAULT_GENERATION_POLL_DELAY_MS = 2000;
   /**
@@ -227,7 +228,7 @@ export class PostmanGatewayAssetsClient {
    * budget so a nameless newly-appeared relation can settle without waiting
    * the full ~180s generation poll window.
    */
-  private static readonly GENERATION_RELATION_SETTLE_MAX_POLLS = 10;
+  private static readonly GENERATION_RELATION_SETTLE_MAX_POLLS = 20;
   /** Post-create exact-name polls before a singleton may be accepted as final. */
   private static readonly SPEC_CREATE_STABLE_MAX_POLLS = 10;
   /** Consecutive identical normalized ID sets required before acting on the set. */
@@ -390,12 +391,13 @@ export class PostmanGatewayAssetsClient {
     // A concurrent same-identity create may have won between lookup and POST.
     // Stable-set election before proceeding so a duplicate is never retained and
     // generation never targets a loser a peer is about to delete.
-    const specId = await this.electStableNewSpecificationIdentity(
+    const election = await this.electStableNewSpecificationIdentity(
       workspaceId,
       projectName,
       before,
       createdSpecId
     );
+    const specId = election.specId;
     // The winner may have been created by the peer. Last writer wins for the
     // same branch identity, which is safe and ensures this run's content lands.
     if (specId !== createdSpecId) {
@@ -409,7 +411,7 @@ export class PostmanGatewayAssetsClient {
     });
     return {
       specId,
-      created: createdByThisRun && specId === createdSpecId
+      created: createdByThisRun && specId === createdSpecId && !election.shared
     };
   }
 
@@ -445,7 +447,7 @@ export class PostmanGatewayAssetsClient {
     projectName: string,
     before: Array<{ id: string; name: string }>,
     createdSpecId: string
-  ): Promise<string> {
+  ): Promise<{ specId: string; shared: boolean }> {
     const identityKey = `specification:${workspaceId}:${projectName}`;
 
     // Pre-existing exact-name rows were observed before create: never run the
@@ -453,18 +455,20 @@ export class PostmanGatewayAssetsClient {
     if (before.length > 0) {
       const matches = await this.findSpecificationsByExactName(workspaceId, projectName);
       const verified = adoptExactMatch(identityKey, matches, (entry) => entry.id);
-      return verified?.id ?? createdSpecId;
+      return { specId: verified?.id ?? createdSpecId, shared: false };
     }
 
     let matches: Array<{ id: string; name: string }> = [];
     let lastSetKey: string | null = null;
     let quietStreak = 0;
+    let shared = false;
     for (
       let poll = 0;
       poll < PostmanGatewayAssetsClient.SPEC_CREATE_STABLE_MAX_POLLS;
       poll += 1
     ) {
       matches = await this.findSpecificationsByExactName(workspaceId, projectName);
+      if (matches.length > 1) shared = true;
       const setKey = matches.map((entry) => entry.id).join('\0');
       if (setKey === lastSetKey) {
         quietStreak += 1;
@@ -512,11 +516,11 @@ export class PostmanGatewayAssetsClient {
       if (!converged) {
         throw new Error(`Concurrent specification create for ${projectName} did not converge`);
       }
-      return converged.id;
+      return { specId: converged.id, shared: true };
     }
 
     const verified = adoptExactMatch(identityKey, matches, (entry) => entry.id);
-    return verified?.id ?? createdSpecId;
+    return { specId: verified?.id ?? createdSpecId, shared };
   }
 
   private async deleteSpecification(specId: string): Promise<void> {
@@ -685,13 +689,16 @@ export class PostmanGatewayAssetsClient {
 
     // After a new spec ID is known, any election/readback/detail failure must
     // whole-delete only the newly created spec (never an elected/adopted peer).
+    let cleanupSafe = true;
     try {
-      const specId = await this.electStableNewSpecificationIdentity(
+      const election = await this.electStableNewSpecificationIdentity(
         workspaceId,
         projectName,
         before,
         createdSpecId
       );
+      const specId = election.specId;
+      cleanupSafe = !election.shared;
       const weCreatedWinner = specId === createdSpecId;
 
       // Lost the election: land our content on the peer winner and surface
@@ -728,7 +735,7 @@ export class PostmanGatewayAssetsClient {
       };
       return {
         specId,
-        created: true,
+        created: cleanupSafe,
         priorSnapshot,
         outcome: {
           status: 'ok',
@@ -741,7 +748,7 @@ export class PostmanGatewayAssetsClient {
       let cleanupFailed: unknown;
       try {
         // Idempotent: 404 (peer already deleted the loser) is success.
-        await this.deleteSpecification(createdSpecId);
+        if (cleanupSafe) await this.deleteSpecification(createdSpecId);
       } catch (cleanupError) {
         cleanupFailed = cleanupError;
       }
@@ -1187,18 +1194,34 @@ export class PostmanGatewayAssetsClient {
       let taskFailed = false;
       if (taskId) {
         const deadline = this.now() + 180_000;
+        let observationRetries = 0;
         for (let attempt = 0; attempt < this.generationPollAttempts; attempt += 1) {
           const fixed = process.env.POSTMAN_GENERATION_POLL_MODE === 'fixed';
           const delay = fixed ? this.generationPollDelayMs : Math.min(16_000, 2_000 * Math.pow(2, attempt));
           const remaining = deadline - this.now();
           if (remaining <= 0) throw new Error('COLLECTION_GENERATION_TIMEOUT');
           await this.sleep(Math.min(delay, remaining));
-          const task = await this.gateway.requestJson<JsonRecord>({
-            service: 'specification',
-            method: 'get',
-            path: '/tasks',
-            query: { entityId: specId, entityType: 'specification', type: 'collection-generation' }
-          });
+          let task: JsonRecord | null;
+          try {
+            task = await this.gateway.requestJson<JsonRecord>({
+              service: 'specification',
+              method: 'get',
+              path: '/tasks',
+              query: { entityId: specId, entityType: 'specification', type: 'collection-generation' }
+            });
+            observationRetries = 0;
+          } catch (error) {
+            const notReady = error instanceof HttpError && (error.status === 403 || error.status === 404);
+            if (
+              notReady &&
+              observationRetries < PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES &&
+              attempt < this.generationPollAttempts - 1
+            ) {
+              observationRetries += 1;
+              continue;
+            }
+            throw error;
+          }
           const status = String(asRecord(task?.data)?.[taskId] ?? '').toLowerCase();
           if (status === 'failed' || status === 'error') {
             taskFailed = true;
@@ -1226,6 +1249,19 @@ export class PostmanGatewayAssetsClient {
         submittedName
       );
       if (!uid) {
+        // A concurrent runner may rename and converge before this runner sees
+        // its own temporary relation, then remove that temp as the loser. The
+        // pre-create read proved there was no final identity beforehand, so a
+        // sole exact final relation is the peer's converged result.
+        const peerFinal = adoptExactMatch(
+          `generated-collection:${specId}:${name}`,
+          await this.filterGeneratedCollectionsByExactName(
+            await this.listGeneratedCollectionRefs(specId),
+            name
+          ),
+          (entry) => entry.id
+        );
+        if (peerFinal) return this.convergeGeneratedCollections(specId, name, peerFinal.id);
         throw new Error(`Collection generation did not yield a collection uid for ${prefix}`);
       }
       await this.renameGeneratedCollection(uid, name);
@@ -1407,12 +1443,30 @@ export class PostmanGatewayAssetsClient {
   private async listGeneratedCollectionRefs(
     specId: string
   ): Promise<Array<{ id: string; name?: string }>> {
-    const list = await this.gateway.requestJson<JsonRecord>({
-      service: 'specification',
-      method: 'get',
-      path: `/specifications/${specId}/collections`,
-      query: { fields: 'syncOptions,options' }
-    });
+    let list: JsonRecord | null = null;
+    for (
+      let attempt = 0;
+      attempt <= PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES;
+      attempt += 1
+    ) {
+      try {
+        list = await this.gateway.requestJson<JsonRecord>({
+          service: 'specification',
+          method: 'get',
+          path: `/specifications/${specId}/collections`,
+          query: { fields: 'syncOptions,options' }
+        });
+        break;
+      } catch (error) {
+        if (
+          !(error instanceof HttpError && error.status === 404) ||
+          attempt === PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES
+        ) {
+          throw error;
+        }
+        await this.sleep(1000);
+      }
+    }
     const entries = Array.isArray(asRecord(list)?.data) ? (asRecord(list)!.data as unknown[]) : [];
     const results: Array<{ id: string; name?: string }> = [];
     for (const raw of entries) {

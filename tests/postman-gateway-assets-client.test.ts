@@ -224,6 +224,35 @@ describe('PostmanGatewayAssetsClient', () => {
         expect.objectContaining({ method: 'delete', path: '/specifications/spec-b' })
       );
     });
+
+    it('does not claim exclusive rollback ownership after its winner is shared with a peer', async () => {
+      let listCalls = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          listCalls += 1;
+          if (listCalls === 1) return jsonResponse({ data: [] });
+          if (listCalls <= 3) {
+            return jsonResponse({
+              data: [
+                { id: 'spec-a', name: 'Payments' },
+                { id: 'spec-b', name: 'Payments' }
+              ]
+            });
+          }
+          return jsonResponse({ data: [{ id: 'spec-a', name: 'Payments' }] });
+        }
+        if (env.method === 'post') return jsonResponse({ data: { id: 'spec-a' } });
+        if (env.method === 'delete') {
+          return jsonResponse({ error: 'winner must not delete a peer-owned spec' }, { status: 500 });
+        }
+        return jsonResponse({ data: { id: 'spec-a' } });
+      });
+
+      await expect(
+        client.uploadSpecWithOutcome('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
+      ).resolves.toEqual({ specId: 'spec-a', created: false });
+      expect(calls.some((call) => call.method === 'delete')).toBe(false);
+    });
   });
 
   describe('generateCollection', () => {
@@ -441,6 +470,88 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
     });
 
+    it('adopts the sole peer final after its own temporary relation disappears', async () => {
+      const peerUid = '132319-34343434-3434-3434-3434-343434343434';
+      let submitted = false;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (!submitted) return jsonResponse({ data: [] });
+          return jsonResponse({ data: [{ collection: peerUid, name: '[Contract] Telecom' }] });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submitted = true;
+          return jsonResponse({ data: { taskId: 'task-peer-final' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          return jsonResponse({ data: { 'task-peer-final': 'completed' } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(peerUid);
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('adopts the sole hydrated peer final after its own temporary relation disappears', async () => {
+      const peerModelId = '34343434-3434-3434-3434-343434343434';
+      const peerUid = `132319-${peerModelId}`;
+      let submitted = false;
+      let postTaskReads = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (!submitted) return jsonResponse({ data: [] });
+          postTaskReads += 1;
+          return jsonResponse({ data: [{ collection: peerUid }] });
+        }
+        if (env.service === 'direct') {
+          return jsonResponse({ entities: [{ data: { name: '[Contract] Telecom' } }] });
+        }
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submitted = true;
+          return jsonResponse({ data: { taskId: 'task-peer-final' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { 'task-peer-final': 'completed' } });
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+      const delays: number[] = [];
+      (client as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => {
+        delays.push(ms);
+      };
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).resolves.toBe(peerUid);
+
+      expect(postTaskReads).toBeGreaterThanOrEqual(21);
+      expect(delays.slice(1, 20)).toEqual(Array(19).fill(1000));
+      expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
+    });
+
+    it('caps post-completion name enrichment before one final peer lookup', async () => {
+      let submitted = false;
+      let settleReads = 0;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          if (submitted) settleReads += 1;
+          return jsonResponse({ data: submitted ? [{ collection: '132319-nameless' }] : [] });
+        }
+        if (env.service === 'direct') return jsonResponse({ entities: [{ data: { name: '' } }] });
+        if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
+          submitted = true;
+          return jsonResponse({ data: { taskId: 'task-settle-cap' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { 'task-settle-cap': 'completed' } });
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
+      ).rejects.toThrow(/did not yield a collection uid/);
+      expect(settleReads).toBe(21);
+    });
+
     it('re-POSTs once when an ambiguous generation 500 did not commit an exact-name relation', async () => {
       const generatedModelId = '33333333-3333-3333-3333-333333333333';
       let createPosts = 0;
@@ -564,6 +675,52 @@ describe('PostmanGatewayAssetsClient', () => {
         nestedFolderHierarchy: true
       });
       expect(calls.filter((c) => c.path === '/tasks').length).toBe(2);
+    });
+
+    it('waits through eventual task authorization after an accepted generation', async () => {
+      let taskReads = 0;
+      let posted = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'post' && env.path.endsWith('/collections')) {
+          posted = true;
+          return jsonResponse({ data: { taskId: 'task-eventual' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') {
+          taskReads += 1;
+          if (taskReads === 1) return jsonResponse({ error: { name: 'permissionError' } }, { status: 403 });
+          if (taskReads === 2) return jsonResponse({ error: { name: 'notFoundError' } }, { status: 404 });
+          return jsonResponse({ data: { 'task-eventual': 'completed' } });
+        }
+        return jsonResponse({ data: posted ? [{ collection: 'uid-eventual', name: 'P [bootstrap:test-run]' }] : [] });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '', 'None', true, 'Fallback')
+      ).resolves.toBe('uid-eventual');
+      expect(taskReads).toBe(3);
+    });
+
+    it('waits for a newly uploaded specification collection relation route to become readable', async () => {
+      let listReads = 0;
+      let posted = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          listReads += 1;
+          if (listReads <= 2) return jsonResponse({ error: { name: 'notFoundError' } }, { status: 404 });
+          return jsonResponse({ data: posted ? [{ collection: 'uid-readable', name: 'P [bootstrap:test-run]' }] : [] });
+        }
+        if (env.method === 'post' && env.path.endsWith('/collections')) {
+          posted = true;
+          return jsonResponse({ data: { taskId: 'task-readable' } }, { status: 202 });
+        }
+        if (env.path === '/tasks') return jsonResponse({ data: { 'task-readable': 'completed' } });
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(
+        client.generateCollection('spec-1', 'P', '', 'None', true, 'Fallback')
+      ).resolves.toBe('uid-readable');
+      expect(listReads).toBeGreaterThanOrEqual(4);
     });
 
     it('omits nestedFolderHierarchy when folderStrategy is not Tags', async () => {
@@ -2523,7 +2680,7 @@ describe('PostmanGatewayAssetsClient', () => {
       );
     });
 
-    it('uploadSpecBundle sets created:true only when this runner owns the elected winner', async () => {
+    it('uploadSpecBundle relinquishes rollback ownership when its elected winner is shared', async () => {
       // Winner-owner race: this runner created the lowest-ID winner. A peer loser
       // becomes list-visible, but this runner must never DELETE the peer ID —
       // peer self-cleanup is observed on bounded subsequent list polls.
@@ -2573,7 +2730,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       const result = await client.uploadSpecBundle('ws-1', 'Payments', target, '3.0');
       expect(result.specId).toBe('spec-a');
-      expect(result.created).toBe(true);
+      expect(result.created).toBe(false);
       expect(result.outcome.status).toBe('ok');
       expect(listCalls).toBeGreaterThan(3);
       expect(calls.some((call) => call.method === 'delete' && call.path === '/specifications/spec-b')).toBe(

@@ -4129,66 +4129,6 @@ describe('PostmanGatewayAssetsClient', () => {
       ).toHaveLength(1);
     });
 
-    it('import-finalize fails when elected-loser cleanup cannot be verified', async () => {
-      const ownBare = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-      const ownId = `300-${ownBare}`;
-      const peerId = '100-11111111-1111-1111-1111-111111111111';
-      let imported = false;
-      const deleted: string[] = [];
-      const sleep = vi.fn(async (delayMs: number) => {
-        void delayMs;
-      });
-      const { client } = makeClient((env) => {
-        if (env.service === 'sync' && env.path === '/collection/import') {
-          imported = true;
-          return jsonResponse({ model_id: ownBare });
-        }
-        if (env.service === 'collection' && env.method === 'patch') {
-          return jsonResponse({ data: { id: ownId } });
-        }
-        if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          env.path.includes('?workspace=')
-        ) {
-          if (!imported) return jsonResponse({ data: [] });
-          // Peer always wins; loser remains in inventory so verified cleanup fails.
-          return jsonResponse({
-            data: [
-              { id: peerId, name: 'Payments' },
-              { id: ownId, name: 'Payments' }
-            ]
-          });
-        }
-        if (env.service === 'collection' && env.method === 'delete') {
-          deleted.push(env.path);
-          return jsonResponse({ data: {} });
-        }
-        if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          env.path === `/v3/collections/${ownBare}`
-        ) {
-          return jsonResponse({ data: { id: ownId, name: 'Payments' } });
-        }
-        return jsonResponse({ error: 'unexpected' }, { status: 500 });
-      }, { sleep });
-
-      await expect(
-        client.importV2Collection('ws-1', v21Collection, 'Payments')
-      ).rejects.toThrow(
-        new RegExp(
-          `LOCAL_OPENAPI_IMPORT_FAILED: stage=import-finalize cause=LOCAL_OPENAPI_CLEANUP_FAILED: owned collection ${ownId.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')} absence unverifiable`
-        )
-      );
-      expect(deleted.length).toBeGreaterThanOrEqual(1);
-      expect(deleted.every((path) => path === `/v3/collections/${ownBare}`)).toBe(true);
-      expect(
-        deleted.some((path) => path.includes('11111111-1111-1111-1111-111111111111'))
-      ).toBe(false);
-    });
-
-
     it('returns elected peer even when loser cleanup absence cannot be verified', async () => {
       const ownBare = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
       const ownId = `300-${ownBare}`;

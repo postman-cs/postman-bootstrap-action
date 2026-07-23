@@ -10,7 +10,7 @@ import {
 } from './create-reconciliation.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
-import { AccessTokenGatewayClient } from './gateway-client.js';
+import { AccessTokenGatewayClient, type RetryEvent } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
 import {
   assertSupportedLocalViewContract,
@@ -203,6 +203,7 @@ export interface PostmanGatewayAssetsClientOptions {
    * for tests; never loaded from external mutable state at runtime.
    */
   reconcileCapabilityPolicy?: SpecReconcileCapabilityPolicy;
+  onRetry?: (event: RetryEvent) => void;
 }
 
 /**
@@ -248,6 +249,7 @@ export class PostmanGatewayAssetsClient {
   private readonly now: () => number;
   private readonly createIdentity: () => string;
   private readonly reconcileCapabilityPolicy: SpecReconcileCapabilityPolicy;
+  private readonly onRetry?: (event: RetryEvent) => void;
 
   constructor(options: PostmanGatewayAssetsClientOptions) {
     this.gateway = options.gateway;
@@ -270,6 +272,7 @@ export class PostmanGatewayAssetsClient {
     this.reconcileCapabilityPolicy = validateSpecReconcileCapabilityPolicy(
       options.reconcileCapabilityPolicy ?? DEFAULT_SPEC_RECONCILE_CAPABILITY_POLICY
     );
+    this.onRetry = options.onRetry;
   }
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
@@ -1218,6 +1221,7 @@ export class PostmanGatewayAssetsClient {
               attempt < this.generationPollAttempts - 1
             ) {
               observationRetries += 1;
+              this.onRetry?.({ class: 'poll', status: error.status, attempt: observationRetries, delay: 0 });
               continue;
             }
             throw error;
@@ -1238,6 +1242,7 @@ export class PostmanGatewayAssetsClient {
         }
       }
       if (taskFailed) {
+        this.onRetry?.({ class: 'poll', attempt: taskAttempt + 2, delay: 1000 * (taskAttempt + 1) });
         await this.sleep(1000 * (taskAttempt + 1));
         continue;
       }
@@ -1318,6 +1323,32 @@ export class PostmanGatewayAssetsClient {
   ): Promise<string> {
     const name = [prefix.trim(), projectName.trim()].filter(Boolean).join(' ');
     return this.convergeGeneratedCollections(specId, name, preferredId);
+  }
+
+  async waitForGeneratedCollectionLinks(
+    specId: string,
+    collectionIds: string[]
+  ): Promise<void> {
+    const expected = new Set(collectionIds.map((id) => this.bareModelId(id)).filter(Boolean));
+    if (expected.size === 0) return;
+    let consecutive = 0;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const linked = new Set(
+        (await this.listGeneratedCollectionRefs(specId))
+          .map((entry) => this.bareModelId(entry.id))
+          .filter(Boolean)
+      );
+      if ([...expected].every((id) => linked.has(id))) {
+        consecutive += 1;
+        if (consecutive >= 2) return;
+      } else {
+        consecutive = 0;
+      }
+      if (attempt < 11) await this.sleep(1000);
+    }
+    throw new Error(
+      `CONTRACT_COLLECTION_LINK_NOT_STABLE: generated collections ${[...expected].join(', ')} did not stabilize on specification ${specId}`
+    );
   }
 
   /**
@@ -1422,7 +1453,9 @@ export class PostmanGatewayAssetsClient {
         if (!locked || lockedAttempt >= PostmanGatewayAssetsClient.GENERATION_LOCKED_MAX_RETRIES) {
           throw error;
         }
-        await this.sleep(5000 * Math.pow(2, lockedAttempt));
+        const delay = 5000 * Math.pow(2, lockedAttempt);
+        this.onRetry?.({ class: 'poll', status: error.status, attempt: lockedAttempt + 2, delay });
+        await this.sleep(delay);
         const adopted = adoptExactMatch(
           `generated-collection:${specId}:${finalName}`,
           await this.filterGeneratedCollectionsByExactName(
@@ -1460,6 +1493,7 @@ export class PostmanGatewayAssetsClient {
         ) {
           throw error;
         }
+        this.onRetry?.({ class: 'poll', status: error.status, attempt: attempt + 2, delay: 1000 });
         await this.sleep(1000);
       }
     }
@@ -1824,7 +1858,9 @@ export class PostmanGatewayAssetsClient {
         if (!retriable || attempt === maxAttempts - 1) {
           throw error;
         }
-        await this.sleep(fullJitterDelayMs(attempt, 300, 2000, this.random));
+        const delay = fullJitterDelayMs(attempt, 300, 2000, this.random);
+        this.onRetry?.({ class: 'poll', status: error.status, attempt: attempt + 2, delay });
+        await this.sleep(delay);
       }
     }
   }
@@ -2413,6 +2449,12 @@ export class PostmanGatewayAssetsClient {
             // already taken between the two reconciliation reads above.
             const retriable = error instanceof HttpError && error.status >= 500;
             if (!retriable || attempt === maxAttempts) throw error;
+            this.onRetry?.({
+              class: 'poll',
+              status: error instanceof HttpError ? error.status : undefined,
+              attempt: attempt + 1,
+              delay: 0
+            });
             continue;
           }
         }
@@ -2485,6 +2527,13 @@ export class PostmanGatewayAssetsClient {
         delayMs: 1000,
         backoffMultiplier: 2,
         maxDelayMs: 8000,
+        sleep: this.sleep,
+        onRetry: ({ attempt, delayMs, error }) => this.onRetry?.({
+          class: 'poll',
+          status: error instanceof HttpError ? error.status : undefined,
+          attempt: attempt + 1,
+          delay: delayMs
+        }),
         shouldRetry: (error) => error instanceof HttpError && error.status === 404
       }
     );
@@ -2742,6 +2791,12 @@ export class PostmanGatewayAssetsClient {
           backoffMultiplier: 2,
           maxDelayMs: 8000,
           sleep: this.sleep,
+          onRetry: ({ attempt, delayMs, error }) => this.onRetry?.({
+            class: 'poll',
+            status: error instanceof HttpError ? error.status : undefined,
+            attempt: attempt + 1,
+            delay: delayMs
+          }),
           shouldRetry: (error) => error instanceof HttpError && error.status === 404
         }
       );

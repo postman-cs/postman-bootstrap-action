@@ -232,6 +232,9 @@ These codes fail the run.
 | Error code | Meaning | Remediation |
 | --- | --- | --- |
 | `CONTRACT_COLLECTION_FORMAT_UNSUPPORTED` | A protocol collection builder returned a non-v3 format; only v3/Extensible Collections are created (access-token EC API). | File a bug; the builder must emit v3-ec. No v2 collection is ever created. |
+| `CONTRACT_COLLECTION_FANOUT_CLEANUP_FAILED` | A temporary spec or collection created for parallel OpenAPI generation could not be deleted after retries. | Delete only the emitted `[bootstrap-fanout:...]` resources, then rerun with `POSTMAN_COLLECTION_GENERATION_FANOUT=off`. |
+| `CONTRACT_COLLECTION_FANOUT_NAME_INVALID` | The run-owned temporary Spec Hub identity could not fit within the 255-character name limit. | Shorten the project name or run identity, then rerun. |
+| `CONTRACT_COLLECTION_LINK_NOT_STABLE` | Collections generated from temporary fan-out specs did not remain linked to the canonical specification for two consecutive readbacks. | Retry after Spec Hub propagation recovers, or rerun with `POSTMAN_COLLECTION_GENERATION_FANOUT=off`. |
 | `CONTRACT_COLLECTION_ID_COLLISION` | Baseline, smoke, and contract IDs were not pairwise distinct. | Pass distinct collection IDs or clear stale IDs. |
 | `CONTRACT_MULTI_FILE_SPEC_SYNC_DISABLED` | `POSTMAN_MULTI_FILE_SPEC_SYNC=off` blocked a multi-file Spec Hub sync before mutation. | Unset the kill switch, or provide a single-file definition. Single-file runs ignore the switch. |
 | `CONTRACT_PLAN_MISSING` | Contract instrumentation ran without a preflight-generated contract plan. | Rerun with dynamic contract preflight enabled and report the failure if it persists. |

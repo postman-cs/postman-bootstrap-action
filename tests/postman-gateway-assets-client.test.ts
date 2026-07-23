@@ -649,6 +649,29 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.some((call) => call.service === 'collection')).toBe(false);
     });
 
+    it('requires two consecutive canonical relation observations before link transfer is stable', async () => {
+      const collectionUid = '132319-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+      let reads = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
+          reads += 1;
+          return jsonResponse({
+            data: reads === 1 ? [] : [{ collection: collectionUid, name: '[Smoke] Telecom' }]
+          });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(
+        client.waitForGeneratedCollectionLinks('spec-1', [collectionUid])
+      ).resolves.toBeUndefined();
+      expect(
+        calls.filter(
+          (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
+        )
+      ).toHaveLength(3);
+    });
+
     it('posts generate, polls the task to completion, and resolves the collection uid', async () => {
       let polls = 0;
       let posted = false;

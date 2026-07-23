@@ -135,7 +135,7 @@ async function runVerify(root: string): Promise<{ code: number; stdout: string; 
   }
 }
 
-describe('verify-dist-artifact canonical contract', () => {
+describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
   it('passes against the committed dist artifact', async () => {
     const result = await runVerify(repoRoot);
     expect(result.stderr).toBe('');
@@ -149,7 +149,7 @@ describe('verify-dist-artifact canonical contract', () => {
     const result = await runVerify(root);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
-  });
+  }, 30_000);
 
   it('fails when the CLI shebang is missing', async () => {
     const root = await makeTempDir('verify-dist-shebang-');

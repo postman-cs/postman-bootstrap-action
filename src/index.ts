@@ -330,7 +330,7 @@ export interface BootstrapExecutionDependencies {
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
       workspaceId: string,
-      finalNames: string[]
+      candidates: Array<{ finalName: string; desiredDescription: string }>
     ): Promise<Record<string, string>>;
   };
   ecClient?: Pick<
@@ -3154,15 +3154,19 @@ async function runBootstrapInner(
         if (
           importCount > 0 &&
           dependencies.postman.reconcileDuplicateFinalCollections &&
-          workspaceId
+          workspaceId &&
+          collectionBranchMarker
         ) {
-          const importedFinalNames = collectionRoles
+          const importedFinals = collectionRoles
             .filter((role) => fulfilledByRole.get(role.role)?.kind === 'import')
-            .map((role) => roleNames[role.role]);
+            .map((role) => ({
+              finalName: roleNames[role.role],
+              desiredDescription: collectionBranchMarker
+            }));
           try {
             const winners = await dependencies.postman.reconcileDuplicateFinalCollections(
               workspaceId,
-              importedFinalNames
+              importedFinals
             );
             for (const role of collectionRoles) {
               const result = fulfilledByRole.get(role.role);
@@ -3806,8 +3810,8 @@ export function createRoutingPostmanClient(options: {
       gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
       gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
-    reconcileDuplicateFinalCollections: (workspaceId, finalNames) =>
-      gateway.reconcileDuplicateFinalCollections(workspaceId, finalNames)
+    reconcileDuplicateFinalCollections: (workspaceId, candidates) =>
+      gateway.reconcileDuplicateFinalCollections(workspaceId, candidates)
   };
 }
 

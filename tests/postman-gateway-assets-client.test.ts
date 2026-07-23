@@ -4796,12 +4796,17 @@ describe('PostmanGatewayAssetsClient', () => {
     });
 
 
-    it('reconcileDuplicateFinalCollections keeps lowest UID and deletes higher duplicates', async () => {
+    it('reconcileDuplicateFinalCollections keeps the lowest same-marker UID only', async () => {
       const low = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
       const high = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const stranger = '400-dddddddd-dddd-dddd-dddd-dddddddddddd';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const otherMarker = marker.replace('feature/x', 'feature/y').replace('feature-x', 'feature-y');
       const entries = [
-        { id: high, name: 'Payments @feature-x' },
-        { id: low, name: 'Payments @feature-x' },
+        { id: high, name: 'Payments @feature-x', description: marker },
+        { id: low, name: 'Payments @feature-x', description: marker },
+        { id: stranger, name: 'Payments @feature-x', description: otherMarker },
         { id: '200-cccccccc-cccc-cccc-cccc-cccccccccccc', name: 'Other' }
       ];
       const deleted: string[] = [];
@@ -4831,15 +4836,60 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       const winners = await client.reconcileDuplicateFinalCollections('ws-1', [
-        'Payments @feature-x',
-        'Missing'
+        { finalName: 'Payments @feature-x', desiredDescription: marker },
+        { finalName: 'Missing', desiredDescription: marker }
       ]);
       expect(winners).toEqual({ 'Payments @feature-x': low });
       expect(deleted).toEqual([`/v3/collections/${high.slice(4)}`]);
       expect(entries.map((e) => e.id).sort()).toEqual([
         '200-cccccccc-cccc-cccc-cccc-cccccccccccc',
-        low
+        low,
+        stranger
       ].sort());
+    });
+
+    it('reconcileDuplicateFinalCollections ignores canonical and unmarked exact-name collections', async () => {
+      const entries = [
+        { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: 'Payments' },
+        { id: '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: 'Payments' }
+      ];
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-1', [
+          { finalName: 'Payments', desiredDescription: '' }
+        ])
+      ).resolves.toEqual({});
+      expect(deleted).toEqual([]);
+      expect(entries).toHaveLength(2);
+    });
+
+    it('deleteVerifiedRunOwnedCollections accepts DELETE 500 only after absence is proven', async () => {
+      const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+      let rootReads = 0;
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'delete') {
+          return jsonResponse({ error: 'GENERIC_ERROR' }, { status: 500 });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith(id)) {
+          rootReads += 1;
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ data: [] });
+      });
+
+      await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).resolves.toBeUndefined();
+      expect(rootReads).toBe(1);
     });
 
     it('deleteVerifiedRunOwnedCollections fails closed when absence is only HTTP 500', async () => {

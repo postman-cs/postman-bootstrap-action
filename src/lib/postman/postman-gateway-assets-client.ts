@@ -13,6 +13,7 @@ import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
 import { AccessTokenGatewayClient, type RetryEvent } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
+import { normalizeCollectionModelIdentity } from './collection-model-identity.js';
 import {
   assertSupportedLocalViewContract,
   normalizeLocalViewScriptType
@@ -62,9 +63,6 @@ function asRecord(value: unknown): JsonRecord | null {
  * A 400 from a JSON-Patch remove whose target no longer exists — the signature
  * of a retried PATCH whose first attempt actually committed downstream.
  */
-const BOOTSTRAP_BARE_UUID_RE =
-  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-
 function isMissingPatchValueError(error: unknown): boolean {
   return (
     error instanceof HttpError &&
@@ -1810,13 +1808,7 @@ export class PostmanGatewayAssetsClient {
    * rejected here in favour of an anchored `<digits>-<uuid>` match.
    */
   private bareModelId(uid: string): string {
-    const u = String(uid ?? '').trim();
-    // A bare UUID already IS the model id, and it contains hyphens — splitting on
-    // the first hyphen would corrupt it (dropping its first segment). Guard that
-    // case; for a full `<owner>-<uuid>` public uid the owner is a single
-    // hyphenless segment, so stripping up to the first hyphen yields the uuid.
-    if (BOOTSTRAP_BARE_UUID_RE.test(u)) return u;
-    return u.includes('-') ? u.slice(u.indexOf('-') + 1) : u;
+    return normalizeCollectionModelIdentity(uid);
   }
 
   /**
@@ -2676,6 +2668,16 @@ export class PostmanGatewayAssetsClient {
     name: string,
     retryPolicy?: 'safe' | 'none'
   ): Promise<Array<{ id: string; name: string }>> {
+    const entries = await this.listWorkspaceCollections(workspaceId, retryPolicy);
+    return entries
+      .filter((value) => value.name === name)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  private async listWorkspaceCollections(
+    workspaceId: string,
+    retryPolicy?: 'safe' | 'none'
+  ): Promise<Array<{ id: string; name: string }>> {
     const response = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
       method: 'get',
@@ -2690,7 +2692,7 @@ export class PostmanGatewayAssetsClient {
         id: String(value.id ?? value.uid ?? '').trim(),
         name: String(value.name ?? value.title ?? '').trim()
       }))
-      .filter((value) => value.id && value.name === name)
+      .filter((value) => value.id)
       .sort((a, b) => a.id.localeCompare(b.id));
   }
 
@@ -2897,6 +2899,13 @@ export class PostmanGatewayAssetsClient {
       }
     };
 
+    // The pre-mutation snapshot is part of the safety boundary. If it cannot be
+    // read without hidden retry, no unsafe import is attempted.
+    const staleFinalIdentities = new Set(
+      (await this.findCollectionsByExactName(workspaceId, desiredName, 'none'))
+        .map((entry) => normalizeCollectionModelIdentity(entry.id))
+    );
+
     let created: JsonRecord | null;
     try {
       created = await this.gateway.requestJson<JsonRecord>({
@@ -2935,7 +2944,7 @@ export class PostmanGatewayAssetsClient {
         workspaceId,
         desiredName,
         rawId,
-        tempName
+        staleFinalIdentities
       );
       const rawBare = this.bareModelId(rawId);
       const electedBare = this.bareModelId(electedId);
@@ -3118,59 +3127,50 @@ export class PostmanGatewayAssetsClient {
     workspaceId: string,
     finalName: string,
     preferredId: string,
-    tempName: string
+    staleFinalIdentities: ReadonlySet<string>
   ): Promise<string> {
-    const tempPrefix = `${finalName} [bootstrap:`;
-    const listSameIdentity = async () => {
-      const finals = await this.findCollectionsByExactName(workspaceId, finalName, 'none');
-      const temps = (await this.findCollectionsByExactName(workspaceId, tempName, 'none')).filter(
-        (entry) => entry.name.startsWith(tempPrefix)
+    const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
+    const delays = [250, 500, 750, 1000, 1250] as const;
+    let eligible: Array<{ id: string; name: string }> = [];
+    let ownCanonical: { id: string; name: string } | undefined;
+
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      const inventory = await this.listWorkspaceCollections(workspaceId, 'none');
+      eligible = inventory
+        .filter((entry) => entry.name === finalName)
+        .filter(
+          (entry) => !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
+        )
+        .sort((a, b) => a.id.localeCompare(b.id));
+      ownCanonical = eligible.find(
+        (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
       );
-      const byId = new Map<string, { id: string; name: string }>();
-      for (const entry of [...finals, ...temps]) {
-        byId.set(entry.id, entry);
-      }
-      return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
-    };
-
-    let sameIdentity = await listSameIdentity();
-    if (sameIdentity.length === 0) return preferredId;
-    if (sameIdentity.length === 1) {
-      await this.sleep(1000);
-      sameIdentity = await listSameIdentity();
-      if (sameIdentity.length === 0) return preferredId;
+      if (ownCanonical) break;
+      if (observation < delays.length) await this.sleep(delays[observation]!);
     }
 
-    const winner = sameIdentity[0]!;
-    if (winner.name !== finalName) {
-      await this.renameGeneratedCollection(winner.id, finalName);
+    if (!ownCanonical) {
+      throw new Error(
+        `Imported collection did not become inventory-visible with canonical identity`
+      );
     }
 
-    const preferredBare = this.bareModelId(preferredId);
-    const winnerBare = this.bareModelId(winner.id);
-    if (preferredId && preferredBare && preferredBare !== winnerBare) {
+    const winner = eligible[0]!;
+
+    const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
+    if (preferredIdentity !== winnerIdentity) {
       // True peer won: delete only the run-owned root (match by bare model id).
-      const own = sameIdentity.find((entry) => this.bareModelId(entry.id) === preferredBare);
-      if (own) {
-        try {
-          await this.deleteCollection(own.id);
-        } catch (error) {
-          if (!(error instanceof HttpError && error.status === 404)) throw error;
-        }
+      try {
+        await this.deleteCollection(ownCanonical.id);
+      } catch (error) {
+        if (!(error instanceof HttpError && error.status === 404)) throw error;
       }
       return winner.id;
     }
 
-    // Same root (bare Sync model_id vs canonical <owner>-<model_id>): keep owned
-    // journal identity as the canonical workspace UID — do not self-delete.
-    if (sameIdentity.length > 1) {
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        await this.sleep(250 * (attempt + 1));
-        sameIdentity = await listSameIdentity();
-        if (sameIdentity.length <= 1) break;
-      }
-    }
-    return winner.id;
+    // Same root (bare Sync model_id vs canonical <owner>-<model_id>): return the
+    // inventory UID so downstream tagging and relation writes never see bare id.
+    return ownCanonical.id;
   }
 
   private async exportCollectionAsV21(collectionUid: string): Promise<JsonRecord> {

@@ -175,6 +175,37 @@ type WorkflowPair = {
 
 // Preview asset names use `@branch` suffixes (e.g. `Payments @feature-x`).
 const SAFE_COLLECTION_NAME = /^[A-Za-z0-9._@[\] -]+$/;
+const MAX_COLLECTION_NAME_LENGTH = 160;
+const LOSSY_NAME_DIGEST_LENGTH = 12;
+
+/**
+ * Derive a stable filesystem/resource-key segment without changing the Postman
+ * display name. Already-safe names are identity-preserving; lossy names carry a
+ * digest of the original so distinct display names cannot collapse together.
+ */
+export function deriveArtifactSafeCollectionName(displayName: string): string {
+  const original = String(displayName ?? '');
+  const trimmed = original.trim();
+  if (trimmed && trimmed.length <= MAX_COLLECTION_NAME_LENGTH && SAFE_COLLECTION_NAME.test(trimmed)) {
+    return trimmed;
+  }
+
+  const digest = createHash('sha256').update(original).digest('hex').slice(0, LOSSY_NAME_DIGEST_LENGTH);
+  const suffix = `-${digest}`;
+  const stem = trimmed
+    .replace(/[^A-Za-z0-9._@[\] -]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[ ._-]+|[ ._-]+$/g, '')
+    .slice(0, MAX_COLLECTION_NAME_LENGTH - suffix.length)
+    .replace(/[ ._-]+$/g, '');
+  const derived = `${stem}${suffix}`;
+  if (!stem || derived.length > MAX_COLLECTION_NAME_LENGTH || !SAFE_COLLECTION_NAME.test(derived)) {
+    throw new LocalCollectionArtifactsError(
+      `displayName cannot produce a safe collection segment; received ${displayName}`
+    );
+  }
+  return derived;
+}
 
 function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];

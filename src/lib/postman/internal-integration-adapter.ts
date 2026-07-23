@@ -6,6 +6,7 @@ import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { adviseFromHttpError, type ErrorAdviceContext } from './error-advice.js';
 import type { AccessTokenProvider } from './token-provider.js';
 import { postmanAppVersionProvider, type AppVersionProvider } from './app-version.js';
+import { normalizeCollectionModelIdentity } from './collection-model-identity.js';
 
 export type InternalIntegrationBackend = 'bifrost';
 
@@ -595,11 +596,26 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         'LOCAL_OPENAPI_LINK_READBACK_FAILED: relation settle requires at least one expected collection id'
       );
     }
+    const expectedByIdentity = new Map<string, string>();
+    for (const id of expected) {
+      const identity = normalizeCollectionModelIdentity(id);
+      const prior = expectedByIdentity.get(identity);
+      if (prior && prior !== id) {
+        throw new Error(
+          `LOCAL_OPENAPI_LINK_READBACK_FAILED: expected collection identity collision; ids=${prior},${id}`
+        );
+      }
+      expectedByIdentity.set(identity, id);
+    }
 
     const formatObserved = (relations: SpecificationCollectionRelation[]): string =>
       expected
         .map((id) => {
-          const row = relations.find((entry) => entry.collectionId === id);
+          const identity = normalizeCollectionModelIdentity(id);
+          const candidates = relations.filter(
+            (entry) => normalizeCollectionModelIdentity(entry.collectionId) === identity
+          );
+          const row = candidates.find((entry) => entry.collectionId === id) ?? candidates[0];
           if (!row) return `${id}:missing`;
           const state = row.state || '<empty>';
           const options = row.options && typeof row.options === 'object' && !Array.isArray(row.options)
@@ -635,11 +651,19 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         await this.sleep(BifrostInternalIntegrationAdapter.RELATION_SETTLE_DELAY_MS);
       }
       lastRelations = await this.listSpecificationCollectionRelations(specificationId);
-      const byId = new Map(
-        lastRelations
-          .filter((row) => expected.includes(row.collectionId))
-          .map((row) => [row.collectionId, row] as const)
-      );
+      const byId = new Map<string, SpecificationCollectionRelation>();
+      for (const [identity, expectedId] of expectedByIdentity) {
+        const candidates = lastRelations.filter(
+          (row) => normalizeCollectionModelIdentity(row.collectionId) === identity
+        );
+        if (candidates.length > 1) {
+          throw new Error(
+            `LOCAL_OPENAPI_LINK_READBACK_FAILED: observed collection identity collision; id=${expectedId}`
+          );
+        }
+        const row = candidates.find((candidate) => candidate.collectionId === expectedId) ?? candidates[0];
+        if (row) byId.set(expectedId, row);
+      }
 
       // Fail closed immediately on present-but-invalid rows (unknown/error state
       // or missing options objects). Keep polling only for missing propagation.
@@ -660,7 +684,10 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       }
 
       if (expected.every((id) => isCompleteRelation(byId.get(id)))) {
-        return { relations: lastRelations, attempts: attempt };
+        return {
+          relations: expected.map((id) => ({ ...byId.get(id)!, collectionId: id })),
+          attempts: attempt
+        };
       }
     }
 

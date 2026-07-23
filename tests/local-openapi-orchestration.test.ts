@@ -661,6 +661,68 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
+  it('separates unsafe display names from artifact identity and reuses safe resource paths', async () => {
+    await withRepo(async (repoRoot) => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const internalIntegration = buildIntegration(events);
+      let durableState: Record<string, unknown> | null = null;
+      const resourcesState = {
+        read: () => durableState as never,
+        write: (state: Record<string, unknown>) => {
+          durableState = structuredClone(state);
+        }
+      };
+      const inputs = createInputs({ projectName: 'Payments:A', workspaceId: 'ws-1' });
+
+      await runBootstrap(inputs, {
+        core,
+        exec: createExecStub(),
+        io: { which: async () => 'tool' },
+        internalIntegration,
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState,
+        specFetcher: vi.fn()
+      });
+
+      const imports = postman.importV2Collection.mock.calls as Array<[string, JsonRecord, string]>;
+      expect(imports.map((call) => call[2])).toEqual([
+        'Payments:A',
+        '[Smoke] Payments:A',
+        '[Contract] Payments:A'
+      ]);
+      expect(imports.map((call) => (call[1].info as JsonRecord).name)).toEqual([
+        'Payments:A',
+        '[Smoke] Payments:A',
+        '[Contract] Payments:A'
+      ]);
+      const persisted = durableState as { cloudResources?: { collections?: JsonRecord } } | null;
+      const collectionPaths = Object.keys(persisted?.cloudResources?.collections ?? {});
+      expect(collectionPaths).toHaveLength(3);
+      expect(collectionPaths.every((entry) => !entry.includes(':'))).toBe(true);
+      const manifest = JSON.parse(
+        await readFile(path.join(repoRoot, '.postman/local-openapi-artifact-manifest.json'), 'utf8')
+      ) as { collections: Array<{ collectionPath: string }> };
+      expect(manifest.collections.every((entry) => !entry.collectionPath.includes(':'))).toBe(true);
+      expect(manifest.collections.map((entry) => `../${entry.collectionPath}`).sort()).toEqual(
+        collectionPaths.sort()
+      );
+
+      await runBootstrap(createInputs({ projectName: 'Payments:A' }), {
+        core,
+        exec: createExecStub(),
+        io: { which: async () => 'tool' },
+        internalIntegration,
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState,
+        specFetcher: vi.fn()
+      });
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+    });
+  });
+
   it('surfaces sanitized failure ledger and cleans only owned import roots', async () => {
     await withRepo(async () => {
       const events: string[] = [];

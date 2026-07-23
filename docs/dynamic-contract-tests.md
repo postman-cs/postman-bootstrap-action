@@ -14,12 +14,13 @@ This page documents the runtime layer: the `pm.test()` scripts that execute agai
 
 2. **Validate and normalize the bundled spec**
    - The bundled OpenAPI document is validated with external and file resolution disabled.
-   - External refs are bundled, then operation summaries are normalized before Spec Hub upload.
+   - External refs are bundled, then operation summaries are normalized. This bundled compatibility document is the single input for validation, contract indexing, and local collection conversion.
    - The loader builds a contract index from `paths` operations, responses, request requirements, response headers, schema content, server/path candidates, and warning conditions.
 
 3. **Upload or update the Spec Hub spec**
-   - Fresh runs upload the canonical bundled spec.
-   - Reruns with `spec-id` update the existing spec with the same canonical bundled document used for validation and contract indexing, after capturing the previous content hash for rollback.
+   - Fresh runs normally upload the canonical bundled spec.
+   - In `preserve-oas30-type-null` mode only, Spec Hub receives the original source bytes as its representation while the bundled compatibility document still drives validation, indexing, and local conversion.
+   - Reruns with `spec-id` capture the previous content hash for rollback before updating the selected upload representation.
 
 4. **Generate baseline, smoke, and contract collections**
     - Local OpenAPI conversion builds role payloads; collections are imported or deep-updated against the uploaded Spec Hub UID via linking.

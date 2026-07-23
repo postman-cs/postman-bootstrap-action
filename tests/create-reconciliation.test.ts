@@ -474,6 +474,9 @@ describe('Wave 2 create reconciliation', () => {
   });
 
   describe('additional collection root and item seams', () => {
+    const collectionModelId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const collectionUid = `55363555-${collectionModelId}`;
+
     it('discovers and reconciles one final-name collection before randomized create', async () => {
       let createPosts = 0;
       const { client } = makeGatewayAssetsClient((env) => {
@@ -623,7 +626,7 @@ describe('Wave 2 create reconciliation', () => {
       let itemPosts = 0;
       const { client } = makeGatewayAssetsClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
-          return jsonResponse({ data: { id: '55363555-root' } }, { status: 201 });
+          return jsonResponse({ data: { id: collectionUid } }, { status: 201 });
         }
         if (env.method === 'post' && env.path.includes('/items/')) {
           itemPosts += 1;
@@ -638,7 +641,7 @@ describe('Wave 2 create reconciliation', () => {
               id: 'item-adopted',
               $kind: 'http-request',
               name: 'GET /curated',
-              position: { parent: { id: 'root' } }
+              position: { parent: { id: collectionModelId } }
             }]
           });
         }
@@ -649,7 +652,7 @@ describe('Wave 2 create reconciliation', () => {
       });
 
       const id = await client.createCollection('ws-1', createCuratedCollection('Payments curated'));
-      expect(id).toBe('55363555-root');
+      expect(id).toBe(collectionUid);
       expect(itemPosts).toBe(1);
     });
 
@@ -657,7 +660,7 @@ describe('Wave 2 create reconciliation', () => {
       let itemPosts = 0;
       const { client } = makeGatewayAssetsClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
-          return jsonResponse({ data: { id: '55363555-root' } }, { status: 201 });
+          return jsonResponse({ data: { id: collectionUid } }, { status: 201 });
         }
         if (env.method === 'post' && env.path.includes('/items/')) {
           itemPosts += 1;
@@ -665,7 +668,15 @@ describe('Wave 2 create reconciliation', () => {
         }
         if (env.method === 'get' && env.path.endsWith('/items/')) {
           return jsonResponse({
-            data: [{ id: 'item-other', $kind: 'http-request', name: 'GET /curated' }]
+            data: [
+              { id: 'item-missing-parent', $kind: 'http-request', name: 'GET /curated' },
+              {
+                id: 'item-wrong-parent',
+                $kind: 'http-request',
+                name: 'GET /curated',
+                position: { parent: { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' } }
+              }
+            ]
           });
         }
         return jsonResponse({ data: {} });

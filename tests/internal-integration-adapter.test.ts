@@ -481,6 +481,70 @@ describe('internal integration adapter', () => {
     expect(sleep).toHaveBeenCalledTimes(11);
   });
 
+  it('settles bare/full/mixed collection identities and restores expected UIDs', async () => {
+    const a = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const b = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const expected = [`123-${a}`, b, `456-cccccccc-cccc-cccc-cccc-cccccccccccc`];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      data: [
+        { collection: a, state: 'in-sync', options: {}, syncOptions: {} },
+        { collection: `999-${b}`, state: 'out-of-sync', options: {}, syncOptions: {} },
+        { collection: expected[2], state: 'in-sync', options: {}, syncOptions: {} }
+      ]
+    }));
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost', accessToken: 'token', teamId: '1', fetchImpl
+    });
+
+    const settled = await adapter.settleSpecificationCollectionRelations!('spec', expected);
+    expect(settled.relations.map((row) => row.collectionId)).toEqual(expected);
+    expect(settled.attempts).toBe(1);
+  });
+
+  it('fails before reading when expected collection identities collide', async () => {
+    const uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const fetchImpl = vi.fn<typeof fetch>();
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost', accessToken: 'token', teamId: '1', fetchImpl
+    });
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec', [uuid, `123-${uuid}`])
+    ).rejects.toThrow(/expected collection identity collision/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when multiple observed rows map to one expected identity', async () => {
+    const uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      data: [
+        { collection: uuid, state: 'in-sync', options: {}, syncOptions: {} },
+        { collection: `123-${uuid}`, state: 'in-sync', options: {}, syncOptions: {} }
+      ]
+    }));
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost', accessToken: 'token', teamId: '1', fetchImpl
+    });
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec', [`123-${uuid}`])
+    ).rejects.toThrow(/observed collection identity collision/);
+  });
+
+  it('does not false-match arbitrary prefixed aliases to a bare UUID', async () => {
+    const uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      data: [{ collection: `owner-${uuid}`, state: 'in-sync', options: {}, syncOptions: {} }]
+    }));
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost', accessToken: 'token', teamId: '1', fetchImpl, sleep
+    });
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec', [uuid])
+    ).rejects.toThrow(/timed out after 12 attempts/);
+    expect(fetchImpl).toHaveBeenCalledTimes(12);
+    expect(sleep).toHaveBeenCalledTimes(11);
+  });
+
   it('routes specification collection sync through the Bifrost proxy', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({ data: { taskId: 'task-1' } })

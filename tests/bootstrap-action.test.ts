@@ -774,14 +774,12 @@ describe('bootstrap action', () => {
     }
   });
 
-  it('uploads the original OpenAPI 3.0 bytes in type null compatibility mode', async () => {
+  it('uploads original preserve-mode bytes while local conversion consumes the bundled compatibility document', async () => {
     const source = `openapi: 3.0.3
 info: { title: Nullable Test, version: 1.0.0 }
 paths:
-  /ping:
-    get:
-      responses:
-        '200': { description: OK }
+  /referenced:
+    $ref: 'https://example.test/path-item.yaml#/PathItem'
 components:
   schemas:
     Criteria:
@@ -792,10 +790,27 @@ components:
             - type: string
             - type: 'null'
 `;
+    const external = `PathItem:
+  get:
+    operationId: getReferenced
+    responses:
+      '200':
+        description: OK
+        content:
+          application/json:
+            schema:
+              $ref: 'https://example.test/openapi.yaml#/components/schemas/Criteria'
+`;
     const postman = createRollbackPostman({
       uploadSpec: vi.fn().mockResolvedValue('spec-nullable')
     });
     const execStub = createExecStub();
+    const specFetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === 'https://example.test/openapi.yaml') return new Response(source, { status: 200 });
+      if (url === 'https://example.test/path-item.yaml') return new Response(external, { status: 200 });
+      throw new Error(`unexpected converter/fallback fetch ${url}`);
+    });
 
     const result = await runBootstrap(
       createInputs({
@@ -808,7 +823,7 @@ components:
         internalIntegration: createRollbackIntegration(),
         io: createIoStub(),
         postman: withContractHelpers(postman),
-        specFetcher: vi.fn<typeof fetch>().mockResolvedValue(new Response(source, { status: 200 }))
+        specFetcher
       }
     );
 
@@ -824,6 +839,15 @@ components:
         reason: 'bootstrap does not invoke the Postman CLI lint'
       })
     );
+    expect(specFetcher.mock.calls.map(([input]) => String(input))).toEqual([
+      'https://example.test/openapi.yaml',
+      'https://example.test/path-item.yaml'
+    ]);
+    expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+    for (const [, collection] of postman.importV2Collection.mock.calls) {
+      expect(JSON.stringify(collection)).toContain('referenced');
+      expect(JSON.stringify(collection)).toContain('getReferenced');
+    }
     expect(execStub.getExecOutput).not.toHaveBeenCalled();
   });
 
@@ -922,9 +946,8 @@ components:
 
         expect(postman.createCollection).toHaveBeenCalled();
         expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalled();
-        // Local OpenAPI persists imported IDs before link; additional-collection
-        // sync itself uses a no-op writer. Ensure at least one pre-link write
-        // recorded OpenAPI collection IDs without treating the failed link as success.
+        // Workspace identity may persist before imports, but newly imported
+        // OpenAPI IDs must not become durable until link/readback/tags succeed.
         expect(writes.length).toBeGreaterThan(0);
         const hasOpenApiCollections = writes.some((state) => {
           const cloud = (state.cloudResources ?? state.canonical) as
@@ -932,7 +955,7 @@ components:
             | undefined;
           return Object.keys(cloud?.collections ?? {}).length === 3;
         });
-        expect(hasOpenApiCollections).toBe(true);
+        expect(hasOpenApiCollections).toBe(false);
       });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -3075,8 +3098,23 @@ paths:
     });
     const internalIntegration = createRollbackIntegration();
 
+    const priorState = {
+      workspace: { id: 'ws-existing' },
+      cloudResources: {
+        specs: { 'spec-url:https://example.test/openapi.yaml': 'spec-prior' },
+        collections: { '../postman/collections/prior': 'col-prior' }
+      }
+    };
+    const writes: Array<Record<string, unknown>> = [];
     await expect(
-      runExistingSpecBootstrap(postman, { core, internalIntegration })
+      runExistingSpecBootstrap(postman, {
+        core,
+        internalIntegration,
+        resourcesState: {
+          read: () => structuredClone(priorState),
+          write: (state) => writes.push(structuredClone(state) as Record<string, unknown>)
+        }
+      })
     ).rejects.toThrow('tag after link failed');
 
     expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
@@ -3091,6 +3129,10 @@ paths:
     expect(sideEffectWarning).toContain('cause: tag after link failed');
     expect(sideEffectWarning).toContain('Remediation: inspect and reconcile');
     expect(sideEffectWarning).not.toMatch(/[\r\n\u2028\u2029]/);
+    expect(writes).not.toHaveLength(0);
+    for (const state of writes) {
+      expect(state).toEqual(priorState);
+    }
   });
 
   it('version mode reuses the current ref resources.yaml mappings instead of a release manifest', async () => {

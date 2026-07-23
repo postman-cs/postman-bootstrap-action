@@ -55,6 +55,7 @@ import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-sele
 import { detectRepoContext } from './lib/repo/context.js';
 import {
   finalizeLocalOpenApiArtifactManifest,
+  deriveArtifactSafeCollectionName,
   materializeLocalCollectionArtifacts,
   persistLocalOpenApiArtifactManifest,
   type MaterializeLocalCollectionArtifactsResult
@@ -2213,6 +2214,7 @@ async function runBootstrapInner(
       : inputs.collectionSyncMode === 'version'
       ? createAssetProjectName(inputs, releaseLabel)
       : inputs.projectName;
+  const artifactProjectName = deriveArtifactSafeCollectionName(collectionAssetProjectName);
 
   // Validated before any side effect (CLI install, spec upload, workspace
   // create, ...): an invalid additional-collections-dir must fail fast, not
@@ -2266,6 +2268,7 @@ async function runBootstrapInner(
   let sourceSpecContent = '';
   let sourceTypeNullPaths: string[] = [];
   let preserveSourceSpecBytes = false;
+  let bundledCompatibilitySpecContent = '';
   let sourceDefinitionBundle: DefinitionBundle | undefined;
   let uploadDefinitionBundle: DefinitionBundle | undefined;
 
@@ -2367,6 +2370,7 @@ async function runBootstrapInner(
       const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
         dependencies.core.warning(msg)
       );
+      bundledCompatibilitySpecContent = document;
       contractIndex = buildContractIndex(parseOpenApiDocument(document));
       const incomingSpecType = normalizeSpecTypeFromContent(document);
       detectedOpenapiVersion = incomingSpecType.replace('OPENAPI:', '') as '3.0' | '3.1';
@@ -2517,7 +2521,7 @@ async function runBootstrapInner(
   if (!baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
-      (filePath) => matchesBaselineCollectionResource(filePath, collectionAssetProjectName)
+      (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
     );
     if (baselineCollectionId) {
       dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
@@ -2529,7 +2533,7 @@ async function runBootstrapInner(
       (filePath) => matchesPrefixedCollectionResource(
         filePath,
         SMOKE_COLLECTION_PREFIX,
-        collectionAssetProjectName
+        artifactProjectName
       )
     );
     if (smokeCollectionId) {
@@ -2542,7 +2546,7 @@ async function runBootstrapInner(
       (filePath) => matchesPrefixedCollectionResource(
         filePath,
         CONTRACT_COLLECTION_PREFIX,
-        collectionAssetProjectName
+        artifactProjectName
       )
     );
     if (contractCollectionId) {
@@ -2848,6 +2852,7 @@ async function runBootstrapInner(
         }
 
         const roleNames = {} as Record<CollectionRole, string>;
+        const artifactRoleNames = {} as Record<CollectionRole, string>;
         for (const role of collectionRoles) {
           const effectivePrefix =
             branchDecision.tier === 'channel' && branchDecision.channel
@@ -2859,6 +2864,10 @@ async function runBootstrapInner(
             .join(' ')
             .replace(/[\r\n\u2028\u2029]+/g, ' ')
             .replace(/\s+/g, ' ')
+            .trim();
+          artifactRoleNames[role.role] = [effectivePrefix, artifactProjectName]
+            .filter(Boolean)
+            .join(' ')
             .trim();
         }
 
@@ -2922,7 +2931,7 @@ async function runBootstrapInner(
         const conversionStarted = Date.now();
         try {
           counts.localConversion += 1;
-          payloads = await generateLocalOpenApiRolePayloads(specContent, conversionOptions);
+          payloads = await generateLocalOpenApiRolePayloads(bundledCompatibilitySpecContent, conversionOptions);
           conversionMs = Math.max(0, Date.now() - conversionStarted);
         } catch (error) {
           await failOwned('local-conversion', error);
@@ -2941,7 +2950,7 @@ async function runBootstrapInner(
             runTempDir,
             roles: collectionRoles.map((role) => ({
               role: role.role,
-              collectionName: roleNames[role.role],
+              collectionName: artifactRoleNames[role.role],
               collection: payloads.roles[role.role].collection,
               payloadDigest: payloads.roles[role.role].payloadDigest
             })),
@@ -3054,17 +3063,6 @@ async function runBootstrapInner(
           );
         }
 
-        // Persist returned IDs before canonical link calls.
-        recordCurrentBootstrapResources({
-          assetProjectName,
-          inputs,
-          outputs,
-          persistWorkspaceId,
-          releaseLabel,
-          resourcesState: writableResourcesState
-        });
-        stateStore.write(writableResourcesState);
-
         const finalized = finalizeLocalOpenApiArtifactManifest(materialized.manifest, {
           baseline: outputs['baseline-collection-id'],
           smoke: outputs['smoke-collection-id'],
@@ -3105,15 +3103,6 @@ async function runBootstrapInner(
     )
   );
 
-  recordCurrentBootstrapResources({
-    assetProjectName: collectionAssetProjectName,
-    inputs,
-    outputs,
-    persistWorkspaceId,
-    releaseLabel,
-    resourcesState: writableResourcesState
-  });
-
   outputs['collections-json'] = JSON.stringify({
     baseline: outputs['baseline-collection-id'],
     contract: outputs['contract-collection-id'],
@@ -3134,14 +3123,6 @@ async function runBootstrapInner(
         dependencies.core,
         'Sync Additional Collections',
         async () => {
-          recordCurrentBootstrapResources({
-            assetProjectName: collectionAssetProjectName,
-            inputs,
-            outputs,
-            persistWorkspaceId,
-            releaseLabel,
-            resourcesState: writableResourcesState
-          });
           const additionalResults = await syncAdditionalCollections({
             collectionFiles: additionalCollections,
             core: dependencies.core,
@@ -3347,7 +3328,7 @@ async function runBootstrapInner(
   // Persist spec-id + collection resources only after verified linking.
   // generation/linking succeed. Workspace-only state was written earlier.
   recordCurrentBootstrapResources({
-    assetProjectName: collectionAssetProjectName,
+    assetProjectName: artifactProjectName,
     inputs,
     outputs,
     persistWorkspaceId,

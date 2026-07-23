@@ -14,6 +14,7 @@ import {
   computeArtifactDigest,
   confineEmittedRelativePath,
   confineRepoRelativePath,
+  deriveArtifactSafeCollectionName,
   finalizeLocalOpenApiArtifactManifest,
   materializeLocalCollectionArtifacts,
   persistLocalOpenApiArtifactManifest,
@@ -120,6 +121,16 @@ function harmlessSplitter(): CollectionSplitter {
 }
 
 describe('local collection artifacts', () => {
+  it('derives deterministic collision-safe artifact names while preserving safe names exactly', () => {
+    expect(deriveArtifactSafeCollectionName('Payments API')).toBe('Payments API');
+    const colon = deriveArtifactSafeCollectionName('Payments:A');
+    const dash = deriveArtifactSafeCollectionName('Payments-A');
+    expect(colon).toMatch(/^[A-Za-z0-9._@[\] -]+$/);
+    expect(colon).not.toBe(dash);
+    expect(deriveArtifactSafeCollectionName('Payments:A')).toBe(colon);
+    expect(deriveArtifactSafeCollectionName(`${'x'.repeat(200)}:tail`).length).toBeLessThanOrEqual(160);
+  });
+
   it('pins @postman/v3.export and emits runtime.models→v3.export trees', async () => {
     const packageJson = JSON.parse(
       readFileSync(

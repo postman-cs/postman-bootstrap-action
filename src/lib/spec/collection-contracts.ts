@@ -1,12 +1,19 @@
 import { normalizePath, type ContractBodyFieldRules, type ContractHeader, type ContractIndex, type ContractMedia, type ContractOperation } from './contract-index.js';
 import { FORBIDDEN_TRAILER_FIELDS, HTTP_CONTENT_CODINGS, PROXY_STATUS_ERROR_TYPES, REFERRER_POLICY_VALUES } from './iana-registries.js';
 import { compileSchemaValidator, compileSchemaValidatorCode } from './schema-validator-code.js';
+import { createSecretsResolverItem } from './smoke-tests.js';
+
+export { createSecretsResolverItem } from './smoke-tests.js';
 
 type JsonRecord = Record<string, unknown>;
 
 export interface ContractInstrumentationResult {
   collection: JsonRecord;
   warnings: string[];
+}
+
+export interface ContractInstrumentationLimits {
+  maxCollectionUpdateBytes?: number;
 }
 
 export const CONTRACT_SIZE_LIMITS = {
@@ -1376,31 +1383,6 @@ export function createMappingFailureScript(message: string): string[] {
   return [`var contractMappingError = ${JSON.stringify(message)};`, "pm.test('OpenAPI operation mapping exists', function () {", '  pm.expect.fail(contractMappingError);', '});'];
 }
 
-export function createSecretsResolverItem(): JsonRecord {
-  return {
-    name: '00 - Resolve Secrets',
-    request: {
-      auth: {
-        type: 'awsv4',
-        awsv4: [
-          { key: 'accessKey', value: '{{AWS_ACCESS_KEY_ID}}' },
-          { key: 'secretKey', value: '{{AWS_SECRET_ACCESS_KEY}}' },
-          { key: 'region', value: '{{AWS_REGION}}' },
-          { key: 'service', value: 'secretsmanager' }
-        ]
-      },
-      method: 'POST',
-      header: [
-        { key: 'X-Amz-Target', value: 'secretsmanager.GetSecretValue' },
-        { key: 'Content-Type', value: 'application/x-amz-json-1.1' }
-      ],
-      body: { mode: 'raw', raw: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-      url: { raw: 'https://secretsmanager.{{AWS_REGION}}.amazonaws.com', protocol: 'https', host: ['secretsmanager', '{{AWS_REGION}}', 'amazonaws', 'com'] }
-    },
-    event: [{ listen: 'test', script: { exec: ['if (pm.environment.get("CI") === "true") { return; }', 'const body = pm.response.json();', 'if (body.SecretString) {', '  const secrets = JSON.parse(body.SecretString);', '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));', '}'] } }]
-  };
-}
-
 function isResolverItem(item: JsonRecord): boolean {
   if (item.name !== '00 - Resolve Secrets') return false;
   const request = asRecord(item.request);
@@ -1717,7 +1699,15 @@ function scanExecutableScripts(node: JsonRecord, warnings: string[]): void {
   }
 }
 
-export function instrumentContractCollection(collection: JsonRecord, index: ContractIndex): ContractInstrumentationResult {
+export function instrumentContractCollection(
+  collection: JsonRecord,
+  index: ContractIndex,
+  limits: ContractInstrumentationLimits = {}
+): ContractInstrumentationResult {
+  const maxCollectionUpdateBytes = limits.maxCollectionUpdateBytes ?? CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes;
+  if (!Number.isSafeInteger(maxCollectionUpdateBytes) || maxCollectionUpdateBytes <= 0) {
+    throw new Error('CONTRACT_COLLECTION_SIZE_EXCEEDED: Contract collection size limit must be a finite positive bounded integer');
+  }
   const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
   const covered = new Map<string, string>();
 
@@ -1762,8 +1752,8 @@ export function instrumentContractCollection(collection: JsonRecord, index: Cont
   scanExecutableScripts(collection, warnings);
 
   const bytes = Buffer.byteLength(JSON.stringify(collection), 'utf8');
-  if (bytes > CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes) {
-    throw new Error(`CONTRACT_COLLECTION_SIZE_EXCEEDED: Instrumented contract collection exceeded ${CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes} bytes`);
+  if (bytes > maxCollectionUpdateBytes) {
+    throw new Error(`CONTRACT_COLLECTION_SIZE_EXCEEDED: Instrumented contract collection exceeded ${maxCollectionUpdateBytes} bytes`);
   }
   return { collection, warnings };
 }

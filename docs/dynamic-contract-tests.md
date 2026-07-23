@@ -22,7 +22,7 @@ This page documents the runtime layer: the `pm.test()` scripts that execute agai
    - Reruns with `spec-id` update the existing spec with the same canonical bundled document used for validation and contract indexing, after capturing the previous content hash for rollback.
 
 4. **Generate baseline, smoke, and contract collections**
-   - Collection generation uses the uploaded Spec Hub UID.
+    - Local OpenAPI conversion builds role payloads; collections are imported or deep-updated against the uploaded Spec Hub UID via linking.
    - `collection-sync-mode: refresh` generates temporary collections, then refreshes existing tracked collections in place when IDs are available.
    - The contract collection is instrumented before an existing tracked contract collection is overwritten.
 

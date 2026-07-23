@@ -116,7 +116,7 @@ export const bootstrapActionContract: ActionContract = {
     },
     'protocol': {
       description:
-        'API spec protocol. auto (default) detects from the spec content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), soap (WSDL), and asyncapi (AsyncAPI 2.x WebSocket/Socket.IO) build and instrument a Postman collection directly.',
+        'API spec protocol. auto (default) detects from the spec content/extension. openapi uploads the canonical spec to Spec Hub and builds baseline/smoke/contract collections locally (import/deep-update); graphql (SDL/introspection), grpc (.proto), soap (WSDL), and asyncapi (AsyncAPI 2.x WebSocket/Socket.IO) build and instrument a Postman collection directly.',
       required: false,
       default: 'auto',
       allowedValues: ['auto', 'openapi', 'graphql', 'grpc', 'soap', 'asyncapi']
@@ -275,6 +275,14 @@ export const bootstrapActionContract: ActionContract = {
     'collections-json': {
       description: 'JSON summary of generated collections.'
     },
+    'prebuilt-collections-json': {
+      description:
+        'Digest-bound JSON manifest of locally materialized Collection v3 trees (schemaVersion 1) for repo-sync reuse.'
+    },
+    'openapi-operation-ledger-json': {
+      description:
+        'Sanitized local OpenAPI orchestration operation ledger (schemaVersion 1) with counts and timings.'
+    },
     'lint-summary-json': {
       description: 'JSON summary of validation findings. Bootstrap does not invoke the Postman CLI lint.'
     },
@@ -312,10 +320,12 @@ export const bootstrapActionContract: ActionContract = {
     'OpenAPI operation summary normalization before upload (missing or oversized summaries)',
     'optional OpenAPI breaking-change detection before Postman mutations',
     'spec linting by UID',
-    'baseline, smoke, and contract collection generation',
+    'local OpenAPI conversion into baseline, smoke, and contract collection payloads with embedded scripts',
+    'whole-collection import for missing/versioned roles and in-place deep-update for refreshed existing roles',
     'collection refresh and versioning policies',
     'collection tagging',
-    'workspace, spec, and collection outputs'
+    'workspace, spec, and collection outputs',
+    'prebuilt collection manifest and OpenAPI operation ledger outputs'
   ],
   removedBehavior: [
     'snake_case input and output names',

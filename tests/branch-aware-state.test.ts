@@ -101,18 +101,29 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   };
 }
 
+function createDefaultImportV2Collection() {
+  return vi.fn().mockImplementation(async (_workspaceId: string, collection: unknown, finalName?: string) => {
+    const info = (collection as { info?: { name?: string } } | null)?.info;
+    const name = String(finalName || info?.name || '');
+    const id = name.includes('[Contract]')
+      ? 'col-contract'
+      : name.includes('[Smoke]')
+        ? 'col-smoke'
+        : 'col-baseline';
+    return {
+      collectionId: id,
+      journaledRootIds: [id],
+      deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+    };
+  });
+}
+
 function createPostman() {
   return {
     addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
     createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-created' }),
     findWorkspacesByName: vi.fn().mockResolvedValue([]),
-    generateCollection: vi
-      .fn()
-      .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-        if (prefix === '' || prefix === '[DEV]') return 'col-baseline';
-        if (prefix === '[Smoke]' || prefix === '[DEV] [Smoke]') return 'col-smoke';
-        return 'col-contract';
-      }),
+    generateCollection: vi.fn().mockRejectedValue(new Error('generateCollection unreachable')),
     getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
     getCollection: vi.fn().mockResolvedValue({
       info: { name: '[Contract] Payments' },
@@ -127,6 +138,9 @@ function createPostman() {
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+    importV2Collection: createDefaultImportV2Collection(),
+    deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
+    deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -138,10 +152,36 @@ function createPostman() {
 }
 
 function createInternalIntegration() {
+  const linked = new Map<string, { options?: Record<string, unknown>; syncOptions?: Record<string, unknown> }>();
   return {
     assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
     configureTeamContext: vi.fn(),
-    linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+    linkCollectionsToSpecification: vi.fn().mockImplementation(
+      async (_specId: string, collections: Array<{ collectionId: string; options?: Record<string, unknown>; syncOptions?: Record<string, unknown> }>) => {
+        for (const row of collections) {
+          linked.set(row.collectionId, {
+            ...(row.options ? { options: row.options } : {}),
+            ...(row.syncOptions ? { syncOptions: row.syncOptions } : {})
+          });
+        }
+        return { lockedRetries: 0 };
+      }
+    ),
+    listSpecificationCollectionRelations: vi.fn().mockImplementation(async () =>
+      [...linked.entries()].map(([collectionId, meta]) => ({
+        collectionId,
+        state: 'in-sync',
+        ...meta
+      }))
+    ),
+    settleSpecificationCollectionRelations: vi.fn().mockImplementation(async () => ({
+      relations: [...linked.entries()].map(([collectionId, meta]) => ({
+        collectionId,
+        state: 'in-sync',
+        ...meta
+      })),
+      attempts: 1
+    })),
     syncCollection: vi.fn().mockResolvedValue(undefined)
   };
 }
@@ -296,11 +336,15 @@ describe('branch-aware bootstrap runs', () => {
       expect(postman.updateSpec).not.toHaveBeenCalled();
       expect(outputs['sync-status']).toBe('synced');
       expect(JSON.parse(outputs['branch-decision']).tier).toBe('preview');
-      expect(postman.updateCollectionDescription).toHaveBeenCalledTimes(3);
-      expect(postman.updateCollectionDescription).toHaveBeenCalledWith(
-        'col-baseline',
-        expect.stringContaining('"role":"preview"')
-      );
+      // Local OpenAPI embeds the preview marker in each imported payload description
+      // (no post-create updateCollectionDescription fanout).
+      expect(postman.updateCollectionDescription).not.toHaveBeenCalled();
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+      for (const call of postman.importV2Collection.mock.calls) {
+        const collection = call[1] as { info?: { description?: string; name?: string } };
+        expect(String(collection.info?.description || '')).toContain('"role":"preview"');
+        expect(String(call[2] || collection.info?.name || '')).toMatch(/@feature-payments/);
+      }
 
       // Tracked state untouched byte-for-byte.
       expect(readFileSync(join(workspace, '.postman/resources.yaml'), 'utf8')).toBe(priorState);
@@ -358,14 +402,13 @@ describe('branch-aware bootstrap runs', () => {
         '3.1'
       );
       expect(JSON.parse(outputs['branch-decision']).tier).toBe('channel');
-      expect(postman.generateCollection).toHaveBeenCalledWith(
-        expect.any(String),
-        'Payments',
-        '[DEV] [Smoke]',
-        expect.any(String),
-        expect.any(Boolean),
-        expect.any(String)
-      );
+      expect(postman.generateCollection).not.toHaveBeenCalled();
+      expect(postman.importV2Collection).toHaveBeenCalled();
+      expect(
+        postman.importV2Collection.mock.calls.some((call) =>
+          String(call[2] || '').includes('[DEV] [Smoke]')
+        )
+      ).toBe(true);
     });
   });
 

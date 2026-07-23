@@ -2,9 +2,9 @@
  * Tier-2 adversarial full-flow tests: drive the REAL runAction through the
  * failure state machines the unit tests cover only client-by-client -
  * mid-run token expiry (401 -> re-mint -> retry), transient downstream 5xx
- * (backoff -> retry), the 423-locked generation create, and the async
- * generation task poll (pending -> completed). Fake timers absorb the real
- * backoff sleeps so the suite stays fast.
+ * (backoff -> retry), 423-locked relation link retry, and local OpenAPI
+ * import/fail-closed ownership. Fake timers absorb the real backoff sleeps
+ * so the suite stays fast.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -47,6 +47,8 @@ describe('contract: adversarial flows', () => {
     expect(result.outputs['workspace-id']).toBe('ws-contract');
     expect(staleRejections).toBe(1);
     expect(fake.state.mintCount).toBe(1);
+    expect(fake.state.importPostCount).toBe(3);
+    expect(fake.state.generationPostCount).toBe(0);
   });
 
   it('retries a transient safe-read 5xx with backoff and completes', async () => {
@@ -79,16 +81,18 @@ describe('contract: adversarial flows', () => {
     expect(result.outputs['workspace-id']).toBe('ws-contract');
     expect(injected).toBe(1);
     expect(fake.state.workspaceCreateBodies).toHaveLength(1);
+    expect(fake.state.importPostCount).toBe(3);
+    expect(fake.state.generationPostCount).toBe(0);
   });
 
-  it('retries a 423-locked generation create and completes', async () => {
+  it('retries a 423-locked specification collection link and completes', async () => {
     let locked = 0;
     const fake = createPlatformFake({
       org: false,
       override: ({ proxy }) => {
         if (
           proxy?.service === 'specification' &&
-          proxy.method === 'post' &&
+          proxy.method === 'put' &&
           /\/specifications\/[^/]+\/collections$/.test(proxy.path) &&
           locked === 0
         ) {
@@ -109,12 +113,20 @@ describe('contract: adversarial flows', () => {
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
     expect(locked).toBe(1);
-    expect(fake.state.generationPostCount).toBeGreaterThanOrEqual(1);
+    expect(fake.state.importPostCount).toBe(3);
+    expect(fake.state.generationPostCount).toBe(0);
+    const ledger = JSON.parse(result.outputs['openapi-operation-ledger-json'] || '{}') as {
+      counts?: { retries?: number; wholeCollectionImport?: number; specHubCollectionGeneration?: number };
+    };
+    expect(ledger.counts?.wholeCollectionImport).toBe(3);
+    expect(ledger.counts?.specHubCollectionGeneration).toBe(0);
+    expect(ledger.counts?.retries).toBeGreaterThanOrEqual(1);
   });
 
-  it('polls the async generation task through pending -> completed', async () => {
+  it('imports three local OpenAPI roles with zero Spec Hub generation/task fanout', async () => {
     const fake = createPlatformFake({
       org: false,
+      // Legacy generationTaskStatuses must remain inert for the OpenAPI path.
       generationTaskStatuses: ['pending', 'in-progress', 'completed']
     });
 
@@ -127,6 +139,27 @@ describe('contract: adversarial flows', () => {
 
     expect(result.error).toBeUndefined();
     expect(result.outputs['workspace-id']).toBe('ws-contract');
-    expect(fake.state.taskPollCount).toBeGreaterThanOrEqual(2);
+    expect(fake.state.importPostCount).toBe(3);
+    expect(fake.state.generationPostCount).toBe(0);
+    expect(fake.state.taskPollCount).toBe(0);
+    expect(fake.state.deepUpdatePutCount).toBe(0);
+    const ledger = JSON.parse(result.outputs['openapi-operation-ledger-json'] || '{}') as {
+      counts?: {
+        localConversion?: number;
+        wholeCollectionImport?: number;
+        deepUpdate?: number;
+        specHubCollectionGeneration?: number;
+        temporaryOpenApiSpecCreate?: number;
+        postCreateScriptPatch?: number;
+      };
+    };
+    expect(ledger.counts).toMatchObject({
+      localConversion: 1,
+      wholeCollectionImport: 3,
+      deepUpdate: 0,
+      specHubCollectionGeneration: 0,
+      temporaryOpenApiSpecCreate: 0,
+      postCreateScriptPatch: 0
+    });
   });
 });

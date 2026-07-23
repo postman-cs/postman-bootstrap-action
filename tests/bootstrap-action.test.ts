@@ -231,6 +231,23 @@ function createCuratedCollection(name: string) {
   };
 }
 
+function createDefaultImportV2Collection() {
+  return vi.fn().mockImplementation(async (_workspaceId: string, collection: unknown, finalName?: string) => {
+    const info = (collection as { info?: { name?: string } } | null)?.info;
+    const name = String(finalName || info?.name || '');
+    const id = name.includes('[Contract]')
+      ? 'col-contract-generated'
+      : name.includes('[Smoke]')
+        ? 'col-smoke-generated'
+        : 'col-baseline-generated';
+    return {
+      collectionId: id,
+      journaledRootIds: [id],
+      deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+    };
+  });
+}
+
 function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
   const existingGetCollection = postman.getCollection as ((uid: string) => Promise<unknown>) | undefined;
   const existingGenerateCollection = postman.generateCollection as ((...args: unknown[]) => Promise<string>) | undefined;
@@ -253,14 +270,24 @@ function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
       return uniqueId;
     })
     : undefined;
+  const defaults = {
+    deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
+    deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
+    importV2Collection: createDefaultImportV2Collection()
+  };
   return {
     deleteSpec: vi.fn().mockResolvedValue(undefined),
     getSpecBundle: vi.fn(),
     reconcileSpecBundle: vi.fn(),
     restoreSpecBundle: vi.fn(),
     uploadSpecBundle: vi.fn(),
+    ...defaults,
     ...postman,
     ...(generateCollection ? { generateCollection } : {}),
+    importV2Collection: postman.importV2Collection ?? defaults.importV2Collection,
+    deepUpdateV2Collection: postman.deepUpdateV2Collection ?? defaults.deepUpdateV2Collection,
+    deleteVerifiedRunOwnedCollections:
+      postman.deleteVerifiedRunOwnedCollections ?? defaults.deleteVerifiedRunOwnedCollections,
     getCollection,
     updateCollection: postman.updateCollection ?? vi.fn().mockResolvedValue(undefined)
   };
@@ -272,7 +299,11 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     createCollection: vi.fn().mockResolvedValue('col-created'),
     createWorkspace: vi.fn(),
     deleteCollection: vi.fn().mockResolvedValue(undefined),
+    deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
     deleteSpec: vi.fn().mockResolvedValue(undefined),
+    deepUpdateV2Collection: vi
+      .fn()
+      .mockImplementation(async (collectionUid: string) => collectionUid),
     findWorkspacesByName: vi.fn().mockResolvedValue([]),
     generateCollection: vi
       .fn()
@@ -288,6 +319,7 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+    importV2Collection: createDefaultImportV2Collection(),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -303,11 +335,37 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
 }
 
 function createRollbackIntegration(overrides: Record<string, unknown> = {}) {
+  let lastLinked: Array<{
+    collectionId: string;
+    options?: Record<string, unknown>;
+    syncOptions?: { syncExamples: boolean };
+  }> = [];
+  const linkCollectionsToSpecification = vi
+    .fn()
+    .mockImplementation(async (_specId: string, collections: typeof lastLinked) => {
+      lastLinked = collections.map((entry) => ({ ...entry }));
+      return { lockedRetries: 0 };
+    });
+  const listSpecificationCollectionRelations = vi.fn().mockImplementation(async () =>
+    lastLinked.map((entry) => ({
+      collectionId: entry.collectionId,
+      state: 'in-sync',
+      ...(entry.options ? { options: entry.options } : {}),
+      ...(entry.syncOptions ? { syncOptions: entry.syncOptions } : {})
+    }))
+  );
   return {
     assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
     configureTeamContext: vi.fn(),
     findWorkspaceForRepo: vi.fn().mockResolvedValue({ state: 'free' }),
-    linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+    linkCollectionsToSpecification,
+    listSpecificationCollectionRelations,
+    settleSpecificationCollectionRelations: vi.fn().mockImplementation(
+      async (specId: string) => {
+        const relations = await listSpecificationCollectionRelations(specId);
+        return { relations, attempts: 1 };
+      }
+    ),
     syncCollection: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
@@ -363,8 +421,20 @@ async function withCwd<T>(dir: string, fn: () => Promise<T>): Promise<T> {
 }
 
 describe('bootstrap action', () => {
+  const packageRoot = process.cwd();
+
+  beforeEach(() => {
+    const workspace = process.env.GITHUB_WORKSPACE;
+    if (workspace) {
+      process.chdir(workspace);
+    }
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     rmSync('.postman', { recursive: true, force: true });
+    rmSync('postman', { recursive: true, force: true });
+    process.chdir(packageRoot);
   });
 
   it('marks secrets as early as input resolution', () => {
@@ -478,32 +548,35 @@ describe('bootstrap action', () => {
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi
-        .fn()
-        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-          order.push(prefix);
-          if (prefix === '') return 'col-baseline';
-          if (prefix === '[Smoke]') return 'col-smoke';
-          return 'col-contract';
-        }),
+      generateCollection: vi.fn().mockRejectedValue(new Error('generateCollection unreachable')),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-      injectContractTests: vi.fn().mockResolvedValue([]),
-      injectTests: vi.fn().mockResolvedValue(undefined),
+      importV2Collection: vi.fn().mockImplementation(async (_ws: string, _collection: unknown, finalName: string) => {
+        order.push(finalName);
+        const id = finalName.includes('[Contract]')
+          ? 'col-contract'
+          : finalName.includes('[Smoke]')
+            ? 'col-smoke'
+            : 'col-baseline';
+        return {
+          collectionId: id,
+          journaledRootIds: [id],
+          deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+        };
+      }),
+      injectContractTests: vi.fn().mockRejectedValue(new Error('injectContractTests unreachable')),
+      injectTests: vi.fn().mockRejectedValue(new Error('injectTests unreachable')),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
       tagCollection: vi.fn().mockResolvedValue(undefined),
       uploadSpec: vi.fn().mockResolvedValue('spec-123'),
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
-    const internalIntegration = {
-      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
-      configureTeamContext: vi.fn(),
-      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
-      syncCollection: vi.fn().mockResolvedValue(undefined)
-    };
+    const internalIntegration = createRollbackIntegration({
+      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined)
+    });
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, {
         status: 200
@@ -531,30 +604,40 @@ describe('bootstrap action', () => {
       'owner@example.com'
     );
     expect(postman.addAdminsToWorkspace).toHaveBeenCalledWith('ws-123', '101,102');
-    expect(order).toEqual(['', '[Smoke]', '[Contract]']);
+    expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(postman.injectTests).not.toHaveBeenCalled();
+    expect(postman.injectContractTests).not.toHaveBeenCalled();
+    expect(order.some((name) => name.includes('[Smoke]'))).toBe(true);
+    expect(order.some((name) => name.includes('[Contract]'))).toBe(true);
     expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledWith(
       'spec-123',
       [
-        { collectionId: 'col-baseline', syncOptions: { syncExamples: true } },
-        { collectionId: 'col-smoke', syncOptions: { syncExamples: true } },
-        { collectionId: 'col-contract', syncOptions: { syncExamples: true } }
+        expect.objectContaining({
+          collectionId: 'col-baseline',
+          options: expect.objectContaining({
+            parametersResolution: 'Example',
+            requestNameSource: 'Fallback',
+            folderStrategy: 'Paths'
+          }),
+          syncOptions: { syncExamples: true }
+        }),
+        expect.objectContaining({
+          collectionId: 'col-smoke',
+          syncOptions: { syncExamples: true }
+        }),
+        expect.objectContaining({
+          collectionId: 'col-contract',
+          syncOptions: { syncExamples: true }
+        })
       ]
     );
-    expect(internalIntegration.syncCollection).toHaveBeenNthCalledWith(
-      1,
+    expect(internalIntegration.settleSpecificationCollectionRelations).toHaveBeenCalledWith(
       'spec-123',
-      'col-baseline'
+      expect.arrayContaining(['col-baseline', 'col-smoke', 'col-contract'])
     );
-    expect(internalIntegration.syncCollection).toHaveBeenNthCalledWith(
-      2,
-      'spec-123',
-      'col-smoke'
-    );
-    expect(internalIntegration.syncCollection).toHaveBeenNthCalledWith(
-      3,
-      'spec-123',
-      'col-contract'
-    );
+    expect(internalIntegration.listSpecificationCollectionRelations).toHaveBeenCalledWith('spec-123');
+    expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       'workspace-id': 'ws-123',
       'workspace-name': '[AF] core-payments',
@@ -648,13 +731,15 @@ describe('bootstrap action', () => {
           'spec-url:https://example.test/openapi.yaml': 'spec-existing'
         });
         expect(resources.canonical?.collections).toMatchObject({
-          '../postman/collections/core-payments v1': 'col-baseline-existing',
-          '../postman/collections/[Smoke] core-payments v1': 'col-smoke-existing',
-          '../postman/collections/[Contract] core-payments v1': 'col-contract-existing'
+          '../postman/collections/core-payments v1': 'col-baseline-generated',
+          '../postman/collections/[Smoke] core-payments v1': 'col-smoke-generated',
+          '../postman/collections/[Contract] core-payments v1': 'col-contract-generated'
         });
 
-        expect(postman.injectTests).toHaveBeenCalledTimes(1);
-        expect(postman.injectTests).toHaveBeenCalledWith('col-smoke-existing', 'smoke');
+        // Version mode uses fresh local import (not Spec Hub generate/inject/sync).
+        expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+        expect(postman.injectTests).not.toHaveBeenCalled();
+        expect(postman.injectContractTests).not.toHaveBeenCalled();
         expect(postman.tagCollection).toHaveBeenCalledTimes(3);
         expect(postman.tagCollection).not.toHaveBeenCalledWith(
           'col-payments-existing',
@@ -667,20 +752,22 @@ describe('bootstrap action', () => {
         expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledWith(
           'spec-existing',
           [
-            { collectionId: 'col-baseline-existing', syncOptions: { syncExamples: true } },
-            { collectionId: 'col-smoke-existing', syncOptions: { syncExamples: true } },
-            { collectionId: 'col-contract-existing', syncOptions: { syncExamples: true } }
+            expect.objectContaining({
+              collectionId: 'col-baseline-generated',
+              options: expect.any(Object),
+              syncOptions: { syncExamples: true }
+            }),
+            expect.objectContaining({
+              collectionId: 'col-smoke-generated',
+              syncOptions: { syncExamples: true }
+            }),
+            expect.objectContaining({
+              collectionId: 'col-contract-generated',
+              syncOptions: { syncExamples: true }
+            })
           ]
         );
-        expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(3);
-        expect(internalIntegration.syncCollection).not.toHaveBeenCalledWith(
-          'spec-existing',
-          'col-payments-existing'
-        );
-        expect(internalIntegration.syncCollection).not.toHaveBeenCalledWith(
-          'spec-existing',
-          'col-refunds-created'
-        );
+        expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
       });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -777,9 +864,9 @@ components:
               '../openapi.yaml': 'spec-existing'
             },
             collections: {
-              '../postman/collections/core-payments v1': 'col-baseline-existing',
-              '../postman/collections/[Smoke] core-payments v1': 'col-smoke-existing',
-              '../postman/collections/[Contract] core-payments v1': 'col-contract-existing'
+              '../postman/collections/core-payments v1': 'col-baseline-generated',
+              '../postman/collections/[Smoke] core-payments v1': 'col-smoke-generated',
+              '../postman/collections/[Contract] core-payments v1': 'col-contract-generated'
             },
             additionalCollections: {
               '../postman/curated/payments.json': 'col-payments-created'
@@ -834,20 +921,18 @@ components:
         ).rejects.toThrow(/link failed after additional/);
 
         expect(postman.createCollection).toHaveBeenCalled();
-        // Intermediate additional-collection callbacks must not persist
-        // spec-id or generated/additional collection resource state.
-        for (const state of writes) {
+        expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalled();
+        // Local OpenAPI persists imported IDs before link; additional-collection
+        // sync itself uses a no-op writer. Ensure at least one pre-link write
+        // recorded OpenAPI collection IDs without treating the failed link as success.
+        expect(writes.length).toBeGreaterThan(0);
+        const hasOpenApiCollections = writes.some((state) => {
           const cloud = (state.cloudResources ?? state.canonical) as
-            | {
-                specs?: Record<string, string>;
-                collections?: Record<string, string>;
-                additionalCollections?: Record<string, string>;
-              }
+            | { collections?: Record<string, string> }
             | undefined;
-          expect(cloud?.specs ?? {}).toEqual({});
-          expect(cloud?.collections ?? {}).toEqual({});
-          expect(cloud?.additionalCollections ?? {}).toEqual({});
-        }
+          return Object.keys(cloud?.collections ?? {}).length === 3;
+        });
+        expect(hasOpenApiCollections).toBe(true);
       });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -1128,40 +1213,17 @@ paths:
   it.each([
     {
       expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
-        expect(postman.injectTests).not.toHaveBeenCalled();
         expect(postman.tagCollection).not.toHaveBeenCalled();
       },
-      failure: 'generation refused',
-      name: 'collection generation',
+      failure: 'import refused',
+      name: 'local collection import',
       overrides: {
-        generateCollection: vi.fn().mockRejectedValue(new Error('generation refused'))
+        importV2Collection: vi.fn().mockRejectedValue(new Error('import refused'))
       }
     },
     {
       expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
-        expect(postman.injectTests).not.toHaveBeenCalled();
-        expect(postman.tagCollection).not.toHaveBeenCalled();
-      },
-      failure: 'CONTRACT_OPERATION_COVERAGE_FAILED',
-      name: 'contract instrumentation coverage',
-      overrides: {
-        injectContractTests: vi.fn().mockRejectedValue(new Error('CONTRACT_OPERATION_COVERAGE_FAILED'))
-      }
-    },
-    {
-      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
-        expect(postman.tagCollection).not.toHaveBeenCalled();
-      },
-      failure: 'inject failed',
-      name: 'inject tests',
-      overrides: {
-        injectContractTests: vi.fn().mockResolvedValue([]),
-        injectTests: vi.fn().mockRejectedValue(new Error('inject failed'))
-      }
-    },
-    {
-      expectedSkippedCalls: (postman: ReturnType<typeof createRollbackPostman>) => {
-        expect(postman.injectTests).toHaveBeenCalled();
+        expect(postman.importV2Collection).toHaveBeenCalled();
       },
       failure: 'tag failed',
       name: 'tagging',
@@ -1174,7 +1236,7 @@ paths:
         postman: ReturnType<typeof createRollbackPostman>,
         internalIntegration?: ReturnType<typeof createRollbackIntegration>
       ) => {
-        expect(postman.tagCollection).toHaveBeenCalled();
+        expect(postman.tagCollection).not.toHaveBeenCalled();
         expect(internalIntegration?.syncCollection).not.toHaveBeenCalled();
       },
       failure: 'link failed',
@@ -1189,17 +1251,17 @@ paths:
         postman: ReturnType<typeof createRollbackPostman>,
         internalIntegration?: ReturnType<typeof createRollbackIntegration>
       ) => {
-        expect(postman.tagCollection).toHaveBeenCalled();
-        expect(internalIntegration?.syncCollection).toHaveBeenCalledTimes(3);
+        expect(postman.tagCollection).not.toHaveBeenCalled();
+        expect(internalIntegration?.syncCollection).not.toHaveBeenCalled();
       },
-      failure: 'sync failed',
+      failure: 'LOCAL_OPENAPI_LINK_READBACK_FAILED',
       integrationOverrides: {
-        syncCollection: vi
-          .fn()
-          .mockResolvedValueOnce(undefined)
-          .mockRejectedValueOnce(new Error('sync failed'))
+        settleSpecificationCollectionRelations: vi.fn().mockResolvedValue({
+          relations: [],
+          attempts: 1
+        })
       },
-      name: 'cloud sync',
+      name: 'link readback',
       overrides: {}
     }
   ])(
@@ -1271,7 +1333,7 @@ paths:
   });
 
   it('emits rollback failure with previous SHA-256 and original triggering stage', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const { core, outputs } = createCoreStub();
       const postman = createRollbackPostman({
@@ -1282,27 +1344,23 @@ paths:
           .mockRejectedValue(new Error('restore write failed'))
       });
 
-      const run = runExistingSpecBootstrap(postman, { core });
-      const rejection = expect(run).rejects.toThrow(
+      await expect(runExistingSpecBootstrap(postman, { core })).rejects.toThrow(
         /CONTRACT_SPEC_ROLLBACK_FAILED: .*after Tag Collections: tag stage failed.*sha256=[a-f0-9]{64}.*Rollback error: restore write failed/s
       );
-      await vi.runAllTimersAsync();
-      await rejection;
 
       expect(postman.updateSpec).toHaveBeenCalledTimes(4);
       expect(outputs).toEqual({});
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 20000);
 
   it('retries rollback restore and then preserves the original downstream failure on success', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const { core, outputs, warnings } = createCoreStub();
       const postman = createRollbackPostman({
-        injectContractTests: vi.fn().mockResolvedValue([]),
-        injectTests: vi.fn().mockRejectedValue(new Error('inject retry trigger')),
+        tagCollection: vi.fn().mockRejectedValue(new Error('tag retry trigger')),
         updateSpec: vi
           .fn()
           .mockResolvedValueOnce(undefined)
@@ -1310,10 +1368,7 @@ paths:
           .mockResolvedValueOnce(undefined)
       });
 
-      const run = runExistingSpecBootstrap(postman, { core });
-      const rejection = expect(run).rejects.toThrow('inject retry trigger');
-      await vi.runAllTimersAsync();
-      await rejection;
+      await expect(runExistingSpecBootstrap(postman, { core })).rejects.toThrow('tag retry trigger');
 
       expect(postman.updateSpec).toHaveBeenCalledTimes(3);
       expect(postman.updateSpec).toHaveBeenNthCalledWith(
@@ -1325,20 +1380,20 @@ paths:
       expect(outputs).toEqual({});
       expect(
         warnings.some((warning) =>
-          warning.includes('Inject Test Scripts: inject retry trigger')
+          warning.includes('Tag Collections: tag retry trigger')
           && warning.includes('sha256=')
         )
       ).toBe(true);
     } finally {
       vi.useRealTimers();
     }
-  });
+  }, 20000);
 
   it('deletes a failed new spec upload and does not restore via updateSpec', async () => {
     const { core, outputs } = createCoreStub();
     const postman = createRollbackPostman({
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
-      generateCollection: vi.fn().mockRejectedValue(new Error('new upload generation failed')),
+      importV2Collection: vi.fn().mockRejectedValue(new Error('new upload import failed')),
       uploadSpec: vi.fn().mockResolvedValue('spec-new')
     });
 
@@ -1352,7 +1407,7 @@ paths:
           new Response(VALID_SPEC_31, { status: 200 })
         )
       })
-    ).rejects.toThrow('new upload generation failed');
+    ).rejects.toThrow(/new upload import failed/);
 
     expect(postman.uploadSpec).toHaveBeenCalledWith(
       'ws-new',
@@ -1374,7 +1429,7 @@ paths:
     });
     const postman = createRollbackPostman({
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-new' }),
-      generateCollection: vi.fn().mockRejectedValue(new Error('peer generation failed')),
+      importV2Collection: vi.fn().mockRejectedValue(new Error('peer import failed')),
       uploadSpec: vi.fn().mockRejectedValue(new Error('legacy uploadSpec must not be called')),
       uploadSpecWithOutcome
     });
@@ -1389,7 +1444,7 @@ paths:
           new Response(VALID_SPEC_31, { status: 200 })
         )
       })
-    ).rejects.toThrow('peer generation failed');
+    ).rejects.toThrow(/peer import failed/);
 
     expect(uploadSpecWithOutcome).toHaveBeenCalledWith(
       'ws-new',
@@ -2148,7 +2203,7 @@ properties:
           verifiedDigest: target.bundle.digest
         }),
         restoreSpecBundle,
-        generateCollection: vi.fn().mockRejectedValue(new Error('generation refused')),
+        importV2Collection: vi.fn().mockRejectedValue(new Error('import refused')),
         updateSpec: vi.fn()
       });
       try {
@@ -2169,7 +2224,7 @@ properties:
                 specFetcher: vi.fn<typeof fetch>()
               }
             )
-          ).rejects.toThrow('generation refused');
+          ).rejects.toThrow(/import refused/);
         });
       } finally {
         rmSync(workspace, { recursive: true, force: true });
@@ -2202,7 +2257,7 @@ properties:
             verifiedDigest: 'abc'
           }
         }),
-        generateCollection: vi.fn().mockRejectedValue(new Error('new multi generation failed')),
+        importV2Collection: vi.fn().mockRejectedValue(new Error('new multi import failed')),
         deleteSpec: vi.fn().mockResolvedValue(undefined)
       });
       try {
@@ -2228,7 +2283,7 @@ properties:
                 specFetcher: vi.fn<typeof fetch>()
               }
             )
-          ).rejects.toThrow('new multi generation failed');
+          ).rejects.toThrow(/new multi import failed/);
         });
       } finally {
         rmSync(workspace, { recursive: true, force: true });
@@ -2269,7 +2324,7 @@ properties:
             verifiedDigest: 'abc'
           }
         }),
-        generateCollection: vi.fn().mockRejectedValue(new Error('generation 403 after peer deleted loser')),
+        importV2Collection: vi.fn().mockRejectedValue(new Error('import 403 after peer deleted loser')),
         deleteSpec: vi.fn().mockRejectedValue(
           new HttpError({
             method: 'DELETE',
@@ -2306,7 +2361,7 @@ properties:
         rmSync(workspace, { recursive: true, force: true });
       }
       expect(caught).toBeInstanceOf(Error);
-      expect((caught as Error).message).toContain('generation 403 after peer deleted loser');
+      expect((caught as Error).message).toContain('import 403 after peer deleted loser');
       expect((caught as Error).message).not.toContain('CONTRACT_SPEC_ROLLBACK_FAILED');
       expect(postman.deleteSpec).toHaveBeenCalledWith('spec-loser');
     });
@@ -2414,7 +2469,7 @@ properties:
           priorSnapshot: prior.snapshot,
           verifiedDigest: prior.snapshot.digest
         }),
-        generateCollection: vi.fn().mockRejectedValue(new Error('gen boom')),
+        importV2Collection: vi.fn().mockRejectedValue(new Error('import boom')),
         updateSpec: vi.fn()
       });
       try {
@@ -2441,7 +2496,7 @@ properties:
                 specFetcher: vi.fn<typeof fetch>()
               }
             )
-          ).rejects.toThrow('gen boom');
+          ).rejects.toThrow(/import boom/);
         });
       } finally {
         rmSync(workspace, { recursive: true, force: true });
@@ -2735,7 +2790,7 @@ paths:
     ).toBe(true);
   });
 
-  it('reuses existing workspace, spec, and collection ids from explicit inputs in version mode', async () => {
+  it('reuses existing workspace and spec ids in version mode while importing fresh versioned collections', async () => {
     const { core, infos, outputs } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -2756,6 +2811,7 @@ paths:
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
+    const wrapped = withContractHelpers(postman);
     const result = await runBootstrap(
       createInputs({
         workspaceId: 'ws-existing',
@@ -2770,7 +2826,7 @@ paths:
         core,
         exec: execStub,
         io: ioStub,
-        postman: withContractHelpers(postman),
+        postman: wrapped,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
           new Response(VALID_SPEC_31, { status: 200 })
         )
@@ -2780,25 +2836,28 @@ paths:
     expect(postman.createWorkspace).not.toHaveBeenCalled();
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(
+      (wrapped as unknown as { importV2Collection: ReturnType<typeof vi.fn> }).importV2Collection
+    ).toHaveBeenCalledTimes(3);
+    expect(
+      (wrapped as unknown as { deepUpdateV2Collection: ReturnType<typeof vi.fn> }).deepUpdateV2Collection
+    ).not.toHaveBeenCalled();
     expect(postman.updateSpec).toHaveBeenCalledWith('spec-existing', VALID_SPEC_31, 'ws-existing');
     expect(result).toMatchObject({
       'workspace-id': 'ws-existing',
       'spec-id': 'spec-existing',
-      'baseline-collection-id': 'col-baseline-existing',
-      'smoke-collection-id': 'col-smoke-existing',
-      'contract-collection-id': 'col-contract-existing'
+      'baseline-collection-id': 'col-baseline-generated',
+      'smoke-collection-id': 'col-smoke-generated',
+      'contract-collection-id': 'col-contract-generated'
     });
     expect(outputs['collections-json']).toBe(
       JSON.stringify({
-        baseline: 'col-baseline-existing',
-        contract: 'col-contract-existing',
-        smoke: 'col-smoke-existing'
+        baseline: 'col-baseline-generated',
+        contract: 'col-contract-generated',
+        smoke: 'col-smoke-generated'
       })
     );
     expect(infos).toContain('Using existing workspace: ws-existing');
-    expect(infos).toContain('Using existing baseline collection: col-baseline-existing');
-    expect(infos).toContain('Using existing smoke collection: col-smoke-existing');
-    expect(infos).toContain('Using existing contract collection: col-contract-existing');
   });
 
   it('sanitizes spec URLs before writing existing-spec update logs', async () => {
@@ -2840,7 +2899,7 @@ paths:
         core,
         exec: execStub,
         io: ioStub,
-        postman,
+        postman: withContractHelpers(postman),
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
           new Response(VALID_SPEC_31, { status: 200 })
         )
@@ -2854,7 +2913,7 @@ paths:
     expect(infoLog).not.toContain('#frag');
   });
 
-  it('refresh mode regenerates collections in place when ids already exist', async () => {
+  it('refresh mode deep-updates collections in place when ids already exist', async () => {
     const { core } = createCoreStub();
     const postman = createRollbackPostman();
     const internalIntegration = createRollbackIntegration();
@@ -2870,14 +2929,18 @@ paths:
       }
     });
 
-    // Regenerate-in-place via the spec sync route preserves each collection UID;
-    // no fresh collection is generated and nothing is deleted (no v2 read/PUT).
+    // Deep-update preserves each collection UID; no Spec Hub sync/generate/inject.
     expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(postman.importV2Collection).not.toHaveBeenCalled();
     expect(postman.deleteCollection).not.toHaveBeenCalled();
-    expect(internalIntegration.syncCollection).toHaveBeenCalledWith('spec-existing', 'col-baseline-existing');
-    expect(internalIntegration.syncCollection).toHaveBeenCalledWith('spec-existing', 'col-smoke-existing');
-    expect(internalIntegration.syncCollection).toHaveBeenCalledWith('spec-existing', 'col-contract-existing');
-    expect(postman.injectContractTests).toHaveBeenCalledWith('col-contract-existing', expect.anything());
+    expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+    expect(postman.deepUpdateV2Collection).toHaveBeenCalledWith(
+      'col-baseline-existing',
+      expect.any(Object),
+      expect.stringMatching(/^[a-f0-9]{64}$/)
+    );
+    expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+    expect(postman.injectContractTests).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       'baseline-collection-id': 'col-baseline-existing',
       'smoke-collection-id': 'col-smoke-existing',
@@ -2885,11 +2948,18 @@ paths:
     });
   });
 
-  it('refresh mode generates fresh collections when no tracked ids exist', async () => {
+  it('refresh mode imports fresh collections when no tracked ids exist', async () => {
     const { core } = createCoreStub();
-    const generatedIds = ['col-baseline-new', 'col-smoke-new', 'col-contract-new'];
+    const importedIds = ['col-baseline-new', 'col-smoke-new', 'col-contract-new'];
     const postman = createRollbackPostman({
-      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback')
+      importV2Collection: vi.fn().mockImplementation(async () => {
+        const id = importedIds.shift() || 'col-fallback';
+        return {
+          collectionId: id,
+          journaledRootIds: [id],
+          deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+        };
+      })
     });
     const internalIntegration = createRollbackIntegration();
 
@@ -2899,9 +2969,10 @@ paths:
       inputs: { collectionSyncMode: 'refresh' }
     });
 
-    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
+    expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+    expect(postman.generateCollection).not.toHaveBeenCalled();
     expect(postman.deleteCollection).not.toHaveBeenCalled();
-    expect(postman.injectContractTests).toHaveBeenCalledWith('col-contract-new', expect.anything());
+    expect(postman.injectContractTests).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       'baseline-collection-id': 'col-baseline-new',
       'smoke-collection-id': 'col-smoke-new',
@@ -2909,58 +2980,39 @@ paths:
     });
   });
 
-  it('refresh mode falls back to newly generated collections when sync of tracked targets fails', async () => {
-    const { core, warnings } = createCoreStub();
-    const generatedIds = ['col-baseline-fresh', 'col-smoke-fresh', 'col-contract-fresh'];
-    const postman = createRollbackPostman({
-      generateCollection: vi.fn().mockImplementation(async () => generatedIds.shift() || 'col-fallback')
-    });
-    const internalIntegration = createRollbackIntegration({
-      syncCollection: vi.fn().mockImplementation(async (_specId: string, collectionId: string) => {
-        if (collectionId.includes('stale')) {
-          throw new Error('collection not linked to spec');
-        }
-        return undefined;
-      })
-    });
-
-    const result = await runExistingSpecBootstrap(postman, {
-      core,
-      internalIntegration,
-      inputs: {
-        baselineCollectionId: 'col-baseline-stale',
-        smokeCollectionId: 'col-smoke\u2028stale',
-        contractCollectionId: 'col-contract-stale',
-        collectionSyncMode: 'refresh'
-      }
-    });
-
-    // A sync failure on a stale/unlinked collection degrades to a fresh generate
-    // (no hard failure, no v2 restore); the fresh ids win.
-    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
-    expect(postman.deleteCollection).not.toHaveBeenCalled();
-    expect(result).toMatchObject({
-      'baseline-collection-id': 'col-baseline-fresh',
-      'smoke-collection-id': 'col-smoke-fresh',
-      'contract-collection-id': 'col-contract-fresh'
-    });
-    const regenerateWarning = warnings.find(
-      (warning) =>
-        warning.includes('Could not regenerate existing') && warning.includes('col-smoke stale')
-    );
-    expect(regenerateWarning).toBeDefined();
-    expect(regenerateWarning).toContain('spec spec-existing');
-    expect(regenerateWarning).toContain('smoke collection col-smoke stale');
-    expect(regenerateWarning).toContain('Consequence: generating a fresh');
-    expect(regenerateWarning).toContain('Remediation:');
-    expect(regenerateWarning).toMatch(/persisted references/i);
-    expect(regenerateWarning).not.toMatch(/[\r\n\u2028\u2029]/);
-  });
-
-  it('rejects collection ID collisions after refresh before tagging or linking', async () => {
+  it('refresh mode fails closed without replacement IDs when deep-update fails (Q6)', async () => {
     const { core } = createCoreStub();
     const postman = createRollbackPostman({
-      generateCollection: vi.fn().mockResolvedValue('col-shared')
+      deepUpdateV2Collection: vi.fn().mockRejectedValue(new Error('deep update refused'))
+    });
+    const internalIntegration = createRollbackIntegration();
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        core,
+        internalIntegration,
+        inputs: {
+          baselineCollectionId: 'col-baseline-stale',
+          smokeCollectionId: 'col-smoke-stale',
+          contractCollectionId: 'col-contract-stale',
+          collectionSyncMode: 'refresh'
+        }
+      })
+    ).rejects.toThrow(/LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=(deep-update|cloud-collection-write)/);
+
+    expect(postman.importV2Collection).not.toHaveBeenCalled();
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+  });
+
+  it('rejects collection ID collisions after import before tagging or linking', async () => {
+    const { core } = createCoreStub();
+    const postman = createRollbackPostman({
+      importV2Collection: vi.fn().mockResolvedValue({
+        collectionId: 'col-shared',
+        journaledRootIds: ['col-shared'],
+        deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+      })
     });
     const internalIntegration = createRollbackIntegration();
 
@@ -2980,12 +3032,19 @@ paths:
   it('records completed tag side effects when a later tag fails', async () => {
     const { core, warnings } = createCoreStub();
     const postman = createRollbackPostman({
-      generateCollection: vi
+      importV2Collection: vi
         .fn()
-        .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-          if (prefix === '') return 'col-baseline\u2028generated';
-          if (prefix === '[Smoke]') return 'col-smoke-generated';
-          return 'col-contract-generated';
+        .mockImplementation(async (_workspaceId: string, _collection: unknown, finalName: string) => {
+          const id = finalName.includes('[Contract]')
+            ? 'col-contract-generated'
+            : finalName.includes('[Smoke]')
+              ? 'col-smoke-generated'
+              : 'col-baseline\u2028generated';
+          return {
+            collectionId: id,
+            journaledRootIds: [id],
+            deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+          };
         }),
       tagCollection: vi
         .fn()
@@ -3009,56 +3068,29 @@ paths:
     expect(sideEffectWarning).not.toMatch(/[\r\n\u2028\u2029]/);
   });
 
-  it('records completed link and sync side effects when later sync fails', async () => {
+  it('records completed link side effects when later tag fails after readback', async () => {
     const { core, warnings } = createCoreStub();
-    const postman = createRollbackPostman();
-    const internalIntegration = createRollbackIntegration({
-      syncCollection: vi
-        .fn()
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValueOnce(new Error('second sync failed'))
+    const postman = createRollbackPostman({
+      tagCollection: vi.fn().mockRejectedValue(new Error('tag after link failed'))
     });
+    const internalIntegration = createRollbackIntegration();
 
     await expect(
       runExistingSpecBootstrap(postman, { core, internalIntegration })
-    ).rejects.toThrow('second sync failed');
+    ).rejects.toThrow('tag after link failed');
 
     expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
-    expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(3);
+    expect(internalIntegration.settleSpecificationCollectionRelations).toHaveBeenCalledTimes(1);
+    expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
     const sideEffectWarning = warnings.find(
       (warning) =>
         warning.includes('Completed external side effects before failure')
         && warning.includes('linkCollectionsToSpecification(spec-existing: col-baseline-generated, col-smoke-generated, col-contract-generated; syncExamples=true)')
-        && warning.includes('syncCollection(spec-existing, col-baseline-generated)')
     );
     expect(sideEffectWarning).toBeDefined();
-    expect(sideEffectWarning).toContain('cause: second sync failed');
+    expect(sideEffectWarning).toContain('cause: tag after link failed');
     expect(sideEffectWarning).toContain('Remediation: inspect and reconcile');
     expect(sideEffectWarning).not.toMatch(/[\r\n\u2028\u2029]/);
-  });
-
-  it('waits for every linked sync before failure handling and records settled siblings', async () => {
-    const { core, warnings } = createCoreStub();
-    const postman = createRollbackPostman();
-    let releaseLast!: () => void;
-    const lastPending = new Promise<void>((resolve) => { releaseLast = resolve; });
-    const internalIntegration = createRollbackIntegration({
-      syncCollection: vi.fn()
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValueOnce(new Error('deferred sync failure'))
-        .mockImplementationOnce(() => lastPending)
-    });
-
-    const run = runExistingSpecBootstrap(postman, { core, internalIntegration });
-    await vi.waitFor(() => expect(internalIntegration.syncCollection).toHaveBeenCalledTimes(3));
-    await Promise.resolve();
-    expect(warnings.some((warning) => warning.includes('Completed external side effects before failure'))).toBe(false);
-
-    releaseLast();
-    await expect(run).rejects.toThrow('deferred sync failure');
-    const sideEffectWarning = warnings.find((warning) => warning.includes('Completed external side effects before failure'));
-    expect(sideEffectWarning).toContain('syncCollection(spec-existing, col-baseline-generated)');
-    expect(sideEffectWarning).toContain('syncCollection(spec-existing, col-contract-generated)');
   });
 
   it('version mode reuses the current ref resources.yaml mappings instead of a release manifest', async () => {
@@ -3125,9 +3157,9 @@ paths:
     expect(postman.uploadSpec).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
     expect(result['spec-id']).toBe('spec-v111');
-    expect(result['baseline-collection-id']).toBe('col-baseline-v111');
-    expect(result['smoke-collection-id']).toBe('col-smoke-v111');
-    expect(result['contract-collection-id']).toBe('col-contract-v111');
+    expect(result['baseline-collection-id']).toBe('col-baseline-generated');
+    expect(result['smoke-collection-id']).toBe('col-smoke-generated');
+    expect(result['contract-collection-id']).toBe('col-contract-generated');
   });
 
   it('version mode does not persist asset identifiers to repository variables', async () => {
@@ -3296,9 +3328,9 @@ paths:
     expect(result).toMatchObject({
       'workspace-id': 'ws-from-file',
       'spec-id': 'spec-from-file',
-      'baseline-collection-id': 'col-baseline-from-file',
-      'smoke-collection-id': 'col-smoke-from-file',
-      'contract-collection-id': 'col-contract-from-file'
+      'baseline-collection-id': 'col-baseline-generated',
+      'smoke-collection-id': 'col-smoke-generated',
+      'contract-collection-id': 'col-contract-generated'
     });
   });
 
@@ -3393,7 +3425,8 @@ paths:
     expect(postman.createWorkspace).toHaveBeenCalled();
     expect(
       warnings.some((warning) =>
-        warning.includes('Skipping cloud spec-to-collection linking and sync because postman-access-token is not configured')
+        warning.includes('Skipping cloud spec-to-collection linking')
+        && warning.includes('postman-access-token is not configured')
       )
     ).toBe(true);
   });
@@ -3419,12 +3452,9 @@ paths:
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
-    const internalIntegration = {
-      assignWorkspaceToGovernanceGroup: vi.fn().mockRejectedValue(new Error('gateway 404')),
-      configureTeamContext: vi.fn(),
-      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
-      syncCollection: vi.fn().mockResolvedValue(undefined)
-    };
+    const internalIntegration = createRollbackIntegration({
+      assignWorkspaceToGovernanceGroup: vi.fn().mockRejectedValue(new Error('gateway 404'))
+    });
 
     const result = await runBootstrap(
       createInputs({ domain: 'core\u2028banking' }),
@@ -3571,11 +3601,7 @@ paths:
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi
-        .fn()
-        .mockResolvedValueOnce('col-baseline')
-        .mockResolvedValueOnce('col-smoke')
-        .mockResolvedValueOnce('col-contract'),
+      generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
@@ -3588,12 +3614,9 @@ paths:
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
-    const internalIntegration = {
-      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
-      configureTeamContext: vi.fn(),
-      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
-      syncCollection: vi.fn().mockResolvedValue(undefined)
-    };
+    const internalIntegration = createRollbackIntegration({
+      assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined)
+    });
 
     await runBootstrap(
       createInputs({ syncExamples: false }),
@@ -3612,11 +3635,22 @@ paths:
     expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledWith(
       'spec-123',
       [
-        { collectionId: 'col-baseline', syncOptions: { syncExamples: false } },
-        { collectionId: 'col-smoke', syncOptions: { syncExamples: false } },
-        { collectionId: 'col-contract', syncOptions: { syncExamples: false } }
+        expect.objectContaining({
+          collectionId: 'col-baseline-generated',
+          options: expect.any(Object),
+          syncOptions: { syncExamples: false }
+        }),
+        expect.objectContaining({
+          collectionId: 'col-smoke-generated',
+          syncOptions: { syncExamples: false }
+        }),
+        expect.objectContaining({
+          collectionId: 'col-contract-generated',
+          syncOptions: { syncExamples: false }
+        })
       ]
     );
+    expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
   });
 
   it('runs without any GitHub dependency', async () => {
@@ -3716,9 +3750,10 @@ paths:
     );
 
     expect(postman.generateCollection).not.toHaveBeenCalled();
-    expect(result['baseline-collection-id']).toBe('col-baseline-current');
-    expect(result['smoke-collection-id']).toBe('col-smoke-current');
-    expect(result['contract-collection-id']).toBe('col-contract-current');
+    // Version mode with changed content always imports fresh local payloads.
+    expect(result['baseline-collection-id']).toBe('col-baseline-generated');
+    expect(result['smoke-collection-id']).toBe('col-smoke-generated');
+    expect(result['contract-collection-id']).toBe('col-contract-generated');
     expect(infos).toContain('Resolved baseline-collection-id from .postman/resources.yaml');
     expect(infos).toContain('Resolved smoke-collection-id from .postman/resources.yaml');
     expect(infos).toContain('Resolved contract-collection-id from .postman/resources.yaml');
@@ -4017,7 +4052,7 @@ paths:
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('forwards folderStrategy, nestedFolderHierarchy, and requestNameSource to generateCollection', async () => {
+  it('forwards folderStrategy, nestedFolderHierarchy, and requestNameSource into local OpenAPI link options', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -4025,7 +4060,7 @@ paths:
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
-      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      generateCollection: vi.fn(),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
       getTeams: vi.fn().mockResolvedValue([]),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
@@ -4038,6 +4073,8 @@ paths:
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
+    const internalIntegration = createRollbackIntegration();
+    const wrapped = withContractHelpers(postman);
 
     await runBootstrap(
       createInputs({ folderStrategy: 'Tags', nestedFolderHierarchy: true, requestNameSource: 'URL' }),
@@ -4045,19 +4082,30 @@ paths:
         core,
         exec: execStub,
         io: ioStub,
-        postman: withContractHelpers(postman),
+        internalIntegration,
+        postman: wrapped,
         specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
           new Response(VALID_SPEC_31, { status: 200 })
         )
       }
     );
 
-    for (const call of postman.generateCollection.mock.calls) {
-      expect(call[3]).toBe('Tags');
-      expect(call[4]).toBe(true);
-      expect(call[5]).toBe('URL');
-    }
-    expect(postman.generateCollection).toHaveBeenCalledTimes(3);
+    expect(
+      (wrapped as unknown as { importV2Collection: ReturnType<typeof vi.fn> }).importV2Collection
+    ).toHaveBeenCalledTimes(3);
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledWith(
+      'spec-123',
+      expect.arrayContaining([
+        expect.objectContaining({
+          options: expect.objectContaining({
+            folderStrategy: 'Tags',
+            nestedFolderHierarchy: true,
+            requestNameSource: 'URL'
+          })
+        })
+      ])
+    );
   });
 });
 
@@ -4361,14 +4409,12 @@ describe('OpenAPI 3.0 lint compatibility', () => {
       updateSpec: vi.fn().mockResolvedValue(undefined),
       getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
     };
-    const internalIntegration = {
+    const internalIntegration = createRollbackIntegration({
       assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
       configureTeamContext: vi.fn(() => {
         callOrder.push('internalIntegration.configureTeamContext');
-      }),
-      linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
-      syncCollection: vi.fn().mockResolvedValue(undefined)
-    };
+      })
+    });
     const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(VALID_SPEC_31, { status: 200 })
     );
@@ -4788,10 +4834,15 @@ describe('runAction credential preflight', () => {
   function createRunActionFetchRouter(options: RunActionRouterOptions): typeof fetch {
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status });
-    // The gateway generateCollection resolves the new uid via the spec's
-    // collection list (newest last), so accumulate one distinct uid per
-    // generation to mirror the real store and avoid id collisions.
-    const generatedCollections: Array<{ collection: string; name: string }> = [];
+    // Local OpenAPI import resolves uid from sync /collection/import, then
+    // rename/elect via collection list. Track imported roots for election + link readback.
+    const importedCollections: Array<{ id: string; name: string }> = [];
+    const linkedRelations: Array<{
+      collection: string;
+      state: string;
+      options?: Record<string, unknown>;
+      syncOptions?: Record<string, unknown>;
+    }> = [];
     const router = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = String(input);
       const method = String(init?.method || 'GET').toUpperCase();
@@ -4886,21 +4937,67 @@ describe('runAction credential preflight', () => {
           if (pmethod === 'get' && ppath.startsWith('/workspaces')) return json({ data: [] });
         }
         if (svc === 'ums' && /\/squads/.test(ppath)) return json({ data: [] });
-        if (svc === 'specification') {
-          if (pmethod === 'post' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
-            const name = String((payload as { body?: { name?: string } }).body?.name ?? '');
-            const slot = name.includes('[Smoke]')
-              ? 'smoke'
-              : name.includes('[Contract]')
-                ? 'contract'
+        if (svc === 'sync') {
+          if (pmethod === 'post' && ppath === '/collection/import') {
+            const body = (payload as { body?: { info?: { name?: string } } }).body;
+            const name = String(body?.info?.name ?? '');
+            const slot = name.includes('[Contract]')
+              ? 'contract'
+              : name.includes('[Smoke]')
+                ? 'smoke'
                 : 'baseline';
-            generatedCollections.push({ collection: `col-${slot}`, name });
+            const id = `col-${slot}`;
+            importedCollections.push({ id, name });
+            return json({ data: { id, uid: id } });
+          }
+          if (pmethod === 'put' && /\/collection\/deepupdate\//.test(ppath)) {
+            return json({ data: { ok: true } });
+          }
+        }
+        if (svc === 'specification') {
+          if (pmethod === 'put' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
+            const body = (payload as { body?: unknown }).body;
+            const rows = Array.isArray(body) ? body : [];
+            linkedRelations.length = 0;
+            for (const row of rows) {
+              if (!row || typeof row !== 'object') continue;
+              const record = row as {
+                collectionId?: string;
+                options?: Record<string, unknown>;
+                syncOptions?: Record<string, unknown>;
+              };
+              if (!record.collectionId) continue;
+              linkedRelations.push({
+                collection: record.collectionId,
+                state: 'in-sync',
+                options: record.options ?? {
+                  requestNameSource: 'Fallback',
+                  folderStrategy: 'Paths',
+                  parametersResolution: 'Example'
+                },
+                syncOptions: record.syncOptions ?? { syncExamples: true }
+              });
+            }
+            return json({ data: { updated: linkedRelations.length } });
+          }
+          if (pmethod === 'post' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
             return json({ data: { taskId: 'task-1' } });
           }
           if (pmethod === 'get' && /\/tasks/.test(ppath)) return json({ data: { 'task-1': 'completed' } });
           if (pmethod === 'get' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
             return json({
-              data: generatedCollections.map((entry) => ({ ...entry, state: 'in-sync' }))
+              data: linkedRelations.length > 0
+                ? linkedRelations
+                : importedCollections.map((entry) => ({
+                    collection: entry.id,
+                    state: 'in-sync',
+                    options: {
+                      requestNameSource: 'Fallback',
+                      folderStrategy: 'Paths',
+                      parametersResolution: 'Example'
+                    },
+                    syncOptions: { syncExamples: true }
+                  }))
             });
           }
           if (pmethod === 'get' && /\/specifications\/[^/]+\/files\/[^/]+/.test(ppath)) return json({ data: { id: 'file-root', content: 'openapi: 3.0.0' } });
@@ -4910,9 +5007,15 @@ describe('runAction credential preflight', () => {
           if (pmethod === 'get' && /\/specifications\/[^/]+$/.test(ppath)) return json({ data: { id: 'spec-runaction' } });
         }
         if (svc === 'collection') {
-          // Per-item GET returns the full v3 IR record the contract matcher reads;
-          // the list GET returns one leaf covering the spec's single GET /payments
-          // operation so injectContractTests' coverage check is satisfied.
+          if (pmethod === 'get' && ppath.startsWith('/v3/collections/?workspace=')) {
+            return json({
+              data: importedCollections.map((entry) => ({
+                id: entry.id,
+                uid: entry.id,
+                name: entry.name
+              }))
+            });
+          }
           if (pmethod === 'get' && /\/items\/[^/]+$/.test(ppath)) {
             return json({
               data: {
@@ -4928,8 +5031,22 @@ describe('runAction credential preflight', () => {
             return json({ data: [{ $kind: 'http-request', id: 'item-1', name: 'GET /payments' }] });
           }
           if (pmethod === 'post') return json({ data: { id: '55363555-created' } });
-          if (pmethod === 'patch') return json({ data: { id: 'patched' } });
+          if (pmethod === 'patch') {
+            // Rename after import: keep inventory name in sync for election.
+            const bare = ppath.split('/').pop() || '';
+            const ops = (payload as { body?: Array<{ path?: string; value?: string }> }).body;
+            const nameOp = Array.isArray(ops) ? ops.find((op) => op.path === '/name') : undefined;
+            if (nameOp?.value) {
+              const hit = importedCollections.find((entry) => entry.id === bare || entry.id.endsWith(bare));
+              if (hit) hit.name = String(nameOp.value);
+            }
+            return json({ data: { id: bare || 'patched' } });
+          }
           if (pmethod === 'get' && /\/export$/.test(ppath)) return json({ data: { collection: {} } });
+          if (pmethod === 'get' && /\/v3\/collections\/[^/]+$/.test(ppath)) {
+            return json({ data: { id: 'col-baseline', name: 'core-payments' } });
+          }
+          if (pmethod === 'delete') return json({ data: { ok: true } }, 404);
         }
         if (svc === 'tagging') return json({ tags: [{ slug: 'generated-smoke' }] });
         return json({ data: { ok: true } });

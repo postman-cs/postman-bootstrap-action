@@ -2,6 +2,8 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as io from '@actions/io';
 import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { parse, stringify } from 'yaml';
 
@@ -35,10 +37,6 @@ import {
   type PreflightMode
 } from './lib/postman/credential-identity.js';
 import { isAmbiguousTransportError } from './lib/postman/create-reconciliation.js';
-import {
-  generateCollectionsWithSpecFanout,
-  type CollectionGenerationRoleName
-} from './lib/postman/collection-generation-fanout.js';
 import { adviseFromHttpError } from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
@@ -55,6 +53,12 @@ import {
 } from './lib/postman/spec-file-reconcile.js';
 import { resolveCanonicalWorkspaceSelection } from './lib/postman/workspace-selection.js';
 import { detectRepoContext } from './lib/repo/context.js';
+import {
+  finalizeLocalOpenApiArtifactManifest,
+  materializeLocalCollectionArtifacts,
+  persistLocalOpenApiArtifactManifest,
+  type MaterializeLocalCollectionArtifactsResult
+} from './lib/repo/local-collection-artifacts.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker, createMutableSecretMasker, type SecretMasker } from './lib/secrets.js';
 import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
@@ -68,6 +72,12 @@ import {
   type DefinitionBundle,
   type DefinitionFormat
 } from './lib/spec/definition-bundle.js';
+import {
+  buildLocalOpenApiConversionOptions,
+  generateLocalOpenApiRolePayloads,
+  type CollectionRole,
+  type LocalOpenApiRolePayloads
+} from './lib/spec/local-openapi-collection-generation.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
 import {
@@ -162,6 +172,8 @@ export interface PlannedOutputs {
   'spec-version-tag': string;
   'spec-version-url': string;
   'spec-content-changed'?: string;
+  'prebuilt-collections-json'?: string;
+  'openapi-operation-ledger-json'?: string;
 }
 
 export interface LintViolation {
@@ -218,7 +230,14 @@ export interface BootstrapExecutionDependencies {
     | 'linkCollectionsToSpecification'
     | 'syncCollection'
   > &
-    Partial<Pick<InternalIntegrationAdapter, 'findWorkspaceForRepo'>>;
+    Partial<
+      Pick<
+        InternalIntegrationAdapter,
+        | 'findWorkspaceForRepo'
+        | 'listSpecificationCollectionRelations'
+        | 'settleSpecificationCollectionRelations'
+      >
+    >;
   github?: Pick<GitHubApiClient, 'getRepositoryCustomProperty'>;
   postman: Pick<
     PostmanGatewayAssetsClient,
@@ -282,6 +301,21 @@ export interface BootstrapExecutionDependencies {
     ): Promise<string>;
     updateCollection?(collectionUid: string, collection: unknown): Promise<void>;
     updateCollectionDescription?(collectionUid: string, description: string): Promise<void>;
+    importV2Collection?(
+      workspaceId: string,
+      collection: unknown,
+      finalName: string
+    ): Promise<{
+      collectionId: string;
+      journaledRootIds: string[];
+      deleteVerifiedCleanup: (ids?: string[]) => Promise<void>;
+    }>;
+    deepUpdateV2Collection?(
+      collectionUid: string,
+      collection: unknown,
+      expectedPayloadDigest: string
+    ): Promise<string>;
+    deleteVerifiedRunOwnedCollections?(collectionIds: string[]): Promise<void>;
   };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,
@@ -298,6 +332,54 @@ export interface BootstrapExecutionDependencies {
     write(state: PostmanResourcesState): void;
   };
   specFetcher: typeof fetch;
+}
+
+export type LocalOpenApiOperationCounts = {
+  localConversion: number;
+  wholeCollectionImport: number;
+  deepUpdate: number;
+  specHubCollectionGeneration: number;
+  specHubCollectionSync: number;
+  temporaryOpenApiSpecCreate: number;
+  temporaryOpenApiSpecDelete: number;
+  v3PerItemCollectionCreate: number;
+  postCreateScriptPatch: number;
+  retries: number;
+};
+
+const LOCAL_OPENAPI_OBSERVED_METHODS: Readonly<Record<string, keyof LocalOpenApiOperationCounts>> = {
+  importV2Collection: 'wholeCollectionImport',
+  deepUpdateV2Collection: 'deepUpdate',
+  generateCollection: 'specHubCollectionGeneration',
+  syncCollection: 'specHubCollectionSync',
+  uploadSpec: 'temporaryOpenApiSpecCreate',
+  uploadSpecWithOutcome: 'temporaryOpenApiSpecCreate',
+  uploadSpecBundle: 'temporaryOpenApiSpecCreate',
+  deleteSpec: 'temporaryOpenApiSpecDelete',
+  createCollection: 'v3PerItemCollectionCreate',
+  createRunOwnedCollection: 'v3PerItemCollectionCreate',
+  injectTests: 'postCreateScriptPatch',
+  injectContractTests: 'postCreateScriptPatch',
+  patchCollectionScripts: 'postCreateScriptPatch',
+  patchItemScripts: 'postCreateScriptPatch'
+};
+
+/** Observe local-OpenAPI dependency calls at invocation time, including throws. */
+export function observeLocalOpenApiOperations<T extends object>(
+  dependency: T,
+  counts: LocalOpenApiOperationCounts
+): T {
+  return new Proxy(dependency, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof property !== 'string' || typeof value !== 'function') return value;
+      const counter = LOCAL_OPENAPI_OBSERVED_METHODS[property];
+      return function observed(this: unknown, ...args: unknown[]) {
+        if (counter) counts[counter] += 1;
+        return Reflect.apply(value, target, args);
+      };
+    }
+  });
 }
 
 function resolveResourcesStateStore(dependencies: BootstrapExecutionDependencies) {
@@ -758,7 +840,9 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
     'branch-decision': '',
     'spec-version-tag': '',
     'spec-version-url': '',
-    'spec-content-changed': ''
+    'spec-content-changed': 'false',
+    'prebuilt-collections-json': '',
+    'openapi-operation-ledger-json': ''
   };
 }
 
@@ -1065,12 +1149,6 @@ type GeneratedCollectionPrefix =
   | typeof BASELINE_COLLECTION_PREFIX
   | typeof SMOKE_COLLECTION_PREFIX
   | typeof CONTRACT_COLLECTION_PREFIX;
-
-function describeGeneratedCollection(prefix: GeneratedCollectionPrefix): string {
-  if (prefix === SMOKE_COLLECTION_PREFIX) return 'smoke';
-  if (prefix === CONTRACT_COLLECTION_PREFIX) return 'contract';
-  return 'baseline';
-}
 
 function normalizedResourcePath(filePath: string): string {
   return filePath.replace(/\\/g, '/').replace(/\/+$/g, '');
@@ -1636,6 +1714,57 @@ async function provisionWorkspace(
 
 function resolveWorkspaceRoot(): string {
   return path.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
+}
+
+/** Stable deep equality for link readback of generation options / syncOptions. */
+function deepJsonEqual(actual: unknown, expected: unknown): boolean {
+  if (actual === expected) return true;
+  if (actual === null || expected === null) return actual === expected;
+  if (typeof actual !== typeof expected) return false;
+  if (typeof actual !== 'object') return false;
+  if (Array.isArray(actual) || Array.isArray(expected)) {
+    if (!Array.isArray(actual) || !Array.isArray(expected)) return false;
+    if (actual.length !== expected.length) return false;
+    return actual.every((value, index) => deepJsonEqual(value, expected[index]));
+  }
+  const actualRecord = actual as Record<string, unknown>;
+  const expectedRecord = expected as Record<string, unknown>;
+  const actualKeys = Object.keys(actualRecord).sort();
+  const expectedKeys = Object.keys(expectedRecord).sort();
+  if (actualKeys.length !== expectedKeys.length) return false;
+  if (actualKeys.some((key, index) => key !== expectedKeys[index])) return false;
+  return actualKeys.every((key) => deepJsonEqual(actualRecord[key], expectedRecord[key]));
+}
+
+/** Requires every requested semantic while tolerating server-added object defaults/metadata. */
+function includesRequestedJsonSemantics(actual: unknown, requested: unknown): boolean {
+  if (actual === requested) return true;
+  if (actual === null || requested === null) return actual === requested;
+  if (typeof actual !== typeof requested) return false;
+  if (typeof actual !== 'object') return false;
+  if (Array.isArray(actual) || Array.isArray(requested)) {
+    return deepJsonEqual(actual, requested);
+  }
+  const actualRecord = actual as Record<string, unknown>;
+  const requestedRecord = requested as Record<string, unknown>;
+  return Object.keys(requestedRecord).every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(actualRecord, key) &&
+      includesRequestedJsonSemantics(actualRecord[key], requestedRecord[key])
+  );
+}
+
+function extractSyncExamplesValue(syncOptions: unknown): boolean | undefined {
+  if (!syncOptions || typeof syncOptions !== 'object' || Array.isArray(syncOptions)) {
+    return undefined;
+  }
+  const syncExamples = (syncOptions as Record<string, unknown>).syncExamples;
+  if (typeof syncExamples === 'boolean') return syncExamples;
+  if (!syncExamples || typeof syncExamples !== 'object' || Array.isArray(syncExamples)) {
+    return undefined;
+  }
+  const value = (syncExamples as Record<string, unknown>).value;
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function definitionFormatToSpecType(format: DefinitionFormat): SpecType {
@@ -2649,6 +2778,21 @@ async function runBootstrapInner(
     reason: 'bootstrap does not invoke the Postman CLI lint'
   });
 
+  let localOpenApiGenerationOptions: ReturnType<typeof buildLocalOpenApiConversionOptions> | undefined;
+  let observedLocalOpenApiPostman = dependencies.postman;
+  let observedLocalOpenApiIntegration = dependencies.internalIntegration;
+  let openApiOperationLedger:
+    | {
+        schemaVersion: 1;
+        mode: 'local';
+        phase: 'fresh' | 'changed-deep-update' | 'mixed-import-deep-update';
+        roleCount: number;
+        counts: Record<string, number>;
+        timings: { conversionMs: number; importMs: number; totalMs: number };
+        linkRelationStates?: Record<string, string>;
+      }
+    | undefined;
+  void openApiOperationLedger;
   if (specContentUnchanged) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
@@ -2663,14 +2807,13 @@ async function runBootstrapInner(
       'Generate Collections from Spec',
       async () => {
         const assetProjectName = collectionAssetProjectName;
-        const specId = outputs['spec-id'];
-
+        const orchestrationStarted = Date.now();
         type CollectionOutputKey =
           | 'baseline-collection-id'
           | 'smoke-collection-id'
           | 'contract-collection-id';
         const collectionRoles: Array<{
-          role: CollectionGenerationRoleName;
+          role: CollectionRole;
           prefix: GeneratedCollectionPrefix;
           existingId: string | undefined;
           outputKey: CollectionOutputKey;
@@ -2695,186 +2838,269 @@ async function runBootstrapInner(
           }
         ];
 
-        // Resolve tracked collections first. Only roles that cannot preserve an
-        // existing identity enter fresh generation and therefore need spec shards.
-        const resolveExistingCollection = async (
-          prefix: GeneratedCollectionPrefix,
-          existingId: string | undefined,
-          outputKey: CollectionOutputKey
-        ): Promise<boolean> => {
-          if (existingId) {
-            if (inputs.collectionSyncMode === 'refresh' && dependencies.internalIntegration) {
-              try {
-                await dependencies.internalIntegration.syncCollection(specId, existingId);
-                outputs[outputKey] = existingId;
-                dependencies.core.info(
-                  `Refreshed existing ${describeGeneratedCollection(prefix)} collection ${existingId} from the current spec`
-                );
-                return true;
-              } catch (error) {
-                if (isAmbiguousTransportError(error)) {
-                  const refreshedState = stateStore.read();
-                  findCloudResourceId(
-                    refreshedState?.cloudResources?.collections,
-                    (filePath) => prefix
-                      ? matchesPrefixedCollectionResource(filePath, prefix, assetProjectName)
-                      : matchesBaselineCollectionResource(filePath, assetProjectName)
-                  );
-                  // The sync may have committed. Never replace or adopt a
-                  // same-name collection after an ambiguous response.
-                  throw error;
-                }
-                const role = describeGeneratedCollection(prefix);
-                const mask = createBootstrapSecretMasker(inputs);
-                const cause = formatMaskedOneLine(error, mask);
-                dependencies.core.warning(
-                  formatMaskedOneLine(
-                    `Could not regenerate existing ${role} collection ${existingId} from spec ${specId}: ${cause}. ` +
-                      `Consequence: generating a fresh ${role} collection automatically (persisted references to ${existingId} will not be preserved). ` +
-                      `Remediation: if persisted references to ${existingId} matter, update repository variables or relink after the run; otherwise no action needed.`,
-                    mask
-                  )
-                );
-              }
-            } else {
-              outputs[outputKey] = existingId;
-              dependencies.core.info(
-                `Using existing ${describeGeneratedCollection(prefix)} collection: ${existingId}`
-              );
-              return true;
-            }
-          }
-          return false;
-        };
-
-        const freshRoles: Array<(typeof collectionRoles)[number] & { effectivePrefix: string }> = [];
-        for (const role of collectionRoles) {
-          if (
-            !(await resolveExistingCollection(role.prefix, role.existingId, role.outputKey))
-          ) {
-            // Channels prefix the complete role-aware collection name so sets
-            // group as `[DEV] [Smoke] name`, never `[Smoke] [DEV] name`.
-            freshRoles.push({
-              ...role,
-              effectivePrefix:
-                branchDecision.tier === 'channel' && branchDecision.channel
-                  ? channelAssetName(role.prefix, branchDecision.channel.code).trim()
-                  : role.prefix
-            });
-          }
-        }
-
-        if (freshRoles.length > 0) {
-          const generation = await generateCollectionsWithSpecFanout({
-            assetName: assetProjectName,
-            canonicalSpecId: specId,
-            workspaceId: workspaceId || '',
-            openapiVersion: detectedOpenapiVersion,
-            source:
-              useMultiFileSync && uploadDefinitionBundle
-                ? { kind: 'bundle', bundle: uploadDefinitionBundle }
-                : { kind: 'single', content: uploadSpecContent },
-            roles: freshRoles.map((role) => ({
-              role: role.role,
-              prefix: role.effectivePrefix
-            })),
-            reservedCollectionIds: {
-              baseline: outputs['baseline-collection-id'] || undefined,
-              smoke: outputs['smoke-collection-id'] || undefined,
-              contract: outputs['contract-collection-id'] || undefined
-            },
-            folderStrategy: inputs.folderStrategy,
-            nestedFolderHierarchy: inputs.nestedFolderHierarchy,
-            requestNameSource: inputs.requestNameSource,
-            postman: dependencies.postman,
-            integration: dependencies.internalIntegration,
-            env: process.env,
-            identity: process.env.GITHUB_RUN_ID
-              ? () => `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT || '1'}`
-              : undefined,
-            info: (message) => dependencies.core.info(message)
-          });
-
-          for (const role of freshRoles) {
-            const collectionId = generation.collections[role.role];
-            if (!collectionId) {
-              throw new Error(`Fresh ${role.role} collection generation did not return an ID`);
-            }
-            outputs[role.outputKey] = collectionId;
-            dependencies.core.info(
-              `Generated ${describeGeneratedCollection(role.prefix)} collection: ${collectionId}`
-            );
-          }
-          dependencies.core.info(
-            `Collection generation ${generation.diagnostic.strategy} completed for ${generation.diagnostic.freshRoles} role(s) using ${generation.diagnostic.temporarySpecs} temporary spec(s) in ${generation.diagnostic.durationMs}ms`
-          );
-          // Spec/collection resources state remains in memory until verified
-          // generation/linking completes at the existing final commit boundary.
-          recordCurrentBootstrapResources({
-            assetProjectName,
-            inputs,
-            outputs,
-            persistWorkspaceId,
-            releaseLabel,
-            resourcesState: writableResourcesState
-          });
-        }
-
-        // Dual-trigger re-election: concurrent previews may have each generated
-        // then orphan-swept. Re-adopt the durable ids before description/inject.
-        if (dependencies.postman.adoptGeneratedCollection) {
-          const reelect = async (
-            prefix: GeneratedCollectionPrefix,
-            outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id'
-          ) => {
-            const effectivePrefix = branchDecision.tier === 'channel' && branchDecision.channel
-              ? channelAssetName(prefix, branchDecision.channel.code).trim()
-              : prefix;
-            const preferred = outputs[outputKey];
-            if (!preferred) return;
-            outputs[outputKey] = await dependencies.postman.adoptGeneratedCollection!(
-              specId,
-              assetProjectName,
-              effectivePrefix,
-              preferred
-            );
-          };
-          await reelect(BASELINE_COLLECTION_PREFIX, 'baseline-collection-id');
-          await reelect(SMOKE_COLLECTION_PREFIX, 'smoke-collection-id');
-          await reelect(CONTRACT_COLLECTION_PREFIX, 'contract-collection-id');
-        }
-
-        if (collectionBranchMarker) {
-          if (!dependencies.postman.updateCollectionDescription) {
-            throw new Error('Branch-scoped collections require updateCollectionDescription support');
-          }
-          await Promise.all([
-            outputs['baseline-collection-id'],
-            outputs['smoke-collection-id'],
-            outputs['contract-collection-id']
-          ].filter(Boolean).map((id) => dependencies.postman.updateCollectionDescription!(id, collectionBranchMarker)));
-        }
-
-        // Contract test injection is v3-native over the access-token gateway:
-        // list the generated collection's items, then PATCH each `http-request`
-        // leaf's `/scripts` with the deterministic contract afterResponse script
-        // and prepend the secrets resolver. This avoids the collection export and
-        // v2.1.0 collection PUT the dynamic-contract refresh used to perform.
-        if (!dependencies.postman.injectContractTests) {
-          throw new Error(
-            'Dynamic contract tests require injectContractTests support from the access-token gateway client'
-          );
-        }
         if (!contractIndex) {
           throw new Error('CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight');
         }
-        const contractWarnings = await dependencies.postman.injectContractTests(
-          outputs['contract-collection-id'],
+        if (!dependencies.postman.importV2Collection || !dependencies.postman.deepUpdateV2Collection) {
+          throw new Error(
+            'LOCAL_OPENAPI_ORCHESTRATION_FAILED: importV2Collection/deepUpdateV2Collection require access-token gateway support'
+          );
+        }
+
+        const roleNames = {} as Record<CollectionRole, string>;
+        for (const role of collectionRoles) {
+          const effectivePrefix =
+            branchDecision.tier === 'channel' && branchDecision.channel
+              ? channelAssetName(role.prefix, branchDecision.channel.code).trim()
+              : role.prefix;
+          // Artifact paths reject control characters; normalize identity separators.
+          roleNames[role.role] = [effectivePrefix, assetProjectName]
+            .filter(Boolean)
+            .join(' ')
+            .replace(/[\r\n\u2028\u2029]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        }
+
+        const conversionOptions = {
+          openApiVersion: detectedOpenapiVersion,
+          requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
+          folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
+          nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+          names: roleNames,
+          ...(collectionBranchMarker ? { description: collectionBranchMarker } : {}),
           contractIndex
-        );
-        for (const warning of contractWarnings) {
+        };
+        localOpenApiGenerationOptions = buildLocalOpenApiConversionOptions(conversionOptions);
+
+        const ownedLedger: string[] = [];
+        let artifactRestore: (() => Promise<void>) | undefined;
+        const counts: LocalOpenApiOperationCounts = {
+          localConversion: 0,
+          wholeCollectionImport: 0,
+          deepUpdate: 0,
+          specHubCollectionGeneration: 0,
+          specHubCollectionSync: 0,
+          temporaryOpenApiSpecCreate: 0,
+          temporaryOpenApiSpecDelete: 0,
+          v3PerItemCollectionCreate: 0,
+          postCreateScriptPatch: 0,
+          retries: 0
+        };
+        observedLocalOpenApiPostman = observeLocalOpenApiOperations(dependencies.postman, counts);
+        observedLocalOpenApiIntegration = dependencies.internalIntegration
+          ? observeLocalOpenApiOperations(dependencies.internalIntegration, counts)
+          : undefined;
+        let conversionMs: number;
+        let importCount = 0;
+        let updateCount = 0;
+
+        const failOwned = async (stage: string, cause: unknown): Promise<never> => {
+          const mask = createBootstrapSecretMasker(inputs);
+          const sanitizedCause = formatMaskedOneLine(cause, mask).slice(0, 240);
+          if (ownedLedger.length > 0 && dependencies.postman.deleteVerifiedRunOwnedCollections) {
+            try {
+              await dependencies.postman.deleteVerifiedRunOwnedCollections([...ownedLedger]);
+            } catch (cleanupError) {
+              dependencies.core.warning(
+                formatMaskedOneLine(
+                  `Owned OpenAPI import cleanup failed at ${stage}: ${formatMaskedOneLine(cleanupError, mask)}`,
+                  mask
+                )
+              );
+            }
+          }
+          if (artifactRestore) {
+            await artifactRestore().catch(() => undefined);
+          }
+          throw new Error(
+            `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`
+          );
+        };
+
+        let payloads: LocalOpenApiRolePayloads;
+        const conversionStarted = Date.now();
+        try {
+          counts.localConversion += 1;
+          payloads = await generateLocalOpenApiRolePayloads(specContent, conversionOptions);
+          conversionMs = Math.max(0, Date.now() - conversionStarted);
+        } catch (error) {
+          await failOwned('local-conversion', error);
+          throw error;
+        }
+        for (const warning of payloads.warnings) {
           dependencies.core.warning(warning);
         }
+
+        const repoRoot = resolveWorkspaceRoot();
+        const runTempDir = await mkdtemp(path.join(process.env.RUNNER_TEMP || tmpdir(), 'bootstrap-local-openapi-'));
+        let materialized: MaterializeLocalCollectionArtifactsResult;
+        try {
+          materialized = await materializeLocalCollectionArtifacts({
+            repoRoot,
+            runTempDir,
+            roles: collectionRoles.map((role) => ({
+              role: role.role,
+              collectionName: roleNames[role.role],
+              collection: payloads.roles[role.role].collection,
+              payloadDigest: payloads.roles[role.role].payloadDigest
+            })),
+            ...(inputs.specPath
+              ? {
+                  specPath: inputs.specPath,
+                  options: { ...(localOpenApiGenerationOptions as Record<string, unknown>) },
+                  syncOptions: { syncExamples: inputs.syncExamples }
+                }
+              : {})
+          });
+          artifactRestore = materialized.restore;
+        } catch (error) {
+          await failOwned('materialize-artifacts', error);
+          throw error;
+        }
+
+        const importStarted = Date.now();
+        type RoleWriteResult =
+          | {
+              role: CollectionRole;
+              outputKey: CollectionOutputKey;
+              kind: 'import';
+              collectionId: string;
+              journaledRootIds: string[];
+            }
+          | {
+              role: CollectionRole;
+              outputKey: CollectionOutputKey;
+              kind: 'deep-update';
+              collectionId: string;
+            };
+        const roleWriteTasks = collectionRoles.map(async (role): Promise<RoleWriteResult> => {
+          const payload = payloads.roles[role.role];
+          const finalName = roleNames[role.role];
+          const useDeepUpdate =
+            Boolean(role.existingId) && inputs.collectionSyncMode === 'refresh';
+          if (useDeepUpdate) {
+            const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection!(
+              role.existingId!,
+              payload.collection,
+              payload.payloadDigest
+            );
+            return {
+              role: role.role,
+              outputKey: role.outputKey,
+              kind: 'deep-update',
+              collectionId: preservedId
+            };
+          }
+          const imported = await observedLocalOpenApiPostman.importV2Collection!(
+            workspaceId || '',
+            payload.collection,
+            finalName
+          );
+          return {
+            role: role.role,
+            outputKey: role.outputKey,
+            kind: 'import',
+            collectionId: imported.collectionId,
+            journaledRootIds: [...imported.journaledRootIds]
+          };
+        });
+        // Bounded structured concurrency: start all independent role writes,
+        // drain every task before cleanup/failure decisions.
+        const settledWrites = await Promise.allSettled(roleWriteTasks);
+        const importMs = Math.max(0, Date.now() - importStarted);
+
+        const roleOrder = collectionRoles.map((role) => role.role);
+        const fulfilledByRole = new Map<CollectionRole, RoleWriteResult>();
+        const failures: unknown[] = [];
+        for (let i = 0; i < settledWrites.length; i += 1) {
+          const settled = settledWrites[i]!;
+          const role = roleOrder[i]!;
+          if (settled.status === 'fulfilled') {
+            fulfilledByRole.set(role, settled.value);
+          } else {
+            failures.push(settled.reason);
+          }
+        }
+        for (const role of collectionRoles) {
+          const result = fulfilledByRole.get(role.role);
+          if (!result) continue;
+          outputs[result.outputKey] = result.collectionId;
+          if (result.kind === 'import') {
+            for (const id of result.journaledRootIds) {
+              if (!ownedLedger.includes(id)) ownedLedger.push(id);
+            }
+            importCount += 1;
+            dependencies.core.info(
+              `Imported ${result.role} collection ${result.collectionId} from local OpenAPI payload`
+            );
+          } else {
+            updateCount += 1;
+            dependencies.core.info(
+              `Deep-updated existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
+            );
+          }
+        }
+        if (failures.length > 0) {
+          await failOwned(
+            importCount > 0 && updateCount > 0
+              ? 'mixed-import-deep-update'
+              : importCount > 0
+                ? 'partial-import'
+                : updateCount > 0
+                  ? 'deep-update'
+                  : 'cloud-collection-write',
+            failures[0]
+          );
+        }
+
+        // Persist returned IDs before canonical link calls.
+        recordCurrentBootstrapResources({
+          assetProjectName,
+          inputs,
+          outputs,
+          persistWorkspaceId,
+          releaseLabel,
+          resourcesState: writableResourcesState
+        });
+        stateStore.write(writableResourcesState);
+
+        const finalized = finalizeLocalOpenApiArtifactManifest(materialized.manifest, {
+          baseline: outputs['baseline-collection-id'],
+          smoke: outputs['smoke-collection-id'],
+          contract: outputs['contract-collection-id']
+        });
+        await persistLocalOpenApiArtifactManifest(repoRoot, finalized);
+        outputs['prebuilt-collections-json'] = JSON.stringify(finalized);
+
+        const phase: 'fresh' | 'changed-deep-update' | 'mixed-import-deep-update' =
+          importCount > 0 && updateCount > 0
+            ? 'mixed-import-deep-update'
+            : updateCount > 0
+              ? 'changed-deep-update'
+              : 'fresh';
+        const ledger = {
+          schemaVersion: 1 as const,
+          mode: 'local' as const,
+          phase,
+          roleCount: 3,
+          counts,
+          timings: {
+            conversionMs,
+            importMs,
+            totalMs: Math.max(0, Date.now() - orchestrationStarted)
+          }
+        };
+        openApiOperationLedger = ledger;
+        outputs['openapi-operation-ledger-json'] = JSON.stringify(ledger);
+        const ledgerRel = path.join('.postman', 'bootstrap-openapi-operation-ledger.json');
+        const ledgerAbs = path.join(repoRoot, ledgerRel);
+        await mkdir(path.dirname(ledgerAbs), { recursive: true });
+        await writeFile(ledgerAbs, `${JSON.stringify(ledger)}\n`, 'utf8');
+
+        dependencies.core.info(
+          `Local OpenAPI orchestration phase=${phase} imports=${importCount} deepUpdates=${updateCount} conversionMs=${conversionMs} importMs=${importMs}`
+        );
       }
     )
   );
@@ -2901,48 +3127,6 @@ async function runBootstrapInner(
     smoke: outputs['smoke-collection-id']
   });
 
-  await runRollbackStage(
-    'Inject Test Scripts',
-    async () => runGroup(
-      dependencies.core,
-      'Inject Test Scripts',
-      async () => {
-        await dependencies.postman.injectTests(outputs['smoke-collection-id'], 'smoke');
-        completedExternalSideEffects.push(
-          `injectTests(${outputs['smoke-collection-id']}, smoke)`
-        );
-      }
-    )
-  );
-
-  await runRollbackStage(
-    'Tag Collections',
-    async () => runGroup(
-      dependencies.core,
-      'Tag Collections',
-      async () => {
-        await dependencies.postman.tagCollection(outputs['baseline-collection-id'], [
-          'generated-docs'
-        ]);
-        completedExternalSideEffects.push(
-          `tagCollection(${outputs['baseline-collection-id']}, generated-docs)`
-        );
-        await dependencies.postman.tagCollection(outputs['smoke-collection-id'], [
-          'generated-smoke'
-        ]);
-        completedExternalSideEffects.push(
-          `tagCollection(${outputs['smoke-collection-id']}, generated-smoke)`
-        );
-        await dependencies.postman.tagCollection(outputs['contract-collection-id'], [
-          'generated-contract'
-        ]);
-        completedExternalSideEffects.push(
-          `tagCollection(${outputs['contract-collection-id']}, generated-contract)`
-        );
-      }
-    )
-  );
-
   if (additionalCollections.length > 0) {
     await runRollbackStage(
       'Sync Additional Collections',
@@ -2950,9 +3134,6 @@ async function runBootstrapInner(
         dependencies.core,
         'Sync Additional Collections',
         async () => {
-          // Mutate in-memory resource maps only. Durable writes wait for the
-          // final commit after linking/sync succeeds (standalone helper callers
-          // still persist via the default writeResourcesState).
           recordCurrentBootstrapResources({
             assetProjectName: collectionAssetProjectName,
             inputs,
@@ -2992,64 +3173,178 @@ async function runBootstrapInner(
   ].filter(Boolean);
 
   if (linkedCollectionIds.length > 0) {
-    if (dependencies.internalIntegration) {
+    if (observedLocalOpenApiIntegration) {
+      const localIntegration = observedLocalOpenApiIntegration;
       await runRollbackStage(
         'Link Collections to Specification',
         async () => runGroup(
           dependencies.core,
           'Link Collections to Specification',
           async () => {
-            await dependencies.internalIntegration?.linkCollectionsToSpecification(
+            const linkOptions = localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
+              openApiVersion: detectedOpenapiVersion,
+              requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
+              folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
+              nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+              names: {
+                baseline: collectionAssetProjectName,
+                smoke: `[Smoke] ${collectionAssetProjectName}`,
+                contract: `[Contract] ${collectionAssetProjectName}`
+              },
+              contractIndex: contractIndex!
+            });
+            const expectedSyncOptions = { syncExamples: inputs.syncExamples };
+            const linkResult = await localIntegration.linkCollectionsToSpecification(
               outputs['spec-id'],
               linkedCollectionIds.map((collectionId) => ({
                 collectionId,
-                syncOptions: {
-                  syncExamples: inputs.syncExamples
-                }
+                options: { ...linkOptions },
+                syncOptions: expectedSyncOptions
               }))
             );
+            const lockedRetries =
+              linkResult && typeof linkResult === 'object' && 'lockedRetries' in linkResult
+                ? Number((linkResult as { lockedRetries?: unknown }).lockedRetries ?? 0)
+                : 0;
+            if (
+              openApiOperationLedger &&
+              Number.isFinite(lockedRetries) &&
+              lockedRetries > 0
+            ) {
+              const nextCounts = {
+                ...openApiOperationLedger.counts,
+                retries: Number(openApiOperationLedger.counts.retries ?? 0) + lockedRetries
+              };
+              openApiOperationLedger = {
+                ...openApiOperationLedger,
+                counts: nextCounts
+              };
+              outputs['openapi-operation-ledger-json'] = JSON.stringify(openApiOperationLedger);
+              const ledgerRel = path.join('.postman', 'bootstrap-openapi-operation-ledger.json');
+              const ledgerAbs = path.join(resolveWorkspaceRoot(), ledgerRel);
+              await mkdir(path.dirname(ledgerAbs), { recursive: true });
+              await writeFile(ledgerAbs, `${JSON.stringify(openApiOperationLedger)}\n`, 'utf8');
+            }
             completedExternalSideEffects.push(
               `linkCollectionsToSpecification(${outputs['spec-id']}: ${linkedCollectionIds.join(', ')}; syncExamples=${inputs.syncExamples})`
             );
-          }
-        )
-      );
 
-      await runRollbackStage(
-        'Sync Linked Collections',
-        async () => runGroup(
-          dependencies.core,
-          'Sync Linked Collections',
-          async () => {
-            const syncResults = await Promise.allSettled(linkedCollectionIds.map(async (collectionId) => {
-              await dependencies.internalIntegration!.syncCollection(
-                outputs['spec-id'],
-                collectionId
+            const settleRelations =
+              localIntegration.settleSpecificationCollectionRelations?.bind(
+                localIntegration
               );
-              return collectionId;
-            }));
-            for (const result of syncResults) {
-              if (result.status === 'fulfilled') {
-                completedExternalSideEffects.push(
-                  `syncCollection(${outputs['spec-id']}, ${result.value})`
+            if (!settleRelations) {
+              throw new Error(
+                'LOCAL_OPENAPI_LINK_READBACK_FAILED: settleSpecificationCollectionRelations is required'
+              );
+            }
+            const expectedIds = [...new Set(linkedCollectionIds)];
+            if (expectedIds.length !== 3) {
+              throw new Error(
+                `LOCAL_OPENAPI_LINK_READBACK_FAILED: expected exactly 3 distinct collection ids, observed ${expectedIds.length}`
+              );
+            }
+            // GET-only bounded wait for Spec Hub relation propagation. Never call syncCollection.
+            const settled = await settleRelations(outputs['spec-id'], expectedIds);
+            const settleAttempts = Number(settled?.attempts ?? 0);
+            const relations = Array.isArray(settled?.relations) ? settled.relations : [];
+            const byId = new Map(
+              relations
+                .filter((row) => expectedIds.includes(row.collectionId))
+                .map((row) => [row.collectionId, row] as const)
+            );
+            if (byId.size !== 3) {
+              throw new Error(
+                `LOCAL_OPENAPI_LINK_READBACK_FAILED: expected 3 linked collections, observed ${byId.size}`
+              );
+            }
+            const recognizedStates = new Set(['in-sync', 'out-of-sync']);
+            const linkRelationStates: Record<string, string> = {};
+            for (const collectionId of expectedIds) {
+              const row = byId.get(collectionId);
+              if (!row) {
+                throw new Error(
+                  `LOCAL_OPENAPI_LINK_READBACK_FAILED: missing relation for collection ${collectionId}`
+                );
+              }
+              const state = String(row.state || '').trim();
+              // Local import+link forbids Spec Hub sync; out-of-sync is a durable verified link.
+              if (!recognizedStates.has(state)) {
+                throw new Error(
+                  `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} state=${state || '<empty>'}`
+                );
+              }
+              linkRelationStates[collectionId] = state;
+              if (!includesRequestedJsonSemantics(row.options, linkOptions)) {
+                throw new Error(
+                  `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} options mismatch`
+                );
+              }
+              if (extractSyncExamplesValue(row.syncOptions) !== expectedSyncOptions.syncExamples) {
+                throw new Error(
+                  `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} syncOptions mismatch`
                 );
               }
             }
-            const failedSync = syncResults.find(
-              (result): result is PromiseRejectedResult => result.status === 'rejected'
+            if (openApiOperationLedger && Number.isFinite(settleAttempts) && settleAttempts > 0) {
+              openApiOperationLedger = {
+                ...openApiOperationLedger,
+                counts: {
+                  ...openApiOperationLedger.counts,
+                  linkRelationSettleReads: settleAttempts
+                },
+                linkRelationStates
+              };
+              outputs['openapi-operation-ledger-json'] = JSON.stringify(openApiOperationLedger);
+              const ledgerRel = path.join('.postman', 'bootstrap-openapi-operation-ledger.json');
+              const ledgerAbs = path.join(resolveWorkspaceRoot(), ledgerRel);
+              await mkdir(path.dirname(ledgerAbs), { recursive: true });
+              await writeFile(ledgerAbs, `${JSON.stringify(openApiOperationLedger)}\n`, 'utf8');
+            }
+            dependencies.core.info(
+              `OpenAPI link relation settle completed after ${settleAttempts} read(s); states=${expectedIds
+                .map((id) => `${id}:${linkRelationStates[id]}`)
+                .join(',')}`
             );
-            if (failedSync) throw failedSync.reason;
           }
         )
       );
     } else {
       dependencies.core.warning(
-        'Skipping cloud spec-to-collection linking and sync because postman-access-token is not configured'
+        'Skipping cloud spec-to-collection linking because postman-access-token is not configured'
       );
     }
   }
 
-  // Persist spec-id + collection resources only after verified sync and
+  await runRollbackStage(
+    'Tag Collections',
+    async () => runGroup(
+      dependencies.core,
+      'Tag Collections',
+      async () => {
+        await dependencies.postman.tagCollection(outputs['baseline-collection-id'], [
+          'generated-docs'
+        ]);
+        completedExternalSideEffects.push(
+          `tagCollection(${outputs['baseline-collection-id']}, generated-docs)`
+        );
+        await dependencies.postman.tagCollection(outputs['smoke-collection-id'], [
+          'generated-smoke'
+        ]);
+        completedExternalSideEffects.push(
+          `tagCollection(${outputs['smoke-collection-id']}, generated-smoke)`
+        );
+        await dependencies.postman.tagCollection(outputs['contract-collection-id'], [
+          'generated-contract'
+        ]);
+        completedExternalSideEffects.push(
+          `tagCollection(${outputs['contract-collection-id']}, generated-contract)`
+        );
+      }
+    )
+  );
+
+  // Persist spec-id + collection resources only after verified linking.
   // generation/linking succeed. Workspace-only state was written earlier.
   recordCurrentBootstrapResources({
     assetProjectName: collectionAssetProjectName,
@@ -3327,7 +3622,10 @@ export function createRoutingPostmanClient(options: {
       injectContractTests: requireAccessToken('injectContractTests'),
       createCollection: requireAccessToken('createCollection'),
       updateCollection: requireAccessToken('updateCollection'),
-      updateCollectionDescription: requireAccessToken('updateCollectionDescription')
+      updateCollectionDescription: requireAccessToken('updateCollectionDescription'),
+      importV2Collection: requireAccessToken('importV2Collection'),
+      deepUpdateV2Collection: requireAccessToken('deepUpdateV2Collection'),
+      deleteVerifiedRunOwnedCollections: requireAccessToken('deleteVerifiedRunOwnedCollections')
     };
   }
 
@@ -3382,7 +3680,13 @@ export function createRoutingPostmanClient(options: {
       gateway.createCollection(workspaceId, collection, options),
     updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection),
     updateCollectionDescription: (collectionUid, description) =>
-      gateway.updateCollectionDescription(collectionUid, description)
+      gateway.updateCollectionDescription(collectionUid, description),
+    importV2Collection: (workspaceId, collection, finalName) =>
+      gateway.importV2Collection(workspaceId, collection, finalName),
+    deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) =>
+      gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
+    deleteVerifiedRunOwnedCollections: (collectionIds) =>
+      gateway.deleteVerifiedRunOwnedCollections(collectionIds)
   };
 }
 

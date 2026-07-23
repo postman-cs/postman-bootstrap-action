@@ -906,6 +906,19 @@ paths:
     expect(() => instrumentContractCollection({
       item: [{ request: { method: 'GET', url: { path: ['pets'] } }, description: 'x'.repeat(CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes) }]
     }, indexFrom(BASE_SPEC))).toThrow(`CONTRACT_COLLECTION_SIZE_EXCEEDED: Instrumented contract collection exceeded ${CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes} bytes`);
+
+    const explicitLimit = 16_000_000;
+    expect(() => instrumentContractCollection({
+      item: [{ request: { method: 'GET', url: { path: ['pets'] } }, description: 'x'.repeat(explicitLimit) }]
+    }, indexFrom(BASE_SPEC), { maxCollectionUpdateBytes: explicitLimit })).toThrow(`CONTRACT_COLLECTION_SIZE_EXCEEDED: Instrumented contract collection exceeded ${explicitLimit} bytes`);
+
+    for (const maxCollectionUpdateBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => instrumentContractCollection(
+        { item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] },
+        indexFrom(BASE_SPEC),
+        { maxCollectionUpdateBytes }
+      )).toThrow('CONTRACT_COLLECTION_SIZE_EXCEEDED: Contract collection size limit must be a finite positive bounded integer');
+    }
   });
 
   it('does not suffix-match paths and reports ambiguous operations', () => {

@@ -183,7 +183,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `spec-url` | HTTPS URL to the OpenAPI document to bootstrap. Provide either spec-url or spec-path. | no |  |
 | `spec-path` | Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path. | no |  |
 | `spec-files-json` | Optional content-free JSON inventory of multi-file definition members from discovery (schemaVersion 1). Empty by default. When set, inventory root must equal spec-path. Cannot be combined with spec-url. Not a directory mode — companions are listed explicitly; file content is never embedded. | no |  |
-| `protocol` | API spec protocol. auto (default) detects from content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly. | no | `auto` |
+| `protocol` | API spec protocol. auto (default) detects from content/extension. openapi uploads the canonical spec to Spec Hub and builds baseline/smoke/contract collections locally (import/deep-update); graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly. | no | `auto` |
 | `protocol-endpoint-url` | Endpoint URL/authority used by generated non-OpenAPI requests (e.g. {{baseUrl}}/graphql, grpc://host:port). Supports Postman variable interpolation. Ignored for openapi. | no |  |
 | `openapi-version` | OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content. | no |  |
 | `preserve-oas30-type-null` | Opt-in compatibility mode for OpenAPI 3.0 oneOf schemas that pair one normal schema with a null-only member. The action uploads the original source bytes unchanged and uses an internal nullable true view for validation and generated artifacts. All unrelated validation and lint errors remain enforced. | no | `false` |
@@ -221,6 +221,8 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `smoke-collection-id` | Smoke collection ID | n/a | n/a |
 | `contract-collection-id` | Contract collection ID | n/a | n/a |
 | `collections-json` | JSON summary of generated collections | n/a | n/a |
+| `prebuilt-collections-json` | Digest-bound JSON manifest of locally materialized Collection v3 trees (schemaVersion 1) for repo-sync reuse | n/a | n/a |
+| `openapi-operation-ledger-json` | Sanitized local OpenAPI orchestration operation ledger (schemaVersion 1) with counts and timings | n/a | n/a |
 | `lint-summary-json` | JSON summary of validation findings. Bootstrap does not invoke an API-key-authenticated Postman CLI lint. | n/a | n/a |
 | `breaking-change-status` | OpenAPI breaking-change check status | n/a | n/a |
 | `breaking-change-summary-json` | JSON summary of the OpenAPI breaking-change check | n/a | n/a |
@@ -285,7 +287,7 @@ Credentials resolve from a CLI flag, then the `INPUT_*` env var, then a plain `P
 
 ## How it works
 
-The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), generate or reuse baseline, smoke, and contract collections, inject generated tests, apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
+The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), convert OpenAPI locally into baseline, smoke, and contract collections (whole-collection import or in-place deep-update with scripts already embedded), apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
 
 - **Phase independence:** bootstrap succeeds on its own even when later pipeline stages fail, and reruns reuse existing assets. See [Bootstrap Phase Independence](docs/bootstrap-phase-independence.md).
 - **Team identity:** the team ID is resolved from the access-token session identity; org-mode tenants pass `workspace-team-id`. See [Team Identity](docs/team-identity.md).

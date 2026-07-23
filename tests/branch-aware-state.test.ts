@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import {
+  runAction,
   runBootstrap,
   type CoreLike,
   type ExecLike,
@@ -301,6 +302,31 @@ describe('branch-aware bootstrap runs', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     delete process.env[BRANCH_DECISION_ENV];
+  });
+
+  it('serializes the immutable decision before credential validation', async () => {
+    delete process.env[BRANCH_DECISION_ENV];
+    vi.stubEnv('GITHUB_ACTIONS', 'true');
+    vi.stubEnv('GITHUB_REF', 'refs/heads/main');
+    vi.stubEnv('GITHUB_HEAD_REF', '');
+    vi.stubEnv('GITHUB_BASE_REF', '');
+    vi.stubEnv('POSTMAN_API_KEY', '');
+    vi.stubEnv('POSTMAN_ACCESS_TOKEN', '');
+    const core = createCoreStub();
+    core.getInput = vi.fn((name: string) => {
+      if (name === 'branch-strategy') return 'publish-gate';
+      if (name === 'canonical-branch') return 'main';
+      if (name === 'spec-path') return 'openapi.yaml';
+      return '';
+    });
+
+    await expect(runAction(core, createExecStub(), createIoStub())).rejects.toThrow(
+      /postman-api-key or postman-access-token is required/
+    );
+    expect(JSON.parse(process.env[BRANCH_DECISION_ENV] ?? '')).toMatchObject({
+      tier: 'canonical',
+      canonicalBranch: 'main'
+    });
   });
 
   it('preview run creates a suffixed asset set, never writes tracked state, never resolves canonical ids', async () => {

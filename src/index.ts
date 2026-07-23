@@ -986,7 +986,12 @@ export function readActionInputs(
     INPUT_BREAKING_SUMMARY_PATH: optionalInput(actionCore, 'breaking-summary-path'),
     INPUT_BREAKING_LOG_PATH: optionalInput(actionCore, 'breaking-log-path'),
     INPUT_GITHUB_TOKEN: githubToken,
-    INPUT_GH_FALLBACK_TOKEN: ghFallbackToken
+    INPUT_GH_FALLBACK_TOKEN: ghFallbackToken,
+    INPUT_BRANCH_STRATEGY:
+      optionalInput(actionCore, 'branch-strategy') ??
+      bootstrapActionContract.inputs['branch-strategy'].default,
+    INPUT_CANONICAL_BRANCH: optionalInput(actionCore, 'canonical-branch'),
+    INPUT_CHANNELS: optionalInput(actionCore, 'channels')
   });
 
   return inputs;
@@ -3535,6 +3540,7 @@ export async function runAction(
   // exit here with credential-free static validation only -- provably zero
   // workspace writes because no token is ever minted.
   const branchDecision = decideBranchTier(inputs);
+  process.env[BRANCH_DECISION_ENV] = serializeBranchDecision(branchDecision);
   if (branchDecision.tier === 'gated') {
     return runGatedValidation(inputs, branchDecision, actionCore);
   }
@@ -3543,7 +3549,6 @@ export async function runAction(
   }
   if (branchDecision.tier !== 'legacy') {
     actionCore.info(`branch-aware sync: tier=${branchDecision.tier} (${branchDecision.reason})`);
-    process.env[BRANCH_DECISION_ENV] = serializeBranchDecision(branchDecision);
   }
 
   await mintAccessTokenIfNeeded(

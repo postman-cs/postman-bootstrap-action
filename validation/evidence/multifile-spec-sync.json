@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "testedAt": "2026-07-23T06:50:08.668Z",
-  "bootstrapCommit": "09ce349686dc594ca8b4db03b7563c554012899b",
+  "testedAt": "2026-07-23T10:16:59.155Z",
+  "bootstrapCommit": "d7757f8b18af7a1fcbb73e2d10de77b647ef157c",
   "legs": [
     {
       "mode": "nonorg",

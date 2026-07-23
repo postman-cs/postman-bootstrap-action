@@ -22,6 +22,7 @@ import { planContractItemScripts } from '../spec/collection-contracts.js';
 import type { ContractIndex } from '../spec/contract-index.js';
 import type { DefinitionBundle, DefinitionFormat } from '../spec/definition-bundle.js';
 import { computePayloadDigest } from '../spec/local-openapi-collection-generation.js';
+import { parseAssetMarker } from '../repo/branch-decision.js';
 import {
   assertNoCloudPathCollisions,
   assertSameRootPath,
@@ -2721,7 +2722,7 @@ export class PostmanGatewayAssetsClient {
     workspaceId: string,
     name: string,
     retryPolicy?: 'safe' | 'rate-limit' | 'none'
-  ): Promise<Array<{ id: string; name: string }>> {
+  ): Promise<Array<{ id: string; name: string; description?: string }>> {
     const entries = await this.listWorkspaceCollections(workspaceId, retryPolicy);
     return entries
       .filter((value) => value.name === name)
@@ -2731,7 +2732,7 @@ export class PostmanGatewayAssetsClient {
   private async listWorkspaceCollections(
     workspaceId: string,
     retryPolicy?: 'safe' | 'rate-limit' | 'none'
-  ): Promise<Array<{ id: string; name: string }>> {
+  ): Promise<Array<{ id: string; name: string; description?: string }>> {
     const response = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
       method: 'get',
@@ -2744,7 +2745,10 @@ export class PostmanGatewayAssetsClient {
       .filter((value): value is JsonRecord => value !== null)
       .map((value) => ({
         id: String(value.id ?? value.uid ?? '').trim(),
-        name: String(value.name ?? value.title ?? '').trim()
+        name: String(value.name ?? value.title ?? '').trim(),
+        ...(String(value.description ?? '').trim()
+          ? { description: String(value.description).trim() }
+          : {})
       }))
       .filter((value) => value.id)
       .sort((a, b) => a.id.localeCompare(b.id));
@@ -2935,6 +2939,7 @@ export class PostmanGatewayAssetsClient {
       throw new Error('LOCAL_OPENAPI_IMPORT_FAILED: final collection name is required');
     }
     const prepared = this.prepareV2ImportPayload(collection, desiredName);
+    const desiredDescription = String(asRecord(prepared.info)?.description ?? '').trim();
     const runToken = this.createIdentity();
     const tempName = `${desiredName} [bootstrap:${runToken}]`;
     const importPayload = this.cloneJson(prepared);
@@ -2957,6 +2962,7 @@ export class PostmanGatewayAssetsClient {
     // read without hidden retry, no unsafe import is attempted.
     const staleFinalIdentities = new Set(
       (await this.findCollectionsByExactName(workspaceId, desiredName, 'none'))
+        .filter((entry) => !this.hasSameBranchAssetMarker(entry.description, desiredDescription))
         .map((entry) => normalizeCollectionModelIdentity(entry.id))
     );
 
@@ -3226,6 +3232,23 @@ export class PostmanGatewayAssetsClient {
     // Same root (bare Sync model_id vs canonical <owner>-<model_id>): return the
     // inventory UID so downstream tagging and relation writes never see bare id.
     return ownCanonical.id;
+  }
+
+  private hasSameBranchAssetMarker(
+    candidateDescription: string | undefined,
+    desiredDescription: string
+  ): boolean {
+    const candidate = parseAssetMarker(candidateDescription);
+    const desired = parseAssetMarker(desiredDescription);
+    return Boolean(
+      candidate &&
+      desired &&
+      candidate.repo === desired.repo &&
+      candidate.rawBranch === desired.rawBranch &&
+      candidate.sanitizedBranch === desired.sanitizedBranch &&
+      candidate.role === desired.role &&
+      candidate.headRepoId === desired.headRepoId
+    );
   }
 
   private async exportCollectionAsV21(collectionUid: string): Promise<JsonRecord> {

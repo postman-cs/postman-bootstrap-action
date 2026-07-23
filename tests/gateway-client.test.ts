@@ -12,6 +12,8 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
 }
 
 const GATEWAY = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
+const DIRECT_COLLECTION =
+  'https://bifrost-premium-https-v4.gw.postman.com/collection/132319-collection-1/sync?since_id=0&favorite=true&exclude=response%2Crequest';
 
 describe('AccessTokenGatewayClient', () => {
   it('sends the proxy envelope with the live access token', async () => {
@@ -88,6 +90,36 @@ describe('AccessTokenGatewayClient', () => {
     await personalClient.requestJson({ service: 'workspaces', method: 'get', path: '/workspaces' });
     const headers = (fetchImpl.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
     expect(headers['x-entity-team-id']).toBeUndefined();
+  });
+
+  it('reads the app collection sync route directly with org service-account headers', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      entities: [{ data: { name: 'Payments' }, revision: '1' }]
+    }));
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: new AccessTokenProvider({ accessToken: 'tok' }),
+      teamId: '132319',
+      orgMode: true,
+      fetchImpl,
+      appVersionProvider: { resolve: async () => '12.21.1' }
+    });
+
+    const result = await client.requestDirectJson(
+      '/collection/132319-collection-1/sync?since_id=0&favorite=true&exclude=response%2Crequest'
+    );
+
+    expect(result).toMatchObject({ entities: [{ data: { name: 'Payments' } }] });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      DIRECT_COLLECTION,
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'x-access-token': 'tok',
+          'x-entity-team-id': '132319',
+          'x-app-version': '12.21.1'
+        })
+      })
+    );
   });
 
   it('refreshes the token on UNAUTHENTICATED and retries once with the new token', async () => {

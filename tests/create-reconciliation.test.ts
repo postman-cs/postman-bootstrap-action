@@ -474,6 +474,9 @@ describe('Wave 2 create reconciliation', () => {
   });
 
   describe('additional collection root and item seams', () => {
+    const collectionModelId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const collectionUid = `55363555-${collectionModelId}`;
+
     it('discovers and reconciles one final-name collection before randomized create', async () => {
       let createPosts = 0;
       const { client } = makeGatewayAssetsClient((env) => {
@@ -623,7 +626,7 @@ describe('Wave 2 create reconciliation', () => {
       let itemPosts = 0;
       const { client } = makeGatewayAssetsClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
-          return jsonResponse({ data: { id: '55363555-root' } }, { status: 201 });
+          return jsonResponse({ data: { id: collectionUid } }, { status: 201 });
         }
         if (env.method === 'post' && env.path.includes('/items/')) {
           itemPosts += 1;
@@ -638,7 +641,7 @@ describe('Wave 2 create reconciliation', () => {
               id: 'item-adopted',
               $kind: 'http-request',
               name: 'GET /curated',
-              position: { parent: { id: 'root' } }
+              position: { parent: { id: collectionModelId } }
             }]
           });
         }
@@ -649,7 +652,7 @@ describe('Wave 2 create reconciliation', () => {
       });
 
       const id = await client.createCollection('ws-1', createCuratedCollection('Payments curated'));
-      expect(id).toBe('55363555-root');
+      expect(id).toBe(collectionUid);
       expect(itemPosts).toBe(1);
     });
 
@@ -657,7 +660,7 @@ describe('Wave 2 create reconciliation', () => {
       let itemPosts = 0;
       const { client } = makeGatewayAssetsClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
-          return jsonResponse({ data: { id: '55363555-root' } }, { status: 201 });
+          return jsonResponse({ data: { id: collectionUid } }, { status: 201 });
         }
         if (env.method === 'post' && env.path.includes('/items/')) {
           itemPosts += 1;
@@ -665,7 +668,15 @@ describe('Wave 2 create reconciliation', () => {
         }
         if (env.method === 'get' && env.path.endsWith('/items/')) {
           return jsonResponse({
-            data: [{ id: 'item-other', $kind: 'http-request', name: 'GET /curated' }]
+            data: [
+              { id: 'item-missing-parent', $kind: 'http-request', name: 'GET /curated' },
+              {
+                id: 'item-wrong-parent',
+                $kind: 'http-request',
+                name: 'GET /curated',
+                position: { parent: { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' } }
+              }
+            ]
           });
         }
         return jsonResponse({ data: {} });
@@ -887,6 +898,100 @@ describe('Wave 2 create reconciliation', () => {
       const source = readFileSync(join(process.cwd(), 'src/index.ts'), 'utf8');
       expect(source).not.toMatch(/VITEST|NODE_ENV/);
     });
+
+    function createLocalOpenApiPostman(overrides: Record<string, unknown> = {}) {
+      return {
+        addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+        createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-created' }),
+        findWorkspacesByName: vi.fn().mockResolvedValue([]),
+        generateCollection: vi.fn().mockRejectedValue(new Error('generateCollection unreachable')),
+        getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+        getCollection: vi.fn().mockResolvedValue({
+          info: { name: '[Contract] Payments' },
+          item: [
+            {
+              name: 'GET /payments',
+              request: { method: 'GET', url: { path: ['payments'] } }
+            }
+          ]
+        }),
+        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+        getTeams: vi.fn().mockResolvedValue([]),
+        getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+        getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+        importV2Collection: vi.fn().mockImplementation(
+          async (_ws: string, collection: unknown, finalName?: string) => {
+            const info = (collection as { info?: { name?: string } } | null)?.info;
+            const name = String(finalName || info?.name || '');
+            const id = name.includes('[Contract]')
+              ? 'col-contract'
+              : name.includes('[Smoke]')
+                ? 'col-smoke'
+                : 'col-baseline';
+            return {
+              collectionId: id,
+              journaledRootIds: [id],
+              deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+            };
+          }
+        ),
+        deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
+        deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
+        injectContractTests: vi.fn().mockResolvedValue([]),
+        injectTests: vi.fn().mockResolvedValue(undefined),
+        inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+        tagCollection: vi.fn().mockResolvedValue(undefined),
+        updateSpec: vi.fn().mockResolvedValue(undefined),
+        uploadSpec: vi.fn().mockResolvedValue('spec-created'),
+        ...overrides
+      };
+    }
+
+    function createLocalOpenApiIntegration(overrides: Record<string, unknown> = {}) {
+      const linked = new Map<
+        string,
+        { options?: Record<string, unknown>; syncOptions?: Record<string, unknown> }
+      >();
+      return {
+        assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
+        linkCollectionsToSpecification: vi.fn().mockImplementation(
+          async (
+            _specId: string,
+            collections: Array<{
+              collectionId: string;
+              options?: Record<string, unknown>;
+              syncOptions?: Record<string, unknown>;
+            }>
+          ) => {
+            for (const row of collections) {
+              linked.set(row.collectionId, {
+                ...(row.options ? { options: row.options } : {}),
+                ...(row.syncOptions ? { syncOptions: row.syncOptions } : {})
+              });
+            }
+            return { lockedRetries: 0 };
+          }
+        ),
+        listSpecificationCollectionRelations: vi.fn().mockImplementation(async () =>
+          [...linked.entries()].map(([collectionId, meta]) => ({
+            collectionId,
+            state: 'in-sync',
+            ...meta
+          }))
+        ),
+        settleSpecificationCollectionRelations: vi.fn().mockImplementation(async () => ({
+          relations: [...linked.entries()].map(([collectionId, meta]) => ({
+            collectionId,
+            state: 'in-sync',
+            ...meta
+          })),
+          attempts: 1
+        })),
+        syncCollection: vi.fn().mockResolvedValue(undefined),
+        ...overrides
+      };
+    }
+
     it('persists workspace/spec/generated collection ids on a standard successful run', async () => {
       const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-standard-state-'));
       vi.stubEnv('GITHUB_WORKSPACE', workspace);
@@ -895,43 +1000,8 @@ describe('Wave 2 create reconciliation', () => {
       try {
         await withCwd(workspace, async () => {
           const core = createCoreStub();
-          const postman = {
-            addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
-            createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-created' }),
-            findWorkspacesByName: vi.fn().mockResolvedValue([]),
-            generateCollection: vi
-              .fn()
-              .mockImplementation(async (_s: string, _p: string, prefix: string) => {
-                if (prefix === '') return 'col-baseline';
-                if (prefix === '[Smoke]') return 'col-smoke';
-                return 'col-contract';
-              }),
-            getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-            getCollection: vi.fn().mockResolvedValue({
-              info: { name: '[Contract] Payments' },
-              item: [
-                {
-                  name: 'GET /payments',
-                  request: { method: 'GET', url: { path: ['payments'] } }
-                }
-              ]
-            }),
-            getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
-            getTeams: vi.fn().mockResolvedValue([]),
-            getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-            getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-            injectContractTests: vi.fn().mockResolvedValue([]),
-            injectTests: vi.fn().mockResolvedValue(undefined),
-            inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-            tagCollection: vi.fn().mockResolvedValue(undefined),
-            updateSpec: vi.fn().mockResolvedValue(undefined),
-            uploadSpec: vi.fn().mockResolvedValue('spec-created')
-          };
-          const internalIntegration = {
-            assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
-            linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
-            syncCollection: vi.fn().mockResolvedValue(undefined)
-          };
+          const postman = createLocalOpenApiPostman();
+          const internalIntegration = createLocalOpenApiIntegration();
 
           await runBootstrap(
             {
@@ -978,6 +1048,8 @@ describe('Wave 2 create reconciliation', () => {
               }
             }
           });
+          expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+          expect(postman.generateCollection).not.toHaveBeenCalled();
         });
       } finally {
         rmSync(workspace, { recursive: true, force: true });
@@ -1006,37 +1078,13 @@ describe('Wave 2 create reconciliation', () => {
 
       try {
         await withCwd(workspace, async () => {
-          const postman = {
-            addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+          const postman = createLocalOpenApiPostman({
             createWorkspace: vi.fn().mockRejectedValue(new Error('must not create workspace')),
-            findWorkspacesByName: vi.fn().mockResolvedValue([]),
-            generateCollection: vi.fn().mockRejectedValue(new Error('must not generate')),
-            getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-            getCollection: vi.fn().mockResolvedValue({
-              info: { name: '[Contract] Payments' },
-              item: [
-                {
-                  name: 'GET /payments',
-                  request: { method: 'GET', url: { path: ['payments'] } }
-                }
-              ]
-            }),
-            getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
-            getTeams: vi.fn().mockResolvedValue([]),
-            getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
-            getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-            injectContractTests: vi.fn().mockResolvedValue([]),
-            injectTests: vi.fn().mockResolvedValue(undefined),
-            inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
-            tagCollection: vi.fn().mockResolvedValue(undefined),
-            updateSpec: vi.fn().mockResolvedValue(undefined),
-            uploadSpec: vi.fn().mockRejectedValue(new Error('must not upload'))
-          };
-          const internalIntegration = {
-            assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
-            linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
-            syncCollection: vi.fn().mockResolvedValue(undefined)
-          };
+            uploadSpec: vi.fn().mockRejectedValue(new Error('must not upload')),
+            importV2Collection: vi.fn().mockRejectedValue(new Error('must not import')),
+            deepUpdateV2Collection: vi.fn().mockRejectedValue(new Error('must not deep-update'))
+          });
+          const internalIntegration = createLocalOpenApiIntegration();
 
           const outputs = await runBootstrap(
             {
@@ -1077,6 +1125,8 @@ describe('Wave 2 create reconciliation', () => {
           expect(postman.createWorkspace).not.toHaveBeenCalled();
           expect(postman.uploadSpec).not.toHaveBeenCalled();
           expect(postman.generateCollection).not.toHaveBeenCalled();
+          expect(postman.importV2Collection).not.toHaveBeenCalled();
+          expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
         });
       } finally {
         rmSync(workspace, { recursive: true, force: true });
@@ -1085,7 +1135,7 @@ describe('Wave 2 create reconciliation', () => {
   });
 
   describe('ambiguous sync/delete before replacement', () => {
-    it('re-reads state after an ambiguous sync failure and never adopts or replaces by name', async () => {
+    it('fails closed on deep-update transport failure and never imports replacement ids', async () => {
       const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-ambiguous-sync-'));
       writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
       mkdirSync(join(workspace, '.postman'), { recursive: true });
@@ -1123,10 +1173,32 @@ describe('Wave 2 create reconciliation', () => {
                 }
               ]
             }),
-            getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
+            getSpecContent: vi.fn().mockResolvedValue(
+              JSON.stringify({
+                openapi: '3.1.0',
+                info: { title: 'Payments', version: '1.0.1' },
+                paths: {
+                  '/payments': {
+                    get: {
+                      operationId: 'listPayments',
+                      responses: { '200': { description: 'ok' } }
+                    }
+                  }
+                }
+              })
+            ),
             getTeams: vi.fn().mockResolvedValue([]),
             getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
             getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+            importV2Collection: vi.fn().mockResolvedValue({
+              collectionId: 'col-should-not-import',
+              journaledRootIds: ['col-should-not-import'],
+              deleteVerifiedCleanup: vi.fn()
+            }),
+            deepUpdateV2Collection: vi
+              .fn()
+              .mockRejectedValue(new Error('503 upstream timeout')),
+            deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
             injectContractTests: vi.fn().mockResolvedValue([]),
             injectTests: vi.fn().mockResolvedValue(undefined),
             inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -1136,11 +1208,13 @@ describe('Wave 2 create reconciliation', () => {
           };
           const internalIntegration = {
             assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
-            linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
-            syncCollection: vi
-              .fn()
-              .mockRejectedValueOnce(new Error('503 upstream timeout'))
-              .mockResolvedValue(undefined)
+            linkCollectionsToSpecification: vi.fn().mockResolvedValue({ lockedRetries: 0 }),
+            listSpecificationCollectionRelations: vi.fn().mockResolvedValue([]),
+            settleSpecificationCollectionRelations: vi.fn().mockResolvedValue({
+              relations: [],
+              attempts: 1
+            }),
+            syncCollection: vi.fn().mockResolvedValue(undefined)
           };
 
           await expect(
@@ -1173,10 +1247,13 @@ describe('Wave 2 create reconciliation', () => {
                 specFetcher: vi.fn()
               }
             )
-          ).rejects.toThrow(/503 upstream timeout/i);
+          ).rejects.toThrow(/503 upstream timeout|LOCAL_OPENAPI_ORCHESTRATION_FAILED/i);
 
           expect(postman.generateCollection).not.toHaveBeenCalled();
           expect(postman.findCollectionsByExactName).not.toHaveBeenCalled();
+          // Existing-role deep-update failure must never create replacement imports.
+          expect(postman.importV2Collection).not.toHaveBeenCalled();
+          expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
         });
       } finally {
         rmSync(workspace, { recursive: true, force: true });

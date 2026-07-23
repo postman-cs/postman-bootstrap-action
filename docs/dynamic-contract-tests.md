@@ -14,15 +14,16 @@ This page documents the runtime layer: the `pm.test()` scripts that execute agai
 
 2. **Validate and normalize the bundled spec**
    - The bundled OpenAPI document is validated with external and file resolution disabled.
-   - External refs are bundled, then operation summaries are normalized before Spec Hub upload.
+   - External refs are bundled, then operation summaries are normalized. This bundled compatibility document is the single input for validation, contract indexing, and local collection conversion.
    - The loader builds a contract index from `paths` operations, responses, request requirements, response headers, schema content, server/path candidates, and warning conditions.
 
 3. **Upload or update the Spec Hub spec**
-   - Fresh runs upload the canonical bundled spec.
-   - Reruns with `spec-id` update the existing spec with the same canonical bundled document used for validation and contract indexing, after capturing the previous content hash for rollback.
+   - Fresh runs normally upload the canonical bundled spec.
+   - In `preserve-oas30-type-null` mode only, Spec Hub receives the original source bytes as its representation while the bundled compatibility document still drives validation, indexing, and local conversion.
+   - Reruns with `spec-id` capture the previous content hash for rollback before updating the selected upload representation.
 
 4. **Generate baseline, smoke, and contract collections**
-   - Collection generation uses the uploaded Spec Hub UID.
+    - Local OpenAPI conversion builds role payloads; collections are imported or deep-updated against the uploaded Spec Hub UID via linking.
    - `collection-sync-mode: refresh` generates temporary collections, then refreshes existing tracked collections in place when IDs are available.
    - The contract collection is instrumented before an existing tracked contract collection is overwritten.
 
@@ -189,7 +190,8 @@ Generated scripts are scanned before upload:
 - `new Function` is forbidden.
 - Scripts above 256 KiB emit a warning.
 - Scripts above 900 KiB fail.
-- Instrumented collection updates above 4 MiB fail.
+- Instrumented collection updates above 4 MiB fail for callers that keep the default update guard.
+- Local OpenAPI whole-import generation opts out of that update guard via an explicit internal no-limit sentinel (`maxCollectionUpdateBytes: false`). Official Postman docs do not document an exact whole-import byte ceiling, so local role instrumentation does not invent one.
 
 ## What dynamic contract tests do not prove
 
@@ -226,9 +228,9 @@ Common failure categories:
 
 For existing spec updates, the action captures the previous normalized spec content and SHA-256 before mutation. If a later required step fails after the update, the action attempts to restore the previous Spec Hub content. If that restore fails, `CONTRACT_SPEC_ROLLBACK_FAILED` includes the previous content SHA-256 for manual restoration.
 
-Refresh mode also tracks temporary generated collections. If refresh fails after temporary collection generation, the action attempts to delete those temporary collections.
+Refresh mode tracks run-owned fresh imports from local conversion. If link or tags fail after a fresh import, the action deletes those journaled collections and restores local artifact trees; deep-updated existing IDs are never deleted.
 
-Optional workspace enrichment steps such as governance assignment warn and continue; required spec, lint, collection generation, instrumentation, tagging, linking, and sync failures stop the bootstrap path.
+Optional workspace enrichment steps such as governance assignment warn and continue; required spec, lint, local conversion/import/deep-update, tagging, and linking failures stop the bootstrap path.
 
 ## Source map
 

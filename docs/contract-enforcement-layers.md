@@ -22,7 +22,7 @@ flowchart TB
     IDX --> CONTRACT["Structured ContractOperation[]<br/>responses, params, schemas, security"]
     LINTS --> WARN["CONTRACT_* warnings<br/>core.warning / stderr<br/>advisory, never fatal"]:::warn
     CONTRACT --> SCRIPT["createContractScript()<br/>collection-contracts.ts"]
-    SCRIPT --> INJECT["injectContractTests()<br/>gateway PATCH .../items/{id} /scripts<br/>afterResponse test events"]:::inject
+    SCRIPT --> EMBED["local OpenAPI payloads embed scripts<br/>before whole-collection import/deep-update"]:::inject
     INJECT --> COLL["[Contract] / [Smoke] collections<br/>carry executable pm.test() checks"]:::inject
     classDef warn fill:#7f1d1d,color:#fff,stroke:#ef4444
     classDef inject fill:#14532d,color:#fff,stroke:#4ade80
@@ -45,7 +45,7 @@ Neither subsumes the other.
 
 ## Who runs the collection
 
-Nothing executes the injected tests at bootstrap time. Bootstrap only prepares the assets: it generates the collections, injects the `pm.test()` scripts through the access-token gateway (per-item `PATCH /v3/collections/{cid}/items/{itemId}` with `afterResponse` script events), tags them, and persists the UIDs to `.postman/resources.yaml` and repo variables.
+Nothing executes the embedded tests at bootstrap time. Bootstrap only prepares the assets: it converts OpenAPI locally into complete baseline/smoke/contract payloads (scripts already embedded), imports or deep-updates whole collections, tags them, and persists the UIDs to `.postman/resources.yaml` and repo variables.
 
 The execution loop belongs to [postman-repo-sync-action](https://github.com/postman-cs/postman-repo-sync-action): it writes a CI workflow into the consuming repository that resolves the smoke and contract collection UIDs plus the environment UID, then runs `postman collection run <uid> -e <environment-uid> --report-events` with the Postman CLI on push and on schedule. The environment's `baseUrl` -- seeded from repo-sync's `env-runtime-urls-json` input, or a Postman mock URL when one was created -- decides what the requests actually hit.
 
@@ -58,7 +58,7 @@ sequenceDiagram
     participant API as live API / mock
 
     B->>B: static lints -> warnings in run log
-    B->>P: generate collections + inject pm.test() scripts
+    B->>P: local convert + import/deep-update collections with embedded pm.test() scripts
     B->>P: tag, link, persist UIDs
     R->>CI: write CI workflow + environment wiring
     loop push / schedule

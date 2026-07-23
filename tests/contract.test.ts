@@ -509,7 +509,7 @@ describe('bootstrap action contract', () => {
       'spec-id': '',
       'spec-version-tag': '',
       'spec-version-url': '',
-      'spec-content-changed': '',
+      'spec-content-changed': 'false',
       'baseline-collection-id': '',
       'smoke-collection-id': '',
       'contract-collection-id': '',
@@ -518,6 +518,8 @@ describe('bootstrap action contract', () => {
         smoke: '',
         contract: ''
       }),
+      'prebuilt-collections-json': '',
+      'openapi-operation-ledger-json': '',
       'lint-summary-json': JSON.stringify({
         errors: 0,
         total: 0,

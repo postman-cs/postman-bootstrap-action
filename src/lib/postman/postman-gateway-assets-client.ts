@@ -1,4 +1,5 @@
 import * as V2 from '@postman/runtime.models/v2';
+import * as V3 from '@postman/runtime.models/v3';
 import { transform, FormatVersion } from '@postman/runtime.models/transforms';
 import { randomUUID } from 'node:crypto';
 
@@ -12,6 +13,7 @@ import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
 import { AccessTokenGatewayClient, type RetryEvent } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
+import { normalizeCollectionModelIdentity } from './collection-model-identity.js';
 import {
   assertSupportedLocalViewContract,
   normalizeLocalViewScriptType
@@ -19,6 +21,7 @@ import {
 import { planContractItemScripts } from '../spec/collection-contracts.js';
 import type { ContractIndex } from '../spec/contract-index.js';
 import type { DefinitionBundle, DefinitionFormat } from '../spec/definition-bundle.js';
+import { computePayloadDigest } from '../spec/local-openapi-collection-generation.js';
 import {
   assertNoCloudPathCollisions,
   assertSameRootPath,
@@ -60,9 +63,6 @@ function asRecord(value: unknown): JsonRecord | null {
  * A 400 from a JSON-Patch remove whose target no longer exists — the signature
  * of a retried PATCH whose first attempt actually committed downstream.
  */
-const BOOTSTRAP_BARE_UUID_RE =
-  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-
 function isMissingPatchValueError(error: unknown): boolean {
   return (
     error instanceof HttpError &&
@@ -240,6 +240,12 @@ export class PostmanGatewayAssetsClient {
    * settle read is still observed (live nonorg dual-preview race).
    */
   private static readonly SPEC_CREATE_SINGLETON_MIN_POLL_INDEX = 2;
+  /**
+   * Finite liveness budget for local Sync-import rename commit visibility and
+   * concurrent final-name election. Shared so both seams observe the same
+   * remote-convergence window; never a size/depth rejection cap.
+   */
+  private static readonly IMPORT_IDENTITY_SETTLE_DELAYS_MS = [250, 500, 750, 1000, 1250] as const;
 
   private readonly gateway: AccessTokenGatewayClient;
   private readonly sleep: (delayMs: number) => Promise<void>;
@@ -1406,13 +1412,16 @@ export class PostmanGatewayAssetsClient {
       await this.renameGeneratedCollection(winner.id, finalName);
     }
 
-    if (preferredId && preferredId !== winner.id) {
+    const preferredBare = this.bareModelId(preferredId);
+    const winnerBare = this.bareModelId(winner.id);
+    if (preferredId && preferredBare && preferredBare !== winnerBare) {
       // We lost the election: drop only our own collection so a peer still
       // injecting/tagging its preferred id is not deleted out from under it.
-      const own = sameIdentity.find((entry) => entry.id === preferredId);
+      // Compare via bare model id — never treat bare vs canonical as a peer loss.
+      const own = sameIdentity.find((entry) => this.bareModelId(entry.id) === preferredBare);
       if (own) {
         try {
-          await this.deleteCollection(preferredId);
+          await this.deleteCollection(own.id);
         } catch (error) {
           if (!(error instanceof HttpError && error.status === 404)) throw error;
         }
@@ -1420,8 +1429,8 @@ export class PostmanGatewayAssetsClient {
       return winner.id;
     }
 
-    // We won. Observe boundedly for peers to self-delete, but never remove an
-    // id we did not create: that peer may still be renaming or populating it.
+    // We won (including bare Sync id matching canonical inventory uid). Observe
+    // boundedly for peers to self-delete, but never remove an id we did not create.
     if (sameIdentity.length > 1) {
       for (let attempt = 0; attempt < 5; attempt += 1) {
         await this.sleep(250 * (attempt + 1));
@@ -1560,6 +1569,54 @@ export class PostmanGatewayAssetsClient {
         )
       ) {
         return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Local Sync-import canonical rename: one PATCH with retry:'none'. On
+   * ambiguous transport/5xx only, poll no-retry workspace inventory until the
+   * exact same normalized collection identity shows the exact requested final
+   * name, or the settle budget is exhausted. Never resend PATCH, never
+   * fallback, never adopt a final-name peer. Inventory GET errors surface
+   * immediately. Generation callers keep {@link renameGeneratedCollection}.
+   */
+  private async renameImportedCollectionCanonical(
+    workspaceId: string,
+    collectionId: string,
+    finalName: string
+  ): Promise<void> {
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'patch',
+        path: `/v3/collections/${this.bareModelId(collectionId)}`,
+        retry: 'none',
+        body: [{ op: 'replace', path: '/name', value: finalName }]
+      });
+    } catch (error) {
+      if (
+        error instanceof HttpError &&
+        error.status === 400 &&
+        /must update at least one|REJECTED_PATCH/i.test(
+          `${error.message}\n${error.responseBody ?? ''}`
+        )
+      ) {
+        return;
+      }
+      if (!isAmbiguousTransportError(error)) throw error;
+      const preferredIdentity = normalizeCollectionModelIdentity(collectionId);
+      const delays = PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+      for (let observation = 0; observation <= delays.length; observation += 1) {
+        const matches = await this.findCollectionsByExactName(workspaceId, finalName, 'none');
+        const committed = matches.find(
+          (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
+        );
+        if (committed) return;
+        if (observation < delays.length) {
+          await this.sleep(delays[observation]!);
+        }
       }
       throw error;
     }
@@ -1805,13 +1862,7 @@ export class PostmanGatewayAssetsClient {
    * rejected here in favour of an anchored `<digits>-<uuid>` match.
    */
   private bareModelId(uid: string): string {
-    const u = String(uid ?? '').trim();
-    // A bare UUID already IS the model id, and it contains hyphens — splitting on
-    // the first hyphen would corrupt it (dropping its first segment). Guard that
-    // case; for a full `<owner>-<uuid>` public uid the owner is a single
-    // hyphenless segment, so stripping up to the first hyphen yields the uuid.
-    if (BOOTSTRAP_BARE_UUID_RE.test(u)) return u;
-    return u.includes('-') ? u.slice(u.indexOf('-') + 1) : u;
+    return normalizeCollectionModelIdentity(uid);
   }
 
   /**
@@ -2668,12 +2719,24 @@ export class PostmanGatewayAssetsClient {
    */
   async findCollectionsByExactName(
     workspaceId: string,
-    name: string
+    name: string,
+    retryPolicy?: 'safe' | 'none'
+  ): Promise<Array<{ id: string; name: string }>> {
+    const entries = await this.listWorkspaceCollections(workspaceId, retryPolicy);
+    return entries
+      .filter((value) => value.name === name)
+      .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  private async listWorkspaceCollections(
+    workspaceId: string,
+    retryPolicy?: 'safe' | 'none'
   ): Promise<Array<{ id: string; name: string }>> {
     const response = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
       method: 'get',
-      path: `/v3/collections/?workspace=${workspaceId}`
+      path: `/v3/collections/?workspace=${workspaceId}`,
+      ...(retryPolicy ? { retry: retryPolicy } : {})
     });
     const entries = Array.isArray(response?.data) ? response.data : [];
     return entries
@@ -2683,7 +2746,7 @@ export class PostmanGatewayAssetsClient {
         id: String(value.id ?? value.uid ?? '').trim(),
         name: String(value.name ?? value.title ?? '').trim()
       }))
-      .filter((value) => value.id && value.name === name)
+      .filter((value) => value.id)
       .sort((a, b) => a.id.localeCompare(b.id));
   }
 
@@ -2855,4 +2918,359 @@ export class PostmanGatewayAssetsClient {
     await this.createItemTree(itemsCid, asItemArray(v3.items), itemsCid);
     await this.applyCollectionLevelSettings(rootCid, v3, { rename: true, reconcileRemovals: true });
   }
+
+  /**
+   * Whole-collection import of a final v2.1 payload via sync
+   * `POST /collection/import`. Create is unsafe: one attempt, exact run-unique
+   * temp-name reconciliation only, then rename/elect with preview ownership
+   * isolation. Journals every root created by this call for verified cleanup.
+   */
+  async importV2Collection(
+    workspaceId: string,
+    collection: unknown,
+    finalName: string
+  ): Promise<ImportV2CollectionResult> {
+    const desiredName = String(finalName || '').trim();
+    if (!desiredName) {
+      throw new Error('LOCAL_OPENAPI_IMPORT_FAILED: final collection name is required');
+    }
+    const prepared = this.prepareV2ImportPayload(collection, desiredName);
+    const runToken = this.createIdentity();
+    const tempName = `${desiredName} [bootstrap:${runToken}]`;
+    const importPayload = this.cloneJson(prepared);
+    const info = asRecord(importPayload.info) ?? {};
+    info.name = tempName;
+    info._postman_id = randomUUID();
+    importPayload.info = info;
+    // Enforce v2.1 schema before the unsafe create.
+    this.assertV21Collection(importPayload);
+
+    const journaledRootIds: string[] = [];
+    const journal = (id: string) => {
+      const trimmed = String(id || '').trim();
+      if (trimmed && !journaledRootIds.includes(trimmed)) {
+        journaledRootIds.push(trimmed);
+      }
+    };
+
+    // The pre-mutation snapshot is part of the safety boundary. If it cannot be
+    // read without hidden retry, no unsafe import is attempted.
+    const staleFinalIdentities = new Set(
+      (await this.findCollectionsByExactName(workspaceId, desiredName, 'none'))
+        .map((entry) => normalizeCollectionModelIdentity(entry.id))
+    );
+
+    let created: JsonRecord | null;
+    try {
+      created = await this.gateway.requestJson<JsonRecord>({
+        service: 'sync',
+        method: 'post',
+        path: '/collection/import',
+        query: { workspace: workspaceId, format: '2.1.0' },
+        retry: 'none',
+        body: importPayload
+      });
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) {
+        throw this.sanitizeImportError('import-transport', error);
+      }
+      // Reconcile only the exact run-unique temp identity — never final-name peers.
+      const match = adoptExactMatch(
+        `collection-import:${workspaceId}:${tempName}`,
+        await this.findCollectionsByExactName(workspaceId, tempName, 'none'),
+        (entry) => entry.id
+      );
+      if (!match) {
+        throw this.sanitizeImportError('import-ambiguous-unreconciled', error);
+      }
+      created = { data: { id: match.id, uid: match.id } };
+    }
+
+    const rawId = this.extractCollectionUid(created);
+    if (!rawId) {
+      throw new Error('LOCAL_OPENAPI_IMPORT_FAILED: import did not return a collection id');
+    }
+    journal(rawId);
+
+    try {
+      await this.renameImportedCollectionCanonical(workspaceId, rawId, desiredName);
+      const electedId = await this.electImportedCollectionIdentity(
+        workspaceId,
+        desiredName,
+        rawId,
+        staleFinalIdentities
+      );
+      const rawBare = this.bareModelId(rawId);
+      const electedBare = this.bareModelId(electedId);
+      if (rawBare && electedBare && rawBare === electedBare) {
+        // Same root: Sync may return bare model_id while inventory returns the
+        // canonical <owner>-<model_id>. Promote the journal; never drop ownership.
+        const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
+        if (idx >= 0) journaledRootIds[idx] = electedId;
+        else journal(electedId);
+      } else {
+        // True peer won: our journaled root was deleted during election.
+        const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
+        if (idx >= 0) journaledRootIds.splice(idx, 1);
+      }
+      return {
+        collectionId: electedId,
+        journaledRootIds: [...journaledRootIds],
+        deleteVerifiedCleanup: async (ids) => {
+          await this.deleteVerifiedRunOwnedCollections(ids ?? journaledRootIds);
+        }
+      };
+    } catch (error) {
+      await this.deleteVerifiedRunOwnedCollections(journaledRootIds).catch(() => undefined);
+      throw this.sanitizeImportError('import-finalize', error);
+    }
+  }
+
+  /**
+   * In-place deep-update of an existing collection with a complete final v2.1
+   * payload. Preserves the root UID. Ambiguous transport never retries/creates/
+   * replaces: export + semantic digest verification only.
+   */
+  async deepUpdateV2Collection(
+    collectionUid: string,
+    collection: unknown,
+    expectedPayloadDigest: string
+  ): Promise<string> {
+    const uid = String(collectionUid || '').trim();
+    if (!uid) {
+      throw new Error('LOCAL_OPENAPI_DEEP_UPDATE_FAILED: collection uid is required');
+    }
+    const digest = String(expectedPayloadDigest || '').trim();
+    if (!/^[a-f0-9]{64}$/.test(digest)) {
+      throw new Error('LOCAL_OPENAPI_DEEP_UPDATE_FAILED: expectedPayloadDigest must be lowercase 64-hex');
+    }
+    const bareId = this.bareModelId(uid);
+    const prepared = this.prepareV2ImportPayload(collection, undefined);
+    // Force the tracked bare root ID so converter-generated identities cannot
+    // replace the existing collection UID on deep-update.
+    const info = asRecord(prepared.info) ?? {};
+    info._postman_id = bareId;
+    prepared.info = info;
+    this.assertV21Collection(prepared);
+
+    try {
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'sync',
+        method: 'put',
+        path: `/collection/deepupdate/${bareId}`,
+        query: { format: '2.1.0' },
+        retry: 'none',
+        body: prepared
+      });
+      return uid;
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) {
+        throw this.sanitizeDeepUpdateError('deep-update-transport', error);
+      }
+      const exported = await this.exportCollectionAsV21(uid);
+      const actualDigest = computePayloadDigest(exported);
+      if (actualDigest !== digest) {
+        throw new Error(
+          `LOCAL_OPENAPI_DEEP_UPDATE_FAILED: ambiguous-deep-update-digest-mismatch stage=deep-update-verify`,
+          { cause: error }
+        );
+      }
+      return uid;
+    }
+  }
+
+  /** Delete and verify absence of only the supplied run-owned collection roots. */
+  async deleteVerifiedRunOwnedCollections(collectionIds: string[]): Promise<void> {
+    const unique = [...new Set(collectionIds.map((id) => String(id || '').trim()).filter(Boolean))];
+    for (const id of unique) {
+      await this.deleteCollection(id);
+      // Verified absence means GET 404 only. 500/ambiguous never counts as deleted.
+      const verifiedAbsent = await this.verifyCollectionAbsent404(id);
+      if (!verifiedAbsent) {
+        throw new Error(
+          `LOCAL_OPENAPI_CLEANUP_FAILED: owned collection ${id} absence unverifiable after delete`
+        );
+      }
+    }
+  }
+
+  /**
+   * Prove a collection root is gone. Only HTTP 404 counts. Bounded safe-read
+   * retries that still end non-404 fail closed (caller surfaces sanitized id).
+   */
+  private async verifyCollectionAbsent404(collectionId: string): Promise<boolean> {
+    const path = `/v3/collections/${this.bareModelId(collectionId)}`;
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'get',
+          path,
+          retry: 'none'
+        });
+        // Still present.
+        return false;
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 404) {
+          return true;
+        }
+        if (error instanceof HttpError && error.status >= 500 && attempt + 1 < maxAttempts) {
+          await this.sleep(fullJitterDelayMs(attempt, 50, 200, Math.random));
+          continue;
+        }
+        return false;
+      }
+    }
+    return false;
+  }
+
+  private prepareV2ImportPayload(collection: unknown, forceName?: string): JsonRecord {
+    const clone = this.cloneJson(asRecord(collection) ?? {});
+    if (forceName !== undefined) {
+      const info = asRecord(clone.info) ?? {};
+      info.name = forceName;
+      clone.info = info;
+    }
+    return clone;
+  }
+
+  private assertV21Collection(collection: JsonRecord): void {
+    try {
+      const model = (V2 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
+      model.parse(collection);
+    } catch (error) {
+      throw new Error(
+        `LOCAL_OPENAPI_IMPORT_FAILED: collection failed v2.1 schema validation (${
+          error instanceof Error ? error.message.slice(0, 160) : 'invalid'
+        })`,
+        { cause: error }
+      );
+    }
+  }
+
+  private extractCollectionUid(created: JsonRecord | null): string {
+    if (!created) return '';
+    const asNonEmptyString = (value: unknown): string => {
+      if (typeof value !== 'string') return '';
+      return value.trim();
+    };
+    const data = asRecord(created.data);
+    const info = asRecord(data?.info);
+    const nested = asRecord(data?.collection) ?? asRecord(created.collection);
+    // Live Sync import envelope (collection-service SyncService): prefer
+    // data.info._postman_id, then top-level model_id, then legacy id/uid shapes.
+    const candidates = [
+      info?._postman_id,
+      created.model_id,
+      data?.id,
+      data?.uid,
+      created.id,
+      created.uid,
+      nested?.id,
+      nested?.uid
+    ];
+    for (const candidate of candidates) {
+      const id = asNonEmptyString(candidate);
+      if (id) return id;
+    }
+    return '';
+  }
+
+  private async electImportedCollectionIdentity(
+    workspaceId: string,
+    finalName: string,
+    preferredId: string,
+    staleFinalIdentities: ReadonlySet<string>
+  ): Promise<string> {
+    const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
+    const delays = PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+    let eligible: Array<{ id: string; name: string }> = [];
+    let ownCanonical: { id: string; name: string } | undefined;
+
+    // Observe the full settle window so a delayed concurrent peer final is not
+    // missed after own UID becomes visible. Never early-break on first sighting.
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      const inventory = await this.listWorkspaceCollections(workspaceId, 'none');
+      eligible = inventory
+        .filter((entry) => entry.name === finalName)
+        .filter(
+          (entry) => !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
+        )
+        .sort((a, b) => a.id.localeCompare(b.id));
+      ownCanonical = eligible.find(
+        (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
+      );
+      if (observation < delays.length) await this.sleep(delays[observation]!);
+    }
+
+    if (!ownCanonical) {
+      throw new Error(
+        `Imported collection did not become inventory-visible with canonical identity`
+      );
+    }
+
+    const winner = eligible[0]!;
+
+    const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
+    if (preferredIdentity !== winnerIdentity) {
+      // True peer won: delete only the run-owned root (match by bare model id).
+      try {
+        await this.deleteCollection(ownCanonical.id);
+      } catch (error) {
+        if (!(error instanceof HttpError && error.status === 404)) throw error;
+      }
+      return winner.id;
+    }
+
+    // Same root (bare Sync model_id vs canonical <owner>-<model_id>): return the
+    // inventory UID so downstream tagging and relation writes never see bare id.
+    return ownCanonical.id;
+  }
+
+  private async exportCollectionAsV21(collectionUid: string): Promise<JsonRecord> {
+    const bareId = this.bareModelId(collectionUid);
+    const exported = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'get',
+      path: `/v3/collections/${bareId}/export`,
+      retry: 'safe'
+    });
+    const data = asRecord(exported?.data) ?? exported;
+    const collection =
+      asRecord(asRecord(data)?.collection) ??
+      asRecord(data) ??
+      {};
+    if (asRecord(collection)?.$kind === 'collection' || Array.isArray(asRecord(collection)?.items)) {
+      const model = (V3 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
+      const parsed = model.parse(collection);
+      const v2 = transform(model as never, FormatVersion.V2, parsed as never) as unknown as JsonRecord;
+      return asRecord(v2) ?? {};
+    }
+    this.assertV21Collection(collection);
+    return collection;
+  }
+
+  private cloneJson<T>(value: T): T {
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value)) as T;
+  }
+
+  private sanitizeImportError(stage: string, error: unknown): Error {
+    const cause = error instanceof Error ? error.message.replace(/\s+/g, ' ').trim().slice(0, 240) : 'failure';
+    return new Error(`LOCAL_OPENAPI_IMPORT_FAILED: stage=${stage} cause=${cause}`);
+  }
+
+  private sanitizeDeepUpdateError(stage: string, error: unknown): Error {
+    const cause = error instanceof Error ? error.message.replace(/\s+/g, ' ').trim().slice(0, 240) : 'failure';
+    return new Error(`LOCAL_OPENAPI_DEEP_UPDATE_FAILED: stage=${stage} cause=${cause}`);
+  }
+}
+
+export interface ImportV2CollectionResult {
+  collectionId: string;
+  /** Roots created by this import attempt (exact run identity only). */
+  journaledRootIds: string[];
+  /** Delete and verify only journaled (or explicitly supplied) run-owned roots. */
+  deleteVerifiedCleanup: (ids?: string[]) => Promise<void>;
 }

@@ -15,7 +15,11 @@ const V2_TO_V3_ALLOWLIST: Record<string, string[]> = {
   'src/lib/protocols/graphql/builder.ts': ['v2-schema-url', 'v2-version-literal'],
   'src/lib/protocols/soap/builder.ts': ['v2-schema-url', 'v2-version-literal'],
   'src/lib/protocols/dispatch.ts': ['v2-version-literal'],
-  'src/lib/postman/postman-gateway-assets-client.ts': ['runtime-models-v2-import'],
+  'src/lib/postman/postman-gateway-assets-client.ts': [
+    'runtime-models-v2-import',
+    'v2-version-literal'
+  ],
+  'src/lib/repo/local-collection-artifacts.ts': ['runtime-models-v2-import'],
   'src/lib/postman/additional-collections.ts': ['v2-schema-url']
 };
 

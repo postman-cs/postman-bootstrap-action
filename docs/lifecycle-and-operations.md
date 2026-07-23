@@ -32,13 +32,13 @@ Current Postman asset state lives in `.postman/resources.yaml`.
 
 Commit `.postman/resources.yaml` when you want later runs to reuse the same workspace, spec, and collection IDs automatically.
 
-## Cloud spec-to-collection syncing
+## Local OpenAPI collection path
 
-After collections exist, bootstrap links them to the cloud specification and triggers a spec-side collection sync when `postman-access-token` is available.
+OpenAPI collections follow the local sole path: local conversion → repo v3 artifacts → classic sync import/deep-update. Canonical spec upload remains in Spec Hub. When `spec-path` exists, bootstrap writes path-only pre-link pairs; linking uses retained generation `options` + `syncOptions` when `postman-access-token` is available (GET-only relation settle; never specification collection-sync).
 
 - `sync-examples: true` enables example syncing in that relation setup.
 - `sync-examples: false` keeps the relation but disables example syncing.
-- If `postman-access-token` is missing or expired, bootstrap warns and skips the cloud link/sync step.
+- If `postman-access-token` is missing or expired, bootstrap warns and skips cloud linking.
 
 Use `credential-preflight: enforce` to fail before workspace creation when the PMAK and access token resolve to different parent orgs. Use `warn` to log the mismatch and continue.
 

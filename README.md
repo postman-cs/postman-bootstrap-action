@@ -183,7 +183,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `spec-url` | HTTPS URL to the OpenAPI document to bootstrap. Provide either spec-url or spec-path. | no |  |
 | `spec-path` | Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path. | no |  |
 | `spec-files-json` | Optional content-free JSON inventory of multi-file definition members from discovery (schemaVersion 1). Empty by default. When set, inventory root must equal spec-path. Cannot be combined with spec-url. Not a directory mode — companions are listed explicitly; file content is never embedded. | no |  |
-| `protocol` | API spec protocol. auto (default) detects from content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly. | no | `auto` |
+| `protocol` | API spec protocol. auto (default) detects from content/extension. openapi uploads the canonical spec to Spec Hub and builds baseline/smoke/contract collections locally (import/deep-update); graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly. | no | `auto` |
 | `protocol-endpoint-url` | Endpoint URL/authority used by generated non-OpenAPI requests (e.g. {{baseUrl}}/graphql, grpc://host:port). Supports Postman variable interpolation. Ignored for openapi. | no |  |
 | `openapi-version` | OpenAPI specification version override (3.0 or 3.1). When not set, the version is auto-detected from the spec content. | no |  |
 | `preserve-oas30-type-null` | Opt-in compatibility mode for OpenAPI 3.0 oneOf schemas that pair one normal schema with a null-only member. The action uploads the original source bytes unchanged and uses an internal nullable true view for validation and generated artifacts. All unrelated validation and lint errors remain enforced. | no | `false` |
@@ -221,6 +221,8 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `smoke-collection-id` | Smoke collection ID | n/a | n/a |
 | `contract-collection-id` | Contract collection ID | n/a | n/a |
 | `collections-json` | JSON summary of generated collections | n/a | n/a |
+| `prebuilt-collections-json` | Digest-bound JSON manifest of locally materialized Collection v3 trees (schemaVersion 1) for repo-sync reuse | n/a | n/a |
+| `openapi-operation-ledger-json` | Sanitized local OpenAPI orchestration operation ledger (schemaVersion 1) with counts and timings | n/a | n/a |
 | `lint-summary-json` | JSON summary of validation findings. Bootstrap does not invoke an API-key-authenticated Postman CLI lint. | n/a | n/a |
 | `breaking-change-status` | OpenAPI breaking-change check status | n/a | n/a |
 | `breaking-change-summary-json` | JSON summary of the OpenAPI breaking-change check | n/a | n/a |
@@ -285,13 +287,13 @@ Credentials resolve from a CLI flag, then the `INPUT_*` env var, then a plain `P
 
 ## How it works
 
-The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), generate or reuse baseline, smoke, and contract collections, inject generated tests, apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
+The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), convert OpenAPI locally into baseline, smoke, and contract collections (whole-collection import or in-place deep-update with scripts already embedded), apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
 
 - **Phase independence:** bootstrap succeeds on its own even when later pipeline stages fail, and reruns reuse existing assets. See [Bootstrap Phase Independence](docs/bootstrap-phase-independence.md).
 - **Team identity:** the team ID is resolved from the access-token session identity; org-mode tenants pass `workspace-team-id`. See [Team Identity](docs/team-identity.md).
 - **Git providers:** workspace-to-repository linking supports GitHub and GitLab, cloud and self-hosted. See [Git Provider Support](docs/git-provider-support.md).
 - **Spec handling:** operation summaries are normalized before upload, `spec-url` fetches are SSRF-hardened HTTPS with pinned DNS, and breaking-change comparison runs before any Postman mutation when enabled. See [OpenAPI Spec Handling](docs/spec-handling.md).
-- **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, cloud spec-to-collection syncing, and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
+- **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, local conversion → repo v3 artifacts → classic sync import/deep-update (canonical spec upload remains in Spec Hub; path-only pre-link when spec-path exists), and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
 - **Credentials:** `postman-access-token` authenticates every identity and asset operation; the optional `postman-api-key` is used only to preflight the mint credential with `GET /me` and mint or re-mint that token. See [Obtaining Credentials](docs/credentials.md).
 - **Protocol write path:** GraphQL and SOAP transform their v2 models into v3 Extensible Collections; gRPC builds the same format natively. Every protocol writes through the access-token EC API and fails fast with `EC_REQUIRES_ACCESS_TOKEN` when no access token can be obtained. See [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
 
@@ -340,7 +342,7 @@ The complete catalog of all 142 codes, grouped by layer with per-code remediatio
 - npm package: [@postman-cse/onboarding-bootstrap](https://www.npmjs.com/package/@postman-cse/onboarding-bootstrap)
 - Docs in this repo: [credentials](docs/credentials.md), [self-contained binary](docs/self-contained-binary.md), [spec handling](docs/spec-handling.md), [lifecycle modes](docs/lifecycle-and-operations.md), [team identity](docs/team-identity.md), [generated assertions](docs/generated-assertions.md), [contract error codes](docs/contract-error-codes.md)
 - Marketplace docs: [Support](SUPPORT.md), [Security Policy](SECURITY.md), [Release Policy](RELEASE_POLICY.md)
-- Postman references: [Postman API](https://learning.postman.com/docs/reference/postman-api/intro-api/), [API authentication](https://learning.postman.com/docs/reference/postman-api/authentication/), [service accounts](https://learning.postman.com/docs/administration/service-accounts/), [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), [generate collections](https://learning.postman.com/docs/design-apis/specifications/generate-collections/), [Postman CLI governance](https://learning.postman.com/docs/postman-cli/postman-cli-governance/)
+- Postman references: [Postman API](https://learning.postman.com/docs/reference/postman-api/intro-api/), [API authentication](https://learning.postman.com/docs/reference/postman-api/authentication/), [service accounts](https://learning.postman.com/docs/administration/service-accounts/), [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), [Postman CLI governance](https://learning.postman.com/docs/postman-cli/postman-cli-governance/)
 
 Local development: `npm install`, `npm test`, `npm run typecheck`, `npm run build` (produces the committed `dist/` bundles used by `action.yml`).
 

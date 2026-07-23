@@ -1,13 +1,13 @@
 # Obtaining Credentials
 
-Bootstrap needs a [Postman API key](https://learning.postman.com/docs/reference/postman-api/authentication/) for standard Postman API calls. Governance assignment, cloud spec-to-collection sync, and canonical workspace validation also need a Postman access token. The primary path is to mint that token in CI with [`postman-cs/postman-resolve-service-token-action`](https://github.com/postman-cs/postman-resolve-service-token-action). See the [service accounts documentation](https://learning.postman.com/docs/administration/service-accounts/) to create the automation identity and assign it to the right team or workspace.
+Bootstrap needs a [Postman API key](https://learning.postman.com/docs/reference/postman-api/authentication/) for standard Postman API calls. Governance assignment, collection linking after local import/deep-update, and canonical workspace validation also need a Postman access token. The primary path is to mint that token in CI with [`postman-cs/postman-resolve-service-token-action`](https://github.com/postman-cs/postman-resolve-service-token-action). See the [service accounts documentation](https://learning.postman.com/docs/administration/service-accounts/) to create the automation identity and assign it to the right team or workspace.
 
 ## Credential matrix
 
 | Credential | Required | Used for | Recommended source |
 | --- | --- | --- | --- |
-| `postman-api-key` / `POSTMAN_API_KEY` | yes | Workspace creation, spec upload, collection generation, linting, and most Postman API operations | Service-account PMAK stored as a CI secret |
-| `postman-access-token` / `POSTMAN_ACCESS_TOKEN` | no, recommended | Governance group assignment, cloud spec-to-collection sync, and canonical workspace validation on reruns | `postman-resolve-service-token-action` output `token` |
+| `postman-api-key` / `POSTMAN_API_KEY` | yes | Workspace creation, spec upload, local collection conversion/import, linting, and most Postman API operations | Service-account PMAK stored as a CI secret |
+| `postman-access-token` / `POSTMAN_ACCESS_TOKEN` | no, recommended | Governance group assignment, collection linking after local import/deep-update, and canonical workspace validation on reruns | `postman-resolve-service-token-action` output `token` |
 | `workspace-team-id` | only for org-mode workspace creation | Selects the sub-team that owns the created workspace | Repository variable such as `POSTMAN_WORKSPACE_TEAM_ID` |
 | `github-token` | only for repository custom property lookup | Reads `postman-governance-group` from GitHub repository properties | `${{ github.token }}` |
 

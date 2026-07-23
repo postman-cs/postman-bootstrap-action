@@ -11,6 +11,7 @@ import {
 } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
 import { parseOpenApiDocument } from '../src/lib/spec/openapi-loader.js';
+import { createSmokeTestExec, instrumentSmokeCollection } from '../src/lib/spec/smoke-tests.js';
 import { parseGraphQLSchema } from '../src/lib/protocols/graphql/parser.js';
 import { buildGraphQLCollection } from '../src/lib/protocols/graphql/builder.js';
 import { instrumentGraphQLCollection } from '../src/lib/protocols/graphql/instrumenter.js';
@@ -137,6 +138,24 @@ describe('generated assertion scripts are syntactically valid JavaScript', () =>
     const resolver: Array<{ label: string; source: string }> = [];
     collectV2Scripts(createSecretsResolverItem(), resolver);
     for (const { label, source } of resolver) assertParses(`smoke-resolver:${label}`, source);
+  });
+
+  it('pure smoke-tests helpers embed parsable v2 item.event scripts', () => {
+    assertParses('smoke-helper:createSmokeTestExec', createSmokeTestExec().join('\n'));
+    const instrumented = instrumentSmokeCollection({
+      info: { name: 'Syntax Smoke' },
+      item: [
+        {
+          name: 'GET /pets',
+          request: { method: 'GET', url: 'https://example.test/pets' }
+        }
+      ]
+    });
+    const scripts: Array<{ label: string; source: string }> = [];
+    collectV2Scripts(instrumented, scripts);
+    expect(scripts.length).toBeGreaterThan(0);
+    expect(scripts.some((entry) => entry.label.startsWith('00 - Resolve Secrets'))).toBe(true);
+    for (const { label, source } of scripts) assertParses(`smoke-helper:${label}`, source);
   });
 
   it('smoke injectTests afterResponse scripts parse', async () => {

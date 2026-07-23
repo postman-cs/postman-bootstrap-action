@@ -6,14 +6,24 @@ import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { adviseFromHttpError, type ErrorAdviceContext } from './error-advice.js';
 import type { AccessTokenProvider } from './token-provider.js';
 import { postmanAppVersionProvider, type AppVersionProvider } from './app-version.js';
+import { normalizeCollectionModelIdentity } from './collection-model-identity.js';
 
 export type InternalIntegrationBackend = 'bifrost';
 
 export interface SpecificationCollectionLink {
   collectionId: string;
+  /** Exact local OpenAPI generation options retained on the relation. */
+  options?: Record<string, unknown>;
   syncOptions?: {
     syncExamples: boolean;
   };
+}
+
+export interface SpecificationCollectionRelation {
+  collectionId: string;
+  state?: string;
+  options?: Record<string, unknown>;
+  syncOptions?: Record<string, unknown>;
 }
 
 export type FindWorkspaceForRepoResult =
@@ -69,7 +79,20 @@ export interface InternalIntegrationAdapter {
   linkCollectionsToSpecification(
     specificationId: string,
     collections: SpecificationCollectionLink[]
-  ): Promise<void>;
+  ): Promise<{ lockedRetries: number }>;
+  listSpecificationCollectionRelations?(
+    specificationId: string
+  ): Promise<SpecificationCollectionRelation[]>;
+  /**
+   * Read-only bounded wait after link PUT: poll relation GET until the exact
+   * expected collection IDs exist with recognized state (`in-sync` or
+   * `out-of-sync`) and options/syncOptions objects. Never calls Spec Hub
+   * collection sync and never retries the link write.
+   */
+  settleSpecificationCollectionRelations?(
+    specificationId: string,
+    expectedCollectionIds: string[]
+  ): Promise<{ relations: SpecificationCollectionRelation[]; attempts: number }>;
   syncCollection(
     specificationId: string,
     collectionId: string
@@ -82,6 +105,11 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   private static readonly REQUEST_TIMEOUT_MS = 30_000;
   /** Concurrent dual-trigger previews share one spec; peer sync holds a 423 lock. */
   private static readonly SYNC_LOCKED_MAX_RETRIES = 6;
+  /** Post-link relation readback: GET-only polls until expected IDs propagate. */
+  private static readonly RELATION_SETTLE_MAX_ATTEMPTS = 12;
+  private static readonly RELATION_SETTLE_DELAY_MS = 1000;
+  /** Durable local-import link states; Spec Hub sync is forbidden on this path. */
+  private static readonly RECOGNIZED_RELATION_STATES = new Set(['in-sync', 'out-of-sync']);
 
   private readonly accessToken: string;
   private readonly tokenProvider?: AccessTokenProvider;
@@ -449,13 +477,14 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
   async linkCollectionsToSpecification(
     specificationId: string,
     collections: SpecificationCollectionLink[]
-  ): Promise<void> {
+  ): Promise<{ lockedRetries: number }> {
     if (collections.length === 0) {
-      return;
+      return { lockedRetries: 0 };
     }
 
     const body = collections.map((collection) => ({
       collectionId: collection.collectionId,
+      ...(collection.options ? { options: collection.options } : {}),
       ...(collection.syncOptions ? { syncOptions: collection.syncOptions } : {})
     }));
 
@@ -468,11 +497,11 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       );
 
       if (response.ok) {
-        return;
+        return { lockedRetries: lockedAttempt };
       }
 
       const httpErr = await HttpError.fromResponse(response, {
-        method: 'POST',
+        method: 'PUT',
         requestHeaders: {
           'Content-Type': 'application/json',
           'x-access-token': this.currentToken(),
@@ -496,6 +525,175 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       );
       throw advised ?? httpErr;
     }
+  }
+
+  async listSpecificationCollectionRelations(
+    specificationId: string
+  ): Promise<SpecificationCollectionRelation[]> {
+    const response = await this.proxyRequest(
+      'specification',
+      'get',
+      `/specifications/${specificationId}/collections`,
+      undefined,
+      { query: { fields: 'syncOptions,options' } }
+    );
+    if (!response.ok) {
+      const httpErr = await HttpError.fromResponse(response, {
+        method: 'GET',
+        requestHeaders: {
+          'Content-Type': 'application/json',
+          'x-access-token': this.currentToken(),
+          ...(this.teamId && this.orgMode ? { 'x-entity-team-id': this.teamId } : {})
+        },
+        secretValues: [this.currentToken()],
+        url: `${this.bifrostBaseUrl}/ws/proxy`
+      });
+      const advised = adviseFromHttpError(
+        httpErr,
+        this.adviceContext('specification collection relation readback')
+      );
+      throw advised ?? httpErr;
+    }
+    const json = (await response.json().catch(() => null)) as
+      | { data?: unknown }
+      | null;
+    const rows = Array.isArray(json?.data) ? json.data : [];
+    const out: SpecificationCollectionRelation[] = [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+      const record = row as Record<string, unknown>;
+      const collectionId = String(
+        record.collection ?? record.collectionId ?? record.id ?? record.uid ?? ''
+      ).trim();
+      if (!collectionId) continue;
+      const options =
+        record.options && typeof record.options === 'object' && !Array.isArray(record.options)
+          ? (record.options as Record<string, unknown>)
+          : undefined;
+      const syncOptions =
+        record.syncOptions &&
+        typeof record.syncOptions === 'object' &&
+        !Array.isArray(record.syncOptions)
+          ? (record.syncOptions as Record<string, unknown>)
+          : undefined;
+      out.push({
+        collectionId,
+        ...(typeof record.state === 'string' ? { state: record.state } : {}),
+        ...(options ? { options } : {}),
+        ...(syncOptions ? { syncOptions } : {})
+      });
+    }
+    return out;
+  }
+
+  async settleSpecificationCollectionRelations(
+    specificationId: string,
+    expectedCollectionIds: string[]
+  ): Promise<{ relations: SpecificationCollectionRelation[]; attempts: number }> {
+    const expected = [...new Set(expectedCollectionIds.map((id) => String(id || '').trim()).filter(Boolean))];
+    if (expected.length === 0) {
+      throw new Error(
+        'LOCAL_OPENAPI_LINK_READBACK_FAILED: relation settle requires at least one expected collection id'
+      );
+    }
+    const expectedByIdentity = new Map<string, string>();
+    for (const id of expected) {
+      const identity = normalizeCollectionModelIdentity(id);
+      const prior = expectedByIdentity.get(identity);
+      if (prior && prior !== id) {
+        throw new Error(
+          `LOCAL_OPENAPI_LINK_READBACK_FAILED: expected collection identity collision; ids=${prior},${id}`
+        );
+      }
+      expectedByIdentity.set(identity, id);
+    }
+
+    const formatObserved = (relations: SpecificationCollectionRelation[]): string =>
+      expected
+        .map((id) => {
+          const identity = normalizeCollectionModelIdentity(id);
+          const candidates = relations.filter(
+            (entry) => normalizeCollectionModelIdentity(entry.collectionId) === identity
+          );
+          const row = candidates.find((entry) => entry.collectionId === id) ?? candidates[0];
+          if (!row) return `${id}:missing`;
+          const state = row.state || '<empty>';
+          const options = row.options && typeof row.options === 'object' && !Array.isArray(row.options)
+            ? 'options'
+            : 'options-missing';
+          const syncOptions =
+            row.syncOptions && typeof row.syncOptions === 'object' && !Array.isArray(row.syncOptions)
+              ? 'syncOptions'
+              : 'syncOptions-missing';
+          return `${id}:${state}/${options}/${syncOptions}`;
+        })
+        .join(',');
+
+    const isCompleteRelation = (row: SpecificationCollectionRelation | undefined): boolean => {
+      if (!row) return false;
+      if (!BifrostInternalIntegrationAdapter.RECOGNIZED_RELATION_STATES.has(String(row.state || ''))) {
+        return false;
+      }
+      if (!row.options || typeof row.options !== 'object' || Array.isArray(row.options)) return false;
+      if (!row.syncOptions || typeof row.syncOptions !== 'object' || Array.isArray(row.syncOptions)) {
+        return false;
+      }
+      return true;
+    };
+
+    let lastRelations: SpecificationCollectionRelation[] = [];
+    for (
+      let attempt = 1;
+      attempt <= BifrostInternalIntegrationAdapter.RELATION_SETTLE_MAX_ATTEMPTS;
+      attempt += 1
+    ) {
+      if (attempt > 1) {
+        await this.sleep(BifrostInternalIntegrationAdapter.RELATION_SETTLE_DELAY_MS);
+      }
+      lastRelations = await this.listSpecificationCollectionRelations(specificationId);
+      const byId = new Map<string, SpecificationCollectionRelation>();
+      for (const [identity, expectedId] of expectedByIdentity) {
+        const candidates = lastRelations.filter(
+          (row) => normalizeCollectionModelIdentity(row.collectionId) === identity
+        );
+        if (candidates.length > 1) {
+          throw new Error(
+            `LOCAL_OPENAPI_LINK_READBACK_FAILED: observed collection identity collision; id=${expectedId}`
+          );
+        }
+        const row = candidates.find((candidate) => candidate.collectionId === expectedId) ?? candidates[0];
+        if (row) byId.set(expectedId, row);
+      }
+
+      // Fail closed immediately on present-but-invalid rows (unknown/error state
+      // or missing options objects). Keep polling only for missing propagation.
+      for (const id of expected) {
+        const row = byId.get(id);
+        if (!row) continue;
+        const state = String(row.state || '');
+        if (!BifrostInternalIntegrationAdapter.RECOGNIZED_RELATION_STATES.has(state)) {
+          throw new Error(
+            `LOCAL_OPENAPI_LINK_READBACK_FAILED: unrecognized relation state; ids=${expected.join(',')} states=${formatObserved(lastRelations)}`
+          );
+        }
+        if (!isCompleteRelation(row)) {
+          throw new Error(
+            `LOCAL_OPENAPI_LINK_READBACK_FAILED: relation fields incomplete; ids=${expected.join(',')} states=${formatObserved(lastRelations)}`
+          );
+        }
+      }
+
+      if (expected.every((id) => isCompleteRelation(byId.get(id)))) {
+        return {
+          relations: expected.map((id) => ({ ...byId.get(id)!, collectionId: id })),
+          attempts: attempt
+        };
+      }
+    }
+
+    throw new Error(
+      `LOCAL_OPENAPI_LINK_READBACK_FAILED: relation settle timed out after ${BifrostInternalIntegrationAdapter.RELATION_SETTLE_MAX_ATTEMPTS} attempts; ids=${expected.join(',')} states=${formatObserved(lastRelations)}`
+    );
   }
 
   async syncCollection(
@@ -522,13 +720,6 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         return;
       }
 
-      const syncInProgress = /collection\s+sync\s+(?:is\s+)?(?:already\s+)?in\s+progress/i.test(
-        bodyText
-      );
-      if (response.status === 423 && syncInProgress) {
-        return;
-      }
-
       const httpErr = await HttpError.fromResponse(response, {
         method: 'POST',
         requestHeaders: {
@@ -540,8 +731,8 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
         url: `${this.bifrostBaseUrl}/ws/proxy`
       });
 
-      // Unrelated locks still follow the bounded retry contract. A proven
-      // collection-sync lock converges above without waiting for the peer.
+      // A per-spec lock does not prove this collection's sync was accepted.
+      // Retry every 423 until this request succeeds or the bounded budget ends.
       if (
         httpErr.status === 423 &&
         lockedAttempt < BifrostInternalIntegrationAdapter.SYNC_LOCKED_MAX_RETRIES

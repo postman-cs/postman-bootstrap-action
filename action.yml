@@ -78,7 +78,7 @@ inputs:
     required: false
     default: ''
   protocol:
-    description: API spec protocol. auto (default) detects from content/extension. openapi flows through Spec Hub; graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly.
+    description: API spec protocol. auto (default) detects from content/extension. openapi uploads the canonical spec to Spec Hub and builds baseline/smoke/contract collections locally (import/deep-update); graphql (SDL/introspection), grpc (.proto), and soap (WSDL) build and instrument a Postman collection directly.
     required: false
     default: auto
   protocol-endpoint-url:
@@ -185,6 +185,10 @@ outputs:
     description: Contract collection ID
   collections-json:
     description: JSON summary of generated collections
+  prebuilt-collections-json:
+    description: Digest-bound JSON manifest of locally materialized Collection v3 trees (schemaVersion 1) for repo-sync reuse
+  openapi-operation-ledger-json:
+    description: Sanitized local OpenAPI orchestration operation ledger (schemaVersion 1) with counts and timings
   lint-summary-json:
     description: JSON summary of validation findings. Bootstrap does not invoke an API-key-authenticated Postman CLI lint.
   breaking-change-status:

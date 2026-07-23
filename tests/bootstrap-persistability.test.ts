@@ -123,24 +123,38 @@ function createGeneratedContractCollection() {
   };
 }
 
+function createDefaultImportV2Collection() {
+  return vi.fn().mockImplementation(async (_workspaceId: string, collection: unknown, finalName?: string) => {
+    const info = (collection as { info?: { name?: string } } | null)?.info;
+    const name = String(finalName || info?.name || '');
+    const id = name.includes('[Contract]')
+      ? 'col-contract'
+      : name.includes('[Smoke]')
+        ? 'col-smoke'
+        : 'col-baseline';
+    return {
+      collectionId: id,
+      journaledRootIds: [id],
+      deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+    };
+  });
+}
+
 function createPostman(overrides: Record<string, unknown> = {}) {
   return {
     addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
     createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-created' }),
     findWorkspacesByName: vi.fn().mockResolvedValue([]),
-    generateCollection: vi
-      .fn()
-      .mockImplementation(async (_specId: string, _projectName: string, prefix: string) => {
-        if (prefix === '') return 'col-baseline';
-        if (prefix === '[Smoke]') return 'col-smoke';
-        return 'col-contract';
-      }),
+    generateCollection: vi.fn().mockRejectedValue(new Error('generateCollection unreachable')),
     getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
     getCollection: vi.fn().mockResolvedValue(createGeneratedContractCollection()),
     getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31),
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+    importV2Collection: createDefaultImportV2Collection(),
+    deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
+    deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -152,10 +166,36 @@ function createPostman(overrides: Record<string, unknown> = {}) {
 }
 
 function createInternalIntegration(overrides: Record<string, unknown> = {}) {
+  const linked = new Map<string, { options?: Record<string, unknown>; syncOptions?: Record<string, unknown> }>();
   return {
     assignWorkspaceToGovernanceGroup: vi.fn().mockResolvedValue(undefined),
     configureTeamContext: vi.fn(),
-    linkCollectionsToSpecification: vi.fn().mockResolvedValue(undefined),
+    linkCollectionsToSpecification: vi.fn().mockImplementation(
+      async (_specId: string, collections: Array<{ collectionId: string; options?: Record<string, unknown>; syncOptions?: Record<string, unknown> }>) => {
+        for (const row of collections) {
+          linked.set(row.collectionId, {
+            ...(row.options ? { options: row.options } : {}),
+            ...(row.syncOptions ? { syncOptions: row.syncOptions } : {})
+          });
+        }
+        return { lockedRetries: 0 };
+      }
+    ),
+    listSpecificationCollectionRelations: vi.fn().mockImplementation(async () =>
+      [...linked.entries()].map(([collectionId, meta]) => ({
+        collectionId,
+        state: 'in-sync',
+        ...meta
+      }))
+    ),
+    settleSpecificationCollectionRelations: vi.fn().mockImplementation(async () => ({
+      relations: [...linked.entries()].map(([collectionId, meta]) => ({
+        collectionId,
+        state: 'in-sync',
+        ...meta
+      })),
+      attempts: 1
+    })),
     syncCollection: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };

@@ -3,7 +3,7 @@
  *
  * Serves the exact wire shapes the production clients parse (mint, /me, iapub
  * session, and the Bifrost /ws/proxy envelope for ums/workspaces/specification/
- * collection/tagging), parametrized over the axes real callers vary on:
+ * collection/tagging/sync), parametrized over the axes real callers vary on:
  * org vs non-org account, prod vs beta stack, and failure injection.
  *
  * Realism that makes the org cells meaningful: on an org account the
@@ -26,6 +26,7 @@ export interface ProxyEnvelope {
   method: string;
   path: string;
   body?: unknown;
+  query?: Record<string, unknown>;
 }
 
 export interface PlatformFakeOptions {
@@ -39,7 +40,7 @@ export interface PlatformFakeOptions {
   teamId?: number;
   /** Session consumerType. Default 'service_account'. */
   consumerType?: string;
-  /** Generation task statuses served by successive GET /tasks (last sticks). When absent, generation returns no taskId (no poll). */
+  /** Kept for harness compatibility; OpenAPI no longer polls Spec Hub generation. */
   generationTaskStatuses?: string[];
   /**
    * Failure/override hook, consulted first. Return a Response to short-circuit;
@@ -60,6 +61,8 @@ export interface PlatformFakeState {
   workspaceCreateBodies: JsonRecord[];
   generationPostCount: number;
   taskPollCount: number;
+  importPostCount: number;
+  deepUpdatePutCount: number;
 }
 
 export interface PlatformFake {
@@ -98,6 +101,12 @@ function asRecord(value: unknown): JsonRecord | undefined {
     : undefined;
 }
 
+function roleFromName(name: string): 'baseline' | 'smoke' | 'contract' {
+  if (name.includes('[Smoke]')) return 'smoke';
+  if (name.includes('[Contract]')) return 'contract';
+  return 'baseline';
+}
+
 export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformFake {
   const org = options.org ?? false;
   const stack = options.stack ?? 'prod';
@@ -112,12 +121,25 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
     flipAttempts: 0,
     workspaceCreateBodies: [],
     generationPostCount: 0,
-    taskPollCount: 0
+    taskPollCount: 0,
+    importPostCount: 0,
+    deepUpdatePutCount: 0
   };
 
   // Mutable per-run platform state.
   let workspaceVisibility: string | undefined;
-  const generatedCollections: Array<{ collection: string; name: string }> = [];
+  let importSeq = 0;
+  const collectionsById = new Map<string, { id: string; name: string }>();
+  const linkedRelations = new Map<
+    string,
+    {
+      collectionId: string;
+      state: string;
+      options?: Record<string, unknown>;
+      syncOptions?: Record<string, unknown>;
+    }
+  >();
+  const deletedIds = new Set<string>();
   const taskStatuses = options.generationTaskStatuses
     ? [...options.generationTaskStatuses]
     : undefined;
@@ -134,7 +156,8 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
         service: String(payload.service ?? ''),
         method: String(payload.method ?? 'get').toLowerCase(),
         path: String(payload.path ?? ''),
-        body: payload.body
+        body: payload.body,
+        ...(payload.query ? { query: payload.query as Record<string, unknown> } : {})
       };
       state.events.push(`proxy:${proxy.service} ${proxy.method.toUpperCase()} ${proxy.path}`);
     }
@@ -213,25 +236,38 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
         }
       }
 
+      if (svc === 'sync') {
+        if (pmethod === 'post' && ppath === '/collection/import') {
+          state.importPostCount += 1;
+          importSeq += 1;
+          const body = asRecord(proxy.body) ?? {};
+          const info = asRecord(body.info) ?? {};
+          const name = String(info.name ?? `Imported ${importSeq}`);
+          const slot = roleFromName(name);
+          const id = `12345678-col-${slot}-${importSeq}`;
+          collectionsById.set(id, { id, name });
+          deletedIds.delete(id);
+          // Documented live Sync import envelope (model_id + data.info._postman_id).
+          return json({
+            model_id: id,
+            data: {
+              info: {
+                _postman_id: id,
+                name
+              }
+            }
+          });
+        }
+        if (pmethod === 'put' && /^\/collection\/deepupdate\//.test(ppath)) {
+          state.deepUpdatePutCount += 1;
+          return json({ data: { ok: true } });
+        }
+      }
+
       if (svc === 'specification') {
         if (pmethod === 'post' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
+          // Legacy Spec Hub generation path — count only; OpenAPI must not hit this.
           state.generationPostCount += 1;
-          const name = String(asRecord(proxy.body)?.name ?? '');
-          const slot = name.includes('[Smoke]')
-            ? 'smoke'
-            : name.includes('[Contract]')
-              ? 'contract'
-              : 'baseline';
-          const defaultName =
-            slot === 'smoke'
-              ? '[Smoke] Contract Payments'
-              : slot === 'contract'
-                ? '[Contract] Contract Payments'
-                : 'Contract Payments';
-          generatedCollections.push({
-            collection: `12345678-col-${slot}`,
-            name: name || defaultName
-          });
           if (taskStatuses) {
             return json({ data: { taskId: 'task-1' } });
           }
@@ -245,12 +281,39 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
               : (taskStatuses?.[0] ?? 'completed');
           return json({ data: { 'task-1': status } });
         }
+        if (pmethod === 'put' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
+          const rows = Array.isArray(proxy.body) ? proxy.body : [];
+          for (const row of rows) {
+            const record = asRecord(row);
+            if (!record) continue;
+            const collectionId = String(record.collectionId ?? '').trim();
+            if (!collectionId) continue;
+            const options =
+              record.options && typeof record.options === 'object' && !Array.isArray(record.options)
+                ? (record.options as Record<string, unknown>)
+                : undefined;
+            const syncOptions =
+              record.syncOptions &&
+              typeof record.syncOptions === 'object' &&
+              !Array.isArray(record.syncOptions)
+                ? (record.syncOptions as Record<string, unknown>)
+                : undefined;
+            linkedRelations.set(collectionId, {
+              collectionId,
+              state: 'in-sync',
+              ...(options ? { options } : {}),
+              ...(syncOptions ? { syncOptions } : {})
+            });
+          }
+          return json({ data: { updated: rows.length } });
+        }
         if (pmethod === 'get' && /\/specifications\/[^/]+\/collections$/.test(ppath)) {
           return json({
-            data: generatedCollections.map(({ collection, name }) => ({
-              collection,
-              name,
-              state: 'in-sync'
+            data: [...linkedRelations.values()].map((row) => ({
+              collection: row.collectionId,
+              state: row.state,
+              ...(row.options ? { options: row.options } : {}),
+              ...(row.syncOptions ? { syncOptions: row.syncOptions } : {})
             }))
           });
         }
@@ -272,8 +335,20 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
       }
 
       if (svc === 'collection') {
+        if (pmethod === 'get' && ppath.startsWith('/v3/collections/?workspace=')) {
+          return json({
+            data: [...collectionsById.values()].filter((entry) => !deletedIds.has(entry.id))
+          });
+        }
         if (pmethod === 'get' && /\/export$/.test(ppath)) {
           return json({ data: { collection: {} } });
+        }
+        if (pmethod === 'get' && /\/v3\/collections\/[^/?]+$/.test(ppath)) {
+          const id = ppath.split('/').pop() || '';
+          if (deletedIds.has(id) || ![...collectionsById.keys()].some((key) => key.endsWith(id) || key === id)) {
+            return json({ error: 'missing' }, 404);
+          }
+          return json({ data: { id } });
         }
         if (pmethod === 'get' && /\/items\/[^/]+$/.test(ppath)) {
           return json({
@@ -288,6 +363,30 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
         }
         if (pmethod === 'get' && /\/items\/$/.test(ppath)) {
           return json({ data: [{ $kind: 'http-request', id: 'item-1', name: 'GET /payments' }] });
+        }
+        if (pmethod === 'patch' && /\/v3\/collections\//.test(ppath)) {
+          const bare = ppath.split('/').pop() || '';
+          const ops = Array.isArray(proxy.body) ? proxy.body : [];
+          const nameOp = ops.find((op) => asRecord(op)?.path === '/name');
+          const nextName = nameOp ? String(asRecord(nameOp)?.value ?? '') : '';
+          for (const [id, entry] of collectionsById) {
+            if (id === bare || id.endsWith(bare)) {
+              if (nextName) entry.name = nextName;
+              collectionsById.set(id, entry);
+              return json({ data: { id } });
+            }
+          }
+          return json({ data: { id: bare } });
+        }
+        if (pmethod === 'delete' && /\/v3\/collections\//.test(ppath)) {
+          const bare = ppath.split('/').pop() || '';
+          for (const id of collectionsById.keys()) {
+            if (id === bare || id.endsWith(bare)) {
+              deletedIds.add(id);
+            }
+          }
+          deletedIds.add(bare);
+          return json({ data: { ok: true } });
         }
         if (pmethod === 'post') {
           return json({ data: { id: '55363555-created' } });

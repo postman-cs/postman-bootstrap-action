@@ -191,6 +191,11 @@ describe('internal integration adapter', () => {
     await adapter.linkCollectionsToSpecification('spec-123', [
       {
         collectionId: 'col-1',
+        options: {
+          parametersResolution: 'Example',
+          requestNameSource: 'Fallback',
+          folderStrategy: 'Paths'
+        },
         syncOptions: { syncExamples: true }
       }
     ]);
@@ -210,12 +215,334 @@ describe('internal integration adapter', () => {
           body: [
             {
               collectionId: 'col-1',
+              options: {
+                parametersResolution: 'Example',
+                requestNameSource: 'Fallback',
+                folderStrategy: 'Paths'
+              },
               syncOptions: { syncExamples: true }
             }
           ]
         })
       })
     );
+  });
+
+  it('reads specification collection relations with syncOptions,options fields', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            collection: 'col-1',
+            state: 'in-sync',
+            options: { requestNameSource: 'Fallback', folderStrategy: 'Paths' },
+            syncOptions: { syncExamples: true }
+          }
+        ]
+      })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl
+    });
+
+    const relations = await adapter.listSpecificationCollectionRelations!('spec-123');
+    expect(relations).toEqual([
+      {
+        collectionId: 'col-1',
+        state: 'in-sync',
+        options: { requestNameSource: 'Fallback', folderStrategy: 'Paths' },
+        syncOptions: { syncExamples: true }
+      }
+    ]);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy',
+      expect.objectContaining({
+        body: JSON.stringify({
+          service: 'specification',
+          method: 'get',
+          path: '/specifications/spec-123/collections',
+          query: { fields: 'syncOptions,options' }
+        })
+      })
+    );
+  });
+
+  it('accepts durable out-of-sync relations with options in one GET read (Q15)', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const options = {
+      parametersResolution: 'Example',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths'
+    };
+    const syncOptions = { syncExamples: true };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { collection: 'col-a', state: 'out-of-sync', options, syncOptions },
+          { collection: 'col-b', state: 'out-of-sync', options, syncOptions },
+          { collection: 'col-c', state: 'out-of-sync', options, syncOptions }
+        ]
+      })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    const settled = await adapter.settleSpecificationCollectionRelations!('spec-123', [
+      'col-a',
+      'col-b',
+      'col-c'
+    ]);
+
+    expect(settled.attempts).toBe(1);
+    expect(settled.relations).toEqual([
+      { collectionId: 'col-a', state: 'out-of-sync', options, syncOptions },
+      { collectionId: 'col-b', state: 'out-of-sync', options, syncOptions },
+      { collectionId: 'col-c', state: 'out-of-sync', options, syncOptions }
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as { body?: string }).body || '{}'))).toMatchObject({
+      service: 'specification',
+      method: 'get',
+      path: '/specifications/spec-123/collections',
+      query: { fields: 'syncOptions,options' }
+    });
+  });
+
+  it('still accepts in-sync relations with options (Q15)', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const options = { requestNameSource: 'Fallback', folderStrategy: 'Paths' };
+    const syncOptions = { syncExamples: false };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { collection: 'col-a', state: 'in-sync', options, syncOptions },
+          { collection: 'col-b', state: 'in-sync', options, syncOptions },
+          { collection: 'col-c', state: 'in-sync', options, syncOptions }
+        ]
+      })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    const settled = await adapter.settleSpecificationCollectionRelations!('spec-123', [
+      'col-a',
+      'col-b',
+      'col-c'
+    ]);
+    expect(settled.attempts).toBe(1);
+    expect(settled.relations.every((row) => row.state === 'in-sync')).toBe(true);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('polls only while expected relations are missing, then accepts out-of-sync (Q15)', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const options = { requestNameSource: 'Fallback', folderStrategy: 'Paths' };
+    const syncOptions = { syncExamples: true };
+    const complete = [
+      { collection: 'col-a', state: 'out-of-sync', options, syncOptions },
+      { collection: 'col-b', state: 'out-of-sync', options, syncOptions },
+      { collection: 'col-c', state: 'out-of-sync', options, syncOptions }
+    ];
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ data: [] }))
+      .mockResolvedValueOnce(jsonResponse({ data: complete.slice(0, 2) }))
+      .mockResolvedValueOnce(jsonResponse({ data: complete }));
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    const settled = await adapter.settleSpecificationCollectionRelations!('spec-123', [
+      'col-a',
+      'col-b',
+      'col-c'
+    ]);
+    expect(settled.attempts).toBe(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(settled.relations.map((row) => row.state)).toEqual([
+      'out-of-sync',
+      'out-of-sync',
+      'out-of-sync'
+    ]);
+  });
+
+  it('fails closed immediately on unrecognized relation state (Q15)', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const options = { requestNameSource: 'Fallback' };
+    const syncOptions = { syncExamples: true };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { collection: 'col-a', state: 'out-of-sync', options, syncOptions },
+          { collection: 'col-b', state: 'error', options, syncOptions },
+          { collection: 'col-c', state: 'out-of-sync', options, syncOptions }
+        ]
+      })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec-123', ['col-a', 'col-b', 'col-c'])
+    ).rejects.toThrow(/LOCAL_OPENAPI_LINK_READBACK_FAILED: unrecognized relation state/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('fails closed immediately when options/syncOptions objects are missing (Q15)', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      jsonResponse({
+        data: [
+          { collection: 'col-a', state: 'out-of-sync', options: { folderStrategy: 'Paths' } },
+          { collection: 'col-b', state: 'out-of-sync', syncOptions: { syncExamples: true } },
+          {
+            collection: 'col-c',
+            state: 'out-of-sync',
+            options: { folderStrategy: 'Paths' },
+            syncOptions: { syncExamples: true }
+          }
+        ]
+      })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec-123', ['col-a', 'col-b', 'col-c'])
+    ).rejects.toThrow(/LOCAL_OPENAPI_LINK_READBACK_FAILED: relation fields incomplete/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when missing relations never propagate within the bound (Q15)', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      jsonResponse({
+        data: [{ collection: 'col-a', state: 'out-of-sync', options: {}, syncOptions: {} }]
+      })
+    );
+
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost',
+      accessToken: 'token-123',
+      teamId: '11430732',
+      orgMode: true,
+      fetchImpl,
+      sleep
+    });
+
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec-123', ['col-a', 'col-b', 'col-c'])
+    ).rejects.toThrow(
+      /LOCAL_OPENAPI_LINK_READBACK_FAILED: relation settle timed out after 12 attempts; ids=col-a,col-b,col-c states=col-a:out-of-sync\/options\/syncOptions,col-b:missing,col-c:missing/
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(12);
+    expect(sleep).toHaveBeenCalledTimes(11);
+  });
+
+  it('settles bare/full/mixed collection identities and restores expected UIDs', async () => {
+    const a = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const b = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+    const expected = [`123-${a}`, b, `456-cccccccc-cccc-cccc-cccc-cccccccccccc`];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      data: [
+        { collection: a, state: 'in-sync', options: {}, syncOptions: {} },
+        { collection: `999-${b}`, state: 'out-of-sync', options: {}, syncOptions: {} },
+        { collection: expected[2], state: 'in-sync', options: {}, syncOptions: {} }
+      ]
+    }));
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost', accessToken: 'token', teamId: '1', fetchImpl
+    });
+
+    const settled = await adapter.settleSpecificationCollectionRelations!('spec', expected);
+    expect(settled.relations.map((row) => row.collectionId)).toEqual(expected);
+    expect(settled.attempts).toBe(1);
+  });
+
+  it('fails before reading when expected collection identities collide', async () => {
+    const uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const fetchImpl = vi.fn<typeof fetch>();
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost', accessToken: 'token', teamId: '1', fetchImpl
+    });
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec', [uuid, `123-${uuid}`])
+    ).rejects.toThrow(/expected collection identity collision/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when multiple observed rows map to one expected identity', async () => {
+    const uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      data: [
+        { collection: uuid, state: 'in-sync', options: {}, syncOptions: {} },
+        { collection: `123-${uuid}`, state: 'in-sync', options: {}, syncOptions: {} }
+      ]
+    }));
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost', accessToken: 'token', teamId: '1', fetchImpl
+    });
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec', [`123-${uuid}`])
+    ).rejects.toThrow(/observed collection identity collision/);
+  });
+
+  it('does not false-match arbitrary prefixed aliases to a bare UUID', async () => {
+    const uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      data: [{ collection: `owner-${uuid}`, state: 'in-sync', options: {}, syncOptions: {} }]
+    }));
+    const adapter = createInternalIntegrationAdapter({
+      backend: 'bifrost', accessToken: 'token', teamId: '1', fetchImpl, sleep
+    });
+    await expect(
+      adapter.settleSpecificationCollectionRelations!('spec', [uuid])
+    ).rejects.toThrow(/timed out after 12 attempts/);
+    expect(fetchImpl).toHaveBeenCalledTimes(12);
+    expect(sleep).toHaveBeenCalledTimes(11);
   });
 
   it('routes specification collection sync through the Bifrost proxy', async () => {
@@ -246,21 +573,24 @@ describe('internal integration adapter', () => {
     );
   });
 
-  it('accepts a proven peer collection-sync 423 without retrying', async () => {
+  it('retries an in-progress collection-sync 423 until this collection is accepted', async () => {
     const sleep = vi.fn(async () => undefined);
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      jsonResponse(
-        {
-          error: {
-            name: 'actionLockedError',
-            status: 423,
-            title: 'Collection sync in progress',
-            detail: 'Collection sync is already in progress for the specification.'
-          }
-        },
-        { status: 423, statusText: 'Locked' }
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: {
+              name: 'actionLockedError',
+              status: 423,
+              title: 'Collection sync in progress',
+              detail: 'Collection sync is already in progress for the specification.'
+            }
+          },
+          { status: 423, statusText: 'Locked' }
+        )
       )
-    );
+      .mockResolvedValueOnce(jsonResponse({ data: { taskId: 'task-2' } }));
 
     const adapter = createInternalIntegrationAdapter({
       backend: 'bifrost',
@@ -272,8 +602,8 @@ describe('internal integration adapter', () => {
     });
 
     await expect(adapter.syncCollection('spec-123', 'col-1')).resolves.toBeUndefined();
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(sleep).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2000);
   });
 
   it('retains bounded retries for an unrelated 423 collection sync lock', async () => {
@@ -361,7 +691,7 @@ describe('internal integration adapter', () => {
       adapter.linkCollectionsToSpecification('spec-123', [
         { collectionId: 'col-1', syncOptions: { syncExamples: true } }
       ])
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ lockedRetries: 1 });
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(2000);
   });

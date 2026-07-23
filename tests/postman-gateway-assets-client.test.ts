@@ -4129,6 +4129,65 @@ describe('PostmanGatewayAssetsClient', () => {
       ).toHaveLength(1);
     });
 
+    it('import-finalize fails when elected-loser cleanup cannot be verified', async () => {
+      const ownBare = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const ownId = `300-${ownBare}`;
+      const peerId = '100-11111111-1111-1111-1111-111111111111';
+      let imported = false;
+      const deleted: string[] = [];
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          return jsonResponse({ data: { id: ownId } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.includes('?workspace=')
+        ) {
+          if (!imported) return jsonResponse({ data: [] });
+          // Peer always wins; loser remains in inventory so verified cleanup fails.
+          return jsonResponse({
+            data: [
+              { id: peerId, name: 'Payments' },
+              { id: ownId, name: 'Payments' }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${ownBare}`
+        ) {
+          return jsonResponse({ data: { id: ownId, name: 'Payments' } });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      await expect(
+        client.importV2Collection('ws-1', v21Collection, 'Payments')
+      ).rejects.toThrow(
+        new RegExp(
+          `LOCAL_OPENAPI_IMPORT_FAILED: stage=import-finalize cause=LOCAL_OPENAPI_CLEANUP_FAILED: owned collection ${ownId.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')} absence unverifiable`
+        )
+      );
+      expect(deleted.length).toBeGreaterThanOrEqual(1);
+      expect(deleted.every((path) => path === `/v3/collections/${ownBare}`)).toBe(true);
+      expect(
+        deleted.some((path) => path.includes('11111111-1111-1111-1111-111111111111'))
+      ).toBe(false);
+    });
+
     it('elects lower peer final only after observations beyond the historic six-read/3.75s election window', async () => {
       const finalName = PREVIEW_FINAL_NAME;
       const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
@@ -4136,6 +4195,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const peerId = '200-11111111-1111-1111-1111-111111111111';
       let imported = false;
       let electionObs = 0;
+      let cleanupInventoryReads = 0;
       let ownRootReads = 0;
       const deleted: string[] = [];
       const sleep = vi.fn(async (delayMs: number) => {
@@ -4155,6 +4215,15 @@ describe('PostmanGatewayAssetsClient', () => {
           env.path.includes('?workspace=')
         ) {
           if (!imported) return jsonResponse({ data: [] });
+          if (deleted.length > 0) {
+            cleanupInventoryReads += 1;
+            return jsonResponse({
+              data: [
+                { id: peerId, name: finalName },
+                { id: ownId, name: finalName }
+              ]
+            });
+          }
           electionObs += 1;
           // Own preview final is visible first; lower peer final appears only
           // after the historic six-observation / 3.75s standard election budget.
@@ -4192,6 +4261,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
       expect(ownRootReads).toBe(2);
       expect(electionObs).toBe(PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+      expect(cleanupInventoryReads).toBe(1);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
@@ -4723,17 +4793,27 @@ describe('PostmanGatewayAssetsClient', () => {
           }
           return jsonResponse({ error: 'missing' }, { status: 404 });
         }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === '/v3/collections/?workspace=ws-1'
+        ) {
+          // Stale root GET still sees the collection; inventory already dropped it.
+          return jsonResponse({ data: [] });
+        }
         return jsonResponse({ data: { ok: true } });
       }, { sleep });
 
       await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).resolves.toBeUndefined();
-      expect(rootReads).toBe(2);
-      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([DELETE_ABSENCE_SETTLE_DELAYS_MS[0]]);
+      // Inventory proves absence on first stale GET 200 — no settle sleep needed.
+      expect(rootReads).toBe(1);
+      expect(sleep).not.toHaveBeenCalled();
     });
 
     it('deleteVerifiedRunOwnedCollections rejects bounded readback when collection never becomes absent', async () => {
       const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
       let rootReads = 0;
+      let inventoryReads = 0;
       const sleep = vi.fn(async (delayMs: number) => {
         void delayMs;
       });
@@ -4745,6 +4825,14 @@ describe('PostmanGatewayAssetsClient', () => {
           rootReads += 1;
           return jsonResponse({ data: { id, name: 'Still here' } });
         }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === '/v3/collections/?workspace=ws-1'
+        ) {
+          inventoryReads += 1;
+          return jsonResponse({ data: [{ id, name: 'Still here' }] });
+        }
         return jsonResponse({ data: { ok: true } });
       }, { sleep });
 
@@ -4752,6 +4840,7 @@ describe('PostmanGatewayAssetsClient', () => {
         /LOCAL_OPENAPI_CLEANUP_FAILED: owned collection eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee absence unverifiable/
       );
       expect(rootReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
+      expect(inventoryReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([...DELETE_ABSENCE_SETTLE_DELAYS_MS]);
     });
 

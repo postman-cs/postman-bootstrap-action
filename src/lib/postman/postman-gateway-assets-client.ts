@@ -3137,10 +3137,11 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Prove a collection root is gone. HTTP 404 on root GET proves absence; root
-   * GET 403 falls back to workspace inventory with normalized identity comparison
-   * (never treating 403 alone as absence). Root GET 200 and transient >=500 share
-   * the bounded DELETE_ABSENCE settle schedule before failing closed.
+   * Prove a collection root is gone. HTTP 404 on root GET proves absence.
+   * Root GET 403 or stale post-delete GET 200 fall back to workspace inventory
+   * with normalized identity comparison (never treating 403 alone as absence).
+   * Transient >=500 shares the bounded DELETE_ABSENCE settle schedule before
+   * failing closed.
    */
   private async verifyCollectionAbsent(
     workspaceId: string,
@@ -3157,6 +3158,13 @@ export class PostmanGatewayAssetsClient {
           path,
           retry: 'none'
         });
+        // Root GET can lag after a successful delete. Inventory is the
+        // workspace-scoped truth for whether the identity still exists.
+        const inventoryAbsent = await this.inventoryOmitsNormalizedIdentity(
+          workspaceId,
+          targetIdentity
+        );
+        if (inventoryAbsent === true) return true;
         if (observation < delays.length) {
           await this.sleep(delays[observation]!);
           continue;
@@ -3167,14 +3175,12 @@ export class PostmanGatewayAssetsClient {
           return true;
         }
         if (error instanceof HttpError && error.status === 403) {
-          try {
-            const inventory = await this.listWorkspaceCollections(workspaceId, 'none');
-            if (!this.isNormalizedIdentityPresentInInventory(inventory, targetIdentity)) {
-              return true;
-            }
-          } catch {
-            return false;
-          }
+          const inventoryAbsent = await this.inventoryOmitsNormalizedIdentity(
+            workspaceId,
+            targetIdentity
+          );
+          if (inventoryAbsent === true) return true;
+          if (inventoryAbsent === null) return false;
           if (observation < delays.length) {
             await this.sleep(delays[observation]!);
             continue;
@@ -3189,6 +3195,22 @@ export class PostmanGatewayAssetsClient {
       }
     }
     return false;
+  }
+
+  /**
+   * true = identity absent from inventory; false = still present;
+   * null = inventory unreadable (fail closed for absence proof).
+   */
+  private async inventoryOmitsNormalizedIdentity(
+    workspaceId: string,
+    targetIdentity: string
+  ): Promise<boolean | null> {
+    try {
+      const inventory = await this.listWorkspaceCollections(workspaceId, 'none');
+      return !this.isNormalizedIdentityPresentInInventory(inventory, targetIdentity);
+    } catch {
+      return null;
+    }
   }
 
   private isNormalizedIdentityPresentInInventory(
@@ -3290,8 +3312,9 @@ export class PostmanGatewayAssetsClient {
 
     const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
     if (preferredIdentity !== winnerIdentity) {
-      // True peer won: delete only the run-owned root and verify absence before
-      // returning the winner inventory UID.
+      // True peer won: delete only the run-owned loser and verify absence before
+      // returning the peer winner so the caller drops journal ownership only
+      // after the owned root is confirmed gone.
       await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
       return winner.id;
     }

@@ -211,7 +211,9 @@ describe('SEA binary workflow contract', () => {
     expect(seaWorkflow).toContain('env -i PATH=/nonexistent');
     expect(seaWorkflow).toContain('--version');
     expect(seaWorkflow).toContain('NODE_OPTIONS=--invalid-node-option');
-    expect(seaWorkflow).toContain('grep -q "is required" /tmp/sea-node-options.out');
+    expect(seaWorkflow).toContain(
+      'hardened="$(NODE_OPTIONS=--invalid-node-option "$BIN" --version 2>/dev/null || true)"',
+    );
 
     expect(seaWorkflow).toContain(
       'node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$PWD/sea-proxy-result.json"',

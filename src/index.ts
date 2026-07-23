@@ -35,6 +35,10 @@ import {
   type PreflightMode
 } from './lib/postman/credential-identity.js';
 import { isAmbiguousTransportError } from './lib/postman/create-reconciliation.js';
+import {
+  generateCollectionsWithSpecFanout,
+  type CollectionGenerationRoleName
+} from './lib/postman/collection-generation-fanout.js';
 import { adviseFromHttpError } from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
@@ -342,6 +346,15 @@ export interface BootstrapDependencyFactories {
    * defaults to a no-op for the CLI path (which has no GitHub log scrubber).
    */
   setSecret?: (secret: string) => void;
+}
+
+function reportRetry(
+  core: Pick<CoreLike, 'info'>,
+  event: import('./lib/postman/gateway-client.js').RetryEvent
+): void {
+  core.info(
+    `[postman retry] action=bootstrap class=${event.class} status=${event.status ?? 'none'} attempt=${event.attempt} delayMs=${event.delay}`
+  );
 }
 
 function normalizeInputValue(value: string | undefined): string | undefined {
@@ -2651,16 +2664,43 @@ async function runBootstrapInner(
         const assetProjectName = collectionAssetProjectName;
         const specId = outputs['spec-id'];
 
-        // Regenerate each spec-linked collection in place from the current spec
-        // via the access-token `specification` sync route (preserving the
-        // collection UID so persisted repo-var references stay valid), or generate
-        // a fresh one. Both are access-token gateway routes.
-        // and no v2 collection is read or written.
-        const ensureCollection = async (
+        type CollectionOutputKey =
+          | 'baseline-collection-id'
+          | 'smoke-collection-id'
+          | 'contract-collection-id';
+        const collectionRoles: Array<{
+          role: CollectionGenerationRoleName;
+          prefix: GeneratedCollectionPrefix;
+          existingId: string | undefined;
+          outputKey: CollectionOutputKey;
+        }> = [
+          {
+            role: 'baseline',
+            prefix: BASELINE_COLLECTION_PREFIX,
+            existingId: baselineCollectionId,
+            outputKey: 'baseline-collection-id'
+          },
+          {
+            role: 'smoke',
+            prefix: SMOKE_COLLECTION_PREFIX,
+            existingId: smokeCollectionId,
+            outputKey: 'smoke-collection-id'
+          },
+          {
+            role: 'contract',
+            prefix: CONTRACT_COLLECTION_PREFIX,
+            existingId: contractCollectionId,
+            outputKey: 'contract-collection-id'
+          }
+        ];
+
+        // Resolve tracked collections first. Only roles that cannot preserve an
+        // existing identity enter fresh generation and therefore need spec shards.
+        const resolveExistingCollection = async (
           prefix: GeneratedCollectionPrefix,
           existingId: string | undefined,
-          outputKey: 'baseline-collection-id' | 'smoke-collection-id' | 'contract-collection-id'
-        ): Promise<void> => {
+          outputKey: CollectionOutputKey
+        ): Promise<boolean> => {
           if (existingId) {
             if (inputs.collectionSyncMode === 'refresh' && dependencies.internalIntegration) {
               try {
@@ -2669,7 +2709,7 @@ async function runBootstrapInner(
                 dependencies.core.info(
                   `Refreshed existing ${describeGeneratedCollection(prefix)} collection ${existingId} from the current spec`
                 );
-                return;
+                return true;
               } catch (error) {
                 if (isAmbiguousTransportError(error)) {
                   const refreshedState = stateStore.read();
@@ -2700,27 +2740,75 @@ async function runBootstrapInner(
               dependencies.core.info(
                 `Using existing ${describeGeneratedCollection(prefix)} collection: ${existingId}`
               );
-              return;
+              return true;
             }
           }
-          // Channels prefix the complete role-aware collection name so sets
-          // group as `[DEV] [Smoke] name`, never `[Smoke] [DEV] name`.
-          const effectivePrefix = branchDecision.tier === 'channel' && branchDecision.channel
-            ? channelAssetName(prefix, branchDecision.channel.code).trim()
-            : prefix;
-          outputs[outputKey] = await dependencies.postman.generateCollection(
-            specId,
-            assetProjectName,
-            effectivePrefix,
-            inputs.folderStrategy,
-            inputs.nestedFolderHierarchy,
-            inputs.requestNameSource
-          );
+          return false;
+        };
+
+        const freshRoles: Array<(typeof collectionRoles)[number] & { effectivePrefix: string }> = [];
+        for (const role of collectionRoles) {
+          if (
+            !(await resolveExistingCollection(role.prefix, role.existingId, role.outputKey))
+          ) {
+            // Channels prefix the complete role-aware collection name so sets
+            // group as `[DEV] [Smoke] name`, never `[Smoke] [DEV] name`.
+            freshRoles.push({
+              ...role,
+              effectivePrefix:
+                branchDecision.tier === 'channel' && branchDecision.channel
+                  ? channelAssetName(role.prefix, branchDecision.channel.code).trim()
+                  : role.prefix
+            });
+          }
+        }
+
+        if (freshRoles.length > 0) {
+          const generation = await generateCollectionsWithSpecFanout({
+            assetName: assetProjectName,
+            canonicalSpecId: specId,
+            workspaceId: workspaceId || '',
+            openapiVersion: detectedOpenapiVersion,
+            source:
+              useMultiFileSync && uploadDefinitionBundle
+                ? { kind: 'bundle', bundle: uploadDefinitionBundle }
+                : { kind: 'single', content: uploadSpecContent },
+            roles: freshRoles.map((role) => ({
+              role: role.role,
+              prefix: role.effectivePrefix
+            })),
+            reservedCollectionIds: {
+              baseline: outputs['baseline-collection-id'] || undefined,
+              smoke: outputs['smoke-collection-id'] || undefined,
+              contract: outputs['contract-collection-id'] || undefined
+            },
+            folderStrategy: inputs.folderStrategy,
+            nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+            requestNameSource: inputs.requestNameSource,
+            postman: dependencies.postman,
+            integration: dependencies.internalIntegration,
+            env: process.env,
+            identity: process.env.GITHUB_RUN_ID
+              ? () => `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT || '1'}`
+              : undefined,
+            info: (message) => dependencies.core.info(message)
+          });
+
+          for (const role of freshRoles) {
+            const collectionId = generation.collections[role.role];
+            if (!collectionId) {
+              throw new Error(`Fresh ${role.role} collection generation did not return an ID`);
+            }
+            outputs[role.outputKey] = collectionId;
+            dependencies.core.info(
+              `Generated ${describeGeneratedCollection(role.prefix)} collection: ${collectionId}`
+            );
+          }
           dependencies.core.info(
-            `Generated ${describeGeneratedCollection(prefix)} collection: ${outputs[outputKey]}`
+            `Collection generation ${generation.diagnostic.strategy} completed for ${generation.diagnostic.freshRoles} role(s) using ${generation.diagnostic.temporarySpecs} temporary spec(s) in ${generation.diagnostic.durationMs}ms`
           );
-          // Spec/collection resources state is deferred until verified sync +
-          // generation/linking succeed (see end of try).
+          // Spec/collection resources state remains in memory until verified
+          // generation/linking completes at the existing final commit boundary.
           recordCurrentBootstrapResources({
             assetProjectName,
             inputs,
@@ -2729,11 +2817,7 @@ async function runBootstrapInner(
             releaseLabel,
             resourcesState: writableResourcesState
           });
-        };
-
-        await ensureCollection(BASELINE_COLLECTION_PREFIX, baselineCollectionId, 'baseline-collection-id');
-        await ensureCollection(SMOKE_COLLECTION_PREFIX, smokeCollectionId, 'smoke-collection-id');
-        await ensureCollection(CONTRACT_COLLECTION_PREFIX, contractCollectionId, 'contract-collection-id');
+        }
 
         // Dual-trigger re-election: concurrent previews may have each generated
         // then orphan-swept. Re-adopt the durable ids before description/inject.
@@ -2936,15 +3020,24 @@ async function runBootstrapInner(
           dependencies.core,
           'Sync Linked Collections',
           async () => {
-            for (const collectionId of linkedCollectionIds) {
+            const syncResults = await Promise.allSettled(linkedCollectionIds.map(async (collectionId) => {
               await dependencies.internalIntegration!.syncCollection(
                 outputs['spec-id'],
                 collectionId
               );
-              completedExternalSideEffects.push(
-                `syncCollection(${outputs['spec-id']}, ${collectionId})`
-              );
+              return collectionId;
+            }));
+            for (const result of syncResults) {
+              if (result.status === 'fulfilled') {
+                completedExternalSideEffects.push(
+                  `syncCollection(${outputs['spec-id']}, ${result.value})`
+                );
+              }
             }
+            const failedSync = syncResults.find(
+              (result): result is PromiseRejectedResult => result.status === 'rejected'
+            );
+            if (failedSync) throw failedSync.reason;
           }
         )
       );
@@ -3093,7 +3186,9 @@ export async function runAction(
       info: (message) => actionCore.info(message),
       warning: (message) => actionCore.warning(message)
     },
-    (secret) => actionCore.setSecret(secret)
+    (secret) => actionCore.setSecret(secret),
+    undefined,
+    (event) => reportRetry(actionCore, event)
   );
   if (!inputs.postmanAccessToken) {
     throw new Error('Could not obtain postman-access-token from the configured postman-api-key.');
@@ -3112,8 +3207,9 @@ export async function runAction(
         if (!isLegacyAccessTokenDeprecationWarning(message)) {
           actionCore.warning(message);
         }
-      }
-    }
+       }
+    },
+    onRetry: (event) => reportRetry(actionCore, event)
   });
   warnIfDeprecatedAccessToken(actionCore, inputs);
 
@@ -3304,7 +3400,8 @@ export function createBootstrapDependencies(
     onToken: (token) => {
       factories.setSecret?.(token);
       mutableMasker.add(token);
-    }
+    },
+    onRetry: (event) => reportRetry(factories.core, event)
   });
 
   const gatewayClient = inputs.postmanAccessToken
@@ -3314,7 +3411,8 @@ export function createBootstrapDependencies(
         fallbackBaseUrl: inputs.postmanFallbackBase,
         teamId: inputs.teamId || '',
         orgMode,
-        secretMasker
+        secretMasker,
+        onRetry: (event) => reportRetry(factories.core, event)
       })
     : undefined;
   const gatewayAssets = gatewayClient
@@ -3325,7 +3423,8 @@ export function createBootstrapDependencies(
               createIdentity: () =>
                 `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT || '1'}`
             }
-          : {})
+          : {}),
+        onRetry: (event) => reportRetry(factories.core, event)
       })
     : undefined;
 

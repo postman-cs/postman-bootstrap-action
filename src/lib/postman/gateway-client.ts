@@ -8,6 +8,13 @@ import { postmanAppVersionProvider, type AppVersionProvider } from './app-versio
 
 export type GatewayMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
+export interface RetryEvent {
+  class: 'http' | 'inner' | 'transport' | 'auth' | 'fallback' | 'poll';
+  status?: number;
+  attempt: number;
+  delay: number;
+}
+
 export interface GatewayRequest {
   service: string;
   method: GatewayMethod;
@@ -51,6 +58,7 @@ export interface AccessTokenGatewayClientOptions {
   /** Injectable RNG for deterministic jitter in tests (default Math.random). */
   randomImpl?: () => number;
   appVersionProvider?: AppVersionProvider;
+  onRetry?: (event: RetryEvent) => void;
 }
 
 function isExpiredAuthError(status: number, body: string): boolean {
@@ -156,6 +164,7 @@ export class AccessTokenGatewayClient {
   private readonly sleepImpl: (ms: number) => Promise<void>;
   private readonly randomImpl: () => number;
   private readonly appVersionProvider: AppVersionProvider;
+  private readonly onRetry?: (event: RetryEvent) => void;
 
   constructor(options: AccessTokenGatewayClientOptions) {
     this.tokenProvider = options.tokenProvider;
@@ -177,6 +186,7 @@ export class AccessTokenGatewayClient {
     this.sleepImpl = options.sleepImpl ?? defaultSleep;
     this.randomImpl = options.randomImpl ?? Math.random;
     this.appVersionProvider = options.appVersionProvider ?? postmanAppVersionProvider;
+    this.onRetry = options.onRetry;
   }
 
   configureTeamContext(teamId: string, orgMode: boolean): void {
@@ -275,6 +285,7 @@ export class AccessTokenGatewayClient {
 
   private async attemptFallback(request: GatewayRequest): Promise<Response | null> {
     if (!this.fallbackEligible(request)) return null;
+    this.onRetry?.({ class: 'fallback', attempt: 1, delay: 0 });
     const response = await this.tryFallback(request);
     if (!response) return null;
     const body = await response.text().catch(() => '');
@@ -309,6 +320,7 @@ export class AccessTokenGatewayClient {
         if (retryMode === 'safe' && attempt < this.maxRetries) {
           const delay = this.retryDelayMs(attempt);
           attempt += 1;
+          this.onRetry?.({ class: 'transport', attempt, delay });
           await this.sleepImpl(delay);
           continue;
         }
@@ -328,6 +340,7 @@ export class AccessTokenGatewayClient {
           ) {
             const delay = this.retryDelayMs(attempt);
             attempt += 1;
+            this.onRetry?.({ class: 'inner', status: innerStatus, attempt, delay });
             await this.sleepImpl(delay);
             continue;
           }
@@ -340,6 +353,7 @@ export class AccessTokenGatewayClient {
 
       const body = await response.text().catch(() => '');
       if (isExpiredAuthError(response.status, body) && this.tokenProvider.canRefresh()) {
+        this.onRetry?.({ class: 'auth', status: response.status, attempt: 1, delay: 0 });
         await this.tokenProvider.refresh();
         response = await this.send(request);
         if (response.ok) {
@@ -364,6 +378,7 @@ export class AccessTokenGatewayClient {
           parseRetryAfterMs(response.headers.get('retry-after'))
         );
         attempt += 1;
+        this.onRetry?.({ class: 'http', status: response.status, attempt, delay });
         await this.sleepImpl(delay);
         continue;
       }

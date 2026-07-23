@@ -93,8 +93,12 @@ jobs:
           BIN="$PWD/build/sea/postman-bootstrap-${VERSION}-linux-x64"
           out="$(env -i PATH=/nonexistent "$BIN" 2>&1 || true)"; echo "$out"; echo "$out" | grep -q "is required"
           test "$(env -i PATH=/nonexistent "$BIN" --version)" = "$VERSION"
-          env NODE_OPTIONS=--invalid-node-option "$BIN" >/tmp/sea-node-options.out 2>&1 || true
-          grep -q "is required" /tmp/sea-node-options.out
+          hardened="$(NODE_OPTIONS=--invalid-node-option "$BIN" --version 2>/dev/null || true)"
+          echo "hardened --version -> $hardened"
+          if [ "$hardened" != "$VERSION" ]; then
+            echo "::error::SEA honored ambient NODE_OPTIONS; expected execArgvExtension=none to ignore it"
+            exit 1
+          fi
           node scripts/assert-sea-proxy.mjs "$BIN" bifrost-premium-https-v4.gw.postman.com:443 --project-name sea-proxy-smoke --spec-path tests/fixtures/e2e-spec.yaml --postman-access-token sea-proxy-smoke-token --credential-preflight warn --result-json "$PWD/sea-proxy-result.json"
           (
             cd "$(dirname "$BIN")"

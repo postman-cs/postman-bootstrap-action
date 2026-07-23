@@ -51,8 +51,15 @@ jobs:
             echo "::error::SEA --version reported '$ver', expected '$VERSION' (version not embedded)"
             exit 1
           fi
-          env NODE_OPTIONS=--invalid-node-option "$BIN" >/tmp/sea-node-options.out 2>&1 || true
-          grep -q "is required" /tmp/sea-node-options.out
+          # Hermetic runtime: sea-config.json sets execArgvExtension=none, so the
+          # binary must ignore ambient NODE_OPTIONS. A bogus flag node would reject
+          # at startup must NOT reach the runtime -- --version still prints cleanly.
+          hardened="$(NODE_OPTIONS=--invalid-node-option "$BIN" --version 2>/dev/null || true)"
+          echo "hardened --version -> $hardened"
+          if [ "$hardened" != "$VERSION" ]; then
+            echo "::error::SEA honored ambient NODE_OPTIONS; expected execArgvExtension=none to ignore it"
+            exit 1
+          fi
       - name: Smoke test SEA proxy routing
         run: |
           VERSION="$(node -p "require('./package.json').version")"

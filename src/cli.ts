@@ -100,8 +100,15 @@ export class ConsoleReporter implements ReporterCore {
   }
 
   public async group<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    console.error(`[group] ${name}`);
-    return await fn();
+    const started = Date.now();
+    try {
+      const result = await fn();
+      console.error(`[bootstrap timing] ${JSON.stringify({ stage: name, ms: Math.max(0, Date.now() - started), status: 'ok' })}`);
+      return result;
+    } catch (error) {
+      console.error(`[bootstrap timing] ${JSON.stringify({ stage: name, ms: Math.max(0, Date.now() - started), status: 'error' })}`);
+      throw error;
+    }
   }
 
   public info(message: string): void {
@@ -458,7 +465,13 @@ export async function runCli(
   // dependencies built below get the full access-token surface (governance
   // adapter, EC client) instead of silently downgrading.
   const mintReporter = new ConsoleReporter();
-  await mintAccessTokenIfNeeded(inputs, mintReporter);
+  await mintReporter.group('Mint access token', async () =>
+    mintAccessTokenIfNeeded(inputs, mintReporter, undefined, fetch, (event) =>
+      mintReporter.info(
+        `[postman retry] action=bootstrap class=${event.class} status=${event.status ?? 'none'} attempt=${event.attempt} delayMs=${event.delay}`
+      )
+    )
+  );
 
   const dependencies = createCliDependencies(inputs);
 
@@ -467,13 +480,19 @@ export async function runCli(
   }
 
   // Resolve the access-token session once before any spec fetch or write.
-  await runCredentialPreflight({
-    iapubBaseUrl: inputs.postmanIapubBase,
-    postmanAccessToken: inputs.postmanAccessToken,
-    mode: inputs.credentialPreflight,
-    mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
-    log: dependencies.core
-  });
+  await dependencies.core.group('Credential preflight', async () =>
+    runCredentialPreflight({
+      iapubBaseUrl: inputs.postmanIapubBase,
+      postmanAccessToken: inputs.postmanAccessToken,
+      mode: inputs.credentialPreflight,
+      mask: createSecretMasker([inputs.postmanApiKey, inputs.postmanAccessToken]),
+      log: dependencies.core,
+      onRetry: (event) =>
+        dependencies.core.info(
+          `[postman retry] action=bootstrap class=${event.class} status=${event.status ?? 'none'} attempt=${event.attempt} delayMs=${event.delay}`
+        )
+    })
+  );
 
   if ((inputs.domain || inputs.governanceGroup) && !dependencies.internalIntegration) {
     dependencies.core.warning(

@@ -1,4 +1,5 @@
 import type { SecretMasker } from '../secrets.js';
+import type { RetryEvent } from './gateway-client.js';
 
 export interface CredentialIdentity {
   source: 'iapub/sessions';
@@ -29,6 +30,7 @@ export interface ResolveSessionIdentityOptions {
    * deterministic under test. Defaults to Math.random.
    */
   randomImpl?: () => number;
+  onRetry?: (event: RetryEvent) => void;
 }
 
 /**
@@ -56,6 +58,7 @@ export interface RunCredentialPreflightArgs {
   sleepImpl?: (ms: number) => Promise<void>;
   /** Injectable RNG threaded into the session-retry full-jitter fallback for tests. */
   randomImpl?: () => number;
+  onRetry?: (event: RetryEvent) => void;
 }
 
 const sessionPath = '/api/sessions/current';
@@ -202,7 +205,8 @@ export async function resolveSessionIdentity(
       opts.fetchImpl ?? fetch,
       Math.max(1, opts.maxAttempts ?? SESSION_MAX_ATTEMPTS),
       opts.sleepImpl ?? defaultSessionSleep,
-      opts.randomImpl ?? defaultRandom
+      opts.randomImpl ?? defaultRandom,
+      opts.onRetry
     );
     sessionMemo.set(memoKey, pending);
   }
@@ -269,7 +273,8 @@ async function probeSessionIdentity(
   fetchImpl: typeof fetch,
   maxAttempts: number,
   sleepImpl: (ms: number) => Promise<void>,
-  random: () => number
+  random: () => number,
+  onRetry?: (event: RetryEvent) => void
 ): Promise<CredentialIdentity | undefined> {
   let failure: SessionResolutionFailure = 'unavailable';
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -284,7 +289,9 @@ async function probeSessionIdentity(
       // fall back to full jitter and retry.
       failure = 'unavailable';
       if (attempt < maxAttempts) {
-        await sleepImpl(computeSessionRetryDelayMs(undefined, attempt, random));
+        const delay = computeSessionRetryDelayMs(undefined, attempt, random);
+        onRetry?.({ class: 'transport', attempt, delay });
+        await sleepImpl(delay);
         continue;
       }
       break;
@@ -313,7 +320,9 @@ async function probeSessionIdentity(
       // when present, else full jitter.
       failure = 'unavailable';
       if (attempt < maxAttempts) {
-        await sleepImpl(computeSessionRetryDelayMs(response, attempt, random));
+        const delay = computeSessionRetryDelayMs(response, attempt, random);
+        onRetry?.({ class: 'http', status: response.status, attempt, delay });
+        await sleepImpl(delay);
         continue;
       }
       break;
@@ -356,7 +365,8 @@ export async function runCredentialPreflight(args: RunCredentialPreflightArgs): 
       accessToken,
       fetchImpl: args.fetchImpl,
       ...(args.sleepImpl ? { sleepImpl: args.sleepImpl } : {}),
-      ...(args.randomImpl ? { randomImpl: args.randomImpl } : {})
+      ...(args.randomImpl ? { randomImpl: args.randomImpl } : {}),
+      onRetry: args.onRetry
     });
   } catch (error) {
     args.log.warning(

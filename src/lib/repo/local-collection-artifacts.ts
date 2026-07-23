@@ -600,7 +600,7 @@ async function copyDir(source: string, destination: string): Promise<void> {
   const stack: Array<{ from: string; to: string }> = [{ from: source, to: destination }];
   const seen = new Set<string>();
   const sourceStat = await fs.lstat(source);
-  seen.add(inodeKey(sourceStat));
+  seen.add(directoryTraversalIdentity(source, sourceStat));
 
   while (stack.length > 0) {
     const { from, to } = stack.pop()!;
@@ -613,7 +613,7 @@ async function copyDir(source: string, destination: string): Promise<void> {
       }
       if (entry.isDirectory()) {
         const childStat = await fs.lstat(childFrom);
-        const key = inodeKey(childStat);
+        const key = directoryTraversalIdentity(childFrom, childStat);
         if (seen.has(key)) {
           throw new LocalCollectionArtifactsError('refusing to copy a directory cycle while staging collection artifacts');
         }

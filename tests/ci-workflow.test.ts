@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 const ciWorkflow = readFileSync(join(process.cwd(), '.github/workflows/ci.yml'), 'utf8');
 const seaWorkflow = readFileSync(join(process.cwd(), '.github/workflows/sea-binary.yml'), 'utf8');
 const windowsGateHelper = readFileSync(join(process.cwd(), '.github/scripts/run-windows-gates.ps1'), 'utf8');
+const cliTest = readFileSync(join(process.cwd(), 'tests/cli.test.ts'), 'utf8');
 
 /** Extract one top-level job block: `  <id>:` through the next job header or EOF. */
 function jobText(workflow: string, jobId: string): string {
@@ -292,6 +293,11 @@ describe('CI workflow dist/pack race contract', () => {
     expect(windowsGateHelper).toContain('::group::$name');
     expect(windowsGateHelper).toContain('gate:$name=pass');
     expect(windowsGateHelper).toContain('gate:$name=fail');
+
+    expect(cliTest).toContain(
+      "process.env.npm_execpath ?? path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')",
+    );
+    expect(cliTest).not.toContain("process.env.npm_execpath ?? ''");
 
     expect(windows).not.toContain('npm run bundle');
     expect(windows).not.toContain('npm run build');

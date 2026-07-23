@@ -265,6 +265,8 @@ async function createTemporarySpec(
     role.role,
     runToken
   );
+  // A created:false outcome is exact-name reconciliation after an ambiguous
+  // create. The random run token in this name keeps that adopted spec run-owned.
   if (options.source.kind === 'single') {
     const uploaded = await options.postman.uploadSpecWithOutcome!(
       options.workspaceId,
@@ -273,9 +275,6 @@ async function createTemporarySpec(
       options.openapiVersion
     );
     if (!uploaded.specId) throw new Error(`Temporary ${role.role} spec upload did not return an ID`);
-    if (!uploaded.created) {
-      throw new Error(`Temporary ${role.role} spec was not created by this fan-out invocation`);
-    }
     const spec = { role: role.role, specId: uploaded.specId, owned: true as const };
     register(spec);
     return spec;
@@ -288,9 +287,6 @@ async function createTemporarySpec(
   );
   if (!uploaded.specId) {
     throw new Error(`Temporary ${role.role} spec bundle upload did not return an ID`);
-  }
-  if (!uploaded.created) {
-    throw new Error(`Temporary ${role.role} spec was not created by this fan-out invocation`);
   }
   const spec = { role: role.role, specId: uploaded.specId, owned: true as const };
   register(spec);

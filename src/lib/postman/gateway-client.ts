@@ -219,6 +219,20 @@ export class AccessTokenGatewayClient {
     }
   }
 
+  private async sendDirect(path: string): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    try {
+      return await this.fetchImpl(`${this.bifrostBaseUrl}${path}`, {
+        method: 'GET',
+        headers: this.buildHeaders(undefined, await this.appVersionProvider.resolve()),
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /**
    * Send a gateway request, refreshing the token once on an auth failure and
    * retrying transient failures with exponential backoff. Transient covers both
@@ -405,6 +419,75 @@ export class AccessTokenGatewayClient {
     }
   }
 
+  /**
+   * Read an app-native Bifrost route that is not exposed through `/ws/proxy`.
+   * Collection sync hydration uses this path in the Postman app and supports
+   * org-mode service accounts that the v3 collection-root proxy rejects.
+   */
+  async requestDirectJson<T = Record<string, unknown>>(path: string): Promise<T | null> {
+    if (!path.startsWith('/')) {
+      throw new Error(`Direct Bifrost path must start with '/': ${path}`);
+    }
+    if (!this.tokenProvider.current() && this.tokenProvider.canRefresh()) {
+      await this.tokenProvider.refresh();
+    }
+
+    let attempt = 0;
+    for (;;) {
+      let response: Response;
+      try {
+        response = await this.sendDirect(path);
+      } catch (error) {
+        if (attempt < this.maxRetries) {
+          const delay = this.retryDelayMs(attempt);
+          attempt += 1;
+          await this.sleepImpl(delay);
+          continue;
+        }
+        throw error;
+      }
+
+      const body = await response.text().catch(() => '');
+      if (response.ok) {
+        if (!body.trim()) return null;
+        try {
+          return JSON.parse(body) as T;
+        } catch {
+          return null;
+        }
+      }
+
+      if (isExpiredAuthError(response.status, body) && this.tokenProvider.canRefresh()) {
+        await this.tokenProvider.refresh();
+        response = await this.sendDirect(path);
+        const refreshedBody = await response.text().catch(() => '');
+        if (response.ok) {
+          if (!refreshedBody.trim()) return null;
+          try {
+            return JSON.parse(refreshedBody) as T;
+          } catch {
+            return null;
+          }
+        }
+        throw this.toDirectHttpError(path, response, refreshedBody);
+      }
+
+      if (
+        isTransientGatewayError(response.status, body) &&
+        attempt < this.maxRetries
+      ) {
+        const delay = this.retryDelayMs(
+          attempt,
+          parseRetryAfterMs(response.headers.get('retry-after'))
+        );
+        attempt += 1;
+        await this.sleepImpl(delay);
+        continue;
+      }
+      throw this.toDirectHttpError(path, response, body);
+    }
+  }
+
   private toHttpError(
     request: GatewayRequest,
     response: Response,
@@ -432,6 +515,18 @@ export class AccessTokenGatewayClient {
       status,
       statusText: 'Inner Error',
       requestHeaders: this.buildHeaders(request.headers),
+      responseBody: this.secretMasker(body),
+      secretValues: [this.tokenProvider.current()]
+    });
+  }
+
+  private toDirectHttpError(path: string, response: Response, body: string): HttpError {
+    return new HttpError({
+      method: 'GET',
+      url: `${this.bifrostBaseUrl}${path}`,
+      status: response.status,
+      statusText: response.statusText,
+      requestHeaders: this.buildHeaders(),
       responseBody: this.secretMasker(body),
       secretValues: [this.tokenProvider.current()]
     });

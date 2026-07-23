@@ -49,8 +49,15 @@ function makeClient(
 ): { client: PostmanGatewayAssetsClient; gateway: AccessTokenGatewayClient; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   let i = 0;
-  const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
-    const env = JSON.parse(String((init as RequestInit).body)) as Envelope;
+  const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+    const requestUrl = new URL(String(url));
+    const env = requestUrl.pathname === '/ws/proxy'
+      ? JSON.parse(String((init as RequestInit).body)) as Envelope
+      : {
+          service: 'direct',
+          method: String((init as RequestInit).method ?? 'GET').toLowerCase(),
+          path: `${requestUrl.pathname}${requestUrl.search}`
+        };
     const headers = Object.fromEntries(
       new Headers((init as RequestInit).headers).entries()
     ) as Record<string, string>;
@@ -220,7 +227,7 @@ describe('PostmanGatewayAssetsClient', () => {
   });
 
   describe('generateCollection', () => {
-    it('requests names from Spec Hub instead of hydrating an org-mode collection root', async () => {
+    it('hydrates generated names through the app sync route instead of the forbidden v3 root', async () => {
       const modelId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
       const collectionUid = `132319-${modelId}`;
       let submittedName = '';
@@ -229,10 +236,12 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
           if (!submittedName) return jsonResponse({ data: [] });
           return jsonResponse({
-            data: [{
-              collection: collectionUid,
-              ...(env.query?.fields === 'name' ? { name: currentName } : {})
-            }]
+            data: [{ collection: collectionUid, state: 'in-sync', options: {}, syncOptions: {} }]
+          });
+        }
+        if (env.service === 'direct') {
+          return jsonResponse({
+            entities: [{ data: { uid: collectionUid, name: currentName }, revision: '1' }]
           });
         }
         if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
@@ -265,21 +274,26 @@ describe('PostmanGatewayAssetsClient', () => {
         (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
       );
       expect(specListCalls.length).toBeGreaterThanOrEqual(3);
-      expect(specListCalls.every((call) => call.query?.fields === 'name')).toBe(true);
+      expect(specListCalls.every((call) => call.query?.fields === 'syncOptions,options')).toBe(true);
       expect(specListCalls.every((call) => call.headers['x-entity-team-id'] === '132319')).toBe(true);
+      expect(calls).toContainEqual(expect.objectContaining({
+        service: 'direct',
+        method: 'get',
+        path: `/collection/${collectionUid}/sync?since_id=0&favorite=true&exclude=response%2Crequest`
+      }));
       expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
     });
 
-    it('requests names from Spec Hub before adopting an existing generated collection', async () => {
+    it('hydrates names through the app sync route before adopting an existing collection', async () => {
       const collectionUid = '132319-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/specifications/spec-1/collections') {
           return jsonResponse({
-            data: [{
-              collection: collectionUid,
-              ...(env.query?.fields === 'name' ? { name: '[Smoke] Telecom' } : {})
-            }]
+            data: [{ collection: collectionUid, state: 'in-sync', options: {}, syncOptions: {} }]
           });
+        }
+        if (env.service === 'direct') {
+          return jsonResponse({ entities: [{ data: { name: '[Smoke] Telecom' }, revision: '1' }] });
         }
         if (env.service === 'collection' && env.method === 'get') {
           return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
@@ -298,12 +312,12 @@ describe('PostmanGatewayAssetsClient', () => {
         service: 'specification',
         method: 'get',
         path: '/specifications/spec-1/collections',
-        query: { fields: 'name' },
+        query: { fields: 'syncOptions,options' },
         headers: expect.objectContaining({ 'x-entity-team-id': '132319' })
       });
     });
 
-    it('ignores nameless Spec Hub relations instead of hydrating their collection roots', async () => {
+    it('hydrates nameless Spec Hub relations without reading v3 collection roots', async () => {
       const staleModelId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
       const staleUid = `132319-${staleModelId}`;
       const generatedModelId = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
@@ -318,6 +332,10 @@ describe('PostmanGatewayAssetsClient', () => {
               ...(submittedName ? [{ collection: generatedUid, name: currentName }] : [])
             ]
           });
+        }
+        if (env.service === 'direct') {
+          const name = env.path.includes(generatedUid) ? currentName : '[Baseline] Other';
+          return jsonResponse({ entities: [{ data: { name }, revision: '1' }] });
         }
         if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
           submittedName = String((env.body as { name?: unknown })?.name ?? '');
@@ -346,12 +364,12 @@ describe('PostmanGatewayAssetsClient', () => {
           .filter(
             (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
           )
-          .every((call) => call.query?.fields === 'name')
+          .every((call) => call.query?.fields === 'syncOptions,options')
       ).toBe(true);
       expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
     });
 
-    it('waits for Spec Hub name enrichment on a newly appeared relation after task completion', async () => {
+    it('waits for direct sync name hydration on a newly appeared relation', async () => {
       const peerModelId = '11111111-1111-1111-1111-111111111111';
       const peerUid = `132319-${peerModelId}`;
       const generatedModelId = '22222222-2222-2222-2222-222222222222';
@@ -367,7 +385,7 @@ describe('PostmanGatewayAssetsClient', () => {
             }
             postTaskListReads += 1;
             // Live race: relation appears immediately after task completion, but
-            // the exact submitted name lags for at least two authorized list reads.
+            // direct sync hydration lags for at least two authorized list reads.
             if (postTaskListReads <= 2) {
               return jsonResponse({
                 data: [{ collection: peerUid }, { collection: generatedUid }]
@@ -376,9 +394,15 @@ describe('PostmanGatewayAssetsClient', () => {
             return jsonResponse({
               data: [
                 { collection: peerUid },
-                { collection: generatedUid, name: enrichedName || submittedName }
+                { collection: generatedUid }
               ]
             });
+          }
+          if (env.service === 'direct') {
+            const name = env.path.includes(generatedUid) && postTaskListReads > 2
+              ? enrichedName || submittedName
+              : env.path.includes(peerUid) ? '[Baseline] Other' : '';
+            return jsonResponse({ entities: [{ data: { name }, revision: '1' }] });
           }
           if (env.method === 'post' && env.path === '/specifications/spec-1/collections') {
             submittedName = String((env.body as { name?: unknown })?.name ?? '');
@@ -413,7 +437,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const specListCalls = calls.filter(
         (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
       );
-      expect(specListCalls.every((call) => call.query?.fields === 'name')).toBe(true);
+      expect(specListCalls.every((call) => call.query?.fields === 'syncOptions,options')).toBe(true);
       expect(calls.some((call) => call.service === 'collection' && call.method === 'get')).toBe(false);
     });
 
@@ -491,6 +515,9 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
+        if (env.service === 'direct') {
+          return jsonResponse({ entities: [{ data: { name: '' }, revision: '1' }] });
+        }
         if (env.service === 'collection' && env.method === 'get') {
           return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
         }
@@ -506,7 +533,7 @@ describe('PostmanGatewayAssetsClient', () => {
         (call) => call.method === 'get' && call.path === '/specifications/spec-1/collections'
       );
       expect(specListCalls).toHaveLength(2);
-      expect(specListCalls.every((call) => call.query?.fields === 'name')).toBe(true);
+      expect(specListCalls.every((call) => call.query?.fields === 'syncOptions,options')).toBe(true);
       expect(specListCalls.every((call) => call.headers['x-entity-team-id'] === '132319')).toBe(true);
       expect(calls.some((call) => call.service === 'collection')).toBe(false);
     });

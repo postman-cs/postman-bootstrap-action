@@ -1411,9 +1411,7 @@ export class PostmanGatewayAssetsClient {
       service: 'specification',
       method: 'get',
       path: `/specifications/${specId}/collections`,
-      // Spec Hub returns relation IDs only by default. Request the name here so
-      // org-mode service accounts do not need a forbidden collection-root read.
-      query: { fields: 'name' }
+      query: { fields: 'syncOptions,options' }
     });
     const entries = Array.isArray(asRecord(list)?.data) ? (asRecord(list)!.data as unknown[]) : [];
     const results: Array<{ id: string; name?: string }> = [];
@@ -1424,7 +1422,28 @@ export class PostmanGatewayAssetsClient {
       const entryName = String(entry?.name ?? entry?.title ?? '').trim();
       results.push({ id, ...(entryName ? { name: entryName } : {}) });
     }
-    return results.sort((a, b) => a.id.localeCompare(b.id));
+    const hydrated = await Promise.all(results.map(async (entry) => {
+      if (entry.name) return entry;
+      const name = await this.readGeneratedCollectionName(entry.id);
+      return { id: entry.id, ...(name ? { name } : {}) };
+    }));
+    return hydrated.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  private async readGeneratedCollectionName(collectionId: string): Promise<string | undefined> {
+    const path =
+      `/collection/${encodeURIComponent(collectionId)}/sync` +
+      '?since_id=0&favorite=true&exclude=response%2Crequest';
+    try {
+      const response = await this.gateway.requestDirectJson<JsonRecord>(path);
+      const entities = Array.isArray(response?.entities) ? response.entities : [];
+      const first = asRecord(entities[0]);
+      const data = asRecord(first?.data);
+      return String(data?.name ?? '').trim() || undefined;
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 404) return undefined;
+      throw error;
+    }
   }
 
   private async filterGeneratedCollectionsByExactName(

@@ -219,6 +219,7 @@ export interface PostmanGatewayAssetsClientOptions {
  */
 export class PostmanGatewayAssetsClient {
   private static readonly GENERATION_LOCKED_MAX_RETRIES = 5;
+  private static readonly GENERATION_OBSERVATION_MAX_RETRIES = 4;
   private static readonly DEFAULT_GENERATION_POLL_ATTEMPTS = 90;
   private static readonly DEFAULT_GENERATION_POLL_DELAY_MS = 2000;
   /**
@@ -1187,18 +1188,34 @@ export class PostmanGatewayAssetsClient {
       let taskFailed = false;
       if (taskId) {
         const deadline = this.now() + 180_000;
+        let observationRetries = 0;
         for (let attempt = 0; attempt < this.generationPollAttempts; attempt += 1) {
           const fixed = process.env.POSTMAN_GENERATION_POLL_MODE === 'fixed';
           const delay = fixed ? this.generationPollDelayMs : Math.min(16_000, 2_000 * Math.pow(2, attempt));
           const remaining = deadline - this.now();
           if (remaining <= 0) throw new Error('COLLECTION_GENERATION_TIMEOUT');
           await this.sleep(Math.min(delay, remaining));
-          const task = await this.gateway.requestJson<JsonRecord>({
-            service: 'specification',
-            method: 'get',
-            path: '/tasks',
-            query: { entityId: specId, entityType: 'specification', type: 'collection-generation' }
-          });
+          let task: JsonRecord | null;
+          try {
+            task = await this.gateway.requestJson<JsonRecord>({
+              service: 'specification',
+              method: 'get',
+              path: '/tasks',
+              query: { entityId: specId, entityType: 'specification', type: 'collection-generation' }
+            });
+            observationRetries = 0;
+          } catch (error) {
+            const notReady = error instanceof HttpError && (error.status === 403 || error.status === 404);
+            if (
+              notReady &&
+              observationRetries < PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES &&
+              attempt < this.generationPollAttempts - 1
+            ) {
+              observationRetries += 1;
+              continue;
+            }
+            throw error;
+          }
           const status = String(asRecord(task?.data)?.[taskId] ?? '').toLowerCase();
           if (status === 'failed' || status === 'error') {
             taskFailed = true;
@@ -1407,12 +1424,30 @@ export class PostmanGatewayAssetsClient {
   private async listGeneratedCollectionRefs(
     specId: string
   ): Promise<Array<{ id: string; name?: string }>> {
-    const list = await this.gateway.requestJson<JsonRecord>({
-      service: 'specification',
-      method: 'get',
-      path: `/specifications/${specId}/collections`,
-      query: { fields: 'syncOptions,options' }
-    });
+    let list: JsonRecord | null = null;
+    for (
+      let attempt = 0;
+      attempt <= PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES;
+      attempt += 1
+    ) {
+      try {
+        list = await this.gateway.requestJson<JsonRecord>({
+          service: 'specification',
+          method: 'get',
+          path: `/specifications/${specId}/collections`,
+          query: { fields: 'syncOptions,options' }
+        });
+        break;
+      } catch (error) {
+        if (
+          !(error instanceof HttpError && error.status === 404) ||
+          attempt === PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES
+        ) {
+          throw error;
+        }
+        await this.sleep(1000);
+      }
+    }
     const entries = Array.isArray(asRecord(list)?.data) ? (asRecord(list)!.data as unknown[]) : [];
     const results: Array<{ id: string; name?: string }> = [];
     for (const raw of entries) {

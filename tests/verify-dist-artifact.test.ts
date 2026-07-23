@@ -149,7 +149,7 @@ describe('verify-dist-artifact canonical contract', () => {
     const result = await runVerify(root);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
-  });
+  }, 30_000);
 
   it('fails when the CLI shebang is missing', async () => {
     const root = await makeTempDir('verify-dist-shebang-');

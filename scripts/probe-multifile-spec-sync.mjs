@@ -412,6 +412,7 @@ export function isReleaseOnlyDriftPath(relPath) {
   if (p === 'CHANGELOG' || /^CHANGELOG(\.|[-_])/i.test(p)) return true;
   if (p.startsWith('validation/evidence/')) return true;
   if (p.startsWith('dist/')) return true;
+  if (p === '.github/workflows/ci.yml' || p === 'tests/ci-workflow.test.ts') return true;
   // Release/docs metadata (markdown only).
   if (p.startsWith('docs/') && /\.md$/i.test(p)) return true;
   return false;

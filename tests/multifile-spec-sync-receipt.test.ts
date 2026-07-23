@@ -493,8 +493,12 @@ describe('multifile-spec-sync receipt contract', () => {
     expect(isReleaseOnlyDriftPath('validation/evidence/multifile-spec-sync.json')).toBe(true);
     expect(isReleaseOnlyDriftPath('dist/index.cjs')).toBe(true);
     expect(isReleaseOnlyDriftPath('docs/LIVE_TESTING_RUNBOOK.md')).toBe(true);
+    expect(isReleaseOnlyDriftPath('.github/workflows/ci.yml')).toBe(true);
+    expect(isReleaseOnlyDriftPath('tests/ci-workflow.test.ts')).toBe(true);
     expect(isReleaseOnlyDriftPath('src/index.ts')).toBe(false);
     expect(isReleaseOnlyDriftPath('action.yml')).toBe(false);
+    expect(isReleaseOnlyDriftPath('.github/workflows/release.yml')).toBe(false);
+    expect(isReleaseOnlyDriftPath('tests/contract.test.ts')).toBe(false);
     expect(isReleaseOnlyDriftPath('scripts/probe-multifile-spec-sync.mjs')).toBe(false);
     expect(isReleaseOnlyDriftPath('tests/multifile-spec-sync-receipt.test.ts')).toBe(false);
     expect(() =>

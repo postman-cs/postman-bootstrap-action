@@ -3145,22 +3145,6 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Prove a collection root is gone across the DELETE_ABSENCE settle window.
-   * Single-shot observations live in verifyCollectionAbsentOnce.
-   */
-  private async verifyCollectionAbsent(
-    workspaceId: string,
-    collectionId: string
-  ): Promise<boolean> {
-    const delays = PostmanGatewayAssetsClient.DELETE_ABSENCE_SETTLE_DELAYS_MS;
-    for (let observation = 0; observation <= delays.length; observation += 1) {
-      if (await this.verifyCollectionAbsentOnce(workspaceId, collectionId)) return true;
-      if (observation < delays.length) await this.sleep(delays[observation]!);
-    }
-    return false;
-  }
-
-  /**
    * Single absence observation. 404 proves gone. GET 200/403 fall back to
    * workspace inventory (never treating 403 alone as absence). Transient
    * >=500 is not absence.
@@ -3320,21 +3304,28 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * After concurrent preview imports, collapse duplicate finals to the lowest UID.
-   * Safe once peers have finished rename+elect: deletes only higher UIDs still
-   * sharing the exact final name. Returns the surviving id per final name.
+   * Collapse duplicate preview/channel finals to the lowest UID. Exact name is
+   * not an ownership boundary: only roots carrying the same durable branch
+   * marker are eligible. Canonical and stranger collections are never touched.
    */
   async reconcileDuplicateFinalCollections(
     workspaceId: string,
-    finalNames: string[]
+    candidates: Array<{ finalName: string; desiredDescription: string }>
   ): Promise<Record<string, string>> {
-    const uniqueNames = [...new Set(finalNames.map((n) => String(n || '').trim()).filter(Boolean))];
+    const uniqueCandidates = new Map<string, string>();
+    for (const candidate of candidates) {
+      const finalName = String(candidate.finalName || '').trim();
+      const desiredDescription = String(candidate.desiredDescription || '').trim();
+      if (!finalName || !parseAssetMarker(desiredDescription)) continue;
+      uniqueCandidates.set(finalName, desiredDescription);
+    }
     const winners: Record<string, string> = {};
-    if (uniqueNames.length === 0) return winners;
+    if (uniqueCandidates.size === 0) return winners;
     const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
-    for (const finalName of uniqueNames) {
+    for (const [finalName, desiredDescription] of uniqueCandidates) {
       const matches = inventory
         .filter((entry) => entry.name === finalName)
+        .filter((entry) => this.hasSameBranchAssetMarker(entry.description, desiredDescription))
         .sort((a, b) => a.id.localeCompare(b.id));
       if (matches.length === 0) continue;
       const winnerId = matches[0]!.id;

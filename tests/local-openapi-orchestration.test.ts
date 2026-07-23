@@ -226,6 +226,7 @@ describe('local OpenAPI orchestration', () => {
       injectContractTests: vi.fn().mockRejectedValue(new Error('injectContractTests must be unreachable')),
       injectTests: vi.fn().mockRejectedValue(new Error('injectTests must be unreachable')),
       inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      reconcileDuplicateFinalCollections: vi.fn().mockResolvedValue({}),
       tagCollection: vi.fn().mockImplementation(async (id: string, tags: string[]) => {
         events.push(`tag:${id}:${tags.join(',')}`);
       }),
@@ -316,6 +317,7 @@ describe('local OpenAPI orchestration', () => {
 
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+      expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
       expect(postman.generateCollection).not.toHaveBeenCalled();
       expect(postman.injectTests).not.toHaveBeenCalled();
       expect(postman.injectContractTests).not.toHaveBeenCalled();

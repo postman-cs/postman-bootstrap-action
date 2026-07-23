@@ -145,6 +145,19 @@ function createPostman() {
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+    reconcileDuplicateFinalCollections: vi.fn(
+      async (_workspaceId: string, candidates: Array<{ finalName: string }>) =>
+        Object.fromEntries(
+          candidates.map(({ finalName }) => [
+            finalName,
+            finalName.includes('[Contract]')
+              ? 'col-contract'
+              : finalName.includes('[Smoke]')
+                ? 'col-smoke'
+                : 'col-baseline'
+          ])
+        )
+    ),
     tagCollection: vi.fn().mockResolvedValue(undefined),
     updateCollectionDescription: vi.fn().mockResolvedValue(undefined),
     updateSpec: vi.fn().mockResolvedValue(undefined),
@@ -366,6 +379,16 @@ describe('branch-aware bootstrap runs', () => {
       // (no post-create updateCollectionDescription fanout).
       expect(postman.updateCollectionDescription).not.toHaveBeenCalled();
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledTimes(1);
+      expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledWith(
+        'ws-existing',
+        expect.arrayContaining([
+          expect.objectContaining({
+            finalName: expect.stringMatching(/@feature-payments/),
+            desiredDescription: expect.stringContaining('"role":"preview"')
+          })
+        ])
+      );
       for (const call of postman.importV2Collection.mock.calls) {
         const collection = call[1] as { info?: { description?: string; name?: string } };
         expect(String(collection.info?.description || '')).toContain('"role":"preview"');
@@ -374,6 +397,55 @@ describe('branch-aware bootstrap runs', () => {
 
       // Tracked state untouched byte-for-byte.
       expect(readFileSync(join(workspace, '.postman/resources.yaml'), 'utf8')).toBe(priorState);
+    });
+  });
+
+  it('preview reconciliation rebinds peer winners without claiming them for rollback', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'branch-preview-peer-'));
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+    for (const [key, value] of Object.entries(githubPreviewEnv(workspace))) {
+      vi.stubEnv(key, value);
+    }
+
+    await withCwd(workspace, async () => {
+      const postman = createPostman();
+      postman.reconcileDuplicateFinalCollections.mockImplementation(
+        async (_workspaceId: string, candidates: Array<{ finalName: string }>) =>
+          Object.fromEntries(
+            candidates.map(({ finalName }) => [
+              finalName,
+              finalName.includes('[Contract]')
+                ? 'peer-contract'
+                : finalName.includes('[Smoke]')
+                  ? 'peer-smoke'
+                  : 'peer-baseline'
+            ])
+          )
+      );
+      const dependencies = runDeps(postman);
+      const internalIntegration = dependencies.internalIntegration!;
+      internalIntegration.linkCollectionsToSpecification = vi
+        .fn()
+        .mockRejectedValue(new Error('link failed after reconcile'));
+
+      await expect(
+        runBootstrap(
+          createInputs({ branchStrategy: 'preview', workspaceId: 'ws-existing' }),
+          dependencies
+        )
+      ).rejects.toThrow(/link failed after reconcile/);
+
+      expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
+      expect(
+        internalIntegration.linkCollectionsToSpecification
+      ).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.arrayContaining([
+          expect.objectContaining({ collectionId: 'peer-baseline' }),
+          expect.objectContaining({ collectionId: 'peer-smoke' }),
+          expect.objectContaining({ collectionId: 'peer-contract' })
+        ])
+      );
     });
   });
 

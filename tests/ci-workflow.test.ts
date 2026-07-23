@@ -196,10 +196,21 @@ describe('CI workflow dist/pack race contract', () => {
     expect(
       (windows.match(/actions\/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4\.2\.0/g) ?? []).length,
     ).toBe(2);
-    expect(windows).toContain("key: node-modules-Windows-Node-24-${{ hashFiles('package-lock.json') }}");
+    const repositoryIdentity = '${{ github.event.pull_request.head.repo.full_name || github.repository }}';
+    const nodeModulesKey =
+      'node-modules-Windows-Node-24-' + repositoryIdentity + "-${{ hashFiles('package-lock.json') }}";
+    const postmanCliKey =
+      'postman-cli-${{ steps.postman-cli-version.outputs.version }}-Windows-${{ runner.arch }}-' +
+      repositoryIdentity;
+    expect(windows).toContain(`key: ${nodeModulesKey}`);
     expect(windows).toContain(
-      'key: postman-cli-${{ steps.postman-cli-version.outputs.version }}-Windows-${{ runner.arch }}',
+      `key: ${postmanCliKey}`,
     );
+    for (const key of [nodeModulesKey, postmanCliKey]) {
+      const baseRepositoryKey = key.replace(repositoryIdentity, 'postman-cs/postman-bootstrap-action');
+      const forkRepositoryKey = key.replace(repositoryIdentity, 'untrusted-fork/postman-bootstrap-action');
+      expect(baseRepositoryKey).not.toBe(forkRepositoryKey);
+    }
     expect(windows).toContain('path: node_modules');
     expect(windows).toContain('path: ${{ runner.temp }}\\postman-cli');
     expect(windows).not.toContain('restore-keys');

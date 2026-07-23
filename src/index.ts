@@ -3084,6 +3084,32 @@ async function runBootstrapInner(
             payload.collection,
             finalName
           );
+          if (collectionBranchMarker) {
+            if (!dependencies.postman.updateCollectionDescription) {
+              throw new Error(
+                'Branch-scoped generated collections require updateCollectionDescription support'
+              );
+            }
+            // Sync import does not reliably surface info.description on the v3
+            // inventory row. Persist the marker explicitly before duplicate
+            // reconciliation so exact name alone is never treated as ownership.
+            try {
+              await dependencies.postman.updateCollectionDescription(
+                imported.collectionId,
+                collectionBranchMarker
+              );
+            } catch (error) {
+              if (imported.deleteVerifiedCleanup) {
+                await imported.deleteVerifiedCleanup(imported.journaledRootIds);
+              } else if (dependencies.postman.deleteVerifiedRunOwnedCollections) {
+                await dependencies.postman.deleteVerifiedRunOwnedCollections(
+                  workspaceId || '',
+                  imported.journaledRootIds
+                );
+              }
+              throw error;
+            }
+          }
           return {
             role: role.role,
             outputKey: role.outputKey,

@@ -375,9 +375,13 @@ describe('branch-aware bootstrap runs', () => {
       expect(postman.updateSpec).not.toHaveBeenCalled();
       expect(outputs['sync-status']).toBe('synced');
       expect(JSON.parse(outputs['branch-decision']).tier).toBe('preview');
-      // Local OpenAPI embeds the preview marker in each imported payload description
-      // (no post-create updateCollectionDescription fanout).
-      expect(postman.updateCollectionDescription).not.toHaveBeenCalled();
+      // Sync import does not reliably project info.description into v3 inventory,
+      // so each generated root receives an explicit durable marker PATCH.
+      expect(postman.updateCollectionDescription).toHaveBeenCalledTimes(3);
+      expect(postman.updateCollectionDescription).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.stringContaining('"role":"preview"')
+      );
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledTimes(1);
       expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledWith(
@@ -446,6 +450,47 @@ describe('branch-aware bootstrap runs', () => {
           expect.objectContaining({ collectionId: 'peer-contract' })
         ])
       );
+    });
+  });
+
+  it('preview marker failure cleans each imported root before losing the role result', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'branch-preview-marker-fail-'));
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+    for (const [key, value] of Object.entries(githubPreviewEnv(workspace))) {
+      vi.stubEnv(key, value);
+    }
+
+    await withCwd(workspace, async () => {
+      const postman = createPostman();
+      const cleanup = vi.fn().mockResolvedValue(undefined);
+      postman.importV2Collection.mockImplementation(
+        async (_workspaceId: string, _collection: unknown, finalName: string) => {
+          const id = finalName.includes('[Contract]')
+            ? 'owned-contract'
+            : finalName.includes('[Smoke]')
+              ? 'owned-smoke'
+              : 'owned-baseline';
+          return {
+            collectionId: id,
+            journaledRootIds: [id],
+            deleteVerifiedCleanup: cleanup
+          };
+        }
+      );
+      postman.updateCollectionDescription.mockRejectedValue(new Error('marker patch failed'));
+
+      await expect(
+        runBootstrap(
+          createInputs({ branchStrategy: 'preview', workspaceId: 'ws-existing' }),
+          runDeps(postman)
+        )
+      ).rejects.toThrow(/marker patch failed/);
+
+      expect(cleanup).toHaveBeenCalledTimes(3);
+      expect(cleanup).toHaveBeenCalledWith(['owned-baseline']);
+      expect(cleanup).toHaveBeenCalledWith(['owned-smoke']);
+      expect(cleanup).toHaveBeenCalledWith(['owned-contract']);
+      expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
     });
   });
 

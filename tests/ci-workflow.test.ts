@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 const ciWorkflow = readFileSync(join(process.cwd(), '.github/workflows/ci.yml'), 'utf8');
 const seaWorkflow = readFileSync(join(process.cwd(), '.github/workflows/sea-binary.yml'), 'utf8');
 const windowsGateHelper = readFileSync(join(process.cwd(), '.github/scripts/run-windows-gates.ps1'), 'utf8');
+const cliTest = readFileSync(join(process.cwd(), 'tests/cli.test.ts'), 'utf8');
 
 /** Extract one top-level job block: `  <id>:` through the next job header or EOF. */
 function jobText(workflow: string, jobId: string): string {
@@ -31,6 +32,7 @@ function linuxQueuedGates(runGates: string): string[] {
 
 const linux = jobText(ciWorkflow, 'gate');
 const windows = jobText(ciWorkflow, 'windows');
+const receiptNormalizer = jobText(ciWorkflow, 'normalize-receipt');
 
 describe('CI workflow dist/pack race contract', () => {
   it('supersedes only older pull-request runs and queues Windows read-only gates', () => {
@@ -38,8 +40,32 @@ describe('CI workflow dist/pack race contract', () => {
     expect(ciWorkflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
     expect(ciWorkflow).toMatch(/windows:[\s\S]*?Run gates/);
     expect(ciWorkflow).toMatch(/windows:[\s\S]*?run-windows-gates\.ps1/);
-    expect(ciWorkflow).toMatch(/windows:[\s\S]*?'integ\|\|\|npm\|\|\|run\|\|\|test:integration'/);
+    expect(ciWorkflow).toMatch(/windows:[\s\S]*?'integ\|\|\|node\|\|\|--run\|\|\|test:integration'/);
     expect(windows).not.toContain('npm run bundle');
+  });
+
+  it('normalizes stale receipts only on same-repository PRs without force-pushing', () => {
+    expect(receiptNormalizer).toContain(
+      "if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}",
+    );
+    expect(receiptNormalizer).toContain('actions: write');
+    expect(receiptNormalizer).toContain('contents: write');
+    expect(receiptNormalizer).toContain('ref: ${{ github.event.pull_request.head.sha }}');
+    expect(receiptNormalizer).toContain('node .github/scripts/rebind-multifile-receipt.mjs --write');
+    expect(receiptNormalizer).toContain("if: steps.rebind.outputs.updated == 'true'");
+    expect(receiptNormalizer).toContain(
+      'git add validation/evidence/multifile-spec-sync.json dist/action.cjs dist/cli.cjs dist/index.cjs',
+    );
+    expect(receiptNormalizer).toContain('chore: rebind multifile receipt to source');
+    expect(receiptNormalizer).toContain('git push origin "HEAD:${GITHUB_HEAD_REF}"');
+    expect(receiptNormalizer).not.toMatch(/git push[^\n]*(?:--force|-f\b)/);
+    expect(receiptNormalizer).toContain('gh workflow run ci.yml --ref "$GITHUB_HEAD_REF"');
+    expect(receiptNormalizer).toContain('gh workflow run sea-binary.yml --ref "$GITHUB_HEAD_REF"');
+
+    for (const job of [linux, windows]) {
+      expect(job).toContain('needs: normalize-receipt');
+      expect(job).toContain("needs.normalize-receipt.outputs.updated != 'true'");
+    }
   });
 
   it('uses the pinned actionlint binary without Go setup', () => {
@@ -88,7 +114,7 @@ describe('CI workflow dist/pack race contract', () => {
       /if: steps\.windows-node-modules\.outputs\.cache-hit != 'true'\n {8}run: npm ci --prefer-offline --no-audit --no-fund\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/,
     );
     expect(seaWorkflow).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
-    expect((ciWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(2);
+    expect((ciWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(3);
     expect((seaWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(1);
     expect(namedStep(linux, 'Run gates')).not.toContain('NPM_TOKEN');
     expect(namedStep(windows, 'Run gates')).not.toContain('NPM_TOKEN');
@@ -252,11 +278,11 @@ describe('CI workflow dist/pack race contract', () => {
     const runGates = namedStep(windows, 'Run gates');
     expect(runGates).toContain('.github/scripts/run-windows-gates.ps1');
     expect(runGates).toContain('-GateJson $gates');
-    expect(runGates).toContain("'test|||npm|||test'");
-    expect(runGates).toContain("'integ|||npm|||run|||test:integration'");
+    expect(runGates).toContain("'test|||node|||--run|||test'");
+    expect(runGates).toContain("'integ|||node|||--run|||test:integration'");
     expect(runGates.match(/'[^']+\|\|\|[^']+'/g) ?? []).toEqual([
-      "'test|||npm|||test'",
-      "'integ|||npm|||run|||test:integration'",
+      "'test|||node|||--run|||test'",
+      "'integ|||node|||--run|||test:integration'",
     ]);
     expect(runGates).not.toMatch(/\bif:/);
     expect(windowsGateHelper).toContain('[int]$MaxParallelGates = 2');
@@ -267,6 +293,11 @@ describe('CI workflow dist/pack race contract', () => {
     expect(windowsGateHelper).toContain('::group::$name');
     expect(windowsGateHelper).toContain('gate:$name=pass');
     expect(windowsGateHelper).toContain('gate:$name=fail');
+
+    expect(cliTest).toContain(
+      "process.env.npm_execpath ?? path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')",
+    );
+    expect(cliTest).not.toContain("process.env.npm_execpath ?? ''");
 
     expect(windows).not.toContain('npm run bundle');
     expect(windows).not.toContain('npm run build');

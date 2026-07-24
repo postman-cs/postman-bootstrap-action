@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   buildCorrelationId,
@@ -133,4 +136,27 @@ test('dispatchE2eMonitor redacts the token from HTTP error text', async () => {
       return true;
     }
   );
+});
+
+test('release gate requests full live coverage, not smoke', () => {
+  const release = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'workflows', 'release.yml'),
+    'utf8'
+  );
+  const suiteLines = release
+    .split('\n')
+    .filter((line) => line.includes('E2E_GATE_SUITE:'))
+    .map((line) => line.trim());
+
+  assert.ok(
+    suiteLines.length > 0,
+    'release.yml must set E2E_GATE_SUITE for the live monitor dispatch'
+  );
+  for (const line of suiteLines) {
+    assert.equal(
+      line,
+      'E2E_GATE_SUITE: full',
+      `release.yml must dispatch the full live suite so every catalog scenario (including the OpenAPI 3.1 fixture) runs against released bytes; found "${line}"`
+    );
+  }
 });

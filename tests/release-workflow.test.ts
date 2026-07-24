@@ -163,7 +163,7 @@ describe('release workflow publishing contract', () => {
   it('preserves the async monitor ref and smoke suite', () => {
     const monitor = job('dispatch-live-monitor');
     expect(monitor).toContain('continue-on-error: true');
-    expect(monitor).toContain('E2E_GATE_SUITE: smoke');
+    expect(monitor).toContain('E2E_GATE_SUITE: full');
     expect(monitor).toContain('E2E_GATE_REF: ${{ github.ref_name }}');
     expect(monitor).toContain('node .github/scripts/dispatch-e2e-monitor.mjs');
   });

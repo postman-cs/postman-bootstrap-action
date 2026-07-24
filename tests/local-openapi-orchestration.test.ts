@@ -266,6 +266,7 @@ describe('local OpenAPI orchestration', () => {
               folderStrategy: expect.any(String)
             })
           );
+          expect(entry.options).not.toHaveProperty('includeWebhooks');
         }
         return { lockedRetries: 0 };
       }),

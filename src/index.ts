@@ -3318,18 +3318,22 @@ async function runBootstrapInner(
           dependencies.core,
           'Link Collections to Specification',
           async () => {
-            const linkOptions = localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
-              openApiVersion: detectedOpenapiVersion,
-              requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
-              folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
-              nestedFolderHierarchy: inputs.nestedFolderHierarchy,
-              names: {
-                baseline: collectionAssetProjectName,
-                smoke: `[Smoke] ${collectionAssetProjectName}`,
-                contract: `[Contract] ${collectionAssetProjectName}`
-              },
-              contractIndex: contractIndex!
-            });
+            const generationOptions =
+              localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
+                openApiVersion: detectedOpenapiVersion,
+                requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
+                folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
+                nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+                names: {
+                  baseline: collectionAssetProjectName,
+                  smoke: `[Smoke] ${collectionAssetProjectName}`,
+                  contract: `[Contract] ${collectionAssetProjectName}`
+                },
+                contractIndex: contractIndex!
+              });
+            const linkOptions: Record<string, unknown> = { ...generationOptions };
+            // Bifrost rejects this local converter-only option on specification relations.
+            delete linkOptions.includeWebhooks;
             const expectedSyncOptions = { syncExamples: inputs.syncExamples };
             const linkResult = await localIntegration.linkCollectionsToSpecification(
               outputs['spec-id'],

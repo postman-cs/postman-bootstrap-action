@@ -428598,7 +428598,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             dependencies.core,
             "Link Collections to Specification",
             async () => {
-              const linkOptions = localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
+              const generationOptions = localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
                 openApiVersion: detectedOpenapiVersion,
                 requestNameSource: inputs.requestNameSource,
                 folderStrategy: inputs.folderStrategy,
@@ -428610,6 +428610,8 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                 },
                 contractIndex
               });
+              const linkOptions = { ...generationOptions };
+              delete linkOptions.includeWebhooks;
               const expectedSyncOptions = { syncExamples: inputs.syncExamples };
               const linkResult = await localIntegration.linkCollectionsToSpecification(
                 outputs["spec-id"],

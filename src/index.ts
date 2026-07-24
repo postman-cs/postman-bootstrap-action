@@ -3318,7 +3318,7 @@ async function runBootstrapInner(
           dependencies.core,
           'Link Collections to Specification',
           async () => {
-            const linkOptions = localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
+            const generationOptions = localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
               openApiVersion: detectedOpenapiVersion,
               requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
               folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
@@ -3330,6 +3330,9 @@ async function runBootstrapInner(
               },
               contractIndex: contractIndex!
             });
+            const linkOptions: Record<string, unknown> = { ...generationOptions };
+            // This option belongs to the local converter, not the Spec Hub relation schema.
+            delete linkOptions.includeWebhooks;
             const expectedSyncOptions = { syncExamples: inputs.syncExamples };
             const linkResult = await localIntegration.linkCollectionsToSpecification(
               outputs['spec-id'],

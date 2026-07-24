@@ -373982,7 +373982,7 @@ function isOpenApiDefinitionFormat(format3) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-23T14:19:14.640Z",
-  bootstrapCommit: "da9a28d8a0994e249c1144fca11b39892e27b579",
+  bootstrapCommit: "a079ce52569df9fe631b42fbaacfc3ce045afcb9",
   legs: [
     {
       mode: "nonorg",

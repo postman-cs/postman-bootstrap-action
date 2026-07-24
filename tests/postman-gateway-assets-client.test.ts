@@ -4249,6 +4249,88 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
     });
 
+    it('adopts an org peer final whose description is omitted from inventory', async () => {
+      // Live branch-aware org failure mode. Org inventory omits root descriptions,
+      // so the pre-import snapshot cannot read the peer's marker and classifies the
+      // same-name peer final as a stale stranger. That identity is then excluded
+      // from election eligibility for the whole settle window, so when the peer wins
+      // and deletes this run's root, the surviving correct asset is invisible to
+      // adoption and the run fails closed on an asset that is already right.
+      const marker = renderAssetMarker({
+        repo: 'acme/api',
+        rawBranch: 'feature/x',
+        sanitizedBranch: 'feature-x',
+        headRepoId: '42',
+        role: 'preview',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastSyncedAt: '2026-01-01T00:00:00.000Z'
+      });
+      const finalName = PREVIEW_FINAL_NAME;
+      const ownBare = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+      const peerBare = '33333333-3333-3333-3333-333333333333';
+      const peerId = `100-${peerBare}`;
+      const marked = { ...v21Collection, info: { ...v21Collection.info, description: marker } };
+      let imported = false;
+      const deleted: string[] = [];
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          return jsonResponse({ data: { id: `300-${ownBare}` } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.includes('?workspace=')
+        ) {
+          // Org inventory omits descriptions on every observation, including the
+          // pre-import snapshot where the peer final is already present.
+          return jsonResponse({ data: [{ id: peerId, name: finalName }] });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${peerBare}/export`
+        ) {
+          return jsonResponse({
+            data: {
+              info: {
+                name: finalName,
+                description: marker,
+                schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+              },
+              item: []
+            }
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${ownBare}`
+        ) {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      const result = await client.importV2Collection('ws-1', marked, finalName);
+      expect(result.collectionId).toBe(peerId);
+      expect(result.journaledRootIds).toEqual([]);
+      expect(deleted).toEqual([]);
+      expect(imported).toBe(true);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+    });
+
+
     it('still fails closed when no same-marker peer final exists for the name', async () => {
       // Absence of own identity with no adoptable same-marker peer stays a hard
       // failure: an unmarked or foreign-marker exact-name collection is a

@@ -3362,14 +3362,16 @@ export class PostmanGatewayAssetsClient {
 
     // Observe the full settle window so a delayed concurrent peer final is not
     // missed after own UID becomes visible. Never early-break on first sighting.
+    let sameNameSurvivors: Array<{ id: string; name: string; description?: string }> = [];
     for (let observation = 0; observation <= delays.length; observation += 1) {
       const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
-      eligible = inventory
+      sameNameSurvivors = inventory
         .filter((entry) => entry.name === finalName)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      eligible = sameNameSurvivors
         .filter(
           (entry) => !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
-        )
-        .sort((a, b) => a.id.localeCompare(b.id));
+        );
       ownCanonical = eligible.find(
         (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
       );
@@ -3385,8 +3387,15 @@ export class PostmanGatewayAssetsClient {
       // marker, so it is the asset this run was asked to produce. Ownership is
       // never claimed (journal stays empty) and nothing is deleted. Anything
       // unmarked or carrying a different marker is a stranger and still fails.
+      //
+      // Adoption scans every same-name survivor rather than the eligible set.
+      // Org inventory omits root descriptions, so the pre-import snapshot cannot
+      // read a peer's marker and classifies that peer as stale; keeping it out
+      // here would fail closed on an asset this branch legitimately owns. Marker
+      // identity is still proven per candidate over the v2.1 export route, so a
+      // stranger is never adopted on the strength of the name alone.
       const adoptable = await this.adoptableSameMarkerFinal(
-        eligible,
+        sameNameSurvivors,
         desiredDescription
       );
       if (adoptable && (await this.verifyCollectionAbsentOnce(workspaceId, preferredId))) {

@@ -761,38 +761,96 @@ export function buildSpecVersionUrl(
  * Specs retain their branch identity even if a user edits the description. This
  * extension is deliberately applied only to disposable preview/channel copies;
  * canonical source content remains byte-for-byte customer authored.
+ *
+ * The marker is part of the uploaded bytes, so its timestamps decide whether a
+ * rerun is digest-equal. `previousContent` (the spec currently in Spec Hub)
+ * lets an unchanged rerun reproduce the stored bytes exactly instead of
+ * restamping and forcing a no-op write. `createdAt` identifies a branch
+ * generation and is preserved across refreshes; only `lastSyncedAt` slides
+ * forward, and only when the document actually changed.
  */
 export function embedSpecBranchMarker(
   content: string,
   decision: BranchDecision,
-  repo: string | undefined
+  repo: string | undefined,
+  previousContent?: string
 ): string {
   if ((decision.tier !== 'preview' && decision.tier !== 'channel') || !decision.identity.headBranch || !repo) {
     return content;
   }
   const rawBranch = decision.identity.headBranch;
   const now = new Date().toISOString();
-  const marker = {
+  const priorMarker = extractSpecBranchMarker(previousContent);
+  const sameGeneration =
+    priorMarker !== undefined &&
+    priorMarker.repo === repo &&
+    priorMarker.rawBranch === rawBranch &&
+    priorMarker.role === decision.tier;
+  const createdAt = sameGeneration ? priorMarker.createdAt : now;
+  const buildMarker = (lastSyncedAt: string): Record<string, unknown> => ({
     repo,
     rawBranch,
     sanitizedBranch: rawBranch.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 30),
     role: decision.tier,
     headSha: decision.identity.headSha,
-    createdAt: now,
-    lastSyncedAt: now
-  };
+    createdAt,
+    lastSyncedAt
+  });
+  const render = (marker: Record<string, unknown>): string | undefined => {
   try {
     if (content.trim().startsWith('{')) {
       return `${JSON.stringify({ ...(JSON.parse(content) as Record<string, unknown>), 'x-postman-onboarding': marker }, null, 2)}\n`;
     }
     const document = parse(content);
-    if (!document || typeof document !== 'object' || Array.isArray(document)) return content;
+      if (!document || typeof document !== 'object' || Array.isArray(document)) return undefined;
     return stringify({ ...(document as Record<string, unknown>), 'x-postman-onboarding': marker });
   } catch {
     // The contract parser already validated the document. Preserve content if a
     // future format cannot round-trip through YAML instead of risking mutation.
-    return content;
+      return undefined;
+    }
+  };
+  if (sameGeneration && previousContent !== undefined) {
+    // Reuse the stored timestamps first: when nothing else changed this
+    // reproduces the stored bytes, so the digest-equality skip can fire.
+    const unchanged = render(buildMarker(priorMarker.lastSyncedAt));
+    if (unchanged === previousContent) {
+      return unchanged;
+    }
   }
+  return render(buildMarker(now)) ?? content;
+}
+
+/**
+ * Read the durable branch marker out of spec content. Absent/malformed markers
+ * read as undefined so an unmarked or hand-edited spec is treated as a fresh
+ * generation rather than silently inheriting another branch's identity.
+ */
+function extractSpecBranchMarker(content: string | undefined):
+  | { repo: string; rawBranch: string; role: string; createdAt: string; lastSyncedAt: string }
+  | undefined {
+  if (!content) return undefined;
+  let document: unknown;
+  try {
+    document = content.trim().startsWith('{') ? JSON.parse(content) : parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!document || typeof document !== 'object' || Array.isArray(document)) return undefined;
+  const marker = (document as Record<string, unknown>)['x-postman-onboarding'];
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return undefined;
+  const record = marker as Record<string, unknown>;
+  const { repo, rawBranch, role, createdAt, lastSyncedAt } = record;
+  if (
+    typeof repo !== 'string' ||
+    typeof rawBranch !== 'string' ||
+    typeof role !== 'string' ||
+    typeof createdAt !== 'string' ||
+    typeof lastSyncedAt !== 'string'
+  ) {
+    return undefined;
+  }
+  return { repo, rawBranch, role, createdAt, lastSyncedAt };
 }
 
 /** Durable description marker for preview/channel collection roots. */
@@ -2538,7 +2596,8 @@ async function runBootstrapInner(
   const uploadSpecContent = embedSpecBranchMarker(
     specContent,
     branchDecision,
-    inputs.repoUrl
+    inputs.repoUrl,
+    previousSpecContent
   );
   if (sourceDefinitionBundle && useMultiFileSync) {
     // Final immutable upload bundle: companions keep exact source bytes; only

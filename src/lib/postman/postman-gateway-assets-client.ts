@@ -113,6 +113,54 @@ function deepEqual(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * Next-page cursor of a Postman list response, or '' on the last page.
+ *
+ * Two cursor envelopes are in play and both are read here because one client
+ * method can hit either service:
+ *   - specification service: `meta.cursor.next` (also seen flattened as
+ *     `meta.nextCursor` / `nextCursor` on the workspaces route).
+ *   - collection service v3: `meta.pagination.nextPage`.
+ * A list read that stops at page 1 concludes "absent" on a large customer team
+ * and forks a duplicate asset, so every list read must drain its cursor.
+ */
+function nextPageCursor(response: unknown): string {
+  const root = asRecord(response);
+  const meta = asRecord(root?.meta);
+  const cursor = asRecord(meta?.cursor);
+  const pagination = asRecord(meta?.pagination);
+  const candidates = [cursor?.next, meta?.nextCursor, pagination?.nextPage, root?.nextCursor];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return '';
+}
+
+/**
+ * Drain every page of a cursor-paginated list. A repeated cursor and a hard page
+ * ceiling turn a server-side cursor bug into a loud failure instead of an
+ * unbounded onboarding hang.
+ */
+async function collectPagedList<T>(
+  fetchPage: (cursor: string) => Promise<unknown>,
+  extract: (page: unknown) => T[],
+  label: string
+): Promise<T[]> {
+  const out: T[] = [];
+  const seen = new Set<string>();
+  let cursor = '';
+  for (let page = 0; ; page += 1) {
+    if (page >= 200) throw new Error(`${label}_PAGE_LIMIT_EXCEEDED`);
+    const response = await fetchPage(cursor);
+    out.push(...extract(response));
+    const next = nextPageCursor(response);
+    if (!next) return out;
+    if (seen.has(next)) throw new Error(`${label}_CURSOR_REPEATED`);
+    seen.add(next);
+    cursor = next;
+  }
+}
+
+/**
  * Resolve a poll-budget number from an explicit option, then an env override,
  * then the default. Non-numeric or below-`min` values fall through so a stray
  * env value can never zero out or invert a production budget.
@@ -574,12 +622,17 @@ export class PostmanGatewayAssetsClient {
     workspaceId: string,
     name: string
   ): Promise<Array<{ id: string; name: string }>> {
-    const response = await this.gateway.requestJson<JsonRecord>({
-      service: 'specification',
-      method: 'get',
-      path: `/specifications?containerType=workspace&containerId=${workspaceId}`
-    });
-    const entries = Array.isArray(response?.data) ? response.data : [];
+    const entries = await collectPagedList(
+      (cursor) =>
+        this.gateway.requestJson<JsonRecord>({
+          service: 'specification',
+          method: 'get',
+          path: `/specifications?containerType=workspace&containerId=${workspaceId}`,
+          ...(cursor ? { query: { cursor } } : {})
+        }),
+      (page) => (Array.isArray(asRecord(page)?.data) ? (asRecord(page)!.data as unknown[]) : []),
+      'SPEC_LIST'
+    );
     return entries
       .map((value) => asRecord(value))
       .filter((value): value is JsonRecord => value !== null)
@@ -865,12 +918,17 @@ export class PostmanGatewayAssetsClient {
         ) throw error;
       }
     }
-    const listed = await this.gateway.requestJson<JsonRecord>({
-      service: 'specification',
-      method: 'get',
-      path: `/specifications/${specId}/files`
-    });
-    const metas = listFilesFromGatewayResponse(listed);
+    const metas = await collectPagedList<CloudSpecFileMeta>(
+      (cursor) =>
+        this.gateway.requestJson<JsonRecord>({
+          service: 'specification',
+          method: 'get',
+          path: `/specifications/${specId}/files`,
+          ...(cursor ? { query: { cursor } } : {})
+        }),
+      (page) => listFilesFromGatewayResponse(page),
+      'SPEC_FILES_LIST'
+    );
     assertNoCloudPathCollisions(metas);
 
     const members: Array<{ path: string; type: string; content: string }> = [];
@@ -1149,20 +1207,45 @@ export class PostmanGatewayAssetsClient {
       .filter((value) => value.id || value.name);
   }
 
-  /** Resolve a specification's ROOT file uuid via the files list. */
+  /**
+   * Resolve a specification's ROOT file uuid via the (paginated) files list.
+   *
+   * The ROOT file can land on any page, and callers write the whole root
+   * document to whatever id comes back — so a page-1-only read can PATCH the
+   * root spec over a component file. When no file is typed ROOT, a lone file is
+   * accepted as its own root; two or more untyped candidates are ambiguous and
+   * fail loudly rather than silently overwriting an arbitrary dependency.
+   */
   private async resolveRootFileId(specId: string): Promise<string> {
-    const files = await this.gateway.requestJson<JsonRecord>({
-      service: 'specification',
-      method: 'get',
-      path: `/specifications/${specId}/files`
-    });
-    const list = Array.isArray(files?.data)
-      ? (files!.data as JsonRecord[])
-      : Array.isArray(asRecord(files?.data)?.files)
-        ? (asRecord(files!.data)!.files as JsonRecord[])
-        : [];
-    const root = list.find((f) => String(f.type ?? '') === 'ROOT') ?? list[0];
-    return String(root?.id ?? '').trim();
+    const list = await collectPagedList<JsonRecord>(
+      (cursor) =>
+        this.gateway.requestJson<JsonRecord>({
+          service: 'specification',
+          method: 'get',
+          path: `/specifications/${specId}/files`,
+          ...(cursor ? { query: { cursor } } : {})
+        }),
+      (page) => {
+        const files = asRecord(page);
+        if (Array.isArray(files?.data)) return files!.data as JsonRecord[];
+        const nested = asRecord(files?.data);
+        return Array.isArray(nested?.files) ? (nested!.files as JsonRecord[]) : [];
+      },
+      'SPEC_FILES_LIST'
+    );
+    const roots = list.filter((f) => String(f.type ?? '') === 'ROOT');
+    if (roots.length > 1) {
+      throw new Error(
+        `SPEC_ROOT_FILE_AMBIGUOUS: specification ${specId} reports ${roots.length} ROOT files`
+      );
+    }
+    if (roots.length === 1) return String(roots[0]?.id ?? '').trim();
+    if (list.length > 1) {
+      throw new Error(
+        `SPEC_ROOT_FILE_AMBIGUOUS: specification ${specId} has ${list.length} files and none is typed ROOT`
+      );
+    }
+    return String(list[0]?.id ?? '').trim();
   }
 
   /**
@@ -1515,32 +1598,37 @@ export class PostmanGatewayAssetsClient {
   private async listGeneratedCollectionRefs(
     specId: string
   ): Promise<Array<{ id: string; name?: string }>> {
-    let list: JsonRecord | null = null;
-    for (
-      let attempt = 0;
-      attempt <= PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES;
-      attempt += 1
-    ) {
-      try {
-        list = await this.gateway.requestJson<JsonRecord>({
-          service: 'specification',
-          method: 'get',
-          path: `/specifications/${specId}/collections`,
-          query: { fields: 'syncOptions,options' }
-        });
-        break;
-      } catch (error) {
-        if (
-          !(error instanceof HttpError && error.status === 404) ||
-          attempt === PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES
-        ) {
-          throw error;
+    const readRelationPage = async (cursor: string): Promise<JsonRecord | null> => {
+      for (
+        let attempt = 0;
+        attempt <= PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES;
+        attempt += 1
+      ) {
+        try {
+          return await this.gateway.requestJson<JsonRecord>({
+            service: 'specification',
+            method: 'get',
+            path: `/specifications/${specId}/collections`,
+            query: { fields: 'syncOptions,options', ...(cursor ? { cursor } : {}) }
+          });
+        } catch (error) {
+          if (
+            !(error instanceof HttpError && error.status === 404) ||
+            attempt === PostmanGatewayAssetsClient.GENERATION_OBSERVATION_MAX_RETRIES
+          ) {
+            throw error;
+          }
+          this.onRetry?.({ class: 'poll', status: error.status, attempt: attempt + 2, delay: 1000 });
+          await this.sleep(1000);
         }
-        this.onRetry?.({ class: 'poll', status: error.status, attempt: attempt + 2, delay: 1000 });
-        await this.sleep(1000);
       }
-    }
-    const entries = Array.isArray(asRecord(list)?.data) ? (asRecord(list)!.data as unknown[]) : [];
+      return null;
+    };
+    const entries = await collectPagedList(
+      (cursor) => readRelationPage(cursor),
+      (page) => (Array.isArray(asRecord(page)?.data) ? (asRecord(page)!.data as unknown[]) : []),
+      'SPEC_COLLECTION_RELATIONS'
+    );
     const results: Array<{ id: string; name?: string }> = [];
     for (const raw of entries) {
       const entry = asRecord(raw);
@@ -2767,13 +2855,18 @@ export class PostmanGatewayAssetsClient {
     workspaceId: string,
     retryPolicy?: 'safe' | 'rate-limit' | 'none'
   ): Promise<Array<{ id: string; name: string; description?: string }>> {
-    const response = await this.gateway.requestJson<JsonRecord>({
-      service: 'collection',
-      method: 'get',
-      path: `/v3/collections/?workspace=${workspaceId}`,
-      ...(retryPolicy ? { retry: retryPolicy } : {})
-    });
-    const entries = Array.isArray(response?.data) ? response.data : [];
+    const entries = await collectPagedList(
+      (cursor) =>
+        this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'get',
+          path: `/v3/collections/?workspace=${workspaceId}`,
+          ...(cursor ? { query: { cursor } } : {}),
+          ...(retryPolicy ? { retry: retryPolicy } : {})
+        }),
+      (page) => (Array.isArray(asRecord(page)?.data) ? (asRecord(page)!.data as unknown[]) : []),
+      'COLLECTION_LIST'
+    );
     return entries
       .map((value) => asRecord(value))
       .filter((value): value is JsonRecord => value !== null)

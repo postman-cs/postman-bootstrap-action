@@ -527,15 +527,49 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
     }
   }
 
+  /**
+   * Every relation row for a specification, draining the cursor.
+   *
+   * The specification service pages this list (`meta.cursor.next`), and callers
+   * treat a missing row as "link not propagated" — so a page-1-only read reports
+   * a healthy link as missing once a spec carries more relations than one page.
+   */
   async listSpecificationCollectionRelations(
     specificationId: string
   ): Promise<SpecificationCollectionRelation[]> {
+    const rows: unknown[] = [];
+    const seenCursors = new Set<string>();
+    let cursor = '';
+    for (let page = 0; ; page += 1) {
+      if (page >= 200) {
+        throw new Error(
+          'LOCAL_OPENAPI_LINK_READBACK_FAILED: relation list exceeded the page ceiling'
+        );
+      }
+      const pageRows = await this.readSpecificationCollectionRelationPage(specificationId, cursor);
+      rows.push(...pageRows.rows);
+      if (!pageRows.nextCursor) break;
+      if (seenCursors.has(pageRows.nextCursor)) {
+        throw new Error(
+          'LOCAL_OPENAPI_LINK_READBACK_FAILED: relation list returned a repeated cursor'
+        );
+      }
+      seenCursors.add(pageRows.nextCursor);
+      cursor = pageRows.nextCursor;
+    }
+    return this.parseSpecificationCollectionRelationRows(rows);
+  }
+
+  private async readSpecificationCollectionRelationPage(
+    specificationId: string,
+    cursor: string
+  ): Promise<{ rows: unknown[]; nextCursor: string }> {
     const response = await this.proxyRequest(
       'specification',
       'get',
       `/specifications/${specificationId}/collections`,
       undefined,
-      { query: { fields: 'syncOptions,options' } }
+      { query: { fields: 'syncOptions,options', ...(cursor ? { cursor } : {}) } }
     );
     if (!response.ok) {
       const httpErr = await HttpError.fromResponse(response, {
@@ -555,9 +589,25 @@ class BifrostInternalIntegrationAdapter implements InternalIntegrationAdapter {
       throw advised ?? httpErr;
     }
     const json = (await response.json().catch(() => null)) as
-      | { data?: unknown }
+      | { data?: unknown; meta?: unknown }
       | null;
     const rows = Array.isArray(json?.data) ? json.data : [];
+    const meta =
+      json?.meta && typeof json.meta === 'object' && !Array.isArray(json.meta)
+        ? (json.meta as Record<string, unknown>)
+        : null;
+    const cursorRecord =
+      meta?.cursor && typeof meta.cursor === 'object' && !Array.isArray(meta.cursor)
+        ? (meta.cursor as Record<string, unknown>)
+        : null;
+    const rawNext = cursorRecord?.next ?? meta?.nextCursor;
+    const nextCursor = typeof rawNext === 'string' ? rawNext.trim() : '';
+    return { rows, nextCursor };
+  }
+
+  private parseSpecificationCollectionRelationRows(
+    rows: unknown[]
+  ): SpecificationCollectionRelation[] {
     const out: SpecificationCollectionRelation[] = [];
     for (const row of rows) {
       if (!row || typeof row !== 'object' || Array.isArray(row)) continue;

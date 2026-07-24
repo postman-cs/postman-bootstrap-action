@@ -9,6 +9,8 @@ import {
 
 import { instrumentContractCollection } from './collection-contracts.js';
 import type { ContractIndex } from './contract-index.js';
+import { withDeterministicSchemaFaker } from './deterministic-schema-faker.js';
+import { repairGeneratedCollectionExamples } from './request-example-repair.js';
 import { instrumentSmokeCollection } from './smoke-tests.js';
 
 export type JsonRecord = Record<string, unknown>;
@@ -19,6 +21,7 @@ export const LOCAL_OPENAPI_CONVERSION_FAILED = 'LOCAL_OPENAPI_CONVERSION_FAILED'
 export type LocalOpenApiConversionStage =
   | 'validate-input'
   | 'convert'
+  | 'repair-request-examples'
   | 'materialize-roles'
   | 'instrument-smoke'
   | 'instrument-contract';
@@ -274,15 +277,34 @@ export async function generateLocalOpenApiRolePayloads(
   assertValidOptions(options);
 
   const converter = dependencies.converter ?? convertV2WithTypes;
-  let converted: JsonRecord;
-  try {
-    converted = await convertOnce(bundledOpenApi, options, converter);
-  } catch (error) {
-    if (error instanceof LocalOpenApiConversionError) throw error;
-    throw new LocalOpenApiConversionError('convert', 'converter failed', error);
-  }
+  const generated = await withDeterministicSchemaFaker(bundledOpenApi, async (candidate) => {
+    let converted: JsonRecord;
+    try {
+      converted = await convertOnce(bundledOpenApi, options, converter);
+    } catch (error) {
+      if (error instanceof LocalOpenApiConversionError) throw error;
+      throw new LocalOpenApiConversionError('convert', 'converter failed', error);
+    }
 
-  const warnings: string[] = [];
+    try {
+      const repairWarnings = repairGeneratedCollectionExamples(
+        converted,
+        options.contractIndex,
+        bundledOpenApi,
+        candidate
+      );
+      return { converted, repairWarnings };
+    } catch (error) {
+      throw new LocalOpenApiConversionError(
+        'repair-request-examples',
+        'failed to make generated request examples conform to their OpenAPI schemas',
+        error
+      );
+    }
+  });
+
+  const converted = generated.converted;
+  const warnings: string[] = [...generated.repairWarnings];
   const description = options.description;
 
   let baseline: JsonRecord;

@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { Script } from 'node:vm';
 
 import { convertV2WithTypes } from 'openapi-to-postmanv2';
+import converterSchemaFaker from 'openapi-to-postmanv2/assets/json-schema-faker.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
@@ -16,6 +17,7 @@ import {
   type LocalOpenApiConverter
 } from '../src/lib/spec/local-openapi-collection-generation.js';
 import { parseOpenApiDocument } from '../src/lib/spec/openapi-loader.js';
+import { compileSchemaValidator } from '../src/lib/spec/schema-validator-code.js';
 import { createSmokeTestExec, instrumentSmokeCollection } from '../src/lib/spec/smoke-tests.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -184,6 +186,39 @@ function collectStructuralSyncIds(collection: JsonRecord): string[] {
 
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function firstJsonRequestBody(collection: JsonRecord): unknown {
+  const visit = (items: unknown): unknown => {
+    if (!Array.isArray(items)) return undefined;
+    for (const raw of items) {
+      if (!isRecord(raw)) continue;
+      if (raw.name === '00 - Resolve Secrets') continue;
+      const request = isRecord(raw.request) ? raw.request : null;
+      const body = request && isRecord(request.body) ? request.body : null;
+      if (body?.mode === 'raw' && typeof body.raw === 'string') return JSON.parse(body.raw);
+      const nested = visit(raw.item);
+      if (nested !== undefined) return nested;
+    }
+    return undefined;
+  };
+  return visit(collection.item);
+}
+
+function firstRequestItem(collection: JsonRecord): JsonRecord {
+  const visit = (items: unknown): JsonRecord | undefined => {
+    if (!Array.isArray(items)) return undefined;
+    for (const raw of items) {
+      if (!isRecord(raw) || raw.name === '00 - Resolve Secrets') continue;
+      if (isRecord(raw.request)) return raw;
+      const nested = visit(raw.item);
+      if (nested) return nested;
+    }
+    return undefined;
+  };
+  const item = visit(collection.item);
+  expect(item).toBeDefined();
+  return item!;
 }
 
 describe('local OpenAPI role payload generation', () => {
@@ -589,5 +624,854 @@ describe('local OpenAPI role payload generation', () => {
       { converter }
     );
     expect(converter).toHaveBeenCalledOnce();
+  });
+
+  it('repairs every replay of the converter nullable maxLength branches before role derivation', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Units', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/units': {
+          post: {
+            operationId: 'createUnit',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: { UomCode: { type: ['string', 'null'], maxLength: 4 } }
+                  }
+                }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      }
+    });
+    const contractIndex = indexFor(bundled);
+    const schema = contractIndex.operations[0]?.requestBody?.jsonSchemas?.['application/json'];
+    const validate = compileSchemaValidator(schema);
+    expect(validate).not.toBeNull();
+    const converter = vi.fn(convertV2WithTypes);
+    const baselineBodies: string[] = [];
+    const digests: Record<'baseline' | 'smoke' | 'contract', string[]> = {
+      baseline: [],
+      smoke: [],
+      contract: []
+    };
+
+    for (let run = 0; run < 30; run += 1) {
+      const generated = await generateLocalOpenApiRolePayloads(bundled, {
+        openApiVersion: '3.1',
+        requestNameSource: 'Fallback',
+        folderStrategy: 'Paths',
+        names: { baseline: 'Units', smoke: '[Smoke] Units', contract: '[Contract] Units' },
+        contractIndex
+      }, { converter });
+      for (const role of ['baseline', 'smoke', 'contract'] as const) {
+        const body = firstJsonRequestBody(generated.roles[role].collection);
+        expect(validate!(body)).toBe(true);
+        if (role === 'baseline') baselineBodies.push(JSON.stringify(body));
+        digests[role].push(generated.roles[role].payloadDigest);
+      }
+    }
+    expect(converter).toHaveBeenCalledTimes(30);
+    expect(new Set(baselineBodies).size).toBe(1);
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      expect(new Set(digests[role]).size).toBe(1);
+    }
+  });
+
+  it('canonicalizes both raw nullable converter branches to one semantic body and digest', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Branches', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/branches': {
+          post: {
+            operationId: 'createBranch',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: { code: { type: ['string', 'null'], maxLength: 4 } }
+                  }
+                }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      }
+    });
+    let conversion = 0;
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => {
+      const code = conversion++ % 2 === 0 ? null : 'string';
+      callback(null, {
+        result: true,
+        output: [{
+          type: 'collection',
+          data: {
+            info: { name: 'Branches' },
+            item: [{
+              name: 'createBranch',
+              request: {
+                method: 'POST',
+                url: { raw: 'https://example.test/branches', path: ['branches'] },
+                header: [{ key: 'Content-Type', value: 'application/json' }],
+                body: { mode: 'raw', raw: JSON.stringify({ code }) }
+              }
+            }]
+          }
+        }]
+      });
+    };
+    const contractIndex = indexFor(bundled);
+    const outputs = [];
+    for (let run = 0; run < 4; run += 1) {
+      outputs.push(await generateLocalOpenApiRolePayloads(bundled, {
+        openApiVersion: '3.1',
+        requestNameSource: 'Fallback',
+        folderStrategy: 'Paths',
+        names: { baseline: 'Branches', smoke: '[Smoke] Branches', contract: '[Contract] Branches' },
+        contractIndex
+      }, { converter }));
+    }
+    expect(new Set(outputs.map((output) => JSON.stringify(firstJsonRequestBody(output.roles.baseline.collection)))).size).toBe(1);
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      expect(new Set(outputs.map((output) => output.roles[role].payloadDigest)).size).toBe(1);
+    }
+  });
+
+  it('repairs serialized path, query, and header parameters in requests and saved originalRequest copies', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Parameters', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/things/{id}': {
+          get: {
+            operationId: 'getThing',
+            parameters: [
+              { name: 'id', in: 'path', required: true, schema: { type: 'string', const: 'ok' } },
+              { name: 'unit', in: 'query', schema: { type: ['string', 'null'], maxLength: 4 } },
+              { name: 'count', in: 'query', schema: { type: 'number', minimum: 1, maximum: 5, multipleOf: 2 } },
+              {
+                name: 'tags',
+                in: 'query',
+                style: 'pipeDelimited',
+                explode: false,
+                schema: { type: 'array', minItems: 2, maxItems: 3, items: { type: 'string', pattern: '^[A-Z]$' } }
+              },
+              { name: 'X-Mode', in: 'header', schema: { type: 'string', const: 'safe' } }
+            ],
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      }
+    });
+    const request = {
+      method: 'GET',
+      url: {
+        raw: 'https://example.test/things/:id?unit=string&count=7&tags=bad|bad',
+        path: ['things', ':id'],
+        variable: [{ key: 'id', value: 'wrong' }],
+        query: [
+          { key: 'unit', value: 'string' },
+          { key: 'count', value: '7' },
+          { key: 'tags', value: 'bad|bad' }
+        ]
+      },
+      header: [{ key: 'X-Mode', value: 'wrong' }]
+    };
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
+      result: true,
+      output: [{
+        type: 'collection',
+        data: {
+          info: { name: 'Parameters' },
+          item: [{
+            name: 'getThing',
+            request: structuredClone(request),
+            response: [{
+              name: 'ok',
+              code: 200,
+              status: 'OK',
+              originalRequest: structuredClone(request),
+              header: [],
+              body: ''
+            }]
+          }]
+        }
+      }]
+    });
+
+    const generated = await generateLocalOpenApiRolePayloads(bundled, {
+      openApiVersion: '3.1',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names: { baseline: 'Parameters', smoke: '[Smoke] Parameters', contract: '[Contract] Parameters' },
+      contractIndex: indexFor(bundled)
+    }, { converter });
+
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      const item = firstRequestItem(generated.roles[role].collection);
+      const live = record(item.request);
+      const saved = record(record(array(item.response)[0]).originalRequest);
+      for (const repaired of [live, saved]) {
+        const url = record(repaired.url);
+        expect(record(array(url.variable)[0])).toMatchObject({ key: 'id', value: 'ok' });
+        const query = array(url.query).map(record);
+        expect(String(query.find((entry) => entry.key === 'unit')?.value ?? '').length).toBeLessThanOrEqual(4);
+        expect(query.find((entry) => entry.key === 'count')?.value).toBe('4');
+        expect(query.find((entry) => entry.key === 'tags')?.value).toMatch(/^[A-Z]\|[A-Z](?:\|[A-Z])?$/);
+        expect(array(repaired.header).map(record).find((entry) => entry.key === 'X-Mode')?.value).toBe('safe');
+      }
+      expect(saved.url).toEqual(live.url);
+      expect(saved.header).toEqual(live.header);
+    }
+  });
+
+  it('keeps real converter parameters, saved requests, response bodies, and role digests stable', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Real Examples', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/samples/{id}': {
+          get: {
+            operationId: 'getSample',
+            parameters: [
+              { name: 'id', in: 'path', required: true, schema: { type: 'string', pattern: '^[A-Z]{2}$', minLength: 2, maxLength: 2 } },
+              {
+                name: 'tags',
+                in: 'query',
+                style: 'pipeDelimited',
+                explode: false,
+                schema: { type: 'array', minItems: 2, maxItems: 3, items: { type: 'string', pattern: '^[A-Z]$' } }
+              },
+              { name: 'X-Count', in: 'header', schema: { type: 'number', minimum: 1, maximum: 5, multipleOf: 2 } }
+            ],
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      required: ['result'],
+                      properties: { result: { type: ['string', 'null'], maxLength: 4 } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+    const contractIndex = indexFor(bundled);
+    const operation = contractIndex.operations[0]!;
+    const checks = new Map((operation.parameterChecks ?? []).map((check) => [check.name, check]));
+    const responseSchema = operation.responses['200']!.content['application/json']!.schema;
+    const responseValidate = compileSchemaValidator(responseSchema);
+    const digests: Record<'baseline' | 'smoke' | 'contract', string[]> = { baseline: [], smoke: [], contract: [] };
+
+    for (let run = 0; run < 6; run += 1) {
+      const generated = await generateLocalOpenApiRolePayloads(bundled, {
+        openApiVersion: '3.1',
+        requestNameSource: 'Fallback',
+        folderStrategy: 'Paths',
+        names: { baseline: 'Real Examples', smoke: '[Smoke] Real Examples', contract: '[Contract] Real Examples' },
+        contractIndex
+      });
+      for (const role of ['baseline', 'smoke', 'contract'] as const) {
+        digests[role].push(generated.roles[role].payloadDigest);
+        const item = firstRequestItem(generated.roles[role].collection);
+        const live = record(item.request);
+        const savedResponse = record(array(item.response)[0]);
+        const saved = record(savedResponse.originalRequest);
+        for (const repaired of [live, saved]) {
+          const url = record(repaired.url);
+          const id = String(record(array(url.variable)[0]).value);
+          expect(compileSchemaValidator(checks.get('id')!.schema)!(id)).toBe(true);
+          const tags = String(array(url.query).map(record).find((entry) => entry.key === 'tags')?.value ?? '').split('|');
+          expect(compileSchemaValidator(checks.get('tags')!.schema)!(tags)).toBe(true);
+          const count = Number(array(repaired.header).map(record).find((entry) => entry.key === 'X-Count')?.value);
+          expect(compileSchemaValidator(checks.get('X-Count')!.schema)!(count)).toBe(true);
+        }
+        expect(saved.url).toEqual(live.url);
+        expect(saved.header).toEqual(live.header);
+        expect(responseValidate!(JSON.parse(String(savedResponse.body)))).toBe(true);
+      }
+    }
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      expect(new Set(digests[role]).size).toBe(1);
+    }
+  });
+
+  it('repairs saved JSON response bodies with response-direction schemas', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Responses', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/responses': {
+          get: {
+            operationId: 'getResponse',
+            responses: {
+              '200': {
+                description: 'ok',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      required: ['result', 'nested'],
+                      properties: {
+                        result: { type: ['string', 'null'], maxLength: 4 },
+                        nested: { $ref: '#/components/schemas/SavedNested' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      components: {
+        schemas: {
+          SavedNested: {
+            type: 'object',
+            required: ['visible'],
+            properties: {
+              visible: { type: 'string' },
+              secret: { type: 'string', writeOnly: true }
+            }
+          }
+        }
+      }
+    });
+    const request = { method: 'GET', url: { raw: 'https://example.test/responses', path: ['responses'] }, header: [] };
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
+      result: true,
+      output: [{
+        type: 'collection',
+        data: {
+          info: { name: 'Responses' },
+          item: [{
+            name: 'getResponse',
+            request,
+            response: [{
+              name: 'ok',
+              code: 200,
+              status: 'OK',
+              originalRequest: structuredClone(request),
+              header: [{ key: 'Content-Type', value: 'application/json' }],
+              body: JSON.stringify({ result: 'string', nested: { visible: 'yes', secret: 'remove-me' } })
+            }]
+          }]
+        }
+      }]
+    });
+    const contractIndex = indexFor(bundled);
+    const generated = await generateLocalOpenApiRolePayloads(bundled, {
+      openApiVersion: '3.1',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names: { baseline: 'Responses', smoke: '[Smoke] Responses', contract: '[Contract] Responses' },
+      contractIndex
+    }, { converter });
+    const schema = contractIndex.operations[0]!.responses['200']!.content['application/json']!.schema;
+    const validate = compileSchemaValidator(schema);
+    expect(validate).not.toBeNull();
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      const saved = record(array(firstRequestItem(generated.roles[role].collection).response)[0]);
+      const body = JSON.parse(String(saved.body)) as JsonRecord;
+      expect(validate!(body)).toBe(true);
+      expect(record(body.nested)).toEqual({ visible: 'yes' });
+    }
+  });
+
+  it('removes nested and referenced readOnly request properties while preserving writeOnly values', async () => {
+    const explicit = { nested: { visible: 'yes', readId: 'remove-me', writeSecret: 'keep-me' } };
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Direction', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/direction': {
+          post: {
+            operationId: 'createDirection',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['nested'],
+                    properties: { nested: { $ref: '#/components/schemas/RequestNested' } }
+                  },
+                  example: explicit
+                }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      },
+      components: {
+        schemas: {
+          RequestNested: {
+            type: 'object',
+            required: ['visible', 'readId', 'writeSecret'],
+            properties: {
+              visible: { type: 'string' },
+              readId: { type: 'string', readOnly: true },
+              writeSecret: { type: 'string', writeOnly: true }
+            }
+          }
+        }
+      }
+    });
+    const request = {
+      method: 'POST',
+      url: { raw: 'https://example.test/direction', path: ['direction'] },
+      header: [{ key: 'Content-Type', value: 'application/json' }],
+      body: { mode: 'raw', raw: JSON.stringify(explicit) }
+    };
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
+      result: true,
+      output: [{
+        type: 'collection',
+        data: {
+          info: { name: 'Direction' },
+          item: [{
+            name: 'createDirection',
+            request: structuredClone(request),
+            response: [0, 1].map((index) => ({
+              name: `ok-${index}`,
+              code: 200,
+              status: 'OK',
+              originalRequest: structuredClone(request),
+              header: [],
+              body: ''
+            }))
+          }]
+        }
+      }]
+    });
+    const generated = await generateLocalOpenApiRolePayloads(bundled, {
+      openApiVersion: '3.1',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names: { baseline: 'Direction', smoke: '[Smoke] Direction', contract: '[Contract] Direction' },
+      contractIndex: indexFor(bundled)
+    }, { converter });
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      const expected = {
+        nested: { visible: 'yes', writeSecret: 'keep-me' }
+      };
+      const item = firstRequestItem(generated.roles[role].collection);
+      expect(firstJsonRequestBody(generated.roles[role].collection)).toEqual(expected);
+      for (const saved of array(item.response).map(record)) {
+        const originalRequest = record(saved.originalRequest);
+        expect(JSON.parse(String(record(originalRequest.body).raw))).toEqual(expected);
+      }
+    }
+  });
+
+  it('proves satisfiable pattern, format, uniqueItems, oneOf, and allOf repairs and omits optional impossibilities', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Candidates', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/candidates': {
+          post: {
+            operationId: 'createCandidates',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['explicit', 'patterned', 'formatted', 'unique', 'overlap', 'intersection'],
+                    properties: {
+                      explicit: { type: 'string', example: 'kept' },
+                      patterned: { type: 'string', pattern: '^[A-Z]{4}$', minLength: 4, maxLength: 4 },
+                      formatted: { type: 'string', format: 'email', minLength: 6, maxLength: 12 },
+                      unique: {
+                        type: 'array',
+                        minItems: 3,
+                        maxItems: 3,
+                        uniqueItems: true,
+                        items: { type: 'string', pattern: '^[A-C]$' }
+                      },
+                      overlap: {
+                        oneOf: [
+                          { type: 'string', enum: ['a', 'b'] },
+                          { type: 'string', enum: ['b', 'c'] }
+                        ]
+                      },
+                      intersection: {
+                        allOf: [
+                          { type: 'string', enum: ['a', 'b'] },
+                          { type: 'string', enum: ['b', 'c'] }
+                        ]
+                      },
+                      optionalImpossible: { type: 'string', pattern: '^A$', minLength: 2 }
+                    }
+                  }
+                }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      }
+    });
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
+      result: true,
+      output: [{
+        type: 'collection',
+        data: {
+          info: { name: 'Candidates' },
+          item: [{
+            name: 'createCandidates',
+            request: {
+              method: 'POST',
+              url: { raw: 'https://example.test/candidates', path: ['candidates'] },
+              header: [{ key: 'Content-Type', value: 'application/json' }],
+              body: {
+                mode: 'raw',
+                raw: JSON.stringify({
+                  explicit: 'kept',
+                  patterned: 'bad',
+                  formatted: 'bad',
+                  unique: ['A', 'A'],
+                  overlap: false,
+                  intersection: 'a',
+                  optionalImpossible: 'bad'
+                })
+              }
+            }
+          }]
+        }
+      }]
+    });
+    const contractIndex = indexFor(bundled);
+    const generated = await generateLocalOpenApiRolePayloads(bundled, {
+      openApiVersion: '3.1',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names: { baseline: 'Candidates', smoke: '[Smoke] Candidates', contract: '[Contract] Candidates' },
+      contractIndex
+    }, { converter });
+    const body = firstJsonRequestBody(generated.roles.baseline.collection) as JsonRecord;
+    const validate = compileSchemaValidator(contractIndex.operations[0]!.requestBody!.jsonSchemas!['application/json']);
+    expect(validate!(body)).toBe(true);
+    expect(body.explicit).toBe('kept');
+    expect(body).not.toHaveProperty('optionalImpossible');
+  });
+
+  it('reports an invalid source-authored media example distinctly instead of rewriting it', async () => {
+    const authored = { code: 'bbb' };
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Authored', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/authored': {
+          post: {
+            operationId: 'createAuthored',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['code'],
+                    properties: { code: { type: 'string', pattern: '^A+$' } }
+                  },
+                  example: authored
+                }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      }
+    });
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
+      result: true,
+      output: [{
+        type: 'collection',
+        data: {
+          info: { name: 'Authored' },
+          item: [{
+            name: 'createAuthored',
+            request: {
+              method: 'POST',
+              url: { raw: 'https://example.test/authored', path: ['authored'] },
+              header: [{ key: 'Content-Type', value: 'application/json' }],
+              body: { mode: 'raw', raw: JSON.stringify(authored) }
+            }
+          }]
+        }
+      }]
+    });
+    await expect(generateLocalOpenApiRolePayloads(bundled, {
+      openApiVersion: '3.1',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names: { baseline: 'Authored', smoke: '[Smoke] Authored', contract: '[Contract] Authored' },
+      contractIndex: indexFor(bundled)
+    }, { converter })).rejects.toMatchObject({
+      stage: 'repair-request-examples',
+      sanitizedCause: expect.stringContaining('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH')
+    });
+  });
+
+  it('serializes concurrent faker access and restores the prior random source after async failures', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Concurrency', version: '1.0.0' },
+      paths: { '/health': { get: { operationId: 'health', responses: { '200': { description: 'ok' } } } } }
+    });
+    const contractIndex = indexFor(bundled);
+    const sentinel = () => 0.125;
+    const originalRandom = converterSchemaFaker.option('random');
+    converterSchemaFaker.option({ random: sentinel });
+    let active = 0;
+    let maxActive = 0;
+    let invocation = 0;
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => {
+      const current = invocation++;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      setTimeout(() => {
+        active -= 1;
+        if (current === 0) {
+          callback(new Error('async conversion failure'));
+          return;
+        }
+        callback(null, {
+          result: true,
+          output: [{
+            type: 'collection',
+            data: {
+              info: { name: 'Concurrency' },
+              item: [{ name: 'health', request: { method: 'GET', url: { path: ['health'] } } }]
+            }
+          }]
+        });
+      }, current === 0 ? 5 : 20);
+    };
+    const options = {
+      openApiVersion: '3.1' as const,
+      requestNameSource: 'Fallback' as const,
+      folderStrategy: 'Paths' as const,
+      names: { baseline: 'Concurrency', smoke: '[Smoke] Concurrency', contract: '[Contract] Concurrency' },
+      contractIndex
+    };
+    try {
+      const results = await Promise.allSettled([
+        generateLocalOpenApiRolePayloads(bundled, options, { converter }),
+        generateLocalOpenApiRolePayloads(bundled, options, { converter })
+      ]);
+      expect(results.map((result) => result.status)).toEqual(['rejected', 'fulfilled']);
+      expect(maxActive).toBe(1);
+      expect(converterSchemaFaker.option('random')).toBe(sentinel);
+
+      const throwingConverter: LocalOpenApiConverter = () => {
+        throw new Error('synchronous conversion failure');
+      };
+      await expect(generateLocalOpenApiRolePayloads(bundled, options, {
+        converter: throwingConverter
+      })).rejects.toMatchObject({ stage: 'convert' });
+      expect(converterSchemaFaker.option('random')).toBe(sentinel);
+    } finally {
+      converterSchemaFaker.option({ random: originalRandom });
+    }
+  });
+
+  it('repairs safely constrained generated JSON values and preserves valid examples and defaults', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Constraints', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/constraints': {
+          post: {
+            operationId: 'createConstraints',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['explicit', 'defaulted', 'requiredObject', 'secret', 'merged'],
+                    properties: {
+                      explicit: { type: 'string', minLength: 4, example: 'kept' },
+                      defaulted: { type: 'integer', minimum: 0, default: 8 },
+                      short: { type: 'string', minLength: 4 },
+                      long: { type: 'string', maxLength: 4 },
+                      patterned: { type: 'string', pattern: '^[A-Z]{2}[0-9]{2}$', enum: ['AB12'] },
+                      formatted: { type: 'string', format: 'email' },
+                      bounded: { type: 'number', minimum: 1, exclusiveMaximum: 5, multipleOf: 0.5 },
+                      whole: { type: 'integer', exclusiveMinimum: 2, maximum: 4 },
+                      few: { type: 'array', minItems: 2, maxItems: 3, items: { type: 'integer', minimum: 1 } },
+                      many: { type: 'array', maxItems: 2, items: { type: 'string' } },
+                      requiredObject: {
+                        type: 'object',
+                        required: ['needed'],
+                        properties: { needed: { type: 'string', enum: ['present'] } }
+                      },
+                      readOnlyValue: { type: 'string', readOnly: true },
+                      secret: { type: 'string', writeOnly: true, minLength: 3 },
+                      nullable: { type: ['string', 'null'], maxLength: 4, example: null },
+                      nullableLong: { type: ['string', 'null'], maxLength: 4 },
+                      choice: { oneOf: [{ type: 'string', enum: ['choice'] }, { type: 'integer', minimum: 10 }] },
+                      flexible: { anyOf: [{ type: 'boolean' }, { type: 'string', enum: ['flex'] }] },
+                      merged: {
+                        allOf: [
+                          { type: 'object', required: ['a'], properties: { a: { type: 'string', enum: ['A'] } } },
+                          { type: 'object', required: ['b'], properties: { b: { type: 'string', minLength: 2 } } }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      }
+    });
+    const contractIndex = indexFor(bundled);
+    const invalidBody = {
+      explicit: 'kept',
+      defaulted: 8,
+      short: 'x',
+      long: 'string',
+      patterned: 'bad',
+      formatted: 'bad',
+      bounded: 7.3,
+      whole: 2,
+      few: [0],
+      many: ['a', 'b', 'c'],
+      readOnlyValue: 'remove-me',
+      secret: 'keep-me',
+      nullable: null,
+      nullableLong: 'string',
+      choice: false,
+      flexible: 42,
+      merged: {}
+    };
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
+      result: true,
+      output: [{
+        type: 'collection',
+        data: {
+          info: { name: 'Constraints' },
+          item: [{
+            name: 'constraints',
+            item: [{
+              name: 'createConstraints',
+              request: {
+                method: 'POST',
+                url: { raw: 'https://example.test/constraints', path: ['constraints'] },
+                header: [{ key: 'Content-Type', value: 'application/json' }],
+                body: { mode: 'raw', raw: JSON.stringify(invalidBody) }
+              }
+            }]
+          }]
+        }
+      }]
+    });
+
+    const generated = await generateLocalOpenApiRolePayloads(bundled, {
+      openApiVersion: '3.1',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names: { baseline: 'Constraints', smoke: '[Smoke] Constraints', contract: '[Contract] Constraints' },
+      contractIndex
+    }, { converter });
+    const schema = contractIndex.operations[0]?.requestBody?.jsonSchemas?.['application/json'];
+    const validate = compileSchemaValidator(schema);
+    expect(validate).not.toBeNull();
+    const bodies = (['baseline', 'smoke', 'contract'] as const)
+      .map((role) => firstJsonRequestBody(generated.roles[role].collection));
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[2]).toEqual(bodies[0]);
+    for (const body of bodies) expect(validate!(body)).toBe(true);
+    expect(bodies[0]).toMatchObject({ explicit: 'kept', defaulted: 8, secret: 'keep-me', nullable: null });
+    expect(bodies[0]).not.toHaveProperty('readOnlyValue');
+  });
+
+  it('fails explicitly before role materialization when a required schema is unsatisfiable', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.0.3',
+      info: { title: 'Pattern', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/pattern': {
+          post: {
+            operationId: 'createPattern',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['code'],
+                    properties: { code: { type: 'string', pattern: '^A$', minLength: 2 } }
+                  }
+                }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      }
+    });
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
+      result: true,
+      output: [{
+        type: 'collection',
+        data: {
+          info: { name: 'Pattern' },
+          item: [{
+            name: 'createPattern',
+            request: {
+              method: 'POST',
+              url: { raw: 'https://example.test/pattern', path: ['pattern'] },
+              header: [{ key: 'Content-Type', value: 'application/json' }],
+              body: { mode: 'raw', raw: JSON.stringify({ code: 'bbb' }) }
+            }
+          }]
+        }
+      }]
+    });
+
+    await expect(generateLocalOpenApiRolePayloads(bundled, {
+      openApiVersion: '3.0',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names: { baseline: 'Pattern', smoke: '[Smoke] Pattern', contract: '[Contract] Pattern' },
+      contractIndex: indexFor(bundled)
+    }, { converter })).rejects.toMatchObject({
+      code: LOCAL_OPENAPI_CONVERSION_FAILED,
+      stage: 'repair-request-examples',
+      sanitizedCause: expect.stringContaining('could not be safely repaired')
+    });
   });
 });

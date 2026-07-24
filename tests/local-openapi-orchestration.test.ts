@@ -376,6 +376,58 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
+  it('fails unrepairable generated examples before materialization or collection writes', async () => {
+    await withRepo(async (repoRoot) => {
+      await writeFile(path.join(repoRoot, 'openapi.yaml'), JSON.stringify({
+        openapi: '3.1.0',
+        info: { title: 'Impossible API', version: '1.0.0' },
+        paths: {
+          '/impossible': {
+            post: {
+              operationId: 'createImpossible',
+              requestBody: {
+                required: true,
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      required: ['code'],
+                      properties: { code: { type: 'string', pattern: '^A$', minLength: 2 } }
+                    }
+                  }
+                }
+              },
+              responses: { '200': { description: 'ok' } }
+            }
+          }
+        }
+      }));
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const internalIntegration = buildIntegration(events);
+      const materialize = vi.spyOn(localCollectionArtifacts, 'materializeLocalCollectionArtifacts');
+
+      await expect(runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+        core,
+        exec: createExecStub(),
+        io: { which: async () => 'tool' },
+        internalIntegration,
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState: {
+          read: () => null,
+          write: () => undefined
+        },
+        specFetcher: vi.fn()
+      })).rejects.toThrow(/repair-request-examples/);
+
+      expect(materialize).not.toHaveBeenCalled();
+      expect(postman.importV2Collection).not.toHaveBeenCalled();
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+      expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+    });
+  });
+
   it('compensates journaled fresh imports on link failure before resources/manifest persist', { timeout: 30_000 }, async () => {
     await withRepo(async (repoRoot) => {
       const events: string[] = [];

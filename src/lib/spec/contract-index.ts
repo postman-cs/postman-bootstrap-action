@@ -123,6 +123,10 @@ export interface ContractOperation {
 
 export interface ContractIndex {
   operations: ContractOperation[];
+  // Webhook operations are NOT contract-tested (no request URL the runner can
+  // call), but their generated request examples still ship in the collection,
+  // so they are indexed separately for the request-example repair pass.
+  webhookOperations?: ContractOperation[];
   version: OpenApiVersion;
   warnings: string[];
 }
@@ -381,10 +385,27 @@ function collectSerializationWarnings(root: JsonRecord, pathItem: JsonRecord, op
 
 const SCALAR_SCHEMA_TYPES = new Set(['string', 'number', 'integer', 'boolean', 'null']);
 
+function scalarConstrainedValue(value: unknown): boolean {
+  return value === null || ['string', 'number', 'boolean'].includes(typeof value);
+}
+
+// A typeless schema whose const/enum pins it to scalar values is as decodable
+// as a declared scalar: the serialized value round-trips back to a scalar the
+// validator can check. OpenAPI 3.1 (JSON Schema 2020-12) encourages the
+// typeless const form, so rejecting it dropped the runtime check silently and
+// let the converter's empty-string sample ship unrepaired.
+function typelessScalarSchema(record: JsonRecord): boolean {
+  if (record.type !== undefined) return false;
+  if (Object.prototype.hasOwnProperty.call(record, 'const')) return scalarConstrainedValue(record.const);
+  if (Array.isArray(record.enum)) return record.enum.length > 0 && record.enum.every(scalarConstrainedValue);
+  return false;
+}
+
 function packedScalarSchema(packed: PackedSchema): unknown | undefined {
   if (packed.unsupported || packed.schema === undefined) return undefined;
   const record = asRecord(packed.schema);
   if (!record) return undefined;
+  if (typelessScalarSchema(record)) return packed.schema;
   const types = Array.isArray(record.type) ? record.type : [record.type];
   if (!types.every((entry) => typeof entry === 'string' && SCALAR_SCHEMA_TYPES.has(entry))) return undefined;
   return packed.schema;
@@ -1371,6 +1392,11 @@ function collectSchemaStaticLints(root: JsonRecord, schema: unknown, version: Op
   const types = schemaTypeNames(record);
   if (version === '3.0' && Array.isArray(record.type)) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses JSON Schema type arrays; OpenAPI 3.0 uses nullable instead`);
   if (version === '3.1' && record.nullable !== undefined) warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses nullable, which is not an OpenAPI 3.1 Schema keyword`);
+  if (Array.isArray(record.items)) {
+    // Tuple-form items is not valid in either OAS dialect: 3.0 requires a single
+    // items schema, and 3.1 (JSON Schema 2020-12) replaced it with prefixItems.
+    warnings.add(`CONTRACT_SCHEMA_VERSION_MISMATCH: ${context} uses tuple-form items, which OpenAPI ${version} does not support (3.1 expresses tuples via prefixItems)`);
+  }
   if (version === '3.0') {
     for (const key of ['$schema', '$id', '$defs', 'prefixItems', 'unevaluatedProperties', 'unevaluatedItems', 'dependentSchemas', 'dependentRequired', 'if', 'then', 'else', 'const', 'contains', 'minContains', 'maxContains', 'contentEncoding', 'contentMediaType', 'contentSchema', 'patternProperties', 'propertyNames']) {
       // OAS 3.0.3 Schema Object is an adjusted Draft Wright-00 subset; these
@@ -1639,7 +1665,39 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
   const operations: ContractOperation[] = [];
   const warnings: string[] = collectDocumentStaticLints(root, version);
 
-  if (asRecord(root.webhooks)) warnings.push('CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests');
+  const webhookOperations: ContractOperation[] = [];
+  const webhooks = asRecord(root.webhooks);
+  if (webhooks) {
+    warnings.push('CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests');
+    // Webhook request examples ARE emitted into the collection by the converter
+    // (includeWebhooks on 3.1), so they are indexed for the repair pass even
+    // though they carry no callable URL and never become contract tests.
+    for (const [name, rawWebhook] of Object.entries(webhooks)) {
+      const webhookItem = resolveInternalRef<JsonRecord>(root, rawWebhook);
+      if (!webhookItem) continue;
+      for (const [method, rawOperation] of Object.entries(webhookItem)) {
+        const lowerMethod = method.toLowerCase();
+        if (!HTTP_METHODS.has(lowerMethod)) continue;
+        const operation = resolveInternalRef<JsonRecord>(root, rawOperation);
+        if (!operation) continue;
+        const webhookId = `${lowerMethod.toUpperCase()} webhook:${name}`;
+        const webhookWarnings: string[] = [];
+        webhookOperations.push({
+          id: webhookId,
+          method: lowerMethod.toUpperCase(),
+          path: `/${name}`,
+          pointer: `/webhooks/${name.replace(/~/g, '~0').replace(/\//g, '~1')}/${lowerMethod}`,
+          candidates: [],
+          responses: {},
+          requiredParameters: [],
+          declaredQueryParameters: [],
+          parameterChecks: collectParameterChecks(root, webhookItem, operation, version, webhookId, `/${name}`, webhookWarnings),
+          requestBody: collectRequestBody(root, operation, version, webhookId, webhookWarnings),
+          warnings: [...new Set(webhookWarnings)].sort()
+        });
+      }
+    }
+  }
 
   if (paths) {
     for (const [path, rawPathItem] of Object.entries(paths)) {
@@ -1788,5 +1846,10 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
     }
   }
 
-  return { operations, version, warnings: [...new Set(warnings)].sort() };
+  return {
+    operations,
+    ...(webhookOperations.length > 0 ? { webhookOperations } : {}),
+    version,
+    warnings: [...new Set(warnings)].sort()
+  };
 }

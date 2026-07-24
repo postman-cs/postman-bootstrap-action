@@ -27,7 +27,6 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
   if (lowerName.endsWith('.graphql') || lowerName.endsWith('.graphqls') || lowerName.endsWith('.gql')) {
     return 'graphql';
   }
-  if (lowerName.includes('asyncapi')) return 'asyncapi';
 
   // WSDL / SOAP: XML document with a WSDL definitions root.
   if (trimmed.startsWith('<')) {
@@ -55,10 +54,24 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
       if (typeof record.openapi === 'string' || record.swagger === '2.0') return 'openapi';
       if (looksLikeMcp(record)) return 'mcp';
     }
+    if (lowerName.includes('asyncapi')) return 'asyncapi';
     // Unrecognized JSON defaults to OpenAPI so the loader can produce its
     // canonical version-gate error rather than a vague protocol mismatch.
     return 'openapi';
   }
+
+  // Root-document version key wins over any prose that merely LOOKS like another
+  // protocol. A YAML root key sits at column 0, while description block scalars
+  // and embedded examples are always indented deeper than the key that owns
+  // them, so a column-0 anchored match is a structural signal rather than a text
+  // match. Without this precedence a valid OpenAPI document whose description
+  // prose begins a line with "type Name", "enum Values", or a "service X { rpc"
+  // block is routed into the GraphQL/gRPC builder and dies far downstream.
+  const rootKeyType = yamlRootSpecType(trimmed);
+  if (rootKeyType) return rootKeyType;
+
+  // A filename hint only decides documents whose own root key stayed silent.
+  if (lowerName.includes('asyncapi')) return 'asyncapi';
 
   // Protocol Buffers: `syntax = "proto3";` or a `service ... { rpc ... }` block.
   if (/^\s*syntax\s*=\s*["']proto[23]["']/m.test(text) || /\bservice\s+\w+\s*\{[\s\S]*\brpc\b/.test(text)) {
@@ -79,15 +92,19 @@ export function detectSpecType(content: string, fileName?: string): SpecType {
     return 'graphql';
   }
 
-  // YAML AsyncAPI: an `asyncapi:` version key at the document root. Checked
-  // before the OpenAPI fallback, which would otherwise swallow any non-OpenAPI
-  // YAML document.
-  if (/^\s*["']?asyncapi["']?\s*:\s*["']?\d/m.test(text)) {
-    return 'asyncapi';
-  }
-
-  // YAML OpenAPI (openapi:/swagger: key) or anything else falls back to OpenAPI.
+  // YAML OpenAPI (openapi:/swagger: key, already matched above) or anything
+  // else falls back to OpenAPI.
   return 'openapi';
+}
+
+// Root-level version keys, anchored to column 0 (see detectSpecType). `trimmed`
+// input keeps a leading BOM or blank line from shifting the first root key off
+// the line start.
+function yamlRootSpecType(trimmed: string): SpecType | null {
+  if (/^["']?asyncapi["']?\s*:\s*["']?\d/m.test(trimmed)) return 'asyncapi';
+  if (/^["']?openapi["']?\s*:\s*["']?\d/m.test(trimmed)) return 'openapi';
+  if (/^["']?swagger["']?\s*:\s*["']?2(?:\.|["']|\s*$)/m.test(trimmed)) return 'openapi';
+  return null;
 }
 
 // MCP server descriptions are conservative to detect (arbitrary JSON must keep

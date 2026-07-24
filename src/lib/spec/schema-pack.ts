@@ -371,8 +371,17 @@ function normalizeSchema(
       return unsupported(`${key} is a draft-07 keyword and is unsupported under JSON Schema 2020-12`);
     }
 
-    if (key === 'items' && Array.isArray(value) && ctx.version === '3.0') {
-      return unsupported('Tuple array items are unsupported in OpenAPI 3.0');
+    if (key === 'items' && Array.isArray(value)) {
+      // Neither supported dialect accepts a tuple-form `items` array: the OAS
+      // 3.0 Schema Object requires a single schema, and JSON Schema 2020-12
+      // moved tuple positions to `prefixItems`. Packing it anyway yields a
+      // schema that only fails when schemasafe compiles it, surfacing as a
+      // broken validator inside the shipped collection instead of a warning.
+      return unsupported(
+        ctx.version === '3.0'
+          ? 'Tuple array items are unsupported in OpenAPI 3.0'
+          : 'Tuple array items are unsupported in OpenAPI 3.1; JSON Schema 2020-12 expresses tuples via prefixItems'
+      );
     }
 
     // Map-valued keywords carry schema (or name-list) VALUES under free-form

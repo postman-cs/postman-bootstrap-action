@@ -1007,6 +1007,13 @@ export function readActionInputs(
     INPUT_SPEC_URL: specUrl,
     INPUT_SPEC_PATH: specPath,
     INPUT_SPEC_FILES_JSON: optionalInput(actionCore, 'spec-files-json') ?? '',
+    // The Actions runner maps only spaces (not hyphens) to underscores, so a
+    // kebab-case input arrives as INPUT_PROTOCOL-ENDPOINT-URL, which
+    // resolveInputs' underscore lookup never sees. Bridge it explicitly.
+    INPUT_PROTOCOL:
+      optionalInput(actionCore, 'protocol') ??
+      bootstrapActionContract.inputs['protocol'].default,
+    INPUT_PROTOCOL_ENDPOINT_URL: optionalInput(actionCore, 'protocol-endpoint-url'),
     INPUT_GOVERNANCE_MAPPING_JSON:
       optionalInput(actionCore, 'governance-mapping-json') ??
       bootstrapActionContract.inputs['governance-mapping-json'].default,

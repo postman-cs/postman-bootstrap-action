@@ -4094,7 +4094,7 @@ paths:
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('forwards folderStrategy, nestedFolderHierarchy, and requestNameSource into local OpenAPI link options', async () => {
+  it('forwards supported local OpenAPI options without converter-only includeWebhooks', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const ioStub = createIoStub();
@@ -4148,6 +4148,11 @@ paths:
         })
       ])
     );
+    const linked = internalIntegration.linkCollectionsToSpecification.mock.calls[0]?.[1] ?? [];
+    expect(linked).toHaveLength(3);
+    for (const entry of linked) {
+      expect(entry.options).not.toHaveProperty('includeWebhooks');
+    }
   });
 });
 

@@ -395834,7 +395834,8 @@ ${error2.responseBody ?? ""}`
         workspaceId,
         desiredName,
         rawId,
-        staleFinalIdentities
+        staleFinalIdentities,
+        desiredDescription
       );
       const rawBare = this.bareModelId(rawId);
       const electedBare = this.bareModelId(electedId);
@@ -396010,7 +396011,7 @@ ${error2.responseBody ?? ""}`
     }
     return "";
   }
-  async electImportedCollectionIdentity(workspaceId, finalName, preferredId, staleFinalIdentities) {
+  async electImportedCollectionIdentity(workspaceId, finalName, preferredId, staleFinalIdentities, desiredDescription) {
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
     const delays = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
     let eligible = [];
@@ -396026,6 +396027,13 @@ ${error2.responseBody ?? ""}`
       if (observation < delays.length) await this.sleep(delays[observation]);
     }
     if (!ownCanonical) {
+      const adoptable = await this.adoptableSameMarkerFinal(
+        eligible,
+        desiredDescription
+      );
+      if (adoptable && await this.verifyCollectionAbsentOnce(workspaceId, preferredId)) {
+        return adoptable;
+      }
       throw new Error(
         `Imported collection did not become inventory-visible with canonical identity`
       );
@@ -396087,6 +396095,30 @@ ${error2.responseBody ?? ""}`
       }
     }
     return winners;
+  }
+  /**
+   * Sole exact-name final carrying the same durable branch marker as this run's
+   * payload, or undefined. Org inventory omits root descriptions, so fall back
+   * to the v2.1 export route; an unprovable candidate is never adoptable. More
+   * than one same-marker survivor is ambiguous and never adopted here —
+   * {@link reconcileDuplicateFinalCollections} collapses those.
+   */
+  async adoptableSameMarkerFinal(eligible, desiredDescription) {
+    if (!parseAssetMarker(desiredDescription)) return void 0;
+    const matches = [];
+    for (const entry of eligible) {
+      let description = entry.description;
+      if (!description) {
+        try {
+          const exported = await this.exportCollectionAsV21(entry.id);
+          description = String(asRecord12(exported.info)?.description ?? "").trim() || void 0;
+        } catch {
+          description = void 0;
+        }
+      }
+      if (this.hasSameBranchAssetMarker(description, desiredDescription)) matches.push(entry.id);
+    }
+    return matches.length === 1 ? matches[0] : void 0;
   }
   hasSameBranchAssetMarker(candidateDescription, desiredDescription) {
     const candidate = parseAssetMarker(candidateDescription);

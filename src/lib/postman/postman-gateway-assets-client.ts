@@ -3131,7 +3131,8 @@ export class PostmanGatewayAssetsClient {
         workspaceId,
         desiredName,
         rawId,
-        staleFinalIdentities
+        staleFinalIdentities,
+        desiredDescription
       );
       const rawBare = this.bareModelId(rawId);
       const electedBare = this.bareModelId(electedId);
@@ -3350,7 +3351,8 @@ export class PostmanGatewayAssetsClient {
     workspaceId: string,
     finalName: string,
     preferredId: string,
-    staleFinalIdentities: ReadonlySet<string>
+    staleFinalIdentities: ReadonlySet<string>,
+    desiredDescription: string
   ): Promise<string> {
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
     const delays =
@@ -3375,6 +3377,21 @@ export class PostmanGatewayAssetsClient {
     }
 
     if (!ownCanonical) {
+      // Own root is absent from inventory. A peer preview run that elected the
+      // same final name deletes this run's root as the elected loser, so absence
+      // is an expected outcome of concurrency, not proof of a failed import.
+      // Adopt the sole surviving same-marker final for this exact name when the
+      // owned root is verifiably gone: that asset carries this branch's durable
+      // marker, so it is the asset this run was asked to produce. Ownership is
+      // never claimed (journal stays empty) and nothing is deleted. Anything
+      // unmarked or carrying a different marker is a stranger and still fails.
+      const adoptable = await this.adoptableSameMarkerFinal(
+        eligible,
+        desiredDescription
+      );
+      if (adoptable && (await this.verifyCollectionAbsentOnce(workspaceId, preferredId))) {
+        return adoptable;
+      }
       throw new Error(
         `Imported collection did not become inventory-visible with canonical identity`
       );
@@ -3451,6 +3468,34 @@ export class PostmanGatewayAssetsClient {
       }
     }
     return winners;
+  }
+
+  /**
+   * Sole exact-name final carrying the same durable branch marker as this run's
+   * payload, or undefined. Org inventory omits root descriptions, so fall back
+   * to the v2.1 export route; an unprovable candidate is never adoptable. More
+   * than one same-marker survivor is ambiguous and never adopted here —
+   * {@link reconcileDuplicateFinalCollections} collapses those.
+   */
+  private async adoptableSameMarkerFinal(
+    eligible: ReadonlyArray<{ id: string; name: string; description?: string }>,
+    desiredDescription: string
+  ): Promise<string | undefined> {
+    if (!parseAssetMarker(desiredDescription)) return undefined;
+    const matches: string[] = [];
+    for (const entry of eligible) {
+      let description = entry.description;
+      if (!description) {
+        try {
+          const exported = await this.exportCollectionAsV21(entry.id);
+          description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
+        } catch {
+          description = undefined;
+        }
+      }
+      if (this.hasSameBranchAssetMarker(description, desiredDescription)) matches.push(entry.id);
+    }
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   private hasSameBranchAssetMarker(

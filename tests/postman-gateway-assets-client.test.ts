@@ -6,6 +6,7 @@ import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-a
 import { __resetIdentityMemo, resolveSessionIdentity } from '../src/lib/postman/credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from '../src/lib/postman/error-advice.js';
 import { normalizeCollectionModelIdentity } from '../src/lib/postman/collection-model-identity.js';
+import { renderAssetMarker } from '../src/lib/repo/branch-decision.js';
 import {
   createDefinitionBundle,
   createDefinitionFile
@@ -4179,6 +4180,135 @@ describe('PostmanGatewayAssetsClient', () => {
       );
       expect(deleted.length).toBeGreaterThanOrEqual(1);
       expect(deleted.every((path) => path === `/v3/collections/${ownBare}`)).toBe(true);
+    });
+
+    it('adopts the sole same-marker peer final when own root vanished mid-election', async () => {
+      // Live nonorg branch-aware failure mode: a peer preview run wins election
+      // for the same final name and deletes this run's root as the elected loser.
+      // Own identity is then permanently absent from inventory, while the peer's
+      // same-marker final for the exact same name is present. Failing closed here
+      // aborts a preview whose asset is already correct in the workspace.
+      const marker = renderAssetMarker({
+        repo: 'acme/api',
+        rawBranch: 'feature/x',
+        sanitizedBranch: 'feature-x',
+        headRepoId: '42',
+        role: 'preview',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastSyncedAt: '2026-01-01T00:00:00.000Z'
+      });
+      const finalName = PREVIEW_FINAL_NAME;
+      const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+      const ownId = `300-${ownBare}`;
+      const peerId = '100-11111111-1111-1111-1111-111111111111';
+      const marked = { ...v21Collection, info: { ...v21Collection.info, description: marker } };
+      let imported = false;
+      const deleted: string[] = [];
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          return jsonResponse({ data: { id: ownId } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.includes('?workspace=')
+        ) {
+          if (!imported) return jsonResponse({ data: [] });
+          // Own root never appears: the peer election already deleted it.
+          return jsonResponse({
+            data: [{ id: peerId, name: finalName, description: marker }]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${ownBare}`
+        ) {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      const result = await client.importV2Collection('ws-1', marked, finalName);
+      // Adopt the peer's asset; never claim ownership of a root this run did not keep.
+      expect(result.collectionId).toBe(peerId);
+      expect(result.journaledRootIds).toEqual([]);
+      // Nothing is deleted: the own root is already gone and the peer is not ours.
+      expect(deleted).toEqual([]);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+    });
+
+    it('still fails closed when no same-marker peer final exists for the name', async () => {
+      // Absence of own identity with no adoptable same-marker peer stays a hard
+      // failure: an unmarked or foreign-marker exact-name collection is a
+      // stranger, never an adoption target.
+      const marker = renderAssetMarker({
+        repo: 'acme/api',
+        rawBranch: 'feature/x',
+        sanitizedBranch: 'feature-x',
+        headRepoId: '42',
+        role: 'preview',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastSyncedAt: '2026-01-01T00:00:00.000Z'
+      });
+      const otherMarker = renderAssetMarker({
+        repo: 'acme/api',
+        rawBranch: 'feature/y',
+        sanitizedBranch: 'feature-y',
+        headRepoId: '42',
+        role: 'preview',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastSyncedAt: '2026-01-01T00:00:00.000Z'
+      });
+      const finalName = PREVIEW_FINAL_NAME;
+      const ownBare = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
+      const strangerId = '100-22222222-2222-2222-2222-222222222222';
+      const marked = { ...v21Collection, info: { ...v21Collection.info, description: marker } };
+      let imported = false;
+      const sleep = vi.fn(async (delayMs: number) => {
+        void delayMs;
+      });
+      const { client } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          imported = true;
+          return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          return jsonResponse({ data: { id: ownBare } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.includes('?workspace=')
+        ) {
+          if (!imported) return jsonResponse({ data: [] });
+          return jsonResponse({
+            data: [{ id: strangerId, name: finalName, description: otherMarker }]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          return jsonResponse({ data: {} });
+        }
+        if (env.service === 'collection' && env.method === 'get') {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      await expect(client.importV2Collection('ws-1', marked, finalName)).rejects.toThrow(
+        /inventory-visible/
+      );
     });
 
     it('deleteVerifiedRunOwnedCollections re-issues DELETE until inventory omits identity', async () => {

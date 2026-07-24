@@ -411,9 +411,18 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '  }',
     '  var retryAfter = respHeader("Retry-After");',
     '  if (retryAfter && (code === 429 || code === 503 || (code >= 300 && code < 400))) {',
-    '    if (!/^\\d+$/.test(retryAfter.trim()) && isNaN(Date.parse(retryAfter))) pm.expect.fail("Retry-After must be delay-seconds or an HTTP-date (RFC 9110 10.2.3): " + retryAfter);',
-    '    var retryDate = Date.parse(retryAfter); var responseDate = Date.parse(respHeader("Date"));',
-    '    if (!isNaN(retryDate) && !isNaN(responseDate) && retryDate < responseDate) pm.expect.fail("Retry-After HTTP-date must not be earlier than Date (RFC 9110 10.2.3 and 6.6.1): " + retryAfter + " < " + respHeader("Date"));',
+    "    // RFC 9110 10.2.3 defines Retry-After as HTTP-date / delay-seconds, and",
+    "    // delay-seconds is 1*DIGIT. Date.parse coerces a bare integer into a year",
+    "    // (Date.parse(\"120\") is year 0120, Date.parse(\"600\") is year 0600), so",
+    "    // comparing a delay-seconds value against Date made every ordinary",
+    "    // rate-limit/maintenance response fail. Only the HTTP-date form is ordered",
+    "    // against Date; delay-seconds is a relative offset and has no such ordering.",
+    "    var retryAfterIsDelaySeconds = /^[0-9]+$/.test(retryAfter.trim());",
+    "    if (!retryAfterIsDelaySeconds && isNaN(Date.parse(retryAfter))) pm.expect.fail(\"Retry-After must be delay-seconds or an HTTP-date (RFC 9110 10.2.3): \" + retryAfter);",
+    "    if (!retryAfterIsDelaySeconds) {",
+    "      var retryDate = Date.parse(retryAfter); var responseDate = Date.parse(respHeader(\"Date\"));",
+    "      if (!isNaN(retryDate) && !isNaN(responseDate) && retryDate < responseDate) pm.expect.fail(\"Retry-After HTTP-date must not be earlier than Date (RFC 9110 10.2.3 and 6.6.1): \" + retryAfter + \" < \" + respHeader(\"Date\"));",
+    "    }",
     '  }',
     '  var location = respHeader("Location");',
     '  if (location && (code === 201 || (code >= 300 && code < 400))) {',
@@ -1336,7 +1345,16 @@ export function createContractScript(operation: ContractOperation, warnings: str
       '      var hv = requestHeader(param.name);',
       '      if (!hv || isPh(hv)) return;',
       '      if (/%[0-9A-Fa-f]{2}/.test(hv)) pm.expect.fail("OpenAPI header parameter " + param.name + " uses simple serialization, so values must not be URI percent-encoded: " + hv);',
-      '      if (/^".*"$/.test(hv.trim())) pm.expect.fail("OpenAPI header parameter " + param.name + " uses simple serialization, so the serialized value must not be wrapped in quotes: " + hv);',
+      // RFC 9110 defines several standard request headers whose field value is
+      // ITSELF a quoted construct: entity-tags (If-Match / If-None-Match /
+      // If-Range, RFC 9110 8.8.3) are quoted tags or W/ quoted tags, and the same
+      // script separately FAILS these headers when they are not quoted entity-tags.
+      // A blanket no-surrounding-quotes simple-serialization rule therefore made a
+      // correctly quoted ETag precondition unsatisfiable in both directions. OAS
+      // simple style adds no quoting of its own, so the check now targets
+      // generator-added quoting and skips headers whose grammar owns the quotes.
+      '      var quotedGrammarHeader = ["if-match", "if-none-match", "if-range"].indexOf(String(param.name).toLowerCase()) !== -1;',
+      '      if (!quotedGrammarHeader && /^".*"$/.test(hv.trim())) pm.expect.fail("OpenAPI header parameter " + param.name + " uses simple serialization, so the serialized value must not be wrapped in quotes: " + hv);',
       '      return;',
       '    }',
       '    if (param.in === "path") {',

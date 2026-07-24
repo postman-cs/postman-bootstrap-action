@@ -2192,6 +2192,54 @@ paths:
     expect(run(['pets', '<integer>'])).toBe('pass');
   });
 
+  it('exempts entity-tag request headers from the simple-serialization no-quotes rule', async () => {
+    const { createContext, runInContext } = await import('node:vm');
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1 }
+paths:
+  /pets:
+    get:
+      parameters:
+        - { name: If-None-Match, in: header, schema: { type: string } }
+        - { name: If-Match, in: header, schema: { type: string } }
+        - { name: If-Range, in: header, schema: { type: string } }
+        - { name: X-Tenant, in: header, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+`);
+    const script = createContractScript(index.operations[0]!).join('\n');
+    const run = (headers: Record<string, string>) => {
+      const results: Record<string, string> = {};
+      const permissive: unknown = new Proxy(function () {}, {
+        get: (_target, property) => (property === 'fail' ? (message: string) => { throw new Error(message); } : permissive),
+        apply: () => permissive
+      });
+      const headerEntries = Object.entries(headers).map(([key, value]) => ({ key, value }));
+      const pm = {
+        test: (name: string, callback: () => void) => {
+          try { callback(); results[name] = 'pass'; } catch { results[name] = 'fail'; }
+        },
+        expect: permissive,
+        response: { code: 200, headers: { get: () => null }, text: () => '', json: () => ({}) },
+        request: {
+          headers: { each: (callback: (header: { key: string; value: string }) => void) => headerEntries.forEach(callback) },
+          url: { query: { each: () => undefined }, path: ['pets'], getPath: () => '/pets' }
+        }
+      };
+      runInContext(script, createContext({ pm }));
+      return results['Request parameters use the OpenAPI-declared wire serialization'];
+    };
+    // RFC 9110 8.8.3 entity-tags own their quotes, and the emitted precondition
+    // test separately fails these headers when they are not quoted entity-tags.
+    // A blanket no-quotes rule made a correct ETag precondition unsatisfiable.
+    expect(run({ 'If-None-Match': '"v1"' })).toBe('pass');
+    expect(run({ 'If-Match': 'W/"v1"' })).toBe('pass');
+    expect(run({ 'If-Range': '"v1"' })).toBe('pass');
+    // Generator-added quoting on an ordinary simple-style header still fails.
+    expect(run({ 'X-Tenant': '"acme"' })).toBe('fail');
+    expect(run({ 'X-Tenant': 'acme' })).toBe('pass');
+  });
+
   it('asserts required cookie parameters and validates their values at runtime', async () => {
     const { createContext, runInContext } = await import('node:vm');
     const index = indexFrom(`openapi: 3.1.0

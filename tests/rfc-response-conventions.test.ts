@@ -170,9 +170,20 @@ describe('RFC 9110 status-code requirement assertions', () => {
   });
 
   it('Retry-After must be delay-seconds or an HTTP-date', () => {
+    const date = 'Wed, 21 Oct 2026 07:28:00 GMT';
     expect(runScript(script, { code: 503, headers: { 'Retry-After': 'soon' } })[RFC9110]).toBe('fail');
     expect(runScript(script, { code: 503, headers: { 'Retry-After': '120' } })[RFC9110]).toBe('pass');
     expect(runScript(script, { code: 429, headers: { 'Retry-After': 'Wed, 21 Oct 2026 07:28:00 GMT' } })[RFC9110]).toBe('pass');
+    // delay-seconds (RFC 9110 10.2.3) is a relative offset, so it is never
+    // ordered against Date. Date.parse coerces a bare integer into a year
+    // (Date.parse('120') is year 0120), which made every ordinary rate-limit
+    // and maintenance response fail once the server also sent Date.
+    for (const delay of ['1', '30', '60', '120', '600', '3600', '86400']) {
+      expect(runScript(script, { code: 429, headers: { Date: date, 'Retry-After': delay } })[RFC9110]).toBe('pass');
+      expect(runScript(script, { code: 503, headers: { Date: date, 'Retry-After': delay } })[RFC9110]).toBe('pass');
+    }
+    // The HTTP-date form keeps its ordering teeth.
+    expect(runScript(script, { code: 503, headers: { Date: date, 'Retry-After': 'Wed, 21 Oct 2025 07:28:00 GMT' } })[RFC9110]).toBe('fail');
   });
 
   it('Location on 201/3xx must be a plausible URI-reference', () => {

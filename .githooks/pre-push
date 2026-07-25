@@ -1,5 +1,30 @@
 #!/bin/sh
-if git diff HEAD --name-only | grep -Eq '^(src/|package\.json|package-lock\.json|tsconfig)'; then
+# Release tags are cut by .github/workflows/auto-release.yml, never by hand.
+#
+# A hand-pushed tag creates an immutable public identifier before any gate has
+# run against it, which is how v2.10.26 was burned: the tag existed, then
+# verification failed, and the version number could never be reused. Reject
+# immutable release tags here so the only path to a tag is a passing CI cut.
+#
+# The rolling major alias (v2) is exempt: release.yml advances it from CI after
+# a successful publish, and that push is a legitimate force-update.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "$remote_ref" ] && continue
+  case "$remote_ref" in
+    refs/tags/v[0-9]*.[0-9]*)
+      if [ "${AUTO_RELEASE_CUT:-}" != "1" ]; then
+        echo "refusing to push immutable release tag ${remote_ref#refs/tags/} by hand." >&2
+        echo "Releases cut automatically from main: merge, and auto-release.yml tags only after gates pass." >&2
+        echo "Inspect the pending cut with 'node scripts/release-cut.mjs --plan'." >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+# dist/ embeds validation/evidence/multifile-spec-sync.json via
+# src/lib/postman/spec-file-reconcile.ts, so a receipt edit is a dist edit.
+if git diff HEAD --name-only | grep -Eq '^(src/|validation/evidence/|package\.json|package-lock\.json|tsconfig)'; then
   npm run verify:dist || {
     echo "dist is stale. Run 'npm run build' and stage dist/ before pushing." >&2
     exit 1

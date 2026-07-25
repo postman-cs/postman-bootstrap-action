@@ -1,0 +1,92 @@
+name: Auto Release
+
+# Cuts releases automatically from main.
+#
+# The tag is an OUTPUT of a passing run, never an input to one. release.yml
+# still triggers on `push: tags`, but nothing hand-pushes those tags any more:
+# this workflow creates a tag only after the exact bytes of the release commit
+# pass the full gate set. A failed cut therefore leaves no tag and burns no
+# version number, and the next merge to main retries the cut on a fresh one.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One cut at a time. Never cancel a cut in flight: it holds an unpushed tag.
+concurrency:
+  group: auto-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history and tags: the version selector reads every tag ever
+          # cut so it can skip burnt versions instead of reusing them.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Install Postman CLI
+        run: curl -o- "https://dl-cli.pstmn.io/install/unix.sh" | sh
+      - run: postman --version
+
+      - name: Plan release
+        id: plan
+        run: |
+          set -euo pipefail
+          node scripts/release-cut.mjs --plan | tee plan.json
+          {
+            echo "release=$(node -p "require('./plan.json').release === true")"
+            echo "version=$(node -p "require('./plan.json').version || ''")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Cut release
+        if: steps.plan.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          node scripts/release-cut.mjs --execute
+
+      - name: Push release commit and tag
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Atomic: the commit and its tag land together or neither does, so
+          # main can never carry a release commit whose tag is missing.
+          git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "refs/tags/v${VERSION}"
+
+      - name: Start release workflow for the new tag
+        if: steps.plan.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Pushes authenticated with GITHUB_TOKEN do not trigger workflows, so
+          # release.yml is started explicitly against the new tag ref.
+          gh workflow run release.yml --ref "v${VERSION}"
+
+      - name: Report skipped cut
+        if: steps.plan.outputs.release != 'true'
+        run: |
+          set -euo pipefail
+          echo "::notice::No release cut. $(node -p "require('./plan.json').reason || 'no plan reason'")"

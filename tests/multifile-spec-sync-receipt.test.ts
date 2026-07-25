@@ -516,6 +516,26 @@ describe('multifile-spec-sync receipt contract', () => {
     );
   });
 
+  it('exempts release plumbing without exempting its directories', () => {
+    // Release tooling cuts and gates releases. It never runs inside the action
+    // and is not bundled into dist, so it cannot invalidate live evidence.
+    expect(isReleaseOnlyDriftPath('.github/workflows/auto-release.yml')).toBe(true);
+    expect(isReleaseOnlyDriftPath('scripts/release-cut.mjs')).toBe(true);
+    expect(isReleaseOnlyDriftPath('tests/auto-release.test.ts')).toBe(true);
+    expect(isReleaseOnlyDriftPath('.githooks/pre-push')).toBe(true);
+
+    // The exemption is per-file, never per-directory: production seams living
+    // beside the release tooling must still invalidate the receipt.
+    expect(isReleaseOnlyDriftPath('scripts/probe-multifile-spec-sync.mjs')).toBe(false);
+    expect(isReleaseOnlyDriftPath('.github/workflows/release.yml')).toBe(false);
+    expect(isReleaseOnlyDriftPath('src/index.ts')).toBe(false);
+    expect(isReleaseOnlyDriftPath('action.yml')).toBe(false);
+    expect(() => assertReleaseOnlySourceDrift(['scripts/release-cut.mjs'])).not.toThrow();
+    expect(() => assertReleaseOnlySourceDrift(['scripts/build-sea.sh'])).toThrow(
+      /behavior-bearing|stale/i
+    );
+  });
+
   it('allows ancestor receipt commit only for release-only path drift', () => {
     const receipt = completeReceipt({
       commit: 'b'.repeat(40),

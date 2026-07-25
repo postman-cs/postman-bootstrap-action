@@ -413,6 +413,17 @@ export function isReleaseOnlyDriftPath(relPath) {
   if (p.startsWith('validation/evidence/')) return true;
   if (p.startsWith('dist/')) return true;
   if (p === '.github/workflows/ci.yml' || p === 'tests/ci-workflow.test.ts') return true;
+  // Release plumbing: cuts and gates releases, never runs inside the action,
+  // and is not bundled into dist. Listed as exact paths so the surrounding
+  // directories (scripts/, tests/, .github/workflows/) stay behavior-bearing.
+  if (
+    p === '.github/workflows/auto-release.yml' ||
+    p === 'scripts/release-cut.mjs' ||
+    p === 'tests/auto-release.test.ts' ||
+    p === '.githooks/pre-push'
+  ) {
+    return true;
+  }
   // Release/docs metadata (markdown only).
   if (p.startsWith('docs/') && /\.md$/i.test(p)) return true;
   return false;

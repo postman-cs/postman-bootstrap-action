@@ -391712,7 +391712,7 @@ var multifile_spec_sync_default = {
     openapiGeneration: true,
     protobufGeneration: false
   },
-  bootstrapCommit: "f9cbc8a6cd7deabd5a8aeedb9739a72436f80140"
+  bootstrapCommit: "266f4be96dbf888210ddd8bbe6276d0af64d2925"
 };
 
 // src/lib/postman/spec-file-reconcile.ts

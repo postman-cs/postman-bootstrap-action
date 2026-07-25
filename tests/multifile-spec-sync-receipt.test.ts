@@ -523,6 +523,8 @@ describe('multifile-spec-sync receipt contract', () => {
     expect(isReleaseOnlyDriftPath('scripts/release-cut.mjs')).toBe(true);
     expect(isReleaseOnlyDriftPath('tests/auto-release.test.ts')).toBe(true);
     expect(isReleaseOnlyDriftPath('.githooks/pre-push')).toBe(true);
+    // Release policy prose documents the cut; it ships in no bundle.
+    expect(isReleaseOnlyDriftPath('RELEASE_POLICY.md')).toBe(true);
 
     // The exemption is per-file, never per-directory: production seams living
     // beside the release tooling must still invalidate the receipt.

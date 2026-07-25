@@ -186,6 +186,28 @@ describe('auto-release workflow', () => {
     expect(autoReleaseWorkflow).not.toContain('HEAD:${GITHUB_REF_NAME}');
   });
 
+  it('carries the normalized receipt back to the branch it cut from', () => {
+    // The cut normalizes the receipt onto the release commit, which is only
+    // reachable from the tag. Without this step the branch keeps the older
+    // binding and its own receipt contract test stays red until an unrelated
+    // pull request happens to normalize it.
+    const push = autoReleaseWorkflow.indexOf('name: Push release tag');
+    const backport = autoReleaseWorkflow.indexOf('name: Open receipt normalization pull request');
+    expect(backport).toBeGreaterThan(push);
+    expect(autoReleaseWorkflow).toContain('gh pr create');
+    expect(autoReleaseWorkflow).toContain('--base "${GITHUB_REF_NAME}"');
+  });
+
+  it('grants the cut the write scope its backport pull request needs', () => {
+    expect(autoReleaseWorkflow).toContain('pull-requests: write');
+  });
+
+  it('skips the backport when the receipt already matches the branch', () => {
+    expect(autoReleaseWorkflow).toContain(
+      'git diff --quiet "origin/${GITHUB_REF_NAME}" -- validation/evidence/multifile-spec-sync.json'
+    );
+  });
+
   it('never cancels a cut in flight', () => {
     expect(autoReleaseWorkflow).toContain('cancel-in-progress: false');
   });

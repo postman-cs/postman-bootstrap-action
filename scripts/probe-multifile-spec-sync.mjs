@@ -425,6 +425,7 @@ export function isReleaseOnlyDriftPath(relPath) {
     return true;
   }
   // Release/docs metadata (markdown only).
+  if (p === 'RELEASE_POLICY.md') return true;
   if (p.startsWith('docs/') && /\.md$/i.test(p)) return true;
   return false;
 }

@@ -12,7 +12,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ -z "$remote_ref" ] && continue
   case "$remote_ref" in
     refs/tags/v[0-9]*.[0-9]*)
-      if [ "${AUTO_RELEASE_CUT:-}" != "1" ]; then
+      # GITHUB_ACTIONS is set by the runner itself, not by a developer
+      # shell, so the automated cut passes while a human push cannot.
+      if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
         echo "refusing to push immutable release tag ${remote_ref#refs/tags/} by hand." >&2
         echo "Releases cut automatically from main: merge, and auto-release.yml tags only after gates pass." >&2
         echo "Inspect the pending cut with 'node scripts/release-cut.mjs --plan'." >&2

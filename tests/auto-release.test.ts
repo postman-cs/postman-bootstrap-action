@@ -150,4 +150,11 @@ describe('auto-release workflow', () => {
   it('never cancels a cut in flight', () => {
     expect(autoReleaseWorkflow).toContain('cancel-in-progress: false');
   });
+
+  it('writes its plan outside the worktree so the cut sees a clean tree', () => {
+    // A plan artifact inside the repo trips the clean-tree guard and blocks
+    // every release.
+    expect(autoReleaseWorkflow).not.toMatch(/tee plan\.json/);
+    expect(autoReleaseWorkflow).toContain('PLAN_FILE: ${{ runner.temp }}/plan.json');
+  });
 });

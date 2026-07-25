@@ -48,12 +48,16 @@ jobs:
 
       - name: Plan release
         id: plan
+        env:
+          PLAN_FILE: ${{ runner.temp }}/plan.json
         run: |
           set -euo pipefail
-          node scripts/release-cut.mjs --plan | tee plan.json
+          # Write the plan outside the worktree: the cut refuses to run from a
+          # dirty tree, so a stray artifact here would block every release.
+          node scripts/release-cut.mjs --plan | tee "$PLAN_FILE"
           {
-            echo "release=$(node -p "require('./plan.json').release === true")"
-            echo "version=$(node -p "require('./plan.json').version || ''")"
+            echo "release=$(node -p "require(process.env.PLAN_FILE).release === true")"
+            echo "version=$(node -p "require(process.env.PLAN_FILE).version || ''")"
           } >> "$GITHUB_OUTPUT"
 
       - name: Cut release
@@ -87,6 +91,8 @@ jobs:
 
       - name: Report skipped cut
         if: steps.plan.outputs.release != 'true'
+        env:
+          PLAN_FILE: ${{ runner.temp }}/plan.json
         run: |
           set -euo pipefail
-          echo "::notice::No release cut. $(node -p "require('./plan.json').reason || 'no plan reason'")"
+          echo "::notice::No release cut. $(node -p "require(process.env.PLAN_FILE).reason || 'no plan reason'")"

@@ -634,5 +634,6 @@
     "rootPathChange": false,
     "openapiGeneration": true,
     "protobufGeneration": false
-  }
+  },
+  "bootstrapCommit": "5ba6eced59addfc99b44a00709a20b76210de671"
 }

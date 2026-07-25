@@ -392236,8 +392236,7 @@ function parseAssetMarker(description) {
 // validation/evidence/multifile-spec-sync.json
 var multifile_spec_sync_default = {
   schemaVersion: 1,
-  testedAt: "2026-07-24T21:36:26.083Z",
-  bootstrapCommit: "23fb4a0f6f1e4ab273c344a02f6d6ff42836bd21",
+  testedAt: "2026-07-25T02:29:44.501Z",
   legs: [
     {
       mode: "nonorg",
@@ -392871,7 +392870,8 @@ var multifile_spec_sync_default = {
     rootPathChange: false,
     openapiGeneration: true,
     protobufGeneration: false
-  }
+  },
+  bootstrapCommit: "5ba6eced59addfc99b44a00709a20b76210de671"
 };
 
 // src/lib/postman/spec-file-reconcile.ts

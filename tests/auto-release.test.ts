@@ -115,11 +115,18 @@ describe('release-cut ordering contract', () => {
     expect(releaseCutSource).toContain("git(['rev-parse', 'HEAD'])");
   });
 
-  it('rebuilds dist and asserts it matches before tagging', () => {
+  it('rebuilds dist before committing and verifies committed dist before tagging', () => {
+    // verify:dist:assert diffs against committed dist, so it only means
+    // anything after the release commit exists.
     expect(releaseCutSource).toContain("run('npm', ['run', 'bundle'])");
-    expect(releaseCutSource).toContain("run('npm', ['run', 'verify:dist:assert'])");
-    const distAssert = releaseCutSource.lastIndexOf('assertDistMatchesSource();');
-    expect(distAssert).toBeLessThan(releaseCutSource.indexOf("'tag', '-a'"));
+    const rebuild = releaseCutSource.indexOf('rebuildDist();');
+    const commit = releaseCutSource.indexOf("'commit', '-m'");
+    const assertDist = releaseCutSource.indexOf('assertCommittedDistMatchesSource();');
+    const tag = releaseCutSource.indexOf("'tag', '-a'");
+    expect(rebuild).toBeGreaterThan(-1);
+    expect(rebuild).toBeLessThan(commit);
+    expect(commit).toBeLessThan(assertDist);
+    expect(assertDist).toBeLessThan(tag);
   });
 });
 

@@ -199,13 +199,23 @@ export function normalizeReceipt({ headCommit }) {
 }
 
 /**
- * Rebuild dist and prove the committed bundle matches the rebuilt bytes. The
- * receipt is imported by src/lib/postman/spec-file-reconcile.ts, so a receipt
- * edit that skips the rebuild shows up here as dist drift.
+ * Rebuild dist from source. The receipt is imported by
+ * src/lib/postman/spec-file-reconcile.ts, so normalizing the receipt changes
+ * dist; the rebuild is what keeps the bundle and the receipt in step.
  */
-export function assertDistMatchesSource() {
+export function rebuildDist() {
   run('npm', ['run', 'bundle']);
-  run('npm', ['run', 'verify:dist:assert']);
+}
+
+/**
+ * Prove the committed dist matches a fresh rebuild.
+ *
+ * verify:dist:assert diffs the working tree against committed dist, so it is
+ * only meaningful AFTER the release commit exists. Running it before the
+ * commit would flag the intended version and receipt updates as drift.
+ */
+export function assertCommittedDistMatchesSource() {
+  run('npm', ['run', 'verify:dist']);
 }
 
 function assertCleanTree() {
@@ -285,7 +295,7 @@ function executeRelease(plan) {
   assertReceiptIntegrity({ headCommit: sourceCommit });
 
   writeVersion(plan.version);
-  assertDistMatchesSource();
+  rebuildDist();
 
   run('npm', ['run', 'typecheck']);
   run('npm', ['run', 'lint']);
@@ -309,7 +319,7 @@ function executeRelease(plan) {
   // ran against the working tree; this runs against the committed release.
   const releaseCommit = git(['rev-parse', 'HEAD']);
   assertReceiptIntegrity({ headCommit: releaseCommit });
-  assertDistMatchesSource();
+  assertCommittedDistMatchesSource();
 
   const committedVersion = JSON.parse(
     git(['show', `${releaseCommit}:package.json`])

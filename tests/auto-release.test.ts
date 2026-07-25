@@ -123,6 +123,35 @@ describe('release-cut ordering contract', () => {
   });
 });
 
+describe('receipt auto-heal on the release path', () => {
+  const planRebind = releaseCut as unknown as {
+    normalizeReceipt: unknown;
+  };
+
+  it('normalizes a stale receipt instead of stalling the release train', () => {
+    // ci.yml only normalizes on pull requests. Without this the release path
+    // would deadlock on any commit that reached main another way.
+    expect(typeof planRebind.normalizeReceipt).toBe('function');
+    expect(releaseCutSource).toContain('planMultifileReceiptRebind');
+  });
+
+  it('normalizes before it asserts, and asserts before it tags', () => {
+    const normalize = releaseCutSource.indexOf('normalizeReceipt({ headCommit: sourceCommit })');
+    const assertSource = releaseCutSource.indexOf('assertReceiptIntegrity({ headCommit: sourceCommit })');
+    const tag = releaseCutSource.indexOf("'tag', '-a'");
+    expect(normalize).toBeGreaterThan(-1);
+    expect(normalize).toBeLessThan(assertSource);
+    expect(assertSource).toBeLessThan(tag);
+  });
+
+  it('reuses the audited planner rather than writing the receipt freehand', () => {
+    // The planner requires ancestry and refuses to alter live evidence, so
+    // the auto-heal can only restate which revision the evidence covers.
+    expect(releaseCutSource).toContain("import { planMultifileReceiptRebind }");
+    expect(releaseCutSource).not.toMatch(/bootstrapCommit:\s*headCommit/);
+  });
+});
+
 describe('auto-release workflow', () => {
   it('cuts from main pushes instead of hand-pushed tags', () => {
     expect(autoReleaseWorkflow).toContain('branches: [main]');

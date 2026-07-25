@@ -28,6 +28,7 @@ import {
   assertMultifileSpecSyncReceiptSourceBinding,
   validateMultifileSpecSyncReceipt
 } from './probe-multifile-spec-sync.mjs';
+import { planMultifileReceiptRebind } from '../.github/scripts/rebind-multifile-receipt.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -158,6 +159,46 @@ export function assertReceiptIntegrity({ headCommit }) {
 }
 
 /**
+ * Rebind the receipt onto `headCommit` when behavior-bearing source moved
+ * under it.
+ *
+ * ci.yml normalizes the receipt on every pull request, but a commit that
+ * reaches main any other way never gets that pass and would leave the release
+ * train permanently stuck on a stale receipt. This applies the identical
+ * planner so the release path is self-sufficient however a commit arrived.
+ *
+ * The planner fails closed: it requires ancestry and refuses any rebind that
+ * would alter a live evidence field, so this can only restate which source
+ * revision the unchanged evidence covers.
+ *
+ * @param {{headCommit: string}} options
+ * @returns {boolean} whether the receipt was rewritten
+ */
+export function normalizeReceipt({ headCommit }) {
+  const receipt = JSON.parse(readFileSync(RECEIPT_PATH, 'utf8'));
+  const plan = planMultifileReceiptRebind(receipt, {
+    headCommit,
+    isAncestor: (ancestor, descendant) => {
+      try {
+        execFileSync('git', ['merge-base', '--is-ancestor', ancestor, descendant], {
+          cwd: REPO_ROOT,
+          stdio: 'ignore'
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    changedPaths: git(['diff', '--name-only', `${receipt.bootstrapCommit}..${headCommit}`])
+      .split('\n')
+      .filter(Boolean)
+  });
+  if (!plan.updated) return false;
+  writeFileSync(RECEIPT_PATH, `${JSON.stringify(plan.receipt, null, 2)}\n`);
+  return true;
+}
+
+/**
  * Rebuild dist and prove the committed bundle matches the rebuilt bytes. The
  * receipt is imported by src/lib/postman/spec-file-reconcile.ts, so a receipt
  * edit that skips the rebuild shows up here as dist drift.
@@ -240,6 +281,7 @@ function executeRelease(plan) {
   // package-lock.json, dist/, validation/evidence/), so this binding stays
   // valid across the commit that follows.
   const sourceCommit = git(['rev-parse', 'HEAD']);
+  normalizeReceipt({ headCommit: sourceCommit });
   assertReceiptIntegrity({ headCommit: sourceCommit });
 
   writeVersion(plan.version);

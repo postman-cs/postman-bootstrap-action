@@ -27,6 +27,9 @@ jobs:
     permissions:
       contents: write
       actions: write
+      # The cut opens a pull request to carry the normalized receipt back to
+      # main, which pushes cannot reach directly.
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -80,6 +83,29 @@ jobs:
           # reads from the tagged commit. main keeps advancing through PRs and
           # the next cut branches from wherever it then points.
           git push origin "refs/tags/v${VERSION}"
+
+      - name: Open receipt normalization pull request
+        if: steps.plan.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The cut normalizes the receipt onto the release commit, which is
+          # reachable only from the tag. main keeps the older binding, so its
+          # own receipt contract test stays red until the normalized receipt
+          # comes back. main requires pull requests, so open one.
+          if git diff --quiet "origin/${GITHUB_REF_NAME}" -- validation/evidence/multifile-spec-sync.json; then
+            echo "::notice::Receipt already matches ${GITHUB_REF_NAME}; no normalization PR needed."
+            exit 0
+          fi
+          BRANCH="chore/normalize-receipt-v${VERSION}"
+          git push origin "HEAD:refs/heads/${BRANCH}"
+          gh pr create \
+            --base "${GITHUB_REF_NAME}" \
+            --head "${BRANCH}" \
+            --title "chore: normalize multifile receipt after v${VERSION}" \
+            --body "Carries the receipt binding and rebuilt \`dist/\` from the v${VERSION} cut back onto ${GITHUB_REF_NAME}, where the receipt contract test reads them. Opened automatically by auto-release.yml."
 
       - name: Start release workflow for the new tag
         if: steps.plan.outputs.release == 'true'

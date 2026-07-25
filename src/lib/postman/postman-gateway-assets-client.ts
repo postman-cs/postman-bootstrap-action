@@ -3146,6 +3146,16 @@ export class PostmanGatewayAssetsClient {
         // True peer won: our journaled root was deleted during election.
         const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
         if (idx >= 0) journaledRootIds.splice(idx, 1);
+        // The surviving peer was produced by an earlier or concurrent run, so
+        // its content is that run's payload, not this one's. Converge the
+        // survivor in place (UID preserved) so downstream gates never execute
+        // stale bytes. Failing here fails the import: returning an unverified
+        // stale survivor would ship wrong bytes into the contract gate.
+        await this.deepUpdateV2Collection(
+          electedId,
+          prepared,
+          computePayloadDigest(prepared)
+        );
       }
       return {
         collectionId: electedId,

@@ -4066,6 +4066,7 @@ describe('PostmanGatewayAssetsClient', () => {
       let imported = false;
       let electionObs = 0;
       const deleted: string[] = [];
+      const deepUpdates: Array<{ path: string; body: unknown }> = [];
       const sleep = vi.fn(async (delayMs: number) => {
         void delayMs;
       });
@@ -4073,6 +4074,10 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'sync' && env.path === '/collection/import') {
           imported = true;
           return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'sync' && env.method === 'put' && env.path.startsWith('/collection/deepupdate/')) {
+          deepUpdates.push({ path: env.path, body: env.body });
+          return jsonResponse({ data: { ok: true } });
         }
         if (env.service === 'collection' && env.method === 'patch') {
           return jsonResponse({ data: { id: ownId } });
@@ -4115,6 +4120,14 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(result.journaledRootIds).toEqual([]);
       expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      // The elected peer survives from an earlier run, so its content is that
+      // run's payload. The import must converge the survivor to THIS run's
+      // payload or downstream gates execute stale bytes.
+      expect(deepUpdates).toHaveLength(1);
+      expect(deepUpdates[0]?.path).toBe('/collection/deepupdate/11111111-1111-1111-1111-111111111111');
+      const deepBody = deepUpdates[0]?.body as { info?: { name?: string; _postman_id?: string } };
+      expect(deepBody.info?.name).toBe('Payments');
+      expect(deepBody.info?._postman_id).toBe('11111111-1111-1111-1111-111111111111');
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
       ]);
@@ -4204,6 +4217,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const marked = { ...v21Collection, info: { ...v21Collection.info, description: marker } };
       let imported = false;
       const deleted: string[] = [];
+      const adoptDeepUpdates: Array<{ path: string; body: unknown }> = [];
       const sleep = vi.fn(async (delayMs: number) => {
         void delayMs;
       });
@@ -4211,6 +4225,10 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'sync' && env.path === '/collection/import') {
           imported = true;
           return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'sync' && env.method === 'put' && env.path.startsWith('/collection/deepupdate/')) {
+          adoptDeepUpdates.push({ path: env.path, body: env.body });
+          return jsonResponse({ data: { ok: true } });
         }
         if (env.service === 'collection' && env.method === 'patch') {
           return jsonResponse({ data: { id: ownId } });
@@ -4246,6 +4264,9 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(result.journaledRootIds).toEqual([]);
       // Nothing is deleted: the own root is already gone and the peer is not ours.
       expect(deleted).toEqual([]);
+      // Adopted survivor content must converge to this run's payload.
+      expect(adoptDeepUpdates).toHaveLength(1);
+      expect(adoptDeepUpdates[0]?.path).toBe('/collection/deepupdate/11111111-1111-1111-1111-111111111111');
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
     });
 
@@ -4279,6 +4300,9 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'sync' && env.path === '/collection/import') {
           imported = true;
           return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'sync' && env.method === 'put' && env.path.startsWith('/collection/deepupdate/')) {
+          return jsonResponse({ data: { ok: true } });
         }
         if (env.service === 'collection' && env.method === 'patch') {
           return jsonResponse({ data: { id: `300-${ownBare}` } });
@@ -4448,6 +4472,9 @@ describe('PostmanGatewayAssetsClient', () => {
           imported = true;
           return jsonResponse({ model_id: ownBare });
         }
+        if (env.service === 'sync' && env.method === 'put' && env.path.startsWith('/collection/deepupdate/')) {
+          return jsonResponse({ data: { ok: true } });
+        }
         if (env.service === 'collection' && env.method === 'patch') {
           return jsonResponse({ data: { id: ownId } });
         }
@@ -4540,6 +4567,9 @@ describe('PostmanGatewayAssetsClient', () => {
           imported = true;
           return jsonResponse({ model_id: ownBare });
         }
+        if (env.service === 'sync' && env.method === 'put' && env.path.startsWith('/collection/deepupdate/')) {
+          return jsonResponse({ data: { ok: true } });
+        }
         if (env.service === 'collection' && env.method === 'patch') {
           return jsonResponse({ data: { id: ownId } });
         }
@@ -4602,6 +4632,9 @@ describe('PostmanGatewayAssetsClient', () => {
         const bRenamed = new Promise<void>((resolve) => { releaseB = resolve; });
 
         const handler = (env: Envelope): Response => {
+          if (env.service === 'sync' && env.method === 'put' && String(env.path).startsWith('/collection/deepupdate/')) {
+            return jsonResponse({ data: { ok: true } });
+          }
           if (env.service === 'sync' && env.path === '/collection/import') {
             const body = env.body as { info?: { name?: string; description?: string } };
             const runner = String(body.info?.name).includes('runner-a') ? 'a' : 'b';
@@ -4898,6 +4931,9 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'sync' && env.path === '/collection/import') {
           imported = true;
           return jsonResponse({ model_id: ownBare });
+        }
+        if (env.service === 'sync' && env.method === 'put' && env.path.startsWith('/collection/deepupdate/')) {
+          return jsonResponse({ data: { ok: true } });
         }
         if (env.service === 'collection' && env.method === 'patch') return jsonResponse({ data: {} });
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {

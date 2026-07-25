@@ -392261,7 +392261,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-24T21:36:26.083Z",
-  bootstrapCommit: "64d06f4e3c581fe3ed3d3fd44ac3f81a40c56408",
+  bootstrapCommit: "23fb4a0f6f1e4ab273c344a02f6d6ff42836bd21",
   legs: [
     {
       mode: "nonorg",
@@ -395870,6 +395870,11 @@ ${error2.responseBody ?? ""}`
       } else {
         const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
         if (idx >= 0) journaledRootIds.splice(idx, 1);
+        await this.deepUpdateV2Collection(
+          electedId,
+          prepared,
+          computePayloadDigest(prepared)
+        );
       }
       return {
         collectionId: electedId,
@@ -429558,6 +429563,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                 const winnerId = winners[finalName];
                 if (!winnerId) continue;
                 if (result.collectionId !== winnerId) {
+                  await observedLocalOpenApiPostman.deepUpdateV2Collection(
+                    winnerId,
+                    payloads.roles[role.role].collection,
+                    payloads.roles[role.role].payloadDigest
+                  );
                   for (const id of result.journaledRootIds) {
                     const idx = ownedLedger.indexOf(id);
                     if (idx >= 0) ownedLedger.splice(idx, 1);

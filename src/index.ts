@@ -3270,6 +3270,15 @@ async function runBootstrapInner(
                 // Peer kept a lower UID; rebind outputs to the reconciled winner
                 // and drop journal ownership of the deleted local root (do not
                 // claim the peer-owned winner).
+                // The winner survives from an earlier or concurrent run, so its
+                // content is that run's payload. Converge it in place (UID
+                // preserved, digest-verified) so downstream gates never execute
+                // stale bytes; failure fails the reconcile closed.
+                await observedLocalOpenApiPostman.deepUpdateV2Collection!(
+                  winnerId,
+                  payloads.roles[role.role].collection,
+                  payloads.roles[role.role].payloadDigest
+                );
                 for (const id of result.journaledRootIds) {
                   const idx = ownedLedger.indexOf(id);
                   if (idx >= 0) ownedLedger.splice(idx, 1);

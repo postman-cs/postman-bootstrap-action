@@ -440,6 +440,16 @@ describe('branch-aware bootstrap runs', () => {
       ).rejects.toThrow(/link failed after reconcile/);
 
       expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
+      // A rebound winner is a survivor from an earlier run; its content is that
+      // run's payload. Orchestration must converge each winner to THIS run's
+      // payload before links/tags, or the contract gate executes stale bytes.
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+      const deepUpdatedIds = postman.deepUpdateV2Collection.mock.calls.map(
+        (call: unknown[]) => call[0]
+      );
+      expect(deepUpdatedIds).toEqual(
+        expect.arrayContaining(['peer-baseline', 'peer-smoke', 'peer-contract'])
+      );
       expect(
         internalIntegration.linkCollectionsToSpecification
       ).toHaveBeenCalledWith(

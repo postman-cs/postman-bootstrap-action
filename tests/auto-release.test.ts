@@ -173,14 +173,17 @@ describe('auto-release workflow', () => {
   it('plans before it cuts and cuts before it pushes', () => {
     const plan = autoReleaseWorkflow.indexOf('name: Plan release');
     const cut = autoReleaseWorkflow.indexOf('name: Cut release');
-    const push = autoReleaseWorkflow.indexOf('name: Push release commit and tag');
+    const push = autoReleaseWorkflow.indexOf('name: Push release tag');
     expect(plan).toBeGreaterThan(-1);
     expect(plan).toBeLessThan(cut);
     expect(cut).toBeLessThan(push);
   });
 
-  it('pushes the release commit and tag atomically', () => {
-    expect(autoReleaseWorkflow).toContain('git push --atomic origin');
+  it('pushes only the tag, never a commit onto protected main', () => {
+    // main requires pull requests; the release commit is reachable from the
+    // tag, which is the ref release.yml reads.
+    expect(autoReleaseWorkflow).toContain('git push origin "refs/tags/v${VERSION}"');
+    expect(autoReleaseWorkflow).not.toContain('HEAD:${GITHUB_REF_NAME}');
   });
 
   it('never cancels a cut in flight', () => {

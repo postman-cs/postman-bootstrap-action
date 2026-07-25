@@ -68,15 +68,18 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           node scripts/release-cut.mjs --execute
 
-      - name: Push release commit and tag
+      - name: Push release tag
         if: steps.plan.outputs.release == 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
         run: |
           set -euo pipefail
-          # Atomic: the commit and its tag land together or neither does, so
-          # main can never carry a release commit whose tag is missing.
-          git push --atomic origin "HEAD:${GITHUB_REF_NAME}" "refs/tags/v${VERSION}"
+          # Push the tag only. main requires pull requests, and the release
+          # commit does not belong there: it carries just the version bump,
+          # rebuilt dist, and the normalized receipt, all of which release.yml
+          # reads from the tagged commit. main keeps advancing through PRs and
+          # the next cut branches from wherever it then points.
+          git push origin "refs/tags/v${VERSION}"
 
       - name: Start release workflow for the new tag
         if: steps.plan.outputs.release == 'true'

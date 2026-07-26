@@ -23,6 +23,7 @@ const selectNextVersion = releaseCut.selectNextVersion as (input: {
   bump: string;
   takenTags: string[];
 }) => { version: string; skipped: string[] };
+const latestReleaseTag = releaseCut.latestReleaseTag as (tags: string[]) => string | null;
 const validateMultifileSpecSyncReceipt = probeModule.validateMultifileSpecSyncReceipt as (
   receipt: unknown
 ) => unknown;
@@ -55,6 +56,13 @@ describe('release version selection', () => {
     const plan = selectNextVersion({ current: '3.0.0', bump: 'patch', takenTags: taken });
     expect(taken).not.toContain(`v${plan.version}`);
     expect(plan.version).toBe('3.0.4');
+  });
+
+  it('normalizes accepted zero-patch minor tags', () => {
+    expect(latestReleaseTag(['v2.9.9', 'v3.0', 'v3'])).toBe('v3.0');
+    expect(
+      selectNextVersion({ current: '2.9.9', bump: 'major', takenTags: ['v3.0'] })
+    ).toEqual({ version: '3.0.1', skipped: ['3.0.0'] });
   });
 
   it('maps conventional commits onto semver bumps', () => {
@@ -165,6 +173,10 @@ describe('auto-release workflow', () => {
     expect(autoReleaseWorkflow).not.toMatch(/on:\n\s+push:\n\s+tags:/);
   });
 
+  it('rejects manually dispatched cuts outside main', () => {
+    expect(autoReleaseWorkflow).toContain("if: github.ref == 'refs/heads/main'");
+  });
+
   it('fetches full history and tags so burnt versions are visible', () => {
     expect(autoReleaseWorkflow).toContain('fetch-depth: 0');
     expect(autoReleaseWorkflow).toContain('fetch-tags: true');
@@ -192,10 +204,28 @@ describe('auto-release workflow', () => {
     // binding and its own receipt contract test stays red until an unrelated
     // pull request happens to normalize it.
     const push = autoReleaseWorkflow.indexOf('name: Push release tag');
+    const dispatch = autoReleaseWorkflow.indexOf('name: Start or recover release workflow');
     const backport = autoReleaseWorkflow.indexOf('name: Open receipt normalization pull request');
     expect(backport).toBeGreaterThan(push);
+    expect(dispatch).toBeGreaterThan(push);
+    expect(dispatch).toBeLessThan(backport);
     expect(autoReleaseWorkflow).toContain('gh pr create');
     expect(autoReleaseWorkflow).toContain('--base "${GITHUB_REF_NAME}"');
+  });
+
+  it('dispatches checks for the token-created receipt pull request', () => {
+    const create = autoReleaseWorkflow.indexOf('gh pr create');
+    const ci = autoReleaseWorkflow.indexOf('gh workflow run ci.yml --ref "$BRANCH"');
+    const sea = autoReleaseWorkflow.indexOf('gh workflow run sea-binary.yml --ref "$BRANCH"');
+    expect(ci).toBeGreaterThan(create);
+    expect(sea).toBeGreaterThan(create);
+  });
+
+  it('recovers the newest unpublished tag after a dispatch failure', () => {
+    expect(autoReleaseWorkflow).toContain('name: Start or recover release workflow');
+    expect(autoReleaseWorkflow).toContain('require(process.env.PLAN_FILE).previous');
+    expect(autoReleaseWorkflow).toContain('gh release view "$TAG"');
+    expect(autoReleaseWorkflow).toContain('gh workflow run release.yml --ref "$TAG"');
   });
 
   it('grants the cut the write scope its backport pull request needs', () => {

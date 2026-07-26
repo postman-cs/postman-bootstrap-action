@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   cut:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -84,6 +85,32 @@ jobs:
           # the next cut branches from wherever it then points.
           git push origin "refs/tags/v${VERSION}"
 
+      - name: Start or recover release workflow
+        id: release_target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_FILE: ${{ runner.temp }}/plan.json
+        run: |
+          set -euo pipefail
+          RELEASE="$(node -p "require(process.env.PLAN_FILE).release === true")"
+          if [ "$RELEASE" = true ]; then
+            TAG="v$(node -p "require(process.env.PLAN_FILE).version")"
+          else
+            TAG="$(node -p "require(process.env.PLAN_FILE).previous || ''")"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ -z "$TAG" ]; then
+            echo "::notice::No release tag is available to dispatch."
+            exit 0
+          fi
+          if [ "$RELEASE" != true ] && gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG already exists; no recovery dispatch needed."
+            exit 0
+          fi
+          # GITHUB_TOKEN tag pushes do not trigger workflows. On a rerun with
+          # no new cut, retry the latest tag when its GitHub release is absent.
+          gh workflow run release.yml --ref "$TAG"
+
       - name: Open receipt normalization pull request
         if: steps.plan.outputs.release == 'true'
         env:
@@ -91,32 +118,25 @@ jobs:
           VERSION: ${{ steps.plan.outputs.version }}
         run: |
           set -euo pipefail
-          # The cut normalizes the receipt onto the release commit, which is
-          # reachable only from the tag. main keeps the older binding, so its
-          # own receipt contract test stays red until the normalized receipt
-          # comes back. main requires pull requests, so open one.
+          # The release is already dispatched, so a branch or PR API failure
+          # here cannot strand the immutable tag unpublished.
           if git diff --quiet "origin/${GITHUB_REF_NAME}" -- validation/evidence/multifile-spec-sync.json; then
             echo "::notice::Receipt already matches ${GITHUB_REF_NAME}; no normalization PR needed."
             exit 0
           fi
           BRANCH="chore/normalize-receipt-v${VERSION}"
           git push origin "HEAD:refs/heads/${BRANCH}"
-          gh pr create \
-            --base "${GITHUB_REF_NAME}" \
-            --head "${BRANCH}" \
-            --title "chore: normalize multifile receipt after v${VERSION}" \
-            --body "Carries the receipt binding and rebuilt \`dist/\` from the v${VERSION} cut back onto ${GITHUB_REF_NAME}, where the receipt contract test reads them. Opened automatically by auto-release.yml."
-
-      - name: Start release workflow for the new tag
-        if: steps.plan.outputs.release == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-          # Pushes authenticated with GITHUB_TOKEN do not trigger workflows, so
-          # release.yml is started explicitly against the new tag ref.
-          gh workflow run release.yml --ref "v${VERSION}"
+          PR_URL="$(gh pr list --state open --base "${GITHUB_REF_NAME}" --head "$BRANCH" --json url --jq '.[0].url')"
+          if [ -z "$PR_URL" ]; then
+            gh pr create \
+              --base "${GITHUB_REF_NAME}" \
+              --head "$BRANCH" \
+              --title "chore: normalize multifile receipt after v${VERSION}" \
+              --body "Carries the receipt binding and rebuilt \`dist/\` from the v${VERSION} cut back onto ${GITHUB_REF_NAME}, where the receipt contract test reads them. Opened automatically by auto-release.yml."
+          fi
+          # GITHUB_TOKEN-created pull requests do not emit pull_request runs.
+          gh workflow run ci.yml --ref "$BRANCH"
+          gh workflow run sea-binary.yml --ref "$BRANCH"
 
       - name: Report skipped cut
         if: steps.plan.outputs.release != 'true'

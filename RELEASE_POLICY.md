@@ -28,7 +28,8 @@ when its GitHub release is missing or its rolling alias has not advanced. It
 does not duplicate an active release run, and a successful release completion
 resumes planning. Receipt normalization retries rebuild the pull request from
 the immutable tag rather than transient runner state, but only while `main`'s
-receipt binding is older than the source commit covered by that tag.
+receipt binding is older than the source commit covered by that tag. Divergent
+receipt bindings stop recovery rather than choosing either side.
 
 Do not push `vX.Y.Z` tags by hand. The pre-push hook refuses them, because a
 hand-pushed tag becomes a public identifier before any gate has run against it.

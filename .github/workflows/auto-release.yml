@@ -12,6 +12,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
 
 permissions:
   contents: read
@@ -23,7 +26,7 @@ concurrency:
 
 jobs:
   cut:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -38,20 +41,87 @@ jobs:
           # cut so it can skip burnt versions instead of reusing them.
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Reconcile prior release
+        id: reconcile
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROLLING_ALIASES: major
+        run: |
+          set -euo pipefail
+          LATEST=""
+          while IFS= read -r CANDIDATE; do
+            if [[ "$CANDIDATE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              EXPECTED="${CANDIDATE#v}"
+            elif [[ "$CANDIDATE" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+              EXPECTED="${CANDIDATE#v}.0"
+            else
+              continue
+            fi
+            if ! PACKAGE_VERSION="$(git show "${CANDIDATE}^{commit}:package.json" 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null)"; then
+              continue
+            fi
+            [ "$PACKAGE_VERSION" = "$EXPECTED" ] || continue
+            LATEST="$CANDIDATE"
+          done < <(git tag --list 'v*' --sort=v:refname)
+
+          TAG=""
+          if [ -n "$LATEST" ] && ! gh release view "$LATEST" >/dev/null 2>&1; then
+            TAG="$LATEST"
+          elif [ -n "$LATEST" ]; then
+            VERSION="${LATEST#v}"
+            IFS='.' read -r MAJOR MINOR _ <<< "$VERSION"
+            if [ "$MAJOR" != 0 ]; then
+              TARGET="$(git rev-parse "${LATEST}^{commit}")"
+              read -r -a ALIAS_KINDS <<< "$ROLLING_ALIASES"
+              for KIND in "${ALIAS_KINDS[@]}"; do
+                case "$KIND" in
+                  major) ALIAS="v$MAJOR" ;;
+                  minor) ALIAS="v$MAJOR.$MINOR" ;;
+                  *) echo "::error::Unsupported rolling alias kind: $KIND"; exit 1 ;;
+                esac
+                if ! ALIAS_COMMIT="$(git rev-parse --verify "${ALIAS}^{commit}" 2>/dev/null)" ||
+                  [ "$ALIAS_COMMIT" != "$TARGET" ]; then
+                  TAG="$LATEST"
+                  break
+                fi
+              done
+            fi
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ -z "$TAG" ]; then
+            echo "blocked=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "blocked=true" >> "$GITHUB_OUTPUT"
+          ACTIVE="$(gh run list --workflow release.yml --branch "$TAG" --limit 20 --json status --jq '[.[] | select(.status != "completed")] | length')"
+          if [ "$ACTIVE" -gt 0 ]; then
+            echo "::notice::Release $TAG is already queued or in progress."
+            exit 0
+          fi
+          gh workflow run release.yml --ref "$TAG"
+
       - uses: actions/setup-node@v7
+        if: steps.reconcile.outputs.blocked != 'true'
         with:
           node-version: '24'
           cache: npm
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
+        if: steps.reconcile.outputs.blocked != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Install Postman CLI
+        if: steps.reconcile.outputs.blocked != 'true'
         run: curl -o- "https://dl-cli.pstmn.io/install/unix.sh" | sh
-      - run: postman --version
+      - if: steps.reconcile.outputs.blocked != 'true'
+        run: postman --version
 
       - name: Plan release
         id: plan
+        if: steps.reconcile.outputs.blocked != 'true'
         env:
           PLAN_FILE: ${{ runner.temp }}/plan.json
         run: |
@@ -87,6 +157,7 @@ jobs:
 
       - name: Start or recover release workflow
         id: release_target
+        if: steps.reconcile.outputs.blocked != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PLAN_FILE: ${{ runner.temp }}/plan.json
@@ -112,20 +183,26 @@ jobs:
           gh workflow run release.yml --ref "$TAG"
 
       - name: Open receipt normalization pull request
-        if: steps.plan.outputs.release == 'true'
+        if: steps.reconcile.outputs.blocked != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.release_target.outputs.tag }}
         run: |
           set -euo pipefail
+          if [ -z "$TAG" ]; then
+            echo "::notice::No release tag is available for receipt normalization."
+            exit 0
+          fi
+          VERSION="${TAG#v}"
+          RELEASE_COMMIT="$(git rev-parse "${TAG}^{commit}")"
           # The release is already dispatched, so a branch or PR API failure
-          # here cannot strand the immutable tag unpublished.
-          if git diff --quiet "origin/${GITHUB_REF_NAME}" -- validation/evidence/multifile-spec-sync.json; then
+          # here is retried from the immutable tag by the next recovery run.
+          if git diff --quiet "origin/${GITHUB_REF_NAME}" "$RELEASE_COMMIT" -- validation/evidence/multifile-spec-sync.json; then
             echo "::notice::Receipt already matches ${GITHUB_REF_NAME}; no normalization PR needed."
             exit 0
           fi
           BRANCH="chore/normalize-receipt-v${VERSION}"
-          git push origin "HEAD:refs/heads/${BRANCH}"
+          git push origin "${RELEASE_COMMIT}:refs/heads/${BRANCH}"
           PR_URL="$(gh pr list --state open --base "${GITHUB_REF_NAME}" --head "$BRANCH" --json url --jq '.[0].url')"
           if [ -z "$PR_URL" ]; then
             gh pr create \
@@ -139,7 +216,7 @@ jobs:
           gh workflow run sea-binary.yml --ref "$BRANCH"
 
       - name: Report skipped cut
-        if: steps.plan.outputs.release != 'true'
+        if: steps.reconcile.outputs.blocked != 'true' && steps.plan.outputs.release != 'true'
         env:
           PLAN_FILE: ${{ runner.temp }}/plan.json
         run: |

@@ -228,13 +228,45 @@ describe('auto-release workflow', () => {
     expect(autoReleaseWorkflow).toContain('gh workflow run release.yml --ref "$TAG"');
   });
 
+  it('reconciles the prior incomplete tag before planning another cut', () => {
+    const reconcile = autoReleaseWorkflow.indexOf('name: Reconcile prior release');
+    const plan = autoReleaseWorkflow.indexOf('name: Plan release');
+    expect(reconcile).toBeGreaterThan(-1);
+    expect(reconcile).toBeLessThan(plan);
+    expect(autoReleaseWorkflow).toContain("git tag --list 'v*'");
+    expect(autoReleaseWorkflow).toContain('if ! PACKAGE_VERSION="$(git show');
+    expect(autoReleaseWorkflow).toContain('gh run list --workflow release.yml --branch "$TAG"');
+    expect(autoReleaseWorkflow).toContain("steps.reconcile.outputs.blocked != 'true'");
+    const activeRun = autoReleaseWorkflow.indexOf('gh run list --workflow release.yml');
+    expect(autoReleaseWorkflow.indexOf('gh workflow run release.yml', activeRun)).toBeGreaterThan(
+      activeRun
+    );
+  });
+
+  it('recovers alias failures and resumes after a successful release', () => {
+    expect(autoReleaseWorkflow).toContain('workflow_run:');
+    expect(autoReleaseWorkflow).toContain('workflows: [Release]');
+    expect(autoReleaseWorkflow).toContain("github.event.workflow_run.conclusion == 'success'");
+    expect(autoReleaseWorkflow).toContain('git rev-parse --verify "${ALIAS}^{commit}"');
+  });
+
+  it('retries the receipt backport from the immutable tag', () => {
+    expect(autoReleaseWorkflow).toContain('RELEASE_COMMIT="$(git rev-parse "${TAG}^{commit}")"');
+    expect(autoReleaseWorkflow).toContain(
+      'git diff --quiet "origin/${GITHUB_REF_NAME}" "$RELEASE_COMMIT" -- validation/evidence/multifile-spec-sync.json'
+    );
+    expect(autoReleaseWorkflow).toContain(
+      'git push origin "${RELEASE_COMMIT}:refs/heads/${BRANCH}"'
+    );
+  });
+
   it('grants the cut the write scope its backport pull request needs', () => {
     expect(autoReleaseWorkflow).toContain('pull-requests: write');
   });
 
   it('skips the backport when the receipt already matches the branch', () => {
     expect(autoReleaseWorkflow).toContain(
-      'git diff --quiet "origin/${GITHUB_REF_NAME}" -- validation/evidence/multifile-spec-sync.json'
+      'git diff --quiet "origin/${GITHUB_REF_NAME}" "$RELEASE_COMMIT" -- validation/evidence/multifile-spec-sync.json'
     );
   });
 

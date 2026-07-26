@@ -265,6 +265,13 @@ describe('auto-release workflow', () => {
     );
   });
 
+  it('fails closed when the release and branch receipt sources diverge', () => {
+    expect(autoReleaseWorkflow).toContain(
+      'if ! git merge-base --is-ancestor "$BRANCH_SOURCE" "$RELEASE_SOURCE"; then'
+    );
+    expect(autoReleaseWorkflow).toContain('Receipt sources diverge; refusing to replay');
+  });
+
   it('grants the cut the write scope its backport pull request needs', () => {
     expect(autoReleaseWorkflow).toContain('pull-requests: write');
   });

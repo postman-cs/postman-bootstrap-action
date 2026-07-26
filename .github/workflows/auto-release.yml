@@ -204,6 +204,10 @@ jobs:
             echo "::notice::Receipt on ${GITHUB_REF_NAME} already covers ${TAG}; no normalization PR needed."
             exit 0
           fi
+          if ! git merge-base --is-ancestor "$BRANCH_SOURCE" "$RELEASE_SOURCE"; then
+            echo "::error::Receipt sources diverge; refusing to replay ${TAG} onto ${GITHUB_REF_NAME}."
+            exit 1
+          fi
           BRANCH="chore/normalize-receipt-v${VERSION}"
           git push origin "${RELEASE_COMMIT}:refs/heads/${BRANCH}"
           PR_URL="$(gh pr list --state open --base "${GITHUB_REF_NAME}" --head "$BRANCH" --json url --jq '.[0].url')"

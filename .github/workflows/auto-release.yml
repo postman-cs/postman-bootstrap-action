@@ -195,10 +195,13 @@ jobs:
           fi
           VERSION="${TAG#v}"
           RELEASE_COMMIT="$(git rev-parse "${TAG}^{commit}")"
+          RECEIPT_PATH="validation/evidence/multifile-spec-sync.json"
+          RELEASE_SOURCE="$(git show "${RELEASE_COMMIT}:${RECEIPT_PATH}" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).bootstrapCommit")"
+          BRANCH_SOURCE="$(git show "origin/${GITHUB_REF_NAME}:${RECEIPT_PATH}" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).bootstrapCommit")"
           # The release is already dispatched, so a branch or PR API failure
           # here is retried from the immutable tag by the next recovery run.
-          if git diff --quiet "origin/${GITHUB_REF_NAME}" "$RELEASE_COMMIT" -- validation/evidence/multifile-spec-sync.json; then
-            echo "::notice::Receipt already matches ${GITHUB_REF_NAME}; no normalization PR needed."
+          if git merge-base --is-ancestor "$RELEASE_SOURCE" "$BRANCH_SOURCE"; then
+            echo "::notice::Receipt on ${GITHUB_REF_NAME} already covers ${TAG}; no normalization PR needed."
             exit 0
           fi
           BRANCH="chore/normalize-receipt-v${VERSION}"

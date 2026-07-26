@@ -253,10 +253,15 @@ describe('auto-release workflow', () => {
   it('retries the receipt backport from the immutable tag', () => {
     expect(autoReleaseWorkflow).toContain('RELEASE_COMMIT="$(git rev-parse "${TAG}^{commit}")"');
     expect(autoReleaseWorkflow).toContain(
-      'git diff --quiet "origin/${GITHUB_REF_NAME}" "$RELEASE_COMMIT" -- validation/evidence/multifile-spec-sync.json'
-    );
-    expect(autoReleaseWorkflow).toContain(
       'git push origin "${RELEASE_COMMIT}:refs/heads/${BRANCH}"'
+    );
+  });
+
+  it('does not replay a release receipt that a newer main receipt supersedes', () => {
+    expect(autoReleaseWorkflow).toContain('RELEASE_SOURCE=');
+    expect(autoReleaseWorkflow).toContain('BRANCH_SOURCE=');
+    expect(autoReleaseWorkflow).toContain(
+      'git merge-base --is-ancestor "$RELEASE_SOURCE" "$BRANCH_SOURCE"'
     );
   });
 
@@ -264,9 +269,9 @@ describe('auto-release workflow', () => {
     expect(autoReleaseWorkflow).toContain('pull-requests: write');
   });
 
-  it('skips the backport when the receipt already matches the branch', () => {
+  it('skips the backport when the branch receipt covers the same or newer source', () => {
     expect(autoReleaseWorkflow).toContain(
-      'git diff --quiet "origin/${GITHUB_REF_NAME}" "$RELEASE_COMMIT" -- validation/evidence/multifile-spec-sync.json'
+      'git merge-base --is-ancestor "$RELEASE_SOURCE" "$BRANCH_SOURCE"'
     );
   });
 

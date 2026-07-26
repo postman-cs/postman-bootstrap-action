@@ -37,6 +37,7 @@ const PKG_PATH = path.join(REPO_ROOT, 'package.json');
 const LOCK_PATH = path.join(REPO_ROOT, 'package-lock.json');
 
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
+const IMMUTABLE_TAG = /^v?(\d+)\.(\d+)(?:\.(\d+))?$/;
 
 /** Conventional-commit subjects that carry no shippable behavior on their own. */
 const NON_SHIPPING_TYPES = new Set(['chore', 'ci', 'build', 'test', 'style']);
@@ -105,6 +106,12 @@ export function applyBump(version, bump) {
   throw new Error(`unsupported bump ${bump}`);
 }
 
+export function normalizeReleaseVersion(value) {
+  const parsed = IMMUTABLE_TAG.exec(String(value || ''));
+  if (!parsed) return null;
+  return `${Number(parsed[1])}.${Number(parsed[2])}.${Number(parsed[3] ?? 0)}`;
+}
+
 /**
  * Pick the next free version. Any tag that already exists is burnt: release
  * tags are immutable, so a previously failed cut (v2.10.26) is skipped rather
@@ -113,7 +120,9 @@ export function applyBump(version, bump) {
  * @param {{current: string, bump: 'major'|'minor'|'patch', takenTags: Iterable<string>}} input
  */
 export function selectNextVersion({ current, bump, takenTags }) {
-  const taken = new Set(Array.from(takenTags || [], (tag) => String(tag).replace(/^v/, '')));
+  const taken = new Set(
+    Array.from(takenTags || [], normalizeReleaseVersion).filter(Boolean)
+  );
   let candidate = applyBump(current, bump);
   const skipped = [];
   // Only the patch axis can advance while skipping; a taken major/minor target
@@ -244,20 +253,22 @@ function commitsSince(tag) {
   return raw.split('\u0000').map((entry) => entry.trim()).filter(Boolean);
 }
 
-function latestReleaseTag(taken) {
-  const versions = Array.from(taken)
-    .map((tag) => tag.replace(/^v/, ''))
-    .filter((version) => SEMVER.test(version))
+export function latestReleaseTag(taken) {
+  const versions = Array.from(taken || [], (tag) => ({
+    tag: String(tag),
+    version: normalizeReleaseVersion(tag)
+  }))
+    .filter((entry) => entry.version)
     .sort((a, b) => {
-      const left = a.split('.').map(Number);
-      const right = b.split('.').map(Number);
+      const left = a.version.split('.').map(Number);
+      const right = b.version.split('.').map(Number);
       for (let i = 0; i < 3; i += 1) {
         if (left[i] !== right[i]) return left[i] - right[i];
       }
-      return 0;
+      return a.tag.split('.').length - b.tag.split('.').length;
     });
   const newest = versions[versions.length - 1];
-  return newest ? `v${newest}` : null;
+  return newest?.tag ?? null;
 }
 
 /**
@@ -278,7 +289,7 @@ export function planRelease() {
   // The release train advances from the highest tag ever cut, not from
   // package.json, so a burnt cut that already bumped the manifest cannot
   // rewind or duplicate a version.
-  const base = previous ? previous.replace(/^v/, '') : pkg.version;
+  const base = previous ? normalizeReleaseVersion(previous) : pkg.version;
   const { version, skipped } = selectNextVersion({ current: base, bump, takenTags: taken });
   return { release: true, previous, bump, version, skipped, commits: messages.length };
 }

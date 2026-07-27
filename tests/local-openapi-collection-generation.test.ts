@@ -1465,6 +1465,12 @@ describe('local OpenAPI role payload generation', () => {
         }
       }
     });
+    const converterRequest = {
+      method: 'POST',
+      url: { raw: 'https://example.test/pattern', path: ['pattern'] },
+      header: [{ key: 'Content-Type', value: 'application/json' }],
+      body: { mode: 'raw', raw: JSON.stringify({ code: 'bbb' }) }
+    };
     const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
       result: true,
       output: [{
@@ -1473,12 +1479,8 @@ describe('local OpenAPI role payload generation', () => {
           info: { name: 'Pattern' },
           item: [{
             name: 'createPattern',
-            request: {
-              method: 'POST',
-              url: { raw: 'https://example.test/pattern', path: ['pattern'] },
-              header: [{ key: 'Content-Type', value: 'application/json' }],
-              body: { mode: 'raw', raw: JSON.stringify({ code: 'bbb' }) }
-            }
+            request: structuredClone(converterRequest),
+            response: [{ code: 200, originalRequest: structuredClone(converterRequest) }]
           }]
         }
       }]
@@ -1499,6 +1501,11 @@ describe('local OpenAPI role payload generation', () => {
       warning.includes('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
     );
     expect(repairWarning).toContain('could not be safely repaired');
+    expect(generated.warnings.filter((warning) =>
+      warning.includes('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
+    )).toHaveLength(1);
     expect(firstJsonRequestBody(generated.roles.baseline.collection)).toEqual({ code: 'bbb' });
+    const savedRequest = record(array(firstRequestItem(generated.roles.baseline.collection).response)[0]);
+    expect(JSON.parse(String(record(record(savedRequest.originalRequest).body).raw))).toEqual({ code: 'bbb' });
   });
 });

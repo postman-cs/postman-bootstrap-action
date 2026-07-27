@@ -526,6 +526,27 @@ describe('multifile-spec-sync receipt contract', () => {
     // Release policy prose documents the cut; it ships in no bundle.
     expect(isReleaseOnlyDriftPath('RELEASE_POLICY.md')).toBe(true);
 
+    // Workflow-only scripts: invoked from .github/workflows, never imported by
+    // src/, action.yml, or scripts/build.mjs, so they ship in no bundle and
+    // cannot invalidate live capability evidence. eslint.config.js is lint
+    // configuration by the same argument.
+    expect(isReleaseOnlyDriftPath('.github/scripts/dispatch-e2e-monitor.mjs')).toBe(true);
+    expect(isReleaseOnlyDriftPath('.github/scripts/dispatch-e2e-monitor.test.mjs')).toBe(true);
+    expect(isReleaseOnlyDriftPath('.github/scripts/rebind-multifile-receipt.mjs')).toBe(true);
+    expect(isReleaseOnlyDriftPath('eslint.config.js')).toBe(true);
+    // Per-file, not per-directory: a new script under .github/scripts is
+    // behavior-bearing until it is named here.
+    expect(isReleaseOnlyDriftPath('.github/scripts/unreviewed-helper.mjs')).toBe(false);
+    expect(() =>
+      assertReleaseOnlySourceDrift([
+        '.github/scripts/dispatch-e2e-monitor.mjs',
+        'eslint.config.js'
+      ])
+    ).not.toThrow();
+    expect(() => assertReleaseOnlySourceDrift(['.github/scripts/unreviewed-helper.mjs'])).toThrow(
+      /behavior-bearing|stale/i
+    );
+
     // The exemption is per-file, never per-directory: production seams living
     // beside the release tooling must still invalidate the receipt.
     expect(isReleaseOnlyDriftPath('scripts/probe-multifile-spec-sync.mjs')).toBe(false);

@@ -420,7 +420,11 @@ export function isReleaseOnlyDriftPath(relPath) {
     p === '.github/workflows/auto-release.yml' ||
     p === 'scripts/release-cut.mjs' ||
     p === 'tests/auto-release.test.ts' ||
-    p === '.githooks/pre-push'
+    p === '.githooks/pre-push' ||
+    p === '.github/scripts/dispatch-e2e-monitor.mjs' ||
+    p === '.github/scripts/dispatch-e2e-monitor.test.mjs' ||
+    p === '.github/scripts/rebind-multifile-receipt.mjs' ||
+    p === 'eslint.config.js'
   ) {
     return true;
   }

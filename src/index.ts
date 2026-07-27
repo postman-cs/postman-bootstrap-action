@@ -63,7 +63,13 @@ import {
 } from './lib/repo/local-collection-artifacts.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker, createMutableSecretMasker, type SecretMasker } from './lib/secrets.js';
-import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-core';
+import {
+  actionSink,
+  createLogger,
+  createTelemetryContext,
+  type Logger,
+  type TelemetryContext
+} from '@postman-cse/automation-core';
 import { resolveActionVersion } from './action-version.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { acquireDefinitionBundle } from './lib/spec/acquire-definition-bundle.js';
@@ -225,6 +231,12 @@ export interface BootstrapExecutionDependencies {
   >;
   exec: ExecLike;
   io: IOLike;
+  /**
+   * Structured diagnostics. Injected by tests; otherwise built over `core`
+   * when the run starts. Every stage runs inside a phase on this logger, so a
+   * failed run names the operation that was in flight.
+   */
+  logger?: Logger;
   internalIntegration?: Pick<
     InternalIntegrationAdapter,
     | 'assignWorkspaceToGovernanceGroup'
@@ -1120,6 +1132,28 @@ async function runGroup<T>(
   return actionCore.group(name, fn);
 }
 
+/**
+ * Wrap a core facade so every `group` call also opens a named logger phase.
+ *
+ * Bootstrap already routes all 17 of its stages through `core.group`. Hanging
+ * the phase there gives each one start/ok/failed lines with elapsed time and a
+ * scrubbed cause chain, instead of threading a logger argument through every
+ * call site and leaving future stages to forget it.
+ */
+function withPhaseGroups<T extends BootstrapExecutionDependencies['core']>(
+  actionCore: T,
+  logger: Logger
+): T {
+  return {
+    ...actionCore,
+    error: (message: string) => actionCore.error(logger.redact(message)),
+    group: <R>(name: string, fn: () => Promise<R>) =>
+      actionCore.group(name, async () => logger.phase(name, fn)),
+    info: (message: string) => actionCore.info(logger.redact(message)),
+    warning: (message: string) => actionCore.warning(logger.redact(message))
+  } as T;
+}
+
 function normalizeLintPath(value: string): string {
   return value
     .trim()
@@ -1435,6 +1469,28 @@ export async function runBootstrap(
     actionVersion: resolveActionVersion(),
     logger: dependencies.core
   });
+  // Every stage already runs inside dependencies.core.group. Wrapping that one
+  // seam gives all 17 of them a named phase without a parallel logging path,
+  // and keeps the CLI's ConsoleReporter groups working unchanged.
+  const logger =
+    dependencies.logger ??
+    createLogger({
+      sink: actionSink(dependencies.core),
+      fields: { action: 'postman-bootstrap-action', action_version: resolveActionVersion() }
+    });
+  // Register before the first stage can run: a credential that reaches the
+  // logger after the first line is a credential that already leaked once.
+  logger.addSecret(inputs.postmanApiKey);
+  logger.addSecret(inputs.postmanAccessToken);
+  logger.addSecret(inputs.githubToken);
+  logger.addSecret(inputs.ghFallbackToken);
+  dependencies = { ...dependencies, core: withPhaseGroups(dependencies.core, logger), logger };
+  logger.debug('resolved inputs', {
+    project: inputs.projectName,
+    sync_mode: inputs.collectionSyncMode,
+    spec_sync_mode: inputs.specSyncMode,
+    team_id: inputs.teamId || undefined
+  });
   try {
     const result = await runBootstrapInner(inputs, dependencies, telemetry);
     telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
@@ -1443,6 +1499,9 @@ export async function runBootstrap(
   } catch (error) {
     telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion('failure');
+    // setFailed names that the run died, not where. The phase line from
+    // withPhaseGroups already named the stage; this carries the cause chain.
+    logger.failure('bootstrap failed', error);
     // Asset operations run gateway-only. Rewrite recognized HTTP failures with
     // actionable token and role guidance; adapter-advised errors pass through.
     if (error instanceof HttpError) {

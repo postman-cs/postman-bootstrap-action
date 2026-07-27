@@ -58318,14 +58318,14 @@ var require_description2 = __commonJS({
     var z = __importStar10(require_mini());
     var metadata_1 = require_metadata();
     var MAX_CONTENT_LENGTH = 1e6;
-    function truncate2(value) {
+    function truncate3(value) {
       return value.length > MAX_CONTENT_LENGTH ? value.slice(0, MAX_CONTENT_LENGTH) : value;
     }
     exports2.Description = (0, schemas_1.model)(z.union([
-      z.pipe(z.string(), z.transform(truncate2)),
+      z.pipe(z.string(), z.transform(truncate3)),
       z.null(),
       z.object({
-        content: z.pipe(z.optional(z.string()), z.transform((value) => truncate2(value ?? ""))),
+        content: z.pipe(z.optional(z.string()), z.transform((value) => truncate3(value ?? ""))),
         type: z.optional(z.string()),
         version: z.optional(z.unknown())
       })
@@ -65399,7 +65399,7 @@ var require_lodash = __commonJS({
           var strSymbols = stringToArray2(string), start = charsStartIndex(strSymbols, stringToArray2(chars));
           return castSlice(strSymbols, start).join("");
         }
-        function truncate2(string, options) {
+        function truncate3(string, options) {
           var length = DEFAULT_TRUNC_LENGTH, omission = DEFAULT_TRUNC_OMISSION;
           if (isObject(options)) {
             var separator = "separator" in options ? options.separator : separator;
@@ -65959,7 +65959,7 @@ var require_lodash = __commonJS({
         lodash.trim = trim;
         lodash.trimEnd = trimEnd;
         lodash.trimStart = trimStart;
-        lodash.truncate = truncate2;
+        lodash.truncate = truncate3;
         lodash.unescape = unescape2;
         lodash.uniqueId = uniqueId;
         lodash.upperCase = upperCase;
@@ -147760,7 +147760,7 @@ var require_json_schema_faker = __commonJS({
               }
               return value;
             }
-            function truncate2(s, n) {
+            function truncate3(s, n) {
               if (util2.isString(s)) {
                 return s.length < n ? s : s.slice(0, n);
               } else {
@@ -147768,7 +147768,7 @@ var require_json_schema_faker = __commonJS({
               }
             }
             function getMessage(self2) {
-              return truncate2(JSON.stringify(self2.actual, replacer), 128) + " " + self2.operator + " " + truncate2(JSON.stringify(self2.expected, replacer), 128);
+              return truncate3(JSON.stringify(self2.actual, replacer), 128) + " " + self2.operator + " " + truncate3(JSON.stringify(self2.expected, replacer), 128);
             }
             function fail5(actual, expected, message, operator, stackStartFunction) {
               throw new assert.AssertionError({
@@ -195548,7 +195548,7 @@ var require_truncate = __commonJS({
     function isLowSurrogate(codePoint) {
       return codePoint >= 56320 && codePoint <= 57343;
     }
-    module2.exports = function truncate2(getLength, string, byteLength) {
+    module2.exports = function truncate3(getLength, string, byteLength) {
       if (typeof string !== "string") {
         throw new Error("Input must be string");
       }
@@ -195579,9 +195579,9 @@ var require_truncate = __commonJS({
 var require_truncate_utf8_bytes = __commonJS({
   "node_modules/truncate-utf8-bytes/index.js"(exports2, module2) {
     "use strict";
-    var truncate2 = require_truncate();
+    var truncate3 = require_truncate();
     var getLength = Buffer.byteLength.bind(Buffer);
-    module2.exports = truncate2.bind(null, getLength);
+    module2.exports = truncate3.bind(null, getLength);
   }
 });
 
@@ -372335,6 +372335,186 @@ function createTelemetryContext(options) {
   };
 }
 
+// node_modules/@postman-cse/automation-core/dist/logger.js
+var LEVEL_ORDER = {
+  debug: 10,
+  info: 20,
+  warning: 30,
+  error: 40
+};
+function defaultCorrelationId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+function resolveLogLevel(env = process.env) {
+  const explicit = String(env.POSTMAN_ACTIONS_LOG_LEVEL ?? "").trim().toLowerCase();
+  if (explicit === "debug" || explicit === "trace" || explicit === "verbose")
+    return "debug";
+  if (explicit === "info")
+    return "info";
+  if (explicit === "warn" || explicit === "warning")
+    return "warning";
+  if (explicit === "error" || explicit === "quiet")
+    return "error";
+  if (isTruthyFlag(env.RUNNER_DEBUG) || isTruthyFlag(env.ACTIONS_STEP_DEBUG))
+    return "debug";
+  if (isTruthyFlag(env.POSTMAN_ACTIONS_DEBUG))
+    return "debug";
+  return "info";
+}
+function isTruthyFlag(value) {
+  if (!value)
+    return false;
+  const flag = value.trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+}
+function actionSink(core2) {
+  return {
+    debug: (message) => core2.debug?.(message),
+    info: (message) => core2.info(message),
+    warning: (message) => (core2.warning ?? core2.info)(message),
+    error: (message) => (core2.error ?? core2.warning ?? core2.info)(message),
+    startGroup: core2.startGroup ? (name) => core2.startGroup?.(name) : void 0,
+    endGroup: core2.endGroup ? () => core2.endGroup?.() : void 0,
+    isDebug: core2.isDebug ? () => core2.isDebug?.() ?? false : void 0
+  };
+}
+var MIN_SECRET_LENGTH = 4;
+function renderValue(value, maxLength = 512) {
+  if (value === void 0)
+    return "undefined";
+  if (value === null)
+    return "null";
+  if (typeof value === "string")
+    return truncate2(value, maxLength);
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (value instanceof Error)
+    return truncate2(describeError(value), maxLength);
+  if (Array.isArray(value)) {
+    return truncate2(`[${value.map((entry) => renderValue(entry, 120)).join(", ")}]`, maxLength);
+  }
+  try {
+    return truncate2(JSON.stringify(value) ?? String(value), maxLength);
+  } catch {
+    return "<unserializable>";
+  }
+}
+function truncate2(text, maxLength) {
+  if (text.length <= maxLength)
+    return text;
+  return `${text.slice(0, maxLength)}\u2026 (+${text.length - maxLength} chars)`;
+}
+function describeError(error, maxDepth = 5) {
+  const parts = [];
+  let current = error;
+  let depth = 0;
+  while (current !== void 0 && current !== null && depth < maxDepth) {
+    if (current instanceof Error) {
+      const code = current.code;
+      parts.push(code ? `${current.name}[${code}]: ${current.message}` : `${current.name}: ${current.message}`);
+      current = current.cause;
+    } else if (typeof current === "object") {
+      try {
+        parts.push(JSON.stringify(current) ?? String(current));
+      } catch {
+        parts.push(String(current));
+      }
+      current = void 0;
+    } else {
+      parts.push(String(current));
+      current = void 0;
+    }
+    depth += 1;
+  }
+  if (parts.length === 0)
+    return "unknown error";
+  return parts.join(" <- caused by ");
+}
+function createLogger(options) {
+  const env = options.env ?? process.env;
+  const level = options.level ?? resolveLogLevel(env);
+  const secrets = options.secrets ?? /* @__PURE__ */ new Set();
+  const correlationId = options.correlationId ?? defaultCorrelationId();
+  const now = options.now ?? (() => Date.now());
+  const threshold = LEVEL_ORDER[level];
+  function addSecret(value) {
+    if (typeof value !== "string")
+      return;
+    const trimmed = value.trim();
+    if (trimmed.length < MIN_SECRET_LENGTH)
+      return;
+    secrets.add(trimmed);
+  }
+  function redact(text) {
+    let output = typeof text === "string" ? text : renderValue(text, 4096);
+    for (const secret of secrets) {
+      if (!secret)
+        continue;
+      output = output.split(secret).join("***");
+      const encoded = encodeURIComponent(secret);
+      if (encoded !== secret)
+        output = output.split(encoded).join("***");
+    }
+    return output;
+  }
+  function build(baseFields) {
+    function emit(target, message, fields) {
+      if (LEVEL_ORDER[target] < threshold)
+        return;
+      const merged = { ...baseFields, ...fields ?? {} };
+      const rendered = Object.entries(merged).filter(([, value]) => value !== void 0).map(([key, value]) => `${key}=${redact(renderValue(value))}`).join(" ");
+      const line = rendered ? `${redact(message)} | ${rendered}` : redact(message);
+      switch (target) {
+        case "debug":
+          options.sink.debug(line);
+          break;
+        case "info":
+          options.sink.info(line);
+          break;
+        case "warning":
+          options.sink.warning(line);
+          break;
+        case "error":
+          options.sink.error(line);
+          break;
+      }
+    }
+    const logger = {
+      level,
+      correlationId,
+      addSecret,
+      redact,
+      isDebug: () => threshold <= LEVEL_ORDER.debug,
+      debug: (message, fields) => emit("debug", message, fields),
+      info: (message, fields) => emit("info", message, fields),
+      warning: (message, fields) => emit("warning", message, fields),
+      error: (message, fields) => emit("error", message, fields),
+      failure: (message, error, fields) => emit("error", message, { ...fields ?? {}, error: describeError(error) }),
+      child: (fields) => build({ ...baseFields, ...fields }),
+      async phase(name, fn, fields) {
+        const scoped = build({ ...baseFields, ...fields ?? {}, phase: name });
+        const started = now();
+        scoped.debug("phase start");
+        options.sink.startGroup?.(name);
+        try {
+          const result = await fn();
+          scoped.debug("phase ok", { duration_ms: Math.round(now() - started) });
+          return result;
+        } catch (error) {
+          scoped.failure("phase failed", error, { duration_ms: Math.round(now() - started) });
+          throw error;
+        } finally {
+          options.sink.endGroup?.();
+        }
+      }
+    };
+    return logger;
+  }
+  const root = build({ run: correlationId, ...options.fields ?? {} });
+  return root;
+}
+
 // src/action-version.ts
 var import_node_fs7 = require("node:fs");
 var import_node_path5 = require("node:path");
@@ -402139,6 +402319,15 @@ async function resolveGovernanceGroupName(inputs, dependencies) {
 async function runGroup(actionCore, name, fn) {
   return actionCore.group(name, fn);
 }
+function withPhaseGroups(actionCore, logger) {
+  return {
+    ...actionCore,
+    error: (message) => actionCore.error(logger.redact(message)),
+    group: (name, fn) => actionCore.group(name, async () => logger.phase(name, fn)),
+    info: (message) => actionCore.info(logger.redact(message)),
+    warning: (message) => actionCore.warning(logger.redact(message))
+  };
+}
 function shouldRetrySpecFetch(error) {
   const retryability = classifySafeFetchRetryability(error);
   return retryability === "retryable" || retryability === "unknown";
@@ -402342,6 +402531,21 @@ async function runBootstrap(inputs, dependencies) {
     actionVersion: resolveActionVersion2(),
     logger: dependencies.core
   });
+  const logger = dependencies.logger ?? createLogger({
+    sink: actionSink(dependencies.core),
+    fields: { action: "postman-bootstrap-action", action_version: resolveActionVersion2() }
+  });
+  logger.addSecret(inputs.postmanApiKey);
+  logger.addSecret(inputs.postmanAccessToken);
+  logger.addSecret(inputs.githubToken);
+  logger.addSecret(inputs.ghFallbackToken);
+  dependencies = { ...dependencies, core: withPhaseGroups(dependencies.core, logger), logger };
+  logger.debug("resolved inputs", {
+    project: inputs.projectName,
+    sync_mode: inputs.collectionSyncMode,
+    spec_sync_mode: inputs.specSyncMode,
+    team_id: inputs.teamId || void 0
+  });
   try {
     const result = await runBootstrapInner(inputs, dependencies, telemetry);
     telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
@@ -402350,6 +402554,7 @@ async function runBootstrap(inputs, dependencies) {
   } catch (error) {
     telemetry.setAccountType(getMemoizedSessionIdentity()?.consumerType);
     telemetry.emitCompletion("failure");
+    logger.failure("bootstrap failed", error);
     if (error instanceof HttpError) {
       const session = getMemoizedSessionIdentity();
       const advised = adviseFromHttpError(error, {

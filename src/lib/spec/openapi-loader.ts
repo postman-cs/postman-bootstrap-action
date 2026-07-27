@@ -402,7 +402,9 @@ async function buildLoadedSpec(
     sourceTypeNullPaths = compatibility.sourceTypeNullPaths;
   }
   const bundledDocument = await bundleSpec(baseRef, contractDocument, { ...options, budget, fetchText }, localBundle);
-  const validation = await validateOpenApi(bundledDocument as never, {
+  // The validator dereferences its input in place. Validate an isolated copy so
+  // repeated internal refs do not inflate the compact document we upload.
+  const validation = await validateOpenApi(structuredClone(bundledDocument) as never, {
     resolve: { external: false, file: false },
     dereference: { circular: 'ignore' },
     validate: { errors: { colorize: false } }

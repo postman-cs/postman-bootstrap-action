@@ -223,4 +223,53 @@ paths:
     expect(fetchText).toHaveBeenCalledWith('https://cdn.example.test/schemas/pet.yaml', expect.any(Object));
     expect(loaded.contractIndex.operations[0]?.path).toBe('/pets');
   });
+
+  it('keeps internal refs compact after validating the bundled document', async () => {
+    const { loadOpenApiContractSpec } = await import('../../src/lib/spec/openapi-loader.js');
+    const paths = Object.fromEntries(
+      Array.from({ length: 50 }, (_, index) => [
+        `/pets/${index}`,
+        {
+          get: {
+            responses: {
+              '200': {
+                description: 'OK',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/Pet' }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ])
+    );
+    const root = `${JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Pets', version: '1.0.0' },
+      paths,
+      components: {
+        schemas: {
+          Pet: {
+            type: 'object',
+            properties: {
+              id: { type: 'integer' },
+              name: { type: 'string' }
+            }
+          }
+        }
+      }
+    }, null, 2)}\n`;
+
+    const loaded = await loadOpenApiContractSpec('https://api.example.test/openapi.json', {
+      fetchText: async () => root
+    });
+
+    expect(loaded.bundledContent).toContain('"$ref": "#/components/schemas/Pet"');
+    expect(Buffer.byteLength(loaded.bundledContent, 'utf8')).toBeLessThan(
+      Buffer.byteLength(root, 'utf8') * 2
+    );
+    expect(loaded.contractIndex.operations).toHaveLength(50);
+  });
 });

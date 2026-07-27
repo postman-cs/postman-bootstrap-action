@@ -365907,7 +365907,7 @@ async function buildLoadedSpec(content, baseRef, options, fetchText, budget, loc
     sourceTypeNullPaths = compatibility.sourceTypeNullPaths;
   }
   const bundledDocument = await bundleSpec(baseRef, contractDocument, { ...options, budget, fetchText }, localBundle);
-  const validation = await validate(bundledDocument, {
+  const validation = await validate(structuredClone(bundledDocument), {
     resolve: { external: false, file: false },
     dereference: { circular: "ignore" },
     validate: { errors: { colorize: false } }

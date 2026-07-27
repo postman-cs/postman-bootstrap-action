@@ -152,6 +152,9 @@ describe('specification files list pagination', () => {
         return specPage([{ id: 'root-file', path: 'openapi.yaml', type: 'ROOT' }]);
       }
       if (env.method === 'patch') return jsonResponse({ data: { id: 'root-file' } });
+      if (env.method === 'get' && env.path === '/specifications/spec-1/files/root-file') {
+        return jsonResponse({ data: { id: 'root-file', content: 'openapi: 3.1.0' } });
+      }
       return jsonResponse({ error: 'unexpected' }, { status: 500 });
     });
 
@@ -184,6 +187,9 @@ describe('specification files list pagination', () => {
         return specPage([{ id: 'only-file', path: 'index.yaml' }]);
       }
       if (env.method === 'patch') return jsonResponse({ data: { id: 'only-file' } });
+      if (env.method === 'get' && env.path === '/specifications/spec-1/files/only-file') {
+        return jsonResponse({ data: { id: 'only-file', content: 'openapi: 3.1.0' } });
+      }
       return jsonResponse({ error: 'unexpected' }, { status: 500 });
     });
 

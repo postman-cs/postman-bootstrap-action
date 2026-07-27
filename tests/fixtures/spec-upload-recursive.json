@@ -1,0 +1,59 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Recursive upload fidelity",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/nodes/01": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/02": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/03": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/04": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/05": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/06": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/07": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/08": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/09": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/10": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/11": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/12": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/13": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/14": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/15": { "$ref": "#/components/pathItems/Node" },
+    "/nodes/16": { "$ref": "#/components/pathItems/Node" }
+  },
+  "components": {
+    "pathItems": {
+      "Node": {
+        "get": {
+          "responses": {
+            "200": {
+              "description": "OK",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Node"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Node": {
+        "type": "object",
+        "description": "This deliberately repetitive schema description makes a dereferenced representation much larger than the authored source while the recursive next pointer keeps the fixture representative of real reference-heavy contracts. This deliberately repetitive schema description makes a dereferenced representation much larger than the authored source while the recursive next pointer keeps the fixture representative of real reference-heavy contracts. This deliberately repetitive schema description makes a dereferenced representation much larger than the authored source while the recursive next pointer keeps the fixture representative of real reference-heavy contracts. This deliberately repetitive schema description makes a dereferenced representation much larger than the authored source while the recursive next pointer keeps the fixture representative of real reference-heavy contracts.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "next": {
+            "$ref": "#/components/schemas/Node"
+          }
+        }
+      }
+    }
+  }
+}

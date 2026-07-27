@@ -43,6 +43,7 @@ import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
 import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
+import { assertRawSpecUploadPayloadWithinLimit } from './lib/postman/spec-upload-payload.js';
 import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
 import { AccessTokenProvider, mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
 import {
@@ -780,9 +781,9 @@ export function buildSpecVersionUrl(
 }
 
 /**
- * Specs retain their branch identity even if a user edits the description. This
- * extension is deliberately applied only to disposable preview/channel copies;
- * canonical source content remains byte-for-byte customer authored.
+ * Legacy branch-marker renderer retained for compatibility tests and inspection
+ * of older preview/channel specs. Current Spec Hub writes do not call this
+ * helper because every tier now preserves source-authored bytes.
  *
  * The marker is part of the uploaded bytes, so its timestamps decide whether a
  * rerun is digest-equal. `previousContent` (the spec currently in Spec Hub)
@@ -2525,7 +2526,7 @@ async function runBootstrapInner(
 
   const useMultiFileSync = Boolean(sourceDefinitionBundle && sourceDefinitionBundle.files.size > 1);
 
-  const specContent = await runGroup(
+  const internalComparisonSpecContent = await runGroup(
     dependencies.core,
     'Preflight OpenAPI Contract',
     async () => {
@@ -2563,8 +2564,9 @@ async function runBootstrapInner(
       sourceSpecContent = loaded.content;
       sourceTypeNullPaths = loaded.sourceTypeNullPaths;
       preserveSourceSpecBytes = sourceTypeNullPaths.length > 0;
-      // Contract validation/index uses the bundled document; Spec Hub sync keeps
-      // the original file tree (root may later receive normalize/branch markers).
+      // Contract validation, breaking-change checks, and collection generation
+      // use the bundled compatibility document. Spec Hub writes use the
+      // source-authored bytes retained separately below.
       const document = normalizeSpecDocument(loaded.bundledContent, (msg) =>
         dependencies.core.warning(msg)
       );
@@ -2596,11 +2598,7 @@ async function runBootstrapInner(
               `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
             );
           }
-          previousSpecContent = preserveSourceSpecBytes
-            ? previousRoot
-            : normalizeSpecDocument(previousRoot, (msg) =>
-              dependencies.core.warning(`Previous spec normalization: ${msg}`)
-            );
+          previousSpecContent = previousRoot;
           const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
           if (existingSpecType !== incomingSpecType) {
             throw new Error(
@@ -2614,11 +2612,7 @@ async function runBootstrapInner(
               `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
             );
           }
-          previousSpecContent = preserveSourceSpecBytes
-            ? previousRaw
-            : normalizeSpecDocument(previousRaw, (msg) =>
-              dependencies.core.warning(`Previous spec normalization: ${msg}`)
-            );
+          previousSpecContent = previousRaw;
           previousSpecRollbackHash = createHash('sha256').update(previousSpecContent).digest('hex');
           const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
           if (existingSpecType !== incomingSpecType) {
@@ -2650,7 +2644,7 @@ async function runBootstrapInner(
         baselineSpecPath: inputs.breakingBaselineSpecPath,
         // Breaking checks retain the original source tree/root, not upload markers.
         currentSourceContent: sourceSpecContent,
-        currentUploadContent: specContent,
+        currentUploadContent: internalComparisonSpecContent,
         logPath: inputs.breakingLogPath,
         mode: inputs.breakingChangeMode,
         previousSpecContent,
@@ -2676,17 +2670,26 @@ async function runBootstrapInner(
     );
   }
 
-  const uploadSpecContent = embedSpecBranchMarker(
-    specContent,
-    branchDecision,
-    inputs.repoUrl,
-    previousSpecContent
-  );
+  // Spec Hub is the source store: send the exact root source string, never the
+  // bundled/dereferenced compatibility document or an embedded branch marker.
+  const rawUploadSpecContent = sourceSpecContent;
   if (sourceDefinitionBundle && useMultiFileSync) {
-    // Final immutable upload bundle: companions keep exact source bytes; only
-    // the root receives normalize/branch-marker changes.
-    uploadDefinitionBundle = withReplacedRootContent(sourceDefinitionBundle, uploadSpecContent);
+    // Every member remains exactly as acquired from the authored file tree.
+    uploadDefinitionBundle = sourceDefinitionBundle;
     assertMultiFileSpecSyncEnabled(uploadDefinitionBundle);
+    assertRawSpecUploadPayloadWithinLimit(
+      [...uploadDefinitionBundle.files.values()].map((file) => ({
+        path: file.path,
+        content: file.content
+      }))
+    );
+  } else {
+    assertRawSpecUploadPayloadWithinLimit([
+      {
+        path: sourceDefinitionBundle?.rootPath || 'index.yaml',
+        content: rawUploadSpecContent
+      }
+    ]);
   }
 
   const provisioned = await provisionWorkspace(
@@ -2975,7 +2978,7 @@ async function runBootstrapInner(
           // Single-file wrapper path (URL and local one-file).
           if (
             previousSpecContent !== undefined &&
-            createHash('sha256').update(uploadSpecContent).digest('hex') ===
+            createHash('sha256').update(rawUploadSpecContent).digest('hex') ===
               createHash('sha256').update(previousSpecContent).digest('hex')
           ) {
             specContentUnchanged = true;
@@ -2988,14 +2991,14 @@ async function runBootstrapInner(
                 `Note: the spec type (OPENAPI:3.0 / OPENAPI:3.1) is set at creation and cannot be changed on update. ` +
                 `If you changed OpenAPI versions, clear the spec-id input to create a fresh spec.`
             );
-            await dependencies.postman.updateSpec(specId, uploadSpecContent, workspaceId);
+            await dependencies.postman.updateSpec(specId, rawUploadSpecContent, workspaceId);
           }
         } else {
           if (dependencies.postman.uploadSpecWithOutcome) {
             const uploaded = await dependencies.postman.uploadSpecWithOutcome(
               workspaceId || '',
               assetName,
-              uploadSpecContent,
+              rawUploadSpecContent,
               detectedOpenapiVersion
             );
             specId = uploaded.specId;
@@ -3004,7 +3007,7 @@ async function runBootstrapInner(
             specId = await dependencies.postman.uploadSpec(
               workspaceId || '',
               assetName,
-              uploadSpecContent,
+              rawUploadSpecContent,
               detectedOpenapiVersion
             );
             createdNewSpec = true;

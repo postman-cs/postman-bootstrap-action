@@ -273,6 +273,14 @@ describe('Wave 2 create reconciliation', () => {
           expect(env.body).toEqual([{ op: 'replace', path: '/content', value: 'openapi: 3.0.3' }]);
           return jsonResponse({ data: {} });
         }
+        if (
+          env.method === 'get' &&
+          env.path === '/specifications/spec-adopted/files/root-file'
+        ) {
+          return jsonResponse({
+            data: { id: 'root-file', content: 'openapi: 3.0.3' }
+          });
+        }
         if (env.path === '/specifications/spec-adopted') {
           return jsonResponse({ data: { id: 'spec-adopted' } });
         }

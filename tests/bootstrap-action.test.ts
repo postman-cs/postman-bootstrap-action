@@ -25,6 +25,7 @@ import {
   createDefinitionBundle,
   createDefinitionFile
 } from '../src/lib/spec/definition-bundle.js';
+import { loadOpenApiContractSpecFromPath } from '../src/lib/spec/openapi-loader.js';
 import { definitionBundleToSnapshot } from '../src/lib/postman/spec-file-reconcile.js';
 import { createHash as createNodeHash } from 'node:crypto';
 
@@ -1060,7 +1061,7 @@ components:
     expect(propertyWarning).not.toMatch(/[\r\n\u2028\u2029]/);
   });
 
-  it('uploads the bundled OpenAPI document used for dynamic contract validation', async () => {
+  it('uploads the raw OpenAPI source while the bundled copy drives internal validation', async () => {
     const { core } = createCoreStub();
     const execStub = createExecStub();
     const postman = {
@@ -1123,11 +1124,60 @@ paths:
     });
 
     const uploadedContent = vi.mocked(postman.uploadSpec).mock.calls[0]?.[2] as string;
-    expect(uploadedContent).not.toContain('components.yaml');
-    const uploaded = JSON.parse(uploadedContent) as {
-      paths: Record<string, { get: { responses: Record<string, { description?: string }> } }>;
-    };
-    expect(uploaded.paths['/payments']?.get.responses['200']?.description).toBe('OK');
+    expect(uploadedContent).toBe(rootSpec);
+    expect(uploadedContent).toContain(
+      "$ref: 'https://example.test/components.yaml#/components/responses/PaymentList'"
+    );
+  });
+
+  it('keeps a small recursive-ref fixture byte-identical in the Spec Hub payload', async () => {
+    const fixture = readFileSync(
+      join(process.cwd(), 'tests/fixtures/spec-upload-recursive.json'),
+      'utf8'
+    );
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-raw-recursive-'));
+    writeFileSync(join(workspace, 'openapi.json'), fixture);
+    const uploadSpecWithOutcome = vi.fn().mockRejectedValue(new Error('UPLOAD_CAPTURED'));
+    const postman = createRollbackPostman({
+      uploadSpec: vi.fn().mockRejectedValue(new Error('legacy uploadSpec must not be called')),
+      uploadSpecWithOutcome
+    });
+
+    try {
+      await withCwd(workspace, async () => {
+        const loaded = await loadOpenApiContractSpecFromPath('openapi.json');
+        expect(Buffer.byteLength(loaded.bundledContent, 'utf8')).toBeGreaterThan(
+          Buffer.byteLength(fixture, 'utf8') * 5
+        );
+        expect(loaded.bundledContent).not.toContain('"$ref"');
+
+        await expect(
+          runBootstrap(
+            createInputs({
+              specPath: 'openapi.json',
+              specUrl: '',
+              workspaceId: 'ws-existing'
+            }),
+            {
+              core: createCoreStub().core,
+              exec: createExecStub(),
+              io: createIoStub(),
+              postman: withContractHelpers(postman),
+              specFetcher: vi.fn<typeof fetch>()
+            }
+          )
+        ).rejects.toThrow('UPLOAD_CAPTURED');
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+
+    expect(uploadSpecWithOutcome).toHaveBeenCalledWith(
+      'ws-existing',
+      'core-payments',
+      fixture,
+      '3.1'
+    );
   });
 
   it('skips spec update, version tag, and rollback when existing content hash matches (no-op sync)', async () => {
@@ -2074,6 +2124,16 @@ paths:
         rmSync(workspace, { recursive: true, force: true });
       }
       expect(reconcileSpecBundle).toHaveBeenCalled();
+      const uploaded = reconcileSpecBundle.mock.calls[0]![1] as {
+        digest: string;
+        files: ReadonlyMap<string, { content: string; sha256: string }>;
+      };
+      expect(uploaded.digest).toBe(target.bundle.digest);
+      expect(uploaded.files.get('openapi.yaml')?.content).toBe(ROOT_OAS);
+      expect(uploaded.files.get('components/pet.yaml')?.content).toBe(PET_V2);
+      expect(uploaded.files.get('openapi.yaml')?.sha256).toBe(
+        createNodeHash('sha256').update(ROOT_OAS).digest('hex')
+      );
       expect(postman.updateSpec).not.toHaveBeenCalled();
       expect(outputs['spec-content-changed']).toBe('true');
     });

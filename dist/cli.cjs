@@ -366047,12 +366047,14 @@ function repairExampleOrWarn(target, context, warnings, repair) {
   const snapshot = clone(target);
   try {
     repair();
+    return true;
   } catch (error) {
     if (isInvalidAuthoredExample(error)) throw error;
     restoreRecord(target, snapshot);
     warnings.push(
       `LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: Preserved converter-generated ${context} without repair because repair could not be completed: ${repairCause(error)}`
     );
+    return false;
   }
 }
 function stableValue(value) {
@@ -366741,33 +366743,37 @@ function repairGeneratedCollectionExamples(collection, index, bundledOpenApi, ca
         const matched = matchOperation(index, raw.request);
         const operation = matched.operation ?? matchWebhookOperation(index, raw);
         if (operation) {
-          repairExampleOrWarn(
+          let operationRepairable = repairExampleOrWarn(
             raw.request,
             `request example for ${operation.id}`,
             warnings,
             () => repairRequest(operation, raw.request, sourceRoot, index, candidate)
           );
-          for (const saved of Array.isArray(raw.response) ? raw.response.filter(isRecord2) : []) {
-            if (isRecord2(saved.originalRequest)) {
-              repairExampleOrWarn(
-                saved.originalRequest,
-                `saved original request example for ${operation.id}`,
-                warnings,
-                () => repairRequest(
-                  operation,
+          if (operationRepairable) {
+            for (const saved of Array.isArray(raw.response) ? raw.response.filter(isRecord2) : []) {
+              if (isRecord2(saved.originalRequest)) {
+                operationRepairable = repairExampleOrWarn(
                   saved.originalRequest,
-                  sourceRoot,
-                  index,
-                  candidate
-                )
+                  `saved original request example for ${operation.id}`,
+                  warnings,
+                  () => repairRequest(
+                    operation,
+                    saved.originalRequest,
+                    sourceRoot,
+                    index,
+                    candidate
+                  )
+                );
+                if (!operationRepairable) break;
+              }
+              operationRepairable = repairExampleOrWarn(
+                saved,
+                `saved response example for ${operation.id}`,
+                warnings,
+                () => repairSavedResponse(operation, saved, sourceRoot, index, candidate)
               );
+              if (!operationRepairable) break;
             }
-            repairExampleOrWarn(
-              saved,
-              `saved response example for ${operation.id}`,
-              warnings,
-              () => repairSavedResponse(operation, saved, sourceRoot, index, candidate)
-            );
           }
         }
       }
@@ -367342,7 +367348,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "81a969c991386159807cb4b29a6b4cd5fac8617c",
+  bootstrapCommit: "78f8027d09773a0df6e1413693839fa01add2b2b",
   legs: [
     {
       mode: "nonorg",

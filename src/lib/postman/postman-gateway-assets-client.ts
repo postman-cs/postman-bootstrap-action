@@ -697,7 +697,7 @@ export class PostmanGatewayAssetsClient {
     operation: 'create' | 'update'
   ): Promise<void> {
     const expectedSha256 = specContentSha256(expectedContent);
-    const storedContent = await this.getSpecContent(specId);
+    const storedContent = await this.readSpecContent(specId);
     if (storedContent === undefined) {
       throw new Error(
         `CONTRACT_SPEC_HUB_FIDELITY_FAILED: Unable to read stored content after ${operation} ` +
@@ -723,19 +723,23 @@ export class PostmanGatewayAssetsClient {
    */
   async getSpecContent(specId: string): Promise<string | undefined> {
     try {
-      const fileId = await this.resolveRootFileId(specId);
-      if (!fileId) return undefined;
-      const file = await this.gateway.requestJson<JsonRecord>({
-        service: 'specification',
-        method: 'get',
-        path: `/specifications/${specId}/files/${fileId}`,
-        query: { fields: 'content' }
-      });
-      const content = asRecord(file?.data)?.content ?? file?.content;
-      return typeof content === 'string' ? content : undefined;
+      return await this.readSpecContent(specId);
     } catch {
       return undefined;
     }
+  }
+
+  private async readSpecContent(specId: string): Promise<string | undefined> {
+    const fileId = await this.resolveRootFileId(specId);
+    if (!fileId) return undefined;
+    const file = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'get',
+      path: `/specifications/${specId}/files/${fileId}`,
+      query: { fields: 'content' }
+    });
+    const content = asRecord(file?.data)?.content ?? file?.content;
+    return typeof content === 'string' ? content : undefined;
   }
 
   /**

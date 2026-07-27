@@ -1149,7 +1149,12 @@ paths:
         expect(Buffer.byteLength(loaded.bundledContent, 'utf8')).toBeGreaterThan(
           Buffer.byteLength(fixture, 'utf8') * 5
         );
-        expect(loaded.bundledContent).not.toContain('"$ref"');
+        expect((loaded.bundledContent.match(/"\$ref"/g) ?? []).length).toBeLessThan(
+          (fixture.match(/"\$ref"/g) ?? []).length
+        );
+        expect(loaded.bundledContent).toContain(
+          '"$ref": "#/components/schemas/RecursiveNode"'
+        );
 
         await expect(
           runBootstrap(

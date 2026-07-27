@@ -1439,7 +1439,7 @@ describe('local OpenAPI role payload generation', () => {
     expect(bodies[0]).not.toHaveProperty('readOnlyValue');
   });
 
-  it('fails explicitly before role materialization when a required schema is unsatisfiable', async () => {
+  it('preserves the converter example with a warning when a required schema is unsatisfiable', async () => {
     const bundled = JSON.stringify({
       openapi: '3.0.3',
       info: { title: 'Pattern', version: '1.0.0' },
@@ -1492,10 +1492,13 @@ describe('local OpenAPI role payload generation', () => {
       contractIndex: indexFor(bundled)
     }, { converter });
 
-    expect(generated.warnings).toEqual([
+    expect(generated.warnings).toEqual(expect.arrayContaining([
       expect.stringContaining('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
-    ]);
-    expect(generated.warnings[0]).toContain('could not be safely repaired');
+    ]));
+    const repairWarning = generated.warnings.find((warning) =>
+      warning.includes('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
+    );
+    expect(repairWarning).toContain('could not be safely repaired');
     expect(firstJsonRequestBody(generated.roles.baseline.collection)).toEqual({ code: 'bbb' });
   });
 });

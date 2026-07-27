@@ -13,7 +13,6 @@
     "/nodes": {
       "post": {
         "operationId": "createNode",
-        "summary": "Create a recursive node",
         "requestBody": {
           "required": true,
           "content": {

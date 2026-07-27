@@ -63,7 +63,7 @@ import {
 } from './lib/repo/local-collection-artifacts.js';
 import { retry } from './lib/retry.js';
 import { createSecretMasker, createMutableSecretMasker, type SecretMasker } from './lib/secrets.js';
-import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-telemetry-core';
+import { createTelemetryContext, type TelemetryContext } from '@postman-cse/automation-core';
 import { resolveActionVersion } from './action-version.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { acquireDefinitionBundle } from './lib/spec/acquire-definition-bundle.js';

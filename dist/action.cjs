@@ -340388,7 +340388,7 @@ function getIDToken(aud) {
 }
 
 // src/index.ts
-var import_node_crypto10 = require("node:crypto");
+var import_node_crypto11 = require("node:crypto");
 var import_promises3 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var path11 = __toESM(require("node:path"), 1);
@@ -344266,7 +344266,7 @@ var PostmanExtensibleCollectionClient = class {
 var V2 = __toESM(require_v2(), 1);
 var V3 = __toESM(require_v3(), 1);
 var import_transforms = __toESM(require_transforms(), 1);
-var import_node_crypto7 = require("node:crypto");
+var import_node_crypto8 = require("node:crypto");
 
 // node_modules/@postman-cse/automation-core/dist/ci-context.js
 function norm(value) {
@@ -368456,7 +368456,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "2d8bac25369a360c06fa155f625774566ed6dddc",
+  bootstrapCommit: "df30832f462194e0c5dc10bcba4d1cf3b520b177",
   legs: [
     {
       mode: "nonorg",
@@ -369542,6 +369542,30 @@ function specTreeNextCursor(value) {
   return typeof cursor?.next === "string" ? cursor.next.trim() : "";
 }
 
+// src/lib/postman/spec-upload-payload.ts
+var import_node_crypto7 = require("node:crypto");
+var SPEC_HUB_RAW_PAYLOAD_LIMIT_BYTES = 20 * 1024 * 1024;
+function rawSpecUploadPayloadBytes(files) {
+  let totalBytes = 0;
+  for (const file of files) {
+    totalBytes += Buffer.byteLength(file.content, "utf8");
+  }
+  return totalBytes;
+}
+function assertRawSpecUploadPayloadWithinLimit(files) {
+  const materialized = [...files];
+  const totalBytes = rawSpecUploadPayloadBytes(materialized);
+  if (totalBytes > SPEC_HUB_RAW_PAYLOAD_LIMIT_BYTES) {
+    throw new Error(
+      `CONTRACT_SPEC_HUB_PAYLOAD_TOO_LARGE: Raw Spec Hub upload is ${totalBytes} bytes across ${materialized.length} file(s), exceeding the ${SPEC_HUB_RAW_PAYLOAD_LIMIT_BYTES}-byte (20 MiB) platform limit. Reduce or split the authored specification before retrying.`
+    );
+  }
+  return totalBytes;
+}
+function specContentSha256(content) {
+  return (0, import_node_crypto7.createHash)("sha256").update(content, "utf8").digest("hex");
+}
+
 // src/lib/postman/postman-gateway-assets-client.ts
 function asItemArray(value) {
   return Array.isArray(value) ? value : [];
@@ -369729,7 +369753,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
   onRetry;
   constructor(options) {
     this.gateway = options.gateway;
-    this.createIdentity = options.createIdentity ?? import_node_crypto7.randomUUID;
+    this.createIdentity = options.createIdentity ?? import_node_crypto8.randomUUID;
     this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve6) => setTimeout(resolve6, delayMs)));
     this.random = options.random ?? Math.random;
     this.generationPollAttempts = resolvePollBudget(
@@ -369804,6 +369828,9 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
     if (openapiVersion !== "3.0" && openapiVersion !== "3.1") {
       throw new Error(`uploadSpec: unsupported openapiVersion "${openapiVersion}". Expected '3.0' or '3.1'.`);
     }
+    assertRawSpecUploadPayloadWithinLimit([
+      { path: "index.yaml", content: specContent }
+    ]);
     const before = await this.findSpecificationsByExactName(workspaceId, projectName);
     const existing = adoptExactMatch(
       `specification:${workspaceId}:${projectName}`,
@@ -369854,6 +369881,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
     if (specId !== createdSpecId) {
       await this.updateSpec(specId, specContent, workspaceId);
     }
+    await this.assertStoredSpecContent(specId, specContent, "create");
     await this.gateway.requestJson({
       service: "specification",
       method: "get",
@@ -369978,6 +370006,9 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
    */
   async updateSpec(specId, specContent, _workspaceId) {
     void _workspaceId;
+    assertRawSpecUploadPayloadWithinLimit([
+      { path: "index.yaml", content: specContent }
+    ]);
     const fileId = await this.resolveRootFileId(specId);
     if (!fileId) {
       throw new Error(`updateSpec: could not resolve a root file id for specification ${specId}`);
@@ -369991,6 +370022,22 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
       retry: "safe",
       body: [{ op: "replace", path: "/content", value: specContent }]
     });
+    await this.assertStoredSpecContent(specId, specContent, "update");
+  }
+  async assertStoredSpecContent(specId, expectedContent, operation) {
+    const expectedSha256 = specContentSha256(expectedContent);
+    const storedContent = await this.readSpecContent(specId);
+    if (storedContent === void 0) {
+      throw new Error(
+        `CONTRACT_SPEC_HUB_FIDELITY_FAILED: Unable to read stored content after ${operation} for ${specId}; expected sha256=${expectedSha256}`
+      );
+    }
+    const storedSha256 = specContentSha256(storedContent);
+    if (storedSha256 !== expectedSha256) {
+      throw new Error(
+        `CONTRACT_SPEC_HUB_FIDELITY_FAILED: Stored content mismatch after ${operation} for ${specId}; expected sha256=${expectedSha256}, got sha256=${storedSha256}`
+      );
+    }
   }
   /**
    * Read a spec's root file content through the gateway (no PMAK). Mirrors the
@@ -370002,19 +370049,22 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
    */
   async getSpecContent(specId) {
     try {
-      const fileId = await this.resolveRootFileId(specId);
-      if (!fileId) return void 0;
-      const file = await this.gateway.requestJson({
-        service: "specification",
-        method: "get",
-        path: `/specifications/${specId}/files/${fileId}`,
-        query: { fields: "content" }
-      });
-      const content = asRecord12(file?.data)?.content ?? file?.content;
-      return typeof content === "string" ? content : void 0;
+      return await this.readSpecContent(specId);
     } catch {
       return void 0;
     }
+  }
+  async readSpecContent(specId) {
+    const fileId = await this.resolveRootFileId(specId);
+    if (!fileId) return void 0;
+    const file = await this.gateway.requestJson({
+      service: "specification",
+      method: "get",
+      path: `/specifications/${specId}/files/${fileId}`,
+      query: { fields: "content" }
+    });
+    const content = asRecord12(file?.data)?.content ?? file?.content;
+    return typeof content === "string" ? content : void 0;
   }
   /**
    * Create (or adopt+reconcile) a multi-file OpenAPI Spec Hub definition from a
@@ -370024,6 +370074,12 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
    * new create that fails verification is whole-deleted (not per-file rolled back).
    */
   async uploadSpecBundle(workspaceId, projectName, bundle3, openapiVersion = "3.0") {
+    assertRawSpecUploadPayloadWithinLimit(
+      [...bundle3.files.values()].map((file) => ({
+        path: file.path,
+        content: file.content
+      }))
+    );
     const before = await this.findSpecificationsByExactName(workspaceId, projectName);
     const existing = adoptExactMatch(
       `specification:${workspaceId}:${projectName}`,
@@ -370248,6 +370304,12 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
    * retries. Root path change throws when rootPathChange=false.
    */
   async reconcileSpecBundle(specId, target) {
+    assertRawSpecUploadPayloadWithinLimit(
+      [...target.files.values()].map((file) => ({
+        path: file.path,
+        content: file.content
+      }))
+    );
     const policy = this.reconcileCapabilityPolicy;
     const priorState = await this.loadSpecBundleState(specId, target.format);
     const prior = priorState.bundle;
@@ -371966,7 +372028,7 @@ ${error2.responseBody ?? ""}`
     const importPayload = this.cloneJson(prepared);
     const info2 = asRecord12(importPayload.info) ?? {};
     info2.name = tempName;
-    info2._postman_id = (0, import_node_crypto7.randomUUID)();
+    info2._postman_id = (0, import_node_crypto8.randomUUID)();
     importPayload.info = info2;
     this.assertV21Collection(importPayload);
     const journaledRootIds = [];
@@ -373094,7 +373156,7 @@ function detectRepoContext2(input, env = process.env) {
 }
 
 // src/lib/repo/local-collection-artifacts.ts
-var import_node_crypto8 = require("node:crypto");
+var import_node_crypto9 = require("node:crypto");
 var import_node_fs6 = require("node:fs");
 var fs3 = __toESM(require("node:fs/promises"), 1);
 var path10 = __toESM(require("node:path"), 1);
@@ -373145,7 +373207,7 @@ async function persistLocalOpenApiArtifactManifest(repoRoot, finalized, dependen
   await assertNoSymlinksInTree(parent, ".postman");
   await assertNoSymlinksInTree(abs, relative3);
   await fs3.mkdir(parent, { recursive: true });
-  const temp = path10.join(parent, `.${path10.basename(abs)}.${(0, import_node_crypto8.randomUUID)()}.tmp`);
+  const temp = path10.join(parent, `.${path10.basename(abs)}.${(0, import_node_crypto9.randomUUID)()}.tmp`);
   const rename3 = dependencies.rename ?? ((oldPath, newPath) => fs3.rename(oldPath, newPath));
   try {
     const handle = await fs3.open(temp, "wx");
@@ -373171,7 +373233,7 @@ function deriveArtifactSafeCollectionName(displayName) {
   if (trimmed && SAFE_COLLECTION_NAME.test(trimmed)) {
     return trimmed;
   }
-  const digest = (0, import_node_crypto8.createHash)("sha256").update(original).digest("hex");
+  const digest = (0, import_node_crypto9.createHash)("sha256").update(original).digest("hex");
   return `collection-${digest}`;
 }
 function asArray6(value) {
@@ -373388,7 +373450,7 @@ async function listRegularFilesRelative(dir, base) {
 }
 async function computeArtifactDigestFromTree(absDir) {
   const relatives = (await listRegularFilesRelative(absDir, absDir)).sort((a, b) => a.localeCompare(b));
-  const hash = (0, import_node_crypto8.createHash)("sha256");
+  const hash = (0, import_node_crypto9.createHash)("sha256");
   for (const relative3 of relatives) {
     hash.update(relative3);
     hash.update("\0");
@@ -373704,7 +373766,7 @@ async function materializeLocalCollectionArtifacts(input) {
     await assertNoSymlinksInTree(plan.absCollectionPath, plan.collectionPath);
   }
   const snapshots = [];
-  const snapshotStoreRoot = path10.join(runTempDir, "snapshots", (0, import_node_crypto8.randomUUID)());
+  const snapshotStoreRoot = path10.join(runTempDir, "snapshots", (0, import_node_crypto9.randomUUID)());
   await fs3.mkdir(snapshotStoreRoot, { recursive: true });
   for (const [index, plan] of rolePlans.entries()) {
     snapshots.push(await snapshotPath(plan.absCollectionPath, snapshotStoreRoot, `role-${index}-${plan.role}`));
@@ -396444,7 +396506,7 @@ function parseWsdl(content, opts) {
 }
 
 // src/lib/protocols/soap/builder.ts
-var import_node_crypto9 = require("node:crypto");
+var import_node_crypto10 = require("node:crypto");
 var COLLECTION_V210_SCHEMA2 = "https://schema.getpostman.com/json/collection/v2.1.0/collection.json";
 var SOAP11_ENVELOPE_NS = "http://schemas.xmlsoap.org/soap/envelope/";
 var SOAP12_ENVELOPE_NS = "http://www.w3.org/2003/05/soap-envelope";
@@ -396452,7 +396514,7 @@ var SOAP11_CONTENT_TYPE = "text/xml; charset=UTF-8";
 var SOAP12_CONTENT_TYPE = "application/soap+xml; charset=UTF-8";
 var WSA_NS = "http://www.w3.org/2005/08/addressing";
 function stableId2(seed) {
-  return (0, import_node_crypto9.createHash)("sha256").update(seed).digest("hex").slice(0, 32);
+  return (0, import_node_crypto10.createHash)("sha256").update(seed).digest("hex").slice(0, 32);
 }
 function envelopeNamespace(version) {
   return version === "1.2" ? SOAP12_ENVELOPE_NS : SOAP11_ENVELOPE_NS;
@@ -403473,63 +403535,6 @@ function decideBranchTier(inputs, env = process.env) {
     env
   );
 }
-function embedSpecBranchMarker(content, decision, repo, previousContent) {
-  if (decision.tier !== "preview" && decision.tier !== "channel" || !decision.identity.headBranch || !repo) {
-    return content;
-  }
-  const rawBranch = decision.identity.headBranch;
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const priorMarker = extractSpecBranchMarker(previousContent);
-  const sameGeneration = priorMarker !== void 0 && priorMarker.repo === repo && priorMarker.rawBranch === rawBranch && priorMarker.role === decision.tier;
-  const createdAt = sameGeneration ? priorMarker.createdAt : now;
-  const buildMarker = (lastSyncedAt) => ({
-    repo,
-    rawBranch,
-    sanitizedBranch: rawBranch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-+/g, "-").slice(0, 30),
-    role: decision.tier,
-    headSha: decision.identity.headSha,
-    createdAt,
-    lastSyncedAt
-  });
-  const render = (marker) => {
-    try {
-      if (content.trim().startsWith("{")) {
-        return `${JSON.stringify({ ...JSON.parse(content), "x-postman-onboarding": marker }, null, 2)}
-`;
-      }
-      const document2 = (0, import_yaml7.parse)(content);
-      if (!document2 || typeof document2 !== "object" || Array.isArray(document2)) return void 0;
-      return (0, import_yaml7.stringify)({ ...document2, "x-postman-onboarding": marker });
-    } catch {
-      return void 0;
-    }
-  };
-  if (sameGeneration && previousContent !== void 0) {
-    const unchanged = render(buildMarker(priorMarker.lastSyncedAt));
-    if (unchanged === previousContent) {
-      return unchanged;
-    }
-  }
-  return render(buildMarker(now)) ?? content;
-}
-function extractSpecBranchMarker(content) {
-  if (!content) return void 0;
-  let document2;
-  try {
-    document2 = content.trim().startsWith("{") ? JSON.parse(content) : (0, import_yaml7.parse)(content);
-  } catch {
-    return void 0;
-  }
-  if (!document2 || typeof document2 !== "object" || Array.isArray(document2)) return void 0;
-  const marker = document2["x-postman-onboarding"];
-  if (!marker || typeof marker !== "object" || Array.isArray(marker)) return void 0;
-  const record = marker;
-  const { repo, rawBranch, role, createdAt, lastSyncedAt } = record;
-  if (typeof repo !== "string" || typeof rawBranch !== "string" || typeof role !== "string" || typeof createdAt !== "string" || typeof lastSyncedAt !== "string") {
-    return void 0;
-  }
-  return { repo, rawBranch, role, createdAt, lastSyncedAt };
-}
 function renderCollectionBranchMarker(decision, repo, now = /* @__PURE__ */ new Date()) {
   if (decision.tier !== "preview" && decision.tier !== "channel" || !decision.identity.headBranch || !repo) {
     return void 0;
@@ -404312,34 +404317,6 @@ function requireBundleGatewayOp(fn, name) {
   }
   return fn;
 }
-function withReplacedRootContent(bundle3, rootContent) {
-  const rootBytes = Buffer.from(rootContent, "utf8");
-  const files = [...bundle3.files.values()].map((file) => {
-    if (file.path === bundle3.rootPath) {
-      return createDefinitionFile({
-        path: file.path,
-        role: "root",
-        bytes: Uint8Array.from(rootBytes)
-      });
-    }
-    return createDefinitionFile({
-      path: file.path,
-      role: file.role,
-      bytes: file.bytes
-    });
-  });
-  return createDefinitionBundle({
-    rootPath: bundle3.rootPath,
-    format: bundle3.format,
-    completeness: bundle3.completeness,
-    provenance: {
-      source: bundle3.provenance.source,
-      ...bundle3.provenance.provider ? { provider: bundle3.provenance.provider } : {},
-      evidence: [...bundle3.provenance.evidence]
-    },
-    files
-  });
-}
 function persistWorkspaceOnlyState(stateStore, resourcesState, inputs, outputs, persistWorkspaceId, assetProjectName, releaseLabel) {
   if (!persistWorkspaceId || !outputs["workspace-id"]) return;
   const workspaceOutputs = {
@@ -404667,7 +404644,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     );
   }
   const useMultiFileSync = Boolean(sourceDefinitionBundle && sourceDefinitionBundle.files.size > 1);
-  const specContent = await runGroup(
+  const internalComparisonSpecContent = await runGroup(
     dependencies.core,
     "Preflight OpenAPI Contract",
     async () => {
@@ -404728,10 +404705,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
             );
           }
-          previousSpecContent = preserveSourceSpecBytes ? previousRoot : normalizeSpecDocument(
-            previousRoot,
-            (msg) => dependencies.core.warning(`Previous spec normalization: ${msg}`)
-          );
+          previousSpecContent = previousRoot;
           const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
           if (existingSpecType !== incomingSpecType) {
             throw new Error(
@@ -404745,11 +404719,8 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               `Unable to verify existing Spec Hub OpenAPI version for spec-id ${specId}; clear spec-id to create a fresh spec`
             );
           }
-          previousSpecContent = preserveSourceSpecBytes ? previousRaw : normalizeSpecDocument(
-            previousRaw,
-            (msg) => dependencies.core.warning(`Previous spec normalization: ${msg}`)
-          );
-          previousSpecRollbackHash = (0, import_node_crypto10.createHash)("sha256").update(previousSpecContent).digest("hex");
+          previousSpecContent = previousRaw;
+          previousSpecRollbackHash = (0, import_node_crypto11.createHash)("sha256").update(previousSpecContent).digest("hex");
           const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
           if (existingSpecType !== incomingSpecType) {
             throw new Error(
@@ -404778,7 +404749,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
         baselineSpecPath: inputs.breakingBaselineSpecPath,
         // Breaking checks retain the original source tree/root, not upload markers.
         currentSourceContent: sourceSpecContent,
-        currentUploadContent: specContent,
+        currentUploadContent: internalComparisonSpecContent,
         logPath: inputs.breakingLogPath,
         mode: inputs.breakingChangeMode,
         previousSpecContent,
@@ -404803,15 +404774,23 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       `OpenAPI breaking-change check failed: ${breakingChangeResult.message || "breaking changes detected"}`
     );
   }
-  const uploadSpecContent = embedSpecBranchMarker(
-    specContent,
-    branchDecision,
-    inputs.repoUrl,
-    previousSpecContent
-  );
+  const rawUploadSpecContent = sourceSpecContent;
   if (sourceDefinitionBundle && useMultiFileSync) {
-    uploadDefinitionBundle = withReplacedRootContent(sourceDefinitionBundle, uploadSpecContent);
+    uploadDefinitionBundle = sourceDefinitionBundle;
     assertMultiFileSpecSyncEnabled(uploadDefinitionBundle);
+    assertRawSpecUploadPayloadWithinLimit(
+      [...uploadDefinitionBundle.files.values()].map((file) => ({
+        path: file.path,
+        content: file.content
+      }))
+    );
+  } else {
+    assertRawSpecUploadPayloadWithinLimit([
+      {
+        path: sourceDefinitionBundle?.rootPath || "index.yaml",
+        content: rawUploadSpecContent
+      }
+    ]);
   }
   const provisioned = await provisionWorkspace(
     inputs,
@@ -405073,7 +405052,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               previousSpecRollbackHash = uploaded.priorSnapshot?.digest || "";
             }
           } else if (specId) {
-            if (previousSpecContent !== void 0 && (0, import_node_crypto10.createHash)("sha256").update(uploadSpecContent).digest("hex") === (0, import_node_crypto10.createHash)("sha256").update(previousSpecContent).digest("hex")) {
+            if (previousSpecContent !== void 0 && (0, import_node_crypto11.createHash)("sha256").update(rawUploadSpecContent).digest("hex") === (0, import_node_crypto11.createHash)("sha256").update(previousSpecContent).digest("hex")) {
               specContentUnchanged = true;
               dependencies.core.info(
                 `Spec content unchanged (sha256 match); skipping Spec Hub update and version tag for ${specId}.`
@@ -405082,14 +405061,14 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               dependencies.core.info(
                 `Updating existing spec ${specId} (detected version: ${detectedOpenapiVersion}). Note: the spec type (OPENAPI:3.0 / OPENAPI:3.1) is set at creation and cannot be changed on update. If you changed OpenAPI versions, clear the spec-id input to create a fresh spec.`
               );
-              await dependencies.postman.updateSpec(specId, uploadSpecContent, workspaceId);
+              await dependencies.postman.updateSpec(specId, rawUploadSpecContent, workspaceId);
             }
           } else {
             if (dependencies.postman.uploadSpecWithOutcome) {
               const uploaded = await dependencies.postman.uploadSpecWithOutcome(
                 workspaceId || "",
                 assetName,
-                uploadSpecContent,
+                rawUploadSpecContent,
                 detectedOpenapiVersion
               );
               specId = uploaded.specId;
@@ -405098,7 +405077,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               specId = await dependencies.postman.uploadSpec(
                 workspaceId || "",
                 assetName,
-                uploadSpecContent,
+                rawUploadSpecContent,
                 detectedOpenapiVersion
               );
               createdNewSpec = true;

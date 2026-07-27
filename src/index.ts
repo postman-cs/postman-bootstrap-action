@@ -2915,7 +2915,7 @@ async function runBootstrapInner(
 
   const failOwned = async (stage: string, cause: unknown): Promise<never> => {
     const mask = createBootstrapSecretMasker(inputs);
-    const sanitizedCause = formatMaskedOneLine(cause, mask).slice(0, 240);
+    const sanitizedCause = formatMaskedOneLine(cause, mask);
     await compensateOwnedLocalOpenApiImports(stage);
     throw new Error(
       `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`

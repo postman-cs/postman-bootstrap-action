@@ -108,13 +108,13 @@ function deepClone<T>(value: T): T {
 function sanitizeCause(cause: unknown): string | undefined {
   if (cause === undefined || cause === null) return undefined;
   if (cause instanceof Error) {
-    return cause.message.replace(/\s+/g, ' ').trim().slice(0, 240);
+    return cause.message.replace(/\s+/g, ' ').trim();
   }
   if (typeof cause === 'string') {
-    return cause.replace(/\s+/g, ' ').trim().slice(0, 240);
+    return cause.replace(/\s+/g, ' ').trim();
   }
   if (isRecord(cause) && typeof cause.message === 'string') {
-    return cause.message.replace(/\s+/g, ' ').trim().slice(0, 240);
+    return cause.message.replace(/\s+/g, ' ').trim();
   }
   return 'non-error failure';
 }

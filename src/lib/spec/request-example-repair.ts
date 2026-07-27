@@ -48,6 +48,40 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function restoreRecord(target: JsonRecord, snapshot: JsonRecord): void {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, snapshot);
+}
+
+function repairCause(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isInvalidAuthoredExample(error: unknown): boolean {
+  return repairCause(error).includes('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH');
+}
+
+function repairExampleOrWarn(
+  target: JsonRecord,
+  context: string,
+  warnings: string[],
+  repair: () => void
+): void {
+  const snapshot = clone(target);
+  try {
+    repair();
+  } catch (error) {
+    if (isInvalidAuthoredExample(error)) throw error;
+    restoreRecord(target, snapshot);
+    warnings.push(
+      `LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: Preserved converter-generated ${context} ` +
+        `without repair because repair could not be completed: ${repairCause(error)}`
+    );
+  }
+}
+
 function stableValue(value: unknown): string {
   if (value === undefined) return 'undefined';
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -935,10 +969,33 @@ export function repairGeneratedCollectionExamples(
         const matched = matchOperation(index, raw.request);
         const operation = matched.operation ?? matchWebhookOperation(index, raw);
         if (operation) {
-          repairRequest(operation, raw.request, sourceRoot, index, candidate);
+          repairExampleOrWarn(
+            raw.request,
+            `request example for ${operation.id}`,
+            warnings,
+            () => repairRequest(operation, raw.request as JsonRecord, sourceRoot, index, candidate)
+          );
           for (const saved of Array.isArray(raw.response) ? raw.response.filter(isRecord) : []) {
-            if (isRecord(saved.originalRequest)) repairRequest(operation, saved.originalRequest, sourceRoot, index, candidate);
-            repairSavedResponse(operation, saved, sourceRoot, index, candidate);
+            if (isRecord(saved.originalRequest)) {
+              repairExampleOrWarn(
+                saved.originalRequest,
+                `saved original request example for ${operation.id}`,
+                warnings,
+                () => repairRequest(
+                  operation,
+                  saved.originalRequest as JsonRecord,
+                  sourceRoot,
+                  index,
+                  candidate
+                )
+              );
+            }
+            repairExampleOrWarn(
+              saved,
+              `saved response example for ${operation.id}`,
+              warnings,
+              () => repairSavedResponse(operation, saved, sourceRoot, index, candidate)
+            );
           }
         }
       }

@@ -502,7 +502,7 @@ describe('local OpenAPI role payload generation', () => {
     expect(firstRequestItem(generated.roles.smoke.collection)).toBeDefined();
   });
 
-  it('throws a typed conversion error with sanitized stage/cause and no secret leakage', async () => {
+  it('throws a typed conversion error with a complete single-line stage/cause', async () => {
     await expect(
       generateLocalOpenApiRolePayloads('', {
         openApiVersion: '3.0',
@@ -517,12 +517,13 @@ describe('local OpenAPI role payload generation', () => {
       stage: 'validate-input'
     });
 
-    const secretMarker = 'private-spec-marker-that-must-not-leak';
+    const terminalMarker = 'terminal-cause-marker-must-survive';
+    const completeCause = `converter failed ${'x'.repeat(280)} ${terminalMarker}`;
     const converter: LocalOpenApiConverter = (_input, _options, callback) => {
-      callback(Object.assign(new Error(`${secretMarker} boom`), { message: `${secretMarker} boom` }));
+      callback(new Error(`${completeCause}\nsecond line`));
     };
     const error = await generateLocalOpenApiRolePayloads(
-      oas30.replace('Pet API', secretMarker),
+      oas30,
       {
         openApiVersion: '3.0',
         requestNameSource: 'Fallback',
@@ -536,6 +537,9 @@ describe('local OpenAPI role payload generation', () => {
     expect(error).toBeInstanceOf(LocalOpenApiConversionError);
     expect(error).toMatchObject({ stage: 'convert', code: LOCAL_OPENAPI_CONVERSION_FAILED });
     expect(String((error as Error).message)).toContain('converter callback failed');
+    expect(String((error as Error).message)).toContain(terminalMarker);
+    expect(String((error as Error).message)).toContain('second line');
+    expect(String((error as Error).message)).not.toContain('\n');
   });
 
   it('keeps smoke helper scripts syntactically valid and digest-stable for identical payloads', () => {
@@ -1480,16 +1484,18 @@ describe('local OpenAPI role payload generation', () => {
       }]
     });
 
-    await expect(generateLocalOpenApiRolePayloads(bundled, {
+    const generated = await generateLocalOpenApiRolePayloads(bundled, {
       openApiVersion: '3.0',
       requestNameSource: 'Fallback',
       folderStrategy: 'Paths',
       names: { baseline: 'Pattern', smoke: '[Smoke] Pattern', contract: '[Contract] Pattern' },
       contractIndex: indexFor(bundled)
-    }, { converter })).rejects.toMatchObject({
-      code: LOCAL_OPENAPI_CONVERSION_FAILED,
-      stage: 'repair-request-examples',
-      sanitizedCause: expect.stringContaining('could not be safely repaired')
-    });
+    }, { converter });
+
+    expect(generated.warnings).toEqual([
+      expect.stringContaining('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
+    ]);
+    expect(generated.warnings[0]).toContain('could not be safely repaired');
+    expect(firstJsonRequestBody(generated.roles.baseline.collection)).toEqual({ code: 'bbb' });
   });
 });

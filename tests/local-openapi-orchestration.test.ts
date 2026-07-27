@@ -377,39 +377,24 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
-  it('fails unrepairable generated examples before materialization or collection writes', async () => {
+  it('completes collection generation with a warning when a recursive request example cannot be repaired', async () => {
     await withRepo(async (repoRoot) => {
-      await writeFile(path.join(repoRoot, 'openapi.yaml'), JSON.stringify({
-        openapi: '3.1.0',
-        info: { title: 'Impossible API', version: '1.0.0' },
-        paths: {
-          '/impossible': {
-            post: {
-              operationId: 'createImpossible',
-              requestBody: {
-                required: true,
-                content: {
-                  'application/json': {
-                    schema: {
-                      type: 'object',
-                      required: ['code'],
-                      properties: { code: { type: 'string', pattern: '^A$', minLength: 2 } }
-                    }
-                  }
-                }
-              },
-              responses: { '200': { description: 'ok' } }
-            }
-          }
-        }
-      }));
+      const recursiveFixture = await readFile(
+        new URL('./fixtures/local-openapi-recursive-request.json', import.meta.url),
+        'utf8'
+      );
+      await writeFile(path.join(repoRoot, 'openapi.yaml'), recursiveFixture);
       const events: string[] = [];
       const core = createCoreStub();
       const postman = buildPostman(events);
       const internalIntegration = buildIntegration(events);
       const materialize = vi.spyOn(localCollectionArtifacts, 'materializeLocalCollectionArtifacts');
 
-      await expect(runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+      const outputs = await runBootstrap(createInputs({
+        projectName: 'recursive-request',
+        syncExamples: false,
+        workspaceId: 'ws-1'
+      }), {
         core,
         exec: createExecStub(),
         io: { which: async () => 'tool' },
@@ -420,12 +405,72 @@ describe('local OpenAPI orchestration', () => {
           write: () => undefined
         },
         specFetcher: vi.fn()
-      })).rejects.toThrow(/repair-request-examples/);
+      });
 
-      expect(materialize).not.toHaveBeenCalled();
-      expect(postman.importV2Collection).not.toHaveBeenCalled();
+      expect(materialize).toHaveBeenCalledOnce();
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
-      expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+      expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledOnce();
+      expect(outputs['baseline-collection-id']).toBe('col-baseline');
+      expect(outputs['smoke-collection-id']).toBe('col-smoke');
+      expect(outputs['contract-collection-id']).toBe('col-contract');
+      const repairWarning = core.warnings.find((warning) =>
+        warning.includes('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
+      );
+      expect(repairWarning).toContain('request example for POST /nodes');
+      expect(repairWarning).toContain('Maximum call stack size exceeded');
+    });
+  });
+
+  it('preserves the full local-conversion cause through orchestration without slicing it', async () => {
+    await withRepo(async (repoRoot) => {
+      const terminalMarker = 'terminal-cause-marker-must-survive';
+      const longPath = `/${'x'.repeat(280)}-${terminalMarker}`;
+      await writeFile(path.join(repoRoot, 'openapi.yaml'), JSON.stringify({
+        openapi: '3.1.0',
+        info: { title: 'Full cause API', version: '1.0.0' },
+        paths: {
+          [longPath]: {
+            post: {
+              operationId: 'createWithInvalidAuthoredExample',
+              requestBody: {
+                required: true,
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'object',
+                      required: ['code'],
+                      properties: { code: { type: 'string', pattern: '^A+$' } }
+                    },
+                    example: { code: 'invalid' }
+                  }
+                }
+              },
+              responses: { '200': { description: 'ok' } }
+            }
+          }
+        }
+      }));
+      const postman = buildPostman([]);
+      const error = await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+        core: createCoreStub(),
+        exec: createExecStub(),
+        io: { which: async () => 'tool' },
+        internalIntegration: buildIntegration([]),
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState: {
+          read: () => null,
+          write: () => undefined
+        },
+        specFetcher: vi.fn()
+      }).catch((cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('LOCAL_OPENAPI_ORCHESTRATION_FAILED');
+      expect((error as Error).message).toContain('LOCAL_OPENAPI_CONVERSION_FAILED');
+      expect((error as Error).message).toContain('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH');
+      expect((error as Error).message).toContain(terminalMarker);
+      expect(postman.importV2Collection).not.toHaveBeenCalled();
     });
   });
 

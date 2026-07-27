@@ -366033,6 +366033,28 @@ function clone(value) {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
 }
+function restoreRecord(target, snapshot) {
+  for (const key of Object.keys(target)) delete target[key];
+  Object.assign(target, snapshot);
+}
+function repairCause(error) {
+  return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
+}
+function isInvalidAuthoredExample(error) {
+  return repairCause(error).includes("SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH");
+}
+function repairExampleOrWarn(target, context, warnings, repair) {
+  const snapshot = clone(target);
+  try {
+    repair();
+  } catch (error) {
+    if (isInvalidAuthoredExample(error)) throw error;
+    restoreRecord(target, snapshot);
+    warnings.push(
+      `LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: Preserved converter-generated ${context} without repair because repair could not be completed: ${repairCause(error)}`
+    );
+  }
+}
 function stableValue(value) {
   if (value === void 0) return "undefined";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -366719,10 +366741,33 @@ function repairGeneratedCollectionExamples(collection, index, bundledOpenApi, ca
         const matched = matchOperation(index, raw.request);
         const operation = matched.operation ?? matchWebhookOperation(index, raw);
         if (operation) {
-          repairRequest(operation, raw.request, sourceRoot, index, candidate);
+          repairExampleOrWarn(
+            raw.request,
+            `request example for ${operation.id}`,
+            warnings,
+            () => repairRequest(operation, raw.request, sourceRoot, index, candidate)
+          );
           for (const saved of Array.isArray(raw.response) ? raw.response.filter(isRecord2) : []) {
-            if (isRecord2(saved.originalRequest)) repairRequest(operation, saved.originalRequest, sourceRoot, index, candidate);
-            repairSavedResponse(operation, saved, sourceRoot, index, candidate);
+            if (isRecord2(saved.originalRequest)) {
+              repairExampleOrWarn(
+                saved.originalRequest,
+                `saved original request example for ${operation.id}`,
+                warnings,
+                () => repairRequest(
+                  operation,
+                  saved.originalRequest,
+                  sourceRoot,
+                  index,
+                  candidate
+                )
+              );
+            }
+            repairExampleOrWarn(
+              saved,
+              `saved response example for ${operation.id}`,
+              warnings,
+              () => repairSavedResponse(operation, saved, sourceRoot, index, candidate)
+            );
           }
         }
       }
@@ -366762,13 +366807,13 @@ function deepClone2(value) {
 function sanitizeCause(cause) {
   if (cause === void 0 || cause === null) return void 0;
   if (cause instanceof Error) {
-    return cause.message.replace(/\s+/g, " ").trim().slice(0, 240);
+    return cause.message.replace(/\s+/g, " ").trim();
   }
   if (typeof cause === "string") {
-    return cause.replace(/\s+/g, " ").trim().slice(0, 240);
+    return cause.replace(/\s+/g, " ").trim();
   }
   if (isRecord3(cause) && typeof cause.message === "string") {
-    return cause.message.replace(/\s+/g, " ").trim().slice(0, 240);
+    return cause.message.replace(/\s+/g, " ").trim();
   }
   return "non-error failure";
 }
@@ -367297,7 +367342,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "88f08a5427d5d8301169a26db759047aa7990f1a",
+  bootstrapCommit: "81a969c991386159807cb4b29a6b4cd5fac8617c",
   legs: [
     {
       mode: "nonorg",
@@ -403756,7 +403801,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   };
   const failOwned = async (stage, cause) => {
     const mask = createBootstrapSecretMasker(inputs);
-    const sanitizedCause = formatMaskedOneLine(cause, mask).slice(0, 240);
+    const sanitizedCause = formatMaskedOneLine(cause, mask);
     await compensateOwnedLocalOpenApiImports(stage);
     throw new Error(
       `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(",")}] cause=${sanitizedCause}`

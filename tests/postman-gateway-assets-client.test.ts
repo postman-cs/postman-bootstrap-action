@@ -15,6 +15,7 @@ import {
   definitionBundleToSnapshot,
   type SpecReconcileCapabilityPolicy
 } from '../src/lib/postman/spec-file-reconcile.js';
+import { SPEC_HUB_RAW_PAYLOAD_LIMIT_BYTES } from '../src/lib/postman/spec-upload-payload.js';
 
 interface Envelope {
   service: string;
@@ -33,6 +34,21 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
     headers: { 'Content-Type': 'application/json' },
     ...init
   });
+}
+
+function singleFileReadback(
+  env: Envelope,
+  specId: string,
+  content: string,
+  fileId = 'root-file'
+): Response | undefined {
+  if (env.method === 'get' && env.path === `/specifications/${specId}/files`) {
+    return jsonResponse({ data: [{ id: fileId, type: 'ROOT', path: 'index.yaml' }] });
+  }
+  if (env.method === 'get' && env.path === `/specifications/${specId}/files/${fileId}`) {
+    return jsonResponse({ data: { id: fileId, content } });
+  }
+  return undefined;
 }
 
 /**
@@ -96,6 +112,8 @@ describe('PostmanGatewayAssetsClient', () => {
     it('creates a spec with a file-level type ROOT and returns data.id', async () => {
       const { client, calls } = makeClient((env) => {
         if (env.method === 'post') return jsonResponse({ meta: {}, data: { id: 'spec-1', type: 'OPENAPI:3.0' } });
+        const readback = singleFileReadback(env, 'spec-1', 'openapi: 3.0.3');
+        if (readback) return readback;
         return jsonResponse({ data: { id: 'spec-1' } }); // preflight GET
       });
 
@@ -125,6 +143,8 @@ describe('PostmanGatewayAssetsClient', () => {
           created = true;
           return jsonResponse({ data: { id: 'spec-owned' } });
         }
+        const readback = singleFileReadback(env, 'spec-owned', 'openapi: 3.0.3');
+        if (readback) return readback;
         return jsonResponse({ data: { id: 'spec-owned' } });
       });
 
@@ -134,7 +154,11 @@ describe('PostmanGatewayAssetsClient', () => {
     });
 
     it('maps 3.1 to OPENAPI:3.1 and rejects unsupported versions', async () => {
-      const { client } = makeClient(() => jsonResponse({ data: { id: 's' } }));
+      const { client } = makeClient((env) => {
+        const readback = singleFileReadback(env, 's', 'x');
+        if (readback) return readback;
+        return jsonResponse({ data: { id: 's' } });
+      });
       await client.uploadSpec('ws', 'n', 'x', '3.1');
       await expect(client.uploadSpec('ws', 'n', 'x', '2.0')).rejects.toThrow(/unsupported openapiVersion/);
     });
@@ -172,6 +196,9 @@ describe('PostmanGatewayAssetsClient', () => {
           return jsonResponse({ data: [{ id: 'root-a', type: 'ROOT' }] });
         }
         if (env.method === 'patch') return jsonResponse({ data: { id: 'root-a' } });
+        if (env.path === '/specifications/spec-a/files/root-a') {
+          return jsonResponse({ data: { id: 'root-a', content: 'openapi: 3.0.3' } });
+        }
         return jsonResponse({ data: { id: 'spec-a' } });
       });
 
@@ -225,6 +252,9 @@ describe('PostmanGatewayAssetsClient', () => {
           return jsonResponse({ data: [{ id: 'root-a', type: 'ROOT' }] });
         }
         if (env.method === 'patch') return jsonResponse({ data: { id: 'root-a' } });
+        if (env.path === '/specifications/spec-a/files/root-a') {
+          return jsonResponse({ data: { id: 'root-a', content: 'openapi: 3.0.3' } });
+        }
         return jsonResponse({ data: { id: 'spec-a' } });
       });
 
@@ -257,6 +287,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'delete') {
           return jsonResponse({ error: 'winner must not delete a peer-owned spec' }, { status: 500 });
         }
+        const readback = singleFileReadback(env, 'spec-a', 'openapi: 3.0.3');
+        if (readback) return readback;
         return jsonResponse({ data: { id: 'spec-a' } });
       });
 
@@ -264,6 +296,42 @@ describe('PostmanGatewayAssetsClient', () => {
         client.uploadSpecWithOutcome('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
       ).resolves.toEqual({ specId: 'spec-a', created: false });
       expect(calls.some((call) => call.method === 'delete')).toBe(false);
+    });
+
+    it('rejects an oversized raw payload before making a gateway request', async () => {
+      const { client, calls } = makeClient(() =>
+        jsonResponse({ error: 'gateway must not be reached' }, { status: 500 })
+      );
+      const actualBytes = SPEC_HUB_RAW_PAYLOAD_LIMIT_BYTES + 1;
+
+      await expect(
+        client.uploadSpec('ws-1', 'Payments', 'x'.repeat(actualBytes), '3.0')
+      ).rejects.toThrow(`Raw Spec Hub upload is ${actualBytes} bytes`);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('fails when create readback does not match the source sha256', async () => {
+      let created = false;
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('/specifications?')) {
+          return jsonResponse({
+            data: created ? [{ id: 'spec-1', name: 'Payments' }] : []
+          });
+        }
+        if (env.method === 'post' && env.path.includes('/specifications?')) {
+          created = true;
+          return jsonResponse({ data: { id: 'spec-1' } });
+        }
+        const readback = singleFileReadback(env, 'spec-1', 'openapi: 3.0.2');
+        if (readback) return readback;
+        return jsonResponse({ data: { id: 'spec-1' } });
+      });
+
+      await expect(
+        client.uploadSpec('ws-1', 'Payments', 'openapi: 3.0.3', '3.0')
+      ).rejects.toThrow(
+        /CONTRACT_SPEC_HUB_FIDELITY_FAILED: Stored content mismatch after create.*expected sha256=.*got sha256=/
+      );
     });
   });
 
@@ -2518,6 +2586,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
     it('updateSpec retries the spec-file content PATCH after a downstream socket timeout', async () => {
       let patchAttempts = 0;
+      let storedContent = 'openapi: 3.0.2';
       const { client } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/specifications/spec-1/files') {
           return jsonResponse({ data: [{ id: 'file-1', type: 'ROOT' }] });
@@ -2525,7 +2594,11 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.method === 'patch' && env.path === '/specifications/spec-1/files/file-1') {
           patchAttempts += 1;
           if (patchAttempts === 1) return timeout500();
+          storedContent = 'openapi: 3.0.3';
           return jsonResponse({ data: { id: 'file-1' } });
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-1/files/file-1') {
+          return jsonResponse({ data: { id: 'file-1', content: storedContent } });
         }
         return jsonResponse({});
       });
@@ -2533,6 +2606,26 @@ describe('PostmanGatewayAssetsClient', () => {
       await client.updateSpec('spec-1', 'openapi: 3.0.3');
 
       expect(patchAttempts).toBe(2);
+    });
+
+    it('fails when update readback does not match the source sha256', async () => {
+      const source = 'openapi: 3.0.3\n';
+      const { client } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/specifications/spec-1/files') {
+          return jsonResponse({ data: [{ id: 'file-1', type: 'ROOT' }] });
+        }
+        if (env.method === 'patch' && env.path === '/specifications/spec-1/files/file-1') {
+          return jsonResponse({ data: { id: 'file-1' } });
+        }
+        if (env.method === 'get' && env.path === '/specifications/spec-1/files/file-1') {
+          return jsonResponse({ data: { id: 'file-1', content: 'openapi: 3.0.2\n' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(client.updateSpec('spec-1', source)).rejects.toThrow(
+        /CONTRACT_SPEC_HUB_FIDELITY_FAILED: Stored content mismatch after update.*expected sha256=.*got sha256=/
+      );
     });
   });
 
@@ -3010,6 +3103,7 @@ describe('PostmanGatewayAssetsClient', () => {
     });
 
     it('keeps uploadSpec/updateSpec/getSpecContent as one-file wrappers', async () => {
+      let storedContent = 'openapi: 3.0.3';
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path.includes('/specifications?')) {
           return jsonResponse({ data: [] });
@@ -3021,9 +3115,12 @@ describe('PostmanGatewayAssetsClient', () => {
           return jsonResponse({ data: [{ id: 'file-1', type: 'ROOT', path: 'index.yaml' }] });
         }
         if (env.method === 'get' && env.path === '/specifications/spec-1/files/file-1') {
-          return jsonResponse({ data: { id: 'file-1', content: 'openapi: 3.0.3' } });
+          return jsonResponse({ data: { id: 'file-1', content: storedContent } });
         }
-        if (env.method === 'patch') return jsonResponse({ data: { id: 'file-1' } });
+        if (env.method === 'patch') {
+          storedContent = 'openapi: 3.0.3\n';
+          return jsonResponse({ data: { id: 'file-1' } });
+        }
         return jsonResponse({ data: { id: 'spec-1' } });
       });
 

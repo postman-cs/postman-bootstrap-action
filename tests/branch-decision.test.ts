@@ -414,7 +414,7 @@ describe('asset markers', () => {
   });
 });
 
-describe('durable spec marker', () => {
+describe('legacy spec marker renderer', () => {
   it('embeds x-postman-onboarding in preview OpenAPI content without changing canonical content', () => {
     const preview = resolveBranchDecision({
       strategy: 'preview',

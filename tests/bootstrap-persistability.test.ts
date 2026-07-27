@@ -280,7 +280,7 @@ describe('bootstrap persistability and exact-source spec state', () => {
     }
   });
 
-  it('rerun same version key reuses/updates exactly that spec', async () => {
+  it('rerun same version key reuses exactly that spec without rewriting matching source bytes', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-v2-rerun-'));
     writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
     mkdirSync(join(workspace, '.postman'), { recursive: true });
@@ -331,11 +331,7 @@ describe('bootstrap persistability and exact-source spec state', () => {
         );
 
         expect(postman.uploadSpec).not.toHaveBeenCalled();
-        expect(postman.updateSpec).toHaveBeenCalledWith(
-          'spec-v2',
-          expect.stringContaining('"openapi": "3.1.0"'),
-          'ws-existing'
-        );
+        expect(postman.updateSpec).not.toHaveBeenCalled();
         expect(outputs['spec-id']).toBe('spec-v2');
 
         const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
@@ -398,16 +394,7 @@ describe('bootstrap persistability and exact-source spec state', () => {
           }
         );
 
-        expect(postman.updateSpec).toHaveBeenCalledWith(
-          'spec-exact',
-          expect.stringContaining('"openapi": "3.1.0"'),
-          'ws-existing'
-        );
-        expect(postman.updateSpec).not.toHaveBeenCalledWith(
-          'spec-other-first',
-          expect.anything(),
-          expect.anything()
-        );
+        expect(postman.updateSpec).not.toHaveBeenCalled();
         expect(outputs['spec-id']).toBe('spec-exact');
       });
     } finally {

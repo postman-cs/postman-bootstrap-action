@@ -1,0 +1,80 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Recursive upload fidelity",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/nodes/01": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/02": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/03": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/04": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/05": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/06": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/07": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/08": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/09": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/10": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/11": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/12": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/13": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/14": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/15": { "$ref": "#/components/pathItems/Expanded" },
+    "/nodes/16": { "$ref": "#/components/pathItems/Expanded" },
+    "/recursive": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecursiveNode"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "pathItems": {
+      "Expanded": {
+        "get": {
+          "responses": {
+            "200": {
+              "description": "OK",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/Verbose"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Verbose": {
+        "type": "object",
+        "description": "This deliberately repetitive schema description makes a dereferenced representation much larger than the authored source while a separate recursive node keeps the fixture representative of real reference-heavy contracts. This deliberately repetitive schema description makes a dereferenced representation much larger than the authored source while a separate recursive node keeps the fixture representative of real reference-heavy contracts. This deliberately repetitive schema description makes a dereferenced representation much larger than the authored source while a separate recursive node keeps the fixture representative of real reference-heavy contracts. This deliberately repetitive schema description makes a dereferenced representation much larger than the authored source while a separate recursive node keeps the fixture representative of real reference-heavy contracts.",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        }
+      },
+      "RecursiveNode": {
+        "type": "object",
+        "properties": {
+          "next": {
+            "$ref": "#/components/schemas/RecursiveNode"
+          }
+        }
+      }
+    }
+  }
+}

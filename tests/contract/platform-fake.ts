@@ -128,6 +128,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
 
   // Mutable per-run platform state.
   let workspaceVisibility: string | undefined;
+  let specRootContent = 'openapi: 3.0.0';
   let importSeq = 0;
   const collectionsById = new Map<string, { id: string; name: string }>();
   const linkedRelations = new Map<
@@ -318,15 +319,26 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           });
         }
         if (pmethod === 'get' && /\/specifications\/[^/]+\/files\/[^/]+/.test(ppath)) {
-          return json({ data: { id: 'file-root', content: 'openapi: 3.0.0' } });
+          return json({ data: { id: 'file-root', content: specRootContent } });
         }
         if (pmethod === 'get' && /\/specifications\/[^/]+\/files$/.test(ppath)) {
           return json({ data: [{ id: 'file-root', type: 'ROOT' }] });
         }
         if (pmethod === 'patch') {
+          const patches = Array.isArray(proxy.body) ? proxy.body : [];
+          const contentPatch = patches.find(
+            (patch) =>
+              patch &&
+              typeof patch === 'object' &&
+              (patch as { path?: unknown }).path === '/content'
+          ) as { value?: unknown } | undefined;
+          if (typeof contentPatch?.value === 'string') specRootContent = contentPatch.value;
           return json({ data: { id: 'file-root' } });
         }
         if (pmethod === 'post' && ppath.startsWith('/specifications')) {
+          const files = asRecord(proxy.body)?.files;
+          const root = Array.isArray(files) ? asRecord(files[0]) : undefined;
+          if (typeof root?.content === 'string') specRootContent = root.content;
           return json({ data: { id: 'spec-contract' } });
         }
         if (pmethod === 'get' && /\/specifications\/[^/]+$/.test(ppath)) {

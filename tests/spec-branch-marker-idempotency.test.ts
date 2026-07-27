@@ -3,11 +3,9 @@ import { embedSpecBranchMarker } from '../src/index.js';
 import { resolveBranchDecision } from '../src/lib/repo/branch-decision.js';
 
 /**
- * The branch marker is embedded in the bytes uploaded to Spec Hub, so its
- * timestamps decide whether a rerun is digest-equal. Restamping them on every
- * run made the "spec content unchanged" skip unreachable: every rerun wrote a
- * spec whose only diff was the marker clock, and `createdAt` (the branch
- * generation identity preview GC keys off) was reset each time.
+ * Legacy branch-marker rendering remains stable for inspection of specs written
+ * before raw source fidelity became mandatory. Current Spec Hub writes do not
+ * embed this marker.
  */
 
 const identity = (over: Record<string, unknown> = {}) => ({

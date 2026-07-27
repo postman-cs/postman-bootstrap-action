@@ -27,6 +27,8 @@ These codes fail the run.
 | `CONTRACT_SPEC_PATH_NOT_FILE` | `spec-path` resolved to a directory or non-regular file. | Point `spec-path` at a single regular file. |
 | `CONTRACT_SPEC_PATH_SYMLINK` | A definition root or member path was a symlink. | Replace symlinks with real files inside the workspace. |
 | `CONTRACT_SPEC_READ_FAILED` | The `spec-path` file could not be read from the workspace. | Verify the file exists at the configured path and that the workflow checked out the branch that contains it. |
+| `CONTRACT_SPEC_HUB_PAYLOAD_TOO_LARGE` | The aggregate raw UTF-8 source payload exceeded the 20 MiB Spec Hub upload limit. | Reduce the source payload or split the API definition before uploading it. |
+| `CONTRACT_SPEC_HUB_FIDELITY_FAILED` | Spec Hub readback was unavailable or its SHA-256 digest differed from the submitted raw source after create/update. | Retry the upload and inspect the stored root file; do not continue from a spec whose bytes cannot be verified. |
 | `CONTRACT_SPEC_VALIDATION_FAILED` | The bundled document failed OpenAPI validation. | Fix [OpenAPI validation](https://learning.postman.com/docs/design-apis/specifications/validate-a-specification/) errors. |
 | `CONTRACT_DEFINITION_ENCODING_INVALID` | A definition member was not valid UTF-8. | Re-encode the file as UTF-8 without a conflicting BOM rewrite. |
 | `CONTRACT_DEFINITION_INVENTORY_INVALID` | Optional `spec-files-json` failed schema, sort, reachability, or one-root rules. | Emit the exact inventory schema with sorted workspace-relative paths. |

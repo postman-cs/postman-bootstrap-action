@@ -53,6 +53,10 @@ import {
   type SpecReconcileCapabilityPolicy
 } from './spec-file-reconcile.js';
 import { parseSpecTreePage, specTreeNextCursor } from './spec-tree.js';
+import {
+  assertRawSpecUploadPayloadWithinLimit,
+  specContentSha256
+} from './spec-upload-payload.js';
 
 function asItemArray(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? (value as JsonRecord[]) : [];
@@ -441,6 +445,9 @@ export class PostmanGatewayAssetsClient {
     if (openapiVersion !== '3.0' && openapiVersion !== '3.1') {
       throw new Error(`uploadSpec: unsupported openapiVersion "${openapiVersion}". Expected '3.0' or '3.1'.`);
     }
+    assertRawSpecUploadPayloadWithinLimit([
+      { path: 'index.yaml', content: specContent }
+    ]);
     // Resolution-layer idempotency: an absent tracked state must not mean a
     // blind create. Exact final-name lookup adopts one match, fails loudly on
     // ambiguity, and only then enters the randomized-create race guard.
@@ -501,6 +508,7 @@ export class PostmanGatewayAssetsClient {
     if (specId !== createdSpecId) {
       await this.updateSpec(specId, specContent, workspaceId);
     }
+    await this.assertStoredSpecContent(specId, specContent, 'create');
     // Preflight the read so a generate immediately after create does not race.
     await this.gateway.requestJson<JsonRecord>({
       service: 'specification',
@@ -664,6 +672,9 @@ export class PostmanGatewayAssetsClient {
    */
   async updateSpec(specId: string, specContent: string, _workspaceId?: string): Promise<void> {
     void _workspaceId;
+    assertRawSpecUploadPayloadWithinLimit([
+      { path: 'index.yaml', content: specContent }
+    ]);
     const fileId = await this.resolveRootFileId(specId);
     if (!fileId) {
       throw new Error(`updateSpec: could not resolve a root file id for specification ${specId}`);
@@ -677,6 +688,29 @@ export class PostmanGatewayAssetsClient {
       retry: 'safe',
       body: [{ op: 'replace', path: '/content', value: specContent }]
     });
+    await this.assertStoredSpecContent(specId, specContent, 'update');
+  }
+
+  private async assertStoredSpecContent(
+    specId: string,
+    expectedContent: string,
+    operation: 'create' | 'update'
+  ): Promise<void> {
+    const expectedSha256 = specContentSha256(expectedContent);
+    const storedContent = await this.readSpecContent(specId);
+    if (storedContent === undefined) {
+      throw new Error(
+        `CONTRACT_SPEC_HUB_FIDELITY_FAILED: Unable to read stored content after ${operation} ` +
+          `for ${specId}; expected sha256=${expectedSha256}`
+      );
+    }
+    const storedSha256 = specContentSha256(storedContent);
+    if (storedSha256 !== expectedSha256) {
+      throw new Error(
+        `CONTRACT_SPEC_HUB_FIDELITY_FAILED: Stored content mismatch after ${operation} for ${specId}; ` +
+          `expected sha256=${expectedSha256}, got sha256=${storedSha256}`
+      );
+    }
   }
 
   /**
@@ -689,19 +723,23 @@ export class PostmanGatewayAssetsClient {
    */
   async getSpecContent(specId: string): Promise<string | undefined> {
     try {
-      const fileId = await this.resolveRootFileId(specId);
-      if (!fileId) return undefined;
-      const file = await this.gateway.requestJson<JsonRecord>({
-        service: 'specification',
-        method: 'get',
-        path: `/specifications/${specId}/files/${fileId}`,
-        query: { fields: 'content' }
-      });
-      const content = asRecord(file?.data)?.content ?? file?.content;
-      return typeof content === 'string' ? content : undefined;
+      return await this.readSpecContent(specId);
     } catch {
       return undefined;
     }
+  }
+
+  private async readSpecContent(specId: string): Promise<string | undefined> {
+    const fileId = await this.resolveRootFileId(specId);
+    if (!fileId) return undefined;
+    const file = await this.gateway.requestJson<JsonRecord>({
+      service: 'specification',
+      method: 'get',
+      path: `/specifications/${specId}/files/${fileId}`,
+      query: { fields: 'content' }
+    });
+    const content = asRecord(file?.data)?.content ?? file?.content;
+    return typeof content === 'string' ? content : undefined;
   }
 
   /**
@@ -722,6 +760,12 @@ export class PostmanGatewayAssetsClient {
     priorSnapshot: SpecBundleSnapshot | null;
     outcome: SpecBundleMutationOutcome;
   }> {
+    assertRawSpecUploadPayloadWithinLimit(
+      [...bundle.files.values()].map((file) => ({
+        path: file.path,
+        content: file.content
+      }))
+    );
     const before = await this.findSpecificationsByExactName(workspaceId, projectName);
     const existing = adoptExactMatch(
       `specification:${workspaceId}:${projectName}`,
@@ -976,6 +1020,12 @@ export class PostmanGatewayAssetsClient {
     specId: string,
     target: DefinitionBundle
   ): Promise<SpecBundleMutationOutcome> {
+    assertRawSpecUploadPayloadWithinLimit(
+      [...target.files.values()].map((file) => ({
+        path: file.path,
+        content: file.content
+      }))
+    );
     const policy = this.reconcileCapabilityPolicy;
     const priorState = await this.loadSpecBundleState(specId, target.format);
     const prior = priorState.bundle;

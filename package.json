@@ -44,7 +44,7 @@
     "@actions/io": "^3.0.2",
     "@apidevtools/json-schema-ref-parser": "15.5.0",
     "@exodus/schemasafe": "1.3.0",
-    "@postman-cse/automation-core": "^1.2.0",
+    "@postman-cse/automation-core": "^1.2.1",
     "@postman/asyncapi-parser": "^3.5.0",
     "@postman/protobufjs": "^7.5.4-postman.2",
     "@postman/runtime.models": "^1.13.1",

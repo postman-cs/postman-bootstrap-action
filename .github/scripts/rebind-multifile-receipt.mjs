@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global process, structuredClone */
+/* global structuredClone */
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';

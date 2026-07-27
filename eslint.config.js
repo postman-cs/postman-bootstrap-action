@@ -8,7 +8,7 @@ export default tseslint.config(
     ignores: ['build/', 'dist/', 'node_modules/', 'integration/.work/'],
   },
   {
-    files: ['integration/**/*.mjs', 'integration/**/*.mts', 'scripts/**/*.mjs'],
+    files: ['integration/**/*.mjs', 'integration/**/*.mts', 'scripts/**/*.mjs', '.github/scripts/**/*.mjs'],
     languageOptions: {
       globals: {
         process: 'readonly',

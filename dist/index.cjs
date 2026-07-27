@@ -368378,7 +368378,7 @@ var multifile_spec_sync_default = {
     openapiGeneration: true,
     protobufGeneration: false
   },
-  bootstrapCommit: "8dc58cba5c91864d9df083af343b3876def22b7f"
+  bootstrapCommit: "49ad5a76daa12f6e4ffdf9f17f58d3170b127bc2"
 };
 
 // src/lib/postman/spec-file-reconcile.ts

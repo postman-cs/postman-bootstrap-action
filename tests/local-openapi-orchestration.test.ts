@@ -16,6 +16,7 @@ import {
   type ResolvedInputs
 } from '../src/index.js';
 import * as localCollectionArtifacts from '../src/lib/repo/local-collection-artifacts.js';
+import * as localOpenApiCollectionGeneration from '../src/lib/spec/local-openapi-collection-generation.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -423,34 +424,16 @@ describe('local OpenAPI orchestration', () => {
   });
 
   it('preserves the full local-conversion cause through orchestration without slicing it', async () => {
-    await withRepo(async (repoRoot) => {
+    await withRepo(async () => {
       const terminalMarker = 'terminal-cause-marker-must-survive';
-      const longPath = `/${'x'.repeat(280)}-${terminalMarker}`;
-      await writeFile(path.join(repoRoot, 'openapi.yaml'), JSON.stringify({
-        openapi: '3.1.0',
-        info: { title: 'Full cause API', version: '1.0.0' },
-        paths: {
-          [longPath]: {
-            post: {
-              operationId: 'createWithInvalidAuthoredExample',
-              requestBody: {
-                required: true,
-                content: {
-                  'application/json': {
-                    schema: {
-                      type: 'object',
-                      required: ['code'],
-                      properties: { code: { type: 'string', pattern: '^A+$' } }
-                    },
-                    example: { code: 'invalid' }
-                  }
-                }
-              },
-              responses: { '200': { description: 'ok' } }
-            }
-          }
-        }
-      }));
+      const completeCause = `validator failed ${'x'.repeat(280)} ${terminalMarker}`;
+      vi.spyOn(localOpenApiCollectionGeneration, 'generateLocalOpenApiRolePayloads').mockRejectedValue(
+        new localOpenApiCollectionGeneration.LocalOpenApiConversionError(
+          'repair-request-examples',
+          'failed to make generated request examples conform to their OpenAPI schemas',
+          new Error(completeCause)
+        )
+      );
       const postman = buildPostman([]);
       const error = await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
         core: createCoreStub(),
@@ -468,7 +451,7 @@ describe('local OpenAPI orchestration', () => {
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain('LOCAL_OPENAPI_ORCHESTRATION_FAILED');
       expect((error as Error).message).toContain('LOCAL_OPENAPI_CONVERSION_FAILED');
-      expect((error as Error).message).toContain('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH');
+      expect((error as Error).message).toContain(completeCause);
       expect((error as Error).message).toContain(terminalMarker);
       expect(postman.importV2Collection).not.toHaveBeenCalled();
     });

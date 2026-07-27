@@ -59,10 +59,6 @@ function repairCause(error: unknown): string {
     .trim();
 }
 
-function isInvalidAuthoredExample(error: unknown): boolean {
-  return repairCause(error).includes('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH');
-}
-
 function repairExampleOrWarn(
   target: JsonRecord,
   context: string,
@@ -74,7 +70,6 @@ function repairExampleOrWarn(
     repair();
     return true;
   } catch (error) {
-    if (isInvalidAuthoredExample(error)) throw error;
     restoreRecord(target, snapshot);
     warnings.push(
       `LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: Preserved converter-generated ${context} ` +

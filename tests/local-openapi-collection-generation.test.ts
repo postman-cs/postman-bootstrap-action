@@ -1203,7 +1203,7 @@ describe('local OpenAPI role payload generation', () => {
     expect(body).not.toHaveProperty('optionalImpossible');
   });
 
-  it('reports an invalid source-authored media example distinctly instead of rewriting it', async () => {
+  it('preserves an invalid source-authored media example with a distinct warning', async () => {
     const authored = { code: 'bbb' };
     const bundled = JSON.stringify({
       openapi: '3.1.0',
@@ -1249,16 +1249,18 @@ describe('local OpenAPI role payload generation', () => {
         }
       }]
     });
-    await expect(generateLocalOpenApiRolePayloads(bundled, {
+    const generated = await generateLocalOpenApiRolePayloads(bundled, {
       openApiVersion: '3.1',
       requestNameSource: 'Fallback',
       folderStrategy: 'Paths',
       names: { baseline: 'Authored', smoke: '[Smoke] Authored', contract: '[Contract] Authored' },
       contractIndex: indexFor(bundled)
-    }, { converter })).rejects.toMatchObject({
-      stage: 'repair-request-examples',
-      sanitizedCause: expect.stringContaining('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH')
-    });
+    }, { converter });
+
+    expect(generated.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH')
+    ]));
+    expect(firstJsonRequestBody(generated.roles.baseline.collection)).toEqual(authored);
   });
 
   it('serializes concurrent faker access and restores the prior random source after async failures', async () => {

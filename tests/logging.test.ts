@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createLogger, type LogSink } from '@postman-cse/automation-core';
 
-import { readActionInputs, runBootstrap, type CoreLike } from '../src/index.js';
+import { readActionInputs, runBootstrap, withPhaseGroups, type CoreLike } from '../src/index.js';
 
 /**
  * A log line is evidence. These tests pin the properties that make it worth
@@ -131,3 +131,39 @@ describe('bootstrap logging', () => {
     ).toBeGreaterThan(0);
   });
 });
+
+describe('phase-group core wrapping (CLI class-instance core)', () => {
+  it('preserves prototype methods (setOutput) through withPhaseGroups', async () => {
+    // The CLI hands runBootstrap a class instance whose methods live on the
+    // prototype (ConsoleReporter). The old object-spread wrapper dropped those,
+    // which shipped as "dependencies.core.setOutput is not a function" on the
+    // ADO CLI path. The wrapper must keep the whole prototype chain.
+    const outputs: Array<[string, string]> = [];
+    class InstanceCore {
+      error(): void {}
+      async group<T>(_name: string, fn: () => Promise<T>): Promise<T> {
+        return fn();
+      }
+      info(): void {}
+      setOutput(name: string, value: string): void {
+        outputs.push([name, value]);
+      }
+      warning(): void {}
+    }
+    const { sink } = recordingSink();
+    const logger = createLogger({ sink });
+    const wrapped = withPhaseGroups(
+      new InstanceCore() as never,
+      logger
+    ) as unknown as InstanceCore;
+
+    expect(typeof wrapped.setOutput).toBe('function');
+    wrapped.setOutput('workspace-id', 'ws-1');
+    expect(outputs).toContainEqual(['workspace-id', 'ws-1']);
+
+    // The redefined methods still work and still route through the logger.
+    (wrapped as unknown as { info: (message: string) => void }).info('hello');
+    await wrapped.group('stage', async () => 'ok');
+  });
+});
+

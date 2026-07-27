@@ -337988,6 +337988,7 @@ __export(index_exports, {
   runAction: () => runAction,
   runBootstrap: () => runBootstrap,
   runGatedValidation: () => runGatedValidation,
+  withPhaseGroups: () => withPhaseGroups,
   withReplacedRootContent: () => withReplacedRootContent
 });
 module.exports = __toCommonJS(index_exports);
@@ -403607,13 +403608,12 @@ async function runGroup(actionCore, name, fn) {
   return actionCore.group(name, fn);
 }
 function withPhaseGroups(actionCore, logger) {
-  return {
-    ...actionCore,
-    error: (message) => actionCore.error(logger.redact(message)),
-    group: (name, fn) => actionCore.group(name, async () => logger.phase(name, fn)),
-    info: (message) => actionCore.info(logger.redact(message)),
-    warning: (message) => actionCore.warning(logger.redact(message))
-  };
+  const wrapped = Object.create(actionCore);
+  wrapped.error = (message) => actionCore.error(logger.redact(message));
+  wrapped.group = (name, fn) => actionCore.group(name, async () => logger.phase(name, fn));
+  wrapped.info = (message) => actionCore.info(logger.redact(message));
+  wrapped.warning = (message) => actionCore.warning(logger.redact(message));
+  return wrapped;
 }
 function normalizeLintPath(value) {
   return value.trim().replace(/^\$\.?/, "").replace(/\[(\d+)\]/g, ".$1").replace(/^\./, "");
@@ -405873,6 +405873,7 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
   runAction,
   runBootstrap,
   runGatedValidation,
+  withPhaseGroups,
   withReplacedRootContent
 });
 /*! Bundled license information:

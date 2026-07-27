@@ -403580,13 +403580,12 @@ async function runGroup(actionCore, name, fn) {
   return actionCore.group(name, fn);
 }
 function withPhaseGroups(actionCore, logger) {
-  return {
-    ...actionCore,
-    error: (message) => actionCore.error(logger.redact(message)),
-    group: (name, fn) => actionCore.group(name, async () => logger.phase(name, fn)),
-    info: (message) => actionCore.info(logger.redact(message)),
-    warning: (message) => actionCore.warning(logger.redact(message))
-  };
+  const wrapped = Object.create(actionCore);
+  wrapped.error = (message) => actionCore.error(logger.redact(message));
+  wrapped.group = (name, fn) => actionCore.group(name, async () => logger.phase(name, fn));
+  wrapped.info = (message) => actionCore.info(logger.redact(message));
+  wrapped.warning = (message) => actionCore.warning(logger.redact(message));
+  return wrapped;
 }
 function shouldRetrySpecFetch(error2) {
   const retryability = classifySafeFetchRetryability(error2);

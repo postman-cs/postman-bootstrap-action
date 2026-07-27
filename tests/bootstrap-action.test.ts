@@ -1132,7 +1132,7 @@ paths:
 
   it('keeps a small recursive-ref fixture byte-identical in the Spec Hub payload', async () => {
     const fixture = readFileSync(
-      join(process.cwd(), 'tests/fixtures/spec-upload-recursive.json'),
+      new URL('./fixtures/spec-upload-recursive.json', import.meta.url),
       'utf8'
     );
     const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-raw-recursive-'));
@@ -4936,7 +4936,7 @@ describe('runAction credential preflight', () => {
     meUser?: Record<string, unknown>;
     sessionStatus?: number;
     sessionBody?: Record<string, unknown>;
-    proxyResponse?: (payload: { service?: string; path?: string }) => Response | undefined;
+    proxyResponse?: (payload: { service?: string; path?: string; body?: unknown }) => Response | undefined;
   }
 
   function createRunActionFetchRouter(options: RunActionRouterOptions): typeof fetch {
@@ -4951,6 +4951,7 @@ describe('runAction credential preflight', () => {
       options?: Record<string, unknown>;
       syncOptions?: Record<string, unknown>;
     }> = [];
+    let specRootContent = 'openapi: 3.0.0';
     const router = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const url = String(input);
       const method = String(init?.method || 'GET').toUpperCase();
@@ -5027,6 +5028,7 @@ describe('runAction credential preflight', () => {
           service?: string;
           method?: string;
           path?: string;
+          body?: unknown;
         };
         const svc = String(payload.service ?? '');
         const pmethod = String(payload.method ?? 'get').toLowerCase();
@@ -5108,10 +5110,25 @@ describe('runAction credential preflight', () => {
                   }))
             });
           }
-          if (pmethod === 'get' && /\/specifications\/[^/]+\/files\/[^/]+/.test(ppath)) return json({ data: { id: 'file-root', content: 'openapi: 3.0.0' } });
+          if (pmethod === 'get' && /\/specifications\/[^/]+\/files\/[^/]+/.test(ppath)) return json({ data: { id: 'file-root', content: specRootContent } });
           if (pmethod === 'get' && /\/specifications\/[^/]+\/files$/.test(ppath)) return json({ data: [{ id: 'file-root', type: 'ROOT' }] });
-          if (pmethod === 'patch') return json({ data: { id: 'file-root' } });
-          if (pmethod === 'post' && ppath.startsWith('/specifications')) return json({ data: { id: 'spec-runaction' } });
+          if (pmethod === 'patch') {
+            const patches = Array.isArray(payload.body) ? payload.body : [];
+            const contentPatch = patches.find(
+              (patch) =>
+                patch &&
+                typeof patch === 'object' &&
+                (patch as { path?: unknown }).path === '/content'
+            ) as { value?: unknown } | undefined;
+            if (typeof contentPatch?.value === 'string') specRootContent = contentPatch.value;
+            return json({ data: { id: 'file-root' } });
+          }
+          if (pmethod === 'post' && ppath.startsWith('/specifications')) {
+            const files = (payload.body as { files?: Array<{ content?: unknown }> } | undefined)?.files;
+            const rootContent = files?.[0]?.content;
+            if (typeof rootContent === 'string') specRootContent = rootContent;
+            return json({ data: { id: 'spec-runaction' } });
+          }
           if (pmethod === 'get' && /\/specifications\/[^/]+$/.test(ppath)) return json({ data: { id: 'spec-runaction' } });
         }
         if (svc === 'collection') {

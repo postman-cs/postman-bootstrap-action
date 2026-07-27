@@ -366040,16 +366040,12 @@ function restoreRecord(target, snapshot) {
 function repairCause(error) {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
 }
-function isInvalidAuthoredExample(error) {
-  return repairCause(error).includes("SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH");
-}
 function repairExampleOrWarn(target, context, warnings, repair) {
   const snapshot = clone(target);
   try {
     repair();
     return true;
   } catch (error) {
-    if (isInvalidAuthoredExample(error)) throw error;
     restoreRecord(target, snapshot);
     warnings.push(
       `LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: Preserved converter-generated ${context} without repair because repair could not be completed: ${repairCause(error)}`
@@ -367348,7 +367344,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "78f8027d09773a0df6e1413693839fa01add2b2b",
+  bootstrapCommit: "50e11ab414ae278d6585357ac990eeebf922dfb7",
   legs: [
     {
       mode: "nonorg",

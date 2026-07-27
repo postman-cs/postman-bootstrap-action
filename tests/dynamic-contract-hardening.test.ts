@@ -774,7 +774,7 @@ paths:
                 type: object
                 properties: { id: { type: integer } }
 `));
-    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[1]!.event![0]!.script.exec).join('\n');
+    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[0]!.event![0]!.script.exec).join('\n');
     expect(script).toContain('(function()');
     expect(script).not.toContain('pm.response.to.have.jsonSchema');
     expect(script).not.toMatch(/\beval\s*\(/);
@@ -803,7 +803,7 @@ paths:
         '204':
           description: No content
 `));
-    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[1]!.event![0]!.script.exec).join('\n');
+    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[0]!.event![0]!.script.exec).join('\n');
     expect(script).toContain("var range = String(Math.floor(pm.response.code / 100)) + 'XX';");
     expect(script).toContain("pm.test('Status code is defined by OpenAPI'");
     expect(script).toContain("pm.test('Response body matches OpenAPI body contract'");
@@ -837,7 +837,7 @@ paths:
                   - type: string
                   - type: integer
 `));
-    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[1]!.event![0]!.script.exec).join('\n');
+    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[0]!.event![0]!.script.exec).join('\n');
     expect(script).toContain('OpenAPI schema unsupported');
     expect(script).toContain('Tuple array items are unsupported in OpenAPI 3.0');
     expect(script).not.toContain('pm.response.to.have.jsonSchema');

@@ -1,3 +1,23 @@
+import {
+  createSecretsResolverItem,
+  isSecretsResolverEnabled,
+  isSecretsResolverItemName,
+  type SecretsResolverProvider
+} from '@postman-cse/automation-core';
+
+export {
+  createSecretsResolverExec,
+  createSecretsResolverItem,
+  createSecretsResolverV3Body,
+  DEFAULT_SECRETS_RESOLVER_PROVIDER,
+  isSecretsResolverEnabled,
+  parseSecretsResolverProvider,
+  SECRETS_RESOLVER_ITEM_NAME,
+  SECRETS_RESOLVER_PROVIDERS,
+  secretsResolverEnvironmentKeys,
+  type SecretsResolverProvider
+} from '@postman-cse/automation-core';
+
 type JsonRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -48,58 +68,8 @@ export function createSmokeTestExec(): string[] {
   ];
 }
 
-export function createSecretsResolverExec(): string[] {
-  return [
-    'if (pm.environment.get("CI") === "true") { return; }',
-    'const body = pm.response.json();',
-    'if (body.SecretString) {',
-    '  const secrets = JSON.parse(body.SecretString);',
-    '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
-    '}'
-  ];
-}
-
-/**
- * Pure v2 secrets-resolver item (same content historically owned by
- * collection-contracts). Cloud injectTests still creates the v3 IR form; this
- * helper is the pre-write Collection v2.1 shape.
- */
-export function createSecretsResolverItem(): JsonRecord {
-  return {
-    name: '00 - Resolve Secrets',
-    request: {
-      auth: {
-        type: 'awsv4',
-        awsv4: [
-          { key: 'accessKey', value: '{{AWS_ACCESS_KEY_ID}}' },
-          { key: 'secretKey', value: '{{AWS_SECRET_ACCESS_KEY}}' },
-          { key: 'region', value: '{{AWS_REGION}}' },
-          { key: 'service', value: 'secretsmanager' }
-        ]
-      },
-      method: 'POST',
-      header: [
-        { key: 'X-Amz-Target', value: 'secretsmanager.GetSecretValue' },
-        { key: 'Content-Type', value: 'application/x-amz-json-1.1' }
-      ],
-      body: { mode: 'raw', raw: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-      url: {
-        raw: 'https://secretsmanager.{{AWS_REGION}}.amazonaws.com',
-        protocol: 'https',
-        host: ['secretsmanager', '{{AWS_REGION}}', 'amazonaws', 'com']
-      }
-    },
-    event: [
-      {
-        listen: 'test',
-        script: { exec: createSecretsResolverExec() }
-      }
-    ]
-  };
-}
-
 function isSecretsResolverItem(item: JsonRecord): boolean {
-  return String(item.name ?? '') === '00 - Resolve Secrets';
+  return isSecretsResolverItemName(item.name);
 }
 
 function injectSmokeEvents(item: JsonRecord, exec: string[]): void {
@@ -121,10 +91,15 @@ function injectSmokeEvents(item: JsonRecord, exec: string[]): void {
 }
 
 /**
- * Deep-clone a v2 collection and embed complete smoke `item.event` test scripts
- * plus the secrets resolver. Does not touch the filesystem or cloud APIs.
+ * Deep-clone a v2 collection and embed complete smoke `item.event` test scripts.
+ * The secrets-resolver helper is prepended only when a provider is selected, so
+ * consumers that use no cloud secret store ship no resolver request at all.
+ * Does not touch the filesystem or cloud APIs.
  */
-export function instrumentSmokeCollection(collection: JsonRecord): JsonRecord {
+export function instrumentSmokeCollection(
+  collection: JsonRecord,
+  provider: SecretsResolverProvider = 'none'
+): JsonRecord {
   const cloned = deepClone(collection);
   const exec = createSmokeTestExec();
   const items = asArray(cloned.item)
@@ -132,6 +107,8 @@ export function instrumentSmokeCollection(collection: JsonRecord): JsonRecord {
     .filter((entry): entry is JsonRecord => Boolean(entry))
     .filter((entry) => !isSecretsResolverItem(entry));
   for (const item of items) injectSmokeEvents(item, exec);
-  cloned.item = [createSecretsResolverItem(), ...items];
+  cloned.item = isSecretsResolverEnabled(provider)
+    ? [createSecretsResolverItem(provider), ...items]
+    : items;
   return cloned;
 }

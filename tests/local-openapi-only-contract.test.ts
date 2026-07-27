@@ -111,6 +111,7 @@ function createTestInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInpu
     folderStrategy: 'Paths',
     nestedFolderHierarchy: false,
     requestNameSource: 'Fallback',
+    secretsResolverProvider: 'none',
     postmanRegion: 'us',
     postmanStack: 'prod',
     postmanApiBase: 'https://api.getpostman.com',

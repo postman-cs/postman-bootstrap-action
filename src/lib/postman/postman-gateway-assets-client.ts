@@ -15,6 +15,13 @@ import { AccessTokenGatewayClient, type RetryEvent } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
 import { normalizeCollectionModelIdentity } from './collection-model-identity.js';
 import {
+  createSecretsResolverExec,
+  createSecretsResolverV3Body,
+  isSecretsResolverEnabled,
+  isSecretsResolverItemName,
+  type SecretsResolverProvider
+} from '@postman-cse/automation-core';
+import {
   assertSupportedLocalViewContract,
   normalizeLocalViewScriptType
 } from './local-view-contract.js';
@@ -2085,7 +2092,11 @@ export class PostmanGatewayAssetsClient {
    *   3. prepend a `00 - Resolve Secrets` item (idempotent) via
    *      `POST /v3/collections/:cid/items/` with `position.parent` = the collection.
    */
-  async injectTests(collectionUid: string, type: 'smoke'): Promise<void> {
+  async injectTests(
+    collectionUid: string,
+    type: 'smoke',
+    resolverProvider: SecretsResolverProvider = 'none'
+  ): Promise<void> {
     void type;
     const cid = this.collectionItemsId(collectionUid);
     const listed = await this.gateway.requestJson<JsonRecord>({
@@ -2144,8 +2155,10 @@ export class PostmanGatewayAssetsClient {
       });
     }
 
+    // Opt-in: no provider selected means no resolver helper is created at all.
+    if (!isSecretsResolverEnabled(resolverProvider)) return;
     // Idempotent: skip if a prior run already created the secrets resolver.
-    if (items.some((i) => String(i.name ?? '') === '00 - Resolve Secrets')) return;
+    if (items.some((i) => isSecretsResolverItemName(i.name))) return;
     // Create shape (live-proven): the v3 IR item carries `method`/`url`/`headers`/
     // `body`/`auth` at the ROOT (sibling fields), NOT under a `payload` wrapper — a
     // payload wrapper is silently dropped (body/auth never persist; live-proven via
@@ -2158,24 +2171,7 @@ export class PostmanGatewayAssetsClient {
       path: `/v3/collections/${cid}/items/`,
       headers: { 'X-Entity-Type': 'http-request' },
       body: {
-        $kind: 'http-request',
-        name: '00 - Resolve Secrets',
-        method: 'POST',
-        url: 'https://secretsmanager.{{AWS_REGION}}.amazonaws.com',
-        headers: [
-          { key: 'X-Amz-Target', value: 'secretsmanager.GetSecretValue' },
-          { key: 'Content-Type', value: 'application/x-amz-json-1.1' }
-        ],
-        body: { type: 'json', content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-        auth: {
-          type: 'awsv4',
-          credentials: [
-            { key: 'accessKey', value: '{{AWS_ACCESS_KEY_ID}}' },
-            { key: 'secretKey', value: '{{AWS_SECRET_ACCESS_KEY}}' },
-            { key: 'region', value: '{{AWS_REGION}}' },
-            { key: 'service', value: 'secretsmanager' }
-          ]
-        },
+        ...createSecretsResolverV3Body(resolverProvider),
         position: { parent: { id: cid, $kind: 'collection' } }
       }
     });
@@ -2185,14 +2181,11 @@ export class PostmanGatewayAssetsClient {
     if (!newItemId) return;
     // Attach the secrets-resolution test script (CI-skipped) as a canonical v3
     // afterResponse script — same `/scripts` shape as the leaf assertions.
-    await this.patchNewItemScripts(cid, newItemId, toV3Scripts([
-      'if (pm.environment.get("CI") === "true") { return; }',
-      'const body = pm.response.json();',
-      'if (body.SecretString) {',
-      '  const secrets = JSON.parse(body.SecretString);',
-      '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
-      '}'
-    ]));
+    await this.patchNewItemScripts(
+      cid,
+      newItemId,
+      toV3Scripts(createSecretsResolverExec(resolverProvider))
+    );
   }
 
   // --- workspace roles + member resolution (live-proven 2026-06-30) ---
@@ -2295,7 +2288,11 @@ export class PostmanGatewayAssetsClient {
    *      script, then prepend the idempotent `00 - Resolve Secrets` item.
    * Returns the non-fatal instrumentation warnings for the caller to surface.
    */
-  async injectContractTests(collectionUid: string, index: ContractIndex): Promise<string[]> {
+  async injectContractTests(
+    collectionUid: string,
+    index: ContractIndex,
+    resolverProvider: SecretsResolverProvider = 'none'
+  ): Promise<string[]> {
     const cid = this.collectionItemsId(collectionUid);
     const listed = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',
@@ -2347,45 +2344,29 @@ export class PostmanGatewayAssetsClient {
       }
     }
 
+    // Opt-in: no provider selected means no resolver helper is created at all.
     // Idempotent: skip if a prior run already created the secrets resolver.
-    if (!items.some((i) => String(i.name ?? '') === '00 - Resolve Secrets')) {
+    if (
+      isSecretsResolverEnabled(resolverProvider) &&
+      !items.some((i) => isSecretsResolverItemName(i.name))
+    ) {
       const created = await this.gateway.requestJson<JsonRecord>({
         service: 'collection',
         method: 'post',
         path: `/v3/collections/${cid}/items/`,
         headers: { 'X-Entity-Type': 'http-request' },
         body: {
-          $kind: 'http-request',
-          name: '00 - Resolve Secrets',
-          method: 'POST',
-          url: 'https://secretsmanager.{{AWS_REGION}}.amazonaws.com',
-          headers: [
-            { key: 'X-Amz-Target', value: 'secretsmanager.GetSecretValue' },
-            { key: 'Content-Type', value: 'application/x-amz-json-1.1' }
-          ],
-          body: { type: 'json', content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-          auth: {
-            type: 'awsv4',
-            credentials: [
-              { key: 'accessKey', value: '{{AWS_ACCESS_KEY_ID}}' },
-              { key: 'secretKey', value: '{{AWS_SECRET_ACCESS_KEY}}' },
-              { key: 'region', value: '{{AWS_REGION}}' },
-              { key: 'service', value: 'secretsmanager' }
-            ]
-          },
+          ...createSecretsResolverV3Body(resolverProvider),
           position: { parent: { id: cid, $kind: 'collection' } }
         }
       });
       const newItemId = String(asRecord(created?.data)?.id ?? '').trim();
       if (newItemId) {
-        await this.patchNewItemScripts(cid, newItemId, toV3Scripts([
-          'if (pm.environment.get("CI") === "true") { return; }',
-          'const body = pm.response.json();',
-          'if (body.SecretString) {',
-          '  const secrets = JSON.parse(body.SecretString);',
-          '  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));',
-          '}'
-        ]));
+        await this.patchNewItemScripts(
+          cid,
+          newItemId,
+          toV3Scripts(createSecretsResolverExec(resolverProvider))
+        );
       }
     }
 

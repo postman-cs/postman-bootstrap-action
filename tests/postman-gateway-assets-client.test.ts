@@ -1134,7 +1134,7 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ data: { id: 'patched' } });
       });
 
-      await client.injectTests('55363555-model-9', 'smoke');
+      await client.injectTests('55363555-model-9', 'smoke', 'aws');
 
       // 1) list on the FULL public uid with trailing slash (bare ids are flaky on org squads)
       expect(calls[0]).toMatchObject({
@@ -1171,6 +1171,23 @@ describe('PostmanGatewayAssetsClient', () => {
       expect((secretsPatch?.body as Array<{ path: string }>)[0].path).toBe('/scripts');
     });
 
+    it('creates no secrets resolver when no provider is selected (default off)', async () => {
+      const items = [{ id: '55363555-leaf-1', $kind: 'http-request', name: 'Ping' }];
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get') return jsonResponse({ data: items });
+        return jsonResponse({ data: { id: 'patched' } });
+      });
+
+      await client.injectTests('55363555-model-9', 'smoke');
+
+      // leaf assertions still land; the resolver helper is never created
+      const leafPatches = calls.filter(
+        (c) => c.method === 'patch' && /\/items\/55363555-leaf-/.test(c.path)
+      );
+      expect(leafPatches).toHaveLength(1);
+      expect(calls.find((c) => c.method === 'post')).toBeUndefined();
+    });
+
     it('retries the secrets-resolver scripts patch on a transient 404 (read-after-write lag)', async () => {
       const items = [{ id: '55363555-leaf-1', $kind: 'http-request', name: 'Ping' }];
       let secretsPatchAttempts = 0;
@@ -1186,7 +1203,7 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ data: { id: 'patched' } });
       });
 
-      await client.injectTests('55363555-model-9', 'smoke');
+      await client.injectTests('55363555-model-9', 'smoke', 'aws');
 
       // created once, patched twice (404 then 200)
       expect(secretsPatchAttempts).toBe(2);
@@ -1227,7 +1244,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const { client, calls } = makeClient((env) =>
         env.method === 'get' ? jsonResponse({ data: items }) : jsonResponse({ data: { id: 'p' } })
       );
-      await client.injectTests('55363555-model-9', 'smoke');
+      await client.injectTests('55363555-model-9', 'smoke', 'aws');
       // no create when the resolver is already present
       expect(calls.some((c) => c.method === 'post')).toBe(false);
       // the existing resolver leaf is NOT re-scripted as a normal leaf

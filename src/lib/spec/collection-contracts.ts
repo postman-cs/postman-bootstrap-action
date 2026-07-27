@@ -1,7 +1,11 @@
 import { normalizePath, type ContractBodyFieldRules, type ContractHeader, type ContractIndex, type ContractMedia, type ContractOperation } from './contract-index.js';
 import { FORBIDDEN_TRAILER_FIELDS, HTTP_CONTENT_CODINGS, PROXY_STATUS_ERROR_TYPES, REFERRER_POLICY_VALUES } from './iana-registries.js';
 import { compileSchemaValidator, compileSchemaValidatorCode } from './schema-validator-code.js';
-import { createSecretsResolverItem } from './smoke-tests.js';
+import {
+  createSecretsResolverItem,
+  isSecretsResolverEnabled,
+  type SecretsResolverProvider
+} from '@postman-cse/automation-core';
 
 export { createSecretsResolverItem } from './smoke-tests.js';
 
@@ -19,6 +23,11 @@ export interface ContractInstrumentationLimits {
    * generation). Omitting the field keeps the default 4 MiB update guard.
    */
   maxCollectionUpdateBytes?: number | false;
+  /**
+   * Cloud secret store backing the optional `00 - Resolve Secrets` helper item.
+   * Defaults to `none`, which injects no helper request at all.
+   */
+  secretsResolverProvider?: SecretsResolverProvider;
 }
 
 export const CONTRACT_SIZE_LIMITS = {
@@ -1777,7 +1786,10 @@ export function instrumentContractCollection(
   if (missing.length > 0) {
     throw new Error(`CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation) => `${operation.id} (${operation.pointer})`).join(', ')}`);
   }
-  (collection.item as JsonRecord[]).unshift(createSecretsResolverItem());
+  const resolverProvider: SecretsResolverProvider = limits.secretsResolverProvider ?? 'none';
+  if (isSecretsResolverEnabled(resolverProvider)) {
+    (collection.item as JsonRecord[]).unshift(createSecretsResolverItem(resolverProvider));
+  }
   scanExecutableScripts(collection, warnings);
 
   if (maxCollectionUpdateBytes !== false) {

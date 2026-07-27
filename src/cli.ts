@@ -176,6 +176,7 @@ const cliInputNames = [
   'folder-strategy',
   'nested-folder-hierarchy',
   'request-name-source',
+  'secrets-resolver',
   'workspace-team-id',
   'repo-url',
   'openapi-version',

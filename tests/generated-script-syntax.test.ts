@@ -135,14 +135,17 @@ describe('generated assertion scripts are syntactically valid JavaScript', () =>
       'contract:mapping-failure',
       createMappingFailureScript('No OpenAPI operation matched request GET /nope').join('\n')
     );
-    const resolver: Array<{ label: string; source: string }> = [];
-    collectV2Scripts(createSecretsResolverItem(), resolver);
-    for (const { label, source } of resolver) assertParses(`smoke-resolver:${label}`, source);
+    for (const provider of ['aws', 'azure', 'gcp'] as const) {
+      const resolver: Array<{ label: string; source: string }> = [];
+      collectV2Scripts(createSecretsResolverItem(provider), resolver);
+      expect(resolver.length, `${provider} resolver has scripts`).toBeGreaterThan(0);
+      for (const { label, source } of resolver) assertParses(`smoke-resolver:${provider}:${label}`, source);
+    }
   });
 
   it('pure smoke-tests helpers embed parsable v2 item.event scripts', () => {
     assertParses('smoke-helper:createSmokeTestExec', createSmokeTestExec().join('\n'));
-    const instrumented = instrumentSmokeCollection({
+    const collection = () => ({
       info: { name: 'Syntax Smoke' },
       item: [
         {
@@ -151,11 +154,24 @@ describe('generated assertion scripts are syntactically valid JavaScript', () =>
         }
       ]
     });
-    const scripts: Array<{ label: string; source: string }> = [];
-    collectV2Scripts(instrumented, scripts);
-    expect(scripts.length).toBeGreaterThan(0);
-    expect(scripts.some((entry) => entry.label.startsWith('00 - Resolve Secrets'))).toBe(true);
-    for (const { label, source } of scripts) assertParses(`smoke-helper:${label}`, source);
+
+    // Default is opt-out: no resolver helper is embedded at all.
+    const defaulted: Array<{ label: string; source: string }> = [];
+    collectV2Scripts(instrumentSmokeCollection(collection()), defaulted);
+    expect(defaulted.length).toBeGreaterThan(0);
+    expect(defaulted.some((entry) => entry.label.startsWith('00 - Resolve Secrets'))).toBe(false);
+    for (const { label, source } of defaulted) assertParses(`smoke-helper:${label}`, source);
+
+    // Every provider embeds a parsable resolver script.
+    for (const provider of ['aws', 'azure', 'gcp'] as const) {
+      const scripts: Array<{ label: string; source: string }> = [];
+      collectV2Scripts(instrumentSmokeCollection(collection(), provider), scripts);
+      expect(
+        scripts.some((entry) => entry.label.startsWith('00 - Resolve Secrets')),
+        `${provider} resolver script present`
+      ).toBe(true);
+      for (const { label, source } of scripts) assertParses(`smoke-helper:${provider}:${label}`, source);
+    }
   });
 
   it('smoke injectTests afterResponse scripts parse', async () => {

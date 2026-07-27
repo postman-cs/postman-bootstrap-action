@@ -237,6 +237,12 @@ export const bootstrapActionContract: ActionContract = {
       default: 'Fallback',
       allowedValues: ['Fallback', 'URL']
     },
+    'secrets-resolver': {
+      description: 'Cloud secret store backing the optional "00 - Resolve Secrets" helper request in generated Smoke and Contract collections. Defaults to none, which injects no helper request.',
+      required: false,
+      default: 'none',
+      allowedValues: ['none', 'aws', 'azure', 'gcp']
+    },
     'postman-region': {
       description: 'Postman data residency region for public API and Postman CLI calls.',
       required: false,

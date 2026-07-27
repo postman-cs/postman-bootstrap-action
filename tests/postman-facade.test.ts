@@ -76,7 +76,8 @@ describe('createRoutingPostmanClient', () => {
     const facade = createRoutingPostmanClient({ gateway });
     await facade.injectTests('uid', 'smoke');
     await facade.tagCollection('uid', ['x']);
-    expect(gateway.injectTests).toHaveBeenCalledWith('uid', 'smoke');
+    // The facade forwards the resolver provider; 'none' is the opt-in default.
+    expect(gateway.injectTests).toHaveBeenCalledWith('uid', 'smoke', 'none');
     expect(gateway.tagCollection).toHaveBeenCalledWith('uid', ['x']);
   });
 
@@ -94,7 +95,7 @@ describe('createRoutingPostmanClient', () => {
     const facade = createRoutingPostmanClient({ gateway });
     const index = { warnings: [], operations: [] } as never;
     await facade.injectContractTests?.('uid', index);
-    expect(gateway.injectContractTests).toHaveBeenCalledWith('uid', index);
+    expect(gateway.injectContractTests).toHaveBeenCalledWith('uid', index, 'none');
   });
 
   it('getTeams routes to the gateway ums squads enumeration', async () => {

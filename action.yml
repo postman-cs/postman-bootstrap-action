@@ -160,6 +160,14 @@ inputs:
     description: Determines how requests are named in generated collections (Fallback or URL)
     required: false
     default: Fallback
+  secrets-resolver:
+    description: >-
+      Cloud secret store backing the optional "00 - Resolve Secrets" helper request placed at
+      the start of generated Smoke and Contract collections. One of none, aws, azure, or gcp.
+      Defaults to none, which injects no helper request. The helper is a local-run convenience
+      only; it is skipped when CI=true.
+    required: false
+    default: none
   postman-region:
     description: Postman data residency region for access-token minting and gateway calls.
     required: false

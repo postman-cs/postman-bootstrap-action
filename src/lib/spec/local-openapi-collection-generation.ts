@@ -12,6 +12,10 @@ import type { ContractIndex } from './contract-index.js';
 import { withDeterministicSchemaFaker } from './deterministic-schema-faker.js';
 import { repairGeneratedCollectionExamples } from './request-example-repair.js';
 import { instrumentSmokeCollection } from './smoke-tests.js';
+import {
+  SECRETS_RESOLVER_PROVIDERS,
+  type SecretsResolverProvider
+} from '@postman-cse/automation-core';
 
 export type JsonRecord = Record<string, unknown>;
 export type CollectionRole = 'baseline' | 'smoke' | 'contract';
@@ -52,6 +56,11 @@ export interface LocalOpenApiConversionOptions {
   requestNameSource: 'URL' | 'Fallback';
   folderStrategy: 'Paths' | 'Tags';
   nestedFolderHierarchy?: boolean;
+  /**
+   * Cloud secret store backing the optional `00 - Resolve Secrets` helper item.
+   * Defaults to `none`: no helper request is embedded in any role payload.
+   */
+  secretsResolverProvider?: SecretsResolverProvider;
   /** Final collection display names already including role/channel prefixes. */
   names: Record<CollectionRole, string>;
   /** Optional branch-scoped description applied to every role payload. */
@@ -117,6 +126,8 @@ function assertValidOptions(options: LocalOpenApiConversionOptions): void {
     (options.requestNameSource !== 'URL' && options.requestNameSource !== 'Fallback') ||
     (options.folderStrategy !== 'Paths' && options.folderStrategy !== 'Tags') ||
     (options.nestedFolderHierarchy !== undefined && typeof options.nestedFolderHierarchy !== 'boolean') ||
+    (options.secretsResolverProvider !== undefined &&
+      !(SECRETS_RESOLVER_PROVIDERS as readonly string[]).includes(String(options.secretsResolverProvider))) ||
     !isRecord(options.names) ||
     typeof options.names.baseline !== 'string' ||
     !options.names.baseline.trim() ||
@@ -319,7 +330,7 @@ export async function generateLocalOpenApiRolePayloads(
   }
 
   try {
-    smoke = instrumentSmokeCollection(smoke);
+    smoke = instrumentSmokeCollection(smoke, options.secretsResolverProvider ?? 'none');
   } catch (error) {
     throw new LocalOpenApiConversionError('instrument-smoke', 'failed to embed smoke helpers', error);
   }
@@ -329,7 +340,8 @@ export async function generateLocalOpenApiRolePayloads(
     // Pass the explicit no-limit sentinel so instrumentation does not fall back
     // to the unrelated default 4 MiB collection-update guard.
     const instrumented = instrumentContractCollection(contract, options.contractIndex, {
-      maxCollectionUpdateBytes: false
+      maxCollectionUpdateBytes: false,
+      secretsResolverProvider: options.secretsResolverProvider ?? 'none'
     });
     contract = instrumented.collection;
     warnings.push(...instrumented.warnings);

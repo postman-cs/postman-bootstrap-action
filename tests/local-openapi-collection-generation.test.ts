@@ -239,7 +239,8 @@ describe('local OpenAPI role payload generation', () => {
         nestedFolderHierarchy: true,
         names,
         description: 'branch-marker',
-        contractIndex: indexFor(oas30)
+        contractIndex: indexFor(oas30),
+        secretsResolverProvider: 'aws'
       },
       { converter }
     );
@@ -478,10 +479,27 @@ describe('local OpenAPI role payload generation', () => {
         smoke: '[Smoke] Bundled API',
         contract: '[Contract] Bundled API'
       },
-      contractIndex: indexFor(bundled)
+      contractIndex: indexFor(bundled),
+      secretsResolverProvider: 'aws'
     });
     expect(record(generated.roles.baseline.collection.info).name).toBe('Bundled API');
     expect(array(generated.roles.smoke.collection.item)[0]).toMatchObject({ name: '00 - Resolve Secrets' });
+  });
+
+  it('omits the secrets resolver from every role payload when no provider is selected', async () => {
+    const generated = await generateLocalOpenApiRolePayloads(oas30, {
+      openApiVersion: '3.0',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names,
+      contractIndex: indexFor(oas30)
+    });
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      const roots = array(generated.roles[role].collection.item).map(record);
+      expect(roots.some((entry) => entry.name === '00 - Resolve Secrets')).toBe(false);
+    }
+    // requests still generate; only the helper is gated
+    expect(firstRequestItem(generated.roles.smoke.collection)).toBeDefined();
   });
 
   it('throws a typed conversion error with sanitized stage/cause and no secret leakage', async () => {

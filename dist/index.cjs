@@ -340627,6 +340627,12 @@ var bootstrapActionContract = {
       default: "Fallback",
       allowedValues: ["Fallback", "URL"]
     },
+    "secrets-resolver": {
+      description: 'Cloud secret store backing the optional "00 - Resolve Secrets" helper request in generated Smoke and Contract collections. Defaults to none, which injects no helper request.',
+      required: false,
+      default: "none",
+      allowedValues: ["none", "aws", "azure", "gcp"]
+    },
     "postman-region": {
       description: "Postman data residency region for public API and Postman CLI calls.",
       required: false,
@@ -344285,7 +344291,753 @@ var PostmanExtensibleCollectionClient = class {
 var V2 = __toESM(require_v2(), 1);
 var V3 = __toESM(require_v3(), 1);
 var import_transforms = __toESM(require_transforms(), 1);
-var import_node_crypto6 = require("node:crypto");
+var import_node_crypto7 = require("node:crypto");
+
+// node_modules/@postman-cse/automation-core/dist/ci-context.js
+function norm(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function detectEventTrigger(env = process.env) {
+  const ghEvent = norm(env.GITHUB_EVENT_NAME)?.toLowerCase();
+  if (ghEvent) {
+    if (ghEvent === "push")
+      return "push";
+    if (ghEvent === "pull_request" || ghEvent === "pull_request_target")
+      return "pull_request";
+    if (ghEvent === "schedule")
+      return "schedule";
+    if (ghEvent === "workflow_dispatch" || ghEvent === "repository_dispatch")
+      return "manual";
+    return "other";
+  }
+  const glSource = norm(env.CI_PIPELINE_SOURCE)?.toLowerCase();
+  if (glSource) {
+    if (glSource === "push")
+      return "push";
+    if (glSource === "merge_request_event")
+      return "pull_request";
+    if (glSource === "schedule")
+      return "schedule";
+    if (glSource === "web" || glSource === "api" || glSource === "trigger" || glSource === "pipeline") {
+      return "manual";
+    }
+    return "other";
+  }
+  if (norm(env.BITBUCKET_PR_ID))
+    return "pull_request";
+  if (norm(env.CI) || norm(env.BUILD_BUILDID) || norm(env.JENKINS_URL) || norm(env.TEAMCITY_VERSION)) {
+    return "other";
+  }
+  return "unknown";
+}
+function detectRunnerOs(env = process.env) {
+  const runnerOs = norm(env.RUNNER_OS)?.toLowerCase();
+  if (runnerOs === "linux")
+    return "linux";
+  if (runnerOs === "macos")
+    return "macos";
+  if (runnerOs === "windows")
+    return "windows";
+  const platform2 = typeof process !== "undefined" ? process.platform : void 0;
+  if (platform2 === "linux")
+    return "linux";
+  if (platform2 === "darwin")
+    return "macos";
+  if (platform2 === "win32")
+    return "windows";
+  return "unknown";
+}
+function detectCiContext(env = process.env) {
+  const provider = detectCiProviderContext(env);
+  return {
+    ...provider,
+    eventTrigger: detectEventTrigger(env),
+    runnerOs: detectRunnerOs(env)
+  };
+}
+function detectCiProviderContext(env = process.env) {
+  if (norm(env.GITHUB_ACTIONS)) {
+    const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
+    const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "github",
+      runId: norm(env.GITHUB_RUN_ID),
+      runnerKind
+    };
+  }
+  if (norm(env.GITLAB_CI)) {
+    return {
+      ciProvider: "gitlab",
+      runId: norm(env.CI_PIPELINE_ID) ?? norm(env.CI_PIPELINE_IID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.CIRCLECI)) {
+    return {
+      ciProvider: "circleci",
+      runId: norm(env.CIRCLE_WORKFLOW_ID) ?? norm(env.CIRCLE_BUILD_NUM),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.BUILDKITE)) {
+    const computeType = norm(env.BUILDKITE_COMPUTE_TYPE);
+    const runnerKind = computeType === "hosted" ? "hosted" : computeType === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "buildkite",
+      runId: norm(env.BUILDKITE_BUILD_ID) ?? norm(env.BUILDKITE_BUILD_NUMBER),
+      runnerKind
+    };
+  }
+  if (norm(env.TF_BUILD)) {
+    return {
+      ciProvider: "azure",
+      runId: norm(env.BUILD_BUILDID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.CODEBUILD_BUILD_ID)) {
+    return {
+      ciProvider: "codebuild",
+      runId: norm(env.CODEBUILD_BUILD_ID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.BITBUCKET_BUILD_NUMBER)) {
+    return {
+      ciProvider: "bitbucket",
+      runId: norm(env.BITBUCKET_BUILD_NUMBER),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.TEAMCITY_VERSION)) {
+    return {
+      ciProvider: "teamcity",
+      runId: norm(env.BUILD_NUMBER),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.HARNESS_BUILD_ID)) {
+    return {
+      ciProvider: "harness",
+      runId: norm(env.HARNESS_EXECUTION_ID) ?? norm(env.HARNESS_BUILD_ID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.JENKINS_URL)) {
+    return {
+      ciProvider: "jenkins",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NUMBER) ?? norm(env.BUILD_TAG),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.ATC_EXTERNAL_URL) || norm(env.BUILD_ID) && norm(env.BUILD_PIPELINE_NAME)) {
+    return {
+      ciProvider: "concourse",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NAME),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.CI)) {
+    return { ciProvider: "other", runnerKind: "unknown" };
+  }
+  return { ciProvider: "unknown", runnerKind: "unknown" };
+}
+
+// node_modules/@postman-cse/automation-core/dist/repo-context.js
+function normalize(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function normalizeRepoUrl(url) {
+  const raw = normalize(url);
+  if (!raw) {
+    return void 0;
+  }
+  const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    const host = sshMatch[1];
+    const path12 = sshMatch[2];
+    return `https://${host}/${path12}`;
+  }
+  return raw.replace(/\.git$/, "");
+}
+function parseProvider(explicitProvider, repoUrl, env) {
+  const explicit = normalize(explicitProvider)?.toLowerCase();
+  if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
+    return explicit;
+  }
+  const url = (repoUrl ?? "").toLowerCase();
+  if (url.includes("github")) {
+    return "github";
+  }
+  if (url.includes("gitlab")) {
+    return "gitlab";
+  }
+  if (url.includes("bitbucket")) {
+    return "bitbucket";
+  }
+  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
+    return "azure-devops";
+  }
+  if (normalize(env.GITHUB_REPOSITORY)) {
+    return "github";
+  }
+  if (normalize(env.CI_PROJECT_PATH) || normalize(env.GITLAB_CI)) {
+    return "gitlab";
+  }
+  if (normalize(env.BITBUCKET_REPO_SLUG)) {
+    return "bitbucket";
+  }
+  if (normalize(env.BUILD_REPOSITORY_URI)) {
+    return "azure-devops";
+  }
+  return "unknown";
+}
+function classifyRefKind(env = process.env) {
+  const githubRefType = normalize(env.GITHUB_REF_TYPE)?.toLowerCase();
+  const githubRef = normalize(env.GITHUB_REF);
+  const azureRef = normalize(env.BUILD_SOURCEBRANCH);
+  if (githubRefType === "tag" || githubRef?.startsWith("refs/tags/") || normalize(env.CI_COMMIT_TAG) || normalize(env.BITBUCKET_TAG) || azureRef?.startsWith("refs/tags/")) {
+    return "tag";
+  }
+  const githubRefName = normalize(env.GITHUB_REF_NAME);
+  const githubDefault = normalize(env.GITHUB_DEFAULT_BRANCH);
+  if (githubRefName && githubDefault) {
+    return githubRefName === githubDefault ? "default-branch" : "branch";
+  }
+  const gitlabRef = normalize(env.CI_COMMIT_REF_NAME);
+  const gitlabDefault = normalize(env.CI_DEFAULT_BRANCH);
+  if (gitlabRef && gitlabDefault) {
+    return gitlabRef === gitlabDefault ? "default-branch" : "branch";
+  }
+  if (githubRefName || githubRef?.startsWith("refs/heads/") || gitlabRef || normalize(env.BITBUCKET_BRANCH) || normalize(env.BUILD_SOURCEBRANCHNAME) || azureRef?.startsWith("refs/heads/")) {
+    return "branch";
+  }
+  return "unknown";
+}
+function detectRepoContext(input, env = process.env) {
+  const repoUrl = normalizeRepoUrl(input.repoUrl) ?? normalizeRepoUrl(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl(env.CI_PROJECT_URL) ?? normalizeRepoUrl(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl(env.BUILD_REPOSITORY_URI);
+  const repoSlug = normalize(input.repoSlug) ?? normalize(env.GITHUB_REPOSITORY) ?? normalize(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize(env.BUILD_REPOSITORY_NAME);
+  const ref = normalize(input.ref) ?? normalize(env.GITHUB_REF_NAME) ?? normalize(env.CI_COMMIT_REF_NAME) ?? normalize(env.BITBUCKET_BRANCH) ?? normalize(env.BUILD_SOURCEBRANCHNAME);
+  const sha = normalize(input.sha) ?? normalize(env.GITHUB_SHA) ?? normalize(env.CI_COMMIT_SHA) ?? normalize(env.BITBUCKET_COMMIT) ?? normalize(env.BUILD_SOURCEVERSION);
+  const provider = parseProvider(input.gitProvider, repoUrl, env);
+  const refKind = classifyRefKind(env);
+  return {
+    provider,
+    repoUrl,
+    repoSlug,
+    ref,
+    sha,
+    refKind
+  };
+}
+
+// node_modules/@postman-cse/automation-core/dist/telemetry.js
+var import_node_crypto2 = require("node:crypto");
+var import_undici2 = __toESM(require_undici(), 1);
+var SCHEMA_VERSION = 3;
+var DEFAULT_TIMEOUT_MS = 1500;
+var DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
+var proxyDispatcher;
+function getProxyDispatcher() {
+  return proxyDispatcher ??= new import_undici2.EnvHttpProxyAgent();
+}
+function resolveActionVersion(explicit, env = process.env) {
+  if (explicit) {
+    return explicit;
+  }
+  const ref = env.GITHUB_ACTION_REF?.trim();
+  if (ref) {
+    return ref;
+  }
+  return typeof __ACTION_VERSION__ !== "undefined" && __ACTION_VERSION__ ? __ACTION_VERSION__ : "unknown";
+}
+function telemetryDisabled(env) {
+  const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
+  if (flag === "off" || flag === "0" || flag === "false" || flag === "no") {
+    return true;
+  }
+  const dnt = String(env.DO_NOT_TRACK ?? "").trim().toLowerCase();
+  if (dnt && dnt !== "0" && dnt !== "false") {
+    return true;
+  }
+  return false;
+}
+function sha2562(value) {
+  return (0, import_node_crypto2.createHash)("sha256").update(value).digest("hex");
+}
+function accountTypeFromConsumer(consumerType) {
+  const t = (consumerType ?? "").trim().toLowerCase();
+  if (!t) {
+    return "unknown";
+  }
+  return t === "service_account" ? "service" : "user";
+}
+var noticeShown = false;
+function maybeNotice(logger) {
+  if (noticeShown || !logger) {
+    return;
+  }
+  noticeShown = true;
+  logger.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type, run trigger, runner OS). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
+}
+function buildTelemetryEvent(params) {
+  const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
+  const ci = detectCiContext(env);
+  const repo = detectRepoContext({}, env);
+  const repoSlug = repo.repoSlug;
+  const repoSource = repoSlug ?? repo.repoUrl;
+  const owner = repoSlug && repoSlug.includes("/") ? repoSlug.split("/")[0] : void 0;
+  return {
+    schema_version: SCHEMA_VERSION,
+    event: "completion",
+    action,
+    action_version: actionVersion || "unknown",
+    team_id: teamId,
+    ci_provider: ci.ciProvider,
+    git_provider: repo.provider,
+    run_id: ci.runId,
+    runner_kind: ci.runnerKind,
+    repo_id: repoSource ? sha2562(repoSource) : void 0,
+    org_id: owner ? sha2562(owner) : void 0,
+    account_type: accountType,
+    event_trigger: ci.eventTrigger,
+    runner_os: ci.runnerOs,
+    ref_kind: repo.refKind,
+    outcome,
+    ts: now()
+  };
+}
+async function send(event2, options) {
+  const env = options.env ?? process.env;
+  const endpoint = options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
+  const transport = options.transport ?? import_undici2.fetch;
+  const dispatcher = options.dispatcher ?? getProxyDispatcher();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  timer.unref?.();
+  const init = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(event2),
+    signal: controller.signal
+  };
+  init.dispatcher = dispatcher;
+  try {
+    await transport(endpoint, init);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function createTelemetryContext(options) {
+  const env = options.env ?? process.env;
+  const now = options.now ?? Date.now;
+  const actionVersion = resolveActionVersion(options.actionVersion, env);
+  let teamId = "";
+  let accountType = "unknown";
+  let emitted = false;
+  return {
+    setTeamId(value) {
+      if (value) {
+        teamId = String(value);
+      }
+    },
+    setAccountType(consumerType) {
+      accountType = accountTypeFromConsumer(consumerType);
+    },
+    emitCompletion(outcome) {
+      if (emitted) {
+        return;
+      }
+      emitted = true;
+      try {
+        if (telemetryDisabled(env) || !teamId) {
+          return;
+        }
+        const event2 = buildTelemetryEvent({
+          action: options.action,
+          actionVersion,
+          teamId,
+          accountType,
+          outcome,
+          env,
+          now
+        });
+        maybeNotice(options.logger);
+        void send(event2, options).catch(() => {
+        });
+      } catch {
+      }
+    }
+  };
+}
+
+// node_modules/@postman-cse/automation-core/dist/logger.js
+var LEVEL_ORDER = {
+  debug: 10,
+  info: 20,
+  warning: 30,
+  error: 40
+};
+function defaultCorrelationId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+function resolveLogLevel(env = process.env) {
+  const explicit = String(env.POSTMAN_ACTIONS_LOG_LEVEL ?? "").trim().toLowerCase();
+  if (explicit === "debug" || explicit === "trace" || explicit === "verbose")
+    return "debug";
+  if (explicit === "info")
+    return "info";
+  if (explicit === "warn" || explicit === "warning")
+    return "warning";
+  if (explicit === "error" || explicit === "quiet")
+    return "error";
+  if (isTruthyFlag(env.RUNNER_DEBUG) || isTruthyFlag(env.ACTIONS_STEP_DEBUG))
+    return "debug";
+  if (isTruthyFlag(env.POSTMAN_ACTIONS_DEBUG))
+    return "debug";
+  return "info";
+}
+function isTruthyFlag(value) {
+  if (!value)
+    return false;
+  const flag = value.trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+}
+function actionSink(core2) {
+  return {
+    debug: (message) => core2.debug?.(message),
+    info: (message) => core2.info(message),
+    warning: (message) => (core2.warning ?? core2.info)(message),
+    error: (message) => (core2.error ?? core2.warning ?? core2.info)(message),
+    startGroup: core2.startGroup ? (name) => core2.startGroup?.(name) : void 0,
+    endGroup: core2.endGroup ? () => core2.endGroup?.() : void 0,
+    isDebug: core2.isDebug ? () => core2.isDebug?.() ?? false : void 0
+  };
+}
+var MIN_SECRET_LENGTH = 4;
+function renderValue(value, maxLength = 512) {
+  if (value === void 0)
+    return "undefined";
+  if (value === null)
+    return "null";
+  if (typeof value === "string")
+    return truncate2(value, maxLength);
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (value instanceof Error)
+    return truncate2(describeError(value), maxLength);
+  if (Array.isArray(value)) {
+    return truncate2(`[${value.map((entry) => renderValue(entry, 120)).join(", ")}]`, maxLength);
+  }
+  try {
+    return truncate2(JSON.stringify(value) ?? String(value), maxLength);
+  } catch {
+    return "<unserializable>";
+  }
+}
+function truncate2(text, maxLength) {
+  if (text.length <= maxLength)
+    return text;
+  return `${text.slice(0, maxLength)}\u2026 (+${text.length - maxLength} chars)`;
+}
+function describeError(error2, maxDepth = 5) {
+  const parts = [];
+  let current = error2;
+  let depth = 0;
+  while (current !== void 0 && current !== null && depth < maxDepth) {
+    if (current instanceof Error) {
+      const code = current.code;
+      parts.push(code ? `${current.name}[${code}]: ${current.message}` : `${current.name}: ${current.message}`);
+      current = current.cause;
+    } else if (typeof current === "object") {
+      try {
+        parts.push(JSON.stringify(current) ?? String(current));
+      } catch {
+        parts.push(String(current));
+      }
+      current = void 0;
+    } else {
+      parts.push(String(current));
+      current = void 0;
+    }
+    depth += 1;
+  }
+  if (parts.length === 0)
+    return "unknown error";
+  return parts.join(" <- caused by ");
+}
+function createLogger(options) {
+  const env = options.env ?? process.env;
+  const level = options.level ?? resolveLogLevel(env);
+  const secrets = options.secrets ?? /* @__PURE__ */ new Set();
+  const correlationId = options.correlationId ?? defaultCorrelationId();
+  const now = options.now ?? (() => Date.now());
+  const threshold = LEVEL_ORDER[level];
+  function addSecret(value) {
+    if (typeof value !== "string")
+      return;
+    const trimmed = value.trim();
+    if (trimmed.length < MIN_SECRET_LENGTH)
+      return;
+    secrets.add(trimmed);
+  }
+  function redact(text) {
+    let output = typeof text === "string" ? text : renderValue(text, 4096);
+    for (const secret of secrets) {
+      if (!secret)
+        continue;
+      output = output.split(secret).join("***");
+      const encoded = encodeURIComponent(secret);
+      if (encoded !== secret)
+        output = output.split(encoded).join("***");
+    }
+    return output;
+  }
+  function build(baseFields) {
+    function emit(target, message, fields) {
+      if (LEVEL_ORDER[target] < threshold)
+        return;
+      const merged = { ...baseFields, ...fields ?? {} };
+      const rendered = Object.entries(merged).filter(([, value]) => value !== void 0).map(([key, value]) => `${key}=${redact(renderValue(value))}`).join(" ");
+      const line = rendered ? `${redact(message)} | ${rendered}` : redact(message);
+      switch (target) {
+        case "debug":
+          options.sink.debug(line);
+          break;
+        case "info":
+          options.sink.info(line);
+          break;
+        case "warning":
+          options.sink.warning(line);
+          break;
+        case "error":
+          options.sink.error(line);
+          break;
+      }
+    }
+    const logger = {
+      level,
+      correlationId,
+      addSecret,
+      redact,
+      isDebug: () => threshold <= LEVEL_ORDER.debug,
+      debug: (message, fields) => emit("debug", message, fields),
+      info: (message, fields) => emit("info", message, fields),
+      warning: (message, fields) => emit("warning", message, fields),
+      error: (message, fields) => emit("error", message, fields),
+      failure: (message, error2, fields) => emit("error", message, { ...fields ?? {}, error: describeError(error2) }),
+      child: (fields) => build({ ...baseFields, ...fields }),
+      async phase(name, fn, fields) {
+        const scoped = build({ ...baseFields, ...fields ?? {}, phase: name });
+        const started = now();
+        scoped.debug("phase start");
+        options.sink.startGroup?.(name);
+        try {
+          const result = await fn();
+          scoped.debug("phase ok", { duration_ms: Math.round(now() - started) });
+          return result;
+        } catch (error2) {
+          scoped.failure("phase failed", error2, { duration_ms: Math.round(now() - started) });
+          throw error2;
+        } finally {
+          options.sink.endGroup?.();
+        }
+      }
+    };
+    return logger;
+  }
+  const root = build({ run: correlationId, ...options.fields ?? {} });
+  return root;
+}
+
+// node_modules/@postman-cse/automation-core/dist/secrets-resolver.js
+var SECRETS_RESOLVER_PROVIDERS = ["none", "aws", "azure", "gcp"];
+var SECRETS_RESOLVER_ITEM_NAME = "00 - Resolve Secrets";
+var DEFAULT_SECRETS_RESOLVER_PROVIDER = "none";
+function parseSecretsResolverProvider(value, fallback = DEFAULT_SECRETS_RESOLVER_PROVIDER) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw)
+    return fallback;
+  if (raw === "true")
+    return "aws";
+  if (raw === "false" || raw === "off")
+    return "none";
+  if (SECRETS_RESOLVER_PROVIDERS.includes(raw)) {
+    return raw;
+  }
+  throw new Error(`SECRETS_RESOLVER_PROVIDER_INVALID: expected one of ${SECRETS_RESOLVER_PROVIDERS.join(", ")} (or legacy true/false), received "${value}"`);
+}
+function isSecretsResolverEnabled(provider) {
+  return provider !== "none";
+}
+function resolverExecTail(extractExpression) {
+  return [
+    'if (pm.environment.get("CI") === "true") { return; }',
+    "const body = pm.response.json();",
+    `const raw = ${extractExpression};`,
+    "if (raw) {",
+    "  const secrets = JSON.parse(raw);",
+    "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
+    "}"
+  ];
+}
+function createSecretsResolverExec(provider = "aws") {
+  switch (provider) {
+    case "azure":
+      return resolverExecTail("body.value");
+    case "gcp":
+      return [
+        'if (pm.environment.get("CI") === "true") { return; }',
+        "const body = pm.response.json();",
+        "const encoded = body.payload && body.payload.data;",
+        "if (encoded) {",
+        '  const secrets = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));',
+        "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
+        "}"
+      ];
+    case "aws":
+    default:
+      return [
+        'if (pm.environment.get("CI") === "true") { return; }',
+        "const body = pm.response.json();",
+        "if (body.SecretString) {",
+        "  const secrets = JSON.parse(body.SecretString);",
+        "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
+        "}"
+      ];
+  }
+}
+function createSecretsResolverItem(provider = "aws") {
+  if (provider === "azure") {
+    return {
+      name: SECRETS_RESOLVER_ITEM_NAME,
+      request: {
+        auth: {
+          type: "bearer",
+          bearer: [{ key: "token", value: "{{AZURE_ACCESS_TOKEN}}" }]
+        },
+        method: "GET",
+        header: [{ key: "Accept", value: "application/json" }],
+        url: {
+          raw: "https://{{AZURE_KEY_VAULT_NAME}}.vault.azure.net/secrets/{{AZURE_SECRET_NAME}}?api-version=7.4",
+          protocol: "https",
+          host: ["{{AZURE_KEY_VAULT_NAME}}", "vault", "azure", "net"],
+          path: ["secrets", "{{AZURE_SECRET_NAME}}"],
+          query: [{ key: "api-version", value: "7.4" }]
+        }
+      },
+      event: [{ listen: "test", script: { exec: createSecretsResolverExec("azure") } }]
+    };
+  }
+  if (provider === "gcp") {
+    return {
+      name: SECRETS_RESOLVER_ITEM_NAME,
+      request: {
+        auth: {
+          type: "bearer",
+          bearer: [{ key: "token", value: "{{GCP_ACCESS_TOKEN}}" }]
+        },
+        method: "GET",
+        header: [{ key: "Accept", value: "application/json" }],
+        url: {
+          raw: "https://secretmanager.googleapis.com/v1/projects/{{GCP_PROJECT_ID}}/secrets/{{GCP_SECRET_NAME}}/versions/latest:access",
+          protocol: "https",
+          host: ["secretmanager", "googleapis", "com"],
+          path: [
+            "v1",
+            "projects",
+            "{{GCP_PROJECT_ID}}",
+            "secrets",
+            "{{GCP_SECRET_NAME}}",
+            "versions",
+            "latest:access"
+          ]
+        }
+      },
+      event: [{ listen: "test", script: { exec: createSecretsResolverExec("gcp") } }]
+    };
+  }
+  return {
+    name: SECRETS_RESOLVER_ITEM_NAME,
+    request: {
+      auth: {
+        type: "awsv4",
+        awsv4: [
+          { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
+          { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
+          { key: "region", value: "{{AWS_REGION}}" },
+          { key: "service", value: "secretsmanager" }
+        ]
+      },
+      method: "POST",
+      header: [
+        { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
+        { key: "Content-Type", value: "application/x-amz-json-1.1" }
+      ],
+      body: { mode: "raw", raw: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
+      url: {
+        raw: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
+        protocol: "https",
+        host: ["secretsmanager", "{{AWS_REGION}}", "amazonaws", "com"]
+      }
+    },
+    event: [{ listen: "test", script: { exec: createSecretsResolverExec("aws") } }]
+  };
+}
+function createSecretsResolverV3Body(provider = "aws") {
+  if (provider === "azure") {
+    return {
+      $kind: "http-request",
+      name: SECRETS_RESOLVER_ITEM_NAME,
+      method: "GET",
+      url: "https://{{AZURE_KEY_VAULT_NAME}}.vault.azure.net/secrets/{{AZURE_SECRET_NAME}}?api-version=7.4",
+      headers: [{ key: "Accept", value: "application/json" }],
+      auth: {
+        type: "bearer",
+        credentials: [{ key: "token", value: "{{AZURE_ACCESS_TOKEN}}" }]
+      }
+    };
+  }
+  if (provider === "gcp") {
+    return {
+      $kind: "http-request",
+      name: SECRETS_RESOLVER_ITEM_NAME,
+      method: "GET",
+      url: "https://secretmanager.googleapis.com/v1/projects/{{GCP_PROJECT_ID}}/secrets/{{GCP_SECRET_NAME}}/versions/latest:access",
+      headers: [{ key: "Accept", value: "application/json" }],
+      auth: {
+        type: "bearer",
+        credentials: [{ key: "token", value: "{{GCP_ACCESS_TOKEN}}" }]
+      }
+    };
+  }
+  return {
+    $kind: "http-request",
+    name: SECRETS_RESOLVER_ITEM_NAME,
+    method: "POST",
+    url: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
+    headers: [
+      { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
+      { key: "Content-Type", value: "application/x-amz-json-1.1" }
+    ],
+    body: { type: "json", content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
+    auth: {
+      type: "awsv4",
+      credentials: [
+        { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
+        { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
+        { key: "region", value: "{{AWS_REGION}}" },
+        { key: "service", value: "secretsmanager" }
+      ]
+    }
+  };
+}
+function isSecretsResolverItemName(name) {
+  return String(name ?? "").trim() === SECRETS_RESOLVER_ITEM_NAME;
+}
 
 // src/lib/spec/iana-registries.ts
 var PROXY_STATUS_ERROR_TYPES = [
@@ -346930,51 +347682,8 @@ function createSmokeTestExec() {
     "});"
   ];
 }
-function createSecretsResolverExec() {
-  return [
-    'if (pm.environment.get("CI") === "true") { return; }',
-    "const body = pm.response.json();",
-    "if (body.SecretString) {",
-    "  const secrets = JSON.parse(body.SecretString);",
-    "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
-    "}"
-  ];
-}
-function createSecretsResolverItem() {
-  return {
-    name: "00 - Resolve Secrets",
-    request: {
-      auth: {
-        type: "awsv4",
-        awsv4: [
-          { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
-          { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
-          { key: "region", value: "{{AWS_REGION}}" },
-          { key: "service", value: "secretsmanager" }
-        ]
-      },
-      method: "POST",
-      header: [
-        { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
-        { key: "Content-Type", value: "application/x-amz-json-1.1" }
-      ],
-      body: { mode: "raw", raw: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-      url: {
-        raw: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
-        protocol: "https",
-        host: ["secretsmanager", "{{AWS_REGION}}", "amazonaws", "com"]
-      }
-    },
-    event: [
-      {
-        listen: "test",
-        script: { exec: createSecretsResolverExec() }
-      }
-    ]
-  };
-}
 function isSecretsResolverItem(item) {
-  return String(item.name ?? "") === "00 - Resolve Secrets";
+  return isSecretsResolverItemName(item.name);
 }
 function injectSmokeEvents(item, exec2) {
   if (isSecretsResolverItem(item)) return;
@@ -346993,12 +347702,12 @@ function injectSmokeEvents(item, exec2) {
     if (childRecord) injectSmokeEvents(childRecord, exec2);
   }
 }
-function instrumentSmokeCollection(collection) {
+function instrumentSmokeCollection(collection, provider = "none") {
   const cloned = deepClone(collection);
   const exec2 = createSmokeTestExec();
   const items = asArray4(cloned.item).map((entry) => asRecord7(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isSecretsResolverItem(entry));
   for (const item of items) injectSmokeEvents(item, exec2);
-  cloned.item = [createSecretsResolverItem(), ...items];
+  cloned.item = isSecretsResolverEnabled(provider) ? [createSecretsResolverItem(provider), ...items] : items;
   return cloned;
 }
 
@@ -348643,7 +349352,10 @@ function instrumentContractCollection(collection, index, limits = {}) {
   if (missing.length > 0) {
     throw new Error(`CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation) => `${operation.id} (${operation.pointer})`).join(", ")}`);
   }
-  collection.item.unshift(createSecretsResolverItem());
+  const resolverProvider = limits.secretsResolverProvider ?? "none";
+  if (isSecretsResolverEnabled(resolverProvider)) {
+    collection.item.unshift(createSecretsResolverItem(resolverProvider));
+  }
   scanExecutableScripts(collection, warnings);
   if (maxCollectionUpdateBytes !== false) {
     const bytes = Buffer.byteLength(JSON.stringify(collection), "utf8");
@@ -348736,15 +349448,15 @@ function planContractItemScripts(items, index) {
 }
 
 // src/lib/spec/local-openapi-collection-generation.ts
-var import_node_crypto4 = require("node:crypto");
+var import_node_crypto5 = require("node:crypto");
 var import_openapi_to_postmanv2 = __toESM(require_dist4(), 1);
 
 // src/lib/spec/deterministic-schema-faker.ts
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var import_json_schema_faker = __toESM(require_json_schema_faker(), 1);
 var fakerAccess = Promise.resolve();
 function deterministicRandom(source) {
-  let state = (0, import_node_crypto2.createHash)("sha256").update(source).digest().readUInt32LE(0);
+  let state = (0, import_node_crypto3.createHash)("sha256").update(source).digest().readUInt32LE(0);
   return () => {
     state = state + 1831565813 >>> 0;
     let value = state;
@@ -365188,7 +365900,7 @@ function looksLikeIntrospection(record) {
 }
 
 // src/lib/spec/definition-bundle.ts
-var import_node_crypto3 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 var DEFINITION_BUNDLE_LIMITS = {
   maxFiles: 101,
   maxDepth: SAFE_FETCH_LIMITS.maxDepth,
@@ -365264,7 +365976,7 @@ function decodeStrictUtf8(bytes) {
   }
 }
 function sha256Hex(bytes) {
-  return (0, import_node_crypto3.createHash)("sha256").update(bytes).digest("hex");
+  return (0, import_node_crypto4.createHash)("sha256").update(bytes).digest("hex");
 }
 function asReadonlyMap(map2) {
   const readonly = {
@@ -365334,7 +366046,7 @@ function computeDefinitionBundleDigest(input) {
     format: input.format,
     files
   };
-  return (0, import_node_crypto3.createHash)("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
+  return (0, import_node_crypto4.createHash)("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
 }
 function createDefinitionBundle(input) {
   const rootPath = assertValidBundleRelativePath(input.rootPath, "rootPath");
@@ -367222,7 +367934,7 @@ function sanitizeCause(cause) {
   return "non-error failure";
 }
 function assertValidOptions(options) {
-  if (!isRecord3(options) || options.openApiVersion !== "3.0" && options.openApiVersion !== "3.1" || options.requestNameSource !== "URL" && options.requestNameSource !== "Fallback" || options.folderStrategy !== "Paths" && options.folderStrategy !== "Tags" || options.nestedFolderHierarchy !== void 0 && typeof options.nestedFolderHierarchy !== "boolean" || !isRecord3(options.names) || typeof options.names.baseline !== "string" || !options.names.baseline.trim() || typeof options.names.smoke !== "string" || !options.names.smoke.trim() || typeof options.names.contract !== "string" || !options.names.contract.trim() || options.description !== void 0 && typeof options.description !== "string" || !options.contractIndex || typeof options.contractIndex !== "object") {
+  if (!isRecord3(options) || options.openApiVersion !== "3.0" && options.openApiVersion !== "3.1" || options.requestNameSource !== "URL" && options.requestNameSource !== "Fallback" || options.folderStrategy !== "Paths" && options.folderStrategy !== "Tags" || options.nestedFolderHierarchy !== void 0 && typeof options.nestedFolderHierarchy !== "boolean" || options.secretsResolverProvider !== void 0 && !SECRETS_RESOLVER_PROVIDERS.includes(String(options.secretsResolverProvider)) || !isRecord3(options.names) || typeof options.names.baseline !== "string" || !options.names.baseline.trim() || typeof options.names.smoke !== "string" || !options.names.smoke.trim() || typeof options.names.contract !== "string" || !options.names.contract.trim() || options.description !== void 0 && typeof options.description !== "string" || !options.contractIndex || typeof options.contractIndex !== "object") {
     throw new LocalOpenApiConversionError("validate-input", "local OpenAPI conversion options are invalid");
   }
 }
@@ -367263,7 +367975,7 @@ function stableStringify2(value) {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify2(record[key])}`).join(",")}}`;
 }
 function computePayloadDigest(collection) {
-  return (0, import_node_crypto4.createHash)("sha256").update(stableStringify2(withoutStructuralIds(collection))).digest("hex");
+  return (0, import_node_crypto5.createHash)("sha256").update(stableStringify2(withoutStructuralIds(collection))).digest("hex");
 }
 function applyCollectionIdentity(source, name, description) {
   const clone2 = deepClone2(source);
@@ -367278,7 +367990,7 @@ function applyCollectionIdentity(source, name, description) {
 function rekeyStructuralCollectionIds(collection) {
   const clone2 = deepClone2(collection);
   const info2 = isRecord3(clone2.info) ? clone2.info : {};
-  info2._postman_id = (0, import_node_crypto4.randomUUID)();
+  info2._postman_id = (0, import_node_crypto5.randomUUID)();
   clone2.info = info2;
   rekeyStructuralItems(clone2.item);
   return clone2;
@@ -367287,12 +367999,12 @@ function rekeyStructuralItems(items) {
   if (!Array.isArray(items)) return;
   for (const raw of items) {
     if (!isRecord3(raw)) continue;
-    raw.id = (0, import_node_crypto4.randomUUID)();
-    if (isRecord3(raw.request)) raw.request.id = (0, import_node_crypto4.randomUUID)();
+    raw.id = (0, import_node_crypto5.randomUUID)();
+    if (isRecord3(raw.request)) raw.request.id = (0, import_node_crypto5.randomUUID)();
     if (Array.isArray(raw.item)) rekeyStructuralItems(raw.item);
     if (Array.isArray(raw.response)) {
       for (const resp of raw.response) {
-        if (isRecord3(resp)) resp.id = (0, import_node_crypto4.randomUUID)();
+        if (isRecord3(resp)) resp.id = (0, import_node_crypto5.randomUUID)();
       }
     }
   }
@@ -367370,13 +368082,14 @@ async function generateLocalOpenApiRolePayloads(bundledOpenApi, options, depende
     throw new LocalOpenApiConversionError("materialize-roles", "failed to materialize role clones", error2);
   }
   try {
-    smoke = instrumentSmokeCollection(smoke);
+    smoke = instrumentSmokeCollection(smoke, options.secretsResolverProvider ?? "none");
   } catch (error2) {
     throw new LocalOpenApiConversionError("instrument-smoke", "failed to embed smoke helpers", error2);
   }
   try {
     const instrumented = instrumentContractCollection(contract, options.contractIndex, {
-      maxCollectionUpdateBytes: false
+      maxCollectionUpdateBytes: false,
+      secretsResolverProvider: options.secretsResolverProvider ?? "none"
     });
     contract = instrumented.collection;
     warnings.push(...instrumented.warnings);
@@ -367415,7 +368128,7 @@ async function generateLocalOpenApiRolePayloads(bundledOpenApi, options, depende
 
 // src/lib/repo/branch-decision.ts
 var import_node_fs5 = require("node:fs");
-var import_node_crypto5 = require("node:crypto");
+var import_node_crypto6 = require("node:crypto");
 var ContractError = class extends Error {
   code;
   constructor(code, message) {
@@ -367702,7 +368415,7 @@ function buildBranchSlug(rawBranch) {
   if (!lossy) {
     return { suffix: truncated, slug: truncated, lossy };
   }
-  const hash = (0, import_node_crypto5.createHash)("sha256").update(rawBranch).digest("hex").slice(0, 6);
+  const hash = (0, import_node_crypto6.createHash)("sha256").update(rawBranch).digest("hex").slice(0, 6);
   return { suffix: `${truncated}-${hash}`, slug: truncated, lossy };
 }
 function previewAssetName(baseName, rawBranch) {
@@ -369018,7 +369731,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
   onRetry;
   constructor(options) {
     this.gateway = options.gateway;
-    this.createIdentity = options.createIdentity ?? import_node_crypto6.randomUUID;
+    this.createIdentity = options.createIdentity ?? import_node_crypto7.randomUUID;
     this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve6) => setTimeout(resolve6, delayMs)));
     this.random = options.random ?? Math.random;
     this.generationPollAttempts = resolvePollBudget(
@@ -370451,7 +371164,7 @@ ${error2.responseBody ?? ""}`
    *   3. prepend a `00 - Resolve Secrets` item (idempotent) via
    *      `POST /v3/collections/:cid/items/` with `position.parent` = the collection.
    */
-  async injectTests(collectionUid, type2) {
+  async injectTests(collectionUid, type2, resolverProvider = "none") {
     void type2;
     const cid = this.collectionItemsId(collectionUid);
     const listed = await this.gateway.requestJson({
@@ -370503,44 +371216,25 @@ ${error2.responseBody ?? ""}`
         body: [{ op: "add", path: "/scripts", value: toV3Scripts(smokeTests) }]
       });
     }
-    if (items.some((i) => String(i.name ?? "") === "00 - Resolve Secrets")) return;
+    if (!isSecretsResolverEnabled(resolverProvider)) return;
+    if (items.some((i) => isSecretsResolverItemName(i.name))) return;
     const created = await this.gateway.requestJson({
       service: "collection",
       method: "post",
       path: `/v3/collections/${cid}/items/`,
       headers: { "X-Entity-Type": "http-request" },
       body: {
-        $kind: "http-request",
-        name: "00 - Resolve Secrets",
-        method: "POST",
-        url: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
-        headers: [
-          { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
-          { key: "Content-Type", value: "application/x-amz-json-1.1" }
-        ],
-        body: { type: "json", content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-        auth: {
-          type: "awsv4",
-          credentials: [
-            { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
-            { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
-            { key: "region", value: "{{AWS_REGION}}" },
-            { key: "service", value: "secretsmanager" }
-          ]
-        },
+        ...createSecretsResolverV3Body(resolverProvider),
         position: { parent: { id: cid, $kind: "collection" } }
       }
     });
     const newItemId = String(asRecord12(created?.data)?.id ?? "").trim();
     if (!newItemId) return;
-    await this.patchNewItemScripts(cid, newItemId, toV3Scripts([
-      'if (pm.environment.get("CI") === "true") { return; }',
-      "const body = pm.response.json();",
-      "if (body.SecretString) {",
-      "  const secrets = JSON.parse(body.SecretString);",
-      "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
-      "}"
-    ]));
+    await this.patchNewItemScripts(
+      cid,
+      newItemId,
+      toV3Scripts(createSecretsResolverExec(resolverProvider))
+    );
   }
   // --- workspace roles + member resolution (live-proven 2026-06-30) ---
   //
@@ -370634,7 +371328,7 @@ ${error2.responseBody ?? ""}`
    *      script, then prepend the idempotent `00 - Resolve Secrets` item.
    * Returns the non-fatal instrumentation warnings for the caller to surface.
    */
-  async injectContractTests(collectionUid, index) {
+  async injectContractTests(collectionUid, index, resolverProvider = "none") {
     const cid = this.collectionItemsId(collectionUid);
     const listed = await this.gateway.requestJson({
       service: "collection",
@@ -370675,44 +371369,24 @@ ${error2.responseBody ?? ""}`
         throw error2;
       }
     }
-    if (!items.some((i) => String(i.name ?? "") === "00 - Resolve Secrets")) {
+    if (isSecretsResolverEnabled(resolverProvider) && !items.some((i) => isSecretsResolverItemName(i.name))) {
       const created = await this.gateway.requestJson({
         service: "collection",
         method: "post",
         path: `/v3/collections/${cid}/items/`,
         headers: { "X-Entity-Type": "http-request" },
         body: {
-          $kind: "http-request",
-          name: "00 - Resolve Secrets",
-          method: "POST",
-          url: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
-          headers: [
-            { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
-            { key: "Content-Type", value: "application/x-amz-json-1.1" }
-          ],
-          body: { type: "json", content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-          auth: {
-            type: "awsv4",
-            credentials: [
-              { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
-              { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
-              { key: "region", value: "{{AWS_REGION}}" },
-              { key: "service", value: "secretsmanager" }
-            ]
-          },
+          ...createSecretsResolverV3Body(resolverProvider),
           position: { parent: { id: cid, $kind: "collection" } }
         }
       });
       const newItemId = String(asRecord12(created?.data)?.id ?? "").trim();
       if (newItemId) {
-        await this.patchNewItemScripts(cid, newItemId, toV3Scripts([
-          'if (pm.environment.get("CI") === "true") { return; }',
-          "const body = pm.response.json();",
-          "if (body.SecretString) {",
-          "  const secrets = JSON.parse(body.SecretString);",
-          "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
-          "}"
-        ]));
+        await this.patchNewItemScripts(
+          cid,
+          newItemId,
+          toV3Scripts(createSecretsResolverExec(resolverProvider))
+        );
       }
     }
     return plan.warnings;
@@ -371294,7 +371968,7 @@ ${error2.responseBody ?? ""}`
     const importPayload = this.cloneJson(prepared);
     const info2 = asRecord12(importPayload.info) ?? {};
     info2.name = tempName;
-    info2._postman_id = (0, import_node_crypto6.randomUUID)();
+    info2._postman_id = (0, import_node_crypto7.randomUUID)();
     importPayload.info = info2;
     this.assertV21Collection(importPayload);
     const journaledRootIds = [];
@@ -372357,12 +373031,12 @@ async function resolveCanonicalWorkspaceSelection(args) {
 }
 
 // src/lib/repo/context.ts
-function normalize(value) {
+function normalize2(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length > 0 ? trimmed : void 0;
 }
-function normalizeRepoUrl(url) {
-  const raw = normalize(url);
+function normalizeRepoUrl2(url) {
+  const raw = normalize2(url);
   if (!raw) {
     return void 0;
   }
@@ -372374,8 +373048,8 @@ function normalizeRepoUrl(url) {
   }
   return raw.replace(/\.git$/, "");
 }
-function parseProvider(explicitProvider, repoUrl, env) {
-  const explicit = normalize(explicitProvider)?.toLowerCase();
+function parseProvider2(explicitProvider, repoUrl, env) {
+  const explicit = normalize2(explicitProvider)?.toLowerCase();
   if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
     return explicit;
   }
@@ -372392,26 +373066,26 @@ function parseProvider(explicitProvider, repoUrl, env) {
   if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
     return "azure-devops";
   }
-  if (normalize(env.GITHUB_REPOSITORY)) {
+  if (normalize2(env.GITHUB_REPOSITORY)) {
     return "github";
   }
-  if (normalize(env.CI_PROJECT_PATH) || normalize(env.GITLAB_CI)) {
+  if (normalize2(env.CI_PROJECT_PATH) || normalize2(env.GITLAB_CI)) {
     return "gitlab";
   }
-  if (normalize(env.BITBUCKET_REPO_SLUG)) {
+  if (normalize2(env.BITBUCKET_REPO_SLUG)) {
     return "bitbucket";
   }
-  if (normalize(env.BUILD_REPOSITORY_URI)) {
+  if (normalize2(env.BUILD_REPOSITORY_URI)) {
     return "azure-devops";
   }
   return "unknown";
 }
-function detectRepoContext(input, env = process.env) {
-  const repoUrl = normalizeRepoUrl(input.repoUrl) ?? normalizeRepoUrl(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl(env.CI_PROJECT_URL) ?? normalizeRepoUrl(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl(env.BUILD_REPOSITORY_URI);
-  const repoSlug = normalize(input.repoSlug) ?? normalize(env.GITHUB_REPOSITORY) ?? normalize(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize(env.BUILD_REPOSITORY_NAME);
-  const ref = normalize(input.ref) ?? normalize(env.GITHUB_REF_NAME) ?? normalize(env.CI_COMMIT_REF_NAME) ?? normalize(env.BITBUCKET_BRANCH) ?? normalize(env.BUILD_SOURCEBRANCHNAME);
-  const sha = normalize(input.sha) ?? normalize(env.GITHUB_SHA) ?? normalize(env.CI_COMMIT_SHA) ?? normalize(env.BITBUCKET_COMMIT) ?? normalize(env.BUILD_SOURCEVERSION);
-  const provider = parseProvider(input.gitProvider, repoUrl, env);
+function detectRepoContext2(input, env = process.env) {
+  const repoUrl = normalizeRepoUrl2(input.repoUrl) ?? normalizeRepoUrl2(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl2(env.CI_PROJECT_URL) ?? normalizeRepoUrl2(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl2(env.BUILD_REPOSITORY_URI);
+  const repoSlug = normalize2(input.repoSlug) ?? normalize2(env.GITHUB_REPOSITORY) ?? normalize2(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize2(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize2(env.BUILD_REPOSITORY_NAME);
+  const ref = normalize2(input.ref) ?? normalize2(env.GITHUB_REF_NAME) ?? normalize2(env.CI_COMMIT_REF_NAME) ?? normalize2(env.BITBUCKET_BRANCH) ?? normalize2(env.BUILD_SOURCEBRANCHNAME);
+  const sha = normalize2(input.sha) ?? normalize2(env.GITHUB_SHA) ?? normalize2(env.CI_COMMIT_SHA) ?? normalize2(env.BITBUCKET_COMMIT) ?? normalize2(env.BUILD_SOURCEVERSION);
+  const provider = parseProvider2(input.gitProvider, repoUrl, env);
   return {
     provider,
     repoUrl,
@@ -372422,7 +373096,7 @@ function detectRepoContext(input, env = process.env) {
 }
 
 // src/lib/repo/local-collection-artifacts.ts
-var import_node_crypto7 = require("node:crypto");
+var import_node_crypto8 = require("node:crypto");
 var import_node_fs6 = require("node:fs");
 var fs3 = __toESM(require("node:fs/promises"), 1);
 var path10 = __toESM(require("node:path"), 1);
@@ -372473,7 +373147,7 @@ async function persistLocalOpenApiArtifactManifest(repoRoot, finalized, dependen
   await assertNoSymlinksInTree(parent, ".postman");
   await assertNoSymlinksInTree(abs, relative3);
   await fs3.mkdir(parent, { recursive: true });
-  const temp = path10.join(parent, `.${path10.basename(abs)}.${(0, import_node_crypto7.randomUUID)()}.tmp`);
+  const temp = path10.join(parent, `.${path10.basename(abs)}.${(0, import_node_crypto8.randomUUID)()}.tmp`);
   const rename3 = dependencies.rename ?? ((oldPath, newPath) => fs3.rename(oldPath, newPath));
   try {
     const handle = await fs3.open(temp, "wx");
@@ -372499,7 +373173,7 @@ function deriveArtifactSafeCollectionName(displayName) {
   if (trimmed && SAFE_COLLECTION_NAME.test(trimmed)) {
     return trimmed;
   }
-  const digest = (0, import_node_crypto7.createHash)("sha256").update(original).digest("hex");
+  const digest = (0, import_node_crypto8.createHash)("sha256").update(original).digest("hex");
   return `collection-${digest}`;
 }
 function asArray6(value) {
@@ -372716,7 +373390,7 @@ async function listRegularFilesRelative(dir, base) {
 }
 async function computeArtifactDigestFromTree(absDir) {
   const relatives = (await listRegularFilesRelative(absDir, absDir)).sort((a, b) => a.localeCompare(b));
-  const hash = (0, import_node_crypto7.createHash)("sha256");
+  const hash = (0, import_node_crypto8.createHash)("sha256");
   for (const relative3 of relatives) {
     hash.update(relative3);
     hash.update("\0");
@@ -373032,7 +373706,7 @@ async function materializeLocalCollectionArtifacts(input) {
     await assertNoSymlinksInTree(plan.absCollectionPath, plan.collectionPath);
   }
   const snapshots = [];
-  const snapshotStoreRoot = path10.join(runTempDir, "snapshots", (0, import_node_crypto7.randomUUID)());
+  const snapshotStoreRoot = path10.join(runTempDir, "snapshots", (0, import_node_crypto8.randomUUID)());
   await fs3.mkdir(snapshotStoreRoot, { recursive: true });
   for (const [index, plan] of rolePlans.entries()) {
     snapshots.push(await snapshotPath(plan.absCollectionPath, snapshotStoreRoot, `role-${index}-${plan.role}`));
@@ -373137,566 +373811,6 @@ async function materializeLocalCollectionArtifacts(input) {
     if (error2 instanceof LocalCollectionArtifactsError) throw error2;
     throw new LocalCollectionArtifactsError("failed to materialize local collection artifacts", error2);
   }
-}
-
-// node_modules/@postman-cse/automation-core/dist/ci-context.js
-function norm(value) {
-  const trimmed = (value ?? "").trim();
-  return trimmed.length > 0 ? trimmed : void 0;
-}
-function detectEventTrigger(env = process.env) {
-  const ghEvent = norm(env.GITHUB_EVENT_NAME)?.toLowerCase();
-  if (ghEvent) {
-    if (ghEvent === "push")
-      return "push";
-    if (ghEvent === "pull_request" || ghEvent === "pull_request_target")
-      return "pull_request";
-    if (ghEvent === "schedule")
-      return "schedule";
-    if (ghEvent === "workflow_dispatch" || ghEvent === "repository_dispatch")
-      return "manual";
-    return "other";
-  }
-  const glSource = norm(env.CI_PIPELINE_SOURCE)?.toLowerCase();
-  if (glSource) {
-    if (glSource === "push")
-      return "push";
-    if (glSource === "merge_request_event")
-      return "pull_request";
-    if (glSource === "schedule")
-      return "schedule";
-    if (glSource === "web" || glSource === "api" || glSource === "trigger" || glSource === "pipeline") {
-      return "manual";
-    }
-    return "other";
-  }
-  if (norm(env.BITBUCKET_PR_ID))
-    return "pull_request";
-  if (norm(env.CI) || norm(env.BUILD_BUILDID) || norm(env.JENKINS_URL) || norm(env.TEAMCITY_VERSION)) {
-    return "other";
-  }
-  return "unknown";
-}
-function detectRunnerOs(env = process.env) {
-  const runnerOs = norm(env.RUNNER_OS)?.toLowerCase();
-  if (runnerOs === "linux")
-    return "linux";
-  if (runnerOs === "macos")
-    return "macos";
-  if (runnerOs === "windows")
-    return "windows";
-  const platform2 = typeof process !== "undefined" ? process.platform : void 0;
-  if (platform2 === "linux")
-    return "linux";
-  if (platform2 === "darwin")
-    return "macos";
-  if (platform2 === "win32")
-    return "windows";
-  return "unknown";
-}
-function detectCiContext(env = process.env) {
-  const provider = detectCiProviderContext(env);
-  return {
-    ...provider,
-    eventTrigger: detectEventTrigger(env),
-    runnerOs: detectRunnerOs(env)
-  };
-}
-function detectCiProviderContext(env = process.env) {
-  if (norm(env.GITHUB_ACTIONS)) {
-    const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
-    const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
-    return {
-      ciProvider: "github",
-      runId: norm(env.GITHUB_RUN_ID),
-      runnerKind
-    };
-  }
-  if (norm(env.GITLAB_CI)) {
-    return {
-      ciProvider: "gitlab",
-      runId: norm(env.CI_PIPELINE_ID) ?? norm(env.CI_PIPELINE_IID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.CIRCLECI)) {
-    return {
-      ciProvider: "circleci",
-      runId: norm(env.CIRCLE_WORKFLOW_ID) ?? norm(env.CIRCLE_BUILD_NUM),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.BUILDKITE)) {
-    const computeType = norm(env.BUILDKITE_COMPUTE_TYPE);
-    const runnerKind = computeType === "hosted" ? "hosted" : computeType === "self-hosted" ? "self-hosted" : "unknown";
-    return {
-      ciProvider: "buildkite",
-      runId: norm(env.BUILDKITE_BUILD_ID) ?? norm(env.BUILDKITE_BUILD_NUMBER),
-      runnerKind
-    };
-  }
-  if (norm(env.TF_BUILD)) {
-    return {
-      ciProvider: "azure",
-      runId: norm(env.BUILD_BUILDID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.CODEBUILD_BUILD_ID)) {
-    return {
-      ciProvider: "codebuild",
-      runId: norm(env.CODEBUILD_BUILD_ID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.BITBUCKET_BUILD_NUMBER)) {
-    return {
-      ciProvider: "bitbucket",
-      runId: norm(env.BITBUCKET_BUILD_NUMBER),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.TEAMCITY_VERSION)) {
-    return {
-      ciProvider: "teamcity",
-      runId: norm(env.BUILD_NUMBER),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.HARNESS_BUILD_ID)) {
-    return {
-      ciProvider: "harness",
-      runId: norm(env.HARNESS_EXECUTION_ID) ?? norm(env.HARNESS_BUILD_ID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.JENKINS_URL)) {
-    return {
-      ciProvider: "jenkins",
-      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NUMBER) ?? norm(env.BUILD_TAG),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.ATC_EXTERNAL_URL) || norm(env.BUILD_ID) && norm(env.BUILD_PIPELINE_NAME)) {
-    return {
-      ciProvider: "concourse",
-      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NAME),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.CI)) {
-    return { ciProvider: "other", runnerKind: "unknown" };
-  }
-  return { ciProvider: "unknown", runnerKind: "unknown" };
-}
-
-// node_modules/@postman-cse/automation-core/dist/repo-context.js
-function normalize2(value) {
-  const trimmed = (value ?? "").trim();
-  return trimmed.length > 0 ? trimmed : void 0;
-}
-function normalizeRepoUrl2(url) {
-  const raw = normalize2(url);
-  if (!raw) {
-    return void 0;
-  }
-  const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
-  if (sshMatch) {
-    const host = sshMatch[1];
-    const path12 = sshMatch[2];
-    return `https://${host}/${path12}`;
-  }
-  return raw.replace(/\.git$/, "");
-}
-function parseProvider2(explicitProvider, repoUrl, env) {
-  const explicit = normalize2(explicitProvider)?.toLowerCase();
-  if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
-    return explicit;
-  }
-  const url = (repoUrl ?? "").toLowerCase();
-  if (url.includes("github")) {
-    return "github";
-  }
-  if (url.includes("gitlab")) {
-    return "gitlab";
-  }
-  if (url.includes("bitbucket")) {
-    return "bitbucket";
-  }
-  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
-    return "azure-devops";
-  }
-  if (normalize2(env.GITHUB_REPOSITORY)) {
-    return "github";
-  }
-  if (normalize2(env.CI_PROJECT_PATH) || normalize2(env.GITLAB_CI)) {
-    return "gitlab";
-  }
-  if (normalize2(env.BITBUCKET_REPO_SLUG)) {
-    return "bitbucket";
-  }
-  if (normalize2(env.BUILD_REPOSITORY_URI)) {
-    return "azure-devops";
-  }
-  return "unknown";
-}
-function classifyRefKind(env = process.env) {
-  const githubRefType = normalize2(env.GITHUB_REF_TYPE)?.toLowerCase();
-  const githubRef = normalize2(env.GITHUB_REF);
-  const azureRef = normalize2(env.BUILD_SOURCEBRANCH);
-  if (githubRefType === "tag" || githubRef?.startsWith("refs/tags/") || normalize2(env.CI_COMMIT_TAG) || normalize2(env.BITBUCKET_TAG) || azureRef?.startsWith("refs/tags/")) {
-    return "tag";
-  }
-  const githubRefName = normalize2(env.GITHUB_REF_NAME);
-  const githubDefault = normalize2(env.GITHUB_DEFAULT_BRANCH);
-  if (githubRefName && githubDefault) {
-    return githubRefName === githubDefault ? "default-branch" : "branch";
-  }
-  const gitlabRef = normalize2(env.CI_COMMIT_REF_NAME);
-  const gitlabDefault = normalize2(env.CI_DEFAULT_BRANCH);
-  if (gitlabRef && gitlabDefault) {
-    return gitlabRef === gitlabDefault ? "default-branch" : "branch";
-  }
-  if (githubRefName || githubRef?.startsWith("refs/heads/") || gitlabRef || normalize2(env.BITBUCKET_BRANCH) || normalize2(env.BUILD_SOURCEBRANCHNAME) || azureRef?.startsWith("refs/heads/")) {
-    return "branch";
-  }
-  return "unknown";
-}
-function detectRepoContext2(input, env = process.env) {
-  const repoUrl = normalizeRepoUrl2(input.repoUrl) ?? normalizeRepoUrl2(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl2(env.CI_PROJECT_URL) ?? normalizeRepoUrl2(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl2(env.BUILD_REPOSITORY_URI);
-  const repoSlug = normalize2(input.repoSlug) ?? normalize2(env.GITHUB_REPOSITORY) ?? normalize2(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize2(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize2(env.BUILD_REPOSITORY_NAME);
-  const ref = normalize2(input.ref) ?? normalize2(env.GITHUB_REF_NAME) ?? normalize2(env.CI_COMMIT_REF_NAME) ?? normalize2(env.BITBUCKET_BRANCH) ?? normalize2(env.BUILD_SOURCEBRANCHNAME);
-  const sha = normalize2(input.sha) ?? normalize2(env.GITHUB_SHA) ?? normalize2(env.CI_COMMIT_SHA) ?? normalize2(env.BITBUCKET_COMMIT) ?? normalize2(env.BUILD_SOURCEVERSION);
-  const provider = parseProvider2(input.gitProvider, repoUrl, env);
-  const refKind = classifyRefKind(env);
-  return {
-    provider,
-    repoUrl,
-    repoSlug,
-    ref,
-    sha,
-    refKind
-  };
-}
-
-// node_modules/@postman-cse/automation-core/dist/telemetry.js
-var import_node_crypto8 = require("node:crypto");
-var import_undici2 = __toESM(require_undici(), 1);
-var SCHEMA_VERSION = 3;
-var DEFAULT_TIMEOUT_MS = 1500;
-var DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
-var proxyDispatcher;
-function getProxyDispatcher() {
-  return proxyDispatcher ??= new import_undici2.EnvHttpProxyAgent();
-}
-function resolveActionVersion(explicit, env = process.env) {
-  if (explicit) {
-    return explicit;
-  }
-  const ref = env.GITHUB_ACTION_REF?.trim();
-  if (ref) {
-    return ref;
-  }
-  return typeof __ACTION_VERSION__ !== "undefined" && __ACTION_VERSION__ ? __ACTION_VERSION__ : "unknown";
-}
-function telemetryDisabled(env) {
-  const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
-  if (flag === "off" || flag === "0" || flag === "false" || flag === "no") {
-    return true;
-  }
-  const dnt = String(env.DO_NOT_TRACK ?? "").trim().toLowerCase();
-  if (dnt && dnt !== "0" && dnt !== "false") {
-    return true;
-  }
-  return false;
-}
-function sha2562(value) {
-  return (0, import_node_crypto8.createHash)("sha256").update(value).digest("hex");
-}
-function accountTypeFromConsumer(consumerType) {
-  const t = (consumerType ?? "").trim().toLowerCase();
-  if (!t) {
-    return "unknown";
-  }
-  return t === "service_account" ? "service" : "user";
-}
-var noticeShown = false;
-function maybeNotice(logger) {
-  if (noticeShown || !logger) {
-    return;
-  }
-  noticeShown = true;
-  logger.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type, run trigger, runner OS). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
-}
-function buildTelemetryEvent(params) {
-  const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
-  const ci = detectCiContext(env);
-  const repo = detectRepoContext2({}, env);
-  const repoSlug = repo.repoSlug;
-  const repoSource = repoSlug ?? repo.repoUrl;
-  const owner = repoSlug && repoSlug.includes("/") ? repoSlug.split("/")[0] : void 0;
-  return {
-    schema_version: SCHEMA_VERSION,
-    event: "completion",
-    action,
-    action_version: actionVersion || "unknown",
-    team_id: teamId,
-    ci_provider: ci.ciProvider,
-    git_provider: repo.provider,
-    run_id: ci.runId,
-    runner_kind: ci.runnerKind,
-    repo_id: repoSource ? sha2562(repoSource) : void 0,
-    org_id: owner ? sha2562(owner) : void 0,
-    account_type: accountType,
-    event_trigger: ci.eventTrigger,
-    runner_os: ci.runnerOs,
-    ref_kind: repo.refKind,
-    outcome,
-    ts: now()
-  };
-}
-async function send(event2, options) {
-  const env = options.env ?? process.env;
-  const endpoint = options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
-  const transport = options.transport ?? import_undici2.fetch;
-  const dispatcher = options.dispatcher ?? getProxyDispatcher();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  timer.unref?.();
-  const init = {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(event2),
-    signal: controller.signal
-  };
-  init.dispatcher = dispatcher;
-  try {
-    await transport(endpoint, init);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-function createTelemetryContext(options) {
-  const env = options.env ?? process.env;
-  const now = options.now ?? Date.now;
-  const actionVersion = resolveActionVersion(options.actionVersion, env);
-  let teamId = "";
-  let accountType = "unknown";
-  let emitted = false;
-  return {
-    setTeamId(value) {
-      if (value) {
-        teamId = String(value);
-      }
-    },
-    setAccountType(consumerType) {
-      accountType = accountTypeFromConsumer(consumerType);
-    },
-    emitCompletion(outcome) {
-      if (emitted) {
-        return;
-      }
-      emitted = true;
-      try {
-        if (telemetryDisabled(env) || !teamId) {
-          return;
-        }
-        const event2 = buildTelemetryEvent({
-          action: options.action,
-          actionVersion,
-          teamId,
-          accountType,
-          outcome,
-          env,
-          now
-        });
-        maybeNotice(options.logger);
-        void send(event2, options).catch(() => {
-        });
-      } catch {
-      }
-    }
-  };
-}
-
-// node_modules/@postman-cse/automation-core/dist/logger.js
-var LEVEL_ORDER = {
-  debug: 10,
-  info: 20,
-  warning: 30,
-  error: 40
-};
-function defaultCorrelationId() {
-  return Math.random().toString(36).slice(2, 10);
-}
-function resolveLogLevel(env = process.env) {
-  const explicit = String(env.POSTMAN_ACTIONS_LOG_LEVEL ?? "").trim().toLowerCase();
-  if (explicit === "debug" || explicit === "trace" || explicit === "verbose")
-    return "debug";
-  if (explicit === "info")
-    return "info";
-  if (explicit === "warn" || explicit === "warning")
-    return "warning";
-  if (explicit === "error" || explicit === "quiet")
-    return "error";
-  if (isTruthyFlag(env.RUNNER_DEBUG) || isTruthyFlag(env.ACTIONS_STEP_DEBUG))
-    return "debug";
-  if (isTruthyFlag(env.POSTMAN_ACTIONS_DEBUG))
-    return "debug";
-  return "info";
-}
-function isTruthyFlag(value) {
-  if (!value)
-    return false;
-  const flag = value.trim().toLowerCase();
-  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
-}
-function actionSink(core2) {
-  return {
-    debug: (message) => core2.debug?.(message),
-    info: (message) => core2.info(message),
-    warning: (message) => (core2.warning ?? core2.info)(message),
-    error: (message) => (core2.error ?? core2.warning ?? core2.info)(message),
-    startGroup: core2.startGroup ? (name) => core2.startGroup?.(name) : void 0,
-    endGroup: core2.endGroup ? () => core2.endGroup?.() : void 0,
-    isDebug: core2.isDebug ? () => core2.isDebug?.() ?? false : void 0
-  };
-}
-var MIN_SECRET_LENGTH = 4;
-function renderValue(value, maxLength = 512) {
-  if (value === void 0)
-    return "undefined";
-  if (value === null)
-    return "null";
-  if (typeof value === "string")
-    return truncate2(value, maxLength);
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value);
-  }
-  if (value instanceof Error)
-    return truncate2(describeError(value), maxLength);
-  if (Array.isArray(value)) {
-    return truncate2(`[${value.map((entry) => renderValue(entry, 120)).join(", ")}]`, maxLength);
-  }
-  try {
-    return truncate2(JSON.stringify(value) ?? String(value), maxLength);
-  } catch {
-    return "<unserializable>";
-  }
-}
-function truncate2(text, maxLength) {
-  if (text.length <= maxLength)
-    return text;
-  return `${text.slice(0, maxLength)}\u2026 (+${text.length - maxLength} chars)`;
-}
-function describeError(error2, maxDepth = 5) {
-  const parts = [];
-  let current = error2;
-  let depth = 0;
-  while (current !== void 0 && current !== null && depth < maxDepth) {
-    if (current instanceof Error) {
-      const code = current.code;
-      parts.push(code ? `${current.name}[${code}]: ${current.message}` : `${current.name}: ${current.message}`);
-      current = current.cause;
-    } else if (typeof current === "object") {
-      try {
-        parts.push(JSON.stringify(current) ?? String(current));
-      } catch {
-        parts.push(String(current));
-      }
-      current = void 0;
-    } else {
-      parts.push(String(current));
-      current = void 0;
-    }
-    depth += 1;
-  }
-  if (parts.length === 0)
-    return "unknown error";
-  return parts.join(" <- caused by ");
-}
-function createLogger(options) {
-  const env = options.env ?? process.env;
-  const level = options.level ?? resolveLogLevel(env);
-  const secrets = options.secrets ?? /* @__PURE__ */ new Set();
-  const correlationId = options.correlationId ?? defaultCorrelationId();
-  const now = options.now ?? (() => Date.now());
-  const threshold = LEVEL_ORDER[level];
-  function addSecret(value) {
-    if (typeof value !== "string")
-      return;
-    const trimmed = value.trim();
-    if (trimmed.length < MIN_SECRET_LENGTH)
-      return;
-    secrets.add(trimmed);
-  }
-  function redact(text) {
-    let output = typeof text === "string" ? text : renderValue(text, 4096);
-    for (const secret of secrets) {
-      if (!secret)
-        continue;
-      output = output.split(secret).join("***");
-      const encoded = encodeURIComponent(secret);
-      if (encoded !== secret)
-        output = output.split(encoded).join("***");
-    }
-    return output;
-  }
-  function build(baseFields) {
-    function emit(target, message, fields) {
-      if (LEVEL_ORDER[target] < threshold)
-        return;
-      const merged = { ...baseFields, ...fields ?? {} };
-      const rendered = Object.entries(merged).filter(([, value]) => value !== void 0).map(([key, value]) => `${key}=${redact(renderValue(value))}`).join(" ");
-      const line = rendered ? `${redact(message)} | ${rendered}` : redact(message);
-      switch (target) {
-        case "debug":
-          options.sink.debug(line);
-          break;
-        case "info":
-          options.sink.info(line);
-          break;
-        case "warning":
-          options.sink.warning(line);
-          break;
-        case "error":
-          options.sink.error(line);
-          break;
-      }
-    }
-    const logger = {
-      level,
-      correlationId,
-      addSecret,
-      redact,
-      isDebug: () => threshold <= LEVEL_ORDER.debug,
-      debug: (message, fields) => emit("debug", message, fields),
-      info: (message, fields) => emit("info", message, fields),
-      warning: (message, fields) => emit("warning", message, fields),
-      error: (message, fields) => emit("error", message, fields),
-      failure: (message, error2, fields) => emit("error", message, { ...fields ?? {}, error: describeError(error2) }),
-      child: (fields) => build({ ...baseFields, ...fields }),
-      async phase(name, fn, fields) {
-        const scoped = build({ ...baseFields, ...fields ?? {}, phase: name });
-        const started = now();
-        scoped.debug("phase start");
-        options.sink.startGroup?.(name);
-        try {
-          const result = await fn();
-          scoped.debug("phase ok", { duration_ms: Math.round(now() - started) });
-          return result;
-        } catch (error2) {
-          scoped.failure("phase failed", error2, { duration_ms: Math.round(now() - started) });
-          throw error2;
-        } finally {
-          options.sink.endGroup?.();
-        }
-      }
-    };
-    return logger;
-  }
-  const root = build({ run: correlationId, ...options.fields ?? {} });
-  return root;
 }
 
 // src/action-version.ts
@@ -403231,7 +403345,7 @@ function sanitizeUrlForLog(value) {
   }
 }
 function resolveInputs(env = process.env) {
-  const repoContext = detectRepoContext(
+  const repoContext = detectRepoContext2(
     {
       repoUrl: getInput2("repo-url", env)
     },
@@ -403322,6 +403436,10 @@ function resolveInputs(env = process.env) {
     folderStrategy: parseEnumInput("folder-strategy", getInput2("folder-strategy", env), "Paths"),
     nestedFolderHierarchy: parseBooleanInput("nested-folder-hierarchy", getInput2("nested-folder-hierarchy", env), false),
     requestNameSource: parseEnumInput("request-name-source", getInput2("request-name-source", env), "Fallback"),
+    secretsResolverProvider: parseSecretsResolverProvider(
+      getInput2("secrets-resolver", env),
+      DEFAULT_SECRETS_RESOLVER_PROVIDER
+    ),
     postmanRegion,
     postmanStack,
     postmanApiBase: endpointProfile.apiBaseUrl,
@@ -403553,6 +403671,7 @@ function readActionInputs(actionCore) {
     INPUT_FOLDER_STRATEGY: optionalInput(actionCore, "folder-strategy") ?? bootstrapActionContract.inputs["folder-strategy"].default,
     INPUT_NESTED_FOLDER_HIERARCHY: optionalInput(actionCore, "nested-folder-hierarchy") ?? bootstrapActionContract.inputs["nested-folder-hierarchy"].default,
     INPUT_REQUEST_NAME_SOURCE: optionalInput(actionCore, "request-name-source") ?? bootstrapActionContract.inputs["request-name-source"].default,
+    INPUT_SECRETS_RESOLVER: optionalInput(actionCore, "secrets-resolver") ?? bootstrapActionContract.inputs["secrets-resolver"].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, "openapi-version") ?? "",
     INPUT_PRESERVE_OAS30_TYPE_NULL: optionalInput(actionCore, "preserve-oas30-type-null") ?? bootstrapActionContract.inputs["preserve-oas30-type-null"].default,
     INPUT_BREAKING_CHANGE_MODE: optionalInput(actionCore, "breaking-change-mode") ?? bootstrapActionContract.inputs["breaking-change-mode"].default,
@@ -405078,6 +405197,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             requestNameSource: inputs.requestNameSource,
             folderStrategy: inputs.folderStrategy,
             nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+            secretsResolverProvider: inputs.secretsResolverProvider,
             names: roleNames,
             ...collectionBranchMarker ? { description: collectionBranchMarker } : {},
             contractIndex
@@ -405366,6 +405486,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                 requestNameSource: inputs.requestNameSource,
                 folderStrategy: inputs.folderStrategy,
                 nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+                secretsResolverProvider: inputs.secretsResolverProvider,
                 names: {
                   baseline: collectionAssetProjectName,
                   smoke: `[Smoke] ${collectionAssetProjectName}`,
@@ -405691,6 +405812,7 @@ async function runAction(actionCore = core_exports, actionExec = exec_exports, a
 }
 function createRoutingPostmanClient(options) {
   const { gateway } = options;
+  const secretsResolverProvider = options.secretsResolverProvider ?? DEFAULT_SECRETS_RESOLVER_PROVIDER;
   const requireAccessToken = (operation) => async () => {
     throw new Error(
       `${operation} requires an access token. Mint a service-account token with postman-resolve-service-token-action.`
@@ -405756,7 +405878,7 @@ function createRoutingPostmanClient(options) {
     findWorkspacesByName: (name) => gateway.findWorkspacesByName(name),
     configureTeamContext: (teamId, orgMode) => gateway.configureTeamContext(teamId, orgMode),
     // Gateway-only asset mutation over the v3 collection-items and tagging surfaces.
-    injectTests: (collectionId, type2) => gateway.injectTests(collectionId, type2),
+    injectTests: (collectionId, type2) => gateway.injectTests(collectionId, type2, secretsResolverProvider),
     tagSpecVersion: (specId, name) => gateway.tagSpecVersion(specId, name),
     listSpecVersionTags: (specId) => gateway.listSpecVersionTags(specId),
     tagCollection: (collectionId, tags) => gateway.tagCollection(collectionId, tags),
@@ -405771,7 +405893,7 @@ function createRoutingPostmanClient(options) {
     inviteRequesterToWorkspace: (workspaceId, email) => gateway.inviteRequesterToWorkspace(workspaceId, email),
     deleteCollection: (collectionUid) => gateway.deleteCollection(collectionUid),
     // Gateway-only v3-native contract test injection over `/scripts`.
-    injectContractTests: (collectionUid, index) => gateway.injectContractTests(collectionUid, index),
+    injectContractTests: (collectionUid, index) => gateway.injectContractTests(collectionUid, index, secretsResolverProvider),
     createCollection: (workspaceId, collection, options2) => gateway.createCollection(workspaceId, collection, options2),
     updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection),
     updateCollectionDescription: (collectionUid, description) => gateway.updateCollectionDescription(collectionUid, description),
@@ -405813,7 +405935,10 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
     } : {},
     onRetry: (event2) => reportRetry(factories.core, event2)
   }) : void 0;
-  const postman = createRoutingPostmanClient({ gateway: gatewayAssets });
+  const postman = createRoutingPostmanClient({
+    gateway: gatewayAssets,
+    secretsResolverProvider: inputs.secretsResolverProvider
+  });
   const internalIntegration = inputs.postmanAccessToken ? createInternalIntegrationAdapter({
     accessToken: inputs.postmanAccessToken,
     tokenProvider,

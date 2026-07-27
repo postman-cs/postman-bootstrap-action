@@ -205,6 +205,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `folder-strategy` | Folder organization strategy for generated collections (Paths or Tags) | no | `Paths` |
 | `nested-folder-hierarchy` | When folder-strategy is Tags, enables nested folder hierarchy | no | `false` |
 | `request-name-source` | Determines how requests are named in generated collections (Fallback or URL) | no | `Fallback` |
+| `secrets-resolver` | Cloud secret store backing the optional "00 - Resolve Secrets" helper request placed at the start of generated Smoke and Contract collections. One of none, aws, azure, or gcp. Defaults to none, which injects no helper request. The helper is a local-run convenience only; it is skipped when CI=true. | no | `none` |
 | `postman-region` | Postman data residency region for access-token minting and gateway calls. | no | `us` |
 <!-- inputs-table:end -->
 

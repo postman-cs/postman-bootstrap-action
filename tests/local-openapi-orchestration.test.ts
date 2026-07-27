@@ -143,6 +143,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     folderStrategy: 'Paths',
     nestedFolderHierarchy: false,
     requestNameSource: 'Fallback',
+    secretsResolverProvider: 'none',
     postmanRegion: 'us',
     postmanStack: 'prod',
     postmanApiBase: 'https://api.getpostman.com',

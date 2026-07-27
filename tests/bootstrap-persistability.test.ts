@@ -91,6 +91,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     folderStrategy: 'Tags',
     nestedFolderHierarchy: true,
     requestNameSource: 'Fallback',
+    secretsResolverProvider: 'none',
     postmanRegion: 'us',
     postmanStack: 'prod',
     postmanBifrostBase: 'https://bifrost-premium-https-v4.gw.postman.com',

@@ -89,6 +89,11 @@ import {
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
 import {
+  DEFAULT_SECRETS_RESOLVER_PROVIDER,
+  parseSecretsResolverProvider,
+  type SecretsResolverProvider
+} from '@postman-cse/automation-core';
+import {
   BRANCH_DECISION_ENV,
   channelAssetName,
   parseChannelRules,
@@ -145,6 +150,7 @@ export interface ResolvedInputs {
   folderStrategy: string;
   nestedFolderHierarchy: boolean;
   requestNameSource: string;
+  secretsResolverProvider: SecretsResolverProvider;
   postmanRegion: PostmanRegion;
   postmanStack: PostmanStack;
   postmanApiBase?: string;
@@ -705,6 +711,10 @@ export function resolveInputs(
     nestedFolderHierarchy: parseBooleanInput('nested-folder-hierarchy', getInput('nested-folder-hierarchy', env), false),
     requestNameSource:
       parseEnumInput('request-name-source', getInput('request-name-source', env), 'Fallback'),
+    secretsResolverProvider: parseSecretsResolverProvider(
+      getInput('secrets-resolver', env),
+      DEFAULT_SECRETS_RESOLVER_PROVIDER
+    ),
     postmanRegion,
     postmanStack,
     postmanApiBase: endpointProfile.apiBaseUrl,
@@ -1052,6 +1062,9 @@ export function readActionInputs(
     INPUT_REQUEST_NAME_SOURCE:
       optionalInput(actionCore, 'request-name-source') ??
       bootstrapActionContract.inputs['request-name-source'].default,
+    INPUT_SECRETS_RESOLVER:
+      optionalInput(actionCore, 'secrets-resolver') ??
+      bootstrapActionContract.inputs['secrets-resolver'].default,
     INPUT_OPENAPI_VERSION: optionalInput(actionCore, 'openapi-version') ?? '',
     INPUT_PRESERVE_OAS30_TYPE_NULL:
       optionalInput(actionCore, 'preserve-oas30-type-null') ??
@@ -3107,6 +3120,7 @@ async function runBootstrapInner(
           requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
           folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
           nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+          secretsResolverProvider: inputs.secretsResolverProvider,
           names: roleNames,
           ...(collectionBranchMarker ? { description: collectionBranchMarker } : {}),
           contractIndex
@@ -3461,6 +3475,7 @@ async function runBootstrapInner(
               requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
               folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
               nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+              secretsResolverProvider: inputs.secretsResolverProvider,
               names: {
                 baseline: collectionAssetProjectName,
                 smoke: `[Smoke] ${collectionAssetProjectName}`,
@@ -3865,9 +3880,15 @@ export async function runAction(
  * credentials or transports.
  */
 export function createRoutingPostmanClient(options: {
+  /**
+   * Cloud secret store backing the optional `00 - Resolve Secrets` helper item.
+   * Defaults to `none`: gateway asset injection creates no helper request.
+   */
+  secretsResolverProvider?: SecretsResolverProvider;
   gateway?: PostmanGatewayAssetsClient;
 }): BootstrapExecutionDependencies['postman'] {
   const { gateway } = options;
+  const secretsResolverProvider = options.secretsResolverProvider ?? DEFAULT_SECRETS_RESOLVER_PROVIDER;
 
   const requireAccessToken = (operation: string) => async (): Promise<never> => {
     throw new Error(
@@ -3949,7 +3970,8 @@ export function createRoutingPostmanClient(options: {
     configureTeamContext: (teamId, orgMode) => gateway.configureTeamContext(teamId, orgMode),
 
     // Gateway-only asset mutation over the v3 collection-items and tagging surfaces.
-    injectTests: (collectionId, type) => gateway.injectTests(collectionId, type),
+    injectTests: (collectionId, type) =>
+      gateway.injectTests(collectionId, type, secretsResolverProvider),
     tagSpecVersion: (specId, name) => gateway.tagSpecVersion(specId, name),
     listSpecVersionTags: (specId) => gateway.listSpecVersionTags(specId),
     tagCollection: (collectionId, tags) => gateway.tagCollection(collectionId, tags),
@@ -3965,7 +3987,8 @@ export function createRoutingPostmanClient(options: {
     deleteCollection: (collectionUid) => gateway.deleteCollection(collectionUid),
 
     // Gateway-only v3-native contract test injection over `/scripts`.
-    injectContractTests: (collectionUid, index) => gateway.injectContractTests(collectionUid, index),
+    injectContractTests: (collectionUid, index) =>
+      gateway.injectContractTests(collectionUid, index, secretsResolverProvider),
     createCollection: (workspaceId, collection, options) =>
       gateway.createCollection(workspaceId, collection, options),
     updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection),
@@ -4028,7 +4051,10 @@ export function createBootstrapDependencies(
       })
     : undefined;
 
-  const postman = createRoutingPostmanClient({ gateway: gatewayAssets });
+  const postman = createRoutingPostmanClient({
+    gateway: gatewayAssets,
+    secretsResolverProvider: inputs.secretsResolverProvider
+  });
 
   const internalIntegration =
     inputs.postmanAccessToken

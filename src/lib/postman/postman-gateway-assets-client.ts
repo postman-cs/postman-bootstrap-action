@@ -2660,7 +2660,9 @@ export class PostmanGatewayAssetsClient {
    * - root /scripts types must be `http:beforeRequest` / `http:afterResponse`
    * - `remove` of absent /auth|/variables|/scripts => 400 REJECTED_PATCH
    * - `remove` of /description always works (field exists as "")
-   * - on update, GET the root first and only remove fields that currently exist
+   * - collection-root GET can 403 for otherwise-authorized service-account tokens
+   * - on update, apply one operation at a time so blind removals can safely
+   *   converge without a root pre-read
    */
   /**
    * GET a collection root, retrying through the v3 surface's read-after-write
@@ -2705,11 +2707,6 @@ export class PostmanGatewayAssetsClient {
       ops.push({ op: 'replace', path: '/name', value: v3.name });
     }
 
-    let current: JsonRecord | null = null;
-    if (options.reconcileRemovals) {
-      current = await this.getCollectionRoot(cid);
-    }
-
     const hasDescription = typeof v3.description === 'string' && v3.description.length > 0;
     if (hasDescription) {
       ops.push({ op: 'add', path: '/description', value: v3.description });
@@ -2720,23 +2717,51 @@ export class PostmanGatewayAssetsClient {
 
     if (v3.auth && typeof v3.auth === 'object') {
       ops.push({ op: 'add', path: '/auth', value: v3.auth });
-    } else if (options.reconcileRemovals && current && current.auth !== undefined) {
+    } else if (options.reconcileRemovals) {
       ops.push({ op: 'remove', path: '/auth' });
     }
 
     if (Array.isArray(v3.variables) && v3.variables.length > 0) {
       ops.push({ op: 'add', path: '/variables', value: v3.variables });
-    } else if (options.reconcileRemovals && current && current.variables !== undefined) {
+    } else if (options.reconcileRemovals) {
       ops.push({ op: 'remove', path: '/variables' });
     }
 
     if (Array.isArray(v3.scripts) && v3.scripts.length > 0) {
       ops.push({ op: 'add', path: '/scripts', value: this.toRootScripts(v3.scripts) });
-    } else if (options.reconcileRemovals && current && current.scripts !== undefined) {
+    } else if (options.reconcileRemovals) {
       ops.push({ op: 'remove', path: '/scripts' });
     }
 
     if (ops.length === 0) return;
+    if (options.reconcileRemovals) {
+      for (const op of ops) {
+        try {
+          await this.gateway.requestJson<JsonRecord>({
+            service: 'collection',
+            method: 'patch',
+            path: `/v3/collections/${cid}`,
+            // A one-operation patch is independently idempotent. If a retry
+            // observes that its remove already committed, the missing target
+            // proves this operation's intended end state without a root GET.
+            retry: 'safe',
+            body: [op]
+          });
+        } catch (error) {
+          if (op.op === 'remove' && isMissingPatchValueError(error)) {
+            continue;
+          }
+          // With one operation per request, REJECTED_PATCH proves the requested
+          // add/replace is already current or the requested remove is absent.
+          if (isRejectedPatchError(error)) {
+            continue;
+          }
+          throw error;
+        }
+      }
+      return;
+    }
+
     try {
       await this.gateway.requestJson<JsonRecord>({
         service: 'collection',

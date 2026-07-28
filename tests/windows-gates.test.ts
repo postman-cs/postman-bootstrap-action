@@ -1,23 +1,20 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-const helper = join(process.cwd(), '.github/scripts/run-windows-gates.ps1');
-const pwshAvailable = spawnSync('pwsh', ['--version'], { encoding: 'utf8' }).status === 0;
+const helper = join(process.cwd(), '.github/scripts/run-windows-gates.mjs');
 
 function runGatesWithTimeout(gateTimeoutSeconds: number, ...gates: string[]) {
   return spawnSync(
-    'pwsh',
+    process.execPath,
     [
-      '-NoProfile',
-      '-File',
       helper,
-      '-GateJson',
+      '--gate-json',
       JSON.stringify(gates),
-      '-GateTimeoutSeconds',
+      '--gate-timeout-seconds',
       String(gateTimeoutSeconds)
     ],
     {
@@ -39,12 +36,12 @@ function gateDiagnostics(result: ReturnType<typeof runGates>) {
     .join('\n');
 }
 
-describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
+describe('Windows gate queue', () => {
   it('continues after native stderr on exit 0 and aggregates a later nonzero status', () => {
     expect(existsSync(helper)).toBe(true);
     const warningOnly = runGates(
-      "stderr-ok|||pwsh|||-NoProfile|||-Command|||[Console]::Error.WriteLine('DEP0040'); exit 0",
-      "also-ok|||pwsh|||-NoProfile|||-Command|||exit 0"
+      `stderr-ok|||${process.execPath}|||-e|||process.stderr.write('DEP0040\\n')`,
+      `also-ok|||${process.execPath}|||-e|||process.exit(0)`
     );
     expect(warningOnly.status, gateDiagnostics(warningOnly)).toBe(0);
     expect(warningOnly.stdout).toContain('::group::stderr-ok');
@@ -54,9 +51,9 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
     expect(warningOnly.stdout).toContain('gate:also-ok=pass');
 
     const mixed = runGates(
-      "stderr-ok|||pwsh|||-NoProfile|||-Command|||[Console]::Error.WriteLine('DEP0040'); exit 0",
-      'fails|||pwsh|||-NoProfile|||-Command|||exit 7',
-      'after-failure|||pwsh|||-NoProfile|||-Command|||exit 0'
+      `stderr-ok|||${process.execPath}|||-e|||process.stderr.write('DEP0040\\n')`,
+      `fails|||${process.execPath}|||-e|||process.exit(7)`,
+      `after-failure|||${process.execPath}|||-e|||process.exit(0)`
     );
     expect(mixed.status, gateDiagnostics(mixed)).toBe(1);
     expect(mixed.stdout).toContain('gate:stderr-ok=pass');
@@ -70,8 +67,8 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
     () => {
       const timedOut = runGatesWithTimeout(
         1,
-        'sleeps|||pwsh|||-NoProfile|||-Command|||Start-Sleep -Seconds 2; exit 0',
-        'after-timeout|||pwsh|||-NoProfile|||-Command|||exit 0'
+        `sleeps|||${process.execPath}|||-e|||setTimeout(() => {}, 2_000)`,
+        `after-timeout|||${process.execPath}|||-e|||process.exit(0)`
       );
 
       expect(timedOut.status, gateDiagnostics(timedOut)).toBe(1);
@@ -87,11 +84,10 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
     () => {
       expect(existsSync(helper)).toBe(true);
       const workDir = mkdtempSync(join(tmpdir(), 'windows-gates-maxparallel-'));
-      const probePath = join(workDir, 'probe.ps1');
+      const probePath = join(workDir, 'probe.mjs');
       const currentPath = join(workDir, 'current.txt');
       const maxPath = join(workDir, 'max.txt');
       const startedPath = join(workDir, 'started.txt');
-      const mutexName = `PostmanBootstrapGatesTest-${basename(workDir)}`;
       const gateNames = ['probe-a', 'probe-b', 'probe-c'] as const;
 
       writeFileSync(currentPath, '0', 'utf8');
@@ -100,61 +96,39 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
       writeFileSync(
         probePath,
         [
-          'param(',
-          '  [Parameter(Mandatory = $true)][string]$WorkDir,',
-          '  [Parameter(Mandatory = $true)][string]$GateName,',
-          '  [Parameter(Mandatory = $true)][string]$MutexName',
-          ')',
-          '$ErrorActionPreference = "Stop"',
-          '$currentPath = Join-Path $WorkDir "current.txt"',
-          '$maxPath = Join-Path $WorkDir "max.txt"',
-          '$startedPath = Join-Path $WorkDir "started.txt"',
-          '$markerPath = Join-Path $WorkDir ("marker-" + $GateName + ".txt")',
-          '$mutex = New-Object System.Threading.Mutex($false, $MutexName)',
-          'try {',
-          '  $null = $mutex.WaitOne()',
-          '  try {',
-          '    $started = [int]((Get-Content -LiteralPath $startedPath -Raw).Trim())',
-          '    $started++',
-          '    Set-Content -LiteralPath $startedPath -Value $started -NoNewline',
-          '    $current = [int]((Get-Content -LiteralPath $currentPath -Raw).Trim())',
-          '    $current++',
-          '    Set-Content -LiteralPath $currentPath -Value $current -NoNewline',
-          '    $max = [int]((Get-Content -LiteralPath $maxPath -Raw).Trim())',
-          '    if ($current -gt $max) {',
-          '      Set-Content -LiteralPath $maxPath -Value $current -NoNewline',
-          '    }',
-          '    $shouldRendezvous = $started -le 2',
-          '  } finally {',
-          '    $mutex.ReleaseMutex()',
+          "import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';",
+          "import { join } from 'node:path';",
+          'const [workDir, gateName] = process.argv.slice(2);',
+          "const lockPath = join(workDir, 'lock');",
+          "const currentPath = join(workDir, 'current.txt');",
+          "const maxPath = join(workDir, 'max.txt');",
+          "const startedPath = join(workDir, 'started.txt');",
+          'const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);',
+          'const withLock = (fn) => {',
+          '  for (;;) {',
+          "    try { mkdirSync(lockPath); break; } catch (error) { if (error.code !== 'EEXIST') throw error; sleep(10); }",
           '  }',
-          '  Set-Content -LiteralPath $markerPath -Value "done" -NoNewline',
-          '  if ($shouldRendezvous) {',
-          '    $deadline = [datetime]::UtcNow.AddSeconds(5)',
-          '    while ([datetime]::UtcNow -lt $deadline) {',
-          '      $null = $mutex.WaitOne()',
-          '      try {',
-          '        $observedMax = [int]((Get-Content -LiteralPath $maxPath -Raw).Trim())',
-          '        if ($observedMax -ge 2) { break }',
-          '      } finally {',
-          '        $mutex.ReleaseMutex()',
-          '      }',
-          '      Start-Sleep -Milliseconds 50',
-          '    }',
-          '  }',
-          '  Start-Sleep -Milliseconds 100',
-          '  $null = $mutex.WaitOne()',
-          '  try {',
-          '    $current = [int]((Get-Content -LiteralPath $currentPath -Raw).Trim())',
-          '    $current--',
-          '    Set-Content -LiteralPath $currentPath -Value $current -NoNewline',
-          '  } finally {',
-          '    $mutex.ReleaseMutex()',
-          '  }',
-          '} finally {',
-          '  $mutex.Dispose()',
+          '  try { return fn(); } finally { rmSync(lockPath, { recursive: true }); }',
+          '};',
+          'const shouldRendezvous = withLock(() => {',
+          "  const started = Number(readFileSync(startedPath, 'utf8')) + 1;",
+          "  writeFileSync(startedPath, String(started));",
+          "  const current = Number(readFileSync(currentPath, 'utf8')) + 1;",
+          "  writeFileSync(currentPath, String(current));",
+          "  const max = Number(readFileSync(maxPath, 'utf8'));",
+          "  if (current > max) writeFileSync(maxPath, String(current));",
+          '  return started <= 2;',
+          '});',
+          "writeFileSync(join(workDir, `marker-${gateName}.txt`), 'done');",
+          'if (shouldRendezvous) {',
+          '  const deadline = Date.now() + 5_000;',
+          "  while (Date.now() < deadline && withLock(() => Number(readFileSync(maxPath, 'utf8'))) < 2) sleep(50);",
           '}',
-          'exit 0',
+          'sleep(100);',
+          'withLock(() => {',
+          "  const current = Number(readFileSync(currentPath, 'utf8')) - 1;",
+          "  writeFileSync(currentPath, String(current));",
+          '});',
           ''
         ].join('\n'),
         'utf8'
@@ -162,8 +136,7 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
 
       try {
         const gates = gateNames.map(
-          (name) =>
-            `${name}|||pwsh|||-NoProfile|||-File|||${probePath}|||-WorkDir|||${workDir}|||-GateName|||${name}|||-MutexName|||${mutexName}`
+          (name) => `${name}|||${process.execPath}|||${probePath}|||${workDir}|||${name}`
         );
         const result = runGates(...gates);
         expect(result.status, gateDiagnostics(result)).toBe(0);

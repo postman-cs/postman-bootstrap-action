@@ -222,5 +222,5 @@ jobs:
             'test|||node|||--run|||test'
             'integ|||node|||--run|||test:integration'
           ) | ConvertTo-Json -Compress
-          & .github/scripts/run-windows-gates.ps1 -GateJson $gates
+          node .github/scripts/run-windows-gates.mjs --gate-json $gates
           exit $LASTEXITCODE

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const ciWorkflow = readFileSync(join(process.cwd(), '.github/workflows/ci.yml'), 'utf8');
 const seaWorkflow = readFileSync(join(process.cwd(), '.github/workflows/sea-binary.yml'), 'utf8');
-const windowsGateHelper = readFileSync(join(process.cwd(), '.github/scripts/run-windows-gates.ps1'), 'utf8');
+const windowsGateHelper = readFileSync(join(process.cwd(), '.github/scripts/run-windows-gates.mjs'), 'utf8');
 const cliTest = readFileSync(join(process.cwd(), 'tests/cli.test.ts'), 'utf8');
 
 /** Extract one top-level job block: `  <id>:` through the next job header or EOF. */
@@ -39,7 +39,7 @@ describe('CI workflow dist/pack race contract', () => {
     expect(ciWorkflow).toContain('group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
     expect(ciWorkflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
     expect(ciWorkflow).toMatch(/windows:[\s\S]*?Run gates/);
-    expect(ciWorkflow).toMatch(/windows:[\s\S]*?run-windows-gates\.ps1/);
+    expect(ciWorkflow).toMatch(/windows:[\s\S]*?run-windows-gates\.mjs/);
     expect(ciWorkflow).toMatch(/windows:[\s\S]*?'integ\|\|\|node\|\|\|--run\|\|\|test:integration'/);
     expect(windows).not.toContain('npm run bundle');
   });
@@ -276,8 +276,8 @@ describe('CI workflow dist/pack race contract', () => {
     expect(addCliPath).not.toMatch(/\bif:/);
 
     const runGates = namedStep(windows, 'Run gates');
-    expect(runGates).toContain('.github/scripts/run-windows-gates.ps1');
-    expect(runGates).toContain('-GateJson $gates');
+    expect(runGates).toContain('.github/scripts/run-windows-gates.mjs');
+    expect(runGates).toContain('--gate-json $gates');
     expect(runGates).toContain("'test|||node|||--run|||test'");
     expect(runGates).toContain("'integ|||node|||--run|||test:integration'");
     expect(runGates.match(/'[^']+\|\|\|[^']+'/g) ?? []).toEqual([
@@ -285,30 +285,17 @@ describe('CI workflow dist/pack race contract', () => {
       "'integ|||node|||--run|||test:integration'",
     ]);
     expect(runGates).not.toMatch(/\bif:/);
-    expect(windowsGateHelper).toContain('[int]$MaxParallelGates = 2');
-    expect(windowsGateHelper).toContain('ValidateRange(1, 2)');
-    expect(windowsGateHelper).toMatch(
-      /\[ValidateRange\(1,\s*\d+\)\]\s*\r?\n\s*\[int\]\$GateTimeoutSeconds\s*=/,
-    );
-    expect(windowsGateHelper).toMatch(/System\.Diagnostics\.ProcessStartInfo/);
-    expect(windowsGateHelper).toMatch(/System\.Diagnostics\.Process/);
-    expect(windowsGateHelper).toContain('.ArgumentList.Add(');
-    expect(windowsGateHelper).toMatch(/\.RedirectStandardOutput\s*=\s*\$true/);
-    expect(windowsGateHelper).toMatch(/\.RedirectStandardError\s*=\s*\$true/);
-    expect(windowsGateHelper).toContain(
-      'Deadline = [datetime]::UtcNow.AddSeconds($GateTimeoutSeconds)',
-    );
-    expect(windowsGateHelper).toContain('$now = [datetime]::UtcNow');
-    expect(windowsGateHelper).toContain('if ($now -ge $gate.Deadline)');
-    expect(windowsGateHelper).toContain('if ($null -eq $completed) { Start-Sleep -Milliseconds 100 }');
-    expect(windowsGateHelper).toMatch(/\.Kill\(\$true\)/);
-    expect(windowsGateHelper).not.toContain('Start-Job');
-    expect(windowsGateHelper).not.toContain('Wait-Job');
+    expect(windowsGateHelper).toContain("readOption('--max-parallel-gates', '2')");
+    expect(windowsGateHelper).toContain("readOption('--gate-timeout-seconds', '900')");
+    expect(windowsGateHelper).toContain('Math.min(maxParallelGates, gates.length)');
+    expect(windowsGateHelper).toContain("spawn(gate.command, gate.args");
+    expect(windowsGateHelper).toContain("spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F']");
+    expect(windowsGateHelper).toContain("child.kill('SIGKILL')");
+    expect(windowsGateHelper).not.toContain('Start-ThreadJob');
     expect(windowsGateHelper).not.toContain('Invoke-Expression');
-    expect(windowsGateHelper).toContain("$ErrorActionPreference = 'Continue'");
-    expect(windowsGateHelper).toContain('::group::$name');
-    expect(windowsGateHelper).toContain('gate:$name=pass');
-    expect(windowsGateHelper).toContain('gate:$name=fail');
+    expect(windowsGateHelper).toContain('::group::${result.name}');
+    expect(windowsGateHelper).toContain('gate:${result.name}=pass');
+    expect(windowsGateHelper).toContain('gate:${result.name}=fail');
 
     expect(cliTest).toContain(
       "process.env.npm_execpath ?? path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')",

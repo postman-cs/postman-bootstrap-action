@@ -367389,7 +367389,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "1cb716e4e7394485dba967bb0a19c576439fbcf7",
+  bootstrapCommit: "bc18632c19818b7790425f7e58ddcb7a70c52b74",
   legs: [
     {
       mode: "nonorg",
@@ -370660,7 +370660,7 @@ ${error.responseBody ?? ""}`
           if (op.op === "remove" && isMissingPatchValueError(error)) {
             continue;
           }
-          if (isRejectedPatchError(error) && (op.op !== "remove" || op.path === "/description")) {
+          if (isRejectedPatchError(error)) {
             continue;
           }
           throw error;

@@ -5185,7 +5185,7 @@ describe('PostmanGatewayAssetsClient', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('findAdoptableSameMarkerCollection does not adopt a different head SHA', async () => {
+    it('findAdoptableSameMarkerCollection adopts the same branch across head SHAs', async () => {
       const marker =
         'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
       const differentShaMarker = marker.replace('abc123', 'def456');
@@ -5207,7 +5207,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await expect(
         client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
-      ).resolves.toBeUndefined();
+      ).resolves.toBe('100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
       expect(mutations).toEqual([]);
     });
 

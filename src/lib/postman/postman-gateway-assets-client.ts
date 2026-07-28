@@ -3535,8 +3535,7 @@ export class PostmanGatewayAssetsClient {
       candidate.rawBranch === desired.rawBranch &&
       candidate.sanitizedBranch === desired.sanitizedBranch &&
       candidate.role === desired.role &&
-      candidate.headRepoId === desired.headRepoId &&
-      candidate.headSha === desired.headSha
+      candidate.headRepoId === desired.headRepoId
     );
   }
 

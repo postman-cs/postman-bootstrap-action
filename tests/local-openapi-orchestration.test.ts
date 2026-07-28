@@ -1117,7 +1117,7 @@ describe('local OpenAPI orchestration', () => {
         )
       );
 
-      expect(postman.importV2Collection).toHaveBeenCalledTimes(2);
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith('ws-1', [
         canonicalBaselineUid
       ]);
@@ -1281,9 +1281,8 @@ describe('local OpenAPI orchestration', () => {
         )
       ).rejects.toThrow(/LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=(deep-update|cloud-collection-write)/);
 
-      // The baseline and the throwing smoke invocation are both rollback
-      // candidates. Contract was never attempted; every snapshot happened
-      // before the first cloud write.
+      // Both lanes drain before rollback. The baseline worker can start contract
+      // while smoke is failing, so all attempted writes remain rollback candidates.
       expect(postman.exportV2Collection).toHaveBeenCalledTimes(3);
       expect(events.filter((event) => event.startsWith('export:'))).toEqual([
         'export:col-baseline-existing',
@@ -1293,16 +1292,22 @@ describe('local OpenAPI orchestration', () => {
       expect(events.findIndex((event) => event.startsWith('deepUpdate:'))).toBeGreaterThan(
         events.findIndex((event) => event === 'export:col-contract-existing')
       );
-      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(4);
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(6);
       expect(postman.deepUpdateV2Collection.mock.calls.map((call) => call[0])).toEqual([
         'col-baseline-existing',
         'col-smoke-existing',
+        'col-contract-existing',
         'col-baseline-existing',
-        'col-smoke-existing'
+        'col-smoke-existing',
+        'col-contract-existing'
       ]);
-      expect(postman.deepUpdateV2Collection.mock.calls.slice(2).map((call) =>
+      expect(postman.deepUpdateV2Collection.mock.calls.slice(3).map((call) =>
         String(((call[1] as JsonRecord).info as JsonRecord).name)
-      )).toEqual(['snapshot-col-baseline-existing', 'snapshot-col-smoke-existing']);
+      )).toEqual([
+        'snapshot-col-baseline-existing',
+        'snapshot-col-smoke-existing',
+        'snapshot-col-contract-existing'
+      ]);
       expect(postman.importV2Collection).not.toHaveBeenCalled();
       expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
       expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
@@ -1310,7 +1315,7 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
-  it('serializes all three role cloud writes within one workspace (Q7)', async () => {
+  it('bounds role cloud writes to two concurrent lanes within one workspace (Q7)', async () => {
     await withRepo(async () => {
       const events: string[] = [];
       const core = createCoreStub();
@@ -1347,7 +1352,7 @@ describe('local OpenAPI orchestration', () => {
         resourcesState: { read: () => null, write: () => undefined },
         specFetcher: vi.fn()
       });
-      expect(maxInFlight).toBe(1);
+      expect(maxInFlight).toBe(2);
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
     });
   });

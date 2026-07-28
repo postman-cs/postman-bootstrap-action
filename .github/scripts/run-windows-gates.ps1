@@ -84,8 +84,9 @@ function Complete-One {
     $stderr
     if ($timedOut) { "gate:$($completed.Name) timed out after $GateTimeoutSeconds seconds" }
   )
+  $completedProcessId = $completed.Process.Id
+  $script:running = @($script:running | Where-Object { $_.Process.Id -ne $completedProcessId })
   $completed.Process.Dispose()
-  $script:running = @($script:running | Where-Object { $_ -ne $completed })
 }
 
 foreach ($definition in $Gate) {

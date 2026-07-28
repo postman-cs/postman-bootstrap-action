@@ -3021,7 +3021,7 @@ paths:
     const deepUpdateV2Collection = vi
       .fn()
       .mockRejectedValueOnce(new Error('deep update refused'))
-      .mockResolvedValueOnce('col-baseline-stale');
+      .mockImplementation(async (collectionUid: string) => collectionUid);
     const postman = createRollbackPostman({
       deepUpdateV2Collection
     });
@@ -3043,9 +3043,9 @@ paths:
     expect(postman.importV2Collection).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
     expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
-    expect(deepUpdateV2Collection).toHaveBeenCalledTimes(2);
+    expect(deepUpdateV2Collection).toHaveBeenCalledTimes(4);
     expect(deepUpdateV2Collection).toHaveBeenNthCalledWith(
-      2,
+      3,
       'col-baseline-stale',
       {
         info: {
@@ -3055,6 +3055,12 @@ paths:
         },
         item: []
       },
+      expect.stringMatching(/^[a-f0-9]{64}$/)
+    );
+    expect(deepUpdateV2Collection).toHaveBeenNthCalledWith(
+      4,
+      'col-smoke-stale',
+      expect.objectContaining({ info: expect.objectContaining({ _postman_id: 'col-smoke-stale' }) }),
       expect.stringMatching(/^[a-f0-9]{64}$/)
     );
   });

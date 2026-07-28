@@ -3350,23 +3350,39 @@ export class PostmanGatewayAssetsClient {
       PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
     let eligible: Array<{ id: string; name: string }> = [];
     let ownCanonical: { id: string; name: string } | undefined;
-
-    // Observe the full settle window so a delayed concurrent peer final is not
-    // missed after own UID becomes visible. Never early-break on first sighting.
     let sameNameSurvivors: Array<{ id: string; name: string; description?: string }> = [];
-    for (let observation = 0; observation <= delays.length; observation += 1) {
+    const observeInventory = async (): Promise<void> => {
       const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
       sameNameSurvivors = inventory
         .filter((entry) => entry.name === finalName)
         .sort((a, b) => a.id.localeCompare(b.id));
-      eligible = sameNameSurvivors
-        .filter(
-          (entry) => !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
-        );
+      eligible = sameNameSurvivors.filter(
+        (entry) => !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
+      );
       ownCanonical = eligible.find(
         (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
       );
+    };
+
+    // Observe the full settle window so a delayed concurrent peer final is not
+    // missed after own UID becomes visible. Never early-break on first sighting.
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      await observeInventory();
       if (observation < delays.length) await this.sleep(delays[observation]!);
+    }
+
+    if (
+      !ownCanonical &&
+      delays === PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS
+    ) {
+      // Healthy canonical imports retain the standard latency. Only a still-hidden
+      // owned identity consumes the remaining live-proven inventory visibility budget.
+      for (const delay of PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(
+        delays.length
+      )) {
+        await this.sleep(delay);
+        await observeInventory();
+      }
     }
 
     if (!ownCanonical) {

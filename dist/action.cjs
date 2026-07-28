@@ -368548,7 +368548,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "5ea2e46afa7dc5d05a6448d3b0009aaaa8b050da",
+  bootstrapCommit: "6885ebc8879c1a7e5f07bc6122a71db8ad22d099",
   legs: [
     {
       mode: "nonorg",
@@ -403852,10 +403852,14 @@ async function runGroup(actionCore, name, fn) {
 }
 function withPhaseGroups(actionCore, logger) {
   const wrapped = Object.create(actionCore);
-  wrapped.error = (message) => actionCore.error(logger.redact(message));
-  wrapped.group = (name, fn) => actionCore.group(name, async () => logger.phase(name, fn));
-  wrapped.info = (message) => actionCore.info(logger.redact(message));
-  wrapped.warning = (message) => actionCore.warning(logger.redact(message));
+  Object.defineProperties(wrapped, {
+    error: { value: (message) => actionCore.error(logger.redact(message)) },
+    group: {
+      value: (name, fn) => actionCore.group(name, async () => logger.phase(name, fn))
+    },
+    info: { value: (message) => actionCore.info(logger.redact(message)) },
+    warning: { value: (message) => actionCore.warning(logger.redact(message)) }
+  });
   return wrapped;
 }
 function shouldRetrySpecFetch(error2) {

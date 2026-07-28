@@ -1726,7 +1726,7 @@ describe('PostmanGatewayAssetsClient', () => {
   });
 
   describe('updateCollection', () => {
-    it('deletes every existing root item, tolerating a 500 on an already-cascaded child, then recreates from the new tree and renames', async () => {
+    it('reconciles a v2.1 update without reading the collection root', async () => {
       const v21 = {
         info: { name: 'Curated (updated)', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
         item: [
@@ -1744,17 +1744,10 @@ describe('PostmanGatewayAssetsClient', () => {
           });
         }
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1') {
-          // Present root fields that must be cleared on update (live: only remove when present).
-          return jsonResponse({
-            data: {
-              id: '55363555-cid-1',
-              name: 'Old',
-              description: 'old desc',
-              auth: { type: 'bearer', credentials: [{ key: 'token', value: 'x' }] },
-              variables: [{ key: 'old', value: '1' }],
-              scripts: [{ type: 'http:beforeRequest', code: '1;', language: 'text/javascript' }]
-            }
-          });
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: 'collection root read denied' } },
+            { status: 403 }
+          );
         }
         if (env.method === 'delete' && env.path === '/v3/collections/55363555-cid-1/items/old-1') {
           return new Response(null, { status: 204 });
@@ -1775,13 +1768,18 @@ describe('PostmanGatewayAssetsClient', () => {
 
       expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/55363555-cid-1/items/old-1')).toBe(true);
       expect(calls.some((c) => c.method === 'delete' && c.path === '/v3/collections/55363555-cid-1/items/old-2')).toBe(true);
-      expect(calls.some((c) => c.method === 'get' && c.path === '/v3/collections/55363555-cid-1')).toBe(true);
+      expect(calls.some((c) => c.method === 'get' && c.path === '/v3/collections/55363555-cid-1')).toBe(false);
 
       const created = calls.find((c) => c.method === 'post' && c.path === '/v3/collections/55363555-cid-1/items/');
       expect(created).toMatchObject({ body: expect.objectContaining({ name: 'New Leaf' }) });
 
-      const patch = calls.find((c) => c.method === 'patch' && c.path === '/v3/collections/55363555-cid-1');
-      const ops = patch?.body as Array<{ op: string; path: string; value?: unknown }>;
+      const patches = calls.filter(
+        (c) => c.method === 'patch' && c.path === '/v3/collections/55363555-cid-1'
+      );
+      expect(patches.every((patch) => Array.isArray(patch.body) && patch.body.length === 1)).toBe(true);
+      const ops = patches.flatMap(
+        (patch) => patch.body as Array<{ op: string; path: string; value?: unknown }>
+      );
       expect(ops).toEqual(
         expect.arrayContaining([
           { op: 'replace', path: '/name', value: 'Curated (updated)' },
@@ -2008,19 +2006,32 @@ describe('PostmanGatewayAssetsClient', () => {
         ],
         items: []
       };
-      let rootState: Record<string, unknown> = {
-        id: '55363555-cid-1',
-        name: 'Old',
-        description: ''
-      };
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: [] });
         }
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1') {
-          return jsonResponse({ data: rootState });
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: 'collection root read denied' } },
+            { status: 403 }
+          );
         }
         if (env.method === 'patch') {
+          const [op] = env.body as Array<{ op: string; path: string }>;
+          if (
+            op?.op === 'remove' &&
+            ['/auth', '/variables', '/scripts'].includes(op.path)
+          ) {
+            return jsonResponse(
+              {
+                error: {
+                  name: 'invalidParamsError',
+                  message: 'Remove operation must point to an existing value'
+                }
+              },
+              { status: 400 }
+            );
+          }
           return jsonResponse({ data: { id: 'cid-1' } });
         }
         return jsonResponse({});
@@ -2029,6 +2040,7 @@ describe('PostmanGatewayAssetsClient', () => {
       await client.updateCollection('55363555-cid-1', desired);
 
       const patches = calls.filter((c) => c.method === 'patch' && c.path === '/v3/collections/55363555-cid-1');
+      expect(patches.every((patch) => Array.isArray(patch.body) && patch.body.length === 1)).toBe(true);
       const ops = patches.flatMap((c) => c.body as Array<{ op: string; path: string; value?: unknown }>);
       expect(ops).toEqual(
         expect.arrayContaining([
@@ -2049,16 +2061,6 @@ describe('PostmanGatewayAssetsClient', () => {
           }
         ])
       );
-
-      // Simulate the post-update remote state so clear only removes present fields.
-      rootState = {
-        id: '55363555-cid-1',
-        name: 'Reconciled',
-        description: 'updated description',
-        auth: desired.auth,
-        variables: desired.variables,
-        scripts: [{ type: 'http:beforeRequest', code: 'pm.variables.set("ready", "1");', language: 'text/javascript' }]
-      };
 
       const cleared = {
         $kind: 'collection',
@@ -2081,8 +2083,8 @@ describe('PostmanGatewayAssetsClient', () => {
         ])
       );
 
-      // Absent optional fields must not emit blind removes (live 400).
-      rootState = { id: '55363555-cid-1', name: 'Cleared root', description: '' };
+      // Absent optional fields are removed blindly; the known missing-target
+      // response proves each one-operation PATCH is already converged.
       calls.length = 0;
       await client.updateCollection('55363555-cid-1', {
         $kind: 'collection',
@@ -2095,12 +2097,16 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(absentOps).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ op: 'replace', path: '/name', value: 'Still clear' }),
-          expect.objectContaining({ op: 'remove', path: '/description' })
+          expect.objectContaining({ op: 'remove', path: '/description' }),
+          expect.objectContaining({ op: 'remove', path: '/auth' }),
+          expect.objectContaining({ op: 'remove', path: '/variables' }),
+          expect.objectContaining({ op: 'remove', path: '/scripts' })
         ])
       );
-      expect(absentOps.some((op) => op.path === '/auth')).toBe(false);
-      expect(absentOps.some((op) => op.path === '/variables')).toBe(false);
-      expect(absentOps.some((op) => op.path === '/scripts')).toBe(false);
+      expect(calls.some((call) => (
+        call.method === 'get' &&
+        call.path === '/v3/collections/55363555-cid-1'
+      ))).toBe(false);
     });
 
     it('normalizes http: script types on v2.1 updateCollection', async () => {
@@ -2396,26 +2402,35 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.filter((c) => c.method === 'delete')).toHaveLength(0);
     });
 
-    it('updateCollection retries the reconcile PATCH, and on a remove-already-applied 400 verifies the intended end state before reporting success', async () => {
-      let patchAttempts = 0;
-      let rootReads = 0;
+    it('updateCollection converges one-operation PATCH retries without a root read', async () => {
+      let descriptionPatchAttempts = 0;
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: [] });
         }
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1') {
-          rootReads += 1;
-          // First read: reconcileRemovals pre-read (old state). Second read:
-          // post-400 verification -- the timed-out PATCH actually committed.
-          return jsonResponse({
-            data: rootReads === 1
-              ? { id: '55363555-cid-1', name: 'Old', description: 'old', auth: { type: 'bearer' } }
-              : { id: '55363555-cid-1', name: 'New', description: '' }
-          });
+          return jsonResponse(
+            { error: { code: 'FORBIDDEN', message: 'collection root read denied' } },
+            { status: 403 }
+          );
         }
         if (env.method === 'patch' && env.path === '/v3/collections/55363555-cid-1') {
-          patchAttempts += 1;
-          if (patchAttempts === 1) return timeout500();
+          const [op] = env.body as Array<{ op: string; path: string }>;
+          if (op?.path === '/name') {
+            return jsonResponse(
+              {
+                error: {
+                  name: 'REJECTED_PATCH',
+                  message: 'Patch must update at least one value'
+                }
+              },
+              { status: 400 }
+            );
+          }
+          if (op?.path === '/description') {
+            descriptionPatchAttempts += 1;
+            if (descriptionPatchAttempts === 1) return timeout500();
+          }
           return jsonResponse(
             { error: { name: 'invalidParamsError', message: 'Remove operation must point to an existing value' } },
             { status: 400 }
@@ -2429,34 +2444,23 @@ describe('PostmanGatewayAssetsClient', () => {
         item: []
       });
 
-      expect(patchAttempts).toBe(2);
-      // Success required a verification read of the root, not just the 400.
-      expect(rootReads).toBe(2);
-      expect(calls.filter((c) => c.method === 'get' && c.path === '/v3/collections/55363555-cid-1')).toHaveLength(2);
+      expect(descriptionPatchAttempts).toBe(2);
+      expect(calls.filter(
+        (c) => c.method === 'get' && c.path === '/v3/collections/55363555-cid-1'
+      )).toHaveLength(0);
+      expect(calls.filter(
+        (c) => c.method === 'patch' && c.path === '/v3/collections/55363555-cid-1'
+      ).every((call) => Array.isArray(call.body) && call.body.length === 1)).toBe(true);
     });
 
-    it('updateCollection surfaces the failure when the remove-already-applied 400 masks a batch that never committed', async () => {
-      let patchAttempts = 0;
-      let rootReads = 0;
+    it('updateCollection surfaces an unrelated one-operation PATCH 400', async () => {
       const { client } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: [] });
         }
-        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1') {
-          rootReads += 1;
-          // Another actor removed /auth, but the rename in this batch never
-          // landed: verification must fail and the error must surface.
-          return jsonResponse({
-            data: rootReads === 1
-              ? { id: '55363555-cid-1', name: 'Old', description: 'old', auth: { type: 'bearer' } }
-              : { id: '55363555-cid-1', name: 'Old', description: 'old' }
-          });
-        }
         if (env.method === 'patch' && env.path === '/v3/collections/55363555-cid-1') {
-          patchAttempts += 1;
-          if (patchAttempts === 1) return timeout500();
           return jsonResponse(
-            { error: { name: 'invalidParamsError', message: 'Remove operation must point to an existing value' } },
+            { error: { name: 'invalidParamsError', message: 'unrelated validation failure' } },
             { status: 400 }
           );
         }
@@ -2469,37 +2473,17 @@ describe('PostmanGatewayAssetsClient', () => {
           item: []
         })
       ).rejects.toThrow(/400/);
-
-      expect(patchAttempts).toBe(2);
-      expect(rootReads).toBe(2);
     });
 
-    it('updateCollection surfaces failure when a stale non-null value is present but not equal to the requested add/replace (no false-verify)', async () => {
-      let patchAttempts = 0;
-      let rootReads = 0;
+    it('updateCollection surfaces a collection-root PATCH 403', async () => {
       const { client } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           return jsonResponse({ data: [] });
         }
-        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1') {
-          rootReads += 1;
-          // Pre-read has old variables. Post-400 verify read returns the SAME
-          // stale variables plus a removed auth — /variables was requested as an
-          // add of the NEW value but the committed value is stale, so a
-          // presence-only check would falsely pass. Structural equality must
-          // reject and surface the error.
-          return jsonResponse({
-            data: rootReads === 1
-              ? { id: '55363555-cid-1', name: 'Old', description: 'old', auth: { type: 'bearer' }, variables: [{ key: 'stale', value: '1' }] }
-              : { id: '55363555-cid-1', name: 'New', description: '', variables: [{ key: 'stale', value: '1' }] }
-          });
-        }
         if (env.method === 'patch' && env.path === '/v3/collections/55363555-cid-1') {
-          patchAttempts += 1;
-          if (patchAttempts === 1) return timeout500();
           return jsonResponse(
-            { error: { name: 'invalidParamsError', message: 'Remove operation must point to an existing value' } },
-            { status: 400 }
+            { error: { code: 'FORBIDDEN', message: 'collection root write denied' } },
+            { status: 403 }
           );
         }
         return jsonResponse({});
@@ -2508,12 +2492,9 @@ describe('PostmanGatewayAssetsClient', () => {
       await expect(
         client.updateCollection('55363555-cid-1', {
           info: { name: 'New', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' },
-          variable: [{ key: 'fresh', value: '2' }],
           item: []
         })
-      ).rejects.toThrow(/400/);
-      expect(patchAttempts).toBe(2);
-      expect(rootReads).toBe(2);
+      ).rejects.toThrow(/403/);
     });
 
     it('updateSpec retries the spec-file content PATCH after a downstream socket timeout', async () => {

@@ -207,7 +207,9 @@ describe('local OpenAPI orchestration', () => {
         };
       }
     );
-    const deepUpdateV2Collection = vi.fn(async (collectionUid: string, _collection: unknown, _expectedPayloadDigest: string) => {
+    const deepUpdateV2Collection = vi.fn(async (collectionUid: string, collection: unknown, expectedPayloadDigest: string) => {
+      void collection;
+      void expectedPayloadDigest;
       events.push(`deepUpdate:${collectionUid}`);
       return collectionUid;
     });
@@ -1244,7 +1246,8 @@ describe('local OpenAPI orchestration', () => {
       const events: string[] = [];
       const core = createCoreStub();
       const postman = buildPostman(events);
-      postman.deepUpdateV2Collection = vi.fn(async (collectionUid: string, collection: unknown, _expectedPayloadDigest: string) => {
+      postman.deepUpdateV2Collection = vi.fn(async (collectionUid: string, collection: unknown, expectedPayloadDigest: string) => {
+        void expectedPayloadDigest;
         events.push(`deepUpdate:${collectionUid}`);
         if (collectionUid === 'col-smoke-existing' && !String(((collection as JsonRecord).info as JsonRecord)?.name).startsWith('snapshot-')) {
           throw new Error('deep update failed');

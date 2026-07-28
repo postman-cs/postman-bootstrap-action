@@ -215,6 +215,7 @@ describe('local OpenAPI orchestration', () => {
       addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
       createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-1' }),
       deleteCollection: vi.fn().mockResolvedValue(undefined),
+      deleteSpec: vi.fn().mockResolvedValue(undefined),
       deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
       deepUpdateV2Collection,
       findWorkspacesByName: vi.fn().mockResolvedValue([{ id: 'ws-1', name: 'orchestration-api' }]),
@@ -377,7 +378,7 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
-  it('fails unrepairable generated examples before materialization or collection writes', async () => {
+  it('continues default lenient example repair through materialization, linking, and tagging', async () => {
     await withRepo(async (repoRoot) => {
       await writeFile(path.join(repoRoot, 'openapi.yaml'), JSON.stringify({
         openapi: '3.1.0',
@@ -409,7 +410,7 @@ describe('local OpenAPI orchestration', () => {
       const internalIntegration = buildIntegration(events);
       const materialize = vi.spyOn(localCollectionArtifacts, 'materializeLocalCollectionArtifacts');
 
-      await expect(runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+      await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
         core,
         exec: createExecStub(),
         io: { which: async () => 'tool' },
@@ -420,12 +421,18 @@ describe('local OpenAPI orchestration', () => {
           write: () => undefined
         },
         specFetcher: vi.fn()
-      })).rejects.toThrow(/repair-request-examples/);
+      });
 
-      expect(materialize).not.toHaveBeenCalled();
-      expect(postman.importV2Collection).not.toHaveBeenCalled();
+      expect(materialize).toHaveBeenCalledTimes(1);
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
-      expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+      expect(internalIntegration.linkCollectionsToSpecification).toHaveBeenCalledTimes(1);
+      expect(postman.tagCollection).toHaveBeenCalledTimes(3);
+      expect(core.warnings).toContainEqual(
+        expect.stringMatching(
+          /LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: operation POST \/impossible request example: generated application\/json request body for POST \/impossible could not be safely repaired to satisfy its OpenAPI schema/
+        )
+      );
     });
   });
 
@@ -1110,6 +1117,47 @@ describe('local OpenAPI orchestration', () => {
       ]);
       expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
       expect(postman.tagCollection).not.toHaveBeenCalled();
+    });
+  });
+
+  it('retains long masked orchestration causes as one line', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const uniqueSuffix = 'UNIQUE-CAUSE-SUFFIX-BEYOND-240-CHARACTERS';
+      const nestedSuffix = 'NESTED-IMPORT-CAUSE-SUFFIX';
+      postman.importV2Collection = vi.fn().mockRejectedValue(
+        new Error(`import failure ${'x'.repeat(260)}\r\n${uniqueSuffix} token=postman-access-token`, {
+          cause: new Error(nestedSuffix)
+        })
+      );
+      const internalIntegration = buildIntegration(events);
+
+      const error = await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+        core,
+        exec: createExecStub(),
+        io: { which: async () => 'tool' },
+        internalIntegration,
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState: {
+          read: () => null,
+          write: () => undefined
+        },
+        specFetcher: vi.fn()
+      }).then(
+        () => new Error('expected orchestration failure'),
+        (cause: unknown) => cause
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain('LOCAL_OPENAPI_ORCHESTRATION_FAILED');
+      expect(message).toContain(uniqueSuffix);
+      expect(message).toContain(nestedSuffix);
+      expect(message.match(new RegExp(nestedSuffix, 'g'))).toHaveLength(1);
+      expect(message).not.toMatch(/[\r\n\u2028\u2029]/);
+      expect(message).not.toContain('postman-access-token');
     });
   });
 

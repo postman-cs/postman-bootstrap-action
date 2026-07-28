@@ -566,6 +566,93 @@ describe('branch-aware bootstrap runs', () => {
     });
   });
 
+  it('channel rerun adopts the same-marker final and deep-updates in place instead of importing', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'branch-channel-rerun-'));
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+    const eventPath = join(workspace, 'event.json');
+    writeFileSync(
+      eventPath,
+      JSON.stringify({ repository: { default_branch: 'main', full_name: 'org/repo' } })
+    );
+    vi.stubEnv('GITHUB_ACTIONS', 'true');
+    vi.stubEnv('GITHUB_REPOSITORY', 'org/repo');
+    vi.stubEnv('GITHUB_REF', 'refs/heads/develop');
+    vi.stubEnv('GITHUB_REF_NAME', 'develop');
+    vi.stubEnv('GITHUB_EVENT_PATH', eventPath);
+    vi.stubEnv('GITHUB_HEAD_REF', '');
+    vi.stubEnv('GITHUB_BASE_REF', '');
+
+    await withCwd(workspace, async () => {
+      const postman = createPostman();
+      const priorByName: Record<string, string> = {
+        '[DEV] Payments': 'prior-baseline',
+        '[DEV] [Smoke] Payments': 'prior-smoke',
+        '[DEV] [Contract] Payments': 'prior-contract'
+      };
+      const findAdoptableSameMarkerCollection = vi.fn(
+        async (_workspaceId: string, finalName: string, desiredDescription: string) => {
+          expect(desiredDescription).toContain('rawBranch');
+          return priorByName[finalName];
+        }
+      );
+      (postman as Record<string, unknown>).findAdoptableSameMarkerCollection =
+        findAdoptableSameMarkerCollection;
+      const outputs = await runBootstrap(
+        createInputs({
+          branchStrategy: 'publish-gate',
+          channels: 'develop=DEV',
+          workspaceId: 'ws-existing'
+        }),
+        runDeps(postman)
+      );
+      expect(JSON.parse(outputs['branch-decision']).tier).toBe('channel');
+      // Every role found its prior-run final: no fresh imports, three in-place
+      // deep-updates preserving the prior UIDs.
+      expect(postman.importV2Collection).not.toHaveBeenCalled();
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
+      expect(outputs['baseline-collection-id']).toBe('prior-baseline');
+      expect(outputs['smoke-collection-id']).toBe('prior-smoke');
+      expect(outputs['contract-collection-id']).toBe('prior-contract');
+    });
+  });
+
+  it('channel rerun falls back to import when discovery finds nothing or is ambiguous', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'branch-channel-fallback-'));
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+    const eventPath = join(workspace, 'event.json');
+    writeFileSync(
+      eventPath,
+      JSON.stringify({ repository: { default_branch: 'main', full_name: 'org/repo' } })
+    );
+    vi.stubEnv('GITHUB_ACTIONS', 'true');
+    vi.stubEnv('GITHUB_REPOSITORY', 'org/repo');
+    vi.stubEnv('GITHUB_REF', 'refs/heads/develop');
+    vi.stubEnv('GITHUB_REF_NAME', 'develop');
+    vi.stubEnv('GITHUB_EVENT_PATH', eventPath);
+    vi.stubEnv('GITHUB_HEAD_REF', '');
+    vi.stubEnv('GITHUB_BASE_REF', '');
+
+    await withCwd(workspace, async () => {
+      const postman = createPostman();
+      // Ambiguous or absent discovery returns undefined for every role.
+      (postman as Record<string, unknown>).findAdoptableSameMarkerCollection = vi.fn(
+        async () => undefined
+      );
+      const outputs = await runBootstrap(
+        createInputs({
+          branchStrategy: 'publish-gate',
+          channels: 'develop=DEV',
+          workspaceId: 'ws-existing'
+        }),
+        runDeps(postman)
+      );
+      expect(JSON.parse(outputs['branch-decision']).tier).toBe('channel');
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+    });
+  });
+
   it('canonical run under publish-gate behaves like legacy: writes v2 state', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'branch-canonical-'));
     writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);

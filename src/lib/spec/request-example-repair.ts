@@ -9,6 +9,7 @@ import type { SchemaCandidateGenerator } from './deterministic-schema-faker.js';
 import { parseOpenApiDocument } from './openapi-loader.js';
 import { packSchema, resolvePointer, type OpenApiVersion, type SchemaDirection } from './schema-pack.js';
 import { compileSchemaValidator } from './schema-validator-code.js';
+import type { ExampleRepairMode } from './local-openapi-collection-generation.js';
 
 type JsonRecord = Record<string, unknown>;
 type SourcePath = Array<string | '*'>;
@@ -37,6 +38,18 @@ const FORMAT_EXAMPLES: Record<string, string[]> = {
   'uri-template': ['{id}'],
   uuid: ['00000000-0000-4000-8000-000000000000']
 };
+
+const MAX_REPAIR_DEPTH = 64;
+const MAX_REPAIR_CALLS = 1_000;
+const MAX_REPAIR_ARRAY_ITEMS = 100;
+const MAX_REPAIR_STRING_LENGTH = 10_000;
+
+class ExampleRepairLimitError extends Error {
+  constructor(limit: string) {
+    super(`EXAMPLE_REPAIR_LIMIT_EXCEEDED: ${limit}`);
+    this.name = 'ExampleRepairLimitError';
+  }
+}
 
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -318,6 +331,8 @@ function pruneDirectionalProperties(
 class SchemaRepairer {
   readonly #candidate: SchemaCandidateGenerator;
   readonly #policy: SourcePolicy;
+  #calls = 0;
+  #depth = 0;
 
   constructor(candidate: SchemaCandidateGenerator, policy: SourcePolicy) {
     this.#candidate = candidate;
@@ -325,24 +340,33 @@ class SchemaRepairer {
   }
 
   repair(value: unknown, schema: unknown, root: JsonRecord, path: SourcePath = []): unknown {
-    if (!isRecord(schema)) return value === undefined ? null : value;
-    const canonical = hasAlternativeShape(schema) && !this.#policy.preserve(path, value);
-    if (!canonical && !containsAlternativeShape(schema) && !hasSerializationHoles(value) && validates(schema, value, root) === true) return value;
+    this.#calls += 1;
+    this.#depth += 1;
+    try {
+      if (this.#calls > MAX_REPAIR_CALLS) throw new ExampleRepairLimitError(`repair call budget ${MAX_REPAIR_CALLS}`);
+      if (this.#depth > MAX_REPAIR_DEPTH) throw new ExampleRepairLimitError(`repair depth ${MAX_REPAIR_DEPTH}`);
+      if (!isRecord(schema)) return value === undefined ? null : value;
+      const canonical = hasAlternativeShape(schema) && !this.#policy.preserve(path, value);
+      if (!canonical && !containsAlternativeShape(schema) && !hasSerializationHoles(value) && validates(schema, value, root) === true) return value;
 
-    const repaired = this.#repairLocal(value, schema, root, path, canonical);
-    if (validates(schema, repaired, root) === true) return repaired;
+      const repaired = this.#repairLocal(value, schema, root, path, canonical);
+      if (validates(schema, repaired, root) === true) return repaired;
 
-    const contextual = schemaWithRootContext(schema, root);
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      try {
-        const generated = this.#candidate(clone(contextual), attempt);
-        if (validates(schema, generated, root) === true) return generated;
-      } catch {
-        // A candidate failure is not terminal; bounded retries end in the
-        // caller's full-schema fail-closed check.
+      const contextual = schemaWithRootContext(schema, root);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          const generated = this.#candidate(clone(contextual), attempt);
+          if (validates(schema, generated, root) === true) return generated;
+        } catch (error) {
+          if (error instanceof ExampleRepairLimitError) throw error;
+          // A candidate failure is not terminal; bounded retries end in the
+          // caller's full-schema fail-closed check.
+        }
       }
+      return repaired;
+    } finally {
+      this.#depth -= 1;
     }
-    return repaired;
   }
 
   #repairLocal(value: unknown, schema: JsonRecord, root: JsonRecord, path: SourcePath, canonical: boolean): unknown {
@@ -394,6 +418,9 @@ class SchemaRepairer {
     const chars = [...candidate];
     if (typeof schema.maxLength === 'number' && chars.length > schema.maxLength) candidate = chars.slice(0, schema.maxLength).join('');
     if (typeof schema.minLength === 'number' && [...candidate].length < schema.minLength) {
+      if (!Number.isSafeInteger(schema.minLength) || schema.minLength > MAX_REPAIR_STRING_LENGTH) {
+        throw new ExampleRepairLimitError(`string expansion ${MAX_REPAIR_STRING_LENGTH}`);
+      }
       const fill = [...candidate].at(-1) ?? 'x';
       candidate += fill.repeat(schema.minLength - [...candidate].length);
     }
@@ -412,9 +439,13 @@ class SchemaRepairer {
     const minContains = containsSchema === undefined
       ? 0
       : typeof schema.minContains === 'number' ? schema.minContains : 1;
-    if (typeof schema.maxItems === 'number' && candidate.length > schema.maxItems) candidate.length = schema.maxItems;
     const minItems = typeof schema.minItems === 'number' ? schema.minItems : 0;
-    while (candidate.length < Math.max(minItems, minContains)) {
+    const requiredItems = Math.max(minItems, minContains);
+    if (!Number.isSafeInteger(requiredItems) || requiredItems < 0 || requiredItems > MAX_REPAIR_ARRAY_ITEMS) {
+      throw new ExampleRepairLimitError(`array expansion ${MAX_REPAIR_ARRAY_ITEMS}`);
+    }
+    if (typeof schema.maxItems === 'number' && candidate.length > schema.maxItems) candidate.length = schema.maxItems;
+    while (candidate.length < requiredItems) {
       const schemaForItem = prefix[candidate.length] ?? itemSchema ?? containsSchema ?? {};
       candidate.push(this.repair(undefined, schemaForItem, root, [...path, '*']));
     }
@@ -562,6 +593,8 @@ function repairJsonValue(
   context: string,
   candidate: SchemaCandidateGenerator
 ): unknown {
+  const validate = compileSchemaValidator(packedSchema);
+  if (!validate) throw new Error(`generated ${context} could not be checked because its packed schema validator did not compile`);
   const packedRoot = isRecord(packedSchema) ? packedSchema : {};
   const policy = new SourcePolicy(
     mediaAuthoredValues(sourceRoot, media, rawSchema, packedSchema, version, direction),
@@ -570,8 +603,6 @@ function repairJsonValue(
   );
   const pruned = pruneDirectionalProperties(value, rawSchema, sourceRoot, direction);
   const repaired = new SchemaRepairer(candidate, policy).repair(pruned, packedSchema, packedRoot);
-  const validate = compileSchemaValidator(packedSchema);
-  if (!validate) throw new Error(`generated ${context} could not be checked because its packed schema validator did not compile`);
   // Validate the SERIALIZED form. compileSchemaValidator runs with isJSON,
   // which accepts in-memory undefined array holes that JSON.stringify then
   // rewrites to null, so checking the live object let invalid bytes ship.
@@ -923,10 +954,27 @@ export function repairGeneratedCollectionExamples(
   collection: JsonRecord,
   index: ContractIndex,
   bundledOpenApi: string,
-  candidate: SchemaCandidateGenerator
+  candidate: SchemaCandidateGenerator,
+  mode: ExampleRepairMode = 'lenient'
 ): string[] {
+  if (mode === 'off') return [];
   const warnings: string[] = [];
   const sourceRoot = parseOpenApiDocument(bundledOpenApi);
+  const warning = (operation: ContractOperation, context: string, error: unknown): void => {
+    const detail = error instanceof Error ? error.message : String(error);
+    warnings.push(`LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: operation ${operation.id} ${context}: ${detail.replace(/\s+/g, ' ').trim()}`);
+  };
+  const transactional = (operation: ContractOperation, context: string, target: JsonRecord, repair: (copy: JsonRecord) => void): void => {
+    try {
+      const copy = clone(target);
+      repair(copy);
+      for (const key of Object.keys(target)) delete target[key];
+      Object.assign(target, copy);
+    } catch (error) {
+      if (mode === 'strict') throw error;
+      warning(operation, context, error);
+    }
+  };
   const visit = (items: unknown): void => {
     if (!Array.isArray(items)) return;
     for (const raw of items) {
@@ -935,10 +983,18 @@ export function repairGeneratedCollectionExamples(
         const matched = matchOperation(index, raw.request);
         const operation = matched.operation ?? matchWebhookOperation(index, raw);
         if (operation) {
-          repairRequest(operation, raw.request, sourceRoot, index, candidate);
+          transactional(operation, 'request example', raw.request, (request) => {
+            repairRequest(operation, request, sourceRoot, index, candidate);
+          });
           for (const saved of Array.isArray(raw.response) ? raw.response.filter(isRecord) : []) {
-            if (isRecord(saved.originalRequest)) repairRequest(operation, saved.originalRequest, sourceRoot, index, candidate);
-            repairSavedResponse(operation, saved, sourceRoot, index, candidate);
+            if (isRecord(saved.originalRequest)) {
+              transactional(operation, 'saved request example', saved.originalRequest, (request) => {
+                repairRequest(operation, request, sourceRoot, index, candidate);
+              });
+            }
+            transactional(operation, 'saved response example', saved, (response) => {
+              repairSavedResponse(operation, response, sourceRoot, index, candidate);
+            });
           }
         }
       }

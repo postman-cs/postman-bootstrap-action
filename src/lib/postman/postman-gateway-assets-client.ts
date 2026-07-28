@@ -3471,6 +3471,27 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
+   * Sole existing final with this exact name carrying the same durable branch
+   * marker as this run's payload, or undefined. Lets a channel/preview rerun
+   * deep-update its prior-run asset in place instead of importing a fresh root
+   * and re-electing. Zero or multiple same-marker survivors return undefined —
+   * the caller then falls back to the import + election + reconcile path, which
+   * already collapses duplicates and never adopts strangers.
+   */
+  async findAdoptableSameMarkerCollection(
+    workspaceId: string,
+    finalName: string,
+    desiredDescription: string
+  ): Promise<string | undefined> {
+    const name = String(finalName || '').trim();
+    const description = String(desiredDescription || '').trim();
+    if (!name || !parseAssetMarker(description)) return undefined;
+    const survivors = await this.findCollectionsByExactName(workspaceId, name, 'safe');
+    if (survivors.length === 0) return undefined;
+    return this.adoptableSameMarkerFinal(survivors, description);
+  }
+
+  /**
    * Sole exact-name final carrying the same durable branch marker as this run's
    * payload, or undefined. Org inventory omits root descriptions, so fall back
    * to the v2.1 export route; an unprovable candidate is never adoptable. More

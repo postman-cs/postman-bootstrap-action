@@ -115,6 +115,19 @@ const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
 const MAX_REFERENCED_SCHEMAS = 400;
 
+// schemasafe compiles every `pattern` with the RegExp `u` flag
+// (@exodus/schemasafe src/scope-utils.js, compile.js, tracing.js). JSON Schema
+// defines `pattern` as plain ECMA-262 and only RECOMMENDS authoring `u`-clean
+// regexes, so a spec-legal pattern is not guaranteed to compile here.
+function isCompilablePattern(pattern: string): boolean {
+  try {
+    new RegExp(pattern, 'u');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Keywords that exist in only one supported dialect: asserting them under the
 // other dialect would silently validate nothing once schemasafe ignores them
 // via allowUnusedKeywords, so the mismatch fails closed instead.
@@ -359,6 +372,20 @@ function normalizeSchema(
 
     if (key === 'format') {
       if (typeof value === 'string' && ASSERTED_FORMATS.has(value)) normalized.format = value;
+      continue;
+    }
+
+    // A `u`-illegal pattern (for example redundant identity escapes inside a
+    // character class) made the ENTIRE packed validator fail to compile, which
+    // silently disabled example repair for every operation in the document --
+    // 5 of 8 request bodies in PayPal's checkout_orders_v2 -- rather than the
+    // one property carrying the pattern. Dropping only the uncompilable
+    // assertion keeps the schema compiling and every other constraint
+    // asserting. `pattern` is a string-only constraint, so losing it widens
+    // that property instead of admitting a wrong shape, and a malformed regex
+    // degrades the same way.
+    if (key === 'pattern') {
+      if (typeof value === 'string' && isCompilablePattern(value)) normalized.pattern = value;
       continue;
     }
 

@@ -150,6 +150,7 @@ export interface ResolvedInputs {
   folderStrategy: string;
   nestedFolderHierarchy: boolean;
   requestNameSource: string;
+
   secretsResolverProvider: SecretsResolverProvider;
   postmanRegion: PostmanRegion;
   postmanStack: PostmanStack;
@@ -350,6 +351,11 @@ export interface BootstrapExecutionDependencies {
       workspaceId: string,
       candidates: Array<{ finalName: string; desiredDescription: string }>
     ): Promise<Record<string, string>>;
+    findAdoptableSameMarkerCollection?(
+      workspaceId: string,
+      finalName: string,
+      desiredDescription: string
+    ): Promise<string | undefined>;
   };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,
@@ -433,7 +439,25 @@ const GOVERNANCE_GROUP_PROPERTY_NAME = 'postman-governance-group';
  * No dependency beyond the local masker.
  */
 function formatMaskedOneLine(value: unknown, masker?: SecretMasker): string {
-  const text = value instanceof Error ? value.message : String(value ?? '');
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  const append = (message: string): void => {
+    const normalized = message.trim();
+    if (normalized && !parts.some((part) => part.includes(normalized))) parts.push(normalized);
+  };
+  let current: unknown = value;
+  for (let depth = 0; depth < 8 && current !== undefined && current !== null; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (current instanceof Error) {
+      append(String(current.message ?? ''));
+      current = (current as Error & { cause?: unknown }).cause;
+      continue;
+    }
+    append(String(current ?? ''));
+    break;
+  }
+  const text = parts.join(': ') || String(value ?? '');
   const masked = masker ? masker(text) : text;
   return masked.replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
 }
@@ -711,6 +735,7 @@ export function resolveInputs(
     nestedFolderHierarchy: parseBooleanInput('nested-folder-hierarchy', getInput('nested-folder-hierarchy', env), false),
     requestNameSource:
       parseEnumInput('request-name-source', getInput('request-name-source', env), 'Fallback'),
+
     secretsResolverProvider: parseSecretsResolverProvider(
       getInput('secrets-resolver', env),
       DEFAULT_SECRETS_RESOLVER_PROVIDER
@@ -1062,6 +1087,7 @@ export function readActionInputs(
     INPUT_REQUEST_NAME_SOURCE:
       optionalInput(actionCore, 'request-name-source') ??
       bootstrapActionContract.inputs['request-name-source'].default,
+
     INPUT_SECRETS_RESOLVER:
       optionalInput(actionCore, 'secrets-resolver') ??
       bootstrapActionContract.inputs['secrets-resolver'].default,
@@ -2915,10 +2941,11 @@ async function runBootstrapInner(
 
   const failOwned = async (stage: string, cause: unknown): Promise<never> => {
     const mask = createBootstrapSecretMasker(inputs);
-    const sanitizedCause = formatMaskedOneLine(cause, mask).slice(0, 240);
+    const sanitizedCause = formatMaskedOneLine(cause, mask);
     await compensateOwnedLocalOpenApiImports(stage);
     throw new Error(
-      `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`
+      `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`,
+      cause !== undefined ? { cause } : undefined
     );
   };
 
@@ -3207,11 +3234,32 @@ async function runBootstrapInner(
         const writeRole = async (role: (typeof collectionRoles)[number]): Promise<RoleWriteResult> => {
           const payload = payloads.roles[role.role];
           const finalName = roleNames[role.role];
-          const useDeepUpdate =
-            Boolean(role.existingId) && inputs.collectionSyncMode === 'refresh';
+          // Channel/preview reruns own no tracked asset ids (canonical-only
+          // state), so without discovery every rerun fresh-imports and the
+          // duplicate reconcile collapses to the lowest UID — churning role ids
+          // across shas (live: run 2882 smoke 560eec50 -> 0e36b725). Adopt the
+          // sole existing exact-name final proven by this branch's durable
+          // marker and deep-update it in place; zero or ambiguous survivors
+          // fall back to the import + election + reconcile path unchanged.
+          let discoveredId: string | undefined;
+          if (
+            !role.existingId &&
+            collectionBranchMarker &&
+            workspaceId &&
+            inputs.collectionSyncMode === 'refresh' &&
+            dependencies.postman.findAdoptableSameMarkerCollection
+          ) {
+            discoveredId = await dependencies.postman.findAdoptableSameMarkerCollection(
+              workspaceId,
+              finalName,
+              collectionBranchMarker
+            );
+          }
+          const reuseId = role.existingId || discoveredId;
+          const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === 'refresh';
           if (useDeepUpdate) {
             const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection!(
-              role.existingId!,
+              reuseId!,
               payload.collection,
               payload.payloadDigest
             );
@@ -4001,7 +4049,9 @@ export function createRoutingPostmanClient(options: {
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
       gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
     reconcileDuplicateFinalCollections: (workspaceId, candidates) =>
-      gateway.reconcileDuplicateFinalCollections(workspaceId, candidates)
+      gateway.reconcileDuplicateFinalCollections(workspaceId, candidates),
+    findAdoptableSameMarkerCollection: (workspaceId, finalName, desiredDescription) =>
+      gateway.findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription)
   };
 }
 

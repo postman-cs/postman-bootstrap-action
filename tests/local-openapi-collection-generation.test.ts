@@ -17,6 +17,7 @@ import {
   type LocalOpenApiConverter
 } from '../src/lib/spec/local-openapi-collection-generation.js';
 import { parseOpenApiDocument } from '../src/lib/spec/openapi-loader.js';
+import { repairGeneratedCollectionExamples } from '../src/lib/spec/request-example-repair.js';
 import { compileSchemaValidator } from '../src/lib/spec/schema-validator-code.js';
 import { createSmokeTestExec, instrumentSmokeCollection } from '../src/lib/spec/smoke-tests.js';
 
@@ -518,8 +519,11 @@ describe('local OpenAPI role payload generation', () => {
     });
 
     const secretMarker = 'private-spec-marker-that-must-not-leak';
+    const causeSuffix = 'UNTRUNCATED_CONVERSION_CAUSE_SUFFIX';
+    const longCause = `converter callback failure\r\n${'x'.repeat(300)} ${causeSuffix}`;
+    const nestedCause = 'NESTED_VALIDATOR_CAUSE_SUFFIX';
     const converter: LocalOpenApiConverter = (_input, _options, callback) => {
-      callback(Object.assign(new Error(`${secretMarker} boom`), { message: `${secretMarker} boom` }));
+      callback(new Error(longCause, { cause: new Error(nestedCause) }));
     };
     const error = await generateLocalOpenApiRolePayloads(
       oas30.replace('Pet API', secretMarker),
@@ -536,6 +540,11 @@ describe('local OpenAPI role payload generation', () => {
     expect(error).toBeInstanceOf(LocalOpenApiConversionError);
     expect(error).toMatchObject({ stage: 'convert', code: LOCAL_OPENAPI_CONVERSION_FAILED });
     expect(String((error as Error).message)).toContain('converter callback failed');
+    expect(String((error as Error).message)).toContain(causeSuffix);
+    expect(String((error as Error).message)).toContain(nestedCause);
+    expect((error as LocalOpenApiConversionError).sanitizedCause).toContain(causeSuffix);
+    expect((error as LocalOpenApiConversionError).sanitizedCause).toContain(nestedCause);
+    expect((error as LocalOpenApiConversionError).sanitizedCause).not.toMatch(/[\r\n]/);
   });
 
   it('keeps smoke helper scripts syntactically valid and digest-stable for identical payloads', () => {
@@ -1199,7 +1208,7 @@ describe('local OpenAPI role payload generation', () => {
     expect(body).not.toHaveProperty('optionalImpossible');
   });
 
-  it('reports an invalid source-authored media example distinctly instead of rewriting it', async () => {
+  it('keeps invalid source-authored examples transactionally in lenient/off mode and rejects them in strict mode', async () => {
     const authored = { code: 'bbb' };
     const bundled = JSON.stringify({
       openapi: '3.1.0',
@@ -1245,16 +1254,32 @@ describe('local OpenAPI role payload generation', () => {
         }
       }]
     });
-    await expect(generateLocalOpenApiRolePayloads(bundled, {
+    const options = {
       openApiVersion: '3.1',
       requestNameSource: 'Fallback',
       folderStrategy: 'Paths',
       names: { baseline: 'Authored', smoke: '[Smoke] Authored', contract: '[Contract] Authored' },
       contractIndex: indexFor(bundled)
+    } as const;
+    const lenient = await generateLocalOpenApiRolePayloads(bundled, options, { converter });
+    expect(Object.keys(lenient.roles).sort()).toEqual(['baseline', 'contract', 'smoke']);
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      expect(firstJsonRequestBody(lenient.roles[role].collection)).toEqual(authored);
+    }
+    expect(lenient.warnings.some((warning) => (
+      warning.includes('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
+      && warning.includes('operation POST /authored request example')
+      && warning.includes('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH')
+    ))).toBe(true);
+
+    await expect(generateLocalOpenApiRolePayloads(bundled, {
+      ...options,
+      exampleRepair: 'strict'
     }, { converter })).rejects.toMatchObject({
       stage: 'repair-request-examples',
       sanitizedCause: expect.stringContaining('SOURCE_AUTHORED_EXAMPLE_SCHEMA_MISMATCH')
     });
+
   });
 
   it('serializes concurrent faker access and restores the prior random source after async failures', async () => {
@@ -1369,7 +1394,12 @@ describe('local OpenAPI role payload generation', () => {
                 }
               }
             },
-            responses: { '200': { description: 'ok' } }
+            responses: {
+              '200': {
+                description: 'ok',
+                content: { 'application/json': { schema: { type: 'object' } } }
+              }
+            }
           }
         }
       }
@@ -1435,7 +1465,150 @@ describe('local OpenAPI role payload generation', () => {
     expect(bodies[0]).not.toHaveProperty('readOnlyValue');
   });
 
-  it('fails explicitly before role materialization when a required schema is unsatisfiable', async () => {
+  it('keeps recursive oneOf request examples when repair cannot safely complete', async () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Recursive Request Repair', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/recursive-requests': {
+          post: {
+            operationId: 'submitRecursiveRequest',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/RecursiveRequest' } }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      },
+      components: {
+        schemas: {
+          RecursiveRequest: {
+            oneOf: [
+              {
+                type: 'object',
+                required: ['recursive'],
+                properties: { recursive: { $ref: '#/components/schemas/RecursiveRequestNode' } }
+              },
+              {
+                type: 'object',
+                required: ['terminal'],
+                properties: { terminal: { type: 'string', enum: ['complete'] } }
+              }
+            ]
+          },
+          RecursiveRequestNode: {
+            type: 'object',
+            required: ['next'],
+            properties: { next: { $ref: '#/components/schemas/RecursiveRequest' } }
+          }
+        }
+      }
+    });
+    const original = { recursive: {} };
+    const converter: LocalOpenApiConverter = (_input, _options, callback) => callback(null, {
+      result: true,
+      output: [{
+        type: 'collection',
+        data: {
+          info: { name: 'Recursive Request Repair' },
+          item: [{
+            name: 'submitRecursiveRequest',
+            request: {
+              method: 'POST',
+              url: { raw: 'https://example.test/recursive-requests', path: ['recursive-requests'] },
+              header: [{ key: 'Content-Type', value: 'application/json' }],
+              body: { mode: 'raw', raw: JSON.stringify(original) }
+            }
+          }]
+        }
+      }]
+    });
+
+    const generated = await generateLocalOpenApiRolePayloads(bundled, {
+      openApiVersion: '3.1',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      names: {
+        baseline: 'Recursive Request Repair',
+        smoke: '[Smoke] Recursive Request Repair',
+        contract: '[Contract] Recursive Request Repair'
+      },
+      contractIndex: indexFor(bundled)
+    }, { converter });
+
+    expect(Object.keys(generated.roles).sort()).toEqual(['baseline', 'contract', 'smoke']);
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      expect(firstJsonRequestBody(generated.roles[role].collection)).toEqual(original);
+    }
+    expect(generated.warnings.some((warning) => (
+      warning.includes('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
+      && warning.includes('operation POST /recursive-requests request example')
+      && warning.includes('EXAMPLE_REPAIR_LIMIT_EXCEEDED: repair depth 64')
+    ))).toBe(true);
+  });
+
+  it('skips schema-faker attempts when an example validator cannot compile', () => {
+    const bundled = JSON.stringify({
+      openapi: '3.1.0',
+      info: { title: 'Unsupported Example Validator', version: '1.0.0' },
+      servers: [{ url: 'https://example.test' }],
+      paths: {
+        '/unsupported-validator': {
+          post: {
+            requestBody: {
+              content: {
+                'application/json': {
+                  // A malformed regex in a patternProperties KEY still defeats
+                  // schemasafe. Unlike a `pattern` assertion, the packer cannot
+                  // drop it without changing which properties the schema
+                  // matches, so the repair guard must still degrade to a warning
+                  // rather than aborting the whole conversion.
+                  schema: { type: 'object', patternProperties: { '[': { type: 'string' } } }
+                }
+              }
+            },
+            responses: { '200': { description: 'ok' } }
+          }
+        }
+      }
+    });
+    const collection = {
+      info: { name: 'Unsupported Example Validator' },
+      item: [{
+        name: 'unsupportedValidator',
+        request: {
+          method: 'POST',
+          url: { raw: 'https://example.test/unsupported-validator', path: ['unsupported-validator'] },
+          header: [{ key: 'Content-Type', value: 'application/json' }],
+          body: { mode: 'raw', raw: JSON.stringify('original') }
+        }
+      }]
+    };
+    const candidate = vi.fn(() => 'replacement');
+
+    const warnings = repairGeneratedCollectionExamples(
+      collection,
+      indexFor(bundled),
+      bundled,
+      candidate,
+      'lenient'
+    );
+
+    expect(candidate).not.toHaveBeenCalled();
+    expect(record(record(array(collection.item)[0]).request).body).toEqual({
+      mode: 'raw',
+      raw: JSON.stringify('original')
+    });
+    expect(warnings).toContainEqual(expect.stringMatching(
+      /LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: operation POST \/unsupported-validator request example: .*validator did not compile/
+    ));
+  });
+
+  it('keeps unsatisfiable generated examples in lenient mode and rejects them in strict mode', async () => {
     const bundled = JSON.stringify({
       openapi: '3.0.3',
       info: { title: 'Pattern', version: '1.0.0' },
@@ -1456,7 +1629,12 @@ describe('local OpenAPI role payload generation', () => {
                 }
               }
             },
-            responses: { '200': { description: 'ok' } }
+            responses: {
+              '200': {
+                description: 'ok',
+                content: { 'application/json': { schema: { type: 'object' } } }
+              }
+            }
           }
         }
       }
@@ -1480,16 +1658,39 @@ describe('local OpenAPI role payload generation', () => {
       }]
     });
 
-    await expect(generateLocalOpenApiRolePayloads(bundled, {
+    const options = {
       openApiVersion: '3.0',
       requestNameSource: 'Fallback',
       folderStrategy: 'Paths',
       names: { baseline: 'Pattern', smoke: '[Smoke] Pattern', contract: '[Contract] Pattern' },
       contractIndex: indexFor(bundled)
+    } as const;
+    const lenient = await generateLocalOpenApiRolePayloads(bundled, options, { converter });
+    expect(Object.keys(lenient.roles).sort()).toEqual(['baseline', 'contract', 'smoke']);
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      expect(firstJsonRequestBody(lenient.roles[role].collection)).toEqual({ code: 'bbb' });
+    }
+    expect(lenient.warnings.some((warning) => (
+      warning.includes('LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED')
+      && warning.includes('operation POST /pattern request example')
+    ))).toBe(true);
+
+    await expect(generateLocalOpenApiRolePayloads(bundled, {
+      ...options,
+      exampleRepair: 'strict'
     }, { converter })).rejects.toMatchObject({
       code: LOCAL_OPENAPI_CONVERSION_FAILED,
       stage: 'repair-request-examples',
       sanitizedCause: expect.stringContaining('could not be safely repaired')
     });
+
+    const off = await generateLocalOpenApiRolePayloads(bundled, {
+      ...options,
+      exampleRepair: 'off'
+    }, { converter });
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      expect(firstJsonRequestBody(off.roles[role].collection)).toEqual({ code: 'bbb' });
+    }
+    expect(off.warnings).toEqual([]);
   });
 });

@@ -286,7 +286,7 @@ describe('CI workflow dist/pack race contract', () => {
     ]);
     expect(runGates).not.toMatch(/\bif:/);
     expect(windowsGateHelper).toContain('[int]$MaxParallelGates = 2');
-    expect(windowsGateHelper).toContain('Start-ThreadJob');
+    expect(windowsGateHelper).toContain('Start-Job');
     expect(windowsGateHelper).toContain('ValidateRange(1, 2)');
     expect(windowsGateHelper).toContain("$ErrorActionPreference = 'Continue'");
     expect(windowsGateHelper).toContain('Receive-Job -Job $completed -ErrorAction Continue 2>&1');

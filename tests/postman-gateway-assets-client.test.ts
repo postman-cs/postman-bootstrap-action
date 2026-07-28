@@ -5115,7 +5115,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
     it('findAdoptableSameMarkerCollection returns the sole same-marker exact-name final', async () => {
       const marker =
-        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
       const otherMarker = marker.replace('project/drum', 'feature/y').replace('project-drum', 'feature-y');
       const entries = [
         { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: '[DRUM] Payments', description: marker },
@@ -5140,12 +5140,35 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(deleted).toEqual([]);
     });
 
-    it('findAdoptableSameMarkerCollection returns undefined on ambiguity, absence, or unmarked payload', async () => {
+    it('findAdoptableSameMarkerCollection rejects ambiguity before any mutation', async () => {
       const marker =
-        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
       const entries = [
         { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: '[DRUM] Payments', description: marker },
         { id: '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: '[DRUM] Payments', description: marker }
+      ];
+      const mutations: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.method !== 'get') mutations.push(`${env.service}:${env.method}:${env.path}`);
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
+      ).rejects.toThrow(
+        'SAME_MARKER_COLLECTION_AMBIGUOUS: multiple exact-name collections carry the same branch marker'
+      );
+      expect(mutations).toEqual([]);
+    });
+
+    it('findAdoptableSameMarkerCollection returns undefined for absence or unmarked payload', async () => {
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const entries = [
+        { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: '[DRUM] Payments', description: marker }
       ];
       const { client } = makeClient((env) => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
@@ -5154,18 +5177,38 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       });
 
-      // Two same-marker survivors: ambiguous, never adopted here.
-      await expect(
-        client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
-      ).resolves.toBeUndefined();
-      // No exact-name survivor at all.
       await expect(
         client.findAdoptableSameMarkerCollection('ws-1', 'Missing', marker)
       ).resolves.toBeUndefined();
-      // Desired description without a parseable marker never adopts.
       await expect(
         client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', 'no marker here')
       ).resolves.toBeUndefined();
+    });
+
+    it('findAdoptableSameMarkerCollection does not adopt a different head SHA', async () => {
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const differentShaMarker = marker.replace('abc123', 'def456');
+      const entries = [
+        {
+          id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+          name: '[DRUM] Payments',
+          description: differentShaMarker
+        }
+      ];
+      const mutations: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.method !== 'get') mutations.push(`${env.service}:${env.method}:${env.path}`);
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
+      ).resolves.toBeUndefined();
+      expect(mutations).toEqual([]);
     });
 
     it('reconcileDuplicateFinalCollections ignores canonical and unmarked exact-name collections', async () => {

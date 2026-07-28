@@ -249,6 +249,17 @@ function createDefaultImportV2Collection() {
   });
 }
 
+function createDefaultExportV2Collection() {
+  return vi.fn().mockImplementation(async (collectionUid: string) => ({
+    info: {
+      _postman_id: collectionUid,
+      name: collectionUid,
+      schema: COLLECTION_SCHEMA
+    },
+    item: []
+  }));
+}
+
 function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
   const existingGetCollection = postman.getCollection as ((uid: string) => Promise<unknown>) | undefined;
   const existingGenerateCollection = postman.generateCollection as ((...args: unknown[]) => Promise<string>) | undefined;
@@ -321,6 +332,7 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
     importV2Collection: createDefaultImportV2Collection(),
+    exportV2Collection: createDefaultExportV2Collection(),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -3006,8 +3018,12 @@ paths:
 
   it('refresh mode fails closed without replacement IDs when deep-update fails (Q6)', async () => {
     const { core } = createCoreStub();
+    const deepUpdateV2Collection = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('deep update refused'))
+      .mockResolvedValueOnce('col-baseline-stale');
     const postman = createRollbackPostman({
-      deepUpdateV2Collection: vi.fn().mockRejectedValue(new Error('deep update refused'))
+      deepUpdateV2Collection
     });
     const internalIntegration = createRollbackIntegration();
 
@@ -3027,6 +3043,20 @@ paths:
     expect(postman.importV2Collection).not.toHaveBeenCalled();
     expect(postman.generateCollection).not.toHaveBeenCalled();
     expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+    expect(deepUpdateV2Collection).toHaveBeenCalledTimes(2);
+    expect(deepUpdateV2Collection).toHaveBeenNthCalledWith(
+      2,
+      'col-baseline-stale',
+      {
+        info: {
+          _postman_id: 'col-baseline-stale',
+          name: 'col-baseline-stale',
+          schema: COLLECTION_SCHEMA
+        },
+        item: []
+      },
+      expect.stringMatching(/^[a-f0-9]{64}$/)
+    );
   });
 
   it('rejects collection ID collisions after import before tagging or linking', async () => {

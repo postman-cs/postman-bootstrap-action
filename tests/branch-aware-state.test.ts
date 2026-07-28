@@ -142,6 +142,10 @@ function createPostman() {
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
     importV2Collection: createDefaultImportV2Collection(),
     deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
+    exportV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => ({
+      info: { _postman_id: collectionUid, name: `snapshot-${collectionUid}` },
+      item: []
+    })),
     deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
@@ -444,7 +448,7 @@ describe('branch-aware bootstrap runs', () => {
       // A rebound winner is a survivor from an earlier run; its content is that
       // run's payload. Orchestration must converge each winner to THIS run's
       // payload before links/tags, or the contract gate executes stale bytes.
-      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(6);
       const deepUpdatedIds = postman.deepUpdateV2Collection.mock.calls.map(
         (call: unknown[]) => call[0]
       );
@@ -497,10 +501,8 @@ describe('branch-aware bootstrap runs', () => {
         )
       ).rejects.toThrow(/marker patch failed/);
 
-      expect(cleanup).toHaveBeenCalledTimes(3);
+      expect(cleanup).toHaveBeenCalledTimes(1);
       expect(cleanup).toHaveBeenCalledWith(['owned-baseline']);
-      expect(cleanup).toHaveBeenCalledWith(['owned-smoke']);
-      expect(cleanup).toHaveBeenCalledWith(['owned-contract']);
       expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
     });
   });
@@ -617,7 +619,7 @@ describe('branch-aware bootstrap runs', () => {
     });
   });
 
-  it('channel rerun falls back to import when discovery finds nothing or is ambiguous', async () => {
+  it('channel rerun falls back to import when discovery finds nothing', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'branch-channel-fallback-'));
     writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
     const eventPath = join(workspace, 'event.json');
@@ -635,7 +637,7 @@ describe('branch-aware bootstrap runs', () => {
 
     await withCwd(workspace, async () => {
       const postman = createPostman();
-      // Ambiguous or absent discovery returns undefined for every role.
+      // No matching marker is a legitimate first-run outcome.
       (postman as Record<string, unknown>).findAdoptableSameMarkerCollection = vi.fn(
         async () => undefined
       );
@@ -650,6 +652,30 @@ describe('branch-aware bootstrap runs', () => {
       expect(JSON.parse(outputs['branch-decision']).tier).toBe('channel');
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+    });
+  });
+
+  it('channel discovery ambiguity aborts before every import or deep-update', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'branch-channel-ambiguous-'));
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+    const eventPath = join(workspace, 'event.json');
+    writeFileSync(eventPath, JSON.stringify({ repository: { default_branch: 'main', full_name: 'org/repo' } }));
+    for (const [key, value] of Object.entries({
+      GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'org/repo', GITHUB_REF: 'refs/heads/develop',
+      GITHUB_REF_NAME: 'develop', GITHUB_EVENT_PATH: eventPath, GITHUB_HEAD_REF: '', GITHUB_BASE_REF: ''
+    })) vi.stubEnv(key, value);
+
+    await withCwd(workspace, async () => {
+      const postman = createPostman();
+      (postman as Record<string, unknown>).findAdoptableSameMarkerCollection = vi.fn(async (_workspaceId: string, finalName: string) => {
+        if (finalName.includes('[Smoke]')) throw new Error('ambiguous same-marker collection');
+        return undefined;
+      });
+      await expect(runBootstrap(createInputs({ branchStrategy: 'publish-gate', channels: 'develop=DEV', workspaceId: 'ws-existing' }), runDeps(postman)))
+        .rejects.toThrow(/collection-preflight.*ambiguous same-marker collection/);
+      expect(postman.importV2Collection).not.toHaveBeenCalled();
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+      expect(postman.updateCollectionDescription).not.toHaveBeenCalled();
     });
   });
 

@@ -3192,7 +3192,7 @@ export class PostmanGatewayAssetsClient {
       if (!isAmbiguousTransportError(error)) {
         throw this.sanitizeDeepUpdateError('deep-update-transport', error);
       }
-      const exported = await this.exportCollectionAsV21(uid);
+      const exported = await this.exportV2Collection(uid);
       const actualDigest = computePayloadDigest(exported);
       if (actualDigest !== digest) {
         throw new Error(
@@ -3441,7 +3441,7 @@ export class PostmanGatewayAssetsClient {
           // readable for generated collections and carries info.description.
           // If export cannot prove ownership, leave the candidate untouched.
           try {
-            const exported = await this.exportCollectionAsV21(entry.id);
+            const exported = await this.exportV2Collection(entry.id);
             description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
           } catch {
             description = undefined;
@@ -3474,9 +3474,8 @@ export class PostmanGatewayAssetsClient {
    * Sole existing final with this exact name carrying the same durable branch
    * marker as this run's payload, or undefined. Lets a channel/preview rerun
    * deep-update its prior-run asset in place instead of importing a fresh root
-   * and re-electing. Zero or multiple same-marker survivors return undefined —
-   * the caller then falls back to the import + election + reconcile path, which
-   * already collapses duplicates and never adopts strangers.
+   * and re-electing. Zero same-marker survivors return undefined; multiple
+   * same-marker survivors fail closed rather than selecting an arbitrary asset.
    */
   async findAdoptableSameMarkerCollection(
     workspaceId: string,
@@ -3495,8 +3494,8 @@ export class PostmanGatewayAssetsClient {
    * Sole exact-name final carrying the same durable branch marker as this run's
    * payload, or undefined. Org inventory omits root descriptions, so fall back
    * to the v2.1 export route; an unprovable candidate is never adoptable. More
-   * than one same-marker survivor is ambiguous and never adopted here —
-   * {@link reconcileDuplicateFinalCollections} collapses those.
+   * than one same-marker survivor is ambiguous and fails closed before a caller
+   * can mutate or elect an arbitrary winner.
    */
   private async adoptableSameMarkerFinal(
     eligible: ReadonlyArray<{ id: string; name: string; description?: string }>,
@@ -3508,7 +3507,7 @@ export class PostmanGatewayAssetsClient {
       let description = entry.description;
       if (!description) {
         try {
-          const exported = await this.exportCollectionAsV21(entry.id);
+          const exported = await this.exportV2Collection(entry.id);
           description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
         } catch {
           description = undefined;
@@ -3516,7 +3515,11 @@ export class PostmanGatewayAssetsClient {
       }
       if (this.hasSameBranchAssetMarker(description, desiredDescription)) matches.push(entry.id);
     }
-    return matches.length === 1 ? matches[0] : undefined;
+    if (matches.length === 0) return undefined;
+    if (matches.length === 1) return matches[0];
+    throw new Error(
+      'SAME_MARKER_COLLECTION_AMBIGUOUS: multiple exact-name collections carry the same branch marker'
+    );
   }
 
   private hasSameBranchAssetMarker(
@@ -3532,11 +3535,12 @@ export class PostmanGatewayAssetsClient {
       candidate.rawBranch === desired.rawBranch &&
       candidate.sanitizedBranch === desired.sanitizedBranch &&
       candidate.role === desired.role &&
-      candidate.headRepoId === desired.headRepoId
+      candidate.headRepoId === desired.headRepoId &&
+      candidate.headSha === desired.headSha
     );
   }
 
-  private async exportCollectionAsV21(collectionUid: string): Promise<JsonRecord> {
+  async exportV2Collection(collectionUid: string): Promise<JsonRecord> {
     const bareId = this.bareModelId(collectionUid);
     const exported = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',

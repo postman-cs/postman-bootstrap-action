@@ -368548,7 +368548,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "88f08a5427d5d8301169a26db759047aa7990f1a",
+  bootstrapCommit: "0fc15c95adae5f67cc93af13d120ec2cdfee15cb",
   legs: [
     {
       mode: "nonorg",
@@ -372170,7 +372170,7 @@ ${error2.responseBody ?? ""}`
       if (!isAmbiguousTransportError(error2)) {
         throw this.sanitizeDeepUpdateError("deep-update-transport", error2);
       }
-      const exported = await this.exportCollectionAsV21(uid);
+      const exported = await this.exportV2Collection(uid);
       const actualDigest = computePayloadDigest(exported);
       if (actualDigest !== digest) {
         throw new Error(
@@ -372347,7 +372347,7 @@ ${error2.responseBody ?? ""}`
         let description = entry.description;
         if (!description) {
           try {
-            const exported = await this.exportCollectionAsV21(entry.id);
+            const exported = await this.exportV2Collection(entry.id);
             description = String(asRecord12(exported.info)?.description ?? "").trim() || void 0;
           } catch {
             description = void 0;
@@ -372379,9 +372379,8 @@ ${error2.responseBody ?? ""}`
    * Sole existing final with this exact name carrying the same durable branch
    * marker as this run's payload, or undefined. Lets a channel/preview rerun
    * deep-update its prior-run asset in place instead of importing a fresh root
-   * and re-electing. Zero or multiple same-marker survivors return undefined —
-   * the caller then falls back to the import + election + reconcile path, which
-   * already collapses duplicates and never adopts strangers.
+   * and re-electing. Zero same-marker survivors return undefined; multiple
+   * same-marker survivors fail closed rather than selecting an arbitrary asset.
    */
   async findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription) {
     const name = String(finalName || "").trim();
@@ -372395,8 +372394,8 @@ ${error2.responseBody ?? ""}`
    * Sole exact-name final carrying the same durable branch marker as this run's
    * payload, or undefined. Org inventory omits root descriptions, so fall back
    * to the v2.1 export route; an unprovable candidate is never adoptable. More
-   * than one same-marker survivor is ambiguous and never adopted here —
-   * {@link reconcileDuplicateFinalCollections} collapses those.
+   * than one same-marker survivor is ambiguous and fails closed before a caller
+   * can mutate or elect an arbitrary winner.
    */
   async adoptableSameMarkerFinal(eligible, desiredDescription) {
     if (!parseAssetMarker(desiredDescription)) return void 0;
@@ -372405,7 +372404,7 @@ ${error2.responseBody ?? ""}`
       let description = entry.description;
       if (!description) {
         try {
-          const exported = await this.exportCollectionAsV21(entry.id);
+          const exported = await this.exportV2Collection(entry.id);
           description = String(asRecord12(exported.info)?.description ?? "").trim() || void 0;
         } catch {
           description = void 0;
@@ -372413,16 +372412,20 @@ ${error2.responseBody ?? ""}`
       }
       if (this.hasSameBranchAssetMarker(description, desiredDescription)) matches.push(entry.id);
     }
-    return matches.length === 1 ? matches[0] : void 0;
+    if (matches.length === 0) return void 0;
+    if (matches.length === 1) return matches[0];
+    throw new Error(
+      "SAME_MARKER_COLLECTION_AMBIGUOUS: multiple exact-name collections carry the same branch marker"
+    );
   }
   hasSameBranchAssetMarker(candidateDescription, desiredDescription) {
     const candidate = parseAssetMarker(candidateDescription);
     const desired = parseAssetMarker(desiredDescription);
     return Boolean(
-      candidate && desired && candidate.repo === desired.repo && candidate.rawBranch === desired.rawBranch && candidate.sanitizedBranch === desired.sanitizedBranch && candidate.role === desired.role && candidate.headRepoId === desired.headRepoId
+      candidate && desired && candidate.repo === desired.repo && candidate.rawBranch === desired.rawBranch && candidate.sanitizedBranch === desired.sanitizedBranch && candidate.role === desired.role && candidate.headRepoId === desired.headRepoId && candidate.headSha === desired.headSha
     );
   }
-  async exportCollectionAsV21(collectionUid) {
+  async exportV2Collection(collectionUid) {
     const bareId = this.bareModelId(collectionUid);
     const exported = await this.gateway.requestJson({
       service: "collection",
@@ -405115,6 +405118,29 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   let localOpenApiRepoRoot;
   let pendingFinalizedLocalOpenApiManifest;
   let ownedLocalOpenApiCompensated = false;
+  const deepUpdateSnapshots = /* @__PURE__ */ new Map();
+  const attemptedDeepUpdates = /* @__PURE__ */ new Set();
+  const restoreAttemptedDeepUpdates = async () => {
+    if (attemptedDeepUpdates.size === 0) return;
+    if (!dependencies.postman.deepUpdateV2Collection) {
+      throw new Error("deepUpdateV2Collection is unavailable for collection rollback");
+    }
+    const failures = [];
+    for (const collectionId of attemptedDeepUpdates) {
+      const snapshot = deepUpdateSnapshots.get(collectionId);
+      if (!snapshot) {
+        failures.push(`${collectionId}: rollback snapshot is unavailable`);
+        continue;
+      }
+      try {
+        await dependencies.postman.deepUpdateV2Collection(collectionId, snapshot.collection, snapshot.payloadDigest);
+      } catch (error2) {
+        failures.push(`${collectionId}: ${formatMaskedOneLine(error2, createBootstrapSecretMasker(inputs))}`);
+      }
+    }
+    if (failures.length > 0) throw new Error(`collection rollback failed for ${failures.join("; ")}`);
+    attemptedDeepUpdates.clear();
+  };
   const compensateOwnedLocalOpenApiImports = async (stage) => {
     if (ownedLocalOpenApiCompensated) return;
     ownedLocalOpenApiCompensated = true;
@@ -405144,7 +405170,19 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const failOwned = async (stage, cause) => {
     const mask = createBootstrapSecretMasker(inputs);
     const sanitizedCause = formatMaskedOneLine(cause, mask);
+    let rollbackFailure;
+    try {
+      await restoreAttemptedDeepUpdates();
+    } catch (error2) {
+      rollbackFailure = error2;
+    }
     await compensateOwnedLocalOpenApiImports(stage);
+    if (rollbackFailure) {
+      throw new Error(
+        `LOCAL_OPENAPI_ORCHESTRATION_ROLLBACK_FAILED: stage=${stage} ledger=[${ownedLedger.join(",")}] cause=${sanitizedCause} rollback=${formatMaskedOneLine(rollbackFailure, mask)}`,
+        { cause: rollbackFailure }
+      );
+    }
     throw new Error(
       `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(",")}] cause=${sanitizedCause}`,
       cause !== void 0 ? { cause } : void 0
@@ -405359,21 +405397,41 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             await failOwned("materialize-artifacts", error2);
             throw error2;
           }
+          const discoveredIds = /* @__PURE__ */ new Map();
+          try {
+            for (const role of collectionRoles) {
+              if (!role.existingId && collectionBranchMarker && workspaceId && inputs.collectionSyncMode === "refresh" && dependencies.postman.findAdoptableSameMarkerCollection) {
+                discoveredIds.set(role.role, await dependencies.postman.findAdoptableSameMarkerCollection(
+                  workspaceId,
+                  roleNames[role.role],
+                  collectionBranchMarker
+                ));
+              }
+            }
+            const reuseIds = collectionRoles.map((role) => role.existingId || discoveredIds.get(role.role)).filter((id) => Boolean(id) && inputs.collectionSyncMode === "refresh");
+            if (reuseIds.length > 0) {
+              if (!dependencies.postman.exportV2Collection) {
+                throw new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support");
+              }
+              for (const collectionId of new Set(reuseIds)) {
+                const collection = await dependencies.postman.exportV2Collection(collectionId);
+                deepUpdateSnapshots.set(collectionId, { collection, payloadDigest: computePayloadDigest(collection) });
+              }
+            }
+          } catch (error2) {
+            await failOwned("collection-preflight", error2);
+          }
           const importStarted = Date.now();
           const writeRole = async (role) => {
             const payload = payloads.roles[role.role];
             const finalName = roleNames[role.role];
-            let discoveredId;
-            if (!role.existingId && collectionBranchMarker && workspaceId && inputs.collectionSyncMode === "refresh" && dependencies.postman.findAdoptableSameMarkerCollection) {
-              discoveredId = await dependencies.postman.findAdoptableSameMarkerCollection(
-                workspaceId,
-                finalName,
-                collectionBranchMarker
-              );
-            }
-            const reuseId = role.existingId || discoveredId;
+            const reuseId = role.existingId || discoveredIds.get(role.role);
             const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === "refresh";
             if (useDeepUpdate) {
+              if (!deepUpdateSnapshots.has(reuseId)) {
+                throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing rollback snapshot for ${reuseId}`);
+              }
+              attemptedDeepUpdates.add(reuseId);
               const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection(
                 reuseId,
                 payload.collection,
@@ -405428,6 +405486,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               settledWrites.push({ status: "fulfilled", value: await writeRole(role) });
             } catch (reason) {
               settledWrites.push({ status: "rejected", reason });
+              break;
             }
           }
           const importMs = Math.max(0, Date.now() - importStarted);
@@ -405485,6 +405544,17 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                 const winnerId = winners[finalName];
                 if (!winnerId) continue;
                 if (result.collectionId !== winnerId) {
+                  if (!deepUpdateSnapshots.has(winnerId)) {
+                    if (!dependencies.postman.exportV2Collection) {
+                      throw new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support");
+                    }
+                    const collection = await dependencies.postman.exportV2Collection(winnerId);
+                    deepUpdateSnapshots.set(winnerId, {
+                      collection,
+                      payloadDigest: computePayloadDigest(collection)
+                    });
+                  }
+                  attemptedDeepUpdates.add(winnerId);
                   await observedLocalOpenApiPostman.deepUpdateV2Collection(
                     winnerId,
                     payloads.roles[role.role].collection,
@@ -405762,6 +405832,14 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     const mask = createBootstrapSecretMasker(inputs);
     const reason = formatMaskedOneLine(error2, mask);
     await compensateOwnedLocalOpenApiImports(rollbackTriggerStage);
+    try {
+      await restoreAttemptedDeepUpdates();
+    } catch (rollbackError) {
+      throw new Error(
+        `LOCAL_OPENAPI_ORCHESTRATION_ROLLBACK_FAILED: stage=${rollbackTriggerStage} cause=${reason} rollback=${formatMaskedOneLine(rollbackError, mask)}`,
+        { cause: rollbackError }
+      );
+    }
     if (completedExternalSideEffects.length > 0) {
       dependencies.core.warning(
         formatMaskedOneLine(
@@ -405964,6 +406042,7 @@ function createRoutingPostmanClient(options) {
       updateCollectionDescription: requireAccessToken("updateCollectionDescription"),
       importV2Collection: requireAccessToken("importV2Collection"),
       deepUpdateV2Collection: requireAccessToken("deepUpdateV2Collection"),
+      exportV2Collection: requireAccessToken("exportV2Collection"),
       deleteVerifiedRunOwnedCollections: requireAccessToken("deleteVerifiedRunOwnedCollections"),
       reconcileDuplicateFinalCollections: requireAccessToken("reconcileDuplicateFinalCollections")
     };
@@ -406009,6 +406088,7 @@ function createRoutingPostmanClient(options) {
     updateCollectionDescription: (collectionUid, description) => gateway.updateCollectionDescription(collectionUid, description),
     importV2Collection: (workspaceId, collection, finalName) => gateway.importV2Collection(workspaceId, collection, finalName),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) => gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
+    exportV2Collection: (collectionUid) => gateway.exportV2Collection(collectionUid),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) => gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
     reconcileDuplicateFinalCollections: (workspaceId, candidates) => gateway.reconcileDuplicateFinalCollections(workspaceId, candidates),
     findAdoptableSameMarkerCollection: (workspaceId, finalName, desiredDescription) => gateway.findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription)

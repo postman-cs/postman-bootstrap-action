@@ -19,6 +19,8 @@ import {
 
 export type JsonRecord = Record<string, unknown>;
 export type CollectionRole = 'baseline' | 'smoke' | 'contract';
+/** Controls whether generated examples are repaired after local conversion. */
+export type ExampleRepairMode = 'strict' | 'lenient' | 'off';
 
 export const LOCAL_OPENAPI_CONVERSION_FAILED = 'LOCAL_OPENAPI_CONVERSION_FAILED' as const;
 
@@ -56,6 +58,8 @@ export interface LocalOpenApiConversionOptions {
   requestNameSource: 'URL' | 'Fallback';
   folderStrategy: 'Paths' | 'Tags';
   nestedFolderHierarchy?: boolean;
+  /** Defaults to lenient so best-effort example repair cannot abort conversion. */
+  exampleRepair?: ExampleRepairMode;
   /**
    * Cloud secret store backing the optional `00 - Resolve Secrets` helper item.
    * Defaults to `none`: no helper request is embedded in any role payload.
@@ -107,16 +111,35 @@ function deepClone<T>(value: T): T {
 
 function sanitizeCause(cause: unknown): string | undefined {
   if (cause === undefined || cause === null) return undefined;
-  if (cause instanceof Error) {
-    return cause.message.replace(/\s+/g, ' ').trim().slice(0, 240);
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  const append = (message: string): void => {
+    const normalized = message.replace(/\s+/g, ' ').trim();
+    if (normalized && !parts.some((part) => part.includes(normalized))) parts.push(normalized);
+  };
+  let current: unknown = cause;
+  for (let depth = 0; depth < 8 && current !== undefined && current !== null; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (current instanceof Error) {
+      append(current.message);
+      current = (current as Error & { cause?: unknown }).cause;
+      continue;
+    }
+    if (typeof current === 'string') {
+      append(current);
+      break;
+    }
+    if (isRecord(current) && typeof current.message === 'string') {
+      append(current.message);
+      current = current.cause;
+      continue;
+    }
+    parts.push('non-error failure');
+    break;
   }
-  if (typeof cause === 'string') {
-    return cause.replace(/\s+/g, ' ').trim().slice(0, 240);
-  }
-  if (isRecord(cause) && typeof cause.message === 'string') {
-    return cause.message.replace(/\s+/g, ' ').trim().slice(0, 240);
-  }
-  return 'non-error failure';
+  if (parts.length === 0) return undefined;
+  return parts.join(': ');
 }
 
 function assertValidOptions(options: LocalOpenApiConversionOptions): void {
@@ -126,6 +149,7 @@ function assertValidOptions(options: LocalOpenApiConversionOptions): void {
     (options.requestNameSource !== 'URL' && options.requestNameSource !== 'Fallback') ||
     (options.folderStrategy !== 'Paths' && options.folderStrategy !== 'Tags') ||
     (options.nestedFolderHierarchy !== undefined && typeof options.nestedFolderHierarchy !== 'boolean') ||
+    (options.exampleRepair !== undefined && !['strict', 'lenient', 'off'].includes(options.exampleRepair)) ||
     (options.secretsResolverProvider !== undefined &&
       !(SECRETS_RESOLVER_PROVIDERS as readonly string[]).includes(String(options.secretsResolverProvider))) ||
     !isRecord(options.names) ||
@@ -302,7 +326,8 @@ export async function generateLocalOpenApiRolePayloads(
         converted,
         options.contractIndex,
         bundledOpenApi,
-        candidate
+        candidate,
+        options.exampleRepair ?? 'lenient'
       );
       return { converted, repairWarnings };
     } catch (error) {

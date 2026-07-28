@@ -21,7 +21,7 @@ function Start-Gate([string]$definition) {
     throw "Invalid gate definition: $definition"
   }
   $name = $parts[0]
-  $script:running += Start-ThreadJob -Name $name -ArgumentList $definition -ScriptBlock {
+  $script:running += Start-Job -Name $name -ArgumentList $definition -ScriptBlock {
     param($gateDefinition)
     $ErrorActionPreference = 'Continue'
     $gateParts = $gateDefinition -split '\|\|\|'

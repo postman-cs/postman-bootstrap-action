@@ -150,6 +150,7 @@ export interface ResolvedInputs {
   folderStrategy: string;
   nestedFolderHierarchy: boolean;
   requestNameSource: string;
+
   secretsResolverProvider: SecretsResolverProvider;
   postmanRegion: PostmanRegion;
   postmanStack: PostmanStack;
@@ -433,7 +434,25 @@ const GOVERNANCE_GROUP_PROPERTY_NAME = 'postman-governance-group';
  * No dependency beyond the local masker.
  */
 function formatMaskedOneLine(value: unknown, masker?: SecretMasker): string {
-  const text = value instanceof Error ? value.message : String(value ?? '');
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  const append = (message: string): void => {
+    const normalized = message.trim();
+    if (normalized && !parts.some((part) => part.includes(normalized))) parts.push(normalized);
+  };
+  let current: unknown = value;
+  for (let depth = 0; depth < 8 && current !== undefined && current !== null; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (current instanceof Error) {
+      append(String(current.message ?? ''));
+      current = (current as Error & { cause?: unknown }).cause;
+      continue;
+    }
+    append(String(current ?? ''));
+    break;
+  }
+  const text = parts.join(': ') || String(value ?? '');
   const masked = masker ? masker(text) : text;
   return masked.replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
 }
@@ -711,6 +730,7 @@ export function resolveInputs(
     nestedFolderHierarchy: parseBooleanInput('nested-folder-hierarchy', getInput('nested-folder-hierarchy', env), false),
     requestNameSource:
       parseEnumInput('request-name-source', getInput('request-name-source', env), 'Fallback'),
+
     secretsResolverProvider: parseSecretsResolverProvider(
       getInput('secrets-resolver', env),
       DEFAULT_SECRETS_RESOLVER_PROVIDER
@@ -1062,6 +1082,7 @@ export function readActionInputs(
     INPUT_REQUEST_NAME_SOURCE:
       optionalInput(actionCore, 'request-name-source') ??
       bootstrapActionContract.inputs['request-name-source'].default,
+
     INPUT_SECRETS_RESOLVER:
       optionalInput(actionCore, 'secrets-resolver') ??
       bootstrapActionContract.inputs['secrets-resolver'].default,
@@ -2915,10 +2936,11 @@ async function runBootstrapInner(
 
   const failOwned = async (stage: string, cause: unknown): Promise<never> => {
     const mask = createBootstrapSecretMasker(inputs);
-    const sanitizedCause = formatMaskedOneLine(cause, mask).slice(0, 240);
+    const sanitizedCause = formatMaskedOneLine(cause, mask);
     await compensateOwnedLocalOpenApiImports(stage);
     throw new Error(
-      `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`
+      `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`,
+      cause !== undefined ? { cause } : undefined
     );
   };
 

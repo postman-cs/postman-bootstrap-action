@@ -38,7 +38,7 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
     expect(mixed.stdout).toContain('gate:fails=fail');
     expect(mixed.stdout).toContain('gate:after-failure=pass');
     expect(mixed.stdout).toContain('::group::fails');
-  }, 30_000);
+  }, 120_000);
 
   it(
     'reaches but never exceeds MaxParallelGates=2 while completing all gates',
@@ -134,6 +134,6 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
         rmSync(workDir, { recursive: true, force: true });
       }
     },
-    30_000
+    120_000
   );
 });

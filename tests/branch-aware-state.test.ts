@@ -501,8 +501,9 @@ describe('branch-aware bootstrap runs', () => {
         )
       ).rejects.toThrow(/marker patch failed/);
 
-      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(cleanup).toHaveBeenCalledTimes(2);
       expect(cleanup).toHaveBeenCalledWith(['owned-baseline']);
+      expect(cleanup).toHaveBeenCalledWith(['owned-smoke']);
       expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
     });
   });

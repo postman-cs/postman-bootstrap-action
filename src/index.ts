@@ -3363,24 +3363,36 @@ async function runBootstrapInner(
             journaledRootIds: [...imported.journaledRootIds]
           };
         };
-        // These writes share one workspace mutation and inventory surface. Keep
-        // them serial and fail fast; rollback handles every attempted update.
-        const settledWrites: PromiseSettledResult<RoleWriteResult>[] = [];
-        for (const role of collectionRoles) {
-          try {
-            settledWrites.push({ status: 'fulfilled', value: await writeRole(role) });
-          } catch (reason) {
-            settledWrites.push({ status: 'rejected', reason });
-            break;
+        // Two lanes cut fresh-import latency while keeping mutation pressure
+        // bounded. Preflight snapshots and the shared ownership ledger let any
+        // completed or ambiguous write roll back as one transaction.
+        const settledWrites: Array<PromiseSettledResult<RoleWriteResult> | undefined> =
+          new Array(collectionRoles.length);
+        let nextRoleIndex = 0;
+        let writeFailed = false;
+        const writeWorker = async (): Promise<void> => {
+          while (!writeFailed) {
+            const roleIndex = nextRoleIndex;
+            nextRoleIndex += 1;
+            const role = collectionRoles[roleIndex];
+            if (!role) return;
+            try {
+              settledWrites[roleIndex] = { status: 'fulfilled', value: await writeRole(role) };
+            } catch (reason) {
+              settledWrites[roleIndex] = { status: 'rejected', reason };
+              writeFailed = true;
+            }
           }
-        }
+        };
+        await Promise.all([writeWorker(), writeWorker()]);
         const importMs = Math.max(0, Date.now() - importStarted);
 
         const roleOrder = collectionRoles.map((role) => role.role);
         const fulfilledByRole = new Map<CollectionRole, RoleWriteResult>();
         const failures: unknown[] = [];
         for (let i = 0; i < settledWrites.length; i += 1) {
-          const settled = settledWrites[i]!;
+          const settled = settledWrites[i];
+          if (!settled) continue;
           const role = roleOrder[i]!;
           if (settled.status === 'fulfilled') {
             fulfilledByRole.set(role, settled.value);

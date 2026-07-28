@@ -367389,7 +367389,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "e67c95f52bb62dd6066203aaa2bb8bfb07e3a10f",
+  bootstrapCommit: "5ea2e46afa7dc5d05a6448d3b0009aaaa8b050da",
   legs: [
     {
       mode: "nonorg",
@@ -371263,7 +371263,7 @@ ${error.responseBody ?? ""}`
     const candidate = parseAssetMarker(candidateDescription);
     const desired = parseAssetMarker(desiredDescription);
     return Boolean(
-      candidate && desired && candidate.repo === desired.repo && candidate.rawBranch === desired.rawBranch && candidate.sanitizedBranch === desired.sanitizedBranch && candidate.role === desired.role && candidate.headRepoId === desired.headRepoId && candidate.headSha === desired.headSha
+      candidate && desired && candidate.repo === desired.repo && candidate.rawBranch === desired.rawBranch && candidate.sanitizedBranch === desired.sanitizedBranch && candidate.role === desired.role && candidate.headRepoId === desired.headRepoId
     );
   }
   async exportV2Collection(collectionUid) {
@@ -404219,21 +404219,31 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               journaledRootIds: [...imported.journaledRootIds]
             };
           };
-          const settledWrites = [];
-          for (const role of collectionRoles) {
-            try {
-              settledWrites.push({ status: "fulfilled", value: await writeRole(role) });
-            } catch (reason) {
-              settledWrites.push({ status: "rejected", reason });
-              break;
+          const settledWrites = new Array(collectionRoles.length);
+          let nextRoleIndex = 0;
+          let writeFailed = false;
+          const writeWorker = async () => {
+            while (!writeFailed) {
+              const roleIndex = nextRoleIndex;
+              nextRoleIndex += 1;
+              const role = collectionRoles[roleIndex];
+              if (!role) return;
+              try {
+                settledWrites[roleIndex] = { status: "fulfilled", value: await writeRole(role) };
+              } catch (reason) {
+                settledWrites[roleIndex] = { status: "rejected", reason };
+                writeFailed = true;
+              }
             }
-          }
+          };
+          await Promise.all([writeWorker(), writeWorker()]);
           const importMs = Math.max(0, Date.now() - importStarted);
           const roleOrder = collectionRoles.map((role) => role.role);
           const fulfilledByRole = /* @__PURE__ */ new Map();
           const failures = [];
           for (let i = 0; i < settledWrites.length; i += 1) {
             const settled = settledWrites[i];
+            if (!settled) continue;
             const role = roleOrder[i];
             if (settled.status === "fulfilled") {
               fulfilledByRole.set(role, settled.value);

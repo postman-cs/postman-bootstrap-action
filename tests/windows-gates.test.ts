@@ -9,9 +9,20 @@ const helper = join(process.cwd(), '.github/scripts/run-windows-gates.ps1');
 const pwshAvailable = spawnSync('pwsh', ['--version'], { encoding: 'utf8' }).status === 0;
 
 function runGates(...gates: string[]) {
-  return spawnSync('pwsh', ['-NoProfile', '-File', helper, '-GateJson', JSON.stringify(gates)], {
-    encoding: 'utf8'
-  });
+  return spawnSync(
+    'pwsh',
+    ['-NoProfile', '-File', helper, '-GateJson', JSON.stringify(gates), '-GateTimeoutSeconds', '1'],
+    {
+      encoding: 'utf8',
+      timeout: 30_000
+    }
+  );
+}
+
+function gateDiagnostics(result: ReturnType<typeof runGates>) {
+  return [result.stderr, result.error ? `${result.error.name}: ${result.error.message}` : '']
+    .filter(Boolean)
+    .join('\n');
 }
 
 describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
@@ -21,7 +32,7 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
       "stderr-ok|||pwsh|||-NoProfile|||-Command|||[Console]::Error.WriteLine('DEP0040'); exit 0",
       "also-ok|||pwsh|||-NoProfile|||-Command|||exit 0"
     );
-    expect(warningOnly.status, warningOnly.stderr).toBe(0);
+    expect(warningOnly.status, gateDiagnostics(warningOnly)).toBe(0);
     expect(warningOnly.stdout).toContain('::group::stderr-ok');
     expect(warningOnly.stdout + warningOnly.stderr).toContain('DEP0040');
     expect(warningOnly.stdout).not.toContain('__POSTMAN_GATE_RESULT__');
@@ -33,12 +44,28 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
       'fails|||pwsh|||-NoProfile|||-Command|||exit 7',
       'after-failure|||pwsh|||-NoProfile|||-Command|||exit 0'
     );
-    expect(mixed.status).toBe(1);
+    expect(mixed.status, gateDiagnostics(mixed)).toBe(1);
     expect(mixed.stdout).toContain('gate:stderr-ok=pass');
     expect(mixed.stdout).toContain('gate:fails=fail');
     expect(mixed.stdout).toContain('gate:after-failure=pass');
     expect(mixed.stdout).toContain('::group::fails');
   }, 120_000);
+
+  it(
+    'times out a sleeping gate and continues to the following gate',
+    () => {
+      const timedOut = runGates(
+        'sleeps|||pwsh|||-NoProfile|||-Command|||Start-Sleep -Seconds 2; exit 0',
+        'after-timeout|||pwsh|||-NoProfile|||-Command|||exit 0'
+      );
+
+      expect(timedOut.status, gateDiagnostics(timedOut)).toBe(1);
+      expect(timedOut.stdout + timedOut.stderr).toMatch(/sleeps.*timed out|timed out.*sleeps/i);
+      expect(timedOut.stdout).toContain('gate:sleeps=fail');
+      expect(timedOut.stdout).toContain('gate:after-timeout=pass');
+    },
+    120_000
+  );
 
   it(
     'reaches but never exceeds MaxParallelGates=2 while completing all gates',
@@ -124,7 +151,7 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
             `${name}|||pwsh|||-NoProfile|||-File|||${probePath}|||-WorkDir|||${workDir}|||-GateName|||${name}|||-MutexName|||${mutexName}`
         );
         const result = runGates(...gates);
-        expect(result.status, result.stderr).toBe(0);
+        expect(result.status, gateDiagnostics(result)).toBe(0);
         for (const name of gateNames) {
           expect(result.stdout).toContain(`gate:${name}=pass`);
           expect(readFileSync(join(workDir, `marker-${name}.txt`), 'utf8')).toBe('done');

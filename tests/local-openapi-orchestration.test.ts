@@ -207,7 +207,7 @@ describe('local OpenAPI orchestration', () => {
         };
       }
     );
-    const deepUpdateV2Collection = vi.fn(async (collectionUid: string) => {
+    const deepUpdateV2Collection = vi.fn(async (collectionUid: string, _collection: unknown, _expectedPayloadDigest: string) => {
       events.push(`deepUpdate:${collectionUid}`);
       return collectionUid;
     });
@@ -218,6 +218,10 @@ describe('local OpenAPI orchestration', () => {
       deleteSpec: vi.fn().mockResolvedValue(undefined),
       deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
       deepUpdateV2Collection,
+      exportV2Collection: vi.fn(async (collectionUid: string) => {
+        events.push(`export:${collectionUid}`);
+        return { info: { _postman_id: collectionUid, name: `snapshot-${collectionUid}` }, item: [] };
+      }),
       findWorkspacesByName: vi.fn().mockResolvedValue([{ id: 'ws-1', name: 'orchestration-api' }]),
       generateCollection: vi.fn().mockRejectedValue(new Error('generateCollection must be unreachable')),
       getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31),
@@ -530,7 +534,7 @@ describe('local OpenAPI orchestration', () => {
         )
       ).rejects.toThrow(/tag boom/);
 
-      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(1);
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(2);
       expect(postman.deepUpdateV2Collection).toHaveBeenCalledWith(
         'col-baseline-existing',
         expect.anything(),
@@ -1111,7 +1115,7 @@ describe('local OpenAPI orchestration', () => {
         )
       );
 
-      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(2);
       expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith('ws-1', [
         canonicalBaselineUid
       ]);
@@ -1235,14 +1239,14 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
-  it('does not replace existing IDs when deep-update fails (Q6)', async () => {
+  it('preflights snapshots before writes and restores attempted deep-updates after a smoke failure (Q3)', async () => {
     await withRepo(async () => {
       const events: string[] = [];
       const core = createCoreStub();
       const postman = buildPostman(events);
-      postman.deepUpdateV2Collection = vi.fn(async (collectionUid: string) => {
+      postman.deepUpdateV2Collection = vi.fn(async (collectionUid: string, collection: unknown, _expectedPayloadDigest: string) => {
         events.push(`deepUpdate:${collectionUid}`);
-        if (collectionUid === 'col-smoke-existing') {
+        if (collectionUid === 'col-smoke-existing' && !String(((collection as JsonRecord).info as JsonRecord)?.name).startsWith('snapshot-')) {
           throw new Error('deep update failed');
         }
         return collectionUid;
@@ -1274,10 +1278,32 @@ describe('local OpenAPI orchestration', () => {
         )
       ).rejects.toThrow(/LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=(deep-update|cloud-collection-write)/);
 
-      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+      // The baseline and the throwing smoke invocation are both rollback
+      // candidates. Contract was never attempted; every snapshot happened
+      // before the first cloud write.
+      expect(postman.exportV2Collection).toHaveBeenCalledTimes(3);
+      expect(events.filter((event) => event.startsWith('export:'))).toEqual([
+        'export:col-baseline-existing',
+        'export:col-smoke-existing',
+        'export:col-contract-existing'
+      ]);
+      expect(events.findIndex((event) => event.startsWith('deepUpdate:'))).toBeGreaterThan(
+        events.findIndex((event) => event === 'export:col-contract-existing')
+      );
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(4);
+      expect(postman.deepUpdateV2Collection.mock.calls.map((call) => call[0])).toEqual([
+        'col-baseline-existing',
+        'col-smoke-existing',
+        'col-baseline-existing',
+        'col-smoke-existing'
+      ]);
+      expect(postman.deepUpdateV2Collection.mock.calls.slice(2).map((call) =>
+        String(((call[1] as JsonRecord).info as JsonRecord).name)
+      )).toEqual(['snapshot-col-baseline-existing', 'snapshot-col-smoke-existing']);
       expect(postman.importV2Collection).not.toHaveBeenCalled();
       expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
       expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+      expect(postman.tagCollection).not.toHaveBeenCalled();
     });
   });
 

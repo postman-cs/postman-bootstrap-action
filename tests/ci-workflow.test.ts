@@ -286,10 +286,26 @@ describe('CI workflow dist/pack race contract', () => {
     ]);
     expect(runGates).not.toMatch(/\bif:/);
     expect(windowsGateHelper).toContain('[int]$MaxParallelGates = 2');
-    expect(windowsGateHelper).toContain('Start-Job');
     expect(windowsGateHelper).toContain('ValidateRange(1, 2)');
+    expect(windowsGateHelper).toMatch(
+      /\[ValidateRange\(1,\s*\d+\)\]\s*\r?\n\s*\[int\]\$GateTimeoutSeconds\s*=/,
+    );
+    expect(windowsGateHelper).toMatch(/System\.Diagnostics\.ProcessStartInfo/);
+    expect(windowsGateHelper).toMatch(/System\.Diagnostics\.Process/);
+    expect(windowsGateHelper).toContain('.ArgumentList.Add(');
+    expect(windowsGateHelper).toMatch(/\.RedirectStandardOutput\s*=\s*\$true/);
+    expect(windowsGateHelper).toMatch(/\.RedirectStandardError\s*=\s*\$true/);
+    expect(windowsGateHelper).toContain(
+      'Deadline = [datetime]::UtcNow.AddSeconds($GateTimeoutSeconds)',
+    );
+    expect(windowsGateHelper).toContain('$now = [datetime]::UtcNow');
+    expect(windowsGateHelper).toContain('if ($now -ge $gate.Deadline)');
+    expect(windowsGateHelper).toContain('if ($null -eq $completed) { Start-Sleep -Milliseconds 100 }');
+    expect(windowsGateHelper).toMatch(/\.Kill\(\$true\)/);
+    expect(windowsGateHelper).not.toContain('Start-Job');
+    expect(windowsGateHelper).not.toContain('Wait-Job');
+    expect(windowsGateHelper).not.toContain('Invoke-Expression');
     expect(windowsGateHelper).toContain("$ErrorActionPreference = 'Continue'");
-    expect(windowsGateHelper).toContain('Receive-Job -Job $completed -ErrorAction Continue 2>&1');
     expect(windowsGateHelper).toContain('::group::$name');
     expect(windowsGateHelper).toContain('gate:$name=pass');
     expect(windowsGateHelper).toContain('gate:$name=fail');

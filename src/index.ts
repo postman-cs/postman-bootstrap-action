@@ -82,6 +82,7 @@ import {
 } from './lib/spec/definition-bundle.js';
 import {
   buildLocalOpenApiConversionOptions,
+  computePayloadDigest,
   generateLocalOpenApiRolePayloads,
   type CollectionRole,
   type LocalOpenApiRolePayloads
@@ -346,6 +347,7 @@ export interface BootstrapExecutionDependencies {
       collection: unknown,
       expectedPayloadDigest: string
     ): Promise<string>;
+    exportV2Collection?(collectionUid: string): Promise<Record<string, unknown>>;
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
       workspaceId: string,
@@ -2911,6 +2913,30 @@ async function runBootstrapInner(
   let localOpenApiRepoRoot: string | undefined;
   let pendingFinalizedLocalOpenApiManifest: FinalizedLocalOpenApiArtifactManifest | undefined;
   let ownedLocalOpenApiCompensated = false;
+  const deepUpdateSnapshots = new Map<string, { collection: Record<string, unknown>; payloadDigest: string }>();
+  const attemptedDeepUpdates = new Set<string>();
+
+  const restoreAttemptedDeepUpdates = async (): Promise<void> => {
+    if (attemptedDeepUpdates.size === 0) return;
+    if (!dependencies.postman.deepUpdateV2Collection) {
+      throw new Error('deepUpdateV2Collection is unavailable for collection rollback');
+    }
+    const failures: string[] = [];
+    for (const collectionId of attemptedDeepUpdates) {
+      const snapshot = deepUpdateSnapshots.get(collectionId);
+      if (!snapshot) {
+        failures.push(`${collectionId}: rollback snapshot is unavailable`);
+        continue;
+      }
+      try {
+        await dependencies.postman.deepUpdateV2Collection(collectionId, snapshot.collection, snapshot.payloadDigest);
+      } catch (error) {
+        failures.push(`${collectionId}: ${formatMaskedOneLine(error, createBootstrapSecretMasker(inputs))}`);
+      }
+    }
+    if (failures.length > 0) throw new Error(`collection rollback failed for ${failures.join('; ')}`);
+    attemptedDeepUpdates.clear();
+  };
 
   const compensateOwnedLocalOpenApiImports = async (stage: string): Promise<void> => {
     if (ownedLocalOpenApiCompensated) return;
@@ -2942,7 +2968,20 @@ async function runBootstrapInner(
   const failOwned = async (stage: string, cause: unknown): Promise<never> => {
     const mask = createBootstrapSecretMasker(inputs);
     const sanitizedCause = formatMaskedOneLine(cause, mask);
+    let rollbackFailure: unknown;
+    try {
+      await restoreAttemptedDeepUpdates();
+    } catch (error) {
+      rollbackFailure = error;
+    }
     await compensateOwnedLocalOpenApiImports(stage);
+    if (rollbackFailure) {
+      throw new Error(
+        `LOCAL_OPENAPI_ORCHESTRATION_ROLLBACK_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] ` +
+          `cause=${sanitizedCause} rollback=${formatMaskedOneLine(rollbackFailure, mask)}`,
+        { cause: rollbackFailure }
+      );
+    }
     throw new Error(
       `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(',')}] cause=${sanitizedCause}`,
       cause !== undefined ? { cause } : undefined
@@ -3216,6 +3255,36 @@ async function runBootstrapInner(
           throw error;
         }
 
+        // Discovery and rollback snapshots are a complete preflight. In
+        // particular, an ambiguous discovery rejection cannot arrive after a
+        // baseline or smoke mutation has already occurred.
+        const discoveredIds = new Map<CollectionRole, string | undefined>();
+        try {
+          for (const role of collectionRoles) {
+            if (!role.existingId && collectionBranchMarker && workspaceId &&
+              inputs.collectionSyncMode === 'refresh' &&
+              dependencies.postman.findAdoptableSameMarkerCollection) {
+              discoveredIds.set(role.role, await dependencies.postman.findAdoptableSameMarkerCollection(
+                workspaceId, roleNames[role.role], collectionBranchMarker
+              ));
+            }
+          }
+          const reuseIds = collectionRoles
+            .map((role) => role.existingId || discoveredIds.get(role.role))
+            .filter((id): id is string => Boolean(id) && inputs.collectionSyncMode === 'refresh');
+          if (reuseIds.length > 0) {
+            if (!dependencies.postman.exportV2Collection) {
+              throw new Error('LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support');
+            }
+            for (const collectionId of new Set(reuseIds)) {
+              const collection = await dependencies.postman.exportV2Collection(collectionId);
+              deepUpdateSnapshots.set(collectionId, { collection, payloadDigest: computePayloadDigest(collection) });
+            }
+          }
+        } catch (error) {
+          await failOwned('collection-preflight', error);
+        }
+
         const importStarted = Date.now();
         type RoleWriteResult =
           | {
@@ -3234,30 +3303,15 @@ async function runBootstrapInner(
         const writeRole = async (role: (typeof collectionRoles)[number]): Promise<RoleWriteResult> => {
           const payload = payloads.roles[role.role];
           const finalName = roleNames[role.role];
-          // Channel/preview reruns own no tracked asset ids (canonical-only
-          // state), so without discovery every rerun fresh-imports and the
-          // duplicate reconcile collapses to the lowest UID — churning role ids
-          // across shas (live: run 2882 smoke 560eec50 -> 0e36b725). Adopt the
-          // sole existing exact-name final proven by this branch's durable
-          // marker and deep-update it in place; zero or ambiguous survivors
-          // fall back to the import + election + reconcile path unchanged.
-          let discoveredId: string | undefined;
-          if (
-            !role.existingId &&
-            collectionBranchMarker &&
-            workspaceId &&
-            inputs.collectionSyncMode === 'refresh' &&
-            dependencies.postman.findAdoptableSameMarkerCollection
-          ) {
-            discoveredId = await dependencies.postman.findAdoptableSameMarkerCollection(
-              workspaceId,
-              finalName,
-              collectionBranchMarker
-            );
-          }
-          const reuseId = role.existingId || discoveredId;
+          const reuseId = role.existingId || discoveredIds.get(role.role);
           const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === 'refresh';
           if (useDeepUpdate) {
+            if (!deepUpdateSnapshots.has(reuseId!)) {
+              throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing rollback snapshot for ${reuseId}`);
+            }
+            // Register before invocation because a rejected transport can still
+            // have committed the deep update remotely.
+            attemptedDeepUpdates.add(reuseId!);
             const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection!(
               reuseId!,
               payload.collection,
@@ -3310,14 +3364,14 @@ async function runBootstrapInner(
           };
         };
         // These writes share one workspace mutation and inventory surface. Keep
-        // them serial to avoid self-generated import bursts, but continue after
-        // a failure so every started role has a settled cleanup decision.
+        // them serial and fail fast; rollback handles every attempted update.
         const settledWrites: PromiseSettledResult<RoleWriteResult>[] = [];
         for (const role of collectionRoles) {
           try {
             settledWrites.push({ status: 'fulfilled', value: await writeRole(role) });
           } catch (reason) {
             settledWrites.push({ status: 'rejected', reason });
+            break;
           }
         }
         const importMs = Math.max(0, Date.now() - importStarted);
@@ -3399,6 +3453,17 @@ async function runBootstrapInner(
                 // content is that run's payload. Converge it in place (UID
                 // preserved, digest-verified) so downstream gates never execute
                 // stale bytes; failure fails the reconcile closed.
+                if (!deepUpdateSnapshots.has(winnerId)) {
+                  if (!dependencies.postman.exportV2Collection) {
+                    throw new Error('LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support');
+                  }
+                  const collection = await dependencies.postman.exportV2Collection(winnerId);
+                  deepUpdateSnapshots.set(winnerId, {
+                    collection,
+                    payloadDigest: computePayloadDigest(collection)
+                  });
+                }
+                attemptedDeepUpdates.add(winnerId);
                 await observedLocalOpenApiPostman.deepUpdateV2Collection!(
                   winnerId,
                   payloads.roles[role.role].collection,
@@ -3712,6 +3777,15 @@ async function runBootstrapInner(
     // Link/tag (or any post-import) failure before resources persist: compensate
     // journaled fresh imports only, restore local trees/workflows, drop manifest.
     await compensateOwnedLocalOpenApiImports(rollbackTriggerStage);
+    try {
+      await restoreAttemptedDeepUpdates();
+    } catch (rollbackError) {
+      throw new Error(
+        `LOCAL_OPENAPI_ORCHESTRATION_ROLLBACK_FAILED: stage=${rollbackTriggerStage} ` +
+          `cause=${reason} rollback=${formatMaskedOneLine(rollbackError, mask)}`,
+        { cause: rollbackError }
+      );
+    }
     if (completedExternalSideEffects.length > 0) {
       dependencies.core.warning(
         formatMaskedOneLine(
@@ -3983,6 +4057,7 @@ export function createRoutingPostmanClient(options: {
       updateCollectionDescription: requireAccessToken('updateCollectionDescription'),
       importV2Collection: requireAccessToken('importV2Collection'),
       deepUpdateV2Collection: requireAccessToken('deepUpdateV2Collection'),
+      exportV2Collection: requireAccessToken('exportV2Collection'),
       deleteVerifiedRunOwnedCollections: requireAccessToken('deleteVerifiedRunOwnedCollections'),
       reconcileDuplicateFinalCollections: requireAccessToken('reconcileDuplicateFinalCollections')
     };
@@ -4046,6 +4121,9 @@ export function createRoutingPostmanClient(options: {
       gateway.importV2Collection(workspaceId, collection, finalName),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) =>
       gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
+    exportV2Collection: (collectionUid) =>
+      (gateway as PostmanGatewayAssetsClient & { exportV2Collection(collectionUid: string): Promise<Record<string, unknown>> })
+        .exportV2Collection(collectionUid),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
       gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
     reconcileDuplicateFinalCollections: (workspaceId, candidates) =>

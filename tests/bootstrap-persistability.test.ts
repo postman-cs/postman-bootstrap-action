@@ -155,6 +155,14 @@ function createPostman(overrides: Record<string, unknown> = {}) {
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
     importV2Collection: createDefaultImportV2Collection(),
     deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
+    exportV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => ({
+      info: {
+        _postman_id: collectionUid,
+        name: `snapshot-${collectionUid}`,
+        schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+      },
+      item: []
+    })),
     deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),

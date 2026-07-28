@@ -3,7 +3,9 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$GateJson,
   [ValidateRange(1, 2)]
-  [int]$MaxParallelGates = 2
+  [int]$MaxParallelGates = 2,
+  [ValidateRange(1, 3600)]
+  [int]$GateTimeoutSeconds = 1200
 )
 
 # Native stderr is diagnostic output, not a gate failure. Collect it for the
@@ -17,34 +19,73 @@ $names = @()
 
 function Start-Gate([string]$definition) {
   $parts = $definition -split '\|\|\|'
-  if ($parts.Count -lt 3 -or [string]::IsNullOrWhiteSpace($parts[0])) {
+  if ($parts.Count -lt 3 -or [string]::IsNullOrWhiteSpace($parts[0]) -or [string]::IsNullOrWhiteSpace($parts[1])) {
     throw "Invalid gate definition: $definition"
   }
   $name = $parts[0]
-  $script:running += Start-Job -Name $name -ArgumentList $definition -ScriptBlock {
-    param($gateDefinition)
-    $ErrorActionPreference = 'Continue'
-    $gateParts = $gateDefinition -split '\|\|\|'
-    $gateName = $gateParts[0]
-    & $gateParts[1] @($gateParts | Select-Object -Skip 2)
-    $nativeExitCode = $LASTEXITCODE
-    Write-Output "__POSTMAN_GATE_RESULT__${gateName}:$nativeExitCode"
+
+  $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+  $startInfo.FileName = $parts[1]
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  foreach ($argument in @($parts | Select-Object -Skip 2)) {
+    $null = $startInfo.ArgumentList.Add([string]$argument)
+  }
+
+  $process = [System.Diagnostics.Process]::new()
+  $process.StartInfo = $startInfo
+  if (-not $process.Start()) { throw "Unable to start gate: $name" }
+
+  # Begin both readers before admitting another gate so a verbose native process
+  # cannot block on a redirected pipe.
+  $script:running += [pscustomobject]@{
+    Name = $name
+    Process = $process
+    StdoutTask = $process.StandardOutput.ReadToEndAsync()
+    StderrTask = $process.StandardError.ReadToEndAsync()
+    Deadline = [datetime]::UtcNow.AddSeconds($GateTimeoutSeconds)
   }
 }
 
 function Complete-One {
-  $completed = Wait-Job -Job $script:running -Any
-  $output = @(Receive-Job -Job $completed -ErrorAction Continue 2>&1)
-  $payload = @($output |
-    Where-Object { $_ -is [string] -and $_ -like "__POSTMAN_GATE_RESULT__$($completed.Name):*" } |
-    Select-Object -Last 1)
-  $exitCode = if ($payload.Count -eq 1) { [int](($payload[0] -split ':')[-1]) } else { 1 }
+  $completed = $null
+  $timedOut = $false
+  while ($null -eq $completed) {
+    $now = [datetime]::UtcNow
+    foreach ($gate in $script:running) {
+      if ($gate.Process.HasExited) {
+        $completed = $gate
+        break
+      }
+      if ($now -ge $gate.Deadline) {
+        $completed = $gate
+        $timedOut = $true
+        break
+      }
+    }
+    if ($null -eq $completed) { Start-Sleep -Milliseconds 100 }
+  }
+
+  if ($timedOut) {
+    try { $completed.Process.Kill($true) } catch { }
+  }
+
+  # Each wait is bounded; killing the full tree above ensures descendants cannot
+  # retain a pipe and keep this queue alive indefinitely.
+  $null = $completed.StdoutTask.Wait(250)
+  $null = $completed.StderrTask.Wait(250)
+  $stdout = if ($completed.StdoutTask.IsCompletedSuccessfully) { $completed.StdoutTask.Result } else { '' }
+  $stderr = if ($completed.StderrTask.IsCompletedSuccessfully) { $completed.StderrTask.Result } else { '' }
+  $exitCode = if ($timedOut) { 1 } else { $completed.Process.ExitCode }
   $script:results[$completed.Name] = $exitCode
-  $script:logs[$completed.Name] = @($output | Where-Object {
-    $_ -isnot [string] -or $_ -notlike "__POSTMAN_GATE_RESULT__$($completed.Name):*"
-  })
-  Remove-Job -Job $completed -Force
-  $script:running = @($script:running | Where-Object Id -ne $completed.Id)
+  $script:logs[$completed.Name] = @(
+    $stdout
+    $stderr
+    if ($timedOut) { "gate:$($completed.Name) timed out after $GateTimeoutSeconds seconds" }
+  )
+  $completed.Process.Dispose()
+  $script:running = @($script:running | Where-Object { $_ -ne $completed })
 }
 
 foreach ($definition in $Gate) {

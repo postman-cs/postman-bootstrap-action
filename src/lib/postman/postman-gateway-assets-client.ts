@@ -2751,14 +2751,9 @@ export class PostmanGatewayAssetsClient {
           if (op.op === 'remove' && isMissingPatchValueError(error)) {
             continue;
           }
-          // The gateway rejects a one-operation patch whose requested value is
-          // already current. That proves convergence for add/replace;
-          // /description is the only remove target documented to exist even
-          // while logically empty.
-          if (
-            isRejectedPatchError(error) &&
-            (op.op !== 'remove' || op.path === '/description')
-          ) {
+          // With one operation per request, REJECTED_PATCH proves the requested
+          // add/replace is already current or the requested remove is absent.
+          if (isRejectedPatchError(error)) {
             continue;
           }
           throw error;

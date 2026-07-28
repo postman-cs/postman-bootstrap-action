@@ -2434,9 +2434,15 @@ describe('PostmanGatewayAssetsClient', () => {
           if (op?.path === '/description') {
             descriptionPatchAttempts += 1;
             if (descriptionPatchAttempts === 1) return timeout500();
+            return jsonResponse({ data: { id: 'cid-1' } });
           }
           return jsonResponse(
-            { error: { name: 'invalidParamsError', message: 'Remove operation must point to an existing value' } },
+            {
+              error: {
+                name: 'REJECTED_PATCH',
+                message: 'Patch must update at least one value'
+              }
+            },
             { status: 400 }
           );
         }

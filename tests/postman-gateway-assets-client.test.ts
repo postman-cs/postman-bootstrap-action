@@ -2156,14 +2156,18 @@ describe('PostmanGatewayAssetsClient', () => {
       const itemScripts = (itemScriptPatch?.body as Array<{ value: Array<{ type: string }> }>)[0].value;
       expect(itemScripts.every((script) => !String(script.type).startsWith('http:'))).toBe(true);
 
-      const rootPatch = calls.find(
+      const rootPatches = calls.filter(
         (c) => c.method === 'patch' && c.path === '/v3/collections/55363555-cid-1'
       );
       const rootScripts =
-        (
-          (rootPatch?.body as Array<{ path: string; value?: Array<{ type: string }> }> | undefined) ??
-          []
-        ).find((op) => op.path === '/scripts')?.value ?? [];
+        rootPatches
+          .flatMap(
+            (patch) => patch.body as Array<{
+              path: string;
+              value?: Array<{ type: string }>;
+            }>
+          )
+          .find((op) => op.path === '/scripts')?.value ?? [];
       expect(rootScripts.length).toBeGreaterThan(0);
       expect(rootScripts.every((script) => String(script.type).startsWith('http:'))).toBe(true);
     });

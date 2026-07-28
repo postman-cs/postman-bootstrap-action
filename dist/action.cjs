@@ -351729,7 +351729,7 @@ ${error2.responseBody ?? ""}`
     let eligible = [];
     let ownCanonical;
     let sameNameSurvivors = [];
-    for (let observation = 0; observation <= delays.length; observation += 1) {
+    const observeInventory = async () => {
       const inventory = await this.listWorkspaceCollections(workspaceId, "safe");
       sameNameSurvivors = inventory.filter((entry) => entry.name === finalName).sort((a, b) => a.id.localeCompare(b.id));
       eligible = sameNameSurvivors.filter(
@@ -351738,7 +351738,18 @@ ${error2.responseBody ?? ""}`
       ownCanonical = eligible.find(
         (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
       );
+    };
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      await observeInventory();
       if (observation < delays.length) await this.sleep(delays[observation]);
+    }
+    if (!ownCanonical && delays === _PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS) {
+      for (const delay of _PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(
+        delays.length
+      )) {
+        await this.sleep(delay);
+        await observeInventory();
+      }
     }
     if (!ownCanonical) {
       const adoptable = await this.adoptableSameMarkerFinal(

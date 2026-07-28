@@ -4863,7 +4863,7 @@ describe('PostmanGatewayAssetsClient', () => {
       ).toHaveLength(1);
     });
 
-    it('waits for bare Sync identity to appear as canonical inventory UID', async () => {
+    it('waits beyond the historic canonical window for inventory visibility', async () => {
       const bareId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
       const canonicalId = `12345678-${bareId}`;
       let imported = false;
@@ -4881,7 +4881,7 @@ describe('PostmanGatewayAssetsClient', () => {
           if (!imported) return jsonResponse({ data: [] });
           observations += 1;
           return jsonResponse({
-            data: observations < 3 ? [] : [{ id: canonicalId, name: 'Payments' }]
+            data: observations < 7 ? [] : [{ id: canonicalId, name: 'Payments' }]
           });
         }
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
@@ -4892,7 +4892,10 @@ describe('PostmanGatewayAssetsClient', () => {
         journaledRootIds: [canonicalId]
       });
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+        ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
+          STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+        )
       ]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
     });
@@ -4928,10 +4931,17 @@ describe('PostmanGatewayAssetsClient', () => {
       );
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(calls.filter((call) => call.path === '/v3/collections/?workspace=ws-1')).toHaveLength(
-        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 2
+        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length +
+          PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
+            STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+          ).length +
+          2
       );
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+        ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
+          STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+        )
       ]);
       expect(deleted).toEqual([`/v3/collections/${bareId}`]);
     });

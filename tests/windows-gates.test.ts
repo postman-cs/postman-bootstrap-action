@@ -8,15 +8,29 @@ import { describe, expect, it } from 'vitest';
 const helper = join(process.cwd(), '.github/scripts/run-windows-gates.ps1');
 const pwshAvailable = spawnSync('pwsh', ['--version'], { encoding: 'utf8' }).status === 0;
 
-function runGates(...gates: string[]) {
+function runGatesWithTimeout(gateTimeoutSeconds: number, ...gates: string[]) {
   return spawnSync(
     'pwsh',
-    ['-NoProfile', '-File', helper, '-GateJson', JSON.stringify(gates), '-GateTimeoutSeconds', '1'],
+    [
+      '-NoProfile',
+      '-File',
+      helper,
+      '-GateJson',
+      JSON.stringify(gates),
+      '-GateTimeoutSeconds',
+      String(gateTimeoutSeconds)
+    ],
     {
       encoding: 'utf8',
-      timeout: 30_000
+      timeout: 120_000
     }
   );
+}
+
+// Generous default so slow CI runners cannot trip the per-gate deadline;
+// the timeout test passes its own short deadline explicitly.
+function runGates(...gates: string[]) {
+  return runGatesWithTimeout(60, ...gates);
 }
 
 function gateDiagnostics(result: ReturnType<typeof runGates>) {
@@ -54,7 +68,8 @@ describe.skipIf(!pwshAvailable)('Windows gate queue', () => {
   it(
     'times out a sleeping gate and continues to the following gate',
     () => {
-      const timedOut = runGates(
+      const timedOut = runGatesWithTimeout(
+        1,
         'sleeps|||pwsh|||-NoProfile|||-Command|||Start-Sleep -Seconds 2; exit 0',
         'after-timeout|||pwsh|||-NoProfile|||-Command|||exit 0'
       );

@@ -351,6 +351,11 @@ export interface BootstrapExecutionDependencies {
       workspaceId: string,
       candidates: Array<{ finalName: string; desiredDescription: string }>
     ): Promise<Record<string, string>>;
+    findAdoptableSameMarkerCollection?(
+      workspaceId: string,
+      finalName: string,
+      desiredDescription: string
+    ): Promise<string | undefined>;
   };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,
@@ -3229,11 +3234,32 @@ async function runBootstrapInner(
         const writeRole = async (role: (typeof collectionRoles)[number]): Promise<RoleWriteResult> => {
           const payload = payloads.roles[role.role];
           const finalName = roleNames[role.role];
-          const useDeepUpdate =
-            Boolean(role.existingId) && inputs.collectionSyncMode === 'refresh';
+          // Channel/preview reruns own no tracked asset ids (canonical-only
+          // state), so without discovery every rerun fresh-imports and the
+          // duplicate reconcile collapses to the lowest UID — churning role ids
+          // across shas (live: run 2882 smoke 560eec50 -> 0e36b725). Adopt the
+          // sole existing exact-name final proven by this branch's durable
+          // marker and deep-update it in place; zero or ambiguous survivors
+          // fall back to the import + election + reconcile path unchanged.
+          let discoveredId: string | undefined;
+          if (
+            !role.existingId &&
+            collectionBranchMarker &&
+            workspaceId &&
+            inputs.collectionSyncMode === 'refresh' &&
+            dependencies.postman.findAdoptableSameMarkerCollection
+          ) {
+            discoveredId = await dependencies.postman.findAdoptableSameMarkerCollection(
+              workspaceId,
+              finalName,
+              collectionBranchMarker
+            );
+          }
+          const reuseId = role.existingId || discoveredId;
+          const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === 'refresh';
           if (useDeepUpdate) {
             const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection!(
-              role.existingId!,
+              reuseId!,
               payload.collection,
               payload.payloadDigest
             );
@@ -4023,7 +4049,9 @@ export function createRoutingPostmanClient(options: {
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
       gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
     reconcileDuplicateFinalCollections: (workspaceId, candidates) =>
-      gateway.reconcileDuplicateFinalCollections(workspaceId, candidates)
+      gateway.reconcileDuplicateFinalCollections(workspaceId, candidates),
+    findAdoptableSameMarkerCollection: (workspaceId, finalName, desiredDescription) =>
+      gateway.findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription)
   };
 }
 

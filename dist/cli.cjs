@@ -344571,6 +344571,14 @@ var ASSERTED_FORMATS = /* @__PURE__ */ new Set([
 var INT32_MIN = -2147483648;
 var INT32_MAX = 2147483647;
 var MAX_REFERENCED_SCHEMAS = 400;
+function isCompilablePattern(pattern) {
+  try {
+    new RegExp(pattern, "u");
+    return true;
+  } catch {
+    return false;
+  }
+}
 var DRAFT_2020_12_ONLY_KEYS = /* @__PURE__ */ new Set(["prefixItems", "dependentRequired", "dependentSchemas", "minContains", "maxContains", "unevaluatedItems", "unevaluatedProperties"]);
 var DRAFT_07_ONLY_KEYS = /* @__PURE__ */ new Set(["dependencies", "additionalItems"]);
 function asRecord6(value) {
@@ -344736,6 +344744,10 @@ function normalizeSchema(ctx, schema3, options) {
     }
     if (key === "format") {
       if (typeof value === "string" && ASSERTED_FORMATS.has(value)) normalized.format = value;
+      continue;
+    }
+    if (key === "pattern") {
+      if (typeof value === "string" && isCompilablePattern(value)) normalized.pattern = value;
       continue;
     }
     if (!ASSERTION_KEYS.has(key)) return unsupported2(`Unsupported OpenAPI schema keyword: ${key}`);
@@ -344915,7 +344927,15 @@ function packSchema(root, schema3, version, direction = "response") {
 
 // src/lib/spec/schema-validator-code.ts
 var import_schemasafe = __toESM(require_src(), 1);
+var validatorCache = /* @__PURE__ */ new WeakMap();
 function compileSchemaValidator(schema3) {
+  const cacheKey = typeof schema3 === "object" && schema3 !== null ? schema3 : null;
+  if (cacheKey && validatorCache.has(cacheKey)) return validatorCache.get(cacheKey) ?? null;
+  const compiled = compileSchemaValidatorUncached(schema3);
+  if (cacheKey) validatorCache.set(cacheKey, compiled);
+  return compiled;
+}
+function compileSchemaValidatorUncached(schema3) {
   try {
     const validate4 = (0, import_schemasafe.validator)(schema3, {
       includeErrors: false,
@@ -366025,6 +366045,16 @@ var FORMAT_EXAMPLES = {
   "uri-template": ["{id}"],
   uuid: ["00000000-0000-4000-8000-000000000000"]
 };
+var MAX_REPAIR_DEPTH = 64;
+var MAX_REPAIR_CALLS = 1e3;
+var MAX_REPAIR_ARRAY_ITEMS = 100;
+var MAX_REPAIR_STRING_LENGTH = 1e4;
+var ExampleRepairLimitError = class extends Error {
+  constructor(limit) {
+    super(`EXAMPLE_REPAIR_LIMIT_EXCEEDED: ${limit}`);
+    this.name = "ExampleRepairLimitError";
+  }
+};
 function isRecord2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -366242,25 +366272,36 @@ function pruneDirectionalProperties(value, rawSchema, root, direction, stack = /
 var SchemaRepairer = class {
   #candidate;
   #policy;
+  #calls = 0;
+  #depth = 0;
   constructor(candidate, policy) {
     this.#candidate = candidate;
     this.#policy = policy;
   }
   repair(value, schema3, root, path11 = []) {
-    if (!isRecord2(schema3)) return value === void 0 ? null : value;
-    const canonical = hasAlternativeShape(schema3) && !this.#policy.preserve(path11, value);
-    if (!canonical && !containsAlternativeShape(schema3) && !hasSerializationHoles(value) && validates(schema3, value, root) === true) return value;
-    const repaired = this.#repairLocal(value, schema3, root, path11, canonical);
-    if (validates(schema3, repaired, root) === true) return repaired;
-    const contextual = schemaWithRootContext(schema3, root);
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      try {
-        const generated = this.#candidate(clone(contextual), attempt);
-        if (validates(schema3, generated, root) === true) return generated;
-      } catch {
+    this.#calls += 1;
+    this.#depth += 1;
+    try {
+      if (this.#calls > MAX_REPAIR_CALLS) throw new ExampleRepairLimitError(`repair call budget ${MAX_REPAIR_CALLS}`);
+      if (this.#depth > MAX_REPAIR_DEPTH) throw new ExampleRepairLimitError(`repair depth ${MAX_REPAIR_DEPTH}`);
+      if (!isRecord2(schema3)) return value === void 0 ? null : value;
+      const canonical = hasAlternativeShape(schema3) && !this.#policy.preserve(path11, value);
+      if (!canonical && !containsAlternativeShape(schema3) && !hasSerializationHoles(value) && validates(schema3, value, root) === true) return value;
+      const repaired = this.#repairLocal(value, schema3, root, path11, canonical);
+      if (validates(schema3, repaired, root) === true) return repaired;
+      const contextual = schemaWithRootContext(schema3, root);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          const generated = this.#candidate(clone(contextual), attempt);
+          if (validates(schema3, generated, root) === true) return generated;
+        } catch (error) {
+          if (error instanceof ExampleRepairLimitError) throw error;
+        }
       }
+      return repaired;
+    } finally {
+      this.#depth -= 1;
     }
-    return repaired;
   }
   #repairLocal(value, schema3, root, path11, canonical) {
     if (typeof schema3.$ref === "string") {
@@ -366308,6 +366349,9 @@ var SchemaRepairer = class {
     const chars = [...candidate];
     if (typeof schema3.maxLength === "number" && chars.length > schema3.maxLength) candidate = chars.slice(0, schema3.maxLength).join("");
     if (typeof schema3.minLength === "number" && [...candidate].length < schema3.minLength) {
+      if (!Number.isSafeInteger(schema3.minLength) || schema3.minLength > MAX_REPAIR_STRING_LENGTH) {
+        throw new ExampleRepairLimitError(`string expansion ${MAX_REPAIR_STRING_LENGTH}`);
+      }
       const fill = [...candidate].at(-1) ?? "x";
       candidate += fill.repeat(schema3.minLength - [...candidate].length);
     }
@@ -366319,9 +366363,13 @@ var SchemaRepairer = class {
     const itemSchema = schema3.items;
     const containsSchema = isRecord2(schema3.contains) ? schema3.contains : void 0;
     const minContains = containsSchema === void 0 ? 0 : typeof schema3.minContains === "number" ? schema3.minContains : 1;
-    if (typeof schema3.maxItems === "number" && candidate.length > schema3.maxItems) candidate.length = schema3.maxItems;
     const minItems = typeof schema3.minItems === "number" ? schema3.minItems : 0;
-    while (candidate.length < Math.max(minItems, minContains)) {
+    const requiredItems = Math.max(minItems, minContains);
+    if (!Number.isSafeInteger(requiredItems) || requiredItems < 0 || requiredItems > MAX_REPAIR_ARRAY_ITEMS) {
+      throw new ExampleRepairLimitError(`array expansion ${MAX_REPAIR_ARRAY_ITEMS}`);
+    }
+    if (typeof schema3.maxItems === "number" && candidate.length > schema3.maxItems) candidate.length = schema3.maxItems;
+    while (candidate.length < requiredItems) {
       const schemaForItem = prefix[candidate.length] ?? itemSchema ?? containsSchema ?? {};
       candidate.push(this.repair(void 0, schemaForItem, root, [...path11, "*"]));
     }
@@ -366443,6 +366491,8 @@ function sourceRequestMedia(root, operation, base) {
   return { media: null, schema: void 0 };
 }
 function repairJsonValue(value, packedSchema, rawSchema, media, sourceRoot, version, direction, context, candidate) {
+  const validate4 = compileSchemaValidator(packedSchema);
+  if (!validate4) throw new Error(`generated ${context} could not be checked because its packed schema validator did not compile`);
   const packedRoot = isRecord2(packedSchema) ? packedSchema : {};
   const policy = new SourcePolicy(
     mediaAuthoredValues(sourceRoot, media, rawSchema, packedSchema, version, direction),
@@ -366451,8 +366501,6 @@ function repairJsonValue(value, packedSchema, rawSchema, media, sourceRoot, vers
   );
   const pruned = pruneDirectionalProperties(value, rawSchema, sourceRoot, direction);
   const repaired = new SchemaRepairer(candidate, policy).repair(pruned, packedSchema, packedRoot);
-  const validate4 = compileSchemaValidator(packedSchema);
-  if (!validate4) throw new Error(`generated ${context} could not be checked because its packed schema validator did not compile`);
   if (!validate4(serializedForm(repaired))) {
     throw new Error(`generated ${context} could not be safely repaired to satisfy its OpenAPI schema`);
   }
@@ -366708,9 +366756,25 @@ function repairSavedResponse(operation, response, sourceRoot, index, candidate) 
     if (validates(headerContract.schema, repaired, root) === true) header.value = scalarString(repaired);
   }
 }
-function repairGeneratedCollectionExamples(collection, index, bundledOpenApi, candidate) {
+function repairGeneratedCollectionExamples(collection, index, bundledOpenApi, candidate, mode = "lenient") {
+  if (mode === "off") return [];
   const warnings = [];
   const sourceRoot = parseOpenApiDocument(bundledOpenApi);
+  const warning = (operation, context, error) => {
+    const detail = error instanceof Error ? error.message : String(error);
+    warnings.push(`LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: operation ${operation.id} ${context}: ${detail.replace(/\s+/g, " ").trim()}`);
+  };
+  const transactional = (operation, context, target, repair) => {
+    try {
+      const copy = clone(target);
+      repair(copy);
+      for (const key of Object.keys(target)) delete target[key];
+      Object.assign(target, copy);
+    } catch (error) {
+      if (mode === "strict") throw error;
+      warning(operation, context, error);
+    }
+  };
   const visit4 = (items) => {
     if (!Array.isArray(items)) return;
     for (const raw of items) {
@@ -366719,10 +366783,18 @@ function repairGeneratedCollectionExamples(collection, index, bundledOpenApi, ca
         const matched = matchOperation(index, raw.request);
         const operation = matched.operation ?? matchWebhookOperation(index, raw);
         if (operation) {
-          repairRequest(operation, raw.request, sourceRoot, index, candidate);
+          transactional(operation, "request example", raw.request, (request) => {
+            repairRequest(operation, request, sourceRoot, index, candidate);
+          });
           for (const saved of Array.isArray(raw.response) ? raw.response.filter(isRecord2) : []) {
-            if (isRecord2(saved.originalRequest)) repairRequest(operation, saved.originalRequest, sourceRoot, index, candidate);
-            repairSavedResponse(operation, saved, sourceRoot, index, candidate);
+            if (isRecord2(saved.originalRequest)) {
+              transactional(operation, "saved request example", saved.originalRequest, (request) => {
+                repairRequest(operation, request, sourceRoot, index, candidate);
+              });
+            }
+            transactional(operation, "saved response example", saved, (response) => {
+              repairSavedResponse(operation, response, sourceRoot, index, candidate);
+            });
           }
         }
       }
@@ -366761,19 +366833,38 @@ function deepClone2(value) {
 }
 function sanitizeCause(cause) {
   if (cause === void 0 || cause === null) return void 0;
-  if (cause instanceof Error) {
-    return cause.message.replace(/\s+/g, " ").trim().slice(0, 240);
+  const parts = [];
+  const seen = /* @__PURE__ */ new Set();
+  const append = (message) => {
+    const normalized = message.replace(/\s+/g, " ").trim();
+    if (normalized && !parts.some((part) => part.includes(normalized))) parts.push(normalized);
+  };
+  let current = cause;
+  for (let depth = 0; depth < 8 && current !== void 0 && current !== null; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (current instanceof Error) {
+      append(current.message);
+      current = current.cause;
+      continue;
+    }
+    if (typeof current === "string") {
+      append(current);
+      break;
+    }
+    if (isRecord3(current) && typeof current.message === "string") {
+      append(current.message);
+      current = current.cause;
+      continue;
+    }
+    parts.push("non-error failure");
+    break;
   }
-  if (typeof cause === "string") {
-    return cause.replace(/\s+/g, " ").trim().slice(0, 240);
-  }
-  if (isRecord3(cause) && typeof cause.message === "string") {
-    return cause.message.replace(/\s+/g, " ").trim().slice(0, 240);
-  }
-  return "non-error failure";
+  if (parts.length === 0) return void 0;
+  return parts.join(": ");
 }
 function assertValidOptions(options) {
-  if (!isRecord3(options) || options.openApiVersion !== "3.0" && options.openApiVersion !== "3.1" || options.requestNameSource !== "URL" && options.requestNameSource !== "Fallback" || options.folderStrategy !== "Paths" && options.folderStrategy !== "Tags" || options.nestedFolderHierarchy !== void 0 && typeof options.nestedFolderHierarchy !== "boolean" || options.secretsResolverProvider !== void 0 && !SECRETS_RESOLVER_PROVIDERS.includes(String(options.secretsResolverProvider)) || !isRecord3(options.names) || typeof options.names.baseline !== "string" || !options.names.baseline.trim() || typeof options.names.smoke !== "string" || !options.names.smoke.trim() || typeof options.names.contract !== "string" || !options.names.contract.trim() || options.description !== void 0 && typeof options.description !== "string" || !options.contractIndex || typeof options.contractIndex !== "object") {
+  if (!isRecord3(options) || options.openApiVersion !== "3.0" && options.openApiVersion !== "3.1" || options.requestNameSource !== "URL" && options.requestNameSource !== "Fallback" || options.folderStrategy !== "Paths" && options.folderStrategy !== "Tags" || options.nestedFolderHierarchy !== void 0 && typeof options.nestedFolderHierarchy !== "boolean" || options.exampleRepair !== void 0 && !["strict", "lenient", "off"].includes(options.exampleRepair) || options.secretsResolverProvider !== void 0 && !SECRETS_RESOLVER_PROVIDERS.includes(String(options.secretsResolverProvider)) || !isRecord3(options.names) || typeof options.names.baseline !== "string" || !options.names.baseline.trim() || typeof options.names.smoke !== "string" || !options.names.smoke.trim() || typeof options.names.contract !== "string" || !options.names.contract.trim() || options.description !== void 0 && typeof options.description !== "string" || !options.contractIndex || typeof options.contractIndex !== "object") {
     throw new LocalOpenApiConversionError("validate-input", "local OpenAPI conversion options are invalid");
   }
 }
@@ -366896,7 +366987,8 @@ async function generateLocalOpenApiRolePayloads(bundledOpenApi, options, depende
         converted2,
         options.contractIndex,
         bundledOpenApi,
-        candidate
+        candidate,
+        options.exampleRepair ?? "lenient"
       );
       return { converted: converted2, repairWarnings };
     } catch (error) {
@@ -371123,6 +371215,22 @@ ${error.responseBody ?? ""}`
       }
     }
     return winners;
+  }
+  /**
+   * Sole existing final with this exact name carrying the same durable branch
+   * marker as this run's payload, or undefined. Lets a channel/preview rerun
+   * deep-update its prior-run asset in place instead of importing a fresh root
+   * and re-electing. Zero or multiple same-marker survivors return undefined —
+   * the caller then falls back to the import + election + reconcile path, which
+   * already collapses duplicates and never adopts strangers.
+   */
+  async findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription) {
+    const name = String(finalName || "").trim();
+    const description = String(desiredDescription || "").trim();
+    if (!name || !parseAssetMarker(description)) return void 0;
+    const survivors = await this.findCollectionsByExactName(workspaceId, name, "safe");
+    if (survivors.length === 0) return void 0;
+    return this.adoptableSameMarkerFinal(survivors, description);
   }
   /**
    * Sole exact-name final carrying the same durable branch marker as this run's
@@ -398438,9 +398546,9 @@ function lintMessages(ctx) {
   const entries = collectMessages2(ctx);
   const idOwners = /* @__PURE__ */ new Map();
   const reportedIds = /* @__PURE__ */ new Set();
-  const validatorCache = /* @__PURE__ */ new Map();
+  const validatorCache2 = /* @__PURE__ */ new Map();
   const validatorFor = (message) => {
-    if (validatorCache.has(message)) return validatorCache.get(message) ?? null;
+    if (validatorCache2.has(message)) return validatorCache2.get(message) ?? null;
     let validate4 = null;
     const payload = asRecord25(message.payload);
     if (payload) {
@@ -398449,7 +398557,7 @@ function lintMessages(ctx) {
         validate4 = compileSchemaValidator(packed.schema);
       }
     }
-    validatorCache.set(message, validate4);
+    validatorCache2.set(message, validate4);
     return validate4;
   };
   for (const { label, message, channelMessages } of entries) {
@@ -402065,7 +402173,25 @@ function resolveResourcesStateStore(dependencies) {
 }
 var GOVERNANCE_GROUP_PROPERTY_NAME = "postman-governance-group";
 function formatMaskedOneLine(value, masker) {
-  const text = value instanceof Error ? value.message : String(value ?? "");
+  const parts = [];
+  const seen = /* @__PURE__ */ new Set();
+  const append = (message) => {
+    const normalized = message.trim();
+    if (normalized && !parts.some((part) => part.includes(normalized))) parts.push(normalized);
+  };
+  let current = value;
+  for (let depth = 0; depth < 8 && current !== void 0 && current !== null; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (current instanceof Error) {
+      append(String(current.message ?? ""));
+      current = current.cause;
+      continue;
+    }
+    append(String(current ?? ""));
+    break;
+  }
+  const text = parts.join(": ") || String(value ?? "");
   const masked = masker ? masker(text) : text;
   return masked.replace(/[\r\n\u2028\u2029]+/g, " ").trim();
 }
@@ -403756,10 +403882,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   };
   const failOwned = async (stage, cause) => {
     const mask = createBootstrapSecretMasker(inputs);
-    const sanitizedCause = formatMaskedOneLine(cause, mask).slice(0, 240);
+    const sanitizedCause = formatMaskedOneLine(cause, mask);
     await compensateOwnedLocalOpenApiImports(stage);
     throw new Error(
-      `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(",")}] cause=${sanitizedCause}`
+      `LOCAL_OPENAPI_ORCHESTRATION_FAILED: stage=${stage} ledger=[${ownedLedger.join(",")}] cause=${sanitizedCause}`,
+      cause !== void 0 ? { cause } : void 0
     );
   };
   try {
@@ -403975,10 +404102,19 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
           const writeRole = async (role) => {
             const payload = payloads.roles[role.role];
             const finalName = roleNames[role.role];
-            const useDeepUpdate = Boolean(role.existingId) && inputs.collectionSyncMode === "refresh";
+            let discoveredId;
+            if (!role.existingId && collectionBranchMarker && workspaceId && inputs.collectionSyncMode === "refresh" && dependencies.postman.findAdoptableSameMarkerCollection) {
+              discoveredId = await dependencies.postman.findAdoptableSameMarkerCollection(
+                workspaceId,
+                finalName,
+                collectionBranchMarker
+              );
+            }
+            const reuseId = role.existingId || discoveredId;
+            const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === "refresh";
             if (useDeepUpdate) {
               const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection(
-                role.existingId,
+                reuseId,
                 payload.collection,
                 payload.payloadDigest
               );
@@ -404524,7 +404660,8 @@ function createRoutingPostmanClient(options) {
     importV2Collection: (workspaceId, collection, finalName) => gateway.importV2Collection(workspaceId, collection, finalName),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) => gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) => gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
-    reconcileDuplicateFinalCollections: (workspaceId, candidates) => gateway.reconcileDuplicateFinalCollections(workspaceId, candidates)
+    reconcileDuplicateFinalCollections: (workspaceId, candidates) => gateway.reconcileDuplicateFinalCollections(workspaceId, candidates),
+    findAdoptableSameMarkerCollection: (workspaceId, finalName, desiredDescription) => gateway.findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription)
   };
 }
 function createBootstrapDependencies(inputs, factories, orgMode = false) {

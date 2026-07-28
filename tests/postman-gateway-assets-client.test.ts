@@ -5113,6 +5113,61 @@ describe('PostmanGatewayAssetsClient', () => {
       ].sort());
     });
 
+    it('findAdoptableSameMarkerCollection returns the sole same-marker exact-name final', async () => {
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const otherMarker = marker.replace('project/drum', 'feature/y').replace('project-drum', 'feature-y');
+      const entries = [
+        { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: '[DRUM] Payments', description: marker },
+        { id: '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: '[DRUM] Payments', description: otherMarker },
+        { id: '200-cccccccc-cccc-cccc-cccc-cccccccccccc', name: 'Other' }
+      ];
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.method === 'delete') {
+          deleted.push(String(env.path));
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
+      ).resolves.toBe('100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+      expect(deleted).toEqual([]);
+    });
+
+    it('findAdoptableSameMarkerCollection returns undefined on ambiguity, absence, or unmarked payload', async () => {
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const entries = [
+        { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: '[DRUM] Payments', description: marker },
+        { id: '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: '[DRUM] Payments', description: marker }
+      ];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      // Two same-marker survivors: ambiguous, never adopted here.
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
+      ).resolves.toBeUndefined();
+      // No exact-name survivor at all.
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', 'Missing', marker)
+      ).resolves.toBeUndefined();
+      // Desired description without a parseable marker never adopts.
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', 'no marker here')
+      ).resolves.toBeUndefined();
+    });
+
     it('reconcileDuplicateFinalCollections ignores canonical and unmarked exact-name collections', async () => {
       const entries = [
         { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: 'Payments' },

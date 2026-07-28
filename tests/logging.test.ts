@@ -132,7 +132,7 @@ describe('bootstrap logging', () => {
   });
 });
 
-describe('phase-group core wrapping (CLI class-instance core)', () => {
+describe('phase-group core wrapping', () => {
   it('preserves prototype methods (setOutput) through withPhaseGroups', async () => {
     // The CLI hands runBootstrap a class instance whose methods live on the
     // prototype (ConsoleReporter). The old object-spread wrapper dropped those,
@@ -165,5 +165,31 @@ describe('phase-group core wrapping (CLI class-instance core)', () => {
     (wrapped as unknown as { info: (message: string) => void }).info('hello');
     await wrapped.group('stage', async () => 'ok');
   });
-});
 
+  it('wraps getter-only methods from the bundled Actions core namespace', async () => {
+    const messages: string[] = [];
+    const actionCore = Object.create(null) as Record<string, unknown>;
+    const methods = {
+      error: (message: string) => messages.push(`error:${message}`),
+      async group<T>(_name: string, fn: () => Promise<T>): Promise<T> {
+        return fn();
+      },
+      info: (message: string) => messages.push(`info:${message}`),
+      setOutput: () => undefined,
+      warning: (message: string) => messages.push(`warning:${message}`)
+    };
+    for (const [name, value] of Object.entries(methods)) {
+      Object.defineProperty(actionCore, name, { enumerable: true, get: () => value });
+    }
+    const { sink } = recordingSink();
+    const logger = createLogger({ sink });
+
+    const wrapped = withPhaseGroups(actionCore as never, logger) as typeof methods;
+
+    wrapped.error('failed');
+    wrapped.info('hello');
+    wrapped.warning('careful');
+    await wrapped.group('stage', async () => 'ok');
+    expect(messages).toEqual(['error:failed', 'info:hello', 'warning:careful']);
+  });
+});

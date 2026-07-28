@@ -1189,13 +1189,18 @@ export function withPhaseGroups<T extends BootstrapExecutionDependencies['core']
   // (ConsoleReporter) whose methods live on the prototype, and a spread would
   // silently drop every prototype method not redefined here (setOutput vanished
   // in the field: "dependencies.core.setOutput is not a function" on the ADO
-  // CLI path). Object.create keeps the full prototype chain intact.
+  // CLI path). Object.create keeps the full prototype chain intact, while own
+  // data properties can override the getter-only exports in the bundled core.
   const wrapped = Object.create(actionCore) as T;
-  wrapped.error = (message: string) => actionCore.error(logger.redact(message));
-  wrapped.group = <R>(name: string, fn: () => Promise<R>) =>
-    actionCore.group(name, async () => logger.phase(name, fn));
-  wrapped.info = (message: string) => actionCore.info(logger.redact(message));
-  wrapped.warning = (message: string) => actionCore.warning(logger.redact(message));
+  Object.defineProperties(wrapped, {
+    error: { value: (message: string) => actionCore.error(logger.redact(message)) },
+    group: {
+      value: <R>(name: string, fn: () => Promise<R>) =>
+        actionCore.group(name, async () => logger.phase(name, fn))
+    },
+    info: { value: (message: string) => actionCore.info(logger.redact(message)) },
+    warning: { value: (message: string) => actionCore.warning(logger.redact(message)) }
+  });
   return wrapped;
 }
 

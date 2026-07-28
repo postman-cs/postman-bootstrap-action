@@ -367389,7 +367389,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "5ea2e46afa7dc5d05a6448d3b0009aaaa8b050da",
+  bootstrapCommit: "1cb716e4e7394485dba967bb0a19c576439fbcf7",
   legs: [
     {
       mode: "nonorg",
@@ -370581,7 +370581,9 @@ ${error.responseBody ?? ""}`
    * - root /scripts types must be `http:beforeRequest` / `http:afterResponse`
    * - `remove` of absent /auth|/variables|/scripts => 400 REJECTED_PATCH
    * - `remove` of /description always works (field exists as "")
-   * - on update, GET the root first and only remove fields that currently exist
+   * - collection-root GET can 403 for otherwise-authorized service-account tokens
+   * - on update, apply one operation at a time so blind removals can safely
+   *   converge without a root pre-read
    */
   /**
    * GET a collection root, retrying through the v3 surface's read-after-write
@@ -370619,10 +370621,6 @@ ${error.responseBody ?? ""}`
     if (options.rename && typeof v3.name === "string" && v3.name) {
       ops.push({ op: "replace", path: "/name", value: v3.name });
     }
-    let current = null;
-    if (options.reconcileRemovals) {
-      current = await this.getCollectionRoot(cid);
-    }
     const hasDescription = typeof v3.description === "string" && v3.description.length > 0;
     if (hasDescription) {
       ops.push({ op: "add", path: "/description", value: v3.description });
@@ -370631,20 +370629,45 @@ ${error.responseBody ?? ""}`
     }
     if (v3.auth && typeof v3.auth === "object") {
       ops.push({ op: "add", path: "/auth", value: v3.auth });
-    } else if (options.reconcileRemovals && current && current.auth !== void 0) {
+    } else if (options.reconcileRemovals) {
       ops.push({ op: "remove", path: "/auth" });
     }
     if (Array.isArray(v3.variables) && v3.variables.length > 0) {
       ops.push({ op: "add", path: "/variables", value: v3.variables });
-    } else if (options.reconcileRemovals && current && current.variables !== void 0) {
+    } else if (options.reconcileRemovals) {
       ops.push({ op: "remove", path: "/variables" });
     }
     if (Array.isArray(v3.scripts) && v3.scripts.length > 0) {
       ops.push({ op: "add", path: "/scripts", value: this.toRootScripts(v3.scripts) });
-    } else if (options.reconcileRemovals && current && current.scripts !== void 0) {
+    } else if (options.reconcileRemovals) {
       ops.push({ op: "remove", path: "/scripts" });
     }
     if (ops.length === 0) return;
+    if (options.reconcileRemovals) {
+      for (const op of ops) {
+        try {
+          await this.gateway.requestJson({
+            service: "collection",
+            method: "patch",
+            path: `/v3/collections/${cid}`,
+            // A one-operation patch is independently idempotent. If a retry
+            // observes that its remove already committed, the missing target
+            // proves this operation's intended end state without a root GET.
+            retry: "safe",
+            body: [op]
+          });
+        } catch (error) {
+          if (op.op === "remove" && isMissingPatchValueError(error)) {
+            continue;
+          }
+          if (isRejectedPatchError(error) && (op.op !== "remove" || op.path === "/description")) {
+            continue;
+          }
+          throw error;
+        }
+      }
+      return;
+    }
     try {
       await this.gateway.requestJson({
         service: "collection",

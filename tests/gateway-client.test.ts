@@ -181,6 +181,7 @@ describe('AccessTokenGatewayClient', () => {
     const client = new AccessTokenGatewayClient({
       tokenProvider: provider,
       fetchImpl,
+      maxRetries: 1,
       retryBaseDelayMs: 10,
       sleepImpl: sleep,
       randomImpl: () => 1
@@ -195,7 +196,8 @@ describe('AccessTokenGatewayClient', () => {
     expect(result).toEqual({ ok: true });
     expect(fetchImpl).toHaveBeenCalledTimes(5);
     // The post-refresh 500 went through the ordinary backoff path.
-    expect(sleep).toHaveBeenCalled();
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(10);
     const finalCall = fetchImpl.mock.calls[4]?.[1] as RequestInit;
     expect((finalCall.headers as Record<string, string>)['x-access-token']).toBe('tok-fresh');
   });

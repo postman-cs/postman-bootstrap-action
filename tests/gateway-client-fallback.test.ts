@@ -46,6 +46,44 @@ describe('AccessTokenGatewayClient cold /_api fallback', () => {
     expect(urls[4]).toBe(`${FALLBACK}/ws/proxy`);
   });
 
+  it('refreshed resend: exhausted transient response falls back with the re-minted token', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      // primary proxy: stale access token rejected
+      .mockResolvedValueOnce(new Response('{"error":"UNAUTHENTICATED"}', { status: 401 }))
+      // PMAK preflight and mint
+      .mockResolvedValueOnce(jsonResponse({ user: { id: 123, teamId: 456 } }))
+      .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-fresh' }))
+      // refreshed primary resend: transient failure exhausts maxRetries: 0
+      .mockResolvedValueOnce(new Response('ESOCKETTIMEDOUT', { status: 502 }))
+      // cold fallback: success
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const provider = new AccessTokenProvider({
+      accessToken: 'tok-stale',
+      apiKey: 'PMAK',
+      fetchImpl,
+      sleep: async () => undefined
+    });
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: provider,
+      fallbackBaseUrl: FALLBACK,
+      maxRetries: 0,
+      sleepImpl: async () => undefined,
+      fetchImpl
+    });
+
+    const result = await client.requestJson({ service: 'collection', method: 'get', path: '/x' });
+
+    expect(result).toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    const urls = fetchImpl.mock.calls.map((c) => String(c[0]));
+    expect(urls[0]).toBe(`${PRIMARY}/ws/proxy`);
+    expect(urls[3]).toBe(`${PRIMARY}/ws/proxy`);
+    expect(urls[4]).toBe(`${FALLBACK}/ws/proxy`);
+    const fallbackRequest = fetchImpl.mock.calls[4]?.[1] as RequestInit;
+    expect((fallbackRequest.headers as Record<string, string>)['x-access-token']).toBe('tok-fresh');
+  });
+
   it('safe request: transient fallback failure surfaces the original primary error', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

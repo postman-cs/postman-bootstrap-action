@@ -47,6 +47,9 @@ interface FixtureOptions {
   contractEntry?: string;
   libraryGetterThrows?: boolean;
   actionBootThrows?: boolean;
+  dynamicVariableRegistry?: unknown;
+  dynamicVariablesExport?: string;
+  dynamicVariablesReport?: { generators: number; failures: string[] };
 }
 
 async function writeFixture(root: string, options: FixtureOptions = {}): Promise<void> {
@@ -74,9 +77,9 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
       'utf8'
     );
   }
-  if (options.contractEntry !== undefined || options.actionBootThrows) {
+  if (options.contractEntry !== undefined || options.actionBootThrows || options.dynamicVariableRegistry !== undefined) {
     await mkdir(path.join(root, 'scripts'), { recursive: true });
-    await writeFile(path.join(root, 'scripts', 'dist-boot-contract.json'), JSON.stringify({ entry: options.contractEntry ?? CONFIG.actionMain, exitCode: 0, outputIncludes: [] }), 'utf8');
+    await writeFile(path.join(root, 'scripts', 'dist-boot-contract.json'), JSON.stringify({ entry: options.contractEntry ?? CONFIG.actionMain, exitCode: 0, outputIncludes: [], ...(options.dynamicVariableRegistry === undefined ? {} : { dynamicVariableRegistry: options.dynamicVariableRegistry }) }), 'utf8');
   }
 
   const shebang = options.shebang === false ? '' : '#!/usr/bin/env node\n';
@@ -112,7 +115,7 @@ process.exit(1);
       await symlink(cliPath, path.join(distDir, name));
       continue;
     }
-    const body = name === options.brokenEntry ? 'const = broken;\n' : options.libraryGetterThrows && name === path.posix.basename(CONFIG.pkgMain) ? "Object.defineProperty(module.exports, 'broken', { enumerable: true, get() { throw new TypeError('getter-only library export'); } });\n" : options.actionBootThrows && name === path.posix.basename(CONFIG.actionMain ?? '') ? "throw new TypeError('action boot failure');\n" : 'module.exports = {};\n';
+    const body = name === options.brokenEntry ? 'const = broken;\n' : options.libraryGetterThrows && name === path.posix.basename(CONFIG.pkgMain) ? "Object.defineProperty(module.exports, 'broken', { enumerable: true, get() { throw new TypeError('getter-only library export'); } });\n" : options.actionBootThrows && name === path.posix.basename(CONFIG.actionMain ?? '') ? "throw new TypeError('action boot failure');\n" : options.dynamicVariablesReport && name === path.posix.basename(CONFIG.pkgMain) ? `module.exports[${JSON.stringify(options.dynamicVariablesExport ?? 'observeBundledDynamicVariables')}] = () => { process.stdout.write('DYNAMIC_FIXTURE_INVOKED\\n'); return ${JSON.stringify(options.dynamicVariablesReport)}; };\n` : 'module.exports = {};\n';
     await writeFile(path.join(distDir, name), body, 'utf8');
   }
   if (options.extraDistFile) {
@@ -165,6 +168,43 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/LIBRARY_EXPORT_ACCESS_FAILED|library entrypoint.*failed to boot/);
   }, 15_000);
+
+  it('uses dynamicVariableRegistry as the sole registry trigger and expectation source', async () => {
+    const absent = await makeTempDir('verify-dist-dynamic-absent-');
+    await writeFixture(absent, { dynamicVariablesReport: { generators: 118, failures: ['must not be observed'] } });
+    const skipped = await runVerify(absent);
+    expect(skipped.code).toBe(0);
+    expect(skipped.stdout).not.toContain('DYNAMIC_FIXTURE_INVOKED');
+
+    const success = await makeTempDir('verify-dist-dynamic-success-');
+    await writeFixture(success, { dynamicVariableRegistry: { export: 'fixtureRegistry', expectedGeneratorCount: 3 }, dynamicVariablesExport: 'fixtureRegistry', dynamicVariablesReport: { generators: 3, failures: [] } });
+    const result = await runVerify(success);
+    expect(result.code).toBe(0);
+  }, 15_000);
+
+  it('rejects missing, malformed, and mismatched dynamic-variable registries', async () => {
+    const missing = await makeTempDir('verify-dist-dynamic-missing-');
+    await writeFixture(missing, { dynamicVariableRegistry: { export: 'missingRegistry', expectedGeneratorCount: 1 } });
+    expect((await runVerify(missing)).stderr).toContain('DYNAMIC_VARS_BOOT_FAILED missing export=missingRegistry');
+    for (const registry of [null, { export: 'not-valid', expectedGeneratorCount: 1 }, { export: 'fixtureRegistry', expectedGeneratorCount: 0 }]) {
+      const root = await makeTempDir('verify-dist-dynamic-malformed-');
+      await writeFixture(root, { dynamicVariableRegistry: registry });
+      expect((await runVerify(root)).stderr).toMatch(/dynamicVariableRegistry/);
+    }
+    const mismatch = await makeTempDir('verify-dist-dynamic-count-');
+    await writeFixture(mismatch, { dynamicVariableRegistry: { export: 'fixtureRegistry', expectedGeneratorCount: 3 }, dynamicVariablesExport: 'fixtureRegistry', dynamicVariablesReport: { generators: 2, failures: [] } });
+    expect((await runVerify(mismatch)).stderr).toContain('DYNAMIC_VARS_BOOT_FAILED');
+  }, 15_000);
+
+  it('fails when the configured dynamic-variable registry reports generator failures', async () => {
+    const root = await makeTempDir('verify-dist-dynamic-failures-');
+    await writeFixture(root, { dynamicVariableRegistry: { export: 'fixtureRegistry', expectedGeneratorCount: 3 }, dynamicVariablesExport: 'fixtureRegistry', dynamicVariablesReport: { generators: 3, failures: ['x: boom'] } });
+    const result = await runVerify(root);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('DYNAMIC_VARS_BOOT_FAILED');
+    expect(result.stderr).toContain('x: boom');
+  }, 15_000);
+
 
   it('rejects a boot contract entry that differs from action.yml runs.main', async () => {
     const root = await makeTempDir('verify-dist-contract-mismatch-');
@@ -317,6 +357,33 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     expect(prefixed.stderr).toBe('');
     expect(prefixed.code).toBe(0);
   }, 15_000);
+
+  it.skipIf(process.platform === 'win32')('rejects symlinked dist roots, caught network calls, and unconsumed GitHub output markers', async () => {
+    const actionMain = CONFIG.actionMain as string;
+    const symlinkRoot = await makeTempDir('verify-dist-parent-symlink-');
+    await writeFixture(symlinkRoot);
+    await rm(path.join(symlinkRoot, 'dist'), { recursive: true });
+    await symlink(symlinkRoot, path.join(symlinkRoot, 'dist'));
+    expect((await runVerify(symlinkRoot)).stderr).toMatch(/dist root must be a regular non-symlink directory/);
+
+    const networkRoot = await makeTempDir('verify-dist-network-');
+    await writeFixture(networkRoot, { contractEntry: actionMain });
+    await writeFile(path.join(networkRoot, actionMain), "try { require('node:https').get('https://example.invalid'); } catch {}\nmodule.exports = {};\n", 'utf8');
+    expect((await runVerify(networkRoot)).stderr).toMatch(/attempted network I\/O/);
+
+    const outputRoot = await makeTempDir('verify-dist-github-output-');
+    await writeFixture(outputRoot, { contractEntry: actionMain });
+    await writeFile(path.join(outputRoot, 'scripts', 'dist-boot-contract.json'), JSON.stringify({ entry: actionMain, exitCode: 0, outputIncludes: [], githubOutputIncludes: ['fixture-output=ok'] }), 'utf8');
+    await writeFile(path.join(outputRoot, actionMain), "require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT, 'fixture-output=ok\\n');\nmodule.exports = {};\n", 'utf8');
+    expect((await runVerify(outputRoot)).code).toBe(0);
+    await writeFile(path.join(outputRoot, 'scripts', 'dist-boot-contract.json'), JSON.stringify({ entry: actionMain, exitCode: 0, outputIncludes: [], githubOutputIncludes: ['missing-output'] }), 'utf8');
+    expect((await runVerify(outputRoot)).stderr).toMatch(/GitHub output missing contract marker/);
+
+    const throwRoot = await makeTempDir('verify-dist-direct-action-throw-');
+    await writeFixture(throwRoot, { contractEntry: actionMain });
+    await writeFile(path.join(throwRoot, actionMain), "throw new TypeError('direct action boot failure');\n", 'utf8');
+    expect((await runVerify(throwRoot)).stderr).toMatch(/action entrypoint.*boot exited|direct action boot failure/);
+  });
 
   it('accepts the documented optional peer allowlist', async () => {
     const root = await makeTempDir('verify-dist-peer-');

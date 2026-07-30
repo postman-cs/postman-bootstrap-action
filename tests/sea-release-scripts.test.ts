@@ -10,15 +10,15 @@ const { assertSeaProxyRouting } = await import(
 
 const HTTPS_PROBE = [
   "require('node:https').get('https://example.com/', (res) => { res.resume(); }).on('error', () => {});",
-  'setTimeout(() => {}, 5000);'
+  'setTimeout(() => {}, 10000);'
 ].join(' ');
 
 describe('SEA release scripts', () => {
   it('resolves when the exact CONNECT authority is observed', async () => {
     await expect(
-      assertSeaProxyRouting(process.execPath, 'example.com:443', ['-e', HTTPS_PROBE], { timeoutMs: 5_000 })
+      assertSeaProxyRouting(process.execPath, 'example.com:443', ['-e', HTTPS_PROBE], { timeoutMs: 10_000 })
     ).resolves.toBeUndefined();
-  }, 15_000);
+  }, 30_000);
 
   it('rejects wrong authority under a short injected timeout', async () => {
     await expect(

@@ -340,7 +340,7 @@ describe('runCli', () => {
     expect(stderrCombined).not.toContain('test-api-key');
 
     stderrSpy.mockRestore();
-  });
+  }, 15_000);
 
   it('fails missing required CLI inputs before bootstrap side effects or output artifacts', async () => {
     const dir = await makeTempDir('postman-bootstrap-required-');

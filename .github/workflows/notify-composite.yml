@@ -1,0 +1,37 @@
+name: Notify Composite
+
+# Tells postman-api-onboarding-action that a release landed here so its
+# advance-pins workflow can move the composite's immutable sibling pin without
+# waiting for the daily cron backstop. Release runs are GITHUB_TOKEN-created,
+# so `release: published` never fires in this repo; chaining off the Release
+# workflow_run is the reliable seam.
+#
+# The dispatch crosses repositories, which GITHUB_TOKEN cannot do. It is sent
+# only when a SIBLING_PIN_TOKEN secret (repo scope on the composite) is
+# configured; without it the composite's cron still picks the release up.
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch sibling-release to the composite
+        env:
+          GH_TOKEN: ${{ secrets.SIBLING_PIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::SIBLING_PIN_TOKEN is not configured; the composite's daily cron will pick this release up."
+            exit 0
+          fi
+          gh api repos/postman-cs/postman-api-onboarding-action/dispatches \
+            -f event_type=sibling-release \
+            -f "client_payload[repository]=${GITHUB_REPOSITORY}" \
+            -f "client_payload[run]=${{ github.event.workflow_run.html_url }}"

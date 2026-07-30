@@ -18,7 +18,7 @@ describe('SEA release scripts', () => {
     await expect(
       assertSeaProxyRouting(process.execPath, 'example.com:443', ['-e', HTTPS_PROBE], { timeoutMs: 5_000 })
     ).resolves.toBeUndefined();
-  });
+  }, 15_000);
 
   it('rejects wrong authority under a short injected timeout', async () => {
     await expect(

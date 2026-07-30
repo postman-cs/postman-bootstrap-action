@@ -1,0 +1,13 @@
+{
+  "entry": "dist/action.cjs",
+  "env": {
+    "POSTMAN_BRANCH_DECISION": "{\"tier\":\"gated\",\"strategy\":\"single\",\"identity\":{\"provider\":\"github\",\"refKind\":\"branch\"},\"reason\":\"verify-dist gated boot contract\"}",
+    "INPUT_PROJECT-NAME": "verify-dist-boot",
+    "INPUT_SPEC-PATH": "tests/fixtures/petstore-oas31-single-file.json"
+  },
+  "exitCode": 0,
+  "outputIncludes": [
+    "gated run",
+    "credential-free static validation"
+  ]
+}

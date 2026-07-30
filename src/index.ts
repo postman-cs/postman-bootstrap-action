@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { parse, stringify } from 'yaml';
+import dynamicVariables from 'postman-collection/lib/superstring/dynamic-variables';
 
 import { bootstrapActionContract } from './contracts.js';
 import { GitHubApiClient } from './lib/github/github-api-client.js';
@@ -4253,4 +4254,34 @@ export function createBootstrapDependencies(
     },
     specFetcher: factories.specFetcher ?? fetch
   };
+}
+
+/**
+ * Observe the bundled postman-collection dynamic-variable registry from the
+ * SHIPPED bytes. Runs every generator once and reports name -> defined-ness,
+ * so the dist-artifact gate can prove the bundled Faker override (not just
+ * the installed node_modules tree) still powers all dynamic variables.
+ * Deterministic-failure surface only: no network, no credentials.
+ */
+export function observeBundledDynamicVariables(): {
+  total: number;
+  generators: number;
+  failures: string[];
+} {
+  const failures: string[] = [];
+  let generators = 0;
+  for (const [name, definition] of Object.entries(dynamicVariables)) {
+    if (typeof definition.generator !== 'function') {
+      continue;
+    }
+    generators += 1;
+    try {
+      if (definition.generator() === undefined) {
+        failures.push(`${name}: generator returned undefined`);
+      }
+    } catch (error) {
+      failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { total: Object.keys(dynamicVariables).length, generators, failures };
 }

@@ -21,3 +21,23 @@ it('keeps every Postman dynamic variable generator compatible with the Faker ove
     warning.mockRestore();
   }
 });
+
+it('proves the BUNDLED dynamic-variable registry from the committed dist bytes', () => {
+  // The dist bundle inlines its own postman-collection copy; the installed-tree
+  // assertion above cannot see it. Exercise the shipped bytes directly.
+  const dist = require('../dist/index.cjs') as {
+    observeBundledDynamicVariables: () => {
+      total: number;
+      generators: number;
+      failures: string[];
+    };
+  };
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  try {
+    const observed = dist.observeBundledDynamicVariables();
+    expect(observed.generators).toBe(118);
+    expect(observed.failures).toEqual([]);
+  } finally {
+    warning.mockRestore();
+  }
+});

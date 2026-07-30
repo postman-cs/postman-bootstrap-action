@@ -23,7 +23,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import console from 'node:console';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -470,6 +470,170 @@ function assertLiteralRequiresAreBuiltins() {
   }
 }
 
+function createSandbox(prefix) {
+  const sandbox = mkdtempSync(path.join(tmpdir(), prefix));
+  const homeDir = path.join(sandbox, 'home');
+  const tmpDir = path.join(sandbox, 'tmp');
+  mkdirSync(homeDir, { recursive: true });
+  mkdirSync(tmpDir, { recursive: true });
+  // Minimal environment: no ambient credentials or CI variables leak into
+  // the artifact under test, and #!/usr/bin/env node still resolves.
+  const env = {
+    PATH: [path.dirname(process.execPath), process.env.PATH ?? ''].filter(Boolean).join(path.delimiter),
+    HOME: homeDir,
+    TMPDIR: tmpDir,
+    TMP: tmpDir,
+    TEMP: tmpDir,
+    XDG_CACHE_HOME: path.join(homeDir, '.cache'),
+    XDG_CONFIG_HOME: path.join(homeDir, '.config'),
+    XDG_DATA_HOME: path.join(homeDir, '.local', 'share'),
+    XDG_STATE_HOME: path.join(homeDir, '.local', 'state')
+  };
+  return { sandbox, env };
+}
+
+// Runtime failure classes that must never appear when booting a shipped
+// artifact. The getter-only-core bundler bug surfaced exactly as a TypeError
+// at load time, invisible to src/-importing tests and to node --check.
+const BOOT_FAILURE_PATTERN = /TypeError:|ReferenceError:|is not a function|Cannot read properties of/;
+
+/**
+ * Execute-the-bytes gate, leg 1: require() the committed library entrypoint
+ * (package.json main) in a sandboxed child process and touch every named
+ * export. node --check parses; this actually runs module init and property
+ * getters, which is where bundler/minifier artifacts (the getter-only-core
+ * class) explode. Skipped when the library entrypoint IS the Action
+ * entrypoint (single-entry actions execute on require; leg 2 covers them).
+ */
+function assertLibraryEntrypointBoots() {
+  const pkg = readJson(path.join(root, 'package.json'));
+  const mainRel = typeof pkg.main === 'string' ? pkg.main : null;
+  if (!mainRel) {
+    return;
+  }
+  const runsMain = actionRunsMain(root);
+  if (runsMain && path.normalize(runsMain) === path.normalize(mainRel)) {
+    // Requiring the entrypoint would execute the action; leg 2 boots it with
+    // an explicit contract instead.
+    return;
+  }
+  const mainAbs = path.join(root, mainRel.split('/').join(path.sep));
+  const probe = [
+    'const failures = [];',
+    'let m;',
+    'try {',
+    `  m = require(${JSON.stringify(mainAbs)});`,
+    '} catch (error) {',
+    "  console.error('LIBRARY_REQUIRE_FAILED ' + (error && error.stack ? error.stack : error));",
+    '  process.exit(1);',
+    '}',
+    'for (const key of Object.keys(m)) {',
+    '  try { void m[key]; } catch (error) {',
+    "    failures.push(key + ': ' + (error && error.message ? error.message : error));",
+    '  }',
+    '}',
+    'if (failures.length > 0) {',
+    "  console.error('LIBRARY_EXPORT_ACCESS_FAILED ' + failures.join('; '));",
+    '  process.exit(1);',
+    '}',
+    "console.log('LIBRARY_BOOT_OK ' + Object.keys(m).length);",
+    'process.exit(0);'
+  ].join('\n');
+  const { sandbox, env } = createSandbox('verify-dist-libboot-');
+  try {
+    const result = spawnSync(process.execPath, ['-e', probe], {
+      cwd: sandbox,
+      encoding: 'utf8',
+      env,
+      timeout: 120_000
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    if (result.status !== 0) {
+      fail(`library entrypoint ${mainRel} failed to boot under require(): ${output.trim()}`);
+    }
+    if (!/LIBRARY_BOOT_OK \d+/.test(result.stdout ?? '')) {
+      fail(`library entrypoint ${mainRel} boot probe produced no receipt: ${output.trim()}`);
+    }
+    if (BOOT_FAILURE_PATTERN.test(output)) {
+      fail(`library entrypoint ${mainRel} boot emitted a runtime failure class: ${output.trim()}`);
+    }
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Execute-the-bytes gate, leg 2: boot the committed Action entrypoint
+ * (action.yml runs.main) with the gated-tier inputs declared in
+ * scripts/dist-boot-contract.json. Gated runs return before any token mint,
+ * so the boot is credential-free and network-free by construction. The
+ * contract pins expected exit code and output markers; TypeError/
+ * ReferenceError anywhere in the output fails regardless of exit code.
+ */
+function assertActionEntrypointBoots() {
+  const contractFile = path.join(root, 'scripts', 'dist-boot-contract.json');
+  try {
+    statSync(contractFile);
+  } catch {
+    // Temp fixture trees and repos without a boot contract skip leg 2.
+    return;
+  }
+  const contract = readJson(contractFile);
+  const entryRel = typeof contract.entry === 'string' ? contract.entry : actionRunsMain(root);
+  if (!entryRel) {
+    fail('dist-boot-contract.json present but no entry: action.yml runs.main missing and contract.entry not set');
+  }
+  if (!Number.isInteger(contract.exitCode)) {
+    fail('dist-boot-contract.json must declare an integer exitCode');
+  }
+  if (!Array.isArray(contract.outputIncludes) || contract.outputIncludes.some((m) => typeof m !== 'string' || m.length === 0)) {
+    fail('dist-boot-contract.json must declare outputIncludes as an array of non-empty strings');
+  }
+  const contractEnv = contract.env ?? {};
+  if (typeof contractEnv !== 'object' || Array.isArray(contractEnv)) {
+    fail('dist-boot-contract.json env must be an object of string values');
+  }
+  for (const [name, value] of Object.entries(contractEnv)) {
+    if (typeof value !== 'string') {
+      fail(`dist-boot-contract.json env.${name} must be a string`);
+    }
+    if (/(?:^|[-_])(?:key|token|secret|password|passphrase|credential)(?:$|[-_])/i.test(name)) {
+      fail(`dist-boot-contract.json env.${name} looks credential-shaped; gated boots are credential-free by contract`);
+    }
+  }
+  const entryAbs = path.join(root, entryRel.split('/').join(path.sep));
+  const { sandbox, env } = createSandbox('verify-dist-actionboot-');
+  try {
+    const githubOutput = path.join(sandbox, 'github-output');
+    writeFileSync(githubOutput, '', 'utf8');
+    const result = spawnSync(process.execPath, [entryAbs], {
+      cwd: sandbox,
+      encoding: 'utf8',
+      env: {
+        ...env,
+        GITHUB_WORKSPACE: root,
+        GITHUB_OUTPUT: githubOutput,
+        ...contractEnv
+      },
+      timeout: 120_000
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    if (result.status !== contract.exitCode) {
+      fail(`action entrypoint ${entryRel} boot exited ${result.status}, contract expects ${contract.exitCode}: ${output.trim().slice(0, 2000)}`);
+    }
+    for (const marker of contract.outputIncludes) {
+      if (!output.includes(marker)) {
+        fail(`action entrypoint ${entryRel} boot output missing contract marker ${JSON.stringify(marker)}: ${output.trim().slice(0, 2000)}`);
+      }
+    }
+    if (BOOT_FAILURE_PATTERN.test(output)) {
+      fail(`action entrypoint ${entryRel} boot emitted a runtime failure class: ${output.trim().slice(0, 2000)}`);
+    }
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
 assertExactCensus();
 assertShebang();
 assertDiskExecutable();
@@ -477,5 +641,7 @@ assertGitIndexExec();
 assertDirectHelpAndVersion();
 assertNodeCheck();
 assertLiteralRequiresAreBuiltins();
+assertLibraryEntrypointBoots();
+assertActionEntrypointBoots();
 
 console.log('verify-dist-artifact: ok');

@@ -43,6 +43,21 @@ const CLI_PROBE_TIMEOUT_MS = 5_000;
 // catch swallows any error. Kept narrow, explicit, and documented so any NEW
 // third-party require() in code position still fails the gate.
 const OPTIONAL_PEER_ALLOWLIST = Object.freeze(['encoding']);
+const PROTECTED_BOOT_ENVIRONMENT_NAMES = new Set([
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME',
+  'GITHUB_WORKSPACE',
+  'GITHUB_OUTPUT',
+  'NODE_OPTIONS',
+  'VERIFY_DIST_NETWORK_SENTINEL'
+]);
 
 function fail(message) {
   console.error(`verify-dist-artifact: ${message}`);
@@ -711,6 +726,9 @@ function assertActionEntrypointBoots() {
     fail('dist-boot-contract.json env must be an object of string values');
   }
   for (const [name, value] of Object.entries(contractEnv)) {
+    if (PROTECTED_BOOT_ENVIRONMENT_NAMES.has(name)) {
+      fail(`dist-boot-contract.json env.${name} is a protected boot environment`);
+    }
     if (typeof value !== 'string') {
       fail(`dist-boot-contract.json env.${name} must be a string`);
     }
@@ -730,11 +748,11 @@ function assertActionEntrypointBoots() {
       encoding: 'utf8',
       env: {
         ...env,
+        ...contractEnv,
         GITHUB_WORKSPACE: root,
         GITHUB_OUTPUT: githubOutput,
         NODE_OPTIONS: `--require=${networkGuard.preload}`,
-        VERIFY_DIST_NETWORK_SENTINEL: networkGuard.sentinel,
-        ...contractEnv
+        VERIFY_DIST_NETWORK_SENTINEL: networkGuard.sentinel
       },
       timeout: 120_000
     });

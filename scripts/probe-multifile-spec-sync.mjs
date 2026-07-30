@@ -420,7 +420,9 @@ export function isReleaseOnlyDriftPath(relPath) {
     p === '.github/workflows/auto-release.yml' ||
     p === '.github/workflows/notify-composite.yml' ||
     p === 'scripts/release-cut.mjs' ||
+    p === 'scripts/verify-dist-artifact.mjs' ||
     p === 'tests/auto-release.test.ts' ||
+    p === 'tests/verify-dist-artifact.test.ts' ||
     p === '.githooks/pre-push' ||
     p === '.github/scripts/dispatch-e2e-monitor.mjs' ||
     p === '.github/scripts/dispatch-e2e-monitor.test.mjs' ||

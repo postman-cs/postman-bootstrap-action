@@ -23,7 +23,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import console from 'node:console';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -80,6 +80,43 @@ function actionRunsMain(packageRoot) {
     }
   }
   return null;
+}
+
+function normalizedActionEntry(entryRel, source) {
+  if (typeof entryRel !== 'string' || entryRel.length === 0) {
+    fail(`${source} must declare a non-empty entry path`);
+  }
+  if (path.isAbsolute(entryRel) || path.win32.isAbsolute(entryRel)) {
+    fail(`${source} must point to a relative path under dist/, found ${JSON.stringify(entryRel)}`);
+  }
+  const segments = entryRel.split(/[\\/]/);
+  if (segments.some((segment) => segment === '..')) {
+    fail(`${source} must not traverse outside dist/, found ${JSON.stringify(entryRel)}`);
+  }
+  const normalized = path.posix.normalize(entryRel.replaceAll('\\', '/'));
+  if (!normalized.startsWith('dist/') || normalized === 'dist/') {
+    fail(`${source} must point under dist/, found ${JSON.stringify(entryRel)}`);
+  }
+  return normalized;
+}
+
+function validatedActionEntry(entryRel, source) {
+  const normalized = normalizedActionEntry(entryRel, source);
+  const entryAbs = path.resolve(root, normalized);
+  const relativeToDist = path.relative(distDir, entryAbs);
+  if (relativeToDist === '' || relativeToDist.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToDist)) {
+    fail(`${source} must resolve under dist/, found ${JSON.stringify(entryRel)}`);
+  }
+  let entry;
+  try {
+    entry = lstatSync(entryAbs);
+  } catch (error) {
+    fail(`${source} entry ${normalized} is unreadable: ${error instanceof Error ? error.message : error}`);
+  }
+  if (!entry.isFile() || entry.isSymbolicLink()) {
+    fail(`${source} entry ${normalized} must be a regular non-symlink file`);
+  }
+  return { normalized, entryAbs };
 }
 
 function deriveManifest() {
@@ -579,9 +616,16 @@ function assertActionEntrypointBoots() {
     return;
   }
   const contract = readJson(contractFile);
-  const entryRel = typeof contract.entry === 'string' ? contract.entry : actionRunsMain(root);
-  if (!entryRel) {
-    fail('dist-boot-contract.json present but no entry: action.yml runs.main missing and contract.entry not set');
+  const runsMain = actionRunsMain(root);
+  if (!runsMain) {
+    fail('dist-boot-contract.json present but action.yml runs.main is missing');
+  }
+  const actionEntry = validatedActionEntry(runsMain, 'action.yml runs.main');
+  if (Object.hasOwn(contract, 'entry')) {
+    const contractEntry = normalizedActionEntry(contract.entry, 'dist-boot-contract.json entry');
+    if (contractEntry !== actionEntry.normalized) {
+      fail(`dist-boot-contract.json entry ${JSON.stringify(contract.entry)} does not match action.yml runs.main ${JSON.stringify(runsMain)}`);
+    }
   }
   if (!Number.isInteger(contract.exitCode)) {
     fail('dist-boot-contract.json must declare an integer exitCode');
@@ -601,7 +645,8 @@ function assertActionEntrypointBoots() {
       fail(`dist-boot-contract.json env.${name} looks credential-shaped; gated boots are credential-free by contract`);
     }
   }
-  const entryAbs = path.join(root, entryRel.split('/').join(path.sep));
+  const entryRel = actionEntry.normalized;
+  const entryAbs = actionEntry.entryAbs;
   const { sandbox, env } = createSandbox('verify-dist-actionboot-');
   try {
     const githubOutput = path.join(sandbox, 'github-output');

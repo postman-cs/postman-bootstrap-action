@@ -308,6 +308,7 @@ export class AccessTokenGatewayClient {
     }
     const retryMode = request.retry ?? (request.method === 'get' ? 'safe' : 'none');
     let attempt = 0;
+    let authRefreshed = false;
     for (;;) {
       let response: Response;
       try {
@@ -350,20 +351,20 @@ export class AccessTokenGatewayClient {
       }
 
       const body = await response.text().catch(() => '');
-      if (isExpiredAuthError(response.status, body) && this.tokenProvider.canRefresh()) {
+      if (
+        !authRefreshed &&
+        isExpiredAuthError(response.status, body) &&
+        this.tokenProvider.canRefresh()
+      ) {
+        authRefreshed = true;
         this.onRetry?.({ class: 'auth', status: response.status, attempt: 1, delay: 0 });
         await this.tokenProvider.refresh();
-        response = await this.send(request);
-        if (response.ok) {
-          const refreshedBody = await response.text().catch(() => '');
-          const innerStatus = detectInnerError(refreshedBody);
-          if (innerStatus !== null) {
-            throw this.toInnerHttpError(request, innerStatus, refreshedBody);
-          }
-          return this.rebuildResponse(response, refreshedBody);
-        }
-        const retryBody = await response.text().catch(() => '');
-        throw this.toHttpError(request, response, retryBody);
+        // Re-enter the loop so the refreshed resend flows through the same
+        // transport/inner/transient/fallback taxonomy as any other attempt. The
+        // refresh happens at most once per request and does not consume the
+        // retry budget; a second auth failure falls through to the ordinary
+        // HTTP error path below.
+        continue;
       }
 
       const retryResponse =

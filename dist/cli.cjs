@@ -350935,6 +350935,7 @@ var AccessTokenGatewayClient = class {
     }
     const retryMode = request.retry ?? (request.method === "get" ? "safe" : "none");
     let attempt = 0;
+    let authRefreshed = false;
     for (; ; ) {
       let response;
       try {
@@ -350970,20 +350971,11 @@ var AccessTokenGatewayClient = class {
         return this.rebuildResponse(response, okBody);
       }
       const body2 = await response.text().catch(() => "");
-      if (isExpiredAuthError(response.status, body2) && this.tokenProvider.canRefresh()) {
+      if (!authRefreshed && isExpiredAuthError(response.status, body2) && this.tokenProvider.canRefresh()) {
+        authRefreshed = true;
         this.onRetry?.({ class: "auth", status: response.status, attempt: 1, delay: 0 });
         await this.tokenProvider.refresh();
-        response = await this.send(request);
-        if (response.ok) {
-          const refreshedBody = await response.text().catch(() => "");
-          const innerStatus = detectInnerError(refreshedBody);
-          if (innerStatus !== null) {
-            throw this.toInnerHttpError(request, innerStatus, refreshedBody);
-          }
-          return this.rebuildResponse(response, refreshedBody);
-        }
-        const retryBody = await response.text().catch(() => "");
-        throw this.toHttpError(request, response, retryBody);
+        continue;
       }
       const retryResponse = retryMode === "safe" && isTransientGatewayError(response.status, body2) || retryMode === "rate-limit" && response.status === 429;
       if (retryResponse && attempt < this.maxRetries) {

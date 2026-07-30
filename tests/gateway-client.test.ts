@@ -154,6 +154,82 @@ describe('AccessTokenGatewayClient', () => {
     expect((retried.headers as Record<string, string>)['x-access-token']).toBe('tok-fresh');
   });
 
+  it('retries a transient failure on the resend after an auth refresh instead of dying', async () => {
+    // Regression: the refreshed resend used to bypass the retry/fallback loop,
+    // so a 401 -> refresh -> transient 5xx killed the run even for a safe GET.
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      // first proxy call: token expired
+      .mockResolvedValueOnce(new Response('{"error":"UNAUTHENTICATED"}', { status: 401 }))
+      // PMAK preflight before re-mint
+      .mockResolvedValueOnce(jsonResponse({ user: { id: 123, teamId: 456 } }))
+      // re-mint call
+      .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-fresh' }))
+      // refreshed resend: transient downstream timeout
+      .mockResolvedValueOnce(
+        new Response('{"error":{"name":"serverError","details":"ESOCKETTIMEDOUT","source":"downstream"}}', { status: 500 })
+      )
+      // ordinary transient retry: success
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const provider = new AccessTokenProvider({
+      accessToken: 'tok-stale',
+      apiKey: 'PMAK',
+      fetchImpl,
+      sleep: async () => undefined
+    });
+    const sleep = vi.fn(async () => undefined);
+    const client = new AccessTokenGatewayClient({
+      tokenProvider: provider,
+      fetchImpl,
+      retryBaseDelayMs: 10,
+      sleepImpl: sleep,
+      randomImpl: () => 1
+    });
+
+    const result = await client.requestJson({
+      service: 'workspaces',
+      method: 'get',
+      path: '/workspaces'
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    // The post-refresh 500 went through the ordinary backoff path.
+    expect(sleep).toHaveBeenCalled();
+    const finalCall = fetchImpl.mock.calls[4]?.[1] as RequestInit;
+    expect((finalCall.headers as Record<string, string>)['x-access-token']).toBe('tok-fresh');
+  });
+
+  it('refreshes at most once per request: a second 401 after refresh surfaces as an error', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{"error":"UNAUTHENTICATED"}', { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse({ user: { id: 123, teamId: 456 } }))
+      .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-fresh' }))
+      // refreshed resend still unauthenticated: must not loop into another refresh
+      .mockResolvedValueOnce(new Response('{"error":"UNAUTHENTICATED"}', { status: 401 }));
+    const provider = new AccessTokenProvider({
+      accessToken: 'tok-stale',
+      apiKey: 'PMAK',
+      fetchImpl,
+      sleep: async () => undefined
+    });
+    const client = new AccessTokenGatewayClient({ tokenProvider: provider, fetchImpl });
+
+    let captured: unknown;
+    try {
+      await client.requestJson({ service: 'workspaces', method: 'get', path: '/workspaces' });
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(captured).toBeInstanceOf(Error);
+    const message = captured instanceof Error ? captured.message : String(captured);
+    expect(message).toContain('401');
+    // exactly one refresh cycle: 401, preflight, mint, resend-401 — no fifth call
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+  });
+
   it('does not refresh when no PMAK is present and raises a redacted error', async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -187,7 +263,10 @@ describe('AccessTokenGatewayClient', () => {
       .mockResolvedValueOnce(new Response('UNAUTHENTICATED', { status: 401 }))
       .mockResolvedValueOnce(jsonResponse({ user: { id: 123, teamId: 456 } }))
       .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-fresh-secret' }))
-      .mockResolvedValueOnce(new Response('failure leaking tok-fresh-secret', { status: 500 }));
+      // The refreshed resend now flows through the ordinary retry loop, so a
+      // persistent (non-transient-body) 500 is returned for every remaining
+      // attempt before surfacing.
+      .mockImplementation(async () => new Response('failure leaking tok-fresh-secret', { status: 500 }));
     const masker = createMutableSecretMasker([]);
     const provider = new AccessTokenProvider({
       accessToken: 'tok-stale',
@@ -199,7 +278,8 @@ describe('AccessTokenGatewayClient', () => {
     const client = new AccessTokenGatewayClient({
       tokenProvider: provider,
       fetchImpl,
-      secretMasker: masker.mask
+      secretMasker: masker.mask,
+      sleepImpl: async () => undefined
     });
 
     let captured: unknown;

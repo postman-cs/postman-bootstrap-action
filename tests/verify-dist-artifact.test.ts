@@ -141,7 +141,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('verify-dist-artifact: ok');
-  }, 30_000);
+  }, 15_000);
 
   it('passes a well-formed temporary dist tree', async () => {
     const root = await makeTempDir('verify-dist-ok-');
@@ -149,7 +149,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
-  }, 30_000);
+  }, 15_000);
 
   it('fails when the CLI shebang is missing', async () => {
     const root = await makeTempDir('verify-dist-shebang-');
@@ -157,7 +157,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/missing Node shebang/);
-  });
+  }, 15_000);
 
   it.skipIf(process.platform === 'win32')('fails when cli.cjs is not executable on disk', async () => {
     const root = await makeTempDir('verify-dist-mode-');
@@ -165,7 +165,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/not executable on disk/);
-  });
+  }, 15_000);
 
   it('fails when the git index does not mark cli.cjs executable', async () => {
     const gitRoot = await makeTempDir('verify-dist-gitmode-');
@@ -180,7 +180,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(pkgRoot);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/git-index mode is 100644/);
-  });
+  }, 15_000);
 
   it('fails when dist census has an extra file', async () => {
     const root = await makeTempDir('verify-dist-extra-');
@@ -188,7 +188,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/dist census mismatch/);
-  });
+  }, 15_000);
 
   it('fails when dist census has a hidden extra file', async () => {
     const root = await makeTempDir('verify-dist-hidden-');
@@ -196,7 +196,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/dist census mismatch/);
-  });
+  }, 15_000);
 
   it('fails when dist census is missing an entrypoint', async () => {
     const root = await makeTempDir('verify-dist-missing-');
@@ -205,7 +205,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/dist census mismatch/);
-  });
+  }, 15_000);
 
   it.skipIf(process.platform === 'win32')('fails when an expected entrypoint is a symlink', async () => {
     const root = await makeTempDir('verify-dist-symlink-');
@@ -214,7 +214,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/regular file, not a directory or symlink/);
-  });
+  }, 15_000);
 
   it('fails when direct --help does not produce the usage banner', async () => {
     const root = await makeTempDir('verify-dist-help-');
@@ -222,7 +222,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/missing usage banner/);
-  });
+  }, 15_000);
 
   it('fails when direct --version drifts from package.json', async () => {
     const root = await makeTempDir('verify-dist-version-');
@@ -230,7 +230,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/--version was/);
-  });
+  }, 15_000);
 
   it('fails when node --check rejects a bundled entrypoint', async () => {
     const root = await makeTempDir('verify-dist-syntax-');
@@ -239,7 +239,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/node --check/);
-  });
+  }, 15_000);
 
   it('fails when a literal require() targets a third-party module', async () => {
     const root = await makeTempDir('verify-dist-thirdparty-');
@@ -247,7 +247,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/non-builtin\/third-party require\("left-pad"\)/);
-  });
+  }, 15_000);
 
   it('fails when a literal require() targets a relative path', async () => {
     const root = await makeTempDir('verify-dist-relative-');
@@ -255,7 +255,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/non-builtin\/third-party require/);
-  });
+  }, 15_000);
 
   it('ignores require() examples in comments and string data', async () => {
     const root = await makeTempDir('verify-dist-example-');
@@ -263,7 +263,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
-  });
+  }, 15_000);
 
   it('accepts bare and node: builtin require() specifiers', async () => {
     const rootBare = await makeTempDir('verify-dist-bare-');
@@ -277,7 +277,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const prefixed = await runVerify(rootPrefixed);
     expect(prefixed.stderr).toBe('');
     expect(prefixed.code).toBe(0);
-  });
+  }, 15_000);
 
   it('accepts the documented optional peer allowlist', async () => {
     const root = await makeTempDir('verify-dist-peer-');
@@ -285,5 +285,5 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
-  });
+  }, 15_000);
 });

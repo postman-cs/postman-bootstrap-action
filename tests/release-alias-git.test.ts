@@ -69,7 +69,7 @@ describe('release alias git dereference fixtures', { timeout: 30_000 }, () => {
     expect(git(repo, ['rev-parse', 'v2.9.8-light'])).toBe(candidate);
     expect(git(repo, ['rev-parse', 'v2.9.8-annotated'])).not.toBe(candidate);
     expect(git(repo, ['cat-file', '-t', 'v2.9.8-annotated'])).toBe('tag');
-  });
+  }, 15_000);
 
   it('reads package.json through ^{commit} for lightweight and annotated rolling aliases', () => {
     const repo = createTempRepo();
@@ -94,7 +94,7 @@ describe('release alias git dereference fixtures', { timeout: 30_000 }, () => {
     expect(git(repo, ['rev-parse', 'v2-annotated^{commit}'])).toBe(candidate);
     expect(packageVersionAt(repo, 'v2-light^{commit}')).toBe('2.9.8');
     expect(packageVersionAt(repo, 'v2-annotated^{commit}')).toBe('2.9.8');
-  });
+  }, 15_000);
 
   it('proves annotated tag object SHA differs from the peeled candidate commit', () => {
     const repo = createTempRepo();
@@ -110,5 +110,5 @@ describe('release alias git dereference fixtures', { timeout: 30_000 }, () => {
     git(repo, ['checkout', '--detach', 'v2.9.8']);
     expect(git(repo, ['rev-parse', 'HEAD^{commit}'])).toBe(candidate);
     expect(packageVersionAt(repo, 'HEAD^{commit}')).toBe('2.9.8');
-  });
+  }, 15_000);
 });

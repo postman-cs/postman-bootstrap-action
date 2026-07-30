@@ -210,7 +210,7 @@ describe('release artifact verifier', () => {
       package_version: ZERO_PATCH_VERSION,
       tag: ZERO_PATCH_TAG
     });
-  });
+  }, 15_000);
 
   it('rejects wrong repository, SHA, tag, package version, and checksum', () => {
     expect(() => verify(fixture({ manifestOverrides: { repository: 'wrong/repository' } }))).toThrow(/repository/);
@@ -225,7 +225,7 @@ describe('release artifact verifier', () => {
     manifest.artifacts[0].sha256 = '0'.repeat(64);
     writeFileSync(join(wrongChecksum, 'release-manifest.json'), JSON.stringify(manifest));
     expect(() => verify(wrongChecksum)).toThrow(/checksum/);
-  });
+  }, 15_000);
 
   it('rejects malformed tar, missing/extra/manifest-approved extra, duplicate, symlink, and non-regular files', () => {
     expect(() => verify(fixture({ malformedTar: true }))).toThrow(/package\/package\.json|tarball|JSON/i);
@@ -242,12 +242,12 @@ describe('release artifact verifier', () => {
     expect(() => verify(fixture({ duplicateManifestEntry: true }))).toThrow(/duplicate/);
     expect(() => verify(fixture({ symlinkSea: true }))).toThrow(/symlink/);
     expect(() => verify(fixture({ nonRegularSea: true }))).toThrow(/regular file|allowlist|missing/i);
-  });
+  }, 15_000);
 
   it('rejects mismatched and wrong-name SEA sidecars', () => {
     expect(() => verify(fixture({ wrongSidecarDigest: true }))).toThrow(/sidecar|checksum/i);
     expect(() => verify(fixture({ wrongSidecarName: true }))).toThrow(/sidecar/i);
-  });
+  }, 15_000);
 });
 
 describe('npm SRI helpers', () => {
@@ -262,7 +262,7 @@ describe('npm SRI helpers', () => {
     expect(() => verifySha512Sri(join(directory, 'release.tgz'), 'sha512-AAAAAAAAAAAAAAAAAAAAAA==')).toThrow(
       /integrity/
     );
-  });
+  }, 15_000);
 
   it('distinguishes explicit E404 from outage and auth failures', () => {
     expect(isExplicitNpmE404('npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/pkg')).toBe(

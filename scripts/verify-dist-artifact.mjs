@@ -35,6 +35,7 @@ const defaultRoot = path.resolve(scriptDir, '..');
 const root = path.resolve(process.argv[2] ?? defaultRoot);
 const distDir = path.join(root, 'dist');
 const SHEBANG = '#!/usr/bin/env node\n';
+const CLI_PROBE_TIMEOUT_MS = 5_000;
 
 // Optional third-party peers that bundled runtimes (e.g. node-fetch) try to
 // require and swallow on failure. These are NOT runtime dependencies of the
@@ -449,8 +450,12 @@ function assertDirectHelpAndVersion() {
     const help = spawnSync(command, [...cliArgs, '--help'], {
       cwd: root,
       encoding: 'utf8',
-      env: sandboxedEnv
+      env: sandboxedEnv,
+      timeout: CLI_PROBE_TIMEOUT_MS
     });
+    if (help.error?.code === 'ETIMEDOUT') {
+      fail(`direct ${CLI_REL} --help timed out after ${CLI_PROBE_TIMEOUT_MS}ms`);
+    }
     if (help.status !== 0) {
       fail(`direct ${CLI_REL} --help exited ${help.status}: ${help.stderr || help.stdout}`);
     }
@@ -464,8 +469,12 @@ function assertDirectHelpAndVersion() {
     const version = spawnSync(command, [...cliArgs, '--version'], {
       cwd: root,
       encoding: 'utf8',
-      env: sandboxedEnv
+      env: sandboxedEnv,
+      timeout: CLI_PROBE_TIMEOUT_MS
     });
+    if (version.error?.code === 'ETIMEDOUT') {
+      fail(`direct ${CLI_REL} --version timed out after ${CLI_PROBE_TIMEOUT_MS}ms`);
+    }
     if (version.status !== 0) {
       fail(`direct ${CLI_REL} --version exited ${version.status}: ${version.stderr || version.stdout}`);
     }

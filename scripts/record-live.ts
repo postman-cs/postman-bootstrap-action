@@ -1,8 +1,4 @@
-import {
-  createEmptyCassette,
-  createRecordingFetch,
-  type Cassette
-} from '@postman-cse/automation-core/cassette';
+import { createEmptyCassette, type Cassette } from '@postman-cse/automation-core/cassette';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -11,9 +7,15 @@ import { pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 
 import type { CoreLike, PlannedOutputs, runAction as RunAction } from '../src/index.js';
+import { createSanitizableRecordingFetch } from './recording-capture.js';
 
 const PACKAGE_ROOT = path.resolve(import.meta.dirname, '..');
 const WORKSPACE_ROOT = path.resolve(PACKAGE_ROOT, '../..');
+const RECORDER_CREDENTIAL_ENVIRONMENT = new Set([
+  'POSTMAN_API_KEY',
+  'POSTMAN_E2E_API_KEY_NON_ORG_MODE',
+  'POSTMAN_ACCESS_TOKEN'
+]);
 
 export const RAW_CASSETTE_DIRECTORY = 'integration/cassettes/raw';
 
@@ -61,6 +63,12 @@ export interface RecordingResult {
   scenario: string;
 }
 
+export interface RecordLiveRuntimeOptions {
+  fetchImpl?: typeof fetch;
+  rawOutputRoot?: string;
+  runAction?: typeof RunAction;
+}
+
 interface MutableSecretMasker {
   add(value: string | undefined): void;
   mask(value: string): string;
@@ -71,6 +79,12 @@ function readEnvironmentFile(filePath: string): NodeJS.ProcessEnv {
   return parseEnv(readFileSync(filePath, 'utf8'));
 }
 
+function withoutRecorderCredentials(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([name]) => !RECORDER_CREDENTIAL_ENVIRONMENT.has(name))
+  );
+}
+
 export function loadRecorderEnvironment(
   options: RecorderEnvironmentOptions = {}
 ): LoadedRecorderEnvironment {
@@ -79,12 +93,13 @@ export function loadRecorderEnvironment(
   const workspaceFile = path.join(workspaceRoot, '.env');
   const packageFile = path.join(packageRoot, '.env');
   const loadedFiles = [workspaceFile, packageFile].filter((filePath) => existsSync(filePath));
+  const ambientEnv = options.ambientEnv ?? process.env;
 
   return {
     env: {
       ...readEnvironmentFile(workspaceFile),
       ...readEnvironmentFile(packageFile),
-      ...(options.ambientEnv ?? process.env)
+      ...withoutRecorderCredentials(ambientEnv)
     },
     loadedFiles
   };
@@ -231,7 +246,8 @@ function applyRecordingEnvironment(env: NodeJS.ProcessEnv): void {
 
 export async function recordLiveScenario(
   scenarioName: string,
-  loadedEnvironment: LoadedRecorderEnvironment = loadRecorderEnvironment()
+  loadedEnvironment: LoadedRecorderEnvironment = loadRecorderEnvironment(),
+  runtime: RecordLiveRuntimeOptions = {}
 ): Promise<RecordingResult> {
   assertLocalRecording(loadedEnvironment.env);
   const scenario = selectRecorderScenario(scenarioName);
@@ -254,21 +270,25 @@ export async function recordLiveScenario(
     secrets
   );
   const cassette = createEmptyCassette();
-  const liveFetch = globalThis.fetch;
-  globalThis.fetch = createRecordingFetch(liveFetch, cassette, secrets.mask);
+  const originalFetch = globalThis.fetch;
+  const liveFetch = runtime.fetchImpl ?? originalFetch;
+  globalThis.fetch = createSanitizableRecordingFetch(liveFetch, cassette, secrets.mask);
 
   let outputs: PlannedOutputs;
   let runError: unknown;
   try {
-    outputs = await loadRunAction()(core);
+    outputs = await (runtime.runAction ?? loadRunAction())(core);
   } catch (error) {
     runError = error;
     outputs = core.outputs as unknown as PlannedOutputs;
   } finally {
-    globalThis.fetch = liveFetch;
+    globalThis.fetch = originalFetch;
   }
 
-  const outputPath = path.join(PACKAGE_ROOT, RAW_CASSETTE_DIRECTORY, `${scenario.name}.json`);
+  const outputPath = path.join(
+    runtime.rawOutputRoot ?? path.join(PACKAGE_ROOT, RAW_CASSETTE_DIRECTORY),
+    `${scenario.name}.json`
+  );
   await mkdir(path.dirname(outputPath), { recursive: true, mode: 0o700 });
   await writeFile(outputPath, `${JSON.stringify(cassette, null, 2)}\n`, {
     encoding: 'utf8',

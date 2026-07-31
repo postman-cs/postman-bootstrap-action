@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   CASSETTE_MINTED_TOKEN,
+  cassetteRequest,
   type Cassette,
   type CassetteInteraction
 } from '@postman-cse/automation-core/cassette';
@@ -77,6 +78,8 @@ interface ReplacementPlan {
 }
 
 type JsonRecord = Record<string, unknown>;
+
+type RawCassetteInteraction = CassetteInteraction & { rawRequestBody?: unknown };
 
 const CATEGORY_ORDER: EntityCategory[] = [
   'workspace',
@@ -294,6 +297,34 @@ function collectFromBody(
   }
 }
 
+function collectRequestSecrets(
+  value: unknown,
+  interactionKey: string,
+  secrets: Map<string, string>
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectRequestSecrets(entry, interactionKey, secrets));
+    return;
+  }
+  const record = asRecord(value);
+  if (!record) return;
+  for (const [name, entry] of Object.entries(record)) {
+    const normalizedName = normalizeName(name);
+    if (isSensitiveName(name) && (typeof entry === 'string' || typeof entry === 'number')) {
+      const raw = String(entry).trim();
+      if (raw) {
+        secrets.set(
+          raw,
+          normalizedName === 'accesstoken' && isMintKey(interactionKey)
+            ? CASSETTE_MINTED_TOKEN
+            : REDACTED
+        );
+      }
+    }
+    collectRequestSecrets(entry, interactionKey, secrets);
+  }
+}
+
 function collectRouteIds(
   key: string,
   candidates: Record<EntityCategory, Candidate>
@@ -329,6 +360,15 @@ function replacementPlan(cassette: Cassette): ReplacementPlan {
     } catch {
       collectFromBody(interaction.body, [], interaction.key, candidates, secrets);
     }
+    const rawRequestBody = (interaction as RawCassetteInteraction).rawRequestBody;
+    if (typeof rawRequestBody === 'string') {
+      try {
+        collectRequestSecrets(JSON.parse(rawRequestBody), interaction.key, secrets);
+      } catch {
+        // A non-JSON request has no named secret field to inspect; do not infer
+        // identity replacements from raw request bytes.
+      }
+    }
     for (const [name, value] of Object.entries(interaction.responseHeaders)) {
       if (SENSITIVE_RESPONSE_HEADER_NAMES.has(name.toLowerCase()) && value !== REDACTED) {
         secrets.set(value, REDACTED);
@@ -360,7 +400,7 @@ function replaceLiteral(value: string, raw: string, replacement: string): string
   return result;
 }
 
-function sanitizeTextSegment(value: string, plan: ReplacementPlan): string {
+function applyPlanReplacements(value: string, plan: ReplacementPlan): string {
   let sanitized = value;
   const replacements = [
     ...[...plan.secrets].map(([raw, replacement]) => ({ raw, replacement })),
@@ -372,6 +412,11 @@ function sanitizeTextSegment(value: string, plan: ReplacementPlan): string {
   for (const { raw, replacement } of replacements) {
     sanitized = replaceLiteral(sanitized, raw, replacement);
   }
+  return sanitized;
+}
+
+function sanitizeTextSegment(value: string, plan: ReplacementPlan): string {
+  const sanitized = applyPlanReplacements(value, plan);
   return sanitized
     .replace(POSTMAN_UID_PATTERN, (match) => `cassette-uid-${match.length}`)
     .replace(UUID_PATTERN, (match) =>
@@ -457,11 +502,61 @@ function sanitizeBody(body: string, plan: ReplacementPlan, interactionKey: strin
   }
 }
 
+function sanitizeRequestBody(body: string, plan: ReplacementPlan): string {
+  // Request bytes are part of the replay key. Replace values without reserializing
+  // JSON, and only substitute values proven by the replacement plan. Generic
+  // redaction would alter request-only generated IDs that the replay emits again.
+  return applyPlanReplacements(body, plan);
+}
+
+function recomputeRequest(
+  key: string,
+  rawRequestBody: string
+): Pick<CassetteInteraction, 'key' | 'requestQuery' | 'requestBodySha256'> {
+  if (key.startsWith('proxy:')) {
+    return cassetteRequest('https://cassette.invalid/ws/proxy', 'POST', rawRequestBody);
+  }
+  const match = /^([A-Z]+) (https?:\/\/[^ ?#]+)(?:\?([^ #]*))?/.exec(key);
+  if (!match) {
+    throw new Error(`Cannot recompute cassette request from key "${key}"`);
+  }
+  const [, method, originAndPath, query = ''] = match;
+  return cassetteRequest(
+    `${originAndPath}${query ? `?${query}` : ''}`,
+    method,
+    rawRequestBody
+  );
+}
+
 function sanitizeInteraction(
   interaction: CassetteInteraction,
   plan: ReplacementPlan
 ): CassetteInteraction {
-  const key = sanitizeText(interaction.key, plan);
+  const rawRequestBody = (interaction as RawCassetteInteraction).rawRequestBody;
+  if (rawRequestBody !== undefined && typeof rawRequestBody !== 'string') {
+    throw new Error('Raw cassette interaction rawRequestBody must be a string');
+  }
+  const sanitizedKey = sanitizeText(interaction.key, plan);
+  const sanitizedRequestQuery = sanitizeText(interaction.requestQuery, plan);
+  const sanitizedBody = sanitizeBody(interaction.body, plan, sanitizedKey);
+  if (
+    interaction.requestBodySha256 &&
+    rawRequestBody === undefined &&
+    (sanitizedKey !== interaction.key ||
+      sanitizedRequestQuery !== interaction.requestQuery ||
+      sanitizedBody !== interaction.body)
+  ) {
+    throw new Error(
+      'Cannot sanitize digest-bearing raw cassette interaction without rawRequestBody for safe rekeying'
+    );
+  }
+  const request = rawRequestBody === undefined
+    ? {
+        key: sanitizedKey,
+        requestQuery: sanitizedRequestQuery,
+        ...(interaction.requestBodySha256 ? { requestBodySha256: interaction.requestBodySha256 } : {})
+      }
+    : recomputeRequest(sanitizedKey, sanitizeRequestBody(rawRequestBody, plan));
   const responseHeaders = Object.fromEntries(
     Object.entries(interaction.responseHeaders)
       .map(([name, value]) => {
@@ -474,14 +569,10 @@ function sanitizeInteraction(
       .sort(([left], [right]) => left.localeCompare(right))
   );
   return {
-    key,
-    requestQuery: sanitizeText(interaction.requestQuery, plan),
-    ...(interaction.requestBodySha256
-      ? { requestBodySha256: interaction.requestBodySha256 }
-      : {}),
+    ...request,
     status: interaction.status,
     ...(interaction.statusText ? { statusText: interaction.statusText } : {}),
-    body: sanitizeBody(interaction.body, plan, key),
+    body: sanitizedBody,
     responseHeaders,
     ...(interaction.repeatLast ? { repeatLast: true } : {})
   };
@@ -559,9 +650,16 @@ function assertSafeIdentityValue(
   }
 }
 
-function assertBodyRedacted(value: unknown, path: string[], location: string): void {
+function assertBodyRedacted(
+  value: unknown,
+  path: string[],
+  location: string,
+  interactionKey: string
+): void {
   if (Array.isArray(value)) {
-    value.forEach((entry, index) => assertBodyRedacted(entry, [...path, String(index)], location));
+    value.forEach((entry, index) =>
+      assertBodyRedacted(entry, [...path, String(index)], location, interactionKey)
+    );
     return;
   }
   const record = asRecord(value);
@@ -581,14 +679,11 @@ function assertBodyRedacted(value: unknown, path: string[], location: string): v
           throw new Error(`Cassette redaction invariant failed at ${location}: live ${name} value`);
         }
       }
-      const category = categoryForEntry(record, name, path, '');
-      if (
-        (category === 'team' || category === 'user' || category === 'run') &&
-        (typeof entry === 'string' || typeof entry === 'number')
-      ) {
+      const category = categoryForEntry(record, name, path, interactionKey);
+      if (category && (typeof entry === 'string' || typeof entry === 'number')) {
         assertSafeIdentityValue(name, entry, category, location);
       }
-      assertBodyRedacted(entry, [...path, name], location);
+      assertBodyRedacted(entry, [...path, name], location, interactionKey);
     }
     return;
   }
@@ -602,6 +697,9 @@ export function assertCassetteRedacted(value: unknown): asserts value is Cassett
   }
   value.interactions.forEach((interaction, index) => {
     const location = `interactions[${index}]`;
+    if ('rawRequestBody' in interaction) {
+      throw new Error(`Cassette redaction invariant failed at ${location}: rawRequestBody`);
+    }
     assertNoForbiddenText(interaction.key, `${location}.key`);
     assertNoForbiddenText(interaction.requestQuery, `${location}.requestQuery`);
     for (const [name, headerValue] of Object.entries(interaction.responseHeaders)) {
@@ -611,7 +709,7 @@ export function assertCassetteRedacted(value: unknown): asserts value is Cassett
       assertNoForbiddenText(headerValue, `${location}.responseHeaders.${name}`);
     }
     try {
-      assertBodyRedacted(JSON.parse(interaction.body), [], `${location}.body`);
+      assertBodyRedacted(JSON.parse(interaction.body), [], `${location}.body`, interaction.key);
     } catch (error) {
       if (error instanceof SyntaxError) assertNoForbiddenText(interaction.body, `${location}.body`);
       else throw error;

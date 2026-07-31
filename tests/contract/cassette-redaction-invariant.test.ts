@@ -22,4 +22,21 @@ describe('contract: committed cassette redaction invariant', () => {
       expect(() => assertCassetteRedacted(cassette), name).not.toThrow();
     }
   });
+
+  it('rejects raw capture material before it can enter a committed cassette', () => {
+    const poisoned = {
+      version: 2 as const,
+      interactions: [{
+        key: 'POST https://api.getpostman.com/collections #body-sha256=0000000000000000000000000000000000000000000000000000000000000000',
+        requestQuery: '',
+        requestBodySha256: '0000000000000000000000000000000000000000000000000000000000000000',
+        rawRequestBody: '{"id":"12345678-1234-4234-8234-123456789abc","email":"operator@example.com","apiKey":"PMAK-live-secret"}',
+        status: 200,
+        body: '{}',
+        responseHeaders: {}
+      }]
+    };
+
+    expect(() => assertCassetteRedacted(poisoned)).toThrow(/rawRequestBody|raw capture/i);
+  });
 });

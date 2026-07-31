@@ -1,17 +1,21 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { createReplayFetch } from '@postman-cse/automation-core/cassette';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   RAW_CASSETTE_DIRECTORY,
   assertLocalRecording,
   loadRecorderEnvironment,
   parseRecordLiveArgs,
+  recordLiveScenario,
   selectRecorderScenario
 } from '../scripts/record-live.js';
+import { sanitizeCassetteFile } from '../scripts/sanitize-cassette.js';
+import type { PlannedOutputs } from '../src/index.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const temporaryDirectories: string[] = [];
@@ -29,7 +33,7 @@ afterEach(() => {
 });
 
 describe('record-live environment', () => {
-  it('prefers ambient env, then package .env, then the workspace-root fallback', () => {
+  it('prefers ambient ordinary environment variables over package and workspace .env values', () => {
     const workspaceRoot = temporaryDirectory();
     const localPackageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
     mkdirSync(localPackageRoot, { recursive: true });
@@ -62,6 +66,58 @@ describe('record-live environment', () => {
     ]);
   });
 
+  it('ignores ambient PMAK and access-token credentials', () => {
+    const workspaceRoot = temporaryDirectory();
+    const localPackageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
+    mkdirSync(localPackageRoot, { recursive: true });
+
+    const loaded = loadRecorderEnvironment({
+      ambientEnv: {
+        POSTMAN_API_KEY: 'ambient-pmak',
+        POSTMAN_E2E_API_KEY_NON_ORG_MODE: 'ambient-e2e-pmak',
+        POSTMAN_ACCESS_TOKEN: 'ambient-access-token'
+      },
+      packageRoot: localPackageRoot,
+      workspaceRoot
+    });
+
+    expect(loaded.env).not.toHaveProperty('POSTMAN_API_KEY');
+    expect(loaded.env).not.toHaveProperty('POSTMAN_E2E_API_KEY_NON_ORG_MODE');
+    expect(loaded.env).not.toHaveProperty('POSTMAN_ACCESS_TOKEN');
+  });
+
+  it('loads credentials from .env with package precedence over workspace', () => {
+    const workspaceRoot = temporaryDirectory();
+    const localPackageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
+    mkdirSync(localPackageRoot, { recursive: true });
+    writeFileSync(
+      path.join(workspaceRoot, '.env'),
+      'POSTMAN_API_KEY=workspace-pmak\nPOSTMAN_E2E_API_KEY_NON_ORG_MODE=workspace-e2e-pmak\nPOSTMAN_ACCESS_TOKEN=workspace-access-token\n',
+      'utf8'
+    );
+    writeFileSync(
+      path.join(localPackageRoot, '.env'),
+      'POSTMAN_API_KEY=package-pmak\nPOSTMAN_ACCESS_TOKEN=package-access-token\n',
+      'utf8'
+    );
+
+    const loaded = loadRecorderEnvironment({
+      ambientEnv: {
+        POSTMAN_API_KEY: 'ambient-pmak',
+        POSTMAN_E2E_API_KEY_NON_ORG_MODE: 'ambient-e2e-pmak',
+        POSTMAN_ACCESS_TOKEN: 'ambient-access-token'
+      },
+      packageRoot: localPackageRoot,
+      workspaceRoot
+    });
+
+    expect(loaded.env).toMatchObject({
+      POSTMAN_API_KEY: 'package-pmak',
+      POSTMAN_E2E_API_KEY_NON_ORG_MODE: 'workspace-e2e-pmak',
+      POSTMAN_ACCESS_TOKEN: 'package-access-token'
+    });
+  });
+
   it.each([{ CI: '' }, { CI: 'false' }, { CI: 'true' }])(
     'refuses recording whenever CI is set: %j',
     (env) => {
@@ -71,6 +127,16 @@ describe('record-live environment', () => {
 });
 
 describe('record-live output safety', () => {
+  it('uses the sanitizable recorder wrapper for shipped live recordings', () => {
+    const source = readFileSync(path.join(packageRoot, 'scripts', 'record-live.ts'), 'utf8');
+
+    expect(source).toContain(
+      "import { createSanitizableRecordingFetch } from './recording-capture.js';"
+    );
+    expect(source).toContain('createSanitizableRecordingFetch(liveFetch, cassette, secrets.mask)');
+    expect(source).not.toContain('createRecordingFetch(liveFetch, cassette, secrets.mask)');
+  });
+
   it('keeps the raw cassette directory covered by gitignore', () => {
     const candidate = path.join(packageRoot, RAW_CASSETTE_DIRECTORY, 'fresh-onboard.json');
     expect(() =>
@@ -83,6 +149,69 @@ describe('record-live output safety', () => {
 });
 
 describe('record-live scenarios', () => {
+  it('records, sanitizes, and replays the shipped recorder path without live replay calls', async () => {
+    const workspaceRoot = temporaryDirectory();
+    const localPackageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
+    const rawOutputRoot = path.join(workspaceRoot, 'raw');
+    const committedOutputPath = path.join(workspaceRoot, 'committed', 'fresh-onboard.json');
+    const liveWorkspaceId = '12345678-1234-4234-8234-123456789abc';
+    const createUrl = 'https://example.test/workspaces';
+    mkdirSync(localPackageRoot, { recursive: true });
+    writeFileSync(path.join(localPackageRoot, '.env'), 'POSTMAN_API_KEY=PMAK-test-key\n', 'utf8');
+    const loadedEnvironment = loadRecorderEnvironment({
+      ambientEnv: { POSTMAN_API_KEY: 'PMAK-ambient-key' },
+      packageRoot: localPackageRoot,
+      workspaceRoot
+    });
+    const liveFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === createUrl) {
+        return new Response(JSON.stringify({ data: { id: liveWorkspaceId }, apiKey: 'PMAK-live-key' }), {
+          status: 201,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      return new Response('ok', { status: 200 });
+    });
+    const runAction = async (): Promise<PlannedOutputs> => {
+      const created = await globalThis.fetch(createUrl, { method: 'POST' });
+      const body = (await created.json()) as { data: { id: string } };
+      await globalThis.fetch(`${createUrl}/${body.data.id}/settings`, {
+        method: 'PATCH',
+        body: JSON.stringify({ workspaceId: body.data.id, enabled: true })
+      });
+      return {} as PlannedOutputs;
+    };
+
+    const recorded = await recordLiveScenario('fresh-onboard', loadedEnvironment, {
+      fetchImpl: liveFetch,
+      rawOutputRoot,
+      runAction
+    });
+    const raw = JSON.parse(readFileSync(recorded.outputPath, 'utf8')) as {
+      interactions: Array<{ rawRequestBody?: string }>;
+    };
+
+    expect(recorded.outputPath).toBe(path.join(rawOutputRoot, 'fresh-onboard.json'));
+    expect(raw.interactions[1]?.rawRequestBody).toContain(liveWorkspaceId);
+
+    const sanitized = sanitizeCassetteFile(recorded.outputPath, committedOutputPath);
+    const committed = readFileSync(committedOutputPath, 'utf8');
+    expect(committed).not.toContain('PMAK-');
+    expect(committed).not.toContain('rawRequestBody');
+
+    const replay = createReplayFetch(structuredClone(sanitized));
+    const replayedCreate = await replay(createUrl, { method: 'POST' });
+    const replayedBody = (await replayedCreate.json()) as { data: { id: string } };
+    await expect(
+      replay(`${createUrl}/${replayedBody.data.id}/settings`, {
+        method: 'PATCH',
+        body: JSON.stringify({ workspaceId: replayedBody.data.id, enabled: true })
+      }).then((response) => response.text())
+    ).resolves.toBe('ok');
+    expect(liveFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('defaults to fresh-onboard and accepts explicit selection', () => {
     expect(parseRecordLiveArgs([])).toEqual({ scenario: 'fresh-onboard' });
     expect(parseRecordLiveArgs(['--scenario', 'fresh-onboard'])).toEqual({

@@ -16,44 +16,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  createEmptyCassette,
-  createRecordingFetch,
-  type Cassette
-} from '@postman-cse/automation-core/cassette';
+import { createEmptyCassette } from '@postman-cse/automation-core/cassette';
 
 import { createSecretMasker } from '../../../src/lib/secrets.js';
+import { createSanitizableRecordingFetch } from '../../../scripts/recording-capture.js';
 import { sanitizeCassette, stableCassetteJson } from '../../../scripts/sanitize-cassette.js';
 import { createPlatformFake } from '../platform-fake.js';
 import { runContractAction, runWithFakeTimers } from '../harness.js';
 import { CASSETTE_SCENARIOS, CASSETTE_SCENARIO_ENV } from './scenarios.js';
 import { applyRepeatableReads, cassettePath } from './replay.js';
-
-/**
- * `sanitizeCassette` parameterizes path segments via `collectRouteIds`, which
- * misclassifies stable route literals (`filesystem`, `deepupdate`) as entity ids.
- * Restore those literals so replay keys match the action's wire contract.
- */
-function repairSanitizedScenarioRouteKeys(cassette: Cassette): Cassette {
-  const repairKey = (key: string): string =>
-    key
-      .replace(
-        /PUT \/collection\/cassette-collection-\d+\/(cassette-collection-\d+)/g,
-        'PUT /collection/deepupdate/$1'
-      )
-      .replace(
-        /GET \/workspaces\/cassette-workspace-\d+\?(?=.*\bpath=)(?=.*\brepo=)/,
-        'GET /workspaces/filesystem?'
-      );
-
-  return {
-    ...cassette,
-    interactions: cassette.interactions.map((interaction) => ({
-      ...interaction,
-      key: repairKey(interaction.key)
-    }))
-  };
-}
 
 const { uuidSequence } = vi.hoisted(() => ({ uuidSequence: { next: 0 } }));
 
@@ -73,7 +44,7 @@ describe.skipIf(!ENABLED)('record: scenario cassettes from the platform fake', (
     it(`records ${scenario.name}`, async () => {
       const cassette = createEmptyCassette();
       const fake = createPlatformFake(scenario.fake ?? {});
-      const recording = createRecordingFetch(
+      const recording = createSanitizableRecordingFetch(
         fake.fetch,
         cassette,
         createSecretMasker([...scenario.secrets, 'minted-access-token'])
@@ -100,7 +71,7 @@ describe.skipIf(!ENABLED)('record: scenario cassettes from the platform fake', (
       writeFileSync(
         target,
         stableCassetteJson(
-          applyRepeatableReads(repairSanitizedScenarioRouteKeys(sanitizeCassette(cassette)))
+          applyRepeatableReads(sanitizeCassette(cassette))
         )
       );
       expect(resolve(target)).toBe(target);

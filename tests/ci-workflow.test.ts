@@ -172,6 +172,7 @@ describe('CI workflow dist/pack race contract', () => {
     expect(linuxQueuedGates(runGates)).toEqual([
       'lint',
       'test',
+      'routes',
       'typecheck',
       'dist',
       'integ',
@@ -180,6 +181,7 @@ describe('CI workflow dist/pack race contract', () => {
     ]);
     expect(runGates).toContain('run lint       npm run lint');
     expect(runGates).toContain('run test       npm test');
+    expect(runGates).toContain('run routes     npm run verify:route-manifest');
     expect(runGates).toContain('run typecheck  npm run typecheck');
     expect(runGates).toContain('run dist       npm run verify:dist:assert');
     expect(runGates).toContain('run integ      npm run test:integration');

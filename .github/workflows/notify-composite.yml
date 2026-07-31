@@ -6,9 +6,11 @@ name: Notify Composite
 # so `release: published` never fires in this repo; chaining off the Release
 # workflow_run is the reliable seam.
 #
-# The dispatch crosses repositories, which GITHUB_TOKEN cannot do. It is sent
-# only when a SIBLING_PIN_TOKEN secret (repo scope on the composite) is
-# configured; without it the composite's cron still picks the release up.
+# The dispatch crosses repositories, which GITHUB_TOKEN cannot do. The
+# postman-suite-pin-bot GitHub App (org-owned, installed on the five suite
+# repos) mints a one-hour installation token scoped to the composite repo for
+# the call; no long-lived credential is stored. If the App secrets are absent
+# the composite's daily cron still picks the release up.
 
 on:
   workflow_run:
@@ -22,13 +24,23 @@ jobs:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
+      - name: Mint composite-scoped App token
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUITE_PIN_BOT_APP_ID }}
+          private-key: ${{ secrets.SUITE_PIN_BOT_PRIVATE_KEY }}
+          owner: postman-cs
+          repositories: postman-api-onboarding-action
+
       - name: Dispatch sibling-release to the composite
         env:
-          GH_TOKEN: ${{ secrets.SIBLING_PIN_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           if [ -z "$GH_TOKEN" ]; then
-            echo "::notice::SIBLING_PIN_TOKEN is not configured; the composite's daily cron will pick this release up."
+            echo "::notice::App token unavailable (secrets missing or mint failed); the composite's daily cron will pick this release up."
             exit 0
           fi
           gh api repos/postman-cs/postman-api-onboarding-action/dispatches \

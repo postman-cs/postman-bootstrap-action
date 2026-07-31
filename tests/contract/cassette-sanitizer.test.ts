@@ -32,7 +32,6 @@ vi.mock('node:crypto', async (importOriginal) => {
 });
 
 const POISONED_FIXTURE = resolve('tests/fixtures/poisoned-cassette.json');
-const COMMITTED_LIVE_CASSETTE = resolve('tests/contract/cassettes/fresh-onboard-live.json');
 const BIFROST_URL = 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy';
 const RAW_WORKSPACE_ID = 'ac13d5c7-1c42-4db4-9287-927310770201';
 const RAW_SPECIFICATION_ID = 'bc13d5c7-1c42-4db4-9287-927310770201';
@@ -425,12 +424,4 @@ describe('contract: cassette sanitizer', () => {
     expect(liveFetch).not.toHaveBeenCalled();
   });
 
-  it('loads the committed sanitized live fresh-onboard cassette', () => {
-    const cassette = JSON.parse(readFileSync(COMMITTED_LIVE_CASSETTE, 'utf8')) as Cassette;
-
-    expect(cassette.version).toBe(2);
-    expect(cassette.recordedAt).toBe('2000-01-01T00:00:00.000Z');
-    expect(cassette.interactions).toHaveLength(50);
-    expect(() => assertCassetteRedacted(cassette)).not.toThrow();
-  });
 });

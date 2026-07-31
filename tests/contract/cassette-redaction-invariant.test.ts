@@ -14,7 +14,17 @@ describe('contract: committed cassette redaction invariant', () => {
       .filter((name) => name.endsWith('.json'))
       .sort();
 
-    expect(cassetteFiles.length).toBeGreaterThan(0);
+    // Additions require explicit redaction and behavioral replay classification.
+    expect(cassetteFiles).toEqual([
+      'branch-preview.json',
+      'fresh-onboard.json',
+      'large-spec.json',
+      'multifile-openapi.json',
+      'non-org-visibility-flip.json',
+      'org-mode.json',
+      'protobuf-grpc.json',
+      'refresh-deep-update.json'
+    ]);
     for (const name of cassetteFiles) {
       const cassette = JSON.parse(
         readFileSync(resolve(COMMITTED_CASSETTES, name), 'utf8')

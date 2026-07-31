@@ -16,6 +16,8 @@
  * capture drops in without a test change.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { createReplayFetch } from '@postman-cse/automation-core/cassette';
 
 import { runContractAction, runWithFakeTimers } from './harness.js';
@@ -102,5 +104,9 @@ describe('contract: cassette scenario suite (offline replay)', () => {
       'protobuf-grpc',
       'refresh-deep-update'
     ]);
+    const cassetteFiles = readdirSync(join('tests', 'contract', 'cassettes'))
+      .filter((file) => file.endsWith('.json'))
+      .sort();
+    expect(cassetteFiles).toEqual(names.map((name) => `${name}.json`).sort());
   });
 });

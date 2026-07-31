@@ -321802,6 +321802,7 @@ var EMULATOR_PROFILE_NAME = "emulator";
 var ENDPOINT_OVERRIDE_ENV = {
   apiBaseUrl: "POSTMAN_TEST_API_BASE_URL",
   bifrostBaseUrl: "POSTMAN_TEST_BIFROST_BASE_URL",
+  gatewayBaseUrl: "POSTMAN_TEST_GATEWAY_BASE_URL",
   iapubBaseUrl: "POSTMAN_TEST_IAPUB_BASE_URL",
   appVersionBaseUrl: "POSTMAN_TEST_APP_VERSION_BASE_URL"
 };
@@ -321830,7 +321831,7 @@ function normalizeEndpointOverride(envName, raw) {
 }
 function assertNoUnarmedOverrides(env) {
   const set2 = OVERRIDE_FIELDS.map((field) => ENDPOINT_OVERRIDE_ENV[field]).filter(
-    (name) => readEndpointEnv(env, name)
+    (name) => Object.hasOwn(env, name)
   );
   if (set2.length > 0) {
     throw new Error(
@@ -348530,8 +348531,8 @@ function parseAssetMarker(description) {
 // validation/evidence/multifile-spec-sync.json
 var multifile_spec_sync_default = {
   schemaVersion: 1,
-  testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "3d17dbed4e5a01202055c13b0708a1da983fb8db",
+  testedAt: "2026-07-31T18:12:19.144Z",
+  bootstrapCommit: "43b238c47fe04e5ac114f39aad789994f7db4de0",
   legs: [
     {
       mode: "nonorg",

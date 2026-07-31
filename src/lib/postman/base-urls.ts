@@ -42,6 +42,7 @@ export const EMULATOR_PROFILE_NAME = 'emulator';
 export const ENDPOINT_OVERRIDE_ENV = {
   apiBaseUrl: 'POSTMAN_TEST_API_BASE_URL',
   bifrostBaseUrl: 'POSTMAN_TEST_BIFROST_BASE_URL',
+  gatewayBaseUrl: 'POSTMAN_TEST_GATEWAY_BASE_URL',
   iapubBaseUrl: 'POSTMAN_TEST_IAPUB_BASE_URL',
   appVersionBaseUrl: 'POSTMAN_TEST_APP_VERSION_BASE_URL'
 } as const;
@@ -79,7 +80,7 @@ function normalizeEndpointOverride(envName: string, raw: string): string {
 
 function assertNoUnarmedOverrides(env: EndpointEnvironment): void {
   const set = OVERRIDE_FIELDS.map((field) => ENDPOINT_OVERRIDE_ENV[field]).filter((name) =>
-    readEndpointEnv(env, name)
+    Object.hasOwn(env, name)
   );
   if (set.length > 0) {
     throw new Error(

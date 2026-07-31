@@ -16,6 +16,7 @@ function armed(overrides: Record<string, string>): Record<string, string | undef
 const COMPLETE_OVERRIDES = {
   [ENDPOINT_OVERRIDE_ENV.apiBaseUrl]: 'http://127.0.0.1:8081/api',
   [ENDPOINT_OVERRIDE_ENV.bifrostBaseUrl]: 'http://127.0.0.1:8082/bifrost',
+  [ENDPOINT_OVERRIDE_ENV.gatewayBaseUrl]: 'http://127.0.0.1:8085/gateway',
   [ENDPOINT_OVERRIDE_ENV.iapubBaseUrl]: 'http://127.0.0.1:8083/iapub',
   [ENDPOINT_OVERRIDE_ENV.appVersionBaseUrl]: 'http://127.0.0.1:8084/app-version'
 };
@@ -25,6 +26,7 @@ describe('bootstrap endpoint profile defaults', () => {
     expect(resolvePostmanEndpointProfile('prod', 'us', {})).toMatchObject({
       apiBaseUrl: 'https://api.getpostman.com',
       bifrostBaseUrl: 'https://bifrost-premium-https-v4.gw.postman.com',
+      gatewayBaseUrl: 'https://gateway.postman.com',
       iapubBaseUrl: 'https://iapub.postman.co',
       appVersionBaseUrl: 'https://dl.pstmn.io'
     });
@@ -34,6 +36,7 @@ describe('bootstrap endpoint profile defaults', () => {
     expect(resolvePostmanEndpointProfile('beta', 'us', {})).toMatchObject({
       apiBaseUrl: 'https://api.getpostman-beta.com',
       bifrostBaseUrl: 'https://bifrost-https-v4.gw.postman-beta.com',
+      gatewayBaseUrl: 'https://gateway.postman-beta.com',
       iapubBaseUrl: 'https://iapub.postman.co',
       appVersionBaseUrl: 'https://dl.pstmn.io'
     });
@@ -45,11 +48,12 @@ describe('bootstrap endpoint profile defaults', () => {
 });
 
 describe('bootstrap emulator endpoint profile', () => {
-  it('atomically redirects API, Bifrost, iapub, app-version, and cold fallback hosts', () => {
+  it('atomically redirects API, Bifrost, gateway, iapub, app-version, and cold fallback hosts', () => {
     expect(resolvePostmanEndpointProfile('prod', 'us', armed(COMPLETE_OVERRIDES))).toMatchObject({
       apiBaseUrl: 'http://127.0.0.1:8081/api',
       bifrostBaseUrl: 'http://127.0.0.1:8082/bifrost',
       fallbackBaseUrl: 'http://127.0.0.1:8082/bifrost',
+      gatewayBaseUrl: 'http://127.0.0.1:8085/gateway',
       iapubBaseUrl: 'http://127.0.0.1:8083/iapub',
       appVersionBaseUrl: 'http://127.0.0.1:8084/app-version'
     });
@@ -61,6 +65,7 @@ describe('bootstrap emulator endpoint profile', () => {
       postmanApiBase: 'http://127.0.0.1:8081/api',
       postmanBifrostBase: 'http://127.0.0.1:8082/bifrost',
       postmanFallbackBase: 'http://127.0.0.1:8082/bifrost',
+      postmanGatewayBase: 'http://127.0.0.1:8085/gateway',
       postmanIapubBase: 'http://127.0.0.1:8083/iapub',
       postmanAppVersionBase: 'http://127.0.0.1:8084/app-version'
     });
@@ -75,6 +80,7 @@ describe('bootstrap emulator endpoint profile', () => {
     expect(resolvePostmanEndpointProfile('beta', 'us', env)).toMatchObject({
       apiBaseUrl: 'http://127.0.0.1:8081/api',
       bifrostBaseUrl: 'http://127.0.0.1:8082/bifrost',
+      gatewayBaseUrl: 'http://127.0.0.1:8085/gateway',
       iapubBaseUrl: 'http://127.0.0.1:8083/iapub',
       appVersionBaseUrl: 'http://127.0.0.1:8084/app-version'
     });
@@ -86,6 +92,14 @@ describe('bootstrap emulator endpoint profile fail-closed validation', () => {
     expect(() =>
       resolvePostmanEndpointProfile('prod', 'us', {
         [ENDPOINT_OVERRIDE_ENV.apiBaseUrl]: COMPLETE_OVERRIDES[ENDPOINT_OVERRIDE_ENV.apiBaseUrl]
+      })
+    ).toThrow('ENDPOINT_PROFILE_NOT_ARMED');
+  });
+
+  it.each(['', '   '])('rejects an unarmed %j override before returning live hosts', (value) => {
+    expect(() =>
+      resolvePostmanEndpointProfile('prod', 'us', {
+        [ENDPOINT_OVERRIDE_ENV.gatewayBaseUrl]: value
       })
     ).toThrow('ENDPOINT_PROFILE_NOT_ARMED');
   });

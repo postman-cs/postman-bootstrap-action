@@ -10,7 +10,6 @@ import dynamicVariables from 'postman-collection/lib/superstring/dynamic-variabl
 
 import { bootstrapActionContract } from './contracts.js';
 import { GitHubApiClient } from './lib/github/github-api-client.js';
-import { HttpError } from './lib/http-error.js';
 import {
   createBreakingChangeSummaryJson,
   runOpenApiBreakingChangeCheck,
@@ -44,7 +43,7 @@ import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
 import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
-import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
+import { PostmanAppVersionProvider } from './lib/postman/app-version.js';
 import { AccessTokenProvider, mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
 import {
   definitionBundleToSnapshot,
@@ -62,12 +61,15 @@ import {
   type FinalizedLocalOpenApiArtifactManifest,
   type MaterializeLocalCollectionArtifactsResult
 } from './lib/repo/local-collection-artifacts.js';
-import { retry } from './lib/retry.js';
 import { createSecretMasker, createMutableSecretMasker, type SecretMasker } from './lib/secrets.js';
 import {
+  AccessTokenGatewayClient,
+  HttpError,
   actionSink,
   createLogger,
   createTelemetryContext,
+  retry,
+  type GatewayRetryEvent,
   type Logger,
   type TelemetryContext
 } from '@postman-cse/automation-core';
@@ -161,6 +163,7 @@ export interface ResolvedInputs {
   postmanFallbackBase: string;
   postmanGatewayBase: string;
   postmanIapubBase: string;
+  postmanAppVersionBase?: string;
   githubRefName?: string;
   githubHeadRef?: string;
   githubRef?: string;
@@ -494,7 +497,7 @@ export interface BootstrapDependencyFactories {
 
 function reportRetry(
   core: Pick<CoreLike, 'info'>,
-  event: import('./lib/postman/gateway-client.js').RetryEvent
+  event: GatewayRetryEvent
 ): void {
   core.info(
     `[postman retry] action=bootstrap class=${event.class} status=${event.status ?? 'none'} attempt=${event.attempt} delayMs=${event.delay}`
@@ -674,7 +677,7 @@ export function resolveInputs(
 
   const postmanRegion = parsePostmanRegion(getInput('postman-region', env));
   const postmanStack = parsePostmanStack(getInput('postman-stack', env));
-  const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion);
+  const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion, env);
 
   return {
     projectName: getInput('project-name', env)
@@ -750,6 +753,7 @@ export function resolveInputs(
     postmanFallbackBase: endpointProfile.fallbackBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
     postmanIapubBase: endpointProfile.iapubBaseUrl,
+    postmanAppVersionBase: endpointProfile.appVersionBaseUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -3970,6 +3974,16 @@ export async function runAction(
           tokenProvider: probeProvider,
           bifrostBaseUrl: inputs.postmanBifrostBase,
           fallbackBaseUrl: inputs.postmanFallbackBase,
+          fallbackOn: 'error',
+          jitterRounding: 'floor',
+          refreshEmptyToken: true,
+          defaultInnerErrorStatus: 502,
+          classifyInnerAuthError: false,
+          refreshOnInnerAuthError: false,
+          includeFallbackStatusInRetryEvent: false,
+          appVersionProvider: new PostmanAppVersionProvider({
+            baseUrl: inputs.postmanAppVersionBase
+          }),
           teamId: inputs.teamId || '',
           orgMode: false,
           secretMasker: createSecretMasker([inputs.postmanAccessToken])
@@ -4161,6 +4175,9 @@ export function createBootstrapDependencies(
     inputs.postmanAccessToken
   ]);
   const secretMasker = mutableMasker.mask;
+  const appVersionProvider = new PostmanAppVersionProvider({
+    baseUrl: inputs.postmanAppVersionBase
+  });
 
   const tokenProvider = new AccessTokenProvider({
     accessToken: inputs.postmanAccessToken,
@@ -4178,6 +4195,14 @@ export function createBootstrapDependencies(
         tokenProvider,
         bifrostBaseUrl: inputs.postmanBifrostBase,
         fallbackBaseUrl: inputs.postmanFallbackBase,
+        fallbackOn: 'error',
+        jitterRounding: 'floor',
+        refreshEmptyToken: true,
+        defaultInnerErrorStatus: 502,
+        classifyInnerAuthError: false,
+        refreshOnInnerAuthError: false,
+        includeFallbackStatusInRetryEvent: false,
+        appVersionProvider,
         teamId: inputs.teamId || '',
         orgMode,
         secretMasker,
@@ -4210,6 +4235,7 @@ export function createBootstrapDependencies(
         backend: inputs.integrationBackend,
         bifrostBaseUrl: inputs.postmanBifrostBase,
         gatewayBaseUrl: inputs.postmanGatewayBase,
+        appVersionProvider,
         orgMode,
         secretMasker,
         teamId: inputs.teamId || ''
@@ -4224,6 +4250,7 @@ export function createBootstrapDependencies(
         accessToken: inputs.postmanAccessToken,
         tokenProvider,
         bifrostBaseUrl: inputs.postmanBifrostBase,
+        appVersionProvider,
         orgMode,
         secretMasker,
         teamId: inputs.teamId || '',

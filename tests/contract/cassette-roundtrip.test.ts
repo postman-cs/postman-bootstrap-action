@@ -5,17 +5,28 @@
  * recording path (record-live) uses this exact transport code, so a green
  * roundtrip here validates the machinery a sandbox recording will rely on.
  */
-import { describe, expect, it } from 'vitest';
-
-import { createSecretMasker } from '../../src/lib/secrets.js';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  CASSETTE_MINTED_TOKEN,
   createEmptyCassette,
   createRecordingFetch,
-  createReplayFetch,
-  CASSETTE_MINTED_TOKEN
-} from './cassette.js';
+  createReplayFetch
+} from '@postman-cse/automation-core/cassette';
+
+import { createSecretMasker } from '../../src/lib/secrets.js';
 import { createPlatformFake } from './platform-fake.js';
 import { runContractAction, runWithFakeTimers } from './harness.js';
+
+const { uuidSequence } = vi.hoisted(() => ({ uuidSequence: { next: 0 } }));
+
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return {
+    ...actual,
+    randomUUID: () =>
+      `00000000-0000-4000-8000-${String(uuidSequence.next++).padStart(12, '0')}`
+  };
+});
 
 const PMAK_ONLY = { 'postman-api-key': 'pmak-test', 'postman-access-token': '' };
 
@@ -29,6 +40,7 @@ describe('contract: cassette roundtrip', () => {
       createSecretMasker(['pmak-test', 'minted-access-token'])
     );
 
+    uuidSequence.next = 0;
     const recorded = await runWithFakeTimers(() => runContractAction({ inputs: PMAK_ONLY, fetchImpl: recording }));
     expect(recorded.error).toBeUndefined();
     expect(recorded.outputs['workspace-id']).toBe('ws-contract');
@@ -43,10 +55,16 @@ describe('contract: cassette roundtrip', () => {
     // Envelope-aware keys: proxied calls key on service/method/path, not the URL.
     expect(cassette.interactions.some((entry) => entry.key.startsWith('proxy:ums GET'))).toBe(true);
     expect(
-      cassette.interactions.some((entry) => entry.key === 'proxy:workspaces POST /workspaces')
+      cassette.interactions.some(
+        (entry) =>
+          entry.key.startsWith('proxy:workspaces POST /workspaces #body-sha256=') &&
+          entry.requestQuery === '' &&
+          typeof entry.requestBodySha256 === 'string'
+      )
     ).toBe(true);
 
     // Replay the same flow with NO live transport at all.
+    uuidSequence.next = 0;
     const replayed = await runWithFakeTimers(() => runContractAction({
       inputs: PMAK_ONLY,
       fetchImpl: createReplayFetch(structuredClone(cassette))
@@ -58,11 +76,34 @@ describe('contract: cassette roundtrip', () => {
 
   it('replay fails loudly (with the key inventory) when the platform shape drifts from the cassette', async () => {
     const cassette = createEmptyCassette();
-    cassette.interactions.push({ key: 'GET https://api.getpostman.com/me', status: 200, body: '{}' });
+    cassette.interactions.push({
+      key: 'GET https://api.getpostman.com/me',
+      requestQuery: '',
+      status: 200,
+      body: '{}',
+      responseHeaders: {}
+    });
     const replay = createReplayFetch(cassette);
 
     await expect(
       replay('https://api.getpostman.com/unknown-surface', { method: 'POST' })
     ).rejects.toThrow(/no recorded response .*POST https:\/\/api\.getpostman\.com\/unknown-surface/s);
+  });
+
+  it('fails closed after an interaction queue is exhausted unless repeatLast is explicit', async () => {
+    const cassette = createEmptyCassette();
+    cassette.interactions.push({
+      key: 'GET https://api.getpostman.com/me',
+      requestQuery: '',
+      status: 200,
+      body: '{}',
+      responseHeaders: { 'content-type': 'application/json' }
+    });
+    const replay = createReplayFetch(cassette);
+
+    await expect(replay('https://api.getpostman.com/me')).resolves.toMatchObject({ status: 200 });
+    await expect(replay('https://api.getpostman.com/me')).rejects.toThrow(
+      'Cassette response queue exhausted'
+    );
   });
 });

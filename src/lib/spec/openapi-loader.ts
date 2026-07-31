@@ -6,7 +6,7 @@ import $RefParser from '@apidevtools/json-schema-ref-parser';
 import { compileErrors, validate as validateOpenApi } from '@readme/openapi-parser';
 import { parse } from 'yaml';
 
-import { retry } from '../retry.js';
+import { retry } from '@postman-cse/automation-core';
 import { acquireDefinitionBundle } from './acquire-definition-bundle.js';
 import type { DefinitionBundle } from './definition-bundle.js';
 import { buildContractIndex, type ContractIndex } from './contract-index.js';

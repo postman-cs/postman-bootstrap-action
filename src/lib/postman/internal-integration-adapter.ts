@@ -1,4 +1,4 @@
-import { HttpError } from '../http-error.js';
+import { HttpError } from '@postman-cse/automation-core';
 import { normalizeGitRepoUrl } from './git-url.js';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';

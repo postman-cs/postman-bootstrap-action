@@ -1,5 +1,5 @@
 import type { SecretMasker } from '../secrets.js';
-import type { RetryEvent } from './gateway-client.js';
+import type { GatewayRetryEvent as RetryEvent } from '@postman-cse/automation-core';
 
 export interface CredentialIdentity {
   source: 'iapub/sessions';

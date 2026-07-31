@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
+import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
@@ -18,6 +18,13 @@ function makeClient(fetchImpl: typeof fetch, extra: Record<string, unknown> = {}
   return new AccessTokenGatewayClient({
     tokenProvider: provider,
     fallbackBaseUrl: FALLBACK,
+    fallbackOn: 'error',
+    jitterRounding: 'floor',
+    refreshEmptyToken: true,
+    defaultInnerErrorStatus: 502,
+    classifyInnerAuthError: false,
+    refreshOnInnerAuthError: false,
+    includeFallbackStatusInRetryEvent: false,
     sleepImpl: async () => undefined,
     fetchImpl,
     ...extra

@@ -3,15 +3,19 @@ import * as V3 from '@postman/runtime.models/v3';
 import { transform, FormatVersion } from '@postman/runtime.models/transforms';
 import { randomUUID } from 'node:crypto';
 
-import { HttpError } from '../http-error.js';
-import { fullJitterDelayMs, retry } from '../retry.js';
+import {
+  AccessTokenGatewayClient,
+  HttpError,
+  fullJitterDelayMs,
+  retry,
+  type GatewayRetryEvent as RetryEvent
+} from '@postman-cse/automation-core';
 import {
   adoptExactMatch,
   isAmbiguousTransportError
 } from './create-reconciliation.js';
 import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
-import { AccessTokenGatewayClient, type RetryEvent } from './gateway-client.js';
 import { normalizeGitRepoUrl } from './git-url.js';
 import { normalizeCollectionModelIdentity } from './collection-model-identity.js';
 import {

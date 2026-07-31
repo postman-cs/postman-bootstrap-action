@@ -8,9 +8,8 @@
  *   POSTMAN_API_KEY="$POSTMAN_E2E_API_KEY_NON_ORG_MODE" npx tsx scripts/diag-move-delete.ts
  */
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
+import { AccessTokenGatewayClient, HttpError } from '@postman-cse/automation-core';
 import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
-import { HttpError } from '../src/lib/http-error.js';
 
 const API = POSTMAN_ENDPOINT_PROFILES.prod.apiBaseUrl;
 type J = Record<string, unknown>;

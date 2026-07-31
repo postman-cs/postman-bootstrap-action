@@ -71,6 +71,7 @@ export interface ContractRunOptions {
  */
 export async function runWithFakeTimers<T>(fn: () => Promise<T>): Promise<T> {
   vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-07-31T00:00:00.000Z'));
   try {
     const pending = fn();
     let settled = false;

@@ -52,4 +52,20 @@ describe('PostmanAppVersionProvider', () => {
       new PostmanAppVersionProvider({ fetchImpl, requestTimeoutMs: 1 }).resolve()
     ).resolves.toBe('12.0.0');
   });
+
+  it('resolves the lookup through the endpoint-profile app-version base URL', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ version: '12.21.1' }), { status: 200 })
+    );
+    const provider = new PostmanAppVersionProvider({
+      baseUrl: 'http://127.0.0.1:8084/app-version/',
+      fetchImpl
+    });
+
+    await expect(provider.resolve()).resolves.toBe('12.21.1');
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'http://127.0.0.1:8084/app-version/update/status?currentVersion=12.0.0&platform=osx_arm64',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
 });

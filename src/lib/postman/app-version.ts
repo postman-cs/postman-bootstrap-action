@@ -1,8 +1,10 @@
 const FLOOR_VERSION = '12.0.0';
-const VERSION_URL = 'https://dl.pstmn.io/update/status?currentVersion=12.0.0&platform=osx_arm64';
+const DEFAULT_VERSION_BASE_URL = 'https://dl.pstmn.io';
+const VERSION_PATH = '/update/status?currentVersion=12.0.0&platform=osx_arm64';
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 export interface PostmanAppVersionProviderOptions {
+  baseUrl?: string;
   fetchImpl?: typeof fetch;
   requestTimeoutMs?: number;
 }
@@ -14,11 +16,13 @@ export interface AppVersionProvider {
 export class PostmanAppVersionProvider implements AppVersionProvider {
   private readonly fetchImpl: typeof fetch;
   private readonly requestTimeoutMs: number;
+  private readonly versionUrl: string;
   private resolved?: Promise<string | undefined>;
 
   constructor(options: PostmanAppVersionProviderOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 2000;
+    this.versionUrl = `${String(options.baseUrl ?? DEFAULT_VERSION_BASE_URL).replace(/\/+$/, '')}${VERSION_PATH}`;
   }
 
   resolve(): Promise<string | undefined> {
@@ -29,7 +33,7 @@ export class PostmanAppVersionProvider implements AppVersionProvider {
 
   private async lookup(): Promise<string> {
     try {
-      const response = await this.fetchImpl(VERSION_URL, {
+      const response = await this.fetchImpl(this.versionUrl, {
         method: 'GET',
         signal: AbortSignal.timeout(this.requestTimeoutMs)
       });

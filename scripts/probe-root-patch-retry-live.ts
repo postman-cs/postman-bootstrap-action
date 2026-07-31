@@ -1,7 +1,7 @@
 
 /** Secret-safe live probe: retried root PATCH via createCollection/updateCollection. Cleans up after itself. */
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
+import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
 import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
 

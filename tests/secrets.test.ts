@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ConsoleReporter } from '../src/cli.js';
-import { HttpError } from '../src/lib/http-error.js';
+import { HttpError } from '@postman-cse/automation-core';
 import {
   __resetIdentityMemo,
   formatIdentityLine,

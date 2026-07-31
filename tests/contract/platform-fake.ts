@@ -38,6 +38,25 @@ export interface PlatformFakeOptions {
   squads?: PlatformSquad[];
   /** Session identity team id. Defaults: org 13347347, non-org 10490519. */
   teamId?: number;
+  /** Public API /me user id. Default 12345678. */
+  userId?: number;
+  /** iapub session user id. Default 555. */
+  sessionUserId?: number;
+  /** Workspace id returned by create/read routes. Default ws-contract. */
+  workspaceId?: string;
+  /** Specification id returned by create/read routes. Default spec-contract. */
+  specificationId?: string;
+  /** Specification file id returned by file routes. Default file-root. */
+  specificationFileId?: string;
+  /** Collection id factory. Defaults to the existing owner/role/sequence shape. */
+  collectionId?: (role: 'baseline' | 'smoke' | 'contract', sequence: number) => string;
+  /** Generic collection-create id used by non-OpenAPI protocols. */
+  createdCollectionId?: string;
+  /**
+   * Collections that already exist in the workspace before the run (refresh /
+   * adopt paths). Export serves a valid v2.1 body for each seeded id.
+   */
+  existingCollections?: Array<{ id: string; name: string; collection?: JsonRecord }>;
   /** Session consumerType. Default 'service_account'. */
   consumerType?: string;
   /** Kept for harness compatibility; OpenAPI no longer polls Spec Hub generation. */
@@ -70,6 +89,16 @@ export interface PlatformFake {
   state: PlatformFakeState;
   hosts: { api: string; bifrost: string; iapub: string };
 }
+
+/** One Spec Hub definition member as the fake stores it. */
+interface SpecFakeFile {
+  id: string;
+  path: string;
+  fileType: 'ROOT' | 'DEFAULT';
+  content: string;
+}
+
+const V21_SCHEMA = 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json';
 
 const HOSTS = {
   prod: {
@@ -107,12 +136,29 @@ function roleFromName(name: string): 'baseline' | 'smoke' | 'contract' {
   return 'baseline';
 }
 
+function defaultV21Export(id: string, name: string): JsonRecord {
+  return {
+    info: { _postman_id: id, name, schema: V21_SCHEMA },
+    item: []
+  };
+}
+
 export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformFake {
   const org = options.org ?? false;
   const stack = options.stack ?? 'prod';
   const hosts = HOSTS[stack];
   const squads = options.squads ?? (org ? [DEFAULT_SQUAD] : []);
   const teamId = options.teamId ?? (org ? 13347347 : 10490519);
+  const userId = options.userId ?? 12345678;
+  const sessionUserId = options.sessionUserId ?? 555;
+  const workspaceId = options.workspaceId ?? 'ws-contract';
+  const specificationId = options.specificationId ?? 'spec-contract';
+  const specificationFileId = options.specificationFileId ?? 'file-root';
+  const collectionId =
+    options.collectionId ??
+    ((role: 'baseline' | 'smoke' | 'contract', sequence: number) =>
+      `12345678-col-${role}-${sequence}`);
+  const createdCollectionId = options.createdCollectionId ?? '55363555-created';
   const consumerType = options.consumerType ?? 'service_account';
 
   const state: PlatformFakeState = {
@@ -130,6 +176,14 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
   let workspaceVisibility: string | undefined;
   let importSeq = 0;
   const collectionsById = new Map<string, { id: string; name: string }>();
+  const collectionExports = new Map<string, JsonRecord>();
+  for (const existing of options.existingCollections ?? []) {
+    collectionsById.set(existing.id, { id: existing.id, name: existing.name });
+    collectionExports.set(
+      existing.id,
+      existing.collection ?? defaultV21Export(existing.id, existing.name)
+    );
+  }
   const linkedRelations = new Map<
     string,
     {
@@ -140,9 +194,31 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
     }
   >();
   const deletedIds = new Set<string>();
+  // Spec Hub definition members, keyed by file id. Populated from the inline
+  // `files` array of a multi-file create so the readback the client performs
+  // after a create/reconcile sees the tree it just uploaded.
+  const specFiles = new Map<string, SpecFakeFile>();
   const taskStatuses = options.generationTaskStatuses
     ? [...options.generationTaskStatuses]
     : undefined;
+
+  function captureSpecFiles(body: unknown): void {
+    const rows = asRecord(body)?.files;
+    if (!Array.isArray(rows)) return;
+    specFiles.clear();
+    rows.forEach((row, index) => {
+      const record = asRecord(row);
+      const path = String(record?.path ?? '').trim();
+      if (!path) return;
+      const id = `spec-file-${index}`;
+      specFiles.set(id, {
+        id,
+        path,
+        fileType: String(record?.type ?? 'DEFAULT') === 'ROOT' ? 'ROOT' : 'DEFAULT',
+        content: String(record?.content ?? '')
+      });
+    });
+  }
 
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input);
@@ -173,7 +249,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
     if (url === `${hosts.api}/me`) {
       return json({
         user: {
-          id: 12345678,
+          id: userId,
           fullName: 'Ada Lovelace',
           teamId,
           teamName: org ? 'field-services-v12-demo' : 'jared-demo',
@@ -184,7 +260,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
     if (url === `${hosts.iapub}/api/sessions/current`) {
       return json({
         identity: { team: teamId, domain: org ? 'field-services-v12-demo' : 'jared-demo' },
-        data: { user: { id: 555, roles: ['admin'] } },
+        data: { user: { id: sessionUserId, roles: ['admin'] } },
         consumerType
       });
     }
@@ -208,7 +284,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           const body = asRecord(proxy.body) ?? {};
           state.workspaceCreateBodies.push(body);
           workspaceVisibility = body.squad ? 'team' : 'personal';
-          return json({ data: { id: 'ws-contract' } });
+          return json({ data: { id: workspaceId } });
         }
         if (pmethod === 'put' && /\/workspaces\/[^/]+\/visibility$/.test(ppath)) {
           state.flipAttempts += 1;
@@ -220,7 +296,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
             );
           }
           workspaceVisibility = String(asRecord(proxy.body)?.visibilityStatus ?? 'team');
-          return json({ data: { id: 'ws-contract', visibilityStatus: workspaceVisibility } });
+          return json({ data: { id: workspaceId, visibilityStatus: workspaceVisibility } });
         }
         if (pmethod === 'delete' && /\/workspaces\/[^/]+$/.test(ppath)) {
           return json({ data: {} });
@@ -229,7 +305,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           return json({ data: null });
         }
         if (pmethod === 'get' && /\/workspaces\/[^/]+$/.test(ppath)) {
-          return json({ data: { id: 'ws-contract', visibilityStatus: workspaceVisibility ?? 'team' } });
+          return json({ data: { id: workspaceId, visibilityStatus: workspaceVisibility ?? 'team' } });
         }
         if (pmethod === 'get' && ppath.startsWith('/workspaces')) {
           return json({ data: [] });
@@ -244,7 +320,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           const info = asRecord(body.info) ?? {};
           const name = String(info.name ?? `Imported ${importSeq}`);
           const slot = roleFromName(name);
-          const id = `12345678-col-${slot}-${importSeq}`;
+          const id = collectionId(slot, importSeq);
           collectionsById.set(id, { id, name });
           deletedIds.delete(id);
           // Documented live Sync import envelope (model_id + data.info._postman_id).
@@ -317,20 +393,67 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
             }))
           });
         }
+        // Definition tree fast path. Members carry id/path/fileType/content, so a
+        // multi-file create verifies against the tree it actually uploaded
+        // instead of passing through the permissive default.
+        if (pmethod === 'get' && /\/specifications\/[^/]+\/tree$/.test(ppath)) {
+          return json({
+            data: [...specFiles.values()].map((file) => ({
+              type: 'FILE',
+              id: file.id,
+              name: file.path.split('/').pop(),
+              path: file.path,
+              fileType: file.fileType,
+              content: file.content
+            })),
+            meta: { cursor: { next: '' } }
+          });
+        }
         if (pmethod === 'get' && /\/specifications\/[^/]+\/files\/[^/]+/.test(ppath)) {
-          return json({ data: { id: 'file-root', content: 'openapi: 3.0.0' } });
+          const file = specFiles.get(ppath.split('/').pop() || '');
+          if (file) {
+            return json({ data: { id: file.id, path: file.path, content: file.content } });
+          }
+          return json({ data: { id: specificationFileId, content: 'openapi: 3.0.0' } });
         }
         if (pmethod === 'get' && /\/specifications\/[^/]+\/files$/.test(ppath)) {
-          return json({ data: [{ id: 'file-root', type: 'ROOT' }] });
+          if (specFiles.size > 0) {
+            return json({
+              data: [...specFiles.values()].map((file) => ({
+                id: file.id,
+                path: file.path,
+                type: file.fileType
+              }))
+            });
+          }
+          return json({ data: [{ id: specificationFileId, type: 'ROOT' }] });
+        }
+        if (pmethod === 'post' && /\/specifications\/[^/]+\/(bulk-)?files$/.test(ppath)) {
+          captureSpecFiles(proxy.body);
+          return json({ data: [...specFiles.values()].map((file) => ({ id: file.id })) });
+        }
+        if (pmethod === 'patch' && /\/specifications\/[^/]+\/files\/[^/]+$/.test(ppath)) {
+          const file = specFiles.get(ppath.split('/').pop() || '');
+          if (file) {
+            // RFC6902 patch against /content, exactly as the client sends it.
+            for (const op of Array.isArray(proxy.body) ? proxy.body : []) {
+              const record = asRecord(op);
+              if (record?.path === '/content') file.content = String(record.value ?? '');
+            }
+            specFiles.set(file.id, file);
+            return json({ data: { id: file.id } });
+          }
+          return json({ data: { id: specificationFileId } });
         }
         if (pmethod === 'patch') {
-          return json({ data: { id: 'file-root' } });
+          return json({ data: { id: specificationFileId } });
         }
         if (pmethod === 'post' && ppath.startsWith('/specifications')) {
-          return json({ data: { id: 'spec-contract' } });
+          captureSpecFiles(proxy.body);
+          return json({ data: { id: specificationId } });
         }
         if (pmethod === 'get' && /\/specifications\/[^/]+$/.test(ppath)) {
-          return json({ data: { id: 'spec-contract' } });
+          return json({ data: { id: specificationId } });
         }
       }
 
@@ -341,7 +464,14 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           });
         }
         if (pmethod === 'get' && /\/export$/.test(ppath)) {
-          return json({ data: { collection: {} } });
+          const bare = ppath.replace(/\/export$/, '').split('/').pop() || '';
+          const id =
+            [...collectionsById.keys()].find((key) => key === bare || key.endsWith(bare)) ?? bare;
+          const entry = collectionsById.get(id);
+          const collection = entry
+            ? (collectionExports.get(id) ?? defaultV21Export(id, entry.name))
+            : {};
+          return json({ data: { collection } });
         }
         if (pmethod === 'get' && /\/v3\/collections\/[^/?]+$/.test(ppath)) {
           const id = ppath.split('/').pop() || '';
@@ -389,7 +519,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           return json({ data: { ok: true } });
         }
         if (pmethod === 'post') {
-          return json({ data: { id: '55363555-created' } });
+          return json({ data: { id: createdCollectionId } });
         }
         if (pmethod === 'patch') {
           return json({ data: { id: 'patched' } });

@@ -4,9 +4,9 @@
  * runBootstrap) with a stubbed global fetch, a tmp workspace, and neutralized
  * CI env. No production seams are touched: the only fake is the transport.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { vi } from 'vitest';
 
 import { __resetIdentityMemo } from '../../src/lib/postman/credential-identity.js';
@@ -46,7 +46,10 @@ const NEUTRALIZED_ENV_VARS = [
   'POSTMAN_WORKSPACE_TEAM_ID',
   'WORKSPACE_ADMIN_USER_IDS',
   'GITHUB_TOKEN',
-  'GH_FALLBACK_TOKEN'
+  'GH_FALLBACK_TOKEN',
+  // runAction writes the resolved decision here for downstream steps; an
+  // inherited value would silently override a scenario's own branch identity.
+  'POSTMAN_BRANCH_DECISION'
 ];
 
 export interface ContractRunResult {
@@ -61,6 +64,17 @@ export interface ContractRunOptions {
   inputs?: Record<string, string>;
   /** The transport to stub as global fetch. */
   fetchImpl: typeof fetch;
+  /**
+   * Workspace-relative files to write before the run, nested paths included.
+   * Supplying any entry replaces the default single-file `openapi.json` write,
+   * so multi-file, .proto, and large-spec scenarios own their whole tree.
+   */
+  files?: Record<string, string>;
+  /**
+   * Env applied AFTER the neutralization sweep, so a scenario can restore the
+   * provider CI identity (GITHUB_REF/GITHUB_HEAD_REF/...) the sweep blanks.
+   */
+  env?: Record<string, string>;
 }
 
 /**
@@ -114,7 +128,14 @@ export function createIoStub(): IOLike {
  */
 export async function runContractAction(options: ContractRunOptions): Promise<ContractRunResult> {
   const specDir = mkdtempSync(join(tmpdir(), 'bootstrap-contract-'));
-  writeFileSync(join(specDir, 'openapi.json'), VALID_SPEC_31);
+  // Scenario inventories hash these exact UTF-8 bytes; write them with an
+  // explicit encoding so nested multi-file trees stay content-free but byte-exact.
+  const files = options.files ?? { 'openapi.json': VALID_SPEC_31 };
+  for (const [relativePath, content] of Object.entries(files)) {
+    const target = join(specDir, relativePath);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content, 'utf8');
+  }
   const previousCwd = process.cwd();
 
   __resetIdentityMemo();
@@ -123,6 +144,9 @@ export async function runContractAction(options: ContractRunOptions): Promise<Co
   vi.stubEnv('GITHUB_RUN_ATTEMPT', '1');
   for (const name of NEUTRALIZED_ENV_VARS) {
     vi.stubEnv(name, '');
+  }
+  for (const [name, value] of Object.entries(options.env ?? {})) {
+    vi.stubEnv(name, value);
   }
   vi.stubGlobal('fetch', options.fetchImpl);
   process.chdir(specDir);

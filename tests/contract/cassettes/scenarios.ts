@@ -28,7 +28,10 @@ export interface CassetteScenario {
   name: string;
   /** Why this scenario exists — the distinct production path it pins. */
   description: string;
-  inputs: Record<string, string>;
+  /** Authoritative raw inputs used when recording the cassette. */
+  inputs: Readonly<Record<string, string>>;
+  /** Sanitized inputs used only when replaying the committed cassette. */
+  replayInputs?: Readonly<Record<string, string>>;
   /** Workspace files; omit to use the harness default `openapi.json`. */
   files?: Record<string, string>;
   /** Provider CI env restored after the harness neutralization sweep. */
@@ -255,6 +258,12 @@ export const CASSETTE_SCENARIOS: readonly CassetteScenario[] = [
     // only scenario here that exercises the mint + /me preflight wire surface.
     inputs: {
       'postman-api-key': PMAK,
+      'postman-access-token': '',
+      'collection-sync-mode': 'refresh',
+      'spec-sync-mode': 'update'
+    },
+    replayInputs: {
+      'postman-api-key': '[REDACTED]',
       'postman-access-token': '',
       'collection-sync-mode': 'refresh',
       'spec-sync-mode': 'update'

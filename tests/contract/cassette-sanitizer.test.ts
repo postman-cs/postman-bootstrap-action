@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
+  CASSETTE_MINTED_TOKEN,
   cassetteRequest,
   createEmptyCassette,
   createReplayFetch,
@@ -227,6 +228,25 @@ describe('contract: cassette sanitizer', () => {
     ).resolves.toEqual({ ok: true });
   });
 
+  it('rejects a digest-bearing proxy body without raw request bytes when workspace sanitization requires rekeying', () => {
+    const requestBody = proxyBody(`/workspaces/${RAW_WORKSPACE_ID}`, 'patch', {
+      workspaceId: RAW_WORKSPACE_ID
+    });
+    const raw = {
+      version: 2 as const,
+      interactions: [{
+        ...cassetteRequest(BIFROST_URL, 'POST', requestBody),
+        status: 200,
+        body: JSON.stringify({ data: { id: RAW_WORKSPACE_ID } }),
+        responseHeaders: {}
+      }]
+    };
+
+    expect(() => sanitizeCassette(raw)).toThrow(
+      'Cannot sanitize digest-bearing raw cassette interaction without rawRequestBody for safe rekeying'
+    );
+  });
+
   it('keeps request-only generated collection IDs stable while rekeying returned workspace IDs', async () => {
     const generatedCollectionId = 'd013d5c7-1c42-4db4-9287-927310770201';
     const createBody = proxyBody('/workspaces', 'post');
@@ -315,6 +335,42 @@ describe('contract: cassette sanitizer', () => {
         body: sanitizedRequestBody
       }).then((response) => response.json())
     ).resolves.toEqual({ ok: true });
+  });
+
+  it('redacts and rekeys a direct service-account token mint request for replay', async () => {
+    const mintUrl = 'https://api.getpostman.com/service-account-tokens';
+    const liveApiKey = 'PMAK-live-request-api-key';
+    const rawRequestBody = JSON.stringify({ apiKey: liveApiKey });
+    const sanitizedRequestBody = JSON.stringify({ apiKey: '[REDACTED]' });
+    const raw = {
+      version: 2 as const,
+      interactions: [{
+        ...cassetteRequest(mintUrl, 'POST', rawRequestBody),
+        rawRequestBody,
+        status: 200,
+        body: JSON.stringify({ accessToken: 'PMAT-live-minted-access-token' }),
+        responseHeaders: {}
+      }]
+    };
+
+    const sanitized = sanitizeCassette(raw);
+    const serialized = JSON.stringify(sanitized);
+
+    expect(sanitized.interactions[0]?.key).toBe(
+      cassetteRequest(mintUrl, 'POST', sanitizedRequestBody).key
+    );
+    expect(JSON.parse(sanitized.interactions[0]?.body ?? '')).toEqual({
+      accessToken: CASSETTE_MINTED_TOKEN
+    });
+    expect(serialized).not.toContain(liveApiKey);
+    expect(serialized).not.toContain('rawRequestBody');
+
+    await expect(
+      createReplayFetch(sanitized)(mintUrl, {
+        method: 'POST',
+        body: sanitizedRequestBody
+      }).then((response) => response.json())
+    ).resolves.toEqual({ accessToken: CASSETTE_MINTED_TOKEN });
   });
 
   it('rejects raw capture metadata and semantic numeric IDs in hand-poisoned cassettes', () => {

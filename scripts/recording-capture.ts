@@ -63,8 +63,7 @@ export function createSanitizableRecordingFetch(
 
     const interaction = cassette.interactions
       .slice(interactionCount)
-      .reverse()
-      .find((candidate) => candidate.key === request.key);
+      .find((candidate) => candidate.key === request.key && candidate.rawRequestBody === undefined);
     if (!interaction) {
       throw new Error(`Shared cassette recorder did not record interaction for "${request.key}"`);
     }

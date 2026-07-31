@@ -55,7 +55,7 @@ describe('contract: cassette scenario suite (offline replay)', () => {
         uuidSequence.next = 0;
         const result = await runWithFakeTimers(() =>
           runContractAction({
-            inputs: scenario.inputs,
+            inputs: scenario.replayInputs ?? scenario.inputs,
             ...(scenario.files ? { files: scenario.files } : {}),
             env: { ...CASSETTE_SCENARIO_ENV, ...(scenario.env ?? {}) },
             fetchImpl: countedReplay

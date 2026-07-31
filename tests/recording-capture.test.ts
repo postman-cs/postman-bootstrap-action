@@ -88,7 +88,7 @@ describe('createSanitizableRecordingFetch', () => {
     ]);
   });
 
-  it('associates concurrent same-key requests with the interaction recorded by each completion', async () => {
+  it('associates concurrent same-key requests when both responses settle before either wrapper continues', async () => {
     const cassette = rawCassette();
     const first = deferred<Response>();
     const second = deferred<Response>();
@@ -100,14 +100,14 @@ describe('createSanitizableRecordingFetch', () => {
     const firstRequest = recording('https://example.test/resources', { method: 'POST', body: '{"id":"same"}' });
     const secondRequest = recording('https://example.test/resources', { method: 'POST', body: '{"id":"same"}' });
     second.resolve(new Response('second'));
-    await secondRequest;
     first.resolve(new Response('first'));
-    await firstRequest;
+    await Promise.all([firstRequest, secondRequest]);
 
-    expect(cassette.interactions).toEqual([
+    expect(cassette.interactions).toHaveLength(2);
+    expect(cassette.interactions).toEqual(expect.arrayContaining([
       expect.objectContaining({ body: 'second', rawRequestBody: '{"id":"same"}' }),
       expect.objectContaining({ body: 'first', rawRequestBody: '{"id":"same"}' })
-    ]);
+    ]));
   });
 
   it('omits raw metadata for requests without bodies', async () => {

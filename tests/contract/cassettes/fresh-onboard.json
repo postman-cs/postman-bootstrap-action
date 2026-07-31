@@ -11,8 +11,8 @@
     },
     {
       "body": "{\"access_token\":\"cassette-access-token\"}",
-      "key": "POST https://api.getpostman.com/service-account-tokens #body-sha256=14c273078301d540cfbbab0921bd2a4cb08a9319435c242aa6de870151c43ea4",
-      "requestBodySha256": "14c273078301d540cfbbab0921bd2a4cb08a9319435c242aa6de870151c43ea4",
+      "key": "POST https://api.getpostman.com/service-account-tokens #body-sha256=e43385230c5dd24d869177e5fa3c75294b823fdd66f0525da8537c33530d04c1",
+      "requestBodySha256": "e43385230c5dd24d869177e5fa3c75294b823fdd66f0525da8537c33530d04c1",
       "requestQuery": "",
       "responseHeaders": {
         "content-type": "text/plain;charset=UTF-8"

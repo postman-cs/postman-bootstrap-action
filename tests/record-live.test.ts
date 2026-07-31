@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   RAW_CASSETTE_DIRECTORY,
   assertLocalRecording,
+  loadRunAction,
   loadRecorderEnvironment,
   parseRecordLiveArgs,
   recordLiveScenario,
@@ -127,14 +128,21 @@ describe('record-live environment', () => {
 });
 
 describe('record-live output safety', () => {
-  it('uses the sanitizable recorder wrapper for shipped live recordings', () => {
-    const source = readFileSync(path.join(packageRoot, 'scripts', 'record-live.ts'), 'utf8');
+  it('loads and invokes the committed dist runAction export', async () => {
+    const runAction = loadRunAction();
+    const core = {
+      error: vi.fn(),
+      getInput: vi.fn(() => ''),
+      group: vi.fn(),
+      info: vi.fn(),
+      setFailed: vi.fn(),
+      setOutput: vi.fn(),
+      setSecret: vi.fn(),
+      warning: vi.fn()
+    };
 
-    expect(source).toContain(
-      "import { createSanitizableRecordingFetch } from './recording-capture.js';"
-    );
-    expect(source).toContain('createSanitizableRecordingFetch(liveFetch, cassette, secrets.mask)');
-    expect(source).not.toContain('createRecordingFetch(liveFetch, cassette, secrets.mask)');
+    await expect(runAction(core)).rejects.toThrow();
+    expect(core.getInput).toHaveBeenCalled();
   });
 
   it('keeps the raw cassette directory covered by gitignore', () => {
@@ -149,6 +157,55 @@ describe('record-live output safety', () => {
 });
 
 describe('record-live scenarios', () => {
+  it('does not expose an ambient access token to the injected action', async () => {
+    const workspaceRoot = temporaryDirectory();
+    const localPackageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
+    const rawOutputRoot = path.join(workspaceRoot, 'raw');
+    const previousAccessToken = process.env.POSTMAN_ACCESS_TOKEN;
+    mkdirSync(localPackageRoot, { recursive: true });
+    writeFileSync(path.join(localPackageRoot, '.env'), 'POSTMAN_API_KEY=PMAK-test-key\n', 'utf8');
+
+    try {
+      process.env.POSTMAN_ACCESS_TOKEN = 'ambient-access-token';
+      const loadedEnvironment = loadRecorderEnvironment({
+        packageRoot: localPackageRoot,
+        workspaceRoot
+      });
+      const runAction = vi.fn(async (): Promise<PlannedOutputs> => {
+        expect(process.env.POSTMAN_ACCESS_TOKEN).toBeUndefined();
+        return {} as PlannedOutputs;
+      });
+
+      await recordLiveScenario('fresh-onboard', loadedEnvironment, { rawOutputRoot, runAction });
+
+      expect(runAction).toHaveBeenCalledOnce();
+    } finally {
+      if (previousAccessToken === undefined) {
+        delete process.env.POSTMAN_ACCESS_TOKEN;
+      } else {
+        process.env.POSTMAN_ACCESS_TOKEN = previousAccessToken;
+      }
+    }
+  });
+
+  it('rejects in CI before invoking the action or fetch or writing a raw cassette', async () => {
+    const rawOutputRoot = path.join(temporaryDirectory(), 'raw');
+    const runAction = vi.fn();
+    const fetchImpl = vi.fn();
+
+    await expect(
+      recordLiveScenario(
+        'fresh-onboard',
+        { env: { CI: 'true', POSTMAN_API_KEY: 'PMAK-test-key' }, loadedFiles: [] },
+        { rawOutputRoot, runAction, fetchImpl }
+      )
+    ).rejects.toThrow('Recording live cassettes is disabled in CI');
+
+    expect(runAction).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(existsSync(path.join(rawOutputRoot, 'fresh-onboard.json'))).toBe(false);
+  });
+
   it('records, sanitizes, and replays the shipped recorder path without live replay calls', async () => {
     const workspaceRoot = temporaryDirectory();
     const localPackageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');

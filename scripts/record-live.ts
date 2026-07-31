@@ -166,7 +166,7 @@ function createRecorderSecretMasker(initialValues: Array<string | undefined>): M
   };
 }
 
-function loadRunAction(): typeof RunAction {
+export function loadRunAction(): typeof RunAction {
   const require = createRequire(import.meta.url);
   const artifact = require(path.join(PACKAGE_ROOT, 'dist/index.cjs')) as {
     runAction?: typeof RunAction;
@@ -213,6 +213,9 @@ function createRecorderCore(
 }
 
 function applyRecordingEnvironment(env: NodeJS.ProcessEnv): void {
+  for (const name of RECORDER_CREDENTIAL_ENVIRONMENT) {
+    delete process.env[name];
+  }
   Object.assign(process.env, env, {
     GITHUB_RUN_ATTEMPT: '1',
     GITHUB_RUN_ID: 'cassette-fresh-onboard',

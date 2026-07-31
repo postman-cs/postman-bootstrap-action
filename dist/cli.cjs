@@ -153754,13 +153754,21 @@ var require_schemaUtils2 = __commonJS({
         return null;
       }
     };
-    var resolveValueOfParameter = (context, param, { schemaFormat = SCHEMA_FORMATS.DEFAULT, isResponseSchema = false } = {}) => {
+    var resolveValueOfParameter = (context, param, { schemaFormat = SCHEMA_FORMATS.DEFAULT, isResponseSchema = false, exampleKey } = {}) => {
       if (!param || !param.hasOwnProperty("schema")) {
         return "";
       }
       const { indentCharacter } = context.computedOptions, resolvedSchema = resolveSchema(context, param.schema, { isResponseSchema }), { parametersResolution } = context.computedOptions, shouldGenerateFromExample = parametersResolution === "example", hasExample = param.example !== void 0 || param.schema.example !== void 0 || param.examples !== void 0 || param.schema.examples !== void 0;
       if (shouldGenerateFromExample && hasExample) {
         let example;
+        if (exampleKey !== void 0 && _2.isObject(param.examples)) {
+          const matchedKey = _2.findKey(param.examples, (exampleValue, key) => {
+            return _2.toLower(key) === _2.toLower(exampleKey);
+          });
+          if (matchedKey !== void 0) {
+            return getExampleData(context, { [matchedKey]: param.examples[matchedKey] });
+          }
+        }
         if (param.example !== void 0) {
           example = param.example;
         } else if (param.schema.example !== void 0) {
@@ -153918,8 +153926,8 @@ var require_schemaUtils2 = __commonJS({
       }
       return xmlFaker(null, reqBodySchemaWithExample, indentCharacter, parametersResolution);
     };
-    var generateExamples = (context, responseExamples, requestBodyExamples, responseBodySchema, isXMLExample) => {
-      const pmExamples = [], responseExampleKeys = _2.map(responseExamples, "key"), requestBodyExampleKeys = _2.map(requestBodyExamples, "key"), exampleKeyComparator = (example, key) => {
+    var generateExamples = (context, responseExamples, requestBodyExamples, responseBodySchema, isXMLExample, parameterExampleKeys = []) => {
+      const pmExamples = [], responseExampleKeys = _2.map(responseExamples, "key"), requestBodyExampleKeys = _2.map(requestBodyExamples, "key"), requestSideExampleKeys = _2.concat(requestBodyExampleKeys, parameterExampleKeys), exampleKeyComparator = (example, key) => {
         return _2.toLower(example.key) === _2.toLower(key);
       };
       const getResponseExampleName = (responseExample) => {
@@ -153928,7 +153936,7 @@ var require_schemaUtils2 = __commonJS({
         }
         return _2.get(responseExample, "value.description") || _2.get(responseExample, "value.summary") || responseExample.key !== "_default" && responseExample.key || (!_2.isNil(responseExample.responseCode) ? String(responseExample.responseCode) : void 0);
       };
-      const matchedKeys = _2.intersectionBy(responseExampleKeys, requestBodyExampleKeys, _2.toLower);
+      const matchedKeys = _2.intersectionBy(responseExampleKeys, requestSideExampleKeys, _2.toLower);
       if (matchedKeys.length) {
         _2.forEach(matchedKeys, (key) => {
           const matchedRequestExamples = _2.filter(requestBodyExamples, (example) => {
@@ -153940,14 +153948,20 @@ var require_schemaUtils2 = __commonJS({
           if (!requestExample) {
             requestExample = _2.head(matchedRequestExamples);
           }
+          if (!requestExample) {
+            requestExample = _2.head(requestBodyExamples);
+          }
           responseExampleData = getExampleData(context, { [responseExample.key]: responseExample.value });
           if (isXMLExample) {
             responseExampleData = getXMLExampleData(context, responseExampleData, responseBodySchema);
           }
           pmExamples.push({
-            request: getExampleData(context, { [requestExample.key]: requestExample.value }),
+            request: requestExample ? getExampleData(context, { [requestExample.key]: requestExample.value }) : void 0,
             response: responseExampleData,
-            name: getResponseExampleName(responseExample) || "Example"
+            name: getResponseExampleName(responseExample) || "Example",
+            // carries the OAS example key so callers can resolve per-key parameter values for the
+            // saved response's originalRequest (query/path/header).
+            exampleKey: responseExample.key
           });
         });
         return pmExamples;
@@ -153976,7 +153990,7 @@ var require_schemaUtils2 = __commonJS({
       }
       return pmExamples;
     };
-    var resolveBodyData = (context, requestBodySchema, bodyType, isExampleBody = false, responseCode = null, requestBodyExamples = {}) => {
+    var resolveBodyData = (context, requestBodySchema, bodyType, isExampleBody = false, responseCode = null, requestBodyExamples = {}, parameterExampleKeys = []) => {
       let { parametersResolution, indentCharacter } = context.computedOptions, headerFamily = getHeaderFamily(bodyType), bodyData = "", shouldGenerateFromExample = parametersResolution === "example", isBodyTypeXML = bodyType === APP_XML || bodyType === TEXT_XML || headerFamily === HEADER_TYPE.XML, bodyKey = isExampleBody ? "response" : "request", responseExamples, example, examples, resolvedSchemaTypes = [];
       if (_2.isEmpty(requestBodySchema)) {
         return [{ [bodyKey]: bodyData }];
@@ -154082,7 +154096,8 @@ var require_schemaUtils2 = __commonJS({
           responseExamples,
           matchedRequestBodyExamples,
           requestBodySchema,
-          isBodyTypeXML
+          isBodyTypeXML,
+          parameterExampleKeys
         );
         return {
           generatedBody,
@@ -154355,7 +154370,7 @@ var require_schemaUtils2 = __commonJS({
         example: schema3.example
       };
     };
-    var resolveQueryParamsForPostmanRequest = (context, operationItem, method) => {
+    var resolveQueryParamsForPostmanRequest = (context, operationItem, method, { exampleKey } = {}) => {
       const params = resolvePathItemParams(context, operationItem[method].parameters, operationItem.parameters), pmParams = [], queryParamTypes = [], { includeDeprecated } = context.computedOptions;
       _2.forEach(params, (param) => {
         if (!_2.isObject(param)) {
@@ -154371,7 +154386,7 @@ var require_schemaUtils2 = __commonJS({
         if (shouldResolveSchema) {
           param.schema = resolveSchema(context, param.schema);
         }
-        let queryParamTypeInfo = {}, properties = {}, paramValue = resolveValueOfParameter(context, param);
+        let queryParamTypeInfo = {}, properties = {}, paramValue = resolveValueOfParameter(context, param, { exampleKey });
         if (param && param.name && param.schema && param.schema.type) {
           properties = createProperties(param);
           queryParamTypeInfo = { keyName: param.name, properties };
@@ -154385,7 +154400,7 @@ var require_schemaUtils2 = __commonJS({
       });
       return { queryParamTypes, queryParams: pmParams };
     };
-    var resolvePathParamsForPostmanRequest = (context, operationItem, method) => {
+    var resolvePathParamsForPostmanRequest = (context, operationItem, method, { exampleKey } = {}) => {
       const params = resolvePathItemParams(context, operationItem[method].parameters, operationItem.parameters), pmParams = [], pathParamTypes = [];
       _2.forEach(params, (param) => {
         if (!_2.isObject(param)) {
@@ -154401,7 +154416,7 @@ var require_schemaUtils2 = __commonJS({
         if (shouldResolveSchema) {
           param.schema = resolveSchema(context, param.schema);
         }
-        let pathParamTypeInfo = {}, properties = {}, paramValue = resolveValueOfParameter(context, param);
+        let pathParamTypeInfo = {}, properties = {}, paramValue = resolveValueOfParameter(context, param, { exampleKey });
         if (param && param.name && param.schema && param.schema.type) {
           properties = createProperties(param);
           pathParamTypeInfo = { keyName: param.name, properties };
@@ -154434,7 +154449,7 @@ var require_schemaUtils2 = __commonJS({
       reqName = utils.trimRequestName(reqName);
       return reqName;
     };
-    var resolveHeadersForPostmanRequest = (context, operationItem, method) => {
+    var resolveHeadersForPostmanRequest = (context, operationItem, method, { exampleKey } = {}) => {
       const params = resolvePathItemParams(context, operationItem[method].parameters, operationItem.parameters), pmParams = [], headerTypes = [], { keepImplicitHeaders, includeDeprecated } = context.computedOptions;
       _2.forEach(params, (param) => {
         if (!_2.isObject(param)) {
@@ -154453,7 +154468,7 @@ var require_schemaUtils2 = __commonJS({
         if (!keepImplicitHeaders && _2.includes(IMPLICIT_HEADERS, _2.toLower(_2.get(param, "name")))) {
           return;
         }
-        let headerTypeInfo = {}, properties = {}, paramValue = resolveValueOfParameter(context, param);
+        let headerTypeInfo = {}, properties = {}, paramValue = resolveValueOfParameter(context, param, { exampleKey });
         if (param && param.name && param.schema && param.schema.type) {
           properties = createProperties(param);
           headerTypeInfo = { keyName: param.name, properties };
@@ -154467,7 +154482,25 @@ var require_schemaUtils2 = __commonJS({
       });
       return { headerTypes, headers: pmParams };
     };
-    var resolveResponseBody = (context, responseBody = {}, requestBodyExamples = {}, code = null) => {
+    var getParameterExampleKeys = (context, operationItem, method) => {
+      const params = resolvePathItemParams(context, operationItem[method].parameters, operationItem.parameters), keys = [];
+      _2.forEach(params, (param) => {
+        if (!_2.isObject(param)) {
+          return;
+        }
+        if (_2.has(param, "$ref")) {
+          param = resolveSchema(context, param);
+        }
+        if (param.in !== QUERYPARAM && param.in !== PATHPARAM && param.in !== HEADER) {
+          return;
+        }
+        if (_2.isObject(param.examples)) {
+          keys.push(...Object.keys(param.examples));
+        }
+      });
+      return _2.uniq(keys);
+    };
+    var resolveResponseBody = (context, responseBody = {}, requestBodyExamples = {}, code = null, parameterExampleKeys = []) => {
       let responseContent2, bodyType, allBodyData, headerFamily, acceptHeader, emptyResponse = [{
         body: void 0
       }], resolvedResponseBodyResult, resolvedResponseBodyTypes;
@@ -154489,12 +154522,13 @@ var require_schemaUtils2 = __commonJS({
         bodyType,
         true,
         code,
-        requestBodyExamples
+        requestBodyExamples,
+        parameterExampleKeys
       );
       allBodyData = resolvedResponseBodyResult.generatedBody;
       resolvedResponseBodyTypes = resolvedResponseBodyResult.resolvedSchemaType;
       return _2.map(allBodyData, (bodyData) => {
-        let requestBodyData = bodyData.request, responseBodyData = bodyData.response, exampleName = bodyData.name;
+        let requestBodyData = bodyData.request, responseBodyData = bodyData.response, exampleName = bodyData.name, exampleKey = bodyData.exampleKey;
         if (bodyType === TEXT_XML || bodyType === APP_XML || headerFamily === HEADER_TYPE.XML) {
           responseBodyData && (responseBodyData = getXmlVersionContent(responseBodyData));
         }
@@ -154517,6 +154551,7 @@ var require_schemaUtils2 = __commonJS({
             value: bodyType
           }],
           name: exampleName,
+          exampleKey,
           bodyType,
           acceptHeader,
           resolvedResponseBodyTypes
@@ -154637,8 +154672,8 @@ var require_schemaUtils2 = __commonJS({
       }
       return responseAuthHelper;
     };
-    var resolveResponseForPostmanRequest = (context, operationItem, request) => {
-      let responses = [], requestBodyExamples = [], requestAcceptHeader, requestBody = operationItem.requestBody, requestContent, rawBodyType, headerFamily, isBodyTypeXML, resolvedExamplesObject = {}, responseTypes = {};
+    var resolveResponseForPostmanRequest = (context, operationItem, request, paramExamples = {}) => {
+      let responses = [], requestBodyExamples = [], requestAcceptHeader, parameterExampleKeys = _2.get(paramExamples, "keys", []), resolveParamsForExampleKey = _2.get(paramExamples, "resolveForKey"), requestBody = operationItem.requestBody, requestContent, rawBodyType, headerFamily, isBodyTypeXML, resolvedExamplesObject = {}, responseTypes = {};
       if (typeof requestBody === "object") {
         if (requestBody.$ref) {
           requestBody = resolveSchema(context, requestBody, { isResponseSchema: true });
@@ -154675,7 +154710,13 @@ var require_schemaUtils2 = __commonJS({
         }
       }
       _2.forOwn(operationItem.responses, (responseObj, code) => {
-        let responseSchema = _2.has(responseObj, "$ref") ? resolveSchema(context, responseObj, { isResponseSchema: true }) : responseObj, { includeAuthInfoInExample } = context.computedOptions, auth = request.auth, resolvedExamples = resolveResponseBody(context, responseSchema, requestBodyExamples, code) || {}, { resolvedHeaderTypes, headers } = resolveResponseHeaders(context, responseSchema.headers), responseBodyHeaderObj;
+        let responseSchema = _2.has(responseObj, "$ref") ? resolveSchema(context, responseObj, { isResponseSchema: true }) : responseObj, { includeAuthInfoInExample } = context.computedOptions, auth = request.auth, resolvedExamples = resolveResponseBody(
+          context,
+          responseSchema,
+          requestBodyExamples,
+          code,
+          parameterExampleKeys
+        ) || {}, { resolvedHeaderTypes, headers } = resolveResponseHeaders(context, responseSchema.headers), responseBodyHeaderObj;
         resolvedExamplesObject = resolvedExamples[0] && resolvedExamples[0].resolvedResponseBodyTypes;
         responseBodyHeaderObj = {
           body: JSON.stringify(resolvedExamplesObject, null, 2),
@@ -154688,7 +154729,7 @@ var require_schemaUtils2 = __commonJS({
           if (!resolvedExample) {
             return;
           }
-          let { body: body2, contentHeader = [], bodyType, acceptHeader, name } = resolvedExample, resolvedRequestBody = _2.get(resolvedExample, "request.body"), originalRequest, response, responseAuthHelper, requestBodyObj = {}, reqHeaders = _2.clone(request.headers) || [], reqQueryParams = _2.clone(_2.get(request, "params.queryParams", []));
+          let { body: body2, contentHeader = [], bodyType, acceptHeader, name, exampleKey } = resolvedExample, resolvedRequestBody = _2.get(resolvedExample, "request.body"), originalRequest, response, responseAuthHelper, requestBodyObj = {}, keyedParams = exampleKey && _2.isFunction(resolveParamsForExampleKey) ? resolveParamsForExampleKey(exampleKey) : void 0, baseHeaders2 = keyedParams ? keyedParams.headers : request.headers, basePathParams = keyedParams ? keyedParams.pathParams : _2.get(request, "params.pathParams", []), reqHeaders = _2.clone(baseHeaders2) || [], reqQueryParams = _2.clone(keyedParams ? keyedParams.queryParams : _2.get(request, "params.queryParams", []));
           _2.isArray(acceptHeader) && reqHeaders.push(...acceptHeader);
           if (_2.get(request, "body.mode") === "raw" && !_2.isNil(resolvedRequestBody)) {
             requestBodyObj = {
@@ -154702,13 +154743,11 @@ var require_schemaUtils2 = __commonJS({
             responseAuthHelper = getResponseAuthHelper(auth);
             reqHeaders.push(...responseAuthHelper.header);
             reqQueryParams.push(...responseAuthHelper.query);
-            originalRequest = _2.assign({}, request, {
-              headers: reqHeaders,
-              params: _2.assign({}, request.params, { queryParams: reqQueryParams })
-            }, requestBodyObj);
-          } else {
-            originalRequest = _2.assign({}, request, { headers: reqHeaders }, requestBodyObj);
           }
+          originalRequest = _2.assign({}, request, {
+            headers: reqHeaders,
+            params: _2.assign({}, request.params, { queryParams: reqQueryParams, pathParams: basePathParams })
+          }, requestBodyObj);
           const responseDescription = _2.get(responseSchema, "description"), responseDescriptionTrimmed = _2.isString(responseDescription) ? responseDescription.trim() : "", codeName = String(!_2.isNil(code) ? code : DEFAULT_RESPONSE_CODE_IN_OAS);
           name = responseDescriptionTrimmed || name || codeName;
           if (_2.isEmpty(requestAcceptHeader)) {
@@ -154739,7 +154778,33 @@ var require_schemaUtils2 = __commonJS({
         headers.push(..._2.get(requestBody, "headers", []));
         pathVariables.push(...baseUrlData.pathVariables);
         collectionVariables.push(...baseUrlData.collectionVariables);
+        const preBaseUrl = url;
         url = _2.get(baseUrlData, "baseUrl", "") + url;
+        const parameterExampleKeys = getParameterExampleKeys(context, operationItem, method), resolveParamsForExampleKey = (exampleKey) => {
+          const keyedQueryParams = resolveQueryParamsForPostmanRequest(
+            context,
+            operationItem,
+            method,
+            { exampleKey }
+          ).queryParams, keyedHeaders = resolveHeadersForPostmanRequest(
+            context,
+            operationItem,
+            method,
+            { exampleKey }
+          ).headers, keyedPathParams = resolvePathParamsForPostmanRequest(
+            context,
+            operationItem,
+            method,
+            { exampleKey }
+          ).pathParams, { pathVariables: keyedPathVariables } = filterCollectionAndPathVariables(preBaseUrl, keyedPathParams);
+          keyedHeaders.push(..._2.get(requestBody, "headers", []));
+          keyedPathVariables.push(...baseUrlData.pathVariables);
+          return {
+            queryParams: keyedQueryParams,
+            headers: keyedHeaders,
+            pathParams: keyedPathVariables
+          };
+        };
         request = {
           description: operationItem[method].description,
           url,
@@ -154762,7 +154827,10 @@ var require_schemaUtils2 = __commonJS({
           responses,
           acceptHeader,
           responseTypes
-        } = resolveResponseForPostmanRequest(context, operationItem[method], request);
+        } = resolveResponseForPostmanRequest(context, operationItem[method], request, {
+          keys: parameterExampleKeys,
+          resolveForKey: resolveParamsForExampleKey
+        });
         const overridesServer = Boolean(baseUrlData.serverObj);
         requestIdentifier = overridesServer ? method + new Url(url).getPath(true) : method + path11;
         Object.assign(
@@ -158193,16 +158261,48 @@ var require_ResponseMerger = __commonJS({
     var HeaderMerger_1 = require_HeaderMerger();
     var RequestMerger_1 = require_RequestMerger();
     var header_1 = require_header2();
-    function mergeResponseData(targetResponse, sourceResponse, syncOptions, preserveOriginalRequestBody = false) {
+    function preserveHeaderParams(targetHeaders, sourceHeaders) {
+      if (!Array.isArray(sourceHeaders)) {
+        return targetHeaders;
+      }
+      const result = Array.isArray(targetHeaders) ? [...targetHeaders] : [], indexByLowerKey = /* @__PURE__ */ new Map();
+      result.forEach((header, index) => {
+        if (typeof header?.key === "string") {
+          indexByLowerKey.set(header.key.toLowerCase(), index);
+        }
+      });
+      sourceHeaders.forEach((sourceHeader) => {
+        if (typeof sourceHeader?.key !== "string") {
+          return;
+        }
+        const lowerKey = sourceHeader.key.toLowerCase();
+        if (indexByLowerKey.has(lowerKey)) {
+          const index = indexByLowerKey.get(lowerKey);
+          result[index] = { ...result[index], value: sourceHeader.value, disabled: sourceHeader.disabled };
+        } else {
+          indexByLowerKey.set(lowerKey, result.length);
+          result.push(sourceHeader);
+        }
+      });
+      return result;
+    }
+    function mergeResponseData(targetResponse, sourceResponse, syncOptions, preserveOriginalRequest = false) {
       const targetRes = targetResponse.toJSON(), sourceRes = sourceResponse.toJSON(), shouldSyncExamples = syncOptions?.syncExamples;
       if (targetRes?.originalRequest && sourceRes?.originalRequest) {
         targetRes.originalRequest = (0, RequestMerger_1.mergeRequestData)(targetRes.originalRequest, sourceRes.originalRequest, syncOptions);
-        if (preserveOriginalRequestBody && shouldSyncExamples) {
+        if (preserveOriginalRequest && shouldSyncExamples) {
+          const targetOriginalRequest = targetRes.originalRequest;
           if (sourceRes.originalRequest.body === void 0) {
-            delete targetRes.originalRequest.body;
+            delete targetOriginalRequest.body;
           } else {
             targetRes.originalRequest.body = sourceRes.originalRequest.body;
           }
+          if (sourceRes.originalRequest.url === void 0) {
+            delete targetOriginalRequest.url;
+          } else {
+            targetRes.originalRequest.url = sourceRes.originalRequest.url;
+          }
+          targetRes.originalRequest.header = preserveHeaderParams(targetRes.originalRequest.header, sourceRes.originalRequest.header);
         }
       }
       (0, header_1.attachImplicitHeaders)(sourceRes.header, targetRes.header);
@@ -347373,7 +347473,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:26:01.362Z",
-  bootstrapCommit: "4d424dcffc9b5cb472e0a040b04036d559bdc5a2",
+  bootstrapCommit: "2afcab1fd2ec3426b996427501b2c2c24edd38cc",
   legs: [
     {
       mode: "nonorg",

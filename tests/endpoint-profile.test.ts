@@ -135,7 +135,7 @@ describe('bootstrap emulator endpoint profile fail-closed validation', () => {
   it.each([
     ['relative URL', 'relative/path'],
     ['non-http scheme', 'ftp://127.0.0.1:8081'],
-    ['credentials', 'http://user:pass@127.0.0.1:8081'],
+    ['credentials', 'http://user:pass@127.0.0.1:8081'], // trufflehog:ignore -- placeholder the profile must reject
     ['query string', 'http://127.0.0.1:8081?team=1'],
     ['fragment', 'http://127.0.0.1:8081#fragment'],
     ['whitespace', '   ']

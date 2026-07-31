@@ -127,6 +127,7 @@ jobs:
 
           run lint       npm run lint
           run test       npm test
+          run routes     npm run verify:route-manifest
           run typecheck  npm run typecheck
           run dist       npm run verify:dist:assert
           run integ      npm run test:integration

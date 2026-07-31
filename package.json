@@ -30,7 +30,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:integration": "node integration/verify.mjs",
     "record:live": "node --experimental-strip-types scripts/record-live.ts",
-    "record:cassettes": "RECORD_FAKE_CASSETTES=1 vitest run tests/contract/cassettes/record-fake-cassettes.test.ts"
+    "record:cassettes": "RECORD_FAKE_CASSETTES=1 vitest run tests/contract/cassettes/record-fake-cassettes.test.ts",
+    "verify:route-manifest": "vitest run tests/contract/route-manifest.test.ts"
   },
   "keywords": [
     "github-action",
@@ -46,7 +47,7 @@
     "@actions/io": "^3.0.2",
     "@apidevtools/json-schema-ref-parser": "15.5.0",
     "@exodus/schemasafe": "1.3.0",
-    "@postman-cse/automation-core": "^1.4.0",
+    "@postman-cse/automation-core": "^1.5.0",
     "@postman/asyncapi-parser": "^3.5.0",
     "@postman/protobufjs": "^7.5.4-postman.2",
     "@postman/runtime.models": "^1.13.1",

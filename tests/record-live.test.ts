@@ -167,9 +167,14 @@ describe('record-live scenarios', () => {
 
     try {
       process.env.POSTMAN_ACCESS_TOKEN = 'ambient-access-token';
+      const ambientEnv = { ...process.env };
+      // Recording is a local-operator action; simulate a local shell even when
+      // this suite itself runs on CI, where the guard would otherwise trip.
+      delete ambientEnv.CI;
       const loadedEnvironment = loadRecorderEnvironment({
         packageRoot: localPackageRoot,
-        workspaceRoot
+        workspaceRoot,
+        ambientEnv
       });
       const runAction = vi.fn(async (): Promise<PlannedOutputs> => {
         expect(process.env.POSTMAN_ACCESS_TOKEN).toBeUndefined();

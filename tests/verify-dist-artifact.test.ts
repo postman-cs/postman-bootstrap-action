@@ -332,7 +332,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const startedAt = Date.now();
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain('direct dist/cli.cjs --help timed out after 5000ms');
+    expect(result.stderr).toMatch(/direct dist[\\/]cli\.cjs --help timed out after 5000ms/);
     expect(Date.now() - startedAt).toBeLessThan(10_000);
   }, 15_000);
 
@@ -342,7 +342,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const startedAt = Date.now();
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toContain('direct dist/cli.cjs --version timed out after 5000ms');
+    expect(result.stderr).toMatch(/direct dist[\\/]cli\.cjs --version timed out after 5000ms/);
     expect(Date.now() - startedAt).toBeLessThan(10_000);
   }, 15_000);
 

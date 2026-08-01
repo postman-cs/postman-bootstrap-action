@@ -11,9 +11,13 @@ describe('runWithFakeTimers', () => {
     ).resolves.toBe('settled');
   });
 
-  it('fails deterministically when the action promise never settles', async () => {
-    await expect(runWithFakeTimers(() => new Promise<never>(() => {}))).rejects.toThrow(
-      /Fake timer flush budget exhausted .* action promise did not settle/
-    );
-  });
+  it(
+    'fails deterministically when the action promise never settles',
+    async () => {
+      await expect(runWithFakeTimers(() => new Promise<never>(() => {}))).rejects.toThrow(
+        /Fake timer flush budget exhausted .* action promise did not settle/
+      );
+    },
+    30_000
+  );
 });

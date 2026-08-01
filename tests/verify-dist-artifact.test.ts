@@ -138,7 +138,7 @@ else {
 
 async function runVerify(
   root: string,
-  options: { cliProbeTimeoutMs?: number } = {}
+  options: { cliProbeTimeoutMs?: number | string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
     const result = await execFileAsync(process.execPath, [verifyScript, root], {
@@ -149,7 +149,7 @@ async function runVerify(
         TMPDIR: process.env.TMPDIR ?? '',
         // Timeout-contract tests pin the strict 5s default; the real-artifact
         // boot opts into contention headroom for full-suite runs.
-        ...(options.cliProbeTimeoutMs
+        ...(options.cliProbeTimeoutMs !== undefined
           ? { VERIFY_DIST_CLI_PROBE_TIMEOUT_MS: String(options.cliProbeTimeoutMs) }
           : {})
       },
@@ -183,6 +183,24 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
+  }, 15_000);
+
+  it('uses the strict default and rejects invalid CLI probe timeout overrides before probing', async () => {
+    const defaultRoot = await makeTempDir('verify-dist-timeout-default-');
+    await writeFixture(defaultRoot);
+    const defaultResult = await runVerify(defaultRoot);
+    expect(defaultResult.stderr).toBe('');
+    expect(defaultResult.code).toBe(0);
+
+    for (const value of [0, -1, 1.5, 'not-a-number', 'Infinity', 30_001]) {
+      const root = await makeTempDir('verify-dist-timeout-invalid-');
+      await writeFixture(root, { hangHelp: true });
+      const startedAt = Date.now();
+      const result = await runVerify(root, { cliProbeTimeoutMs: value });
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/VERIFY_DIST_CLI_PROBE_TIMEOUT_MS must be a finite integer between 1 and 30000ms/);
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    }
   }, 15_000);
 
   it('fails the real verifier on the historical getter-only library export boot failure', async () => {

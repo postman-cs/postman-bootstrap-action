@@ -39,7 +39,19 @@ const SHEBANG = '#!/usr/bin/env node\n';
 // vitest run every core is saturated and the same boot can take >5s, so the
 // suite may grant explicit headroom; the standalone gate keeps the strict
 // default.
-const CLI_PROBE_TIMEOUT_MS = Number(process.env.VERIFY_DIST_CLI_PROBE_TIMEOUT_MS || '') || 5_000;
+const DEFAULT_CLI_PROBE_TIMEOUT_MS = 5_000;
+// Explicit suite headroom is capped so environment input cannot turn a
+// verifier probe into an arbitrarily long hang.
+const MAX_CLI_PROBE_TIMEOUT_MS = 30_000;
+function parseCliProbeTimeoutMs(value) {
+  if (value === undefined || value.trim() === '') return DEFAULT_CLI_PROBE_TIMEOUT_MS;
+  const timeoutMs = Number(value);
+  if (!Number.isFinite(timeoutMs) || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_CLI_PROBE_TIMEOUT_MS) {
+    fail(`VERIFY_DIST_CLI_PROBE_TIMEOUT_MS must be a finite integer between 1 and ${MAX_CLI_PROBE_TIMEOUT_MS}ms, got ${JSON.stringify(value)}`);
+  }
+  return timeoutMs;
+}
+const CLI_PROBE_TIMEOUT_MS = parseCliProbeTimeoutMs(process.env.VERIFY_DIST_CLI_PROBE_TIMEOUT_MS);
 const DYNAMIC_VARIABLE_REGISTRY_RUNS = 1_000;
 
 // Optional third-party peers that bundled runtimes (e.g. node-fetch) try to

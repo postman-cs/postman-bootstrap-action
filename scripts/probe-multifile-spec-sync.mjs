@@ -61,8 +61,37 @@ export const CAPABILITY_KEYS = [
 ];
 
 const REQUEST_TIMEOUT_MS = 30_000;
-const GENERATION_POLL_ATTEMPTS = Number(process.env.POSTMAN_GENERATION_POLL_ATTEMPTS || 180);
-const GENERATION_POLL_DELAY_MS = Number(process.env.POSTMAN_GENERATION_POLL_DELAY_MS || 1000);
+/**
+ * Parse a bounded integer environment setting before probe work begins.
+ * @param {string} name
+ * @param {string | undefined} value
+ * @param {number} defaultValue
+ * @param {number} minimum
+ * @param {number} maximum
+ */
+export function parseBoundedIntegerEnv(name, value, defaultValue, minimum, maximum) {
+  if (value === undefined || value === '') return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return parsed;
+}
+
+const GENERATION_POLL_ATTEMPTS = parseBoundedIntegerEnv(
+  'POSTMAN_GENERATION_POLL_ATTEMPTS',
+  process.env.POSTMAN_GENERATION_POLL_ATTEMPTS,
+  180,
+  1,
+  300
+);
+const GENERATION_POLL_DELAY_MS = parseBoundedIntegerEnv(
+  'POSTMAN_GENERATION_POLL_DELAY_MS',
+  process.env.POSTMAN_GENERATION_POLL_DELAY_MS,
+  1000,
+  0,
+  5000
+);
 
 const ROOT_OPENAPI = [
   'openapi: 3.0.3',

@@ -39,7 +39,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":{\"ok\":true}}",
+      "body": "{\"data\":[],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
       "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
       "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
       "responseHeaders": {
@@ -58,7 +58,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":{\"ok\":true}}",
+      "body": "{\"data\":[{\"id\":\"cassette-specification-1\",\"name\":\"contract-payments\"}],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
       "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
       "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
       "responseHeaders": {
@@ -67,7 +67,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":{\"ok\":true}}",
+      "body": "{\"data\":[{\"id\":\"cassette-specification-1\",\"name\":\"contract-payments\"}],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
       "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
       "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
       "responseHeaders": {
@@ -76,7 +76,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":{\"ok\":true}}",
+      "body": "{\"data\":[{\"id\":\"cassette-specification-1\",\"name\":\"contract-payments\"}],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
       "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
       "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
       "responseHeaders": {
@@ -85,70 +85,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":{\"ok\":true}}",
-      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
-      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":{\"ok\":true}}",
-      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
-      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":{\"ok\":true}}",
-      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
-      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":{\"ok\":true}}",
-      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
-      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":{\"ok\":true}}",
-      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
-      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":{\"ok\":true}}",
-      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
-      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":{\"ok\":true}}",
-      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
-      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":{\"id\":\"cassette-specification-1\"}}",
+      "body": "{\"data\":{\"id\":\"cassette-specification-1\",\"name\":\"contract-payments\"}}",
       "key": "proxy:specification GET /specifications/cassette-specification-1",
       "requestQuery": "",
       "responseHeaders": {
@@ -157,7 +94,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[]}",
+      "body": "{\"data\":[],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -166,7 +103,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[]}",
+      "body": "{\"data\":[],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -215,7 +152,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -224,7 +161,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -233,7 +170,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -242,7 +179,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -251,7 +188,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -260,7 +197,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -269,7 +206,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -278,7 +215,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -287,7 +224,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -296,7 +233,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -305,7 +242,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -314,7 +251,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -343,7 +280,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -352,7 +289,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -361,7 +298,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -370,7 +307,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -379,7 +316,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -388,7 +325,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -397,7 +334,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}]}",
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
       "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
       "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
@@ -416,7 +353,7 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"collection\":\"cassette-collection-1\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}},{\"collection\":\"cassette-collection-2\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}},{\"collection\":\"cassette-collection-3\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}}]}",
+      "body": "{\"data\":[{\"collection\":\"cassette-collection-1\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}},{\"collection\":\"cassette-collection-2\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}},{\"collection\":\"cassette-collection-3\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}}],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
       "key": "proxy:specification GET /specifications/cassette-specification-1/collections?fields=syncOptions%2Coptions",
       "requestQuery": "fields=syncOptions%2Coptions",
       "responseHeaders": {

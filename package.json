@@ -30,6 +30,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:integration": "node integration/verify.mjs",
     "record:live": "node --experimental-strip-types scripts/record-live.ts",
+    "drift:check": "node --experimental-strip-types scripts/drift-check.ts",
     "record:cassettes": "RECORD_FAKE_CASSETTES=1 vitest run tests/contract/cassettes/record-fake-cassettes.test.ts",
     "verify:route-manifest": "vitest run tests/contract/route-manifest.test.ts"
   },

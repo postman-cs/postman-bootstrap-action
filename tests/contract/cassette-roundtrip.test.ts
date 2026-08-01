@@ -33,7 +33,11 @@ const PMAK_ONLY = { 'postman-api-key': 'pmak-test', 'postman-access-token': '' }
 describe('contract: cassette roundtrip', () => {
   it('records a {PMAK-only, org} run, redacts secrets, and replays it to identical outputs', async () => {
     const cassette = createEmptyCassette();
-    const fake = createPlatformFake({ org: true });
+    const fake = createPlatformFake({
+      org: true,
+      pageSize: 1,
+      importElection: { importedVisibleAfterObservations: 7 }
+    });
     const recording = createRecordingFetch(
       fake.fetch,
       cassette,
@@ -45,6 +49,11 @@ describe('contract: cassette roundtrip', () => {
     expect(recorded.error).toBeUndefined();
     expect(recorded.outputs['workspace-id']).toBe('ws-contract');
     expect(cassette.interactions.length).toBeGreaterThan(5);
+    expect(fake.state.collectionObservationCount).toBeGreaterThan(6);
+    expect(fake.state.collectionTransitions).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^visible:.*:observation=8$/)])
+    );
+    expect(fake.state.paginationCursorsIssued).toBeGreaterThan(0);
 
     // No secret value survives into the serialized cassette.
     const serialized = JSON.stringify(cassette);

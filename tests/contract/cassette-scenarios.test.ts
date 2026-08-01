@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { createReplayFetch } from '@postman-cse/automation-core/cassette';
 
 import { runContractAction, runWithFakeTimers } from './harness.js';
+import { createPlatformFake } from './platform-fake.js';
 import { CASSETTE_SCENARIOS, CASSETTE_SCENARIO_ENV } from './cassettes/scenarios.js';
 import { isRepeatableRead, readCassette } from './cassettes/replay.js';
 
@@ -109,4 +110,30 @@ describe('contract: cassette scenario suite (offline replay)', () => {
       .sort();
     expect(cassetteFiles).toEqual(names.map((name) => `${name}.json`).sort());
   });
+
+  it('applies the fresh-onboard assertions unchanged to the lagged stateful fake', async () => {
+    const scenario = CASSETTE_SCENARIOS.find((entry) => entry.name === 'fresh-onboard');
+    expect(scenario).toBeDefined();
+    const fake = createPlatformFake({
+      ...scenario!.fake,
+      pageSize: 1,
+      importElection: { importedVisibleAfterObservations: 7 }
+    });
+
+    uuidSequence.next = 0;
+    const result = await runWithFakeTimers(() =>
+      runContractAction({
+        inputs: scenario!.inputs,
+        env: { ...CASSETTE_SCENARIO_ENV, ...(scenario!.env ?? {}) },
+        fetchImpl: fake.fetch
+      })
+    );
+
+    scenario!.expectOutputs(result);
+    expect(fake.state.collectionObservationCount).toBeGreaterThan(6);
+    expect(fake.state.collectionTransitions).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^visible:.*:observation=8$/)])
+    );
+    expect(fake.state.paginationCursorsIssued).toBeGreaterThan(0);
+  }, 120_000);
 });

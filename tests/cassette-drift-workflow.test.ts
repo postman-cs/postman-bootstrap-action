@@ -9,7 +9,7 @@ type Workflow = {
   permissions?: Record<string, string>;
   jobs?: Record<string, {
     if?: string;
-    steps?: Array<{ uses?: string; run?: string }>;
+    steps?: Array<{ name?: string; uses?: string; run?: string; env?: Record<string, string> }>;
   }>;
 };
 
@@ -49,5 +49,17 @@ describe('cassette drift workflow contract', () => {
     const steps = Object.values(drift.jobs ?? {}).flatMap((job) => job.steps ?? []);
     expect(steps.some((step) => /upload-artifact|create-pull-request/i.test(step.uses ?? ''))).toBe(false);
     expect(steps.some((step) => /\b(?:git\s+(?:commit|push)|gh\s+pr)\b/i.test(step.run ?? ''))).toBe(false);
+  });
+
+  it('runs the drift check with the non-org smoke credential', () => {
+    const driftCheck = drift.jobs?.['drift-check'];
+    const executionStep = driftCheck?.steps?.find(
+      (step) => step.name === 'Re-record fresh-onboard and shape-diff against the committed cassette'
+    );
+
+    expect(executionStep?.run).toBe('npm run drift:check');
+    expect(executionStep?.env?.POSTMAN_E2E_API_KEY_NON_ORG_MODE).toBe(
+      '${{ secrets.SMOKE_NON_ORG_API_KEY }}'
+    );
   });
 });

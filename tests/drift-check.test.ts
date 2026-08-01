@@ -1,8 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import type { Cassette } from '@postman-cse/automation-core/cassette';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -319,6 +318,27 @@ describe('runDriftCheck', () => {
     ).rejects.toThrow('ephemeral rawOutputRoot child directory under the OS temp root');
     expect(recorderCalled).toBe(false);
   });
+
+  it('rejects traversal scenarios before reading the baseline package JSON or invoking the recorder', async () => {
+    let recorderCalled = false;
+    const packageJson = path.resolve('package.json');
+    const error = await runDriftCheck({
+      scenario: '../../../package',
+      rawOutputRoot: temporaryDirectory(),
+      committedCassetteDirectory: packageJson,
+      loadedEnvironment: { env: {}, loadedFiles: [] },
+      recordScenario: async (): Promise<RecordingResult> => {
+        recorderCalled = true;
+        throw new Error('recorder must not be called');
+      }
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toMatchObject({
+      message: 'Unknown recording scenario "../../../package". Supported scenarios: fresh-onboard'
+    });
+    expect(error).not.toMatchObject({ message: expect.stringContaining('package.json') });
+    expect(recorderCalled).toBe(false);
+  });
 });
 
 describe('drift:check entrypoint', () => {
@@ -371,24 +391,32 @@ describe('drift:check entrypoint', () => {
     expect(existsSync(rawOutputRoot)).toBe(false);
   });
 
-  it('shipped node --experimental-strip-types entrypoint loads the drift-check module graph', () => {
-    const entry = pathToFileURL(path.resolve('scripts/drift-check.ts')).href;
+  it('shipped node --experimental-strip-types entrypoint rejects traversal before credentials or network and cleans raw storage', () => {
+    const testTmpdir = temporaryDirectory();
+    const environmentWithoutCredentials = { ...process.env };
+    delete environmentWithoutCredentials.POSTMAN_API_KEY;
+    delete environmentWithoutCredentials.POSTMAN_E2E_API_KEY_NON_ORG_MODE;
+    delete environmentWithoutCredentials.POSTMAN_ACCESS_TOKEN;
     const result = spawnSync(
       process.execPath,
-      [
-        '--experimental-strip-types',
-        '--input-type=module',
-        '-e',
-        `import(${JSON.stringify(entry)}).then(() => { console.log('DRIFT_ENTRYPOINT_LOAD_OK'); }).catch((error) => { console.error(error); process.exit(1); })`
-      ],
+      ['--experimental-strip-types', 'scripts/drift-check.ts', '../../../package'],
       {
         encoding: 'utf8',
         cwd: path.resolve('.'),
-        env: { ...process.env, POSTMAN_ACTIONS_TELEMETRY: 'off' }
+        env: {
+          ...environmentWithoutCredentials,
+          POSTMAN_ACTIONS_TELEMETRY: 'off',
+          TMPDIR: testTmpdir
+        }
       }
     );
-    expect(result.status, result.stderr + result.stdout).toBe(0);
-    expect(result.stdout).toContain('DRIFT_ENTRYPOINT_LOAD_OK');
-    expect(result.stderr + result.stdout).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
+    const output = result.stderr + result.stdout;
+
+    expect(result.status, output).not.toBe(0);
+    expect(output).toContain(
+      'Unknown recording scenario "../../../package". Supported scenarios: fresh-onboard'
+    );
+    expect(output).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
+    expect(readdirSync(testTmpdir).filter((name) => name.startsWith('bootstrap-drift-raw-'))).toEqual([]);
   });
 });

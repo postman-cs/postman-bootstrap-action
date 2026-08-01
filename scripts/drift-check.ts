@@ -14,6 +14,7 @@ import {
 import {
   loadRecorderEnvironment,
   recordLiveScenario,
+  selectRecorderScenario,
   type LoadedRecorderEnvironment,
   type RecorderEnvironmentOptions
 } from './record-live.ts';
@@ -138,7 +139,7 @@ export function loadDriftMonitorEnvironment(
 }
 
 export async function runDriftCheck(options: DriftCheckOptions): Promise<DriftCheckResult> {
-  const scenario = options.scenario ?? 'fresh-onboard';
+  const scenario = selectRecorderScenario(options.scenario ?? 'fresh-onboard').name;
   const rawOutputRoot = options.rawOutputRoot;
   assertEphemeralRawOutputRoot(rawOutputRoot);
   const committedDirectory = options.committedCassetteDirectory ?? COMMITTED_CASSETTE_DIRECTORY;

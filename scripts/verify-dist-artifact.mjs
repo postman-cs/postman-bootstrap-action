@@ -35,7 +35,12 @@ const defaultRoot = path.resolve(scriptDir, '..');
 const root = path.resolve(process.argv[2] ?? defaultRoot);
 const distDir = path.join(root, 'dist');
 const SHEBANG = '#!/usr/bin/env node\n';
-const CLI_PROBE_TIMEOUT_MS = 5_000;
+// 5s is generous for an uncontended boot of the bundled CLI. Under a full
+// vitest run every core is saturated and the same boot can take >5s, so the
+// suite may grant explicit headroom; the standalone gate keeps the strict
+// default.
+const CLI_PROBE_TIMEOUT_MS = Number(process.env.VERIFY_DIST_CLI_PROBE_TIMEOUT_MS || '') || 5_000;
+const DYNAMIC_VARIABLE_REGISTRY_RUNS = 1_000;
 
 // Optional third-party peers that bundled runtimes (e.g. node-fetch) try to
 // require and swallow on failure. These are NOT runtime dependencies of the
@@ -641,21 +646,27 @@ function assertLibraryEntrypointBoots(dynamicVariableRegistry) {
     `const dynamicVariableRegistry = ${JSON.stringify(dynamicVariableRegistry)};`,
     'if (dynamicVariableRegistry) {',
     '  let report;',
+    '  const originalConsoleWarn = console.warn;',
     '  if (typeof m[dynamicVariableRegistry.exportName] !== \'function\') {',
     "    console.error('DYNAMIC_VARS_BOOT_FAILED missing export=' + dynamicVariableRegistry.exportName);",
     '    process.exit(1);',
     '  }',
     '  try {',
-    '    report = m[dynamicVariableRegistry.exportName]();',
+    '    console.warn = () => {};',
+    `    for (let run = 1; run <= ${DYNAMIC_VARIABLE_REGISTRY_RUNS}; run += 1) {`,
+    '      report = m[dynamicVariableRegistry.exportName]();',
+    '      if (!report || report.generators !== dynamicVariableRegistry.expectedGeneratorCount || !Array.isArray(report.failures) || report.failures.length > 0) {',
+    "        console.error('DYNAMIC_VARS_BOOT_FAILED run=' + run + ' result=' + JSON.stringify(report));",
+    '        process.exit(1);',
+    '      }',
+    '    }',
     '  } catch (error) {',
     "    console.error('DYNAMIC_VARS_BOOT_FAILED result=' + JSON.stringify(report) + ' error=' + (error && error.stack ? error.stack : error));",
     '    process.exit(1);',
+    '  } finally {',
+    '    console.warn = originalConsoleWarn;',
     '  }',
-    '  if (!report || report.generators !== dynamicVariableRegistry.expectedGeneratorCount || !Array.isArray(report.failures) || report.failures.length > 0) {',
-    "    console.error('DYNAMIC_VARS_BOOT_FAILED result=' + JSON.stringify(report));",
-    '    process.exit(1);',
-    '  }',
-    "  console.log('DYNAMIC_VARS_BOOT_OK ' + dynamicVariableRegistry.exportName + ' ' + report.generators);",
+    `  console.log('DYNAMIC_VARS_BOOT_OK ' + dynamicVariableRegistry.exportName + ' ' + report.generators + ' runs=${DYNAMIC_VARIABLE_REGISTRY_RUNS}');`,
     '} else {',
     "  console.log('DYNAMIC_VARS_BOOT_SKIPPED');",
     '}',
@@ -679,8 +690,11 @@ function assertLibraryEntrypointBoots(dynamicVariableRegistry) {
     if (!/LIBRARY_BOOT_OK \d+/.test(result.stdout ?? '')) {
       fail(`library entrypoint ${mainRel} boot probe produced no receipt: ${output.trim()}`);
     }
-    if (!/DYNAMIC_VARS_BOOT_(?:OK [A-Za-z_$][A-Za-z0-9_$]* \d+|SKIPPED)/.test(result.stdout ?? '')) {
+    if (!/DYNAMIC_VARS_BOOT_(?:OK [A-Za-z_$][A-Za-z0-9_$]* \d+ runs=1000|SKIPPED)/.test(result.stdout ?? '')) {
       fail(`library entrypoint ${mainRel} dynamic-variable probe produced no receipt: ${output.trim()}`);
+    }
+    if (dynamicVariableRegistry) {
+      console.log(`DYNAMIC_VARS_BOOT_OK ${dynamicVariableRegistry.exportName} ${dynamicVariableRegistry.expectedGeneratorCount} runs=${DYNAMIC_VARIABLE_REGISTRY_RUNS}`);
     }
     if (BOOT_FAILURE_PATTERN.test(output)) {
       fail(`library entrypoint ${mainRel} boot emitted a runtime failure class: ${output.trim()}`);

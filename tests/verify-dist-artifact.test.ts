@@ -128,7 +128,7 @@ else {
       await symlink(cliPath, path.join(distDir, name));
       continue;
     }
-    const body = name === options.brokenEntry ? 'const = broken;\n' : options.libraryGetterThrows && name === path.posix.basename(CONFIG.pkgMain) ? "Object.defineProperty(module.exports, 'broken', { enumerable: true, get() { throw new TypeError('getter-only library export'); } });\n" : options.actionBootThrows && name === path.posix.basename(CONFIG.actionMain ?? '') ? "throw new TypeError('action boot failure');\n" : options.dynamicVariablesReport && name === path.posix.basename(CONFIG.pkgMain) ? `module.exports[${JSON.stringify(options.dynamicVariablesExport ?? 'observeBundledDynamicVariables')}] = () => { process.stdout.write('DYNAMIC_FIXTURE_INVOKED\\n'); return ${JSON.stringify(options.dynamicVariablesReport)}; };\n` : 'module.exports = {};\n';
+    const body = name === options.brokenEntry ? 'const = broken;\n' : options.libraryGetterThrows && name === path.posix.basename(CONFIG.pkgMain) ? "Object.defineProperty(module.exports, 'broken', { enumerable: true, get() { throw new TypeError('getter-only library export'); } });\n" : options.actionBootThrows && name === path.posix.basename(CONFIG.actionMain ?? '') ? "throw new TypeError('action boot failure');\n" : options.dynamicVariablesReport && name === path.posix.basename(CONFIG.pkgMain) ? `let dynamicFixtureCalls = 0;\nprocess.on('exit', () => { if (dynamicFixtureCalls > 0) process.stdout.write('DYNAMIC_FIXTURE_INVOKED ' + dynamicFixtureCalls + '\\n'); });\nmodule.exports[${JSON.stringify(options.dynamicVariablesExport ?? 'observeBundledDynamicVariables')}] = () => { dynamicFixtureCalls += 1; return ${JSON.stringify(options.dynamicVariablesReport)}; };\n` : 'module.exports = {};\n';
     await writeFile(path.join(distDir, name), body, 'utf8');
   }
   if (options.extraDistFile) {
@@ -136,14 +136,22 @@ else {
   }
 }
 
-async function runVerify(root: string): Promise<{ code: number; stdout: string; stderr: string }> {
+async function runVerify(
+  root: string,
+  options: { cliProbeTimeoutMs?: number } = {}
+): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
     const result = await execFileAsync(process.execPath, [verifyScript, root], {
       encoding: 'utf8',
       env: {
         PATH: process.env.PATH ?? '',
         HOME: process.env.HOME ?? '',
-        TMPDIR: process.env.TMPDIR ?? ''
+        TMPDIR: process.env.TMPDIR ?? '',
+        // Timeout-contract tests pin the strict 5s default; the real-artifact
+        // boot opts into contention headroom for full-suite runs.
+        ...(options.cliProbeTimeoutMs
+          ? { VERIFY_DIST_CLI_PROBE_TIMEOUT_MS: String(options.cliProbeTimeoutMs) }
+          : {})
       },
       maxBuffer: 1024 * 1024
     });
@@ -159,12 +167,15 @@ async function runVerify(root: string): Promise<{ code: number; stdout: string; 
 }
 
 describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
-  it('passes against the committed dist artifact', async () => {
-    const result = await runVerify(repoRoot);
+  it('passes against the committed dist artifact', { timeout: 60_000 }, async () => {
+    // Full-suite runs saturate every core and a 15MB bundle boot can blow the
+    // strict 5s probe; grant headroom here only. The hang tests below still
+    // prove the 5s fail-closed default.
+    const result = await runVerify(repoRoot, { cliProbeTimeoutMs: 30_000 });
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('verify-dist-artifact: ok');
-  }, 15_000);
+  });
 
   it('passes a well-formed temporary dist tree', async () => {
     const root = await makeTempDir('verify-dist-ok-');
@@ -193,6 +204,8 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     await writeFixture(success, { dynamicVariableRegistry: { export: 'fixtureRegistry', expectedGeneratorCount: 3 }, dynamicVariablesExport: 'fixtureRegistry', dynamicVariablesReport: { generators: 3, failures: [] } });
     const result = await runVerify(success);
     expect(result.code).toBe(0);
+    expect(result.stdout).toContain('DYNAMIC_VARS_BOOT_OK fixtureRegistry 3 runs=1000');
+    expect(await readFile(verifyScript, 'utf8')).toContain('for (let run = 1; run <= ${DYNAMIC_VARIABLE_REGISTRY_RUNS}; run += 1)');
   }, 15_000);
 
   it('rejects missing, malformed, and mismatched dynamic-variable registries', async () => {

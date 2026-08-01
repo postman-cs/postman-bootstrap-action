@@ -77,6 +77,8 @@ export interface ContractRunOptions {
   env?: Record<string, string>;
 }
 
+const MAX_TIMER_FLUSH_PASSES = 100_000;
+
 /**
  * Run a contract action under vitest fake timers, flushing every timer chain
  * (retry backoffs, generation poll sleeps, identity-settle windows) until the
@@ -88,23 +90,31 @@ export async function runWithFakeTimers<T>(fn: () => Promise<T>): Promise<T> {
   vi.setSystemTime(new Date('2026-07-31T00:00:00.000Z'));
   try {
     const pending = fn();
-    let settled = false;
-    const settle = pending.then(
+    let settled: { value: T } | { error: unknown } | undefined;
+    // Observe rejection immediately so a timer-flush budget failure cannot leave
+    // the original action promise as an unhandled rejection.
+    void pending.then(
       (value) => {
-        settled = true;
-        return value;
+        settled = { value };
       },
       (error) => {
-        settled = true;
-        throw error;
+        settled = { error };
       }
     );
-    while (!settled) {
+    for (let pass = 0; pass < MAX_TIMER_FLUSH_PASSES && !settled; pass += 1) {
       await vi.runAllTimersAsync();
       // Yield the microtask queue so `settled` can flip between timer flushes.
       await Promise.resolve();
     }
-    return settle;
+    if (!settled) {
+      throw new Error(
+        `Fake timer flush budget exhausted after ${MAX_TIMER_FLUSH_PASSES} passes: action promise did not settle`
+      );
+    }
+    if ('error' in settled) {
+      throw settled.error;
+    }
+    return settled.value;
   } finally {
     vi.useRealTimers();
   }

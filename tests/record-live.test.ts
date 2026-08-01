@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { createReplayFetch } from '@postman-cse/automation-core/cassette';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -15,7 +14,7 @@ import {
   recordLiveScenario,
   selectRecorderScenario
 } from '../scripts/record-live.js';
-import { sanitizeCassetteFile } from '../scripts/sanitize-cassette.js';
+import { assertFreshOnboardParity } from '../scripts/fresh-onboard-parity.js';
 import type { PlannedOutputs } from '../src/index.js';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
@@ -181,9 +180,12 @@ describe('record-live scenarios', () => {
         return {} as PlannedOutputs;
       });
 
-      await recordLiveScenario('fresh-onboard', loadedEnvironment, { rawOutputRoot, runAction });
+      await expect(
+        recordLiveScenario('fresh-onboard', loadedEnvironment, { rawOutputRoot, runAction })
+      ).rejects.toThrow('fresh-onboard parity requires output "workspace-id"');
 
       expect(runAction).toHaveBeenCalledOnce();
+      expect(existsSync(path.join(rawOutputRoot, 'fresh-onboard.json'))).toBe(false);
     } finally {
       if (previousAccessToken === undefined) {
         delete process.env.POSTMAN_ACCESS_TOKEN;
@@ -211,11 +213,10 @@ describe('record-live scenarios', () => {
     expect(existsSync(path.join(rawOutputRoot, 'fresh-onboard.json'))).toBe(false);
   });
 
-  it('records, sanitizes, and replays the shipped recorder path without live replay calls', async () => {
+  it('rejects a live wire mismatch before writing a raw cassette', async () => {
     const workspaceRoot = temporaryDirectory();
     const localPackageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
     const rawOutputRoot = path.join(workspaceRoot, 'raw');
-    const committedOutputPath = path.join(workspaceRoot, 'committed', 'fresh-onboard.json');
     const liveWorkspaceId = '12345678-1234-4234-8234-123456789abc';
     const createUrl = 'https://example.test/workspaces';
     mkdirSync(localPackageRoot, { recursive: true });
@@ -242,36 +243,92 @@ describe('record-live scenarios', () => {
         method: 'PATCH',
         body: JSON.stringify({ workspaceId: body.data.id, enabled: true })
       });
-      return {} as PlannedOutputs;
+      return {
+        'workspace-id': liveWorkspaceId,
+        'spec-id': 'live-specification',
+        'baseline-collection-id': 'live-baseline',
+        'smoke-collection-id': 'live-smoke',
+        'contract-collection-id': 'live-contract',
+        'openapi-operation-ledger-json': JSON.stringify({
+          counts: {
+            wholeCollectionImport: 3,
+            deepUpdate: 0,
+            specHubCollectionGeneration: 0,
+            temporaryOpenApiSpecCreate: 0,
+            postCreateScriptPatch: 0
+          }
+        })
+      } as PlannedOutputs;
     };
 
-    const recorded = await recordLiveScenario('fresh-onboard', loadedEnvironment, {
-      fetchImpl: liveFetch,
-      rawOutputRoot,
-      runAction
-    });
-    const raw = JSON.parse(readFileSync(recorded.outputPath, 'utf8')) as {
-      interactions: Array<{ rawRequestBody?: string }>;
-    };
-
-    expect(recorded.outputPath).toBe(path.join(rawOutputRoot, 'fresh-onboard.json'));
-    expect(raw.interactions[1]?.rawRequestBody).toContain(liveWorkspaceId);
-
-    const sanitized = sanitizeCassetteFile(recorded.outputPath, committedOutputPath);
-    const committed = readFileSync(committedOutputPath, 'utf8');
-    expect(committed).not.toContain('PMAK-');
-    expect(committed).not.toContain('rawRequestBody');
-
-    const replay = createReplayFetch(structuredClone(sanitized));
-    const replayedCreate = await replay(createUrl, { method: 'POST' });
-    const replayedBody = (await replayedCreate.json()) as { data: { id: string } };
     await expect(
-      replay(`${createUrl}/${replayedBody.data.id}/settings`, {
-        method: 'PATCH',
-        body: JSON.stringify({ workspaceId: replayedBody.data.id, enabled: true })
-      }).then((response) => response.text())
-    ).resolves.toBe('ok');
+      recordLiveScenario('fresh-onboard', loadedEnvironment, { fetchImpl: liveFetch, rawOutputRoot, runAction })
+    ).rejects.toThrow('fresh-onboard parity requires the fresh onboarding wire contract');
     expect(liveFetch).toHaveBeenCalledTimes(2);
+    expect(existsSync(path.join(rawOutputRoot, 'fresh-onboard.json'))).toBe(false);
+  });
+
+  it('preserves a sanitized partial raw cassette when the action fails', async () => {
+    const workspaceRoot = temporaryDirectory();
+    const localPackageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
+    const rawOutputRoot = path.join(workspaceRoot, 'raw');
+    const partialPath = path.join(rawOutputRoot, 'fresh-onboard.json');
+    const requestUrl = 'https://example.test/workspaces';
+    mkdirSync(localPackageRoot, { recursive: true });
+    writeFileSync(path.join(localPackageRoot, '.env'), 'POSTMAN_API_KEY=PMAK-test-key\n', 'utf8');
+    const loadedEnvironment = loadRecorderEnvironment({
+      ambientEnv: {},
+      packageRoot: localPackageRoot,
+      workspaceRoot
+    });
+    const liveFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ apiKey: 'PMAK-test-key', result: 'captured' }), {
+        headers: { 'content-type': 'application/json' },
+        status: 200
+      })
+    );
+    const runAction = async (): Promise<PlannedOutputs> => {
+      await globalThis.fetch(requestUrl, {
+        headers: { authorization: 'Bearer PMAK-test-key' },
+        method: 'POST'
+      });
+      throw new Error('injected action failure');
+    };
+
+    await expect(
+      recordLiveScenario('fresh-onboard', loadedEnvironment, { fetchImpl: liveFetch, rawOutputRoot, runAction })
+    ).rejects.toThrow(`failed after 1 interaction(s); partial raw cassette: ${partialPath}`);
+
+    expect(existsSync(partialPath)).toBe(true);
+    const rawCassette = readFileSync(partialPath, 'utf8');
+    expect(rawCassette).toContain(requestUrl);
+    expect(rawCassette).not.toContain('PMAK-test-key');
+  });
+
+  it('rejects fresh-onboard output and wire mismatches through the shared assertion', () => {
+    const outputs = {
+      'workspace-id': 'live-workspace',
+      'spec-id': 'live-spec',
+      'baseline-collection-id': 'live-baseline',
+      'smoke-collection-id': 'live-smoke',
+      'contract-collection-id': 'live-contract',
+      'openapi-operation-ledger-json': JSON.stringify({
+        counts: {
+          wholeCollectionImport: 3,
+          deepUpdate: 0,
+          specHubCollectionGeneration: 0,
+          temporaryOpenApiSpecCreate: 0,
+          postCreateScriptPatch: 0
+        }
+      })
+    } as PlannedOutputs;
+
+    expect(() => assertFreshOnboardParity({ outputs: {}, interactionKeys: [] })).toThrow(
+      'fresh-onboard parity requires output "workspace-id"'
+    );
+    expect(() => assertFreshOnboardParity({ outputs, interactionKeys: [] })).toThrow(
+      'fresh-onboard parity requires the fresh onboarding wire contract'
+    );
   });
 
   it('defaults to fresh-onboard and accepts explicit selection', () => {

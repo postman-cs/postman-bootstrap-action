@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createEmptyCassette } from '@postman-cse/automation-core/cassette';
 
 import { createSecretMasker } from '../../../src/lib/secrets.js';
+import { assertFreshOnboardParity } from '../../../scripts/fresh-onboard-parity.js';
 import { createSanitizableRecordingFetch } from '../../../scripts/recording-capture.js';
 import { sanitizeCassette, stableCassetteJson } from '../../../scripts/sanitize-cassette.js';
 import { createPlatformFake } from '../platform-fake.js';
@@ -60,10 +61,13 @@ describe.skipIf(!ENABLED)('record: scenario cassettes from the platform fake', (
         })
       );
 
-      // A cassette is only worth committing if the run it captured was correct.
-      scenario.expectOutputs(result);
-      const keys = cassette.interactions.map((interaction) => interaction.key);
-      scenario.expectWire(keys);
+       // A cassette is only worth committing if the run it captured was correct.
+       scenario.expectOutputs(result);
+       const keys = cassette.interactions.map((interaction) => interaction.key);
+       scenario.expectWire(keys);
+       if (scenario.name === 'fresh-onboard') {
+         assertFreshOnboardParity({ outputs: result.outputs, interactionKeys: keys });
+       }
       expect(keys.length).toBeGreaterThan(5);
 
       const target = cassettePath(scenario.name);

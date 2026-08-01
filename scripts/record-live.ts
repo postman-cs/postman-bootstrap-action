@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 
 import type { CoreLike, PlannedOutputs, runAction as RunAction } from '../src/index.js';
+import { assertFreshOnboardParity } from './fresh-onboard-parity.js';
 import { createSanitizableRecordingFetch } from './recording-capture.js';
 
 const PACKAGE_ROOT = path.resolve(import.meta.dirname, '..');
@@ -247,6 +248,14 @@ function applyRecordingEnvironment(env: NodeJS.ProcessEnv): void {
   }
 }
 
+async function writeRawCassette(outputPath: string, cassette: Cassette): Promise<void> {
+  await mkdir(path.dirname(outputPath), { recursive: true, mode: 0o700 });
+  await writeFile(outputPath, `${JSON.stringify(cassette, null, 2)}\n`, {
+    encoding: 'utf8',
+    mode: 0o600
+  });
+}
+
 export async function recordLiveScenario(
   scenarioName: string,
   loadedEnvironment: LoadedRecorderEnvironment = loadRecorderEnvironment(),
@@ -273,6 +282,10 @@ export async function recordLiveScenario(
     secrets
   );
   const cassette = createEmptyCassette();
+  const outputPath = path.join(
+    runtime.rawOutputRoot ?? path.join(PACKAGE_ROOT, RAW_CASSETTE_DIRECTORY),
+    `${scenario.name}.json`
+  );
   const originalFetch = globalThis.fetch;
   const liveFetch = runtime.fetchImpl ?? originalFetch;
   globalThis.fetch = createSanitizableRecordingFetch(liveFetch, cassette, secrets.mask);
@@ -288,22 +301,20 @@ export async function recordLiveScenario(
     globalThis.fetch = originalFetch;
   }
 
-  const outputPath = path.join(
-    runtime.rawOutputRoot ?? path.join(PACKAGE_ROOT, RAW_CASSETTE_DIRECTORY),
-    `${scenario.name}.json`
-  );
-  await mkdir(path.dirname(outputPath), { recursive: true, mode: 0o700 });
-  await writeFile(outputPath, `${JSON.stringify(cassette, null, 2)}\n`, {
-    encoding: 'utf8',
-    mode: 0o600
-  });
-
   if (runError) {
+    await writeRawCassette(outputPath, cassette);
     throw new Error(
       `Live scenario ${scenario.name} failed after ${cassette.interactions.length} interaction(s); partial raw cassette: ${outputPath}`,
       { cause: runError }
     );
   }
+
+  assertFreshOnboardParity({
+    outputs,
+    interactionKeys: cassette.interactions.map((interaction) => interaction.key)
+  });
+
+  await writeRawCassette(outputPath, cassette);
 
   return { cassette, outputPath, outputs, scenario: scenario.name };
 }

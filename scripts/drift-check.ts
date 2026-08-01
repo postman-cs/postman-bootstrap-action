@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -9,13 +10,14 @@ import {
   diffCassetteShapes,
   formatDriftReport,
   type DriftFinding
-} from './cassette-shape.js';
+} from './cassette-shape.ts';
 import {
   loadRecorderEnvironment,
   recordLiveScenario,
-  type LoadedRecorderEnvironment
-} from './record-live.js';
-import { sanitizeCassette } from './sanitize-cassette.js';
+  type LoadedRecorderEnvironment,
+  type RecorderEnvironmentOptions
+} from './record-live.ts';
+import { sanitizeCassette } from './sanitize-cassette.ts';
 
 /**
  * WS9 nightly drift check: re-record a live scenario, sanitize it in memory,
@@ -33,6 +35,13 @@ import { sanitizeCassette } from './sanitize-cassette.js';
 const PACKAGE_ROOT = path.resolve(import.meta.dirname, '..');
 const COMMITTED_CASSETTE_DIRECTORY = path.join(PACKAGE_ROOT, 'tests', 'contract', 'cassettes');
 
+/** Ambient credentials GHA (and local shells) may inject for the drift monitor. */
+const DRIFT_MONITOR_CREDENTIAL_ENVIRONMENT = [
+  'POSTMAN_API_KEY',
+  'POSTMAN_E2E_API_KEY_NON_ORG_MODE',
+  'POSTMAN_ACCESS_TOKEN'
+] as const;
+
 export interface DriftCheckOptions {
   scenario?: string;
   /** Ephemeral directory for the recorder's raw output; must be a temp path. */
@@ -46,6 +55,41 @@ export interface DriftCheckResult {
   scenario: string;
   findings: DriftFinding[];
   interactionCount: number;
+}
+
+/**
+ * Prove the recorder can only write below an existing OS-managed temp directory.
+ * `realpath` is deliberate: macOS commonly presents /var as a symlink to
+ * /private/var, and caller-provided symlinks must not escape the temp root.
+ */
+function assertEphemeralRawOutputRoot(rawOutputRoot: string): void {
+  if (!rawOutputRoot || !path.isAbsolute(rawOutputRoot)) {
+    throw new Error('Drift check requires an absolute ephemeral rawOutputRoot temp directory');
+  }
+
+  let resolvedOutputRoot: string;
+  let resolvedTempRoot: string;
+  try {
+    resolvedOutputRoot = realpathSync(rawOutputRoot);
+    resolvedTempRoot = realpathSync(tmpdir());
+  } catch {
+    throw new Error('Drift check requires an existing ephemeral rawOutputRoot directory under the OS temp root');
+  }
+
+  if (!statSync(resolvedOutputRoot).isDirectory()) {
+    throw new Error('Drift check requires an existing ephemeral rawOutputRoot directory under the OS temp root');
+  }
+
+  const relativeToTempRoot = path.relative(resolvedTempRoot, resolvedOutputRoot);
+  if (
+    resolvedOutputRoot === resolvedTempRoot ||
+    relativeToTempRoot === '' ||
+    relativeToTempRoot === '..' ||
+    relativeToTempRoot.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeToTempRoot)
+  ) {
+    throw new Error('Drift check requires an ephemeral rawOutputRoot child directory under the OS temp root');
+  }
 }
 
 export function loadCommittedCassette(directory: string, scenario: string): Cassette {
@@ -66,16 +110,43 @@ function withoutCiMarker(environment: LoadedRecorderEnvironment): LoadedRecorder
   return { env, loadedFiles: environment.loadedFiles };
 }
 
+/**
+ * Load the recorder environment for the GHA drift monitor.
+ *
+ * `loadRecorderEnvironment` intentionally strips ambient recorder credentials so
+ * local `record-live` only reads gitignored `.env`. The cassette-drift workflow
+ * has no `.env` and instead injects `POSTMAN_E2E_API_KEY_NON_ORG_MODE` (etc.) via
+ * GitHub Actions secrets — re-apply those three ambient names after the base load,
+ * then drop `CI` so the recorder's local-only guard accepts the monitor run.
+ */
+export function loadDriftMonitorEnvironment(
+  options: RecorderEnvironmentOptions = {}
+): LoadedRecorderEnvironment {
+  const loaded = loadRecorderEnvironment(options);
+  const ambientEnv = options.ambientEnv ?? process.env;
+  const env = { ...loaded.env };
+
+  for (const name of DRIFT_MONITOR_CREDENTIAL_ENVIRONMENT) {
+    const value = ambientEnv[name]?.trim();
+    if (value) {
+      env[name] = value;
+    }
+  }
+
+  delete env.CI;
+  return { env, loadedFiles: loaded.loadedFiles };
+}
+
 export async function runDriftCheck(options: DriftCheckOptions): Promise<DriftCheckResult> {
   const scenario = options.scenario ?? 'fresh-onboard';
   const rawOutputRoot = options.rawOutputRoot;
-  if (!rawOutputRoot || !path.isAbsolute(rawOutputRoot)) {
-    throw new Error('Drift check requires an absolute ephemeral rawOutputRoot temp directory');
-  }
+  assertEphemeralRawOutputRoot(rawOutputRoot);
   const committedDirectory = options.committedCassetteDirectory ?? COMMITTED_CASSETTE_DIRECTORY;
   const baseline = loadCommittedCassette(committedDirectory, scenario);
 
-  const environment = withoutCiMarker(options.loadedEnvironment ?? loadRecorderEnvironment());
+  const environment = options.loadedEnvironment
+    ? withoutCiMarker(options.loadedEnvironment)
+    : loadDriftMonitorEnvironment();
   const record = options.recordScenario ?? recordLiveScenario;
   const recording = await record(scenario, environment, { rawOutputRoot });
 
@@ -84,27 +155,52 @@ export async function runDriftCheck(options: DriftCheckOptions): Promise<DriftCh
   return { scenario, findings, interactionCount: sanitized.interactions.length };
 }
 
-async function main(): Promise<void> {
+export interface DriftCheckCommandOptions {
+  scenario?: string;
+  createTemporaryDirectory?: () => Promise<string>;
+  removeTemporaryDirectory?: (directory: string) => Promise<void>;
+  runCheck?: typeof runDriftCheck;
+  stdout?: Pick<NodeJS.WriteStream, 'write'>;
+  stderr?: Pick<NodeJS.WriteStream, 'write'>;
+  setExitCode?: (code: number) => void;
+}
+
+/** Run the shipped drift command with injectable I/O for deterministic tests. */
+export async function runDriftCheckCommand(options: DriftCheckCommandOptions = {}): Promise<number> {
   const { mkdtemp, rm } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const scenario = process.argv[2] ?? 'fresh-onboard';
-  const rawOutputRoot = await mkdtemp(path.join(tmpdir(), 'bootstrap-drift-raw-'));
+  const scenario = options.scenario ?? 'fresh-onboard';
+  const createTemporaryDirectory =
+    options.createTemporaryDirectory ?? (() => mkdtemp(path.join(tmpdir(), 'bootstrap-drift-raw-')));
+  const removeTemporaryDirectory =
+    options.removeTemporaryDirectory ?? ((directory: string) => rm(directory, { recursive: true, force: true }));
+  const runCheck = options.runCheck ?? runDriftCheck;
+  const stdout = options.stdout ?? process.stdout;
+  const stderr = options.stderr ?? process.stderr;
+  const setExitCode = options.setExitCode ?? ((code: number) => {
+    process.exitCode = code;
+  });
+  const rawOutputRoot = await createTemporaryDirectory();
   try {
-    const result = await runDriftCheck({ scenario, rawOutputRoot });
+    const result = await runCheck({ scenario, rawOutputRoot });
     if (result.findings.length > 0) {
-      process.stderr.write(`${formatDriftReport(result.findings)}\n`);
-      process.stderr.write(
+      stderr.write(`${formatDriftReport(result.findings)}\n`);
+      stderr.write(
         `DRIFT_CHECK_FAILED scenario=${result.scenario} findings=${result.findings.length}\n`
       );
-      process.exitCode = 1;
-      return;
+      setExitCode(1);
+      return 1;
     }
-    process.stdout.write(
+    stdout.write(
       `DRIFT_CHECK_OK scenario=${result.scenario} interactions=${result.interactionCount}\n`
     );
+    return 0;
   } finally {
-    await rm(rawOutputRoot, { recursive: true, force: true });
+    await removeTemporaryDirectory(rawOutputRoot);
   }
+}
+
+async function main(): Promise<void> {
+  await runDriftCheckCommand({ scenario: process.argv[2] ?? 'fresh-onboard' });
 }
 
 function isEntrypoint(): boolean {

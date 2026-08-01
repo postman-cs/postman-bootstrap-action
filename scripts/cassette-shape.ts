@@ -148,8 +148,9 @@ function firstSchemaDifference(
  *
  * Key comparison is a multiset diff: missing keys, unexpected keys, and
  * repeated-count changes are each named. Interactions whose keys match are
- * then compared pairwise (in order of occurrence per key) on status and body
- * schema.
+ * then compared pairwise as an order-independent multiset on status and body
+ * schema. This avoids treating recording-order changes among repeated keys as
+ * response-contract drift.
  */
 export function diffCassetteShapes(baseline: CassetteShape, fresh: CassetteShape): DriftFinding[] {
   const findings: DriftFinding[] = [];
@@ -192,12 +193,21 @@ export function diffCassetteShapes(baseline: CassetteShape, fresh: CassetteShape
   const baselineByKey = byKey(baseline);
   const freshByKey = byKey(fresh);
 
+  const compareInteractions = (left: InteractionShape, right: InteractionShape): number => {
+    const statusOrder = left.status - right.status;
+    return statusOrder === 0
+      ? schemaSignature(left.bodySchema).localeCompare(schemaSignature(right.bodySchema))
+      : statusOrder;
+  };
+
   for (const [key, baselineList] of [...baselineByKey.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const freshList = freshByKey.get(key) ?? [];
+    const sortedBaselineList = [...baselineList].sort(compareInteractions);
+    const sortedFreshList = [...freshList].sort(compareInteractions);
     const pairs = Math.min(baselineList.length, freshList.length);
     for (let index = 0; index < pairs; index += 1) {
-      const baselineInteraction = baselineList[index] as InteractionShape;
-      const freshInteraction = freshList[index] as InteractionShape;
+      const baselineInteraction = sortedBaselineList[index] as InteractionShape;
+      const freshInteraction = sortedFreshList[index] as InteractionShape;
       if (baselineInteraction.status !== freshInteraction.status) {
         findings.push({
           key,

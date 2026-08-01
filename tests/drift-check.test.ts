@@ -1,6 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import type { Cassette } from '@postman-cse/automation-core/cassette';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -12,7 +14,12 @@ import {
   schemaEquals,
   schemaSignature
 } from '../scripts/cassette-shape.js';
-import { loadCommittedCassette, runDriftCheck } from '../scripts/drift-check.js';
+import {
+  loadCommittedCassette,
+  loadDriftMonitorEnvironment,
+  runDriftCheck,
+  runDriftCheckCommand
+} from '../scripts/drift-check.js';
 import type { RecordingResult } from '../scripts/record-live.js';
 
 const COMMITTED_CASSETTES = path.resolve('tests', 'contract', 'cassettes');
@@ -163,7 +170,84 @@ describe('cassette shape diff', () => {
   });
 });
 
+describe('loadDriftMonitorEnvironment', () => {
+  function emptyRoots(): { packageRoot: string; workspaceRoot: string } {
+    const workspaceRoot = temporaryDirectory();
+    const packageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
+    mkdirSync(packageRoot, { recursive: true });
+    return { packageRoot, workspaceRoot };
+  }
+
+  it('preserves the ambient workflow PMAK while removing CI without requiring .env', () => {
+    const roots = emptyRoots();
+    const loaded = loadDriftMonitorEnvironment({
+      ambientEnv: {
+        POSTMAN_E2E_API_KEY_NON_ORG_MODE: 'gha-smoke-pmak',
+        CI: 'true'
+      },
+      ...roots
+    });
+
+    expect(loaded.env.POSTMAN_E2E_API_KEY_NON_ORG_MODE).toBe('gha-smoke-pmak');
+    expect(loaded.env).not.toHaveProperty('CI');
+    expect(loaded.loadedFiles).toEqual([]);
+  });
+
+  it('strips CI from the resulting env', () => {
+    const roots = emptyRoots();
+    const loaded = loadDriftMonitorEnvironment({
+      ambientEnv: {
+        POSTMAN_E2E_API_KEY_NON_ORG_MODE: 'gha-smoke-pmak',
+        CI: 'true'
+      },
+      ...roots
+    });
+
+    expect(loaded.env).not.toHaveProperty('CI');
+  });
+
+  it('does not invent empty credential keys when ambient lacks them', () => {
+    const roots = emptyRoots();
+    const loaded = loadDriftMonitorEnvironment({
+      ambientEnv: { CI: 'true', OTHER: 'kept' },
+      ...roots
+    });
+
+    expect(loaded.env).not.toHaveProperty('POSTMAN_API_KEY');
+    expect(loaded.env).not.toHaveProperty('POSTMAN_E2E_API_KEY_NON_ORG_MODE');
+    expect(loaded.env).not.toHaveProperty('POSTMAN_ACCESS_TOKEN');
+    expect(loaded.env.OTHER).toBe('kept');
+  });
+});
+
 describe('runDriftCheck', () => {
+  it('passes the ambient workflow PMAK to the recorder while removing CI', async () => {
+    const workspaceRoot = temporaryDirectory();
+    const packageRoot = path.join(workspaceRoot, 'cse', 'postman-bootstrap-action');
+    mkdirSync(packageRoot, { recursive: true });
+    const environment = loadDriftMonitorEnvironment({
+      ambientEnv: { POSTMAN_E2E_API_KEY_NON_ORG_MODE: 'gha-smoke-pmak', CI: 'true' },
+      packageRoot,
+      workspaceRoot
+    });
+    const committed = loadCommittedCassette(COMMITTED_CASSETTES, 'fresh-onboard');
+
+    await runDriftCheck({
+      rawOutputRoot: temporaryDirectory(),
+      loadedEnvironment: environment,
+      recordScenario: async (scenario, recorderEnvironment): Promise<RecordingResult> => {
+        expect(recorderEnvironment?.env.POSTMAN_E2E_API_KEY_NON_ORG_MODE).toBe('gha-smoke-pmak');
+        expect(recorderEnvironment?.env).not.toHaveProperty('CI');
+        return {
+          cassette: committed,
+          outputPath: 'unused',
+          outputs: {} as RecordingResult['outputs'],
+          scenario
+        };
+      }
+    });
+  });
+
   it('re-records through the injected recorder, sanitizes in memory, and reports zero findings for a shape-identical capture', async () => {
     const committed = loadCommittedCassette(COMMITTED_CASSETTES, 'fresh-onboard');
     const rawOutputRoot = temporaryDirectory();
@@ -218,5 +302,93 @@ describe('runDriftCheck', () => {
     await expect(
       runDriftCheck({ rawOutputRoot: 'relative/path', loadedEnvironment: { env: {}, loadedFiles: [] } })
     ).rejects.toThrow('absolute ephemeral rawOutputRoot');
+  });
+
+  it('rejects a durable absolute raw output root before loading a baseline or invoking the recorder', async () => {
+    let recorderCalled = false;
+    await expect(
+      runDriftCheck({
+        rawOutputRoot: path.resolve('tests'),
+        committedCassetteDirectory: path.resolve('does-not-exist'),
+        loadedEnvironment: { env: {}, loadedFiles: [] },
+        recordScenario: async (): Promise<RecordingResult> => {
+          recorderCalled = true;
+          throw new Error('recorder must not be called');
+        }
+      })
+    ).rejects.toThrow('ephemeral rawOutputRoot child directory under the OS temp root');
+    expect(recorderCalled).toBe(false);
+  });
+});
+
+describe('drift:check entrypoint', () => {
+  it('emits every drift line, returns exit 1, and cleans its temporary raw directory', async () => {
+    const rawOutputRoot = temporaryDirectory();
+    const stderr: string[] = [];
+    const exitCodes: number[] = [];
+    const status = await runDriftCheckCommand({
+      scenario: 'injected-drift',
+      createTemporaryDirectory: async () => rawOutputRoot,
+      runCheck: async () => ({
+        scenario: 'injected-drift',
+        interactionCount: 3,
+        findings: [
+          {
+            key: 'GET https://api.getpostman.com/me',
+            axis: 'status',
+            detail: 'status changed: baseline 200 -> live 500'
+          }
+        ]
+      }),
+      stderr: {
+        write: (message: string | Uint8Array) => {
+          stderr.push(String(message));
+          return true;
+        }
+      },
+      setExitCode: (code: number) => exitCodes.push(code)
+    });
+
+    expect(status).toBe(1);
+    expect(exitCodes).toEqual([1]);
+    expect(stderr).toEqual([
+      'DRIFT [status] GET https://api.getpostman.com/me — status changed: baseline 200 -> live 500\n',
+      'DRIFT_CHECK_FAILED scenario=injected-drift findings=1\n'
+    ]);
+    expect(existsSync(rawOutputRoot)).toBe(false);
+  });
+
+  it('cleans its temporary raw directory when the drift check throws', async () => {
+    const rawOutputRoot = temporaryDirectory();
+    await expect(
+      runDriftCheckCommand({
+        createTemporaryDirectory: async () => rawOutputRoot,
+        runCheck: async () => {
+          throw new Error('injected recorder failure');
+        }
+      })
+    ).rejects.toThrow('injected recorder failure');
+    expect(existsSync(rawOutputRoot)).toBe(false);
+  });
+
+  it('shipped node --experimental-strip-types entrypoint loads the drift-check module graph', () => {
+    const entry = pathToFileURL(path.resolve('scripts/drift-check.ts')).href;
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--experimental-strip-types',
+        '--input-type=module',
+        '-e',
+        `import(${JSON.stringify(entry)}).then(() => { console.log('DRIFT_ENTRYPOINT_LOAD_OK'); }).catch((error) => { console.error(error); process.exit(1); })`
+      ],
+      {
+        encoding: 'utf8',
+        cwd: path.resolve('.'),
+        env: { ...process.env, POSTMAN_ACTIONS_TELEMETRY: 'off' }
+      }
+    );
+    expect(result.status, result.stderr + result.stdout).toBe(0);
+    expect(result.stdout).toContain('DRIFT_ENTRYPOINT_LOAD_OK');
+    expect(result.stderr + result.stdout).not.toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
   });
 });

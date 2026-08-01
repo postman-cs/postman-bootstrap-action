@@ -1,5 +1,6 @@
 name: Cassette Drift Monitor
-# WS9: nightly re-record of the live sandbox scenario, sanitized in memory and
+# WS9: re-records the live sandbox scenario after the scheduled contract smoke
+# completes, sanitizes it in memory, and
 # shape-diffed against the committed cassette (key sets, statuses, body
 # schemas — never volatile values). Drift fails this monitor loudly, naming the
 # exact interaction keys. Report-only: committed cassettes are never rewritten,
@@ -7,8 +8,9 @@ name: Cassette Drift Monitor
 # never a PR gate.
 
 on:
-  schedule:
-    - cron: '30 8 * * *'   # daily at 8:30 AM UTC, after contract-smoke
+  workflow_run:
+    workflows: [Contract Smoke Tests]
+    types: [completed]
   workflow_dispatch: {}
 
 permissions:
@@ -18,6 +20,7 @@ jobs:
   preflight:
     name: Drift credential preflight
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'schedule') }}
     outputs:
       recordable: ${{ steps.credentials.outputs.recordable }}
     steps:
@@ -25,11 +28,12 @@ jobs:
         name: Check sandbox recording secret
         env:
           SMOKE_NON_ORG_API_KEY: ${{ secrets.SMOKE_NON_ORG_API_KEY }}
+          AUTOMATED_NIGHTLY: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.event == 'schedule' }}
         run: |
           set -euo pipefail
           recordable=true
           if [ -z "$SMOKE_NON_ORG_API_KEY" ]; then
-            if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+            if [ "$AUTOMATED_NIGHTLY" = "true" ]; then
               echo "::notice::Skipping cassette drift check: SMOKE_NON_ORG_API_KEY is not configured."
               recordable=false
             else

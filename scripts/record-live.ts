@@ -7,8 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 
 import type { CoreLike, PlannedOutputs, runAction as RunAction } from '../src/index.js';
-import { assertFreshOnboardParity } from './fresh-onboard-parity.js';
-import { createSanitizableRecordingFetch } from './recording-capture.js';
+import { assertFreshOnboardParity } from './fresh-onboard-parity.ts';
+import { createSanitizableRecordingFetch } from './recording-capture.ts';
 
 const PACKAGE_ROOT = path.resolve(import.meta.dirname, '..');
 const WORKSPACE_ROOT = path.resolve(PACKAGE_ROOT, '../..');

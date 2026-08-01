@@ -12,6 +12,9 @@ import { vi } from 'vitest';
 import { __resetIdentityMemo } from '../../src/lib/postman/credential-identity.js';
 import { runAction, type CoreLike, type ExecLike, type IOLike } from '../../src/index.js';
 
+// Preserve the real event-loop yield before Vitest replaces timer globals.
+const realSetImmediate = setImmediate;
+
 export const VALID_SPEC_31 = `{
   "openapi": "3.1.0",
   "info": { "title": "Contract Test API", "version": "1.0.0" },
@@ -78,6 +81,7 @@ export interface ContractRunOptions {
 }
 
 const MAX_TIMER_FLUSH_PASSES = 100_000;
+const REAL_EVENT_LOOP_YIELD_INTERVAL = 10;
 
 /**
  * Run a contract action under vitest fake timers, flushing every timer chain
@@ -105,6 +109,11 @@ export async function runWithFakeTimers<T>(fn: () => Promise<T>): Promise<T> {
       await vi.runAllTimersAsync();
       // Yield the microtask queue so `settled` can flip between timer flushes.
       await Promise.resolve();
+      // Fake timers do not advance libuv I/O; periodically yield a real turn so
+      // filesystem-backed action work can complete without making every pass I/O-bound.
+      if ((pass + 1) % REAL_EVENT_LOOP_YIELD_INTERVAL === 0) {
+        await new Promise<void>((resolve) => realSetImmediate(resolve));
+      }
     }
     if (!settled) {
       throw new Error(

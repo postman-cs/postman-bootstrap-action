@@ -351120,27 +351120,23 @@ ${error2.responseBody ?? ""}`
     }
   }
   async findWorkspacesByName(name) {
-    const all2 = [];
-    const seenCursors = /* @__PURE__ */ new Set();
-    let cursor;
-    do {
-      const response = await this.gateway.requestJson({
+    const all2 = await collectPagedList(
+      (cursor) => this.gateway.requestJson({
         service: "workspaces",
         method: "get",
         path: "/workspaces",
         ...cursor ? { query: { cursor } } : {}
-      });
-      const data = asRecord13(response);
-      const page = Array.isArray(data?.data) ? data.data : Array.isArray(data?.workspaces) ? data.workspaces : [];
-      for (const entry of page) {
-        const record = asRecord13(entry);
-        if (record?.id && record?.name) all2.push(record);
-      }
-      const meta = asRecord13(data?.meta);
-      const next = String(meta?.nextCursor ?? data?.nextCursor ?? "").trim();
-      cursor = next && !seenCursors.has(next) ? next : void 0;
-      if (cursor) seenCursors.add(cursor);
-    } while (cursor);
+      }),
+      (response) => {
+        const data = asRecord13(response);
+        const page = Array.isArray(data?.data) ? data.data : Array.isArray(data?.workspaces) ? data.workspaces : [];
+        return page.flatMap((entry) => {
+          const record = asRecord13(entry);
+          return record?.id && record?.name ? [record] : [];
+        });
+      },
+      "WORKSPACE"
+    );
     return all2.filter((w) => String(w.name) === name).map((w) => ({ id: String(w.id), name: String(w.name) })).sort((a, b) => a.id.localeCompare(b.id));
   }
   /**

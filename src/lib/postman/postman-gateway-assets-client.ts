@@ -1920,31 +1920,27 @@ export class PostmanGatewayAssetsClient {
   }
 
   async findWorkspacesByName(name: string): Promise<Array<{ id: string; name: string }>> {
-    const all: JsonRecord[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      const response = await this.gateway.requestJson<JsonRecord>({
+    const all = await collectPagedList(
+      (cursor) => this.gateway.requestJson<JsonRecord>({
         service: 'workspaces',
         method: 'get',
         path: '/workspaces',
         ...(cursor ? { query: { cursor } } : {})
-      });
-      const data = asRecord(response);
-      const page = Array.isArray(data?.data)
-        ? (data!.data as unknown[])
-        : Array.isArray(data?.workspaces)
-          ? (data!.workspaces as unknown[])
-          : [];
-      for (const entry of page) {
-        const record = asRecord(entry);
-        if (record?.id && record?.name) all.push(record);
-      }
-      const meta = asRecord(data?.meta);
-      const next = String(meta?.nextCursor ?? data?.nextCursor ?? '').trim();
-      cursor = next && !seenCursors.has(next) ? next : undefined;
-      if (cursor) seenCursors.add(cursor);
-    } while (cursor);
+      }),
+      (response) => {
+        const data = asRecord(response);
+        const page = Array.isArray(data?.data)
+          ? (data.data as unknown[])
+          : Array.isArray(data?.workspaces)
+            ? (data.workspaces as unknown[])
+            : [];
+        return page.flatMap((entry) => {
+          const record = asRecord(entry);
+          return record?.id && record?.name ? [record] : [];
+        });
+      },
+      'WORKSPACE'
+    );
 
     return all
       .filter((w) => String(w.name) === name)

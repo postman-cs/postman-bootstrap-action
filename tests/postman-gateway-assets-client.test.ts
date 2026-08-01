@@ -1080,6 +1080,28 @@ describe('PostmanGatewayAssetsClient', () => {
       ]);
       expect(calls[1]).toMatchObject({ query: { cursor: 'c2' } });
     });
+
+    it('fails loudly when a cursor repeats', async () => {
+      const { client, calls } = makeClient((env, i) => jsonResponse({
+        meta: { nextCursor: i === 0 ? 'c2' : 'c2' },
+        data: [{ id: `ws-${i}`, name: 'Telecom' }]
+      }));
+
+      await expect(client.findWorkspacesByName('Telecom')).rejects.toThrow('WORKSPACE_CURSOR_REPEATED');
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toMatchObject({ query: { cursor: 'c2' } });
+    });
+
+    it('fails at the page ceiling for endlessly unique cursors', async () => {
+      const { client, calls } = makeClient((_env, i) => jsonResponse({
+        meta: { nextCursor: `cursor-${i + 1}` },
+        data: [{ id: `ws-${i}`, name: 'Telecom' }]
+      }));
+
+      await expect(client.findWorkspacesByName('Telecom')).rejects.toThrow('WORKSPACE_PAGE_LIMIT_EXCEEDED');
+      expect(calls).toHaveLength(200);
+      expect(calls[199]).toMatchObject({ query: { cursor: 'cursor-199' } });
+    });
   });
 
   describe('getWorkspaceGitRepoUrl', () => {

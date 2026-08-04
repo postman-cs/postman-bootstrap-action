@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -62,6 +64,10 @@ describe('release workflow publishing contract', () => {
     expect(verify).not.toMatch(/npm run verify:dist(?:\s|$)/);
     expect(verify).toContain('download-actionlint.bash) 1.7.11 "$RUNNER_TEMP"');
     expect(verify).toContain('ACTIONLINT_BIN=$RUNNER_TEMP/actionlint');
+    expect(verify).toContain(
+      'https://raw.githubusercontent.com/rhysd/actionlint/393031adb9afb225ee52ae2ccd7a5af5525e03e8/scripts/download-actionlint.bash',
+    );
+    expect(workflow).not.toContain('/main/scripts/download-actionlint.bash');
     expect(verify).not.toContain('actions/setup-go');
     expect(verify).not.toContain('go install github.com/rhysd/actionlint');
     expect(verify.slice(verify.indexOf('name: Run gates'))).not.toContain('NPM_TOKEN');
@@ -176,5 +182,181 @@ describe('release workflow publishing contract', () => {
       'needs: [classify, verify-package, publish, verify-release-e2e]'
     );
     expect(workflow).toContain('default: enforce');
+  });
+
+  it('dispatches sibling-release from release.yml after alias advance because workflow_run cascades never fire for GITHUB_TOKEN-created Release runs', () => {
+    const notify = job('notify-composite');
+    expect(notify).toContain(
+      'needs: [classify, verify-package, publish, verify-release-e2e, advance-major-alias]'
+    );
+    expect(notify).toContain(
+      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.advance-major-alias.result == 'success' }}"
+    );
+    expect(notify).toMatch(/permissions:\s*\{\}/);
+    expect(notify).toContain('actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0');
+    expect(notify).toContain('continue-on-error: true');
+    expect(notify).toContain('app-id: ${{ secrets.SUITE_PIN_BOT_APP_ID }}');
+    expect(notify).toContain('private-key: ${{ secrets.SUITE_PIN_BOT_PRIVATE_KEY }}');
+    expect(notify).toContain('owner: postman-cs');
+    expect(notify).toContain('repositories: postman-api-onboarding-action');
+    expect(notify).toContain('event_type=sibling-release');
+    expect(notify).toContain('client_payload[repository]=${GITHUB_REPOSITORY}');
+    expect(notify).toContain(
+      'client_payload[run]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+    );
+    expect(notify).toContain(
+      "App token unavailable (secrets missing or mint failed); the composite's daily cron will pick this release up."
+    );
+    expect(notify).toContain('exit 0');
+    expect(workflow).not.toContain('github.event.workflow_run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Executable harness for the notify-composite "Dispatch sibling-release" shell.
+//
+// Instead of only text-inspecting the present/absent token branches, this
+// extracts the actual `run:` body from release.yml, substitutes the GitHub
+// Actions `${{ }}` expression literals with deterministic values that stand in
+// for a real current run, and executes the *same* shell verbatim through bash
+// with a stub `gh` shim on PATH. This proves observable dispatch / no-dispatch
+// behaviour rather than reimplementing the logic in a helper.
+// ---------------------------------------------------------------------------
+
+/** Name of the step whose `run` body we extract and execute. */
+const DISPATCH_STEP_NAME = 'Dispatch sibling-release to the composite';
+
+/**
+ * Extract the literal `run: |` block from a specific step within a job.
+ * Mirrors the text-based extraction style used elsewhere in this file.
+ */
+function extractStepRunBody(jobName: string, stepName: string): string {
+  const jobText = job(jobName);
+  const lines = jobText.split('\n');
+  let inStep = false;
+  let inRun = false;
+  const runLines: string[] = [];
+  const stepRegex = new RegExp(
+    `^      - name: ${stepName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+  );
+
+  for (const line of lines) {
+    if (!inStep && stepRegex.test(line)) {
+      inStep = true;
+      continue;
+    }
+    if (!inStep) continue;
+    if (!inRun && /^ {8}run: \|/.test(line)) {
+      inRun = true;
+      continue;
+    }
+    if (inRun) {
+      if (line.length === 0) {
+        // Blank line could still be part of the run body (e.g. heredoc).
+        runLines.push('');
+      } else if (line.startsWith('          ')) {
+        runLines.push(line.slice(10));
+      } else {
+        // De-indented line ends the run block.
+        break;
+      }
+    }
+  }
+  return runLines.join('\n').trimEnd();
+}
+
+/** Deterministic stand-ins for GitHub Actions context expressions. */
+const DETERMINISTIC_REPO = 'postman-cs/postman-bootstrap-action';
+const DETERMINISTIC_RUN_ID = '4242424242';
+const DETERMINISTIC_SERVER_URL = 'https://github.com';
+const EXPECTED_RUN_URL = `${DETERMINISTIC_SERVER_URL}/${DETERMINISTIC_REPO}/actions/runs/${DETERMINISTIC_RUN_ID}`;
+
+/** Replace mutable GitHub expression literals with deterministic values. */
+function substituteGithubExpressions(shell: string): string {
+  return shell
+    .replace(/\$\{\{\s*github\.server_url\s*\}\}/g, DETERMINISTIC_SERVER_URL)
+    .replace(/\$\{\{\s*github\.repository\s*\}\}/g, DETERMINISTIC_REPO)
+    .replace(/\$\{\{\s*github\.run_id\s*\}\}/g, DETERMINISTIC_RUN_ID);
+}
+
+interface DispatchShellResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  callLog: string;
+}
+
+/**
+ * Execute the extracted (and expression-substituted) dispatch shell verbatim
+ * through bash, with a stub `gh` on PATH that records each invocation.
+ *
+ * The stub captures `"$*"` (all args space-joined) — one line per call — into
+ * the file named by $GH_STUB_CALLS so tests can assert call count and payload.
+ */
+function executeDispatchShell(ghToken: string): DispatchShellResult {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'release-dispatch-'));
+  const callsLog = join(tmpDir, 'gh-calls.log');
+  const stubPath = join(tmpDir, 'gh');
+  const shellPath = join(tmpDir, 'dispatch.sh');
+
+  try {
+    // Stub gh: record each invocation, then exit 0.
+    writeFileSync(
+      stubPath,
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$GH_STUB_CALLS"\nexit 0\n`,
+    );
+    chmodSync(stubPath, 0o755);
+
+    // Write the real dispatch shell (expression-substituted) to a temp script.
+    writeFileSync(shellPath, substituteGithubExpressions(extractStepRunBody('notify-composite', DISPATCH_STEP_NAME)));
+
+    const result = spawnSync('bash', [shellPath], {
+      env: {
+        ...process.env,
+        PATH: `${tmpDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
+        GH_TOKEN: ghToken,
+        GITHUB_REPOSITORY: DETERMINISTIC_REPO,
+        GH_STUB_CALLS: callsLog,
+      },
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+
+    const callLog = existsSync(callsLog) ? readFileSync(callsLog, 'utf8').trim() : '';
+
+    return {
+      exitCode: result.status ?? -1,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+      callLog,
+    };
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+describe('notify-composite dispatch shell', () => {
+  it('exits 0 and dispatches sibling-release when GH_TOKEN is present', () => {
+    const { exitCode, callLog } = executeDispatchShell('test-app-token-value');
+    expect(exitCode, 'shell must exit 0 when GH_TOKEN is present').toBe(0);
+
+    const calls = callLog === '' ? [] : callLog.split('\n').filter(Boolean);
+    expect(calls).toHaveLength(1);
+
+    const call = calls[0]!;
+    expect(call).toContain('api repos/postman-cs/postman-api-onboarding-action/dispatches');
+    expect(call).toContain('event_type=sibling-release');
+    expect(call).toContain(`client_payload[repository]=${DETERMINISTIC_REPO}`);
+    expect(call).toContain(`client_payload[run]=${EXPECTED_RUN_URL}`);
+  });
+
+  it('exits 0, prints cron-backstop notice, and never calls gh when GH_TOKEN is empty', () => {
+    const { exitCode, stdout, stderr, callLog } = executeDispatchShell('');
+    expect(exitCode, 'shell must exit 0 when GH_TOKEN is absent').toBe(0);
+
+    const output = stdout + stderr;
+    expect(output).toContain('App token unavailable (secrets missing or mint failed)');
+    expect(output).toContain("the composite's daily cron will pick this release up");
+    expect(callLog).toBe('');
   });
 });

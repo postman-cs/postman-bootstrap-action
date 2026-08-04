@@ -6,12 +6,19 @@ import { describe, expect, it } from 'vitest';
 const releaseWorkflow = readFileSync(join(process.cwd(), '.github/workflows/release.yml'), 'utf8');
 const verifierScript = readFileSync(join(process.cwd(), '.github/scripts/verify-e2e-release.mjs'), 'utf8');
 
+/** Extract one top-level job block: `  <id>:` through the next job header or EOF. */
+function job(name: string): string {
+  return releaseWorkflow.match(new RegExp(`  ${name}:\\n[\\s\\S]*?(?=\\n  [a-zA-Z0-9_-]+:|$)`))?.[0] ?? '';
+}
+
 describe('correlated release verification contract', () => {
   it('is post-publish, fail-closed, and required by the major alias job', () => {
     expect(releaseWorkflow).toMatch(
       /verify-release-e2e:[\s\S]*?needs: \[classify, verify-package, publish\]/
     );
-    expect(releaseWorkflow).not.toMatch(/verify-release-e2e:[\s\S]*?continue-on-error/);
+    // Scoped to the gate job: an unscoped scan now reaches the sibling-release
+    // notifier, whose App-token mint is intentionally tolerant.
+    expect(job('verify-release-e2e')).not.toContain('continue-on-error');
     expect(releaseWorkflow).toMatch(
       /advance-major-alias:[\s\S]*?needs: \[classify, verify-package, publish, verify-release-e2e\]/
     );

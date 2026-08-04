@@ -158,24 +158,6 @@
       "status": 200
     },
     {
-      "body": "{\"data\":[{\"description\":\"x-pm-onboarding: {\\\"repo\\\":\\\"https://example.invalid/cassette-org/cassette-repo\\\",\\\"rawBranch\\\":\\\"feature/payments\\\",\\\"sanitizedBranch\\\":\\\"feature-payments\\\",\\\"role\\\":\\\"preview\\\",\\\"headSha\\\":\\\"1111111111111111111111111111111111111111\\\",\\\"createdAt\\\":\\\"2000-01-01T00:00:00.000Z\\\",\\\"lastSyncedAt\\\":\\\"2000-01-01T00:00:00.000Z\\\"}\",\"id\":\"cassette-collection-1\",\"name\":\"contract-payments @feature-payments-5958a6 [bootstrap:cassette-run-1]\"},{\"description\":\"x-pm-onboarding: {\\\"repo\\\":\\\"https://example.invalid/cassette-org/cassette-repo\\\",\\\"rawBranch\\\":\\\"feature/payments\\\",\\\"sanitizedBranch\\\":\\\"feature-payments\\\",\\\"role\\\":\\\"preview\\\",\\\"headSha\\\":\\\"1111111111111111111111111111111111111111\\\",\\\"createdAt\\\":\\\"2000-01-01T00:00:00.000Z\\\",\\\"lastSyncedAt\\\":\\\"2000-01-01T00:00:00.000Z\\\"}\",\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments @feature-payments-5958a6 [bootstrap:cassette-run-1]\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
-      "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
-      "requestQuery": "workspace=cassette-workspace-1",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":[{\"description\":\"x-pm-onboarding: {\\\"repo\\\":\\\"https://example.invalid/cassette-org/cassette-repo\\\",\\\"rawBranch\\\":\\\"feature/payments\\\",\\\"sanitizedBranch\\\":\\\"feature-payments\\\",\\\"role\\\":\\\"preview\\\",\\\"headSha\\\":\\\"1111111111111111111111111111111111111111\\\",\\\"createdAt\\\":\\\"2000-01-01T00:00:00.000Z\\\",\\\"lastSyncedAt\\\":\\\"2000-01-01T00:00:00.000Z\\\"}\",\"id\":\"cassette-collection-1\",\"name\":\"contract-payments @feature-payments-5958a6 [bootstrap:cassette-run-1]\"},{\"description\":\"x-pm-onboarding: {\\\"repo\\\":\\\"https://example.invalid/cassette-org/cassette-repo\\\",\\\"rawBranch\\\":\\\"feature/payments\\\",\\\"sanitizedBranch\\\":\\\"feature-payments\\\",\\\"role\\\":\\\"preview\\\",\\\"headSha\\\":\\\"1111111111111111111111111111111111111111\\\",\\\"createdAt\\\":\\\"2000-01-01T00:00:00.000Z\\\",\\\"lastSyncedAt\\\":\\\"2000-01-01T00:00:00.000Z\\\"}\",\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments @feature-payments-5958a6 [bootstrap:cassette-run-1]\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
-      "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
-      "requestQuery": "workspace=cassette-workspace-1",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
       "body": "{\"data\":{\"id\":\"cassette-collection-1\"}}",
       "key": "proxy:collection PATCH /v3/collections/cassette-collection-1 #body-sha256=b4f8a994b6c480739a1544eed7c9fd34b93b5ec9a721348e244953896c05be8c",
       "requestBodySha256": "b4f8a994b6c480739a1544eed7c9fd34b93b5ec9a721348e244953896c05be8c",
@@ -390,15 +372,6 @@
       "key": "proxy:sync POST /collection/import?format=2.1.0&workspace=cassette-workspace-1 #body-sha256=3500d7d0f572c14d0c9496995310e1410aae2c77c6bac8f8727441b5b416f358",
       "requestBodySha256": "3500d7d0f572c14d0c9496995310e1410aae2c77c6bac8f8727441b5b416f358",
       "requestQuery": "format=2.1.0&workspace=cassette-workspace-1",
-      "responseHeaders": {
-        "content-type": "text/plain;charset=UTF-8"
-      },
-      "status": 200
-    },
-    {
-      "body": "{\"data\":[{\"description\":\"x-pm-onboarding: {\\\"repo\\\":\\\"https://example.invalid/cassette-org/cassette-repo\\\",\\\"rawBranch\\\":\\\"feature/payments\\\",\\\"sanitizedBranch\\\":\\\"feature-payments\\\",\\\"role\\\":\\\"preview\\\",\\\"headSha\\\":\\\"1111111111111111111111111111111111111111\\\",\\\"createdAt\\\":\\\"2000-01-01T00:00:00.000Z\\\",\\\"lastSyncedAt\\\":\\\"2000-01-01T00:00:00.000Z\\\"}\",\"id\":\"cassette-collection-1\",\"name\":\"contract-payments @feature-payments-5958a6\"},{\"description\":\"x-pm-onboarding: {\\\"repo\\\":\\\"https://example.invalid/cassette-org/cassette-repo\\\",\\\"rawBranch\\\":\\\"feature/payments\\\",\\\"sanitizedBranch\\\":\\\"feature-payments\\\",\\\"role\\\":\\\"preview\\\",\\\"headSha\\\":\\\"1111111111111111111111111111111111111111\\\",\\\"createdAt\\\":\\\"2000-01-01T00:00:00.000Z\\\",\\\"lastSyncedAt\\\":\\\"2000-01-01T00:00:00.000Z\\\"}\",\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments @feature-payments-5958a6\"},{\"description\":\"x-pm-onboarding: {\\\"repo\\\":\\\"https://example.invalid/cassette-org/cassette-repo\\\",\\\"rawBranch\\\":\\\"feature/payments\\\",\\\"sanitizedBranch\\\":\\\"feature-payments\\\",\\\"role\\\":\\\"preview\\\",\\\"headSha\\\":\\\"1111111111111111111111111111111111111111\\\",\\\"createdAt\\\":\\\"2000-01-01T00:00:00.000Z\\\",\\\"lastSyncedAt\\\":\\\"2000-01-01T00:00:00.000Z\\\"}\",\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments @feature-payments-5958a6 [bootstrap:cassette-run-1]\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
-      "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
-      "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
         "content-type": "text/plain;charset=UTF-8"
       },

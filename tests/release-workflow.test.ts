@@ -37,11 +37,11 @@ describe('release workflow publishing contract', () => {
     expect(job('publish')).toContain(
       "if: ${{ needs.classify.outputs.release_kind == 'immutable' && needs.verify-package.result == 'success' }}"
     );
-    expect(job('dispatch-live-monitor')).toContain(
-      "if: ${{ needs.verify-package.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}"
+    expect(job('verify-release-e2e')).toContain(
+      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}"
     );
     expect(job('advance-major-alias')).toContain(
-      "if: ${{ !cancelled() && needs.verify-package.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}"
+      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' }}"
     );
   });
 
@@ -160,11 +160,21 @@ describe('release workflow publishing contract', () => {
     expect(alias).not.toContain('git merge-base --is-ancestor');
   });
 
-  it('preserves the async monitor ref and smoke suite', () => {
-    const monitor = job('dispatch-live-monitor');
-    expect(monitor).toContain('continue-on-error: true');
-    expect(monitor).toContain('E2E_GATE_SUITE: full');
-    expect(monitor).toContain('E2E_GATE_REF: ${{ github.ref_name }}');
-    expect(monitor).toContain('node .github/scripts/dispatch-e2e-monitor.mjs');
+  it('awaits exact correlated E2E evidence before the rolling alias', () => {
+    const verifier = job('verify-release-e2e');
+    expect(verifier).toContain('needs: [classify, verify-package, publish]');
+    expect(verifier).not.toContain('continue-on-error');
+    expect(verifier).toContain("E2E_GATE_MODE: ${{ inputs.e2e_verification_mode || 'enforce' }}");
+    expect(verifier).toContain('E2E_GATE_ACTION: postman-bootstrap-action');
+    expect(verifier).toContain('E2E_GATE_SUITE: full');
+    expect(verifier).toContain('E2E_GATE_REF: ${{ github.ref_name }}');
+    expect(verifier).toContain('E2E_GATE_SOURCE_DIGEST: ${{ needs.verify-package.outputs.release_tgz_sha256 }}');
+    expect(verifier).toContain('E2E_GATE_REGISTRY_REVISION: 0b77666e38737189cd619db2c640ba483a054d70f1cd90b5f68e2294a289667a');
+    expect(verifier).toContain("E2E_GATE_CONTRACT_SCENARIOS: '[\"bootstrap.fresh-import-finalize\"]'");
+    expect(verifier).toContain('node .github/scripts/verify-e2e-release.mjs');
+    expect(job('advance-major-alias')).toContain(
+      'needs: [classify, verify-package, publish, verify-release-e2e]'
+    );
+    expect(workflow).toContain('default: enforce');
   });
 });

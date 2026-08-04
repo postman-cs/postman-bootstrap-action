@@ -4,40 +4,36 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const releaseWorkflow = readFileSync(join(process.cwd(), '.github/workflows/release.yml'), 'utf8');
-const monitorScript = readFileSync(join(process.cwd(), '.github/scripts/dispatch-e2e-monitor.mjs'), 'utf8');
+const verifierScript = readFileSync(join(process.cwd(), '.github/scripts/verify-e2e-release.mjs'), 'utf8');
 
-describe('e2e monitor dispatch contract', () => {
-  it('is post-publish, continue-on-error, and unused by the major alias job', () => {
+describe('correlated release verification contract', () => {
+  it('is post-publish, fail-closed, and required by the major alias job', () => {
     expect(releaseWorkflow).toMatch(
-      /dispatch-live-monitor:[\s\S]*?needs: \[verify-package, publish\]/
+      /verify-release-e2e:[\s\S]*?needs: \[classify, verify-package, publish\]/
+    );
+    expect(releaseWorkflow).not.toMatch(/verify-release-e2e:[\s\S]*?continue-on-error/);
+    expect(releaseWorkflow).toMatch(
+      /advance-major-alias:[\s\S]*?needs: \[classify, verify-package, publish, verify-release-e2e\]/
     );
     expect(releaseWorkflow).toMatch(
-      /dispatch-live-monitor:[\s\S]*?continue-on-error: true/
+      /advance-major-alias:[\s\S]*?needs\.verify-release-e2e\.result == 'success'/
     );
-    expect(releaseWorkflow).toMatch(
-      /dispatch-live-monitor:[\s\S]*?needs\.verify-package\.outputs\.release_kind == 'immutable'/
-    );
-    expect(releaseWorkflow).toMatch(
-      /advance-major-alias:[\s\S]*?needs: \[verify-package, publish\]/
-    );
-    expect(releaseWorkflow).not.toMatch(/advance-major-alias:[\s\S]*dispatch-live-monitor/);
   });
 
   it('keeps publication dependent on immutable artifact verification', () => {
     expect(releaseWorkflow).toContain('publish:\n    needs: [classify, verify-package]');
     expect(releaseWorkflow).toContain("needs.classify.outputs.release_kind == 'immutable'");
-    expect(releaseWorkflow).not.toContain('live-e2e-gate');
-    expect(releaseWorkflow).not.toContain('gate_required');
   });
 
-  it('dispatches a single POST with no polling or timeout loops', () => {
-    expect(monitorScript).toContain("method: 'POST'");
-    expect(monitorScript).toContain('gate_correlation_id');
-    expect(monitorScript).toContain("suite");
-    expect(monitorScript).not.toContain('setTimeout');
-    expect(monitorScript).not.toContain('DEFAULT_TIMEOUT_SECONDS');
-    expect(monitorScript).not.toContain('DEFAULT_POLL_SECONDS');
-    expect(monitorScript).not.toContain('waitForMatchingRun');
-    expect(monitorScript).not.toContain('waitForTerminalRun');
+  it('requests run details, has exact-correlation fallback, and polls exact run with bounds', () => {
+    expect(verifierScript).toContain('return_run_details: true');
+    expect(verifierScript).toContain('gate_correlation_id');
+    expect(verifierScript).toContain('electCorrelatedRun');
+    expect(verifierScript).toContain('waitForTerminalRun');
+    expect(verifierScript).toContain('DEFAULT_LOOKUP_TIMEOUT_MS');
+    expect(verifierScript).toContain('DEFAULT_VERIFICATION_TIMEOUT_MS');
+    expect(verifierScript).toContain('correlation_mismatch');
+    expect(verifierScript).toContain('dispatch_auth_error');
+    expect(verifierScript).toContain('verification_timeout');
   });
 });

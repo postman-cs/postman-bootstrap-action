@@ -322170,6 +322170,9 @@ function adoptExactMatch(identityKey, matches, formatMatch) {
 
 // src/lib/postman/error-advice.ts
 var WORKSPACE_PERSONAL_ONLY_ADVICE = "Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. The Postman API does not allow creating team workspaces at the organization level. Use the workspace-team-id input to specify which sub-team should own this workspace.";
+function squadDiscoveryUnavailableAdvice(observedStatus) {
+  return `Cannot determine whether this is an Org-mode account: the Postman sub-team (squad) list could not be read (observed UMS status ${observedStatus}). Creating a workspace without that answer risks a personal-only workspace that org accounts reject with 403 on the visibility change. Set the workspace-team-id input to the numeric id of the sub-team that should own this workspace (GitHub Actions: workspace-team-id; env: POSTMAN_WORKSPACE_TEAM_ID; CLI: --workspace-team-id <id>). If you believe this account is genuinely not Org-mode, re-run once the squads endpoint is readable, or pass an existing workspace-id so no workspace has to be created.`;
+}
 function expiryAdvice(code) {
   return `postman: Bifrost rejected the access token (${code}). Service-account access tokens expire after about 1 to 1.5 hours; this run likely outlived its token. Re-mint a fresh token with postman-resolve-service-token-action and re-run. If it was just minted, confirm postman-access-token is the token for the same parent org as postman-api-key.`;
 }
@@ -348538,7 +348541,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "1c63fa4ebe729c6c132010444a83229e5d887afa",
+  bootstrapCommit: "5520653cb3ecf92230bc4f2c1eb1ebf9e9f974ca",
   legs: [
     {
       mode: "nonorg",
@@ -349634,6 +349637,40 @@ function asRecord13(value) {
   }
   return value;
 }
+var NON_ORG_SQUAD_SENTINEL = /squad feature is not available/i;
+var SQUAD_DISCOVERY_BODY_DIGEST_LIMIT = 200;
+function parsePositiveSafeInteger(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) return null;
+    if (String(parsed) !== trimmed) return null;
+    return parsed;
+  }
+  return null;
+}
+var SquadDiscoveryUnavailableError = class extends Error {
+  observedStatus;
+  bodyDigest;
+  constructor(cause) {
+    const status = cause instanceof HttpError ? cause.status : 0;
+    const rawBody = cause instanceof HttpError ? cause.responseBody || cause.message || "" : cause instanceof Error ? cause.message : String(cause ?? "");
+    const digest = String(rawBody).replace(/\s+/g, " ").trim().slice(0, SQUAD_DISCOVERY_BODY_DIGEST_LIMIT);
+    super(
+      `Org sub-team (squad) discovery is unavailable (observed UMS status ${status || "none"})` + (digest ? `: ${digest}` : "")
+    );
+    this.name = "SquadDiscoveryUnavailableError";
+    this.observedStatus = status;
+    this.bodyDigest = digest;
+    if (cause !== void 0) {
+      this.cause = cause;
+    }
+  }
+};
 function isMissingPatchValueError(error2) {
   return error2 instanceof HttpError && error2.status === 400 && error2.responseBody.includes("Remove operation must point to an existing value");
 }
@@ -349864,29 +349901,68 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
    * list comes from `ums GET /api/teams/:orgTeamId/squads?settings=true&userRoles=true`
    * → `{ data:[{ id, name, handle, organizationId, … }] }`. Each squad carries
    * `organizationId`, so the caller's `teams.some(t => t.organizationId != null)`
-   * org-mode test works unchanged. Non-org accounts get `400 "Squad feature is not
-   * available"` (live-proven, team 10490519) → resolved as `[]` (not org-mode).
-   * PMAK is never consulted (reserved for token mint + CLI login).
+   * org-mode test works unchanged. PMAK is never consulted (reserved for token
+   * mint + CLI login).
+   *
+   * Outcomes are classified, never collapsed. Exactly one endpoint response
+   * means "not org-mode": `400` whose body matches
+   * `/squad feature is not available/i` (live-proven, team 10490519) → `[]`.
+   * Everything else - other `4xx`, terminal `5xx`/transport after the gateway's
+   * safe-read retries, a non-array or empty `data`, or any row without a usable
+   * numeric id, non-empty name, and positive safe organizationId - is
+   * indeterminate and raises `SquadDiscoveryUnavailableError`. Successful
+   * payloads are validated whole rather than filtered: dropping bad rows can
+   * turn a two-squad account into an unsafe single-squad auto-pick. A missing
+   * memoized session identity still returns `[]`, because there is no org id to
+   * query with.
    */
   async getTeams() {
     const orgTeamId = getMemoizedSessionIdentity()?.teamId;
     if (!orgTeamId) return [];
+    let res;
     try {
-      const res = await this.gateway.requestJson({
+      res = await this.gateway.requestJson({
         service: "ums",
         method: "get",
         path: `/api/teams/${orgTeamId}/squads?settings=true&userRoles=true`
       });
-      const list = Array.isArray(res?.data) ? res.data : [];
-      return list.filter((s) => s?.id != null && s?.name != null).map((s) => ({
-        id: Number(s.id),
-        name: String(s.name),
-        handle: String(s.handle ?? ""),
-        ...s.organizationId != null ? { organizationId: Number(s.organizationId) } : {}
-      }));
-    } catch {
-      return [];
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 400 && NON_ORG_SQUAD_SENTINEL.test(err.responseBody || err.message || "")) {
+        return [];
+      }
+      throw new SquadDiscoveryUnavailableError(err);
     }
+    if (!Array.isArray(res?.data)) {
+      throw new SquadDiscoveryUnavailableError(
+        new Error("ums squads response did not contain a data array")
+      );
+    }
+    const list = res.data;
+    if (list.length === 0) {
+      throw new SquadDiscoveryUnavailableError(
+        new Error("ums squads response contained an empty data array")
+      );
+    }
+    return list.map((row) => {
+      const squad = asRecord13(row);
+      if (!squad) {
+        throw new SquadDiscoveryUnavailableError(
+          new Error("ums squads response contained a row that is not an object")
+        );
+      }
+      const id = parsePositiveSafeInteger(squad.id);
+      const organizationId = parsePositiveSafeInteger(squad.organizationId);
+      const name = typeof squad.name === "string" ? squad.name.trim() : "";
+      if (id === null || organizationId === null || !name) {
+        throw new SquadDiscoveryUnavailableError(
+          new Error(
+            "ums squads response contained a row without usable id, name, and organizationId"
+          )
+        );
+      }
+      const handle = typeof squad.handle === "string" ? squad.handle : String(squad.handle ?? "");
+      return { id, name, handle, organizationId };
+    });
   }
   /**
    * Create an OpenAPI spec in Spec Hub via the gateway specification service.
@@ -383931,6 +384007,13 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     } catch (err) {
       if (err instanceof Error && err.message.includes("Org-mode account detected")) {
         throw err;
+      }
+      if (err instanceof SquadDiscoveryUnavailableError) {
+        const mask2 = createBootstrapSecretMasker(inputs);
+        throw new Error(
+          formatMaskedOneLine(squadDiscoveryUnavailableAdvice(err.observedStatus || "none"), mask2),
+          { cause: err }
+        );
       }
       const mask = createBootstrapSecretMasker(inputs);
       const cause = formatMaskedOneLine(err, mask);

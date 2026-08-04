@@ -179,7 +179,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `governance-group` | Postman governance workspace group name. Overrides the postman-governance-group repository custom property and domain mapping. | no |  |
 | `requester-email` | Requester email for audit context | no |  |
 | `workspace-admin-user-ids` | Comma-separated workspace admin user ids | no |  |
-| `workspace-team-id` | Numeric sub-team ID for org-mode workspace creation. Required when your Postman team is an org with multiple sub-teams. Run the action without this input to see available sub-teams listed in the error output. | no |  |
+| `workspace-team-id` | Numeric SUB-TEAM (squad) id that should own the created org-mode workspace. Required when your Postman team is an org with multiple sub-teams. This is a squad id, NOT the parent/org team id from the resolver's `team-id` output; that value is never valid here. On an org account whose squad list is unreadable or unusable, bootstrap now fails before any workspace is created unless this input is set. Run once on a healthy account without it to see available sub-teams listed in the error output. | no |  |
 | `spec-url` | HTTPS URL to the OpenAPI document to bootstrap. Provide either spec-url or spec-path. | no |  |
 | `spec-path` | Local filesystem path to the OpenAPI document (relative to the workspace). Provide either spec-url or spec-path. | no |  |
 | `spec-files-json` | Optional content-free JSON inventory of multi-file definition members from discovery (schemaVersion 1). Empty by default. When set, inventory root must equal spec-path. Cannot be combined with spec-url. Not a directory mode — companions are listed explicitly; file content is never embedded. | no |  |

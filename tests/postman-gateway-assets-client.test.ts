@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient, HttpError } from '@postman-cse/automation-core';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
+import {
+  PostmanGatewayAssetsClient,
+  SquadDiscoveryUnavailableError
+} from '../src/lib/postman/postman-gateway-assets-client.js';
 import { __resetIdentityMemo, resolveSessionIdentity } from '../src/lib/postman/credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from '../src/lib/postman/error-advice.js';
 import { normalizeCollectionModelIdentity } from '../src/lib/postman/collection-model-identity.js';
@@ -1311,6 +1314,146 @@ describe('PostmanGatewayAssetsClient', () => {
       );
       expect(await client.getTeams()).toEqual([]);
     });
+
+    it('raises SquadDiscoveryUnavailableError on a 400 whose body is not the non-org sentinel', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() =>
+        jsonResponse({ error: { name: 'BadRequest', message: 'settings query parameter is invalid' } }, { status: 400 })
+      );
+      await expect(client.getTeams()).rejects.toBeInstanceOf(SquadDiscoveryUnavailableError);
+      await expect(client.getTeams()).rejects.toMatchObject({ observedStatus: 400 });
+    });
+
+    it('raises SquadDiscoveryUnavailableError on a 403, preserving the cause and status', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() =>
+        jsonResponse({ message: 'You are not authorized to perform this action' }, { status: 403 })
+      );
+      const error = await client.getTeams().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+      expect(error).toBeInstanceOf(SquadDiscoveryUnavailableError);
+      const typed = error as SquadDiscoveryUnavailableError;
+      expect(typed.observedStatus).toBe(403);
+      expect(typed.bodyDigest).toContain('not authorized');
+      expect(typed.cause).toBeInstanceOf(HttpError);
+    });
+
+    it('raises SquadDiscoveryUnavailableError on a terminal 5xx after the gateway retries', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() => jsonResponse({ message: 'internal error' }, { status: 503 }));
+      await expect(client.getTeams()).rejects.toMatchObject({
+        name: 'SquadDiscoveryUnavailableError',
+        observedStatus: 503
+      });
+    });
+
+    it('raises SquadDiscoveryUnavailableError on a terminal transport rejection after the gateway retries, preserving the cause and status 0', async () => {
+      await seedSession(13347347);
+      const transportError = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+      const { client } = makeClient(() => {
+        throw transportError;
+      });
+      const error = await client.getTeams().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+      expect(error).toBeInstanceOf(SquadDiscoveryUnavailableError);
+      const typed = error as SquadDiscoveryUnavailableError;
+      expect(typed.observedStatus).toBe(0);
+      expect(typed.bodyDigest).toContain('ECONNRESET');
+      expect(typed.cause).toBe(transportError);
+    });
+
+    it('raises SquadDiscoveryUnavailableError when data is not an array', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() => jsonResponse({ data: { id: 132319, name: 'CSE v12' } }));
+      await expect(client.getTeams()).rejects.toBeInstanceOf(SquadDiscoveryUnavailableError);
+    });
+
+    it('raises SquadDiscoveryUnavailableError when data is an empty array', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() => jsonResponse({ data: [] }));
+      await expect(client.getTeams()).rejects.toBeInstanceOf(SquadDiscoveryUnavailableError);
+    });
+
+    it('accepts positive safe integer ids and organizationIds from decimal digit strings', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() =>
+        jsonResponse({
+          data: [
+            {
+              id: '132319',
+              name: 'CSE v12',
+              handle: 'cse-v12',
+              organizationId: '13347347'
+            }
+          ]
+        })
+      );
+      await expect(client.getTeams()).resolves.toEqual([
+        { id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347 }
+      ]);
+    });
+
+    it.each([
+      {
+        label: 'null row',
+        data: [null]
+      },
+      {
+        label: 'primitive string row',
+        data: ['not-a-squad']
+      },
+      {
+        label: 'boolean id',
+        data: [{ id: true, name: 'CSE v12', organizationId: 13347347 }]
+      },
+      {
+        label: 'negative id',
+        data: [{ id: -1, name: 'CSE v12', organizationId: 13347347 }]
+      },
+      {
+        label: 'fractional id',
+        data: [{ id: 132319.5, name: 'CSE v12', organizationId: 13347347 }]
+      },
+      {
+        label: 'unsafe id',
+        data: [{ id: Number.MAX_SAFE_INTEGER + 1, name: 'CSE v12', organizationId: 13347347 }]
+      },
+      {
+        label: 'non-string name',
+        data: [{ id: 132319, name: 42, organizationId: 13347347 }]
+      },
+      {
+        label: 'empty name',
+        data: [{ id: 132319, name: '   ', organizationId: 13347347 }]
+      },
+      {
+        label: 'missing organizationId',
+        data: [{ id: 132319, name: 'CSE v12', handle: 'cse-v12' }]
+      },
+      {
+        label: 'invalid organizationId',
+        data: [{ id: 132319, name: 'CSE v12', organizationId: 'not-a-number' }]
+      },
+      {
+        label: 'valid row followed by invalid id row',
+        data: [
+          { id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347 },
+          { id: null, name: 'CSE v13', organizationId: 13347347 }
+        ]
+      }
+    ])(
+      'raises SquadDiscoveryUnavailableError instead of filtering when a squad row is unusable ($label)',
+      async ({ data }) => {
+        await seedSession(13347347);
+        const { client } = makeClient(() => jsonResponse({ data }));
+        await expect(client.getTeams()).rejects.toBeInstanceOf(SquadDiscoveryUnavailableError);
+      }
+    );
+
 
     it('returns [] when no session identity is memoized (no PMAK /me, no org id)', async () => {
       __resetIdentityMemo();

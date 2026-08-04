@@ -76,6 +76,75 @@ function asRecord(value: unknown): JsonRecord | null {
 }
 
 /**
+ * The single UMS response that proves an account is NOT org-mode: squads are
+ * not a feature of its plan. Matched on a `400` body only; wording drift makes
+ * discovery indeterminate rather than silently non-org, which fails closed.
+ */
+const NON_ORG_SQUAD_SENTINEL = /squad feature is not available/i;
+
+/** Longest safe body excerpt kept on a discovery failure for operator triage. */
+const SQUAD_DISCOVERY_BODY_DIGEST_LIMIT = 200;
+
+/**
+ * Positive safe integer from the ums squads transport contract: a finite number
+ * or a decimal-digit string that normalizes exactly (no fractions, negatives,
+ * booleans, or values outside Number.isSafeInteger).
+ */
+function parsePositiveSafeInteger(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) return null;
+    if (String(parsed) !== trimmed) return null;
+    return parsed;
+  }
+  return null;
+}
+
+/**
+ * Sub-team (squad) discovery reached a terminal outcome that neither produced a
+ * usable squad list nor matched the non-org sentinel, so whether the account is
+ * org-mode is unknown. Carries the observed HTTP status (0 when the failure was
+ * not an HTTP response) and a truncated, secret-masked body digest. Callers that
+ * must create a workspace have to fail on this rather than assume
+ * "not org-mode": that assumption is what produced the late visibility-flip 403.
+ */
+export class SquadDiscoveryUnavailableError extends Error {
+  readonly observedStatus: number;
+  readonly bodyDigest: string;
+
+  constructor(cause: unknown) {
+    const status = cause instanceof HttpError ? cause.status : 0;
+    const rawBody =
+      cause instanceof HttpError
+        ? cause.responseBody || cause.message || ''
+        : cause instanceof Error
+          ? cause.message
+          : String(cause ?? '');
+    // HttpError already redacts known secret values; truncate so a large body
+    // cannot dominate the operator-facing message.
+    const digest = String(rawBody)
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, SQUAD_DISCOVERY_BODY_DIGEST_LIMIT);
+    super(
+      `Org sub-team (squad) discovery is unavailable (observed UMS status ${status || 'none'})` +
+        (digest ? `: ${digest}` : '')
+    );
+    this.name = 'SquadDiscoveryUnavailableError';
+    this.observedStatus = status;
+    this.bodyDigest = digest;
+    if (cause !== undefined) {
+      (this as { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
+/**
  * A 400 from a JSON-Patch remove whose target no longer exists — the signature
  * of a retried PATCH whose first attempt actually committed downstream.
  */
@@ -412,33 +481,74 @@ export class PostmanGatewayAssetsClient {
    * list comes from `ums GET /api/teams/:orgTeamId/squads?settings=true&userRoles=true`
    * → `{ data:[{ id, name, handle, organizationId, … }] }`. Each squad carries
    * `organizationId`, so the caller's `teams.some(t => t.organizationId != null)`
-   * org-mode test works unchanged. Non-org accounts get `400 "Squad feature is not
-   * available"` (live-proven, team 10490519) → resolved as `[]` (not org-mode).
-   * PMAK is never consulted (reserved for token mint + CLI login).
+   * org-mode test works unchanged. PMAK is never consulted (reserved for token
+   * mint + CLI login).
+   *
+   * Outcomes are classified, never collapsed. Exactly one endpoint response
+   * means "not org-mode": `400` whose body matches
+   * `/squad feature is not available/i` (live-proven, team 10490519) → `[]`.
+   * Everything else - other `4xx`, terminal `5xx`/transport after the gateway's
+   * safe-read retries, a non-array or empty `data`, or any row without a usable
+   * numeric id, non-empty name, and positive safe organizationId - is
+   * indeterminate and raises `SquadDiscoveryUnavailableError`. Successful
+   * payloads are validated whole rather than filtered: dropping bad rows can
+   * turn a two-squad account into an unsafe single-squad auto-pick. A missing
+   * memoized session identity still returns `[]`, because there is no org id to
+   * query with.
    */
-  async getTeams(): Promise<Array<{ id: number; name: string; handle: string; organizationId?: number }>> {
+  async getTeams(): Promise<Array<{ id: number; name: string; handle: string; organizationId: number }>> {
     const orgTeamId = getMemoizedSessionIdentity()?.teamId;
     if (!orgTeamId) return [];
+    let res: JsonRecord | null;
     try {
-      const res = await this.gateway.requestJson<JsonRecord>({
+      res = await this.gateway.requestJson<JsonRecord>({
         service: 'ums',
         method: 'get',
         path: `/api/teams/${orgTeamId}/squads?settings=true&userRoles=true`
       });
-      const list = Array.isArray(res?.data) ? (res.data as JsonRecord[]) : [];
-      return list
-        .filter((s) => s?.id != null && s?.name != null)
-        .map((s) => ({
-          id: Number(s.id),
-          name: String(s.name),
-          handle: String(s.handle ?? ''),
-          ...(s.organizationId != null ? { organizationId: Number(s.organizationId) } : {})
-        }));
-    } catch {
-      // 400 "Squad feature is not available" (non-org) or any read failure: no
-      // squads to report, so the account is treated as non-org.
-      return [];
+    } catch (err) {
+      if (
+        err instanceof HttpError &&
+        err.status === 400 &&
+        NON_ORG_SQUAD_SENTINEL.test(err.responseBody || err.message || '')
+      ) {
+        // The one unambiguous non-org signal: squads are not a feature here.
+        return [];
+      }
+      throw new SquadDiscoveryUnavailableError(err);
     }
+    if (!Array.isArray(res?.data)) {
+      throw new SquadDiscoveryUnavailableError(
+        new Error('ums squads response did not contain a data array')
+      );
+    }
+    const list = res.data as JsonRecord[];
+    if (list.length === 0) {
+      throw new SquadDiscoveryUnavailableError(
+        new Error('ums squads response contained an empty data array')
+      );
+    }
+    return list.map((row) => {
+      const squad = asRecord(row);
+      if (!squad) {
+        throw new SquadDiscoveryUnavailableError(
+          new Error('ums squads response contained a row that is not an object')
+        );
+      }
+      const id = parsePositiveSafeInteger(squad.id);
+      const organizationId = parsePositiveSafeInteger(squad.organizationId);
+      const name = typeof squad.name === 'string' ? squad.name.trim() : '';
+      if (id === null || organizationId === null || !name) {
+        throw new SquadDiscoveryUnavailableError(
+          new Error(
+            'ums squads response contained a row without usable id, name, and organizationId'
+          )
+        );
+      }
+      const handle =
+        typeof squad.handle === 'string' ? squad.handle : String(squad.handle ?? '');
+      return { id, name, handle, organizationId };
+    });
   }
 
   /**

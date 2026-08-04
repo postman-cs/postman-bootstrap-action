@@ -191,6 +191,67 @@ describe('contract: cassette sanitizer', () => {
     expect(serialized).not.toContain('12345678');
   });
 
+  it('groups production-shaped collection aliases independently of interaction order', () => {
+    const bareCollectionId = 'aaaaaaaa-aaaa-0aaa-7aaa-aaaaaaaaaaaa';
+    const fullCollectionUid = `1-${bareCollectionId}`;
+    const interactions = [
+      {
+        key: `proxy:collection PATCH /v3/collections/${fullCollectionUid}`,
+        requestQuery: '',
+        status: 200,
+        body: JSON.stringify({ data: { id: fullCollectionUid }, collectionUid: fullCollectionUid }),
+        responseHeaders: {}
+      },
+      {
+        key: 'proxy:sync POST /collection/import',
+        requestQuery: '',
+        status: 200,
+        body: JSON.stringify({ data: { model_id: bareCollectionId }, collectionId: bareCollectionId }),
+        responseHeaders: {}
+      }
+    ];
+    const sanitize = (orderedInteractions: typeof interactions) =>
+      sanitizeCassette({ version: 2 as const, interactions: orderedInteractions });
+    const sanitized = sanitize(interactions);
+    const reversed = sanitize([...interactions].reverse());
+    const root = sanitized.interactions.find((interaction) => interaction.key.includes('/v3/collections/'));
+    const imported = sanitized.interactions.find((interaction) => interaction.key.includes('/collection/import'));
+    const rootBody = JSON.parse(root?.body ?? '') as { data: { id: string }; collectionUid: string };
+    const importBody = JSON.parse(imported?.body ?? '') as {
+      data: { model_id: string };
+      collectionId: string;
+    };
+    const placeholder = rootBody.data.id;
+    const normalized = (cassette: Cassette) => stableCassetteJson({
+      ...cassette,
+      interactions: [...cassette.interactions].sort((left, right) => left.key.localeCompare(right.key))
+    });
+
+    expect(placeholder).toMatch(/^cassette-collection-\d+$/);
+    expect(rootBody.collectionUid).toBe(placeholder);
+    expect(importBody.data.model_id).toBe(placeholder);
+    expect(importBody.collectionId).toBe(placeholder);
+    expect(root?.key).toContain(`/v3/collections/${placeholder}`);
+    expect(normalized(reversed)).toBe(normalized(sanitized));
+  });
+
+  it('redacts and rejects production-shaped Postman UIDs in free text', () => {
+    const uid = '1-aaaaaaaa-aaaa-0aaa-7aaa-aaaaaaaaaaaa';
+    const poisoned = {
+      version: 2 as const,
+      interactions: [{
+        key: 'POST https://api.getpostman.com/poisoned',
+        requestQuery: '',
+        status: 200,
+        body: JSON.stringify({ note: `leaked collection UID: ${uid}` }),
+        responseHeaders: {}
+      }]
+    };
+
+    expect(() => assertCassetteRedacted(poisoned)).toThrow(/Postman UID|redaction invariant/i);
+    expect(JSON.stringify(sanitizeCassette(poisoned))).not.toContain(uid);
+  });
+
   it('replays parameterized response IDs through matching parameterized interaction keys', async () => {
     const sanitized = sanitizeCassette(rawCassette());
     const replay = createReplayFetch(structuredClone(sanitized));

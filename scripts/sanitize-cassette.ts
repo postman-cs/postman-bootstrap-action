@@ -8,6 +8,11 @@ import {
   type Cassette,
   type CassetteInteraction
 } from '@postman-cse/automation-core/cassette';
+import {
+  isBareCollectionUuid,
+  isFullPublicCollectionUid,
+  normalizeCollectionModelIdentity
+} from '../src/lib/postman/collection-model-identity.ts';
 
 const REDACTED = '[REDACTED]';
 const REDACTED_REPOSITORY = '[REDACTED-REPOSITORY]';
@@ -16,8 +21,8 @@ const FIXED_HTTP_TIMESTAMP = 'Sat, 01 Jan 2000 00:00:00 GMT';
 const USAGE =
   'Usage: node --experimental-strip-types scripts/sanitize-cassette.ts integration/cassettes/raw/<name>.json [tests/contract/cassettes/<name>.json]';
 
-const UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
-const POSTMAN_UID_PATTERN = /\b\d{3,}-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
+const UUID_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const POSTMAN_UID_PATTERN = /\b\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const OBJECT_ID_PATTERN = /\b[0-9a-f]{24}\b/gi;
 const ISO_TIMESTAMP_PATTERN = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\b/g;
 const HTTP_TIMESTAMP_PATTERN = /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT\b/g;
@@ -351,10 +356,9 @@ function collectRouteIds(
 }
 
 function collectionModelIdentity(value: string): string | undefined {
-  const fullUid = value.match(POSTMAN_UID_PATTERN)?.[0];
-  if (fullUid === value) return fullUid.slice(fullUid.indexOf('-') + 1).toLowerCase();
-  const bareUuid = value.match(UUID_PATTERN)?.[0];
-  return bareUuid === value ? bareUuid.toLowerCase() : undefined;
+  return isBareCollectionUuid(value) || isFullPublicCollectionUid(value)
+    ? normalizeCollectionModelIdentity(value)
+    : undefined;
 }
 
 function replacementPlan(cassette: Cassette): ReplacementPlan {
@@ -629,7 +633,7 @@ function assertNoForbiddenText(value: string, location: string): void {
       'encoded repository URL',
       /(?:https?|ssh)%3A%2F%2F(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|ssh\.dev\.azure\.com)/i
     ],
-    ['Postman UID', /\b\d{3,}-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i],
+    ['Postman UID', /\b\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i],
     ['object UID', /\b[0-9a-f]{24}\b/i]
   ];
   for (const [label, pattern] of forbidden) {

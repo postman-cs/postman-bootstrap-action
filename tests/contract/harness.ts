@@ -12,8 +12,9 @@ import { vi } from 'vitest';
 import { __resetIdentityMemo } from '../../src/lib/postman/credential-identity.js';
 import { runAction, type CoreLike, type ExecLike, type IOLike } from '../../src/index.js';
 
-// Preserve the real event-loop yield before Vitest replaces timer globals.
+// Preserve real clock/event-loop primitives before Vitest replaces timer globals.
 const realSetImmediate = setImmediate;
+const realDateNow = Date.now;
 
 export const VALID_SPEC_31 = `{
   "openapi": "3.1.0",
@@ -80,8 +81,46 @@ export interface ContractRunOptions {
   env?: Record<string, string>;
 }
 
-const MAX_TIMER_FLUSH_PASSES = 100_000;
-const REAL_EVENT_LOOP_YIELD_INTERVAL = 10;
+/** Default settle window for full-flow contract tests (under their 120s budget). */
+export const FAKE_TIMER_SETTLE_DEADLINE_MS = 110_000;
+/** Extra real-timer grace so I/O-backed work can finish before surfacing a timeout. */
+export const FAKE_TIMER_CLEANUP_GRACE_MS = 5_000;
+
+export interface RunWithFakeTimersOptions {
+  /** Wall-clock budget for fake-timer flushing; defaults to FAKE_TIMER_SETTLE_DEADLINE_MS. */
+  settleDeadlineMs?: number;
+  /** Real-timer grace after the settle deadline before failing; defaults to FAKE_TIMER_CLEANUP_GRACE_MS. */
+  cleanupGraceMs?: number;
+}
+
+async function yieldRealEventLoopTurn(): Promise<void> {
+  await new Promise<void>((resolve) => realSetImmediate(resolve));
+}
+
+async function waitForPendingCleanup<T>(
+  pending: Promise<T>,
+  isSettled: () => boolean,
+  cleanupGraceMs: number
+): Promise<void> {
+  if (isSettled()) {
+    return;
+  }
+  const cleanupDeadline = realDateNow() + cleanupGraceMs;
+  while (!isSettled() && realDateNow() < cleanupDeadline) {
+    await Promise.resolve();
+    await yieldRealEventLoopTurn();
+  }
+  if (isSettled()) {
+    return;
+  }
+  await Promise.race([
+    pending.then(
+      () => undefined,
+      () => undefined
+    ),
+    new Promise<void>((resolve) => realSetImmediate(resolve))
+  ]);
+}
 
 /**
  * Run a contract action under vitest fake timers, flushing every timer chain
@@ -89,44 +128,79 @@ const REAL_EVENT_LOOP_YIELD_INTERVAL = 10;
  * run settles. The production converge/settle sleeps are real seconds; this
  * absorbs them so full-flow contract tests stay fast.
  */
-export async function runWithFakeTimers<T>(fn: () => Promise<T>): Promise<T> {
+export async function runWithFakeTimers<T>(
+  fn: () => Promise<T>,
+  options: RunWithFakeTimersOptions = {}
+): Promise<T> {
+  const settleDeadlineMs = options.settleDeadlineMs ?? FAKE_TIMER_SETTLE_DEADLINE_MS;
+  const cleanupGraceMs = options.cleanupGraceMs ?? FAKE_TIMER_CLEANUP_GRACE_MS;
+  const settleDeadline = realDateNow() + settleDeadlineMs;
+
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-07-31T00:00:00.000Z'));
+
+  const pending = fn();
+  let settled: { value: T } | { error: unknown } | undefined;
+  // Observe rejection immediately so a settle-timeout cannot leave the original
+  // action promise as an unhandled rejection.
+  void pending.then(
+    (value) => {
+      settled = { value };
+    },
+    (error) => {
+      settled = { error };
+    }
+  );
+
+  let flushError: Error | undefined;
+  let result: T | undefined;
+  let actionError: unknown;
   try {
-    const pending = fn();
-    let settled: { value: T } | { error: unknown } | undefined;
-    // Observe rejection immediately so a timer-flush budget failure cannot leave
-    // the original action promise as an unhandled rejection.
-    void pending.then(
-      (value) => {
-        settled = { value };
-      },
-      (error) => {
-        settled = { error };
-      }
-    );
-    for (let pass = 0; pass < MAX_TIMER_FLUSH_PASSES && !settled; pass += 1) {
+    while (!settled && realDateNow() < settleDeadline) {
       await vi.runAllTimersAsync();
-      // Yield the microtask queue so `settled` can flip between timer flushes.
+      // Yield microtasks so `settled` can flip between timer flushes.
       await Promise.resolve();
-      // Fake timers do not advance libuv I/O; periodically yield a real turn so
-      // filesystem-backed action work can complete without making every pass I/O-bound.
-      if ((pass + 1) % REAL_EVENT_LOOP_YIELD_INTERVAL === 0) {
-        await new Promise<void>((resolve) => realSetImmediate(resolve));
+      // Fake timers do not advance libuv I/O; every pass yields a real turn so
+      // filesystem-backed action work can complete under hosted contention.
+      await yieldRealEventLoopTurn();
+    }
+
+    if (!settled) {
+      vi.useRealTimers();
+      const cleanupDeadline = realDateNow() + cleanupGraceMs;
+      while (!settled && realDateNow() < cleanupDeadline) {
+        await Promise.resolve();
+        await yieldRealEventLoopTurn();
+      }
+      if (!settled) {
+        flushError = new Error(
+          `Fake timer settle deadline exceeded after ${settleDeadlineMs}ms (+${cleanupGraceMs}ms cleanup grace): action promise did not settle`
+        );
       }
     }
-    if (!settled) {
-      throw new Error(
-        `Fake timer flush budget exhausted after ${MAX_TIMER_FLUSH_PASSES} passes: action promise did not settle`
-      );
+
+    if (!flushError && settled) {
+      if ('error' in settled) {
+        actionError = settled.error;
+      } else {
+        result = settled.value;
+      }
     }
-    if ('error' in settled) {
-      throw settled.error;
-    }
-    return settled.value;
   } finally {
     vi.useRealTimers();
+    await waitForPendingCleanup(pending, () => settled !== undefined, cleanupGraceMs);
   }
+
+  if (flushError) {
+    throw flushError;
+  }
+  if (actionError !== undefined) {
+    throw actionError;
+  }
+  if (result === undefined) {
+    throw new Error('Fake timer harness: action promise did not settle');
+  }
+  return result;
 }
 
 export function createExecStub(stdout = '{"violations":[]}'): ExecLike {

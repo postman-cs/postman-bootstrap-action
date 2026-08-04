@@ -16,14 +16,19 @@
  * capture drops in without a test change.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createReplayFetch } from '@postman-cse/automation-core/cassette';
 
 import { runContractAction, runWithFakeTimers } from './harness.js';
 import { createPlatformFake } from './platform-fake.js';
 import { CASSETTE_SCENARIOS, CASSETTE_SCENARIO_ENV } from './cassettes/scenarios.js';
-import { isRepeatableRead, readCassette } from './cassettes/replay.js';
+import {
+  isRepeatableRead,
+  listCommittedCassetteJsonFiles,
+  readCassette
+} from './cassettes/replay.js';
 
 // The recorded request keys include a digest of every request body, and the
 // production flow puts generated UUIDs into some of those bodies. Replay must
@@ -105,10 +110,22 @@ describe('contract: cassette scenario suite (offline replay)', () => {
       'protobuf-grpc',
       'refresh-deep-update'
     ]);
-    const cassetteFiles = readdirSync(join('tests', 'contract', 'cassettes'))
-      .filter((file) => file.endsWith('.json'))
-      .sort();
-    expect(cassetteFiles).toEqual(names.map((name) => `${name}.json`).sort());
+    expect(listCommittedCassetteJsonFiles()).toEqual(names.map((name) => `${name}.json`).sort());
+  });
+
+  it('resolves committed cassette files from module location after cwd changes', () => {
+    const previous = process.cwd();
+    const tempDir = mkdtempSync(join(tmpdir(), 'cassette-cwd-'));
+    try {
+      process.chdir(tempDir);
+      expect(readCassette('fresh-onboard').interactions.length).toBeGreaterThan(5);
+      expect(listCommittedCassetteJsonFiles()).toContain('fresh-onboard.json');
+      expect(realpathSync(process.cwd())).toBe(realpathSync(tempDir));
+    } finally {
+      process.chdir(previous);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+    expect(realpathSync(process.cwd())).toBe(realpathSync(previous));
   });
 
   it('applies the fresh-onboard assertions unchanged to the lagged stateful fake', async () => {

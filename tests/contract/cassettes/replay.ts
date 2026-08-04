@@ -3,15 +3,26 @@
  * committed fixture lives, and the byte-stable serialization the recorder emits
  * so a re-record with no behavior change produces no diff.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { Cassette } from '@postman-cse/automation-core/cassette';
 
 const CASSETTE_DIR = resolve(import.meta.dirname);
 
+/** Absolute path to committed scenario cassette JSON files (stable across cwd changes). */
+export function committedCassetteDirectory(): string {
+  return CASSETTE_DIR;
+}
+
 export function cassettePath(name: string): string {
   return resolve(CASSETTE_DIR, `${name}.json`);
+}
+
+export function listCommittedCassetteJsonFiles(): string[] {
+  return readdirSync(CASSETTE_DIR)
+    .filter((file) => file.endsWith('.json'))
+    .sort();
 }
 
 /**

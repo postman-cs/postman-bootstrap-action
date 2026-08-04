@@ -4,6 +4,15 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      e2e_verification_mode:
+        description: Enforce correlated E2E success before moving the rolling alias, or explicitly report-only.
+        required: true
+        type: choice
+        options:
+          - enforce
+          - report-only
+        default: enforce
 
 permissions:
   contents: read
@@ -319,26 +328,38 @@ jobs:
             postman-bootstrap-*-linux-x64
             postman-bootstrap-*-linux-x64.sha256
 
-  dispatch-live-monitor:
-    needs: [verify-package, publish]
-    if: ${{ needs.verify-package.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
-    continue-on-error: true
+  verify-release-e2e:
+    needs: [classify, verify-package, publish]
+    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.verifier.outputs.e2e_outcome }}
+      correlation_id: ${{ steps.verifier.outputs.e2e_correlation_id }}
+      workflow_run_id: ${{ steps.verifier.outputs.e2e_workflow_run_id }}
+      run_url: ${{ steps.verifier.outputs.e2e_run_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - name: Dispatch postman-actions-e2e live monitor
+      - name: Dispatch and await exact correlated E2E verifier
+        id: verifier
         env:
           E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
+          E2E_GATE_MODE: ${{ inputs.e2e_verification_mode || 'enforce' }}
+          E2E_GATE_ACTION: postman-bootstrap-action
           E2E_GATE_SUITE: full
           E2E_GATE_REF: ${{ github.ref_name }}
-        run: node .github/scripts/dispatch-e2e-monitor.mjs
+          E2E_GATE_SOURCE_DIGEST: ${{ needs.verify-package.outputs.release_tgz_sha256 }}
+          E2E_GATE_REGISTRY_REVISION: 0b77666e38737189cd619db2c640ba483a054d70f1cd90b5f68e2294a289667a
+          E2E_GATE_CONTRACT_SCENARIOS: '["bootstrap.fresh-import-finalize"]'
+        run: node .github/scripts/verify-e2e-release.mjs
 
   advance-major-alias:
-    needs: [verify-package, publish]
-    if: ${{ !cancelled() && needs.verify-package.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
+    needs: [classify, verify-package, publish, verify-release-e2e]
+    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

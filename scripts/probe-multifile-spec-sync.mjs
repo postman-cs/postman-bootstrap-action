@@ -447,7 +447,6 @@ export function isReleaseOnlyDriftPath(relPath) {
   // directories (scripts/, tests/, .github/workflows/) stay behavior-bearing.
   if (
     p === '.github/workflows/auto-release.yml' ||
-    p === '.github/workflows/notify-composite.yml' ||
     p === 'scripts/release-cut.mjs' ||
     p === 'scripts/verify-dist-artifact.mjs' ||
     p === 'tests/auto-release.test.ts' ||

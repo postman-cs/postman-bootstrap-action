@@ -98,13 +98,18 @@ describe('contract: import election state machine', () => {
     expect(activeCollections(fake)).toEqual([
       expect.objectContaining({ id: OWN_UID, name: FINAL_NAME, origin: 'imported' })
     ]);
+    // Rename addresses ROOT by full public UID, so the canonical identity must be
+    // observed in workspace inventory before the finalize PATCH can be issued.
     expect(fake.state.collectionTransitions).toEqual([
       expect.stringMatching(`^imported:${OWN_UID}:Payments \\[bootstrap:`),
-      `renamed:${OWN_UID}:Payments [bootstrap:state-machine-run]->${FINAL_NAME}`,
-      `visible:${OWN_UID}:observation=1`
+      `visible:${OWN_UID}:observation=1`,
+      `renamed:${OWN_UID}:Payments [bootstrap:state-machine-run]->${FINAL_NAME}`
     ]);
     expect(fake.state.collectionDeleteLedger).toEqual([]);
     expect(importRequests(fake)).toHaveLength(1);
+    expect(collectionRequests(fake, 'patch').map((request) => request.path)).toEqual([
+      `/v3/collections/${OWN_UID}`
+    ]);
     expect(collectionRequests(fake, 'delete')).toEqual([]);
   });
 
@@ -139,10 +144,14 @@ describe('contract: import election state machine', () => {
       expect.objectContaining({ id: PEER_UID, name: FINAL_NAME, origin: 'peer' })
     ]);
     expect(fake.state.collectionTransitions).toContain(`vanished:${OWN_UID}:observation=2`);
-    expect(fake.state.collectionDeleteLedger).toEqual([]);
+    expect(fake.state.collectionDeleteLedger).toEqual([
+      { id: OWN_UID, ownedByRun: true, verifiedAbsent: true }
+    ]);
     expect(fake.state.deepUpdatedCollectionIds).toEqual([PEER_UID]);
     expect(importRequests(fake)).toHaveLength(1);
-    expect(collectionRequests(fake, 'delete')).toEqual([]);
+    expect(collectionRequests(fake, 'delete').map((request) => request.path)).toEqual([
+      `/v3/collections/${OWN_BARE}`
+    ]);
   });
 
   it('elects the lower-UID peer and deletes only its verified run-owned loser', async () => {
@@ -246,7 +255,9 @@ describe('contract: import election state machine', () => {
 
     expect(result.collectionId).toBe(PEER_UID);
     expect(result.journaledRootIds).toEqual([]);
-    expect(fake.state.collectionDeleteLedger).toEqual([]);
+    expect(fake.state.collectionDeleteLedger).toEqual([
+      { id: OWN_UID, ownedByRun: true, verifiedAbsent: true }
+    ]);
     expect(
       collectionRequests(fake, 'get').some((request) => request.path === `/v3/collections/${PEER_BARE}/export`)
     ).toBe(true);
@@ -254,7 +265,9 @@ describe('contract: import election state machine', () => {
       expect.objectContaining({ id: PEER_UID, description: sharedMarker })
     ]);
     expect(importRequests(fake)).toHaveLength(1);
-    expect(collectionRequests(fake, 'delete')).toEqual([]);
+    expect(collectionRequests(fake, 'delete').map((request) => request.path)).toEqual([
+      `/v3/collections/${OWN_BARE}`
+    ]);
   });
 
   it('regresses fe-onsite-g02 attempt 4: own canonical identity appears after the historic six-observation window', async () => {
@@ -275,10 +288,42 @@ describe('contract: import election state machine', () => {
     expect(result.collectionId).toBe(OWN_UID);
     expect(result.journaledRootIds).toEqual([OWN_UID]);
     expect(fake.state.collectionTransitions).toContain(`visible:${OWN_UID}:observation=7`);
-    expect(fake.state.collectionObservationCount).toBe(11);
+    // Bounded: the canonical-uid resolution that precedes the finalize PATCH reads
+    // the same inventory the election later re-reads, so late visibility costs one
+    // extra bounded pass rather than an unbounded poll.
+    expect(fake.state.collectionObservationCount).toBe(14);
     expect(fake.state.collectionDeleteLedger).toEqual([]);
     expect(importRequests(fake)).toHaveLength(1);
     expect(collectionRequests(fake, 'delete')).toEqual([]);
+  });
+
+  it('fails closed and cleans only the owned root when canonical inventory visibility never arrives', async () => {
+    const fake = createPlatformFake({
+      collectionId: () => OWN_BARE,
+      importElection: {
+        importedCanonicalId: OWN_UID,
+        importedVisibleAfterObservations: 999
+      }
+    });
+
+    await expect(
+      makeClient(fake).importV2Collection('ws-contract', collection(''), FINAL_NAME)
+    ).rejects.toThrow(/COLLECTION_ROOT_UID_RESOLUTION_FAILED/);
+
+    expect(activeCollections(fake)).toEqual([]);
+    expect(fake.state.collectionDeleteLedger).toEqual([
+      expect.objectContaining({ id: OWN_UID, ownedByRun: true })
+    ]);
+    expect(collectionRequests(fake, 'patch')).toEqual([]);
+    expect(collectionRequests(fake, 'delete').map((request) => request.path)).toEqual([
+      `/v3/collections/${OWN_BARE}`
+    ]);
+    expect(
+      collectionRequests(fake, 'get').some(
+        (request) => request.path === `/v3/collections/${OWN_BARE}`
+      )
+    ).toBe(false);
+    expect(importRequests(fake)).toHaveLength(1);
   });
 });
 

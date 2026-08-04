@@ -16,7 +16,11 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import { normalizeCollectionModelIdentity } from '../../src/lib/postman/collection-model-identity.js';
+import {
+  isBareCollectionUuid,
+  isFullPublicCollectionUid,
+  normalizeCollectionModelIdentity
+} from '../../src/lib/postman/collection-model-identity.js';
 
 const NUM_RUNS = 1000;
 
@@ -80,5 +84,26 @@ describe('normalizeCollectionModelIdentity properties (WS8)', () => {
       }),
       { numRuns: NUM_RUNS }
     );
+  });
+});
+
+describe('collection ROOT identity predicates', () => {
+  it('classifies every bare UUID and numeric-owner-prefixed UID exclusively', () => {
+    fc.assert(
+      fc.property(uuidArb, ownerArb, (uuid, owner) => {
+        expect(isBareCollectionUuid(uuid)).toBe(true);
+        expect(isFullPublicCollectionUid(uuid)).toBe(false);
+        expect(isBareCollectionUuid(`${owner}-${uuid}`)).toBe(false);
+        expect(isFullPublicCollectionUid(`${owner}-${uuid}`)).toBe(true);
+      }),
+      { numRuns: NUM_RUNS }
+    );
+  });
+
+  it('never classifies arbitrary aliases as UUID identities', () => {
+    for (const alias of ['custom-owner-alias', 'owner-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '']) {
+      expect(isBareCollectionUuid(alias)).toBe(false);
+      expect(isFullPublicCollectionUid(alias)).toBe(false);
+    }
   });
 });

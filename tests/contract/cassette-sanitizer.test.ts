@@ -159,6 +159,38 @@ describe('contract: cassette sanitizer', () => {
     expect(serialized.endsWith('\n')).toBe(true);
   });
 
+  it('maps paired bare and owner-prefixed collection model IDs to one placeholder', () => {
+    const bareCollectionId = RAW_COLLECTION_ID;
+    const fullCollectionUid = `12345678-${bareCollectionId}`;
+    const raw = {
+      version: 2 as const,
+      interactions: [{
+        key: `proxy:collection PATCH /v3/collections/${fullCollectionUid}`,
+        requestQuery: '',
+        status: 200,
+        body: JSON.stringify({
+          data: { id: fullCollectionUid, model_id: bareCollectionId },
+          collectionId: bareCollectionId,
+          collectionUid: fullCollectionUid
+        }),
+        responseHeaders: {}
+      }]
+    };
+
+    const sanitized = sanitizeCassette(raw);
+    const response = JSON.parse(sanitized.interactions[0]?.body ?? '') as {
+      data: { id: string; model_id: string };
+    };
+    const serialized = JSON.stringify(sanitized);
+
+    expect(response.data.id).toMatch(/^cassette-collection-\d+$/);
+    expect(response.data.model_id).toBe(response.data.id);
+    expect(sanitized.interactions[0]?.key).toContain(`/v3/collections/${response.data.id}`);
+    expect(serialized).not.toContain(fullCollectionUid);
+    expect(serialized).not.toContain(bareCollectionId);
+    expect(serialized).not.toContain('12345678');
+  });
+
   it('replays parameterized response IDs through matching parameterized interaction keys', async () => {
     const sanitized = sanitizeCassette(rawCassette());
     const replay = createReplayFetch(structuredClone(sanitized));
@@ -400,10 +432,27 @@ describe('contract: cassette sanitizer', () => {
   it('round-trips a sanitized platform-fake recording through the full action flow', async () => {
     const { raw, cassette: sanitized, outputs: recordedOutputs, liveFetch } =
       await recordSanitizedFakeCassette();
+    const syncModelIds = new Set(
+      sanitized.interactions
+        .filter((interaction) => interaction.key.startsWith('proxy:sync POST /collection/import'))
+        .map((interaction) => {
+          const body = JSON.parse(interaction.body) as { model_id?: string };
+          return String(body.model_id ?? '');
+        })
+        .filter(Boolean)
+    );
+    const rootPatchIds = new Set(
+      sanitized.interactions.flatMap((interaction) => {
+        const match = /^proxy:collection PATCH \/v3\/collections\/([^ /?#]+)/.exec(interaction.key);
+        return match?.[1] ? [match[1]] : [];
+      })
+    );
     expect(JSON.stringify(raw)).toContain('rawRequestBody');
     expect(JSON.stringify(sanitized)).not.toContain('rawRequestBody');
     expect(JSON.stringify(sanitized)).not.toContain(RAW_WORKSPACE_ID);
     expect(JSON.stringify(sanitized)).not.toContain(LIVE_PMAK);
+    expect(syncModelIds.size).toBe(3);
+    expect(rootPatchIds).toEqual(syncModelIds);
     liveFetch.mockClear();
     uuidSequence.next = 0;
     const replayed = await runWithFakeTimers(() =>

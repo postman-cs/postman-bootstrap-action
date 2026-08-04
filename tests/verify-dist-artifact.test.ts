@@ -138,20 +138,30 @@ else {
 
 async function runVerify(
   root: string,
-  options: { cliProbeTimeoutMs?: number | string } = {}
+  options: {
+    cliProbeTimeoutMs?: number | string;
+    /** Leave VERIFY_DIST_CLI_PROBE_TIMEOUT_MS unset so the script keeps its 5s default. */
+    useStrictCliProbeTimeout?: boolean;
+  } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
+    // Full-suite runs saturate cores and fixture CLI boots can exceed the
+    // script's strict 5s default. Grant 30s headroom unless a timeout-contract
+    // test explicitly pins the unset/strict default or an override value.
+    const timeoutEnv = options.useStrictCliProbeTimeout
+      ? {}
+      : {
+          VERIFY_DIST_CLI_PROBE_TIMEOUT_MS: String(
+            options.cliProbeTimeoutMs !== undefined ? options.cliProbeTimeoutMs : 30_000
+          )
+        };
     const result = await execFileAsync(process.execPath, [verifyScript, root], {
       encoding: 'utf8',
       env: {
         PATH: process.env.PATH ?? '',
         HOME: process.env.HOME ?? '',
         TMPDIR: process.env.TMPDIR ?? '',
-        // Timeout-contract tests pin the strict 5s default; the real-artifact
-        // boot opts into contention headroom for full-suite runs.
-        ...(options.cliProbeTimeoutMs !== undefined
-          ? { VERIFY_DIST_CLI_PROBE_TIMEOUT_MS: String(options.cliProbeTimeoutMs) }
-          : {})
+        ...timeoutEnv
       },
       maxBuffer: 1024 * 1024
     });
@@ -168,10 +178,7 @@ async function runVerify(
 
 describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
   it('passes against the committed dist artifact', { timeout: 60_000 }, async () => {
-    // Full-suite runs saturate every core and a 15MB bundle boot can blow the
-    // strict 5s probe; grant headroom here only. The hang tests below still
-    // prove the 5s fail-closed default.
-    const result = await runVerify(repoRoot, { cliProbeTimeoutMs: 30_000 });
+    const result = await runVerify(repoRoot);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('verify-dist-artifact: ok');
@@ -185,13 +192,7 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     expect(result.code).toBe(0);
   }, 15_000);
 
-  it('uses the strict default and rejects invalid CLI probe timeout overrides before probing', async () => {
-    const defaultRoot = await makeTempDir('verify-dist-timeout-default-');
-    await writeFixture(defaultRoot);
-    const defaultResult = await runVerify(defaultRoot);
-    expect(defaultResult.stderr).toBe('');
-    expect(defaultResult.code).toBe(0);
-
+  it('rejects invalid CLI probe timeout overrides before probing', async () => {
     for (const value of [0, -1, 1.5, 'not-a-number', 'Infinity', 30_001]) {
       const root = await makeTempDir('verify-dist-timeout-invalid-');
       await writeFixture(root, { hangHelp: true });
@@ -357,23 +358,22 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     expect(result.stderr).toMatch(/missing usage banner/);
   }, 15_000);
 
-  it('fails within the test budget when direct --help hangs', async () => {
-    const root = await makeTempDir('verify-dist-help-timeout-');
-    await writeFixture(root, { hangHelp: true });
+  it('fails within the test budget when direct --help or --version hangs', async () => {
+    // Keep the strict 5s default on both probes; overlap the wall waits in one
+    // test so afterEach temp cleanup cannot race a sibling concurrent case.
+    const helpRoot = await makeTempDir('verify-dist-help-timeout-');
+    const versionRoot = await makeTempDir('verify-dist-version-timeout-');
+    await writeFixture(helpRoot, { hangHelp: true });
+    await writeFixture(versionRoot, { hangVersion: true });
     const startedAt = Date.now();
-    const result = await runVerify(root);
-    expect(result.code).not.toBe(0);
-    expect(result.stderr).toMatch(/direct dist[\\/]cli\.cjs --help timed out after 5000ms/);
-    expect(Date.now() - startedAt).toBeLessThan(10_000);
-  }, 15_000);
-
-  it('fails within the test budget when direct --version hangs', async () => {
-    const root = await makeTempDir('verify-dist-version-timeout-');
-    await writeFixture(root, { hangVersion: true });
-    const startedAt = Date.now();
-    const result = await runVerify(root);
-    expect(result.code).not.toBe(0);
-    expect(result.stderr).toMatch(/direct dist[\\/]cli\.cjs --version timed out after 5000ms/);
+    const [help, version] = await Promise.all([
+      runVerify(helpRoot, { useStrictCliProbeTimeout: true }),
+      runVerify(versionRoot, { useStrictCliProbeTimeout: true })
+    ]);
+    expect(help.code).not.toBe(0);
+    expect(help.stderr).toMatch(/direct dist[\\/]cli\.cjs --help timed out after 5000ms/);
+    expect(version.code).not.toBe(0);
+    expect(version.stderr).toMatch(/direct dist[\\/]cli\.cjs --version timed out after 5000ms/);
     expect(Date.now() - startedAt).toBeLessThan(10_000);
   }, 15_000);
 

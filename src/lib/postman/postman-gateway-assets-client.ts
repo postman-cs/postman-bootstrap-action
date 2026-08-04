@@ -17,7 +17,11 @@ import {
 import { getMemoizedSessionIdentity } from './credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from './error-advice.js';
 import { normalizeGitRepoUrl } from './git-url.js';
-import { normalizeCollectionModelIdentity } from './collection-model-identity.js';
+import {
+  isBareCollectionUuid,
+  isFullPublicCollectionUid,
+  normalizeCollectionModelIdentity
+} from './collection-model-identity.js';
 import {
   createSecretsResolverExec,
   createSecretsResolverV3Body,
@@ -328,6 +332,29 @@ export class PostmanGatewayAssetsClient {
     return PostmanGatewayAssetsClient.PREVIEW_ASSET_NAME_SUFFIX.test(finalName)
       ? PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
       : PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+  }
+
+  /**
+   * Inventory-visibility schedule for resolving a bare Sync model id to the
+   * ROOT-addressable uid the finalize PATCH needs: this final name's settle
+   * window, extended by the live-proven preview continuation when the standard
+   * window is the one in play.
+   *
+   * This is deliberately the same total budget {@link
+   * electImportedCollectionIdentity} spends waiting for the very same inventory
+   * row. The rename cannot be deferred to election as a fallback — election
+   * matches candidates by exact final name, so a root still carrying its
+   * run-unique temp name is invisible there — and the ROOT PATCH has no bare-id
+   * fallback. Any shorter budget would therefore fail imports whose inventory
+   * visibility merely lags, which is the case election was built to survive.
+   */
+  private static rootUidResolveDelaysForFinalName(finalName: string): readonly number[] {
+    const settle = PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+    if (settle !== PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS) return settle;
+    return [
+      ...settle,
+      ...PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(settle.length)
+    ];
   }
   /**
    * Bounded eventual-consistency verification after a successful owned-root delete.
@@ -1686,7 +1713,7 @@ export class PostmanGatewayAssetsClient {
       await this.gateway.requestJson<JsonRecord>({
         service: 'collection',
         method: 'patch',
-        path: `/v3/collections/${this.bareModelId(collectionId)}`,
+        path: `/v3/collections/${this.collectionRootId(collectionId)}`,
         // Replacing a generated collection's name with the same value is idempotent.
         retry: 'safe',
         body: [{ op: 'replace', path: '/name', value: name }]
@@ -1720,11 +1747,34 @@ export class PostmanGatewayAssetsClient {
     collectionId: string,
     finalName: string
   ): Promise<void> {
+    // Sync's import envelope returns a BARE model id, which the ROOT PATCH now
+    // rejects 403. Resolve the canonical <owner>-<uuid> from inventory before
+    // the only PATCH this canonical rename is allowed to send.
+    const rootId = await this.resolveCollectionRootUid(
+      workspaceId,
+      collectionId,
+      PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName)
+    );
+    if (!rootId) {
+      // The identity never became inventory-visible across the full window, so
+      // no ROOT-addressable id exists and the bare id is never sent (it would
+      // 403 unconditionally and burn the single attempt this rename is allowed).
+      //
+      // Return rather than throw: under dual-trigger the expected cause is that
+      // a peer run already won this final name and deleted this run's root, and
+      // election is the authority for that outcome. Election re-reads the same
+      // inventory and either adopts a verified same-marker peer or fails closed
+      // with `did not become inventory-visible with canonical identity`, without
+      // deleting or adopting a collection this run does not own. A root that is
+      // still absent here is likewise not final-name eligible there, so an
+      // unrenamed temp-named collection can never be silently shipped.
+      return;
+    }
     try {
       await this.gateway.requestJson<JsonRecord>({
         service: 'collection',
         method: 'patch',
-        path: `/v3/collections/${this.bareModelId(collectionId)}`,
+        path: `/v3/collections/${rootId}`,
         retry: 'none',
         body: [{ op: 'replace', path: '/name', value: finalName }]
       });
@@ -1977,23 +2027,92 @@ export class PostmanGatewayAssetsClient {
   // --- collection v3 mutation + tagging (live-proven 2026-06-30; see docs/REST-to-gateway.md) ---
   //
   // These retire bootstrap's last asset-op PMAK dependencies. Collection ROOT
-  // routes (GET/PATCH/DELETE `/v3/collections/:id`) accept the bare model id.
+  // routes (GET/PATCH `/v3/collections/:id`) must use the FULL public uid
+  // (`<owner>-<uuid>`): bare model ids are rejected 403 FORBIDDEN (live-proven
+  // 2026-08-03 on non-org team 10490519 and org team 172912 — the same ACL
+  // tightening that reached the items surface on 2026-07-14). `/export` and
+  // DELETE still accept the bare id (same 2026-08-03 live A/B: bare=200) but
+  // are addressed by the full uid too whenever the caller holds one, so a
+  // single vocabulary covers the whole collection service and those routes
+  // stay safe if the tightening spreads again.
   // Collection ITEMS routes (`/v3/collections/:id/items/...`) must use the FULL
-  // public uid (`<owner>-<uuid>`): bare model ids are flaky on org-mode squads
-  // (live-proven 2026-07-14 on team 172912 / Northwind — immediate post-generation
-  // `GET .../items/` returns 403 FORBIDDEN with bare id, 200 with full uid).
+  // public uid (live-proven 2026-07-14 on team 172912 / Northwind — immediate
+  // post-generation `GET .../items/` returns 403 FORBIDDEN with bare id).
   // The tagging service is distinct and takes the FULL uid.
+  // Sync routes (`/collection/import`, `/collection/deepupdate/:id`) keep the
+  // BARE model id, which is also the form the import envelope returns.
 
   /**
-   * `<owner>-<uuid>` public uid -> bare `<uuid>` model id (collection ROOT routes
-   * only). Strip ONLY the numeric owner prefix of a full public uid; a bare UUID
-   * (which itself contains hyphens) must pass through unchanged, so a naive
-   * split on the first hyphen — which would lop off a UUID's first segment — is
-   * rejected here in favour of an anchored `<digits>-<uuid>` match.
+   * `<owner>-<uuid>` public uid -> bare `<uuid>` model id. Used for the SYNC
+   * routes and for identity comparison only — never to build a collection ROOT
+   * or ITEMS URL. Strip ONLY the numeric owner prefix of a full public uid; a
+   * bare UUID (which itself contains hyphens) must pass through unchanged, so a
+   * naive split on the first hyphen — which would lop off a UUID's first
+   * segment — is rejected here in favour of an anchored `<digits>-<uuid>` match.
    */
   private bareModelId(uid: string): string {
     return normalizeCollectionModelIdentity(uid);
   }
+
+  /**
+   * Collection id for ROOT routes (`GET`/`PATCH /v3/collections/:id`). Preserve
+   * legacy non-UUID aliases, but reject a known bare UUID locally: production
+   * rejects that shape 403, so callers must resolve it through inventory first.
+   */
+  private collectionRootId(uid: string): string {
+    const id = String(uid ?? '').trim();
+    if (isBareCollectionUuid(id)) {
+      throw new Error(
+        'COLLECTION_ROOT_UID_REQUIRED: a bare collection model id cannot address Collection ROOT'
+      );
+    }
+    return id;
+  }
+
+  /**
+   * Resolve a collection's ROOT-addressable id from workspace inventory — the
+   * only surface that carries the numeric owner prefix. The prefix is not
+   * derivable from a bare uuid, and inferring it from the service-account
+   * identity would be a guess (the collection owner is not necessarily the
+   * caller), so inventory is the sole authority here.
+   *
+   * A ROOT-addressable input is returned unchanged without spending a read. A
+   * bare model id is polled across `delays` until inventory reports the exact
+   * normalized identity, absorbing import read-after-write lag rather than
+   * letting a bare id reach a route that would reject it 403.
+   *
+   * Returns `undefined` only when the identity never became inventory-visible
+   * within the budget (or inventory stayed unreadable throughout) — the caller
+   * decides how to fail, since there is no safe bare-id fallback.
+   */
+  private async resolveCollectionRootUid(
+    workspaceId: string,
+    collectionId: string,
+    delays: readonly number[],
+    retryPolicy: 'safe' | 'rate-limit' | 'none' = 'safe'
+  ): Promise<string | undefined> {
+    const id = String(collectionId ?? '').trim();
+    if (!id) return undefined;
+    if (!isBareCollectionUuid(id)) return id;
+    const targetIdentity = normalizeCollectionModelIdentity(id);
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      try {
+        const inventory = await this.listWorkspaceCollections(workspaceId, retryPolicy);
+        const match = inventory.find(
+          (entry) => normalizeCollectionModelIdentity(entry.id) === targetIdentity
+        );
+        // Inventory sometimes exposes only the bare model id. That confirms the
+        // identity exists but is not ROOT-addressable, so keep polling for the
+        // owner-prefixed public uid rather than sending a forbidden ROOT request.
+        if (match?.id && isFullPublicCollectionUid(match.id)) return match.id;
+      } catch {
+        // Inventory unreadable on this observation; spend the remaining budget.
+      }
+      if (observation < delays.length) await this.sleep(delays[observation]!);
+    }
+    return undefined;
+  }
+
 
   /**
    * Collection id for ITEMS routes. Prefer the full public uid; fall back to the
@@ -2374,6 +2493,10 @@ export class PostmanGatewayAssetsClient {
   }
 
   async deleteCollection(collectionUid: string): Promise<void> {
+    // DELETE is NOT part of the ROOT GET/PATCH ACL tightening: it accepts the
+    // bare model id (2026-08-03 live A/B: bare=200). Keep the bare vocabulary
+    // that is actually live-proven — journaled cleanup ids can be bare, and
+    // rewriting this route on speculation would change a proven-good call.
     const cid = this.bareModelId(collectionUid);
     try {
       await this.gateway.requestJson<JsonRecord>({
@@ -2908,9 +3031,9 @@ export class PostmanGatewayAssetsClient {
     if (!rawId) {
       throw new Error('Collection create did not return an id');
     }
-    // Items routes need the full public uid; root PATCH/DELETE still accept bare.
+    // Both the items and root routes need the full public uid.
     const itemsCid = this.collectionItemsId(rawId);
-    const rootCid = this.bareModelId(rawId);
+    const rootCid = this.collectionRootId(rawId);
     await options.onRootCreated?.(rawId);
     try {
       await this.createItemTree(itemsCid, asItemArray(v3.items), itemsCid);
@@ -2947,7 +3070,7 @@ export class PostmanGatewayAssetsClient {
    * add /description op means the intended value is already present.
    */
   async updateCollectionDescription(collectionUid: string, description: string): Promise<void> {
-    const cid = this.bareModelId(collectionUid);
+    const cid = this.collectionRootId(collectionUid);
     const ops = [{ op: 'add', path: '/description', value: description }];
     try {
       await retry(
@@ -2990,7 +3113,7 @@ export class PostmanGatewayAssetsClient {
    */
   async updateCollection(collectionUid: string, collection: unknown): Promise<void> {
     const itemsCid = this.collectionItemsId(collectionUid);
-    const rootCid = this.bareModelId(collectionUid);
+    const rootCid = this.collectionRootId(collectionUid);
     const v3 = this.normalizeCollectionForWrite(collection);
 
     const existingItems = await this.listCollectionItems(itemsCid);
@@ -3230,16 +3353,26 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Single absence observation. 404 proves gone. GET 200/403 fall back to
-   * workspace inventory (never treating 403 alone as absence). Transient
-   * >=500 is not absence.
+   * Single absence observation. A full public uid can use ROOT GET: 404 proves
+   * gone, while GET 200/403 falls back to workspace inventory (never treating
+   * 403 alone as absence). A bare journal id skips ROOT GET entirely because
+   * that route rejects it; normalized workspace inventory is its authority.
+   * Transient >=500 is not absence.
+   *
+   * A caller holding the full public uid gets a real ROOT GET; a caller holding
+   * only a bare journal id skips ROOT GET and is resolved through normalized
+   * inventory, the authority for that case.
    */
   private async verifyCollectionAbsentOnce(
     workspaceId: string,
     collectionId: string
   ): Promise<boolean> {
-    const path = `/v3/collections/${this.bareModelId(collectionId)}`;
-    const targetIdentity = normalizeCollectionModelIdentity(collectionId);
+    const id = String(collectionId ?? '').trim();
+    const targetIdentity = normalizeCollectionModelIdentity(id);
+    if (isBareCollectionUuid(id)) {
+      return (await this.inventoryOmitsNormalizedIdentity(workspaceId, targetIdentity)) === true;
+    }
+    const path = `/v3/collections/${this.collectionRootId(id)}`;
     try {
       await this.gateway.requestJson<JsonRecord>({
         service: 'collection',
@@ -3357,7 +3490,9 @@ export class PostmanGatewayAssetsClient {
         .filter((entry) => entry.name === finalName)
         .sort((a, b) => a.id.localeCompare(b.id));
       eligible = sameNameSurvivors.filter(
-        (entry) => !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
+        (entry) =>
+          !isBareCollectionUuid(entry.id) &&
+          !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
       );
       ownCanonical = eligible.find(
         (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
@@ -3386,30 +3521,34 @@ export class PostmanGatewayAssetsClient {
     }
 
     if (!ownCanonical) {
-      // Own root is absent from inventory. A peer preview run that elected the
-      // same final name deletes this run's root as the elected loser, so absence
-      // is an expected outcome of concurrency, not proof of a failed import.
+      // Own root is absent from inventory. It may have been deleted by a peer,
+      // or it may still exist but remain inventory-invisible after an unresolved
+      // rename. Before adopting a same-marker peer and dropping this run's
+      // journal ownership, actively delete and prove absence of the run-owned
+      // preferred root.
       // Adopt the sole surviving same-marker final for this exact name when the
       // owned root is verifiably gone: that asset carries this branch's durable
-      // marker, so it is the asset this run was asked to produce. Ownership is
-      // never claimed (journal stays empty) and nothing is deleted. Anything
-      // unmarked or carrying a different marker is a stranger and still fails.
+      // marker, so it is the asset this run was asked to produce. The peer is
+      // never deleted or claimed; cleanup failure fails closed. Anything unmarked
+      // or carrying a different marker is a stranger and still fails.
       //
       // Adoption scans every same-name survivor rather than the eligible set.
       // Org inventory omits root descriptions, so the pre-import snapshot cannot
       // read a peer's marker and classifies that peer as stale; keeping it out
       // here would fail closed on an asset this branch legitimately owns. Marker
       // identity is still proven per candidate over the v2.1 export route, so a
-      // stranger is never adopted on the strength of the name alone.
+      // stranger is never adopted on the strength of the name alone. Bare rows
+      // are excluded because canonical election may never return one.
       const adoptable = await this.adoptableSameMarkerFinal(
-        sameNameSurvivors,
+        sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
         desiredDescription
       );
-      if (adoptable && (await this.verifyCollectionAbsentOnce(workspaceId, preferredId))) {
+      if (adoptable) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [preferredId]);
         return adoptable;
       }
       throw new Error(
-        `Imported collection did not become inventory-visible with canonical identity`
+        'COLLECTION_ROOT_UID_RESOLUTION_FAILED: imported collection did not become inventory-visible with a ROOT-addressable canonical uid'
       );
     }
 
@@ -3556,6 +3695,9 @@ export class PostmanGatewayAssetsClient {
   }
 
   async exportV2Collection(collectionUid: string): Promise<JsonRecord> {
+    // `/export` is NOT part of the ROOT GET/PATCH ACL tightening: it accepts
+    // the bare model id (2026-08-03 live A/B: bare=200). Keep the live-proven
+    // bare vocabulary rather than rewriting a working route on speculation.
     const bareId = this.bareModelId(collectionUid);
     const exported = await this.gateway.requestJson<JsonRecord>({
       service: 'collection',

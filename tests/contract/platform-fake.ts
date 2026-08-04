@@ -335,6 +335,7 @@ interface SpecFakeFile {
 }
 
 const V21_SCHEMA = 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json';
+const BARE_COLLECTION_MODEL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const HOSTS = {
   prod: {
@@ -812,7 +813,9 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
             typeof info.description === 'string' ? info.description.trim() : '';
           const slot = roleFromName(name);
           const modelId = collectionId(slot, importSeq);
-          const id = options.importElection?.importedCanonicalId ?? modelId;
+          const id =
+            options.importElection?.importedCanonicalId ??
+            (BARE_COLLECTION_MODEL_ID.test(modelId) ? `${Math.abs(userId)}-${modelId}` : modelId);
           collectionsById.set(id, {
             id,
             name,
@@ -1041,6 +1044,11 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
                 : {})
             }))
           );
+          for (const deletion of state.collectionDeleteLedger) {
+            if (!page.data.some((entry) => asRecord(entry)?.id === deletion.id)) {
+              deletion.verifiedAbsent = true;
+            }
+          }
           return json({
             data: page.data,
             meta: { pagination: { nextPage: page.nextCursor } }
@@ -1057,6 +1065,9 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
         }
         if (pmethod === 'get' && /\/v3\/collections\/[^/?]+$/.test(ppath)) {
           const bare = ppath.split('/').pop() || '';
+          if (BARE_COLLECTION_MODEL_ID.test(bare)) {
+            return json({ error: 'forbidden collection root' }, 403);
+          }
           const id = resolveCollectionId(bare);
           if (!id || deletedIds.has(id) || vanishedIds.has(id)) {
             const deletion = state.collectionDeleteLedger.findLast(
@@ -1101,8 +1112,11 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
         if (pmethod === 'delete' && /\/items\/[^/]+$/.test(ppath)) {
           return json({ data: { deleted: ppath.split('/').pop() } });
         }
-        if (pmethod === 'patch' && /\/v3\/collections\//.test(ppath)) {
+        if (pmethod === 'patch' && /^\/v3\/collections\/[^/]+$/.test(ppath)) {
           const bare = ppath.split('/').pop() || '';
+          if (BARE_COLLECTION_MODEL_ID.test(bare)) {
+            return json({ error: 'forbidden collection root' }, 403);
+          }
           const ops = Array.isArray(proxy.body) ? proxy.body : [];
           const nameOp = ops.find((op) => asRecord(op)?.path === '/name');
           const nextName = nameOp ? String(asRecord(nameOp)?.value ?? '') : '';

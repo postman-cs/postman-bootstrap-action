@@ -58,6 +58,7 @@ jobs:
       contents: read
     outputs:
       release_kind: ${{ needs.classify.outputs.release_kind }}
+      release_tgz_sha256: ${{ steps.artifact-digests.outputs.release_tgz_sha256 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -131,6 +132,19 @@ jobs:
           }, null, 2));
           NODE
           node scripts/verify-release-artifacts.mjs release-artifacts
+      - name: Record trusted tarball digest
+        id: artifact-digests
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const tgz = crypto.createHash('sha256').update(fs.readFileSync('release-artifacts/release.tgz')).digest('hex');
+          if (!/^[a-f0-9]{64}$/.test(tgz)) {
+            console.error('::error::failed to compute trusted tarball digest');
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `release_tgz_sha256=${tgz}\n`);
+          NODE
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ github.run_id }}-${{ github.run_attempt }}
@@ -157,6 +171,20 @@ jobs:
         with:
           name: release-${{ github.run_id }}-${{ github.run_attempt }}
           path: .
+      - name: Authenticate transferred tarball
+        env:
+          EXPECTED_RELEASE_TGZ_SHA256: ${{ needs.verify-package.outputs.release_tgz_sha256 }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const expected = process.env.EXPECTED_RELEASE_TGZ_SHA256;
+          const actual = crypto.createHash('sha256').update(fs.readFileSync('release.tgz')).digest('hex');
+          if (!/^[a-f0-9]{64}$/.test(expected ?? '') || actual !== expected) {
+            console.error('::error::release.tgz hash does not match trusted verify-package output');
+            process.exit(1);
+          }
+          NODE
       - name: Verify staged release artifacts
         run: |
           node --input-type=module - <<'TRUSTED_PUBLISHER_VERIFIER'

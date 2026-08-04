@@ -350,6 +350,13 @@ function collectRouteIds(
   }
 }
 
+function collectionModelIdentity(value: string): string | undefined {
+  const fullUid = value.match(POSTMAN_UID_PATTERN)?.[0];
+  if (fullUid === value) return fullUid.slice(fullUid.indexOf('-') + 1).toLowerCase();
+  const bareUuid = value.match(UUID_PATTERN)?.[0];
+  return bareUuid === value ? bareUuid.toLowerCase() : undefined;
+}
+
 function replacementPlan(cassette: Cassette): ReplacementPlan {
   const candidates = createCandidates();
   const secrets = new Map<string, string>();
@@ -379,6 +386,23 @@ function replacementPlan(cassette: Cassette): ReplacementPlan {
   const entities = new Map<string, Replacement>();
   for (const category of CATEGORY_ORDER) {
     const values = [...candidates[category].values].sort((left, right) => left.localeCompare(right));
+    if (category === 'collection') {
+      const collectionGroups = new Map<string, string[]>();
+      for (const raw of values) {
+        const identity = collectionModelIdentity(raw);
+        const key = identity ? `model:${identity}` : `exact:${raw}`;
+        collectionGroups.set(key, [...(collectionGroups.get(key) ?? []), raw]);
+      }
+      let index = 0;
+      for (const raws of collectionGroups.values()) {
+        index += 1;
+        for (const raw of raws) {
+          if (entities.has(raw) || secrets.has(raw)) continue;
+          entities.set(raw, { numeric: false, value: `cassette-collection-${index}` });
+        }
+      }
+      continue;
+    }
     values.forEach((raw, index) => {
       if (entities.has(raw) || secrets.has(raw)) return;
       const numeric = candidates[category].numeric && /^-?\d+$/.test(raw);

@@ -171,6 +171,24 @@
       "status": 200
     },
     {
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments [bootstrap:cassette-run-1]\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments [bootstrap:cassette-run-1]\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
+      "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
+      "requestQuery": "workspace=cassette-workspace-1",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments [bootstrap:cassette-run-1]\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments [bootstrap:cassette-run-1]\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
+      "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
+      "requestQuery": "workspace=cassette-workspace-1",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
       "body": "{\"data\":{\"id\":\"cassette-collection-1\"}}",
       "key": "proxy:collection PATCH /v3/collections/cassette-collection-1 #body-sha256=63f3e2375357929906fd15afbb4ed0215120db959c3efeb19a4bc614b7b471af",
       "requestBodySha256": "63f3e2375357929906fd15afbb4ed0215120db959c3efeb19a4bc614b7b471af",
@@ -303,6 +321,15 @@
       "key": "proxy:sync POST /collection/import?format=2.1.0&workspace=cassette-workspace-1 #body-sha256=8e617b62a66be298060750b9cae25901d3c09ee37399e09c95deb7168c258005",
       "requestBodySha256": "8e617b62a66be298060750b9cae25901d3c09ee37399e09c95deb7168c258005",
       "requestQuery": "format=2.1.0&workspace=cassette-workspace-1",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":[{\"id\":\"cassette-collection-1\",\"name\":\"contract-payments\"},{\"id\":\"cassette-collection-2\",\"name\":\"[Smoke] contract-payments\"},{\"id\":\"cassette-collection-3\",\"name\":\"[Contract] contract-payments [bootstrap:cassette-run-1]\"}],\"meta\":{\"pagination\":{\"nextPage\":\"\"}}}",
+      "key": "proxy:collection GET /v3/collections/?workspace=cassette-workspace-1",
+      "requestQuery": "workspace=cassette-workspace-1",
       "responseHeaders": {
         "content-type": "text/plain;charset=UTF-8"
       },

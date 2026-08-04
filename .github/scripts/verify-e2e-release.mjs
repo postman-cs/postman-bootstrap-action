@@ -534,6 +534,37 @@ export async function waitForTerminalRun({ config, runId, expected, fetchRun, no
   );
 }
 
+export async function waitForRunIdentity({ config, runId, expected, fetchRun, now, sleep }) {
+  const deadline = now() + config.lookupTimeoutMs;
+  let attempt = 0;
+  let lastTitleMismatch;
+  while (now() <= deadline) {
+    try {
+      return validateRunIdentity(await fetchRun(runId), { ...expected, runId });
+    } catch (error) {
+      const titleIsHydrating =
+        error instanceof ReleaseVerificationError &&
+        error.code === 'correlation_mismatch' &&
+        error.message.endsWith('action/ref/correlation/digest title');
+      if (!titleIsHydrating) throw error;
+      lastTitleMismatch = error;
+    }
+    const delay = computeBackoffMs(attempt, config.initialPollMs, config.maxPollMs);
+    attempt += 1;
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(delay, remaining));
+  }
+  throw (
+    lastTitleMismatch ??
+    new ReleaseVerificationError(
+      'correlation_mismatch',
+      `downstream run ${runId} identity did not hydrate before lookup timeout`,
+      { runId: String(runId) }
+    )
+  );
+}
+
 export async function verifyCorrelatedRelease(config, dependencies = {}) {
   const fetchImpl = dependencies.fetchImpl ?? fetch;
   const now = dependencies.now ?? Date.now;
@@ -558,14 +589,13 @@ export async function verifyCorrelatedRelease(config, dependencies = {}) {
 
   let initialRun;
   if (dispatched.details) {
-    initialRun = await fetchExactRun(config, dispatched.details.workflowRunId, {
-      fetchImpl,
+    initialRun = await waitForRunIdentity({
+      config,
+      runId: dispatched.details.workflowRunId,
+      expected,
+      fetchRun: async (id) => fetchExactRun(config, id, { fetchImpl, now, sleep }),
       now,
       sleep
-    });
-    validateRunIdentity(initialRun, {
-      ...expected,
-      runId: dispatched.details.workflowRunId
     });
   } else {
     initialRun = await lookupCorrelatedRun(config, expected, { fetchImpl, now, sleep });

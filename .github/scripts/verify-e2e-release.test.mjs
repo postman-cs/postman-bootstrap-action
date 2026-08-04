@@ -13,6 +13,7 @@ import {
   runReleaseVerificationCli,
   shouldFailRelease,
   validateRunIdentity,
+  waitForRunIdentity,
   waitForTerminalRun
 } from './verify-e2e-release.mjs';
 
@@ -216,6 +217,49 @@ test('exact-run polling is bounded and reports verification_timeout', async () =
         }
       }),
     (error) => error instanceof ReleaseVerificationError && error.code === 'verification_timeout'
+  );
+});
+
+test('exact dispatch run waits for run-name hydration but rejects every other mismatch', async () => {
+  let clock = 0;
+  let reads = 0;
+  const hydrated = await waitForRunIdentity({
+    config: {
+      lookupTimeoutMs: 20,
+      initialPollMs: 4,
+      maxPollMs: 4
+    },
+    runId: '77',
+    expected: { ...EXPECTED, notBeforeMs: 0 },
+    fetchRun: async () => {
+      reads += 1;
+      return run({
+        created_at: '1970-01-01T00:00:00.001Z',
+        display_title: reads === 1 ? 'e2e (live sandbox)' : RUN_TITLE
+      });
+    },
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms || 1;
+    }
+  });
+  assert.equal(hydrated.id, 77);
+  assert.equal(reads, 2);
+
+  await assert.rejects(
+    () =>
+      waitForRunIdentity({
+        config: { lookupTimeoutMs: 20, initialPollMs: 4, maxPollMs: 4 },
+        runId: '77',
+        expected: { ...EXPECTED, notBeforeMs: 0 },
+        fetchRun: async () => run({ head_branch: 'wrong-branch' }),
+        now: () => 0,
+        sleep: async () => {}
+      }),
+    (error) =>
+      error instanceof ReleaseVerificationError &&
+      error.code === 'correlation_mismatch' &&
+      /workflow ref/.test(error.message)
   );
 });
 

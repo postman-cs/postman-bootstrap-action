@@ -37,12 +37,18 @@ import {
   type PreflightMode
 } from './lib/postman/credential-identity.js';
 import { isAmbiguousTransportError } from './lib/postman/create-reconciliation.js';
-import { adviseFromHttpError } from './lib/postman/error-advice.js';
+import {
+  adviseFromHttpError,
+  squadDiscoveryUnavailableAdvice
+} from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
-import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
+import {
+  PostmanGatewayAssetsClient,
+  SquadDiscoveryUnavailableError
+} from './lib/postman/postman-gateway-assets-client.js';
 import { PostmanAppVersionProvider } from './lib/postman/app-version.js';
 import { AccessTokenProvider, mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
 import {
@@ -1746,6 +1752,17 @@ async function provisionWorkspace(
     } catch (err) {
       if (err instanceof Error && err.message.includes('Org-mode account detected')) {
         throw err;
+      }
+      // Indeterminate squad discovery is fatal HERE, where a workspace still has
+      // to be created. Continuing would pick the personal-then-flip branch on
+      // what may well be an org account and surface a late 403 on
+      // PUT /workspaces/:id/visibility instead of naming the missing input.
+      if (err instanceof SquadDiscoveryUnavailableError) {
+        const mask = createBootstrapSecretMasker(inputs);
+        throw new Error(
+          formatMaskedOneLine(squadDiscoveryUnavailableAdvice(err.observedStatus || 'none'), mask),
+          { cause: err }
+        );
       }
       const mask = createBootstrapSecretMasker(inputs);
       const cause = formatMaskedOneLine(err, mask);

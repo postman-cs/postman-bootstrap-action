@@ -18,6 +18,24 @@ export const WORKSPACE_PERSONAL_ONLY_ADVICE =
   'The Postman API does not allow creating team workspaces at the organization level. ' +
   'Use the workspace-team-id input to specify which sub-team should own this workspace.';
 
+/**
+ * Pre-create failure for indeterminate org sub-team (squad) discovery. Raised
+ * when the squads read did not return a usable list AND did not return the
+ * recognized non-org sentinel, so whether the account is org-mode is unknown.
+ * Guessing "not org-mode" is what produced the late, misleading 403 on
+ * PUT /workspaces/:id/visibility after a workspace had already been created.
+ */
+export function squadDiscoveryUnavailableAdvice(observedStatus: number | string): string {
+  return (
+    `Cannot determine whether this is an Org-mode account: the Postman sub-team (squad) list could not be read (observed UMS status ${observedStatus}). ` +
+    'Creating a workspace without that answer risks a personal-only workspace that org accounts reject with 403 on the visibility change. ' +
+    'Set the workspace-team-id input to the numeric id of the sub-team that should own this workspace ' +
+    '(GitHub Actions: workspace-team-id; env: POSTMAN_WORKSPACE_TEAM_ID; CLI: --workspace-team-id <id>). ' +
+    'If you believe this account is genuinely not Org-mode, re-run once the squads endpoint is readable, ' +
+    'or pass an existing workspace-id so no workspace has to be created.'
+  );
+}
+
 export function workspaceTeamIdUnauthorizedAdvice(targetTeamId: number | string): string {
   return (
     `The workspace-team-id input (${targetTeamId}) was rejected as unauthorized by the Postman API. ` +

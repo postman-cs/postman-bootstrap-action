@@ -220,7 +220,11 @@ describe('runAction credential preflight', () => {
           if (pmethod === 'get' && /\/workspaces\/[^/]+$/.test(ppath)) return json({ data: { id: 'ws-runaction', visibilityStatus: 'team' } });
           if (pmethod === 'get' && ppath.startsWith('/workspaces')) return json({ data: [] });
         }
-        if (svc === 'ums' && /\/squads/.test(ppath)) return json({ data: [] });
+        // Non-org accounts answer the squads read with this exact sentinel; an
+        // empty 200 is now indeterminate and fails closed before create.
+        if (svc === 'ums' && /\/squads/.test(ppath)) {
+          return json({ message: 'Squad feature is not available' }, 400);
+        }
         if (svc === 'sync') {
           if (pmethod === 'post' && ppath === '/collection/import') {
             const body = (payload as { body?: { info?: { name?: string } } }).body;

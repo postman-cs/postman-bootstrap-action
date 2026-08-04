@@ -24,6 +24,7 @@ import {
   createDefinitionFile
 } from '../src/lib/spec/definition-bundle.js';
 import { definitionBundleToSnapshot } from '../src/lib/postman/spec-file-reconcile.js';
+import { SquadDiscoveryUnavailableError } from '../src/lib/postman/postman-gateway-assets-client.js';
 import { createHash as createNodeHash } from 'node:crypto';
 
 const VALID_SPEC_31 = `{
@@ -4565,7 +4566,7 @@ describe('OpenAPI 3.0 lint compatibility', () => {
     expect(outputs['workspace-id']).toBe('ws-existing');
   });
 
-  it('warns and proceeds when getTeams fails', async () => {
+  it('fails before creating a workspace when squad discovery is unavailable', async () => {
     const { core } = createCoreStub();
     const warnings: string[] = [];
     core.warning = vi.fn((msg: string) => warnings.push(msg));
@@ -4577,7 +4578,19 @@ describe('OpenAPI 3.0 lint compatibility', () => {
       findWorkspacesByName: vi.fn().mockResolvedValue([]),
       generateCollection: vi.fn().mockResolvedValue('col-1'),
       getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
-      getTeams: vi.fn().mockRejectedValue(new Error('Network error')),
+      getTeams: vi
+        .fn()
+        .mockRejectedValue(
+          new SquadDiscoveryUnavailableError(
+            new HttpError({
+              method: 'GET',
+              url: 'https://bifrost.example/ws/proxy',
+              status: 403,
+              statusText: 'Forbidden',
+              responseBody: 'You are not authorized to perform this action'
+            })
+          )
+        ),
       getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
       getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
       injectContractTests: vi.fn().mockResolvedValue([]),
@@ -4592,7 +4605,63 @@ describe('OpenAPI 3.0 lint compatibility', () => {
       new Response(VALID_SPEC_31, { status: 200 })
     );
 
-    await runBootstrap(createInputs({ projectName: 'core\u2028payments' }), {
+    // Indeterminate discovery is no longer downgraded to a warning: creating
+    // here is what produced the late visibility-flip 403 on org accounts.
+    let thrown: unknown;
+    try {
+      await runBootstrap(createInputs({ projectName: 'core\u2028payments' }), {
+        core,
+        exec: execStub,
+        io: ioStub,
+        postman: withContractHelpers(postman),
+        specFetcher
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : String(thrown);
+    expect(message).toContain('workspace-team-id');
+    expect(message).toContain('POSTMAN_WORKSPACE_TEAM_ID');
+    expect(message).toContain('--workspace-team-id');
+    expect(message).toContain('403');
+    // Still masked and single-line, as the warning it replaces was.
+    expect(message).not.toMatch(/[\r\n\u2028\u2029]/);
+    expect(
+      warnings.find((w) => w.includes('Could not check for org-mode'))
+    ).toBeUndefined();
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('warns and proceeds when squad discovery fails with a generic error', async () => {
+    const { core } = createCoreStub();
+    const warnings: string[] = [];
+    core.warning = vi.fn((msg: string) => warnings.push(msg));
+    const execStub = createExecStub();
+    const ioStub = createIoStub();
+    const postman = {
+      addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
+      createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-123' }),
+      findWorkspacesByName: vi.fn().mockResolvedValue([]),
+      generateCollection: vi.fn().mockResolvedValue('col-1'),
+      getAutoDerivedTeamId: vi.fn().mockResolvedValue('12345'),
+      getTeams: vi.fn().mockRejectedValue(new Error('gateway timeout')),
+      getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
+      getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
+      injectContractTests: vi.fn().mockResolvedValue([]),
+      injectTests: vi.fn().mockResolvedValue(undefined),
+      inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
+      tagCollection: vi.fn().mockResolvedValue(undefined),
+      uploadSpec: vi.fn().mockResolvedValue('spec-123'),
+      updateSpec: vi.fn().mockResolvedValue(undefined),
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+    };
+    const specFetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(VALID_SPEC_31, { status: 200 })
+    );
+
+    const result = await runBootstrap(createInputs({ projectName: 'core\u2028payments' }), {
       core,
       exec: execStub,
       io: ioStub,
@@ -4600,14 +4669,19 @@ describe('OpenAPI 3.0 lint compatibility', () => {
       specFetcher
     });
 
-    const orgModeWarning = warnings.find((w) => w.includes('Could not check for org-mode'));
-    expect(orgModeWarning).toBeDefined();
-    expect(orgModeWarning).toContain('workspace [AF] core payments');
-    expect(orgModeWarning).toContain('Network error');
-    expect(orgModeWarning).toContain('Impact: continuing without org-mode team context (orgMode=false)');
-    expect(orgModeWarning).toContain('Remediation: set workspace-team-id');
-    expect(orgModeWarning).not.toMatch(/[\r\n\u2028\u2029]/);
+    const squadWarning = warnings.find((warning) =>
+      warning.includes('Could not check for org-mode sub-teams')
+    );
+    expect(squadWarning).toBeDefined();
+    expect(squadWarning).toContain('provisioning workspace [AF] core payments');
+    expect(squadWarning).toContain('gateway timeout');
+    expect(squadWarning).toContain('continuing without org-mode team context (orgMode=false)');
+    expect(squadWarning).not.toMatch(/[\r\n\u2028\u2029]/);
     expect(postman.createWorkspace).toHaveBeenCalled();
+    expect(result).toMatchObject({
+      'workspace-id': 'ws-123',
+      'spec-id': 'spec-123'
+    });
   });
 
   it('throws when workspace-team-id is non-numeric', async () => {

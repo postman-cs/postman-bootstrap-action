@@ -59,9 +59,14 @@ inputs:
     required: false
   workspace-team-id:
     description: >-
-      Numeric sub-team ID for org-mode workspace creation. Required when your
-      Postman team is an org with multiple sub-teams. Run the action without
-      this input to see available sub-teams listed in the error output.
+      Numeric SUB-TEAM (squad) id that should own the created org-mode
+      workspace. Required when your Postman team is an org with multiple
+      sub-teams. This is a squad id, NOT the parent/org team id from the
+      resolver's `team-id` output; that value is never valid here. On an org
+      account whose squad list is unreadable or unusable, bootstrap now fails
+      before any workspace is created unless this input is set. Run once on a
+      healthy account without it to see available sub-teams listed in the error
+      output.
     required: false
   spec-url:
     description: HTTPS URL to the OpenAPI document to bootstrap. Provide either spec-url or spec-path.

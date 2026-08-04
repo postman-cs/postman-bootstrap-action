@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -34,6 +34,13 @@ const POSTMAN_TOKEN_PATTERN = /\b(?:PMAT|PMSA|PMSC)-[A-Z0-9._-]+\b/gi;
 const JWT_PATTERN = /\beyJ[A-Z0-9_-]{8,}\.[A-Z0-9_-]{8,}(?:\.[A-Z0-9_-]{8,})?\b/gi;
 const LIVE_BEARER_PATTERN = /\bBearer\s+(?!(?:\[REDACTED\]|\{\{))[^\s,"'}]{12,}/gi;
 const BODY_DIGEST_SEGMENT = /(#body-sha256=[0-9a-f]{64})/gi;
+const POSIX_LOCAL_PATH_PATTERN = /(^|[\s"'=:(,])\/(?:Users|home|tmp|private\/var\/folders|var\/folders|runner\/_work)(?:\/[^\s"'<>\\]*)?/g;
+const WINDOWS_LOCAL_PATH_PATTERN = /(^|[\s"'=:(,])(?:[A-Z]:[\\/](?:Users|Documents and Settings|Temp|Windows[\\/]Temp|runner[\\/]_work)|\\\\[^\\/\s]+[\\/](?:[^\\/\s]+[\\/])?(?:Users|Temp|runner[\\/]_work))(?:[\\/][^\s"'<>]*)?/gi;
+const POSIX_LOCAL_PATH_FORBIDDEN = /(^|[\s"'=:(,])\/(?:Users|home|tmp|private\/var\/folders|var\/folders|runner\/_work)(?:\/[^\s"'<>\\]*)?/i;
+const WINDOWS_LOCAL_PATH_FORBIDDEN = /(^|[\s"'=:(,])(?:[A-Z]:[\\/](?:Users|Documents and Settings|Temp|Windows[\\/]Temp|runner[\\/]_work)|\\\\[^\\/\s]+[\\/](?:[^\\/\s]+[\\/])?(?:Users|Temp|runner[\\/]_work))(?:[\\/][^\s"'<>]*)?/i;
+const REDACTED_LOCAL_PATH = '[REDACTED-LOCAL-PATH]';
+const MAX_JSON_DEPTH = 1_000;
+const MAX_JSON_NODES = 100_000;
 
 const SENSITIVE_HEADER_NAMES = new Set([
   'authorization',
@@ -155,6 +162,40 @@ function validateCassette(value: unknown): asserts value is Cassette {
       !asRecord(interaction.responseHeaders)
     ) {
       throw new Error(`Raw cassette interaction ${index} does not match CassetteInteraction`);
+    }
+  }
+}
+
+function assertJsonTraversalBounds(value: unknown, location: string): void {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || current.value === null || typeof current.value !== 'object') continue;
+    nodes += 1;
+    if (nodes > MAX_JSON_NODES || current.depth > MAX_JSON_DEPTH) {
+      throw new Error(`Cassette JSON exceeds safe traversal bounds at ${location}`);
+    }
+    const children = Array.isArray(current.value)
+      ? current.value
+      : Object.values(current.value as JsonRecord);
+    for (const child of children) pending.push({ value: child, depth: current.depth + 1 });
+  }
+}
+
+function assertCassetteJsonTraversalBounds(cassette: Cassette): void {
+  for (const [index, interaction] of cassette.interactions.entries()) {
+    for (const [label, body] of [
+      ['body', interaction.body],
+      ['rawRequestBody', (interaction as RawCassetteInteraction).rawRequestBody]
+    ] as const) {
+      if (typeof body !== 'string') continue;
+      try {
+        assertJsonTraversalBounds(JSON.parse(body), `interactions[${index}].${label}`);
+      } catch (error) {
+        if (error instanceof SyntaxError) continue;
+        throw error;
+      }
     }
   }
 }
@@ -461,7 +502,9 @@ function sanitizeTextSegment(value: string, plan: ReplacementPlan): string {
     .replace(PMAK_PATTERN, REDACTED)
     .replace(POSTMAN_TOKEN_PATTERN, REDACTED)
     .replace(JWT_PATTERN, REDACTED)
-    .replace(LIVE_BEARER_PATTERN, REDACTED);
+    .replace(LIVE_BEARER_PATTERN, REDACTED)
+    .replace(POSIX_LOCAL_PATH_PATTERN, `$1${REDACTED_LOCAL_PATH}`)
+    .replace(WINDOWS_LOCAL_PATH_PATTERN, `$1${REDACTED_LOCAL_PATH}`);
 }
 
 function sanitizeText(value: string, plan: ReplacementPlan): string {
@@ -608,6 +651,7 @@ function sanitizeInteraction(
 
 export function sanitizeCassette(raw: unknown): Cassette {
   validateCassette(raw);
+  assertCassetteJsonTraversalBounds(raw);
   const plan = replacementPlan(raw);
   const sanitized: Cassette = {
     version: 2,
@@ -634,7 +678,9 @@ function assertNoForbiddenText(value: string, location: string): void {
       /(?:https?|ssh)%3A%2F%2F(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|ssh\.dev\.azure\.com)/i
     ],
     ['Postman UID', /\b\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i],
-    ['object UID', /\b[0-9a-f]{24}\b/i]
+    ['object UID', /\b[0-9a-f]{24}\b/i],
+    ['local POSIX filesystem path', POSIX_LOCAL_PATH_FORBIDDEN],
+    ['local Windows filesystem path', WINDOWS_LOCAL_PATH_FORBIDDEN]
   ];
   for (const [label, pattern] of forbidden) {
     if (pattern.test(value)) throw new Error(`Cassette redaction invariant failed at ${location}: ${label}`);
@@ -720,6 +766,7 @@ function assertBodyRedacted(
 
 export function assertCassetteRedacted(value: unknown): asserts value is Cassette {
   validateCassette(value);
+  assertCassetteJsonTraversalBounds(value);
   if (value.recordedAt && value.recordedAt !== FIXED_ISO_TIMESTAMP) {
     throw new Error('Cassette redaction invariant failed at recordedAt: live timestamp');
   }
@@ -750,26 +797,24 @@ function isWithin(root: string, candidate: string): boolean {
   return path === '' || (!path.startsWith('..') && !path.startsWith(`/`) && !path.startsWith('\\'));
 }
 
-export function sanitizeCassetteFile(rawPath: string, outputPath: string): Cassette {
-  const raw = JSON.parse(readFileSync(rawPath, 'utf8')) as unknown;
-  const sanitized = sanitizeCassette(raw);
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, stableCassetteJson(sanitized));
-  return sanitized;
+function nearestExistingPath(path: string): string {
+  let current = path;
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) throw new Error(`No existing parent for ${path}`);
+    current = parent;
+  }
+  return current;
 }
 
-function runCli(args: string[]): void {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log(USAGE);
-    return;
-  }
-  const packageRoot = process.cwd();
+export function resolveCassetteCliPaths(
+  packageRoot: string,
+  args: string[]
+): { rawPath: string; outputPath: string } {
   const rawRoot = resolve(packageRoot, 'integration/cassettes/raw');
   const committedRoot = resolve(packageRoot, 'tests/contract/cassettes');
   const rawArgument = args[0];
-  if (!rawArgument) {
-    throw new Error(USAGE);
-  }
+  if (!rawArgument) throw new Error(USAGE);
   const rawPath = resolve(packageRoot, rawArgument);
   const outputPath = resolve(
     packageRoot,
@@ -781,6 +826,36 @@ function runCli(args: string[]): void {
   if (!isWithin(committedRoot, outputPath) || !outputPath.endsWith('.json')) {
     throw new Error('Sanitized cassette output must be a JSON file under tests/contract/cassettes/');
   }
+  const canonicalRawRoot = realpathSync(rawRoot);
+  const canonicalCommittedRoot = realpathSync(committedRoot);
+  if (!isWithin(canonicalRawRoot, realpathSync(rawPath))) {
+    throw new Error('Raw cassette input must be under integration/cassettes/raw/');
+  }
+  const canonicalOutputParent = realpathSync(nearestExistingPath(dirname(outputPath)));
+  if (!isWithin(canonicalCommittedRoot, canonicalOutputParent)) {
+    throw new Error('Sanitized cassette output must be a JSON file under tests/contract/cassettes/');
+  }
+  if (existsSync(outputPath) && !isWithin(canonicalCommittedRoot, realpathSync(outputPath))) {
+    throw new Error('Sanitized cassette output must be a JSON file under tests/contract/cassettes/');
+  }
+  return { rawPath, outputPath };
+}
+
+export function sanitizeCassetteFile(rawPath: string, outputPath: string): Cassette {
+  const raw = JSON.parse(readFileSync(rawPath, 'utf8')) as unknown;
+  const sanitized = sanitizeCassette(raw);
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, stableCassetteJson(sanitized));
+  return sanitized;
+}
+
+export function runCli(args: string[]): void {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(USAGE);
+    return;
+  }
+  const packageRoot = process.cwd();
+  const { rawPath, outputPath } = resolveCassetteCliPaths(packageRoot, args);
   sanitizeCassetteFile(rawPath, outputPath);
   console.log(relative(packageRoot, outputPath));
 }

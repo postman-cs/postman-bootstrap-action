@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import {
   CASSETTE_MINTED_TOKEN,
@@ -14,6 +15,7 @@ import { createSecretMasker } from '../../src/lib/secrets.js';
 import { createSanitizableRecordingFetch } from '../../scripts/recording-capture.js';
 import {
   assertCassetteRedacted,
+  resolveCassetteCliPaths,
   sanitizeCassette,
   stableCassetteJson
 } from '../../scripts/sanitize-cassette.js';
@@ -141,6 +143,107 @@ describe('contract: cassette sanitizer', () => {
     const poisoned = JSON.parse(readFileSync(POISONED_FIXTURE, 'utf8')) as Cassette;
 
     expect(() => assertCassetteRedacted(poisoned)).toThrow(/PMAK|secret|redact/i);
+  });
+
+  it('redacts concrete local filesystem paths without changing API routes', () => {
+    const posixPath = '/Users/operator/work/postman-actions/cassette.json';
+    const tempPath = '/private/var/folders/ab/cd/T/cassette.json';
+    const windowsPath = 'C:\\Users\\operator\\postman-actions\\cassette.json';
+    const uncPath = '\\\\runner\\share\\Users\\operator\\cassette.json';
+    const apiRoute = '/v1/workspaces/cassette-workspace-1';
+    const raw = {
+      version: 2 as const,
+      interactions: [{
+        key: `GET https://api.getpostman.com${apiRoute}?source=${posixPath}`,
+        requestQuery: `temp=${tempPath}&route=${apiRoute}`,
+        status: 200,
+        body: JSON.stringify({ posixPath, windowsPath, uncPath, apiRoute }),
+        responseHeaders: { 'x-debug-path': windowsPath }
+      }]
+    };
+
+    expect(() => assertCassetteRedacted(raw)).toThrow(/filesystem path|redaction invariant/i);
+    const serialized = JSON.stringify(sanitizeCassette(raw));
+
+    expect(serialized).not.toContain(posixPath);
+    expect(serialized).not.toContain(tempPath);
+    expect(serialized).not.toContain(windowsPath);
+    expect(serialized).not.toContain(uncPath);
+    expect(serialized).toContain('[REDACTED-LOCAL-PATH]');
+    expect(serialized).toContain(apiRoute);
+  });
+
+  it('rejects JSON before recursive sanitizer passes exceed safe traversal bounds', () => {
+    let nested: unknown = 'leaf';
+    for (let depth = 0; depth <= 1_001; depth += 1) nested = { nested };
+    const raw = {
+      version: 2 as const,
+      interactions: [{
+        key: 'GET https://api.getpostman.com/poisoned',
+        requestQuery: '',
+        status: 200,
+        body: JSON.stringify(nested),
+        responseHeaders: {}
+      }]
+    };
+
+    expect(() => sanitizeCassette(raw)).toThrow(/safe traversal bounds/i);
+    expect(() => assertCassetteRedacted(raw)).toThrow(/safe traversal bounds/i);
+  });
+
+  it('resolves only canonical cassette paths under their declared roots', () => {
+    const packageRoot = mkdtempSync(join(tmpdir(), 'cassette-sanitizer-'));
+    const rawRoot = join(packageRoot, 'integration/cassettes/raw');
+    const committedRoot = join(packageRoot, 'tests/contract/cassettes');
+    const rawPath = join(rawRoot, 'recording.raw.json');
+    try {
+      mkdirSync(rawRoot, { recursive: true });
+      mkdirSync(committedRoot, { recursive: true });
+      writeFileSync(rawPath, '{}');
+
+      expect(resolveCassetteCliPaths(packageRoot, [
+        'integration/cassettes/raw/recording.raw.json'
+      ])).toEqual({
+        rawPath,
+        outputPath: join(committedRoot, 'recording.json')
+      });
+    } finally {
+      rmSync(packageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects input and output symlink escapes before writing outside the committed root', () => {
+    const packageRoot = mkdtempSync(join(tmpdir(), 'cassette-sanitizer-'));
+    const rawRoot = join(packageRoot, 'integration/cassettes/raw');
+    const committedRoot = join(packageRoot, 'tests/contract/cassettes');
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'cassette-sanitizer-outside-'));
+    try {
+      mkdirSync(rawRoot, { recursive: true });
+      mkdirSync(committedRoot, { recursive: true });
+      const outsideInput = join(outsideRoot, 'outside.raw.json');
+      const outsideOutput = join(outsideRoot, 'outside.json');
+      writeFileSync(outsideInput, '{}');
+      writeFileSync(join(rawRoot, 'safe.raw.json'), '{}');
+      try {
+        symlinkSync(outsideInput, join(rawRoot, 'escaped.raw.json'));
+        symlinkSync(outsideRoot, join(committedRoot, 'escaped-output'));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EPERM' || (error as NodeJS.ErrnoException).code === 'EACCES') return;
+        throw error;
+      }
+
+      expect(() => resolveCassetteCliPaths(packageRoot, [
+        'integration/cassettes/raw/escaped.raw.json'
+      ])).toThrow(/Raw cassette input/);
+      expect(() => resolveCassetteCliPaths(packageRoot, [
+        'integration/cassettes/raw/safe.raw.json',
+        'tests/contract/cassettes/escaped-output/outside.json'
+      ])).toThrow(/Sanitized cassette output/);
+      expect(existsSync(outsideOutput)).toBe(false);
+    } finally {
+      rmSync(packageRoot, { recursive: true, force: true });
+      rmSync(outsideRoot, { recursive: true, force: true });
+    }
   });
 
   it('parameterizes volatile values, redacts secrets, and emits stable JSON', () => {

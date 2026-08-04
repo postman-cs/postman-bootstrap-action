@@ -41,18 +41,18 @@ const RAW_COLLECTION_ID = 'cc13d5c7-1c42-4db4-9287-927310770201';
 const LIVE_PMAK = 'PMAK-live-recording-credential';
 const SANITIZED_FAKE_OPTIONS: PlatformFakeOptions = {
   org: true,
-  teamId: -1001,
-  userId: -2001,
-  sessionUserId: -2002,
+  teamId: 1001,
+  userId: 2001,
+  sessionUserId: 2002,
   workspaceId: 'cassette-workspace-1',
   specificationId: 'cassette-specification-1',
   specificationFileId: 'cassette-specification-2',
   squads: [
     {
-      id: -1002,
+      id: 1002,
       name: 'Cassette Squad',
       handle: 'cassette-squad',
-      organizationId: -1001
+      organizationId: 1001
     }
   ],
   collectionId: (_role: 'baseline' | 'smoke' | 'contract', sequence: number) =>

@@ -125,6 +125,7 @@ export interface ResolvedInputs {
   smokeCollectionId?: string;
   contractCollectionId?: string;
   additionalCollectionsDir?: string;
+  syncGeneratedAssets?: boolean;
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
@@ -696,6 +697,11 @@ export function resolveInputs(
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
     additionalCollectionsDir: getInput('additional-collections-dir', env),
+    syncGeneratedAssets: parseBooleanInput(
+      'sync-generated-assets',
+      getInput('sync-generated-assets', env),
+      true
+    ),
     syncExamples: parseBooleanInput('sync-examples', getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
@@ -1042,6 +1048,9 @@ export function readActionInputs(
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, 'additional-collections-dir'),
+    INPUT_SYNC_GENERATED_ASSETS:
+      optionalInput(actionCore, 'sync-generated-assets') ??
+      bootstrapActionContract.inputs['sync-generated-assets'].default,
     INPUT_SYNC_EXAMPLES:
       optionalInput(actionCore, 'sync-examples') ??
       bootstrapActionContract.inputs['sync-examples'].default,
@@ -2430,6 +2439,7 @@ async function runBootstrapInner(
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
   const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
+  const syncGeneratedAssets = inputs.syncGeneratedAssets !== false;
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -2442,9 +2452,13 @@ async function runBootstrapInner(
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ['spec-id', inputs.specId],
-      ['baseline-collection-id', inputs.baselineCollectionId],
-      ['smoke-collection-id', inputs.smokeCollectionId],
-      ['contract-collection-id', inputs.contractCollectionId]
+      ...(syncGeneratedAssets
+        ? [
+            ['baseline-collection-id', inputs.baselineCollectionId],
+            ['smoke-collection-id', inputs.smokeCollectionId],
+            ['contract-collection-id', inputs.contractCollectionId]
+          ]
+        : [])
     ].filter(([, value]) => Boolean(value));
     if (explicitCanonicalIds.length > 0) {
       throw new Error(
@@ -2454,7 +2468,8 @@ async function runBootstrapInner(
   }
 
   const requiresReleaseLabel =
-    inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
+    inputs.specSyncMode === 'version' ||
+    (syncGeneratedAssets && inputs.collectionSyncMode === 'version');
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -2501,10 +2516,9 @@ async function runBootstrapInner(
     );
   }
   const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
-  const additionalCollections = loadAdditionalCollectionFiles(
-    inputs.additionalCollectionsDir,
-    resourcesState
-  );
+  const additionalCollections = syncGeneratedAssets
+    ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, resourcesState)
+    : [];
 
   let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
   if (!inputs.specId && specId) {
@@ -2767,12 +2781,12 @@ async function runBootstrapInner(
     releaseLabel
   );
 
-  let baselineCollectionId = inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.smokeCollectionId;
-  let contractCollectionId = inputs.contractCollectionId;
+  let baselineCollectionId = syncGeneratedAssets ? inputs.baselineCollectionId : undefined;
+  let smokeCollectionId = syncGeneratedAssets ? inputs.smokeCollectionId : undefined;
+  let contractCollectionId = syncGeneratedAssets ? inputs.contractCollectionId : undefined;
 
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (!baselineCollectionId) {
+  if (syncGeneratedAssets && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -2781,7 +2795,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
     }
   }
-  if (!smokeCollectionId) {
+  if (syncGeneratedAssets && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -2794,7 +2808,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
     }
   }
-  if (!contractCollectionId) {
+  if (syncGeneratedAssets && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -3134,6 +3148,25 @@ async function runBootstrapInner(
       }
     | undefined;
   void openApiOperationLedger;
+  if (!syncGeneratedAssets) {
+    outputs['baseline-collection-id'] = '';
+    outputs['smoke-collection-id'] = '';
+    outputs['contract-collection-id'] = '';
+    outputs['collections-json'] = JSON.stringify({ baseline: '', contract: '', smoke: '' });
+    dependencies.core.info(
+      'Generated asset sync disabled; preserving workspace/spec onboarding and skipping collections.'
+    );
+    recordCurrentBootstrapResources({
+      assetProjectName: artifactProjectName,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      releaseLabel,
+      resourcesState: writableResourcesState
+    });
+    stateStore.write(writableResourcesState);
+    createdNewSpec = false;
+  } else {
   if (specContentUnchanged) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
@@ -3809,6 +3842,7 @@ async function runBootstrapInner(
   });
   stateStore.write(writableResourcesState);
   createdNewSpec = false;
+  }
 
   } catch (error) {
     const mask = createBootstrapSecretMasker(inputs);

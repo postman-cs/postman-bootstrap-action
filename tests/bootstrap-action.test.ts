@@ -786,6 +786,41 @@ describe('bootstrap action', () => {
     }
   });
 
+  it('supports workspace and spec onboarding without generated collection assets', async () => {
+    const postman = createRollbackPostman();
+    const internalIntegration = createRollbackIntegration();
+
+    const result = await runExistingSpecBootstrap(postman, {
+      inputs: {
+        additionalCollectionsDir: 'does-not-need-to-exist',
+        baselineCollectionId: 'col-baseline-existing',
+        contractCollectionId: 'col-contract-existing',
+        smokeCollectionId: 'col-smoke-existing',
+        syncGeneratedAssets: false
+      },
+      internalIntegration
+    });
+
+    expect(result).toMatchObject({
+      'workspace-id': 'ws-existing',
+      'spec-id': 'spec-existing',
+      'baseline-collection-id': '',
+      'smoke-collection-id': '',
+      'contract-collection-id': '',
+      'collections-json': JSON.stringify({ baseline: '', contract: '', smoke: '' })
+    });
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(postman.importV2Collection).not.toHaveBeenCalled();
+    expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+    expect(postman.injectContractTests).not.toHaveBeenCalled();
+    expect(postman.injectTests).not.toHaveBeenCalled();
+    expect(postman.tagCollection).not.toHaveBeenCalled();
+    expect(postman.createCollection).not.toHaveBeenCalled();
+    expect(postman.updateCollection).not.toHaveBeenCalled();
+    expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+    expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+  });
+
   it('uploads original preserve-mode bytes while local conversion consumes the bundled compatibility document', async () => {
     const source = `openapi: 3.0.3
 info: { title: Nullable Test, version: 1.0.0 }

@@ -384665,6 +384665,9 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info(
         `Generated asset sync disabled; preserving workspace onboarding and skipping the ${resolvedSpecType} contract collection.`
       );
+      for (const [name, value] of Object.entries(outputs)) {
+        dependencies.core.setOutput(name, value);
+      }
       return outputs;
     }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);

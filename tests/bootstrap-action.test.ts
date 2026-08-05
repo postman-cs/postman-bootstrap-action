@@ -827,6 +827,7 @@ describe('bootstrap action', () => {
     async (protocol) => {
       const postman = createRollbackPostman();
       const createExtensibleCollection = vi.fn().mockResolvedValue('col-unexpected');
+      const { core, outputs } = createCoreStub();
 
       const result = await runBootstrap(
         createInputs({
@@ -841,7 +842,7 @@ describe('bootstrap action', () => {
           syncGeneratedAssets: false
         }),
         {
-          core: createCoreStub().core,
+          core,
           exec: createExecStub(),
           io: createIoStub(),
           postman: withContractHelpers(postman),
@@ -869,6 +870,7 @@ describe('bootstrap action', () => {
       expect(createExtensibleCollection).not.toHaveBeenCalled();
       expect(postman.createCollection).not.toHaveBeenCalled();
       expect(postman.tagCollection).not.toHaveBeenCalled();
+      expect(outputs).toMatchObject(result);
     }
   );
 

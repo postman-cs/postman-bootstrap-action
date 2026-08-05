@@ -2579,6 +2579,34 @@ async function runBootstrapInner(
         ? definitionFormatToSpecType(sourceDefinitionBundle.format)
         : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== 'openapi') {
+    if (!syncGeneratedAssets) {
+      const provisioned = await provisionWorkspace(
+        inputs,
+        dependencies,
+        telemetry,
+        outputs,
+        resourcesState,
+        workspaceName,
+        aboutText
+      );
+      outputs['workspace-id'] = provisioned.workspaceId || '';
+      outputs['baseline-collection-id'] = '';
+      outputs['smoke-collection-id'] = '';
+      outputs['contract-collection-id'] = '';
+      outputs['collections-json'] = JSON.stringify({ baseline: '', contract: '', smoke: '' });
+      persistWorkspaceOnlyState(
+        stateStore,
+        writableResourcesState,
+        inputs,
+        outputs,
+        provisioned.persistable,
+        inputs.projectName
+      );
+      dependencies.core.info(
+        `Generated asset sync disabled; preserving workspace onboarding and skipping the ${resolvedSpecType} contract collection.`
+      );
+      return outputs;
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     // Protocol collections are local EC generation; protobuf never uploads to Spec Hub.
     return runProtocolBootstrap(

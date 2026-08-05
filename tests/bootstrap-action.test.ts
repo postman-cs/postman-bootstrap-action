@@ -248,6 +248,7 @@ function createDefaultImportV2Collection() {
   });
 }
 
+
 function createDefaultExportV2Collection() {
   return vi.fn().mockImplementation(async (collectionUid: string) => ({
     info: {
@@ -820,6 +821,56 @@ describe('bootstrap action', () => {
     expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
     expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
   });
+
+  it.each(['graphql', 'grpc', 'soap', 'asyncapi'] as const)(
+    'skips the generated %s contract collection when generated asset sync is disabled',
+    async (protocol) => {
+      const postman = createRollbackPostman();
+      const createExtensibleCollection = vi.fn().mockResolvedValue('col-unexpected');
+
+      const result = await runBootstrap(
+        createInputs({
+          protocol,
+          specUrl: `https://example.test/${protocol}`,
+          specPath: '',
+          workspaceId: 'ws-existing',
+          specId: undefined,
+          baselineCollectionId: undefined,
+          smokeCollectionId: undefined,
+          contractCollectionId: undefined,
+          syncGeneratedAssets: false
+        }),
+        {
+          core: createCoreStub().core,
+          exec: createExecStub(),
+          io: createIoStub(),
+          postman: withContractHelpers(postman),
+          ecClient: {
+            createExtensibleCollection,
+            populateFromTree: vi.fn(),
+            getExtensibleCollection: vi.fn(),
+            deleteExtensibleCollection: vi.fn(),
+            listExtensibleCollectionItems: vi.fn().mockResolvedValue([]),
+            configureTeamContext: vi.fn()
+          },
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response('protocol definition', { status: 200 })
+          )
+        }
+      );
+
+      expect(result).toMatchObject({
+        'workspace-id': 'ws-existing',
+        'baseline-collection-id': '',
+        'smoke-collection-id': '',
+        'contract-collection-id': '',
+        'collections-json': JSON.stringify({ baseline: '', contract: '', smoke: '' })
+      });
+      expect(createExtensibleCollection).not.toHaveBeenCalled();
+      expect(postman.createCollection).not.toHaveBeenCalled();
+      expect(postman.tagCollection).not.toHaveBeenCalled();
+    }
+  );
 
   it('uploads original preserve-mode bytes while local conversion consumes the bundled compatibility document', async () => {
     const source = `openapi: 3.0.3
@@ -4934,4 +4985,3 @@ describe('OpenAPI 3.0 lint compatibility', () => {
     expect(postman.createWorkspace).toHaveBeenCalled();
     expect(outputs['workspace-id']).toBe('ws-created');
   });
-

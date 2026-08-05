@@ -315,7 +315,9 @@ export async function runContractAction(options: ContractRunOptions): Promise<Co
 
   let error: unknown;
   try {
-    await runAction(core, createExecStub(), createIoStub());
+    await runAction(core, createExecStub(), createIoStub(), {
+      branchMarkerTimestamp: new Date('2026-07-31T00:00:00.000Z')
+    });
   } catch (caught) {
     error = caught;
   } finally {

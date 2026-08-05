@@ -125,6 +125,7 @@ export interface ResolvedInputs {
   smokeCollectionId?: string;
   contractCollectionId?: string;
   additionalCollectionsDir?: string;
+  syncGeneratedAssets?: boolean;
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
@@ -243,6 +244,8 @@ export interface IOLike {
 }
 
 export interface BootstrapExecutionDependencies {
+  branchDecision?: BranchDecision;
+  branchMarkerTimestamp?: Date;
   core: Pick<
     CoreLike,
     'error' | 'group' | 'info' | 'setOutput' | 'warning'
@@ -696,6 +699,11 @@ export function resolveInputs(
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
     additionalCollectionsDir: getInput('additional-collections-dir', env),
+    syncGeneratedAssets: parseBooleanInput(
+      'sync-generated-assets',
+      getInput('sync-generated-assets', env),
+      true
+    ),
     syncExamples: parseBooleanInput('sync-examples', getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
@@ -833,20 +841,21 @@ export function embedSpecBranchMarker(
   content: string,
   decision: BranchDecision,
   repo: string | undefined,
-  previousContent?: string
+  previousContent?: string,
+  now = new Date()
 ): string {
   if ((decision.tier !== 'preview' && decision.tier !== 'channel') || !decision.identity.headBranch || !repo) {
     return content;
   }
   const rawBranch = decision.identity.headBranch;
-  const now = new Date().toISOString();
+  const timestamp = now.toISOString();
   const priorMarker = extractSpecBranchMarker(previousContent);
   const sameGeneration =
     priorMarker !== undefined &&
     priorMarker.repo === repo &&
     priorMarker.rawBranch === rawBranch &&
     priorMarker.role === decision.tier;
-  const createdAt = sameGeneration ? priorMarker.createdAt : now;
+  const createdAt = sameGeneration ? priorMarker.createdAt : timestamp;
   const buildMarker = (lastSyncedAt: string): Record<string, unknown> => ({
     repo,
     rawBranch,
@@ -878,7 +887,7 @@ export function embedSpecBranchMarker(
       return unchanged;
     }
   }
-  return render(buildMarker(now)) ?? content;
+  return render(buildMarker(timestamp)) ?? content;
 }
 
 /**
@@ -1042,6 +1051,9 @@ export function readActionInputs(
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, 'additional-collections-dir'),
+    INPUT_SYNC_GENERATED_ASSETS:
+      optionalInput(actionCore, 'sync-generated-assets') ??
+      bootstrapActionContract.inputs['sync-generated-assets'].default,
     INPUT_SYNC_EXAMPLES:
       optionalInput(actionCore, 'sync-examples') ??
       bootstrapActionContract.inputs['sync-examples'].default,
@@ -1402,6 +1414,39 @@ function resolveSpecIdFromResourcesState(
     return undefined;
   }
   return resourcesState?.cloudResources?.specs?.[key];
+}
+
+function scopeResourcesStateToTargetWorkspace(
+  inputs: ResolvedInputs,
+  resourcesState: PostmanResourcesState | null
+): PostmanResourcesState | null {
+  return scopeResourcesStateToWorkspace(resourcesState, inputs.workspaceId?.trim());
+}
+
+function scopeResourcesStateToWorkspace(
+  resourcesState: PostmanResourcesState | null,
+  requestedWorkspaceId?: string
+): PostmanResourcesState | null {
+  const trackedWorkspaceId = resourcesState?.workspace?.id?.trim();
+  if (
+    !resourcesState ||
+    !requestedWorkspaceId ||
+    !trackedWorkspaceId ||
+    requestedWorkspaceId === trackedWorkspaceId
+  ) {
+    return resourcesState;
+  }
+
+  const workspaceScopedState = { ...resourcesState };
+  delete workspaceScopedState.canonical;
+  delete workspaceScopedState.cloudResources;
+  return {
+    ...workspaceScopedState,
+    workspace: {
+      ...resourcesState.workspace,
+      id: requestedWorkspaceId
+    }
+  };
 }
 
 function recordCurrentBootstrapResources(options: {
@@ -2411,7 +2456,8 @@ async function runBootstrapInner(
   // default inputs). The canonical workspace name is computed BEFORE any
   // preview/channel renaming: preview and channel asset sets live in the same
   // canonical workspace.
-  const branchDecision = decideBranchTier(inputs);
+  const branchDecision = dependencies.branchDecision ?? decideBranchTier(inputs);
+  const branchMarkerTimestamp = dependencies.branchMarkerTimestamp ?? new Date();
   const isCanonicalWriter = branchDecision.tier === 'legacy' || branchDecision.tier === 'canonical';
   const canonicalProjectName = inputs.projectName;
   const workspaceName = createWorkspaceName(inputs);
@@ -2429,7 +2475,12 @@ async function runBootstrapInner(
     };
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
-  const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
+  const collectionBranchMarker = renderCollectionBranchMarker(
+    branchDecision,
+    inputs.repoUrl,
+    branchMarkerTimestamp
+  );
+  const syncGeneratedAssets = inputs.syncGeneratedAssets !== false;
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -2442,9 +2493,13 @@ async function runBootstrapInner(
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ['spec-id', inputs.specId],
-      ['baseline-collection-id', inputs.baselineCollectionId],
-      ['smoke-collection-id', inputs.smokeCollectionId],
-      ['contract-collection-id', inputs.contractCollectionId]
+      ...(syncGeneratedAssets
+        ? [
+            ['baseline-collection-id', inputs.baselineCollectionId],
+            ['smoke-collection-id', inputs.smokeCollectionId],
+            ['contract-collection-id', inputs.contractCollectionId]
+          ]
+        : [])
     ].filter(([, value]) => Boolean(value));
     if (explicitCanonicalIds.length > 0) {
       throw new Error(
@@ -2454,7 +2509,8 @@ async function runBootstrapInner(
   }
 
   const requiresReleaseLabel =
-    inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
+    inputs.specSyncMode === 'version' ||
+    (syncGeneratedAssets && inputs.collectionSyncMode === 'version');
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -2480,6 +2536,30 @@ async function runBootstrapInner(
   // workspace identity (shared infrastructure) but never canonical asset ids.
   const rawStateStore = resolveResourcesStateStore(dependencies);
   const trackedState = rawStateStore.read();
+  let workspaceScopedTrackedState = scopeResourcesStateToTargetWorkspace(inputs, trackedState);
+  if (
+    workspaceScopedTrackedState === trackedState &&
+    !inputs.workspaceId?.trim() &&
+    trackedState?.workspace?.id?.trim() &&
+    trackedState.cloudResources &&
+    inputs.repoUrl &&
+    dependencies.internalIntegration?.findWorkspaceForRepo
+  ) {
+    const repositoryWorkspace = await dependencies.internalIntegration.findWorkspaceForRepo(
+      inputs.repoUrl
+    );
+    if (repositoryWorkspace.state === 'linked-visible') {
+      workspaceScopedTrackedState = scopeResourcesStateToWorkspace(
+        trackedState,
+        repositoryWorkspace.workspace.id
+      );
+    }
+  }
+  if (workspaceScopedTrackedState !== trackedState) {
+    dependencies.core.info(
+      'Target workspace differs from .postman/resources.yaml; ignoring tracked asset ids from the prior workspace'
+    );
+  }
   const stateStore = isCanonicalWriter
     ? rawStateStore
     : {
@@ -2491,20 +2571,19 @@ async function runBootstrapInner(
         }
       };
   const resourcesState = isCanonicalWriter
-    ? trackedState
-    : trackedState?.workspace
-      ? { workspace: trackedState.workspace }
+    ? workspaceScopedTrackedState
+    : workspaceScopedTrackedState?.workspace
+      ? { workspace: workspaceScopedTrackedState.workspace }
       : null;
-  if (!isCanonicalWriter && trackedState?.cloudResources) {
+  if (!isCanonicalWriter && workspaceScopedTrackedState?.cloudResources) {
     dependencies.core.info(
       'branch-aware sync: canonical asset ids in .postman/resources.yaml are not resolved on a non-canonical run'
     );
   }
   const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
-  const additionalCollections = loadAdditionalCollectionFiles(
-    inputs.additionalCollectionsDir,
-    resourcesState
-  );
+  const additionalCollections = syncGeneratedAssets
+    ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, resourcesState)
+    : [];
 
   let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
   if (!inputs.specId && specId) {
@@ -2565,6 +2644,37 @@ async function runBootstrapInner(
         ? definitionFormatToSpecType(sourceDefinitionBundle.format)
         : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== 'openapi') {
+    if (!syncGeneratedAssets) {
+      const provisioned = await provisionWorkspace(
+        inputs,
+        dependencies,
+        telemetry,
+        outputs,
+        resourcesState,
+        workspaceName,
+        aboutText
+      );
+      outputs['workspace-id'] = provisioned.workspaceId || '';
+      outputs['baseline-collection-id'] = '';
+      outputs['smoke-collection-id'] = '';
+      outputs['contract-collection-id'] = '';
+      outputs['collections-json'] = JSON.stringify({ baseline: '', contract: '', smoke: '' });
+      persistWorkspaceOnlyState(
+        stateStore,
+        writableResourcesState,
+        inputs,
+        outputs,
+        provisioned.persistable,
+        inputs.projectName
+      );
+      dependencies.core.info(
+        `Generated asset sync disabled; preserving workspace onboarding and skipping the ${resolvedSpecType} contract collection.`
+      );
+      for (const [name, value] of Object.entries(outputs)) {
+        dependencies.core.setOutput(name, value);
+      }
+      return outputs;
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     // Protocol collections are local EC generation; protobuf never uploads to Spec Hub.
     return runProtocolBootstrap(
@@ -2735,7 +2845,8 @@ async function runBootstrapInner(
     specContent,
     branchDecision,
     inputs.repoUrl,
-    previousSpecContent
+    previousSpecContent,
+    branchMarkerTimestamp
   );
   if (sourceDefinitionBundle && useMultiFileSync) {
     // Final immutable upload bundle: companions keep exact source bytes; only
@@ -2767,12 +2878,12 @@ async function runBootstrapInner(
     releaseLabel
   );
 
-  let baselineCollectionId = inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.smokeCollectionId;
-  let contractCollectionId = inputs.contractCollectionId;
+  let baselineCollectionId = syncGeneratedAssets ? inputs.baselineCollectionId : undefined;
+  let smokeCollectionId = syncGeneratedAssets ? inputs.smokeCollectionId : undefined;
+  let contractCollectionId = syncGeneratedAssets ? inputs.contractCollectionId : undefined;
 
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (!baselineCollectionId) {
+  if (syncGeneratedAssets && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -2781,7 +2892,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
     }
   }
-  if (!smokeCollectionId) {
+  if (syncGeneratedAssets && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -2794,7 +2905,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
     }
   }
-  if (!contractCollectionId) {
+  if (syncGeneratedAssets && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -3134,6 +3245,25 @@ async function runBootstrapInner(
       }
     | undefined;
   void openApiOperationLedger;
+  if (!syncGeneratedAssets) {
+    outputs['baseline-collection-id'] = '';
+    outputs['smoke-collection-id'] = '';
+    outputs['contract-collection-id'] = '';
+    outputs['collections-json'] = JSON.stringify({ baseline: '', contract: '', smoke: '' });
+    dependencies.core.info(
+      'Generated asset sync disabled; preserving workspace/spec onboarding and skipping collections.'
+    );
+    recordCurrentBootstrapResources({
+      assetProjectName: artifactProjectName,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      releaseLabel,
+      resourcesState: writableResourcesState
+    });
+    stateStore.write(writableResourcesState);
+    createdNewSpec = false;
+  } else {
   if (specContentUnchanged) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
@@ -3809,6 +3939,7 @@ async function runBootstrapInner(
   });
   stateStore.write(writableResourcesState);
   createdNewSpec = false;
+  }
 
   } catch (error) {
     const mask = createBootstrapSecretMasker(inputs);
@@ -3921,8 +4052,10 @@ export async function runGatedValidation(
 export async function runAction(
   actionCore: CoreLike = core,
   actionExec: ExecLike = exec,
-  actionIo: IOLike = io
+  actionIo: IOLike = io,
+  options: { branchMarkerTimestamp?: Date } = {}
 ): Promise<PlannedOutputs> {
+  const branchMarkerTimestamp = options.branchMarkerTimestamp ?? new Date();
   const inputs = readActionInputs(actionCore);
 
   // Decide step (branch-aware sync): resolve the immutable BranchDecision from
@@ -4042,7 +4175,7 @@ export async function runAction(
     );
   }
 
-  return runBootstrap(inputs, dependencies);
+  return runBootstrap(inputs, { ...dependencies, branchDecision, branchMarkerTimestamp });
 }
 
 /**

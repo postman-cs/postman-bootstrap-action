@@ -318700,6 +318700,12 @@ var bootstrapActionContract = {
       description: "Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update.",
       required: false
     },
+    "sync-generated-assets": {
+      description: "Whether to create or update generated collections and curated collection assets. Set false for workspace/spec-only onboarding.",
+      required: false,
+      default: "true",
+      allowedValues: ["true", "false"]
+    },
     "sync-examples": {
       description: "Whether linked spec/collection relations should enable example syncing.",
       required: false,
@@ -382133,6 +382139,11 @@ function resolveInputs(env = process.env) {
     smokeCollectionId: getInput("smoke-collection-id", env),
     contractCollectionId: getInput("contract-collection-id", env),
     additionalCollectionsDir: getInput("additional-collections-dir", env),
+    syncGeneratedAssets: parseBooleanInput(
+      "sync-generated-assets",
+      getInput("sync-generated-assets", env),
+      true
+    ),
     syncExamples: parseBooleanInput("sync-examples", getInput("sync-examples", env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput("collection-sync-mode", env)),
     specSyncMode: parseSpecSyncMode(getInput("spec-sync-mode", env)),
@@ -382219,15 +382230,15 @@ function decideBranchTier(inputs, env = process.env) {
     env
   );
 }
-function embedSpecBranchMarker(content, decision, repo, previousContent) {
+function embedSpecBranchMarker(content, decision, repo, previousContent, now = /* @__PURE__ */ new Date()) {
   if (decision.tier !== "preview" && decision.tier !== "channel" || !decision.identity.headBranch || !repo) {
     return content;
   }
   const rawBranch = decision.identity.headBranch;
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const timestamp2 = now.toISOString();
   const priorMarker = extractSpecBranchMarker(previousContent);
   const sameGeneration = priorMarker !== void 0 && priorMarker.repo === repo && priorMarker.rawBranch === rawBranch && priorMarker.role === decision.tier;
-  const createdAt = sameGeneration ? priorMarker.createdAt : now;
+  const createdAt = sameGeneration ? priorMarker.createdAt : timestamp2;
   const buildMarker = (lastSyncedAt) => ({
     repo,
     rawBranch,
@@ -382256,7 +382267,7 @@ function embedSpecBranchMarker(content, decision, repo, previousContent) {
       return unchanged;
     }
   }
-  return render(buildMarker(now)) ?? content;
+  return render(buildMarker(timestamp2)) ?? content;
 }
 function extractSpecBranchMarker(content) {
   if (!content) return void 0;
@@ -382477,6 +382488,23 @@ function resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel) {
     return void 0;
   }
   return resourcesState?.cloudResources?.specs?.[key];
+}
+function scopeResourcesStateToTargetWorkspace(inputs, resourcesState) {
+  const requestedWorkspaceId = inputs.workspaceId?.trim();
+  const trackedWorkspaceId = resourcesState?.workspace?.id?.trim();
+  if (!resourcesState || !requestedWorkspaceId || !trackedWorkspaceId || requestedWorkspaceId === trackedWorkspaceId) {
+    return resourcesState;
+  }
+  const workspaceScopedState = { ...resourcesState };
+  delete workspaceScopedState.canonical;
+  delete workspaceScopedState.cloudResources;
+  return {
+    ...workspaceScopedState,
+    workspace: {
+      ...resourcesState.workspace,
+      id: requestedWorkspaceId
+    }
+  };
 }
 function recordCurrentBootstrapResources(options) {
   const { assetProjectName, inputs, outputs, persistWorkspaceId, releaseLabel, resourcesState } = options;
@@ -383204,6 +383232,7 @@ async function createExtensibleContractCollection(workspaceId, built, inputs, de
 async function runBootstrapInner(inputs, dependencies, telemetry) {
   const outputs = createPlannedOutputs(inputs);
   const branchDecision = decideBranchTier(inputs);
+  const branchMarkerTimestamp = /* @__PURE__ */ new Date();
   const isCanonicalWriter = branchDecision.tier === "legacy" || branchDecision.tier === "canonical";
   const canonicalProjectName = inputs.projectName;
   const workspaceName = createWorkspaceName(inputs);
@@ -383221,7 +383250,12 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     };
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
-  const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
+  const collectionBranchMarker = renderCollectionBranchMarker(
+    branchDecision,
+    inputs.repoUrl,
+    branchMarkerTimestamp
+  );
+  const syncGeneratedAssets = inputs.syncGeneratedAssets !== false;
   if (branchDecision.tier !== "legacy") {
     outputs["sync-status"] = "synced";
     outputs["branch-decision"] = serializeBranchDecision(branchDecision);
@@ -383229,9 +383263,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ["spec-id", inputs.specId],
-      ["baseline-collection-id", inputs.baselineCollectionId],
-      ["smoke-collection-id", inputs.smokeCollectionId],
-      ["contract-collection-id", inputs.contractCollectionId]
+      ...syncGeneratedAssets ? [
+        ["baseline-collection-id", inputs.baselineCollectionId],
+        ["smoke-collection-id", inputs.smokeCollectionId],
+        ["contract-collection-id", inputs.contractCollectionId]
+      ] : []
     ].filter(([, value]) => Boolean(value));
     if (explicitCanonicalIds.length > 0) {
       throw new Error(
@@ -383239,7 +383275,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       );
     }
   }
-  const requiresReleaseLabel = inputs.collectionSyncMode === "version" || inputs.specSyncMode === "version";
+  const requiresReleaseLabel = inputs.specSyncMode === "version" || syncGeneratedAssets && inputs.collectionSyncMode === "version";
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : void 0;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -383250,6 +383286,12 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const artifactProjectName = deriveArtifactSafeCollectionName(collectionAssetProjectName);
   const rawStateStore = resolveResourcesStateStore(dependencies);
   const trackedState = rawStateStore.read();
+  const workspaceScopedTrackedState = scopeResourcesStateToTargetWorkspace(inputs, trackedState);
+  if (workspaceScopedTrackedState !== trackedState) {
+    dependencies.core.info(
+      "Target workspace differs from .postman/resources.yaml; ignoring tracked asset ids from the prior workspace"
+    );
+  }
   const stateStore = isCanonicalWriter ? rawStateStore : {
     read: rawStateStore.read,
     write: () => {
@@ -383258,17 +383300,14 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       );
     }
   };
-  const resourcesState = isCanonicalWriter ? trackedState : trackedState?.workspace ? { workspace: trackedState.workspace } : null;
-  if (!isCanonicalWriter && trackedState?.cloudResources) {
+  const resourcesState = isCanonicalWriter ? workspaceScopedTrackedState : workspaceScopedTrackedState?.workspace ? { workspace: workspaceScopedTrackedState.workspace } : null;
+  if (!isCanonicalWriter && workspaceScopedTrackedState?.cloudResources) {
     dependencies.core.info(
       "branch-aware sync: canonical asset ids in .postman/resources.yaml are not resolved on a non-canonical run"
     );
   }
   const writableResourcesState = resourcesState ?? {};
-  const additionalCollections = loadAdditionalCollectionFiles(
-    inputs.additionalCollectionsDir,
-    resourcesState
-  );
+  const additionalCollections = syncGeneratedAssets ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, resourcesState) : [];
   let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
   if (!inputs.specId && specId) {
     dependencies.core.info("Resolved spec-id from .postman/resources.yaml");
@@ -383316,6 +383355,37 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const specSourceName = inputs.specPath || inputs.specUrl;
   const resolvedSpecType = inputs.protocol && inputs.protocol !== "auto" ? inputs.protocol : sourceDefinitionBundle ? definitionFormatToSpecType(sourceDefinitionBundle.format) : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== "openapi") {
+    if (!syncGeneratedAssets) {
+      const provisioned2 = await provisionWorkspace(
+        inputs,
+        dependencies,
+        telemetry,
+        outputs,
+        resourcesState,
+        workspaceName,
+        aboutText
+      );
+      outputs["workspace-id"] = provisioned2.workspaceId || "";
+      outputs["baseline-collection-id"] = "";
+      outputs["smoke-collection-id"] = "";
+      outputs["contract-collection-id"] = "";
+      outputs["collections-json"] = JSON.stringify({ baseline: "", contract: "", smoke: "" });
+      persistWorkspaceOnlyState(
+        stateStore,
+        writableResourcesState,
+        inputs,
+        outputs,
+        provisioned2.persistable,
+        inputs.projectName
+      );
+      dependencies.core.info(
+        `Generated asset sync disabled; preserving workspace onboarding and skipping the ${resolvedSpecType} contract collection.`
+      );
+      for (const [name, value] of Object.entries(outputs)) {
+        dependencies.core.setOutput(name, value);
+      }
+      return outputs;
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     return runProtocolBootstrap(
       resolvedSpecType,
@@ -383468,7 +383538,8 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     specContent,
     branchDecision,
     inputs.repoUrl,
-    previousSpecContent
+    previousSpecContent,
+    branchMarkerTimestamp
   );
   if (sourceDefinitionBundle && useMultiFileSync) {
     uploadDefinitionBundle = withReplacedRootContent(sourceDefinitionBundle, uploadSpecContent);
@@ -383495,11 +383566,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     collectionAssetProjectName,
     releaseLabel
   );
-  let baselineCollectionId = inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.smokeCollectionId;
-  let contractCollectionId = inputs.contractCollectionId;
+  let baselineCollectionId = syncGeneratedAssets ? inputs.baselineCollectionId : void 0;
+  let smokeCollectionId = syncGeneratedAssets ? inputs.smokeCollectionId : void 0;
+  let contractCollectionId = syncGeneratedAssets ? inputs.contractCollectionId : void 0;
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (!baselineCollectionId) {
+  if (syncGeneratedAssets && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -383508,7 +383579,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info("Resolved baseline-collection-id from .postman/resources.yaml");
     }
   }
-  if (!smokeCollectionId) {
+  if (syncGeneratedAssets && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -383521,7 +383592,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info("Resolved smoke-collection-id from .postman/resources.yaml");
     }
   }
-  if (!contractCollectionId) {
+  if (syncGeneratedAssets && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -383815,561 +383886,581 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     let observedLocalOpenApiIntegration = dependencies.internalIntegration;
     let openApiOperationLedger;
     void openApiOperationLedger;
-    if (specContentUnchanged) {
-      outputs["baseline-collection-id"] = baselineCollectionId || "";
-      outputs["smoke-collection-id"] = smokeCollectionId || "";
-      outputs["contract-collection-id"] = contractCollectionId || "";
-      dependencies.core.info("Spec content unchanged; skipping collection regeneration and version finalization.");
-    } else await runRollbackStage(
-      "Generate Collections from Spec",
-      async () => runGroup(
-        dependencies.core,
+    if (!syncGeneratedAssets) {
+      outputs["baseline-collection-id"] = "";
+      outputs["smoke-collection-id"] = "";
+      outputs["contract-collection-id"] = "";
+      outputs["collections-json"] = JSON.stringify({ baseline: "", contract: "", smoke: "" });
+      dependencies.core.info(
+        "Generated asset sync disabled; preserving workspace/spec onboarding and skipping collections."
+      );
+      recordCurrentBootstrapResources({
+        assetProjectName: artifactProjectName,
+        inputs,
+        outputs,
+        persistWorkspaceId,
+        releaseLabel,
+        resourcesState: writableResourcesState
+      });
+      stateStore.write(writableResourcesState);
+      createdNewSpec = false;
+    } else {
+      if (specContentUnchanged) {
+        outputs["baseline-collection-id"] = baselineCollectionId || "";
+        outputs["smoke-collection-id"] = smokeCollectionId || "";
+        outputs["contract-collection-id"] = contractCollectionId || "";
+        dependencies.core.info("Spec content unchanged; skipping collection regeneration and version finalization.");
+      } else await runRollbackStage(
         "Generate Collections from Spec",
-        async () => {
-          const assetProjectName = collectionAssetProjectName;
-          const orchestrationStarted = Date.now();
-          const collectionRoles = [
-            {
-              role: "baseline",
-              prefix: BASELINE_COLLECTION_PREFIX,
-              existingId: baselineCollectionId,
-              outputKey: "baseline-collection-id"
-            },
-            {
-              role: "smoke",
-              prefix: SMOKE_COLLECTION_PREFIX,
-              existingId: smokeCollectionId,
-              outputKey: "smoke-collection-id"
-            },
-            {
-              role: "contract",
-              prefix: CONTRACT_COLLECTION_PREFIX,
-              existingId: contractCollectionId,
-              outputKey: "contract-collection-id"
+        async () => runGroup(
+          dependencies.core,
+          "Generate Collections from Spec",
+          async () => {
+            const assetProjectName = collectionAssetProjectName;
+            const orchestrationStarted = Date.now();
+            const collectionRoles = [
+              {
+                role: "baseline",
+                prefix: BASELINE_COLLECTION_PREFIX,
+                existingId: baselineCollectionId,
+                outputKey: "baseline-collection-id"
+              },
+              {
+                role: "smoke",
+                prefix: SMOKE_COLLECTION_PREFIX,
+                existingId: smokeCollectionId,
+                outputKey: "smoke-collection-id"
+              },
+              {
+                role: "contract",
+                prefix: CONTRACT_COLLECTION_PREFIX,
+                existingId: contractCollectionId,
+                outputKey: "contract-collection-id"
+              }
+            ];
+            if (!contractIndex) {
+              throw new Error("CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight");
             }
-          ];
-          if (!contractIndex) {
-            throw new Error("CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight");
-          }
-          if (!dependencies.postman.importV2Collection || !dependencies.postman.deepUpdateV2Collection) {
-            throw new Error(
-              "LOCAL_OPENAPI_ORCHESTRATION_FAILED: importV2Collection/deepUpdateV2Collection require access-token gateway support"
-            );
-          }
-          const roleNames = {};
-          const artifactRoleNames = {};
-          for (const role of collectionRoles) {
-            const effectivePrefix = branchDecision.tier === "channel" && branchDecision.channel ? channelAssetName(role.prefix, branchDecision.channel.code).trim() : role.prefix;
-            roleNames[role.role] = [effectivePrefix, assetProjectName].filter(Boolean).join(" ").replace(/[\r\n\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim();
-            artifactRoleNames[role.role] = [effectivePrefix, artifactProjectName].filter(Boolean).join(" ").trim();
-          }
-          const conversionOptions = {
-            openApiVersion: detectedOpenapiVersion,
-            requestNameSource: inputs.requestNameSource,
-            folderStrategy: inputs.folderStrategy,
-            nestedFolderHierarchy: inputs.nestedFolderHierarchy,
-            secretsResolverProvider: inputs.secretsResolverProvider,
-            names: roleNames,
-            ...collectionBranchMarker ? { description: collectionBranchMarker } : {},
-            contractIndex
-          };
-          localOpenApiGenerationOptions = buildLocalOpenApiConversionOptions(conversionOptions);
-          const counts = {
-            localConversion: 0,
-            wholeCollectionImport: 0,
-            deepUpdate: 0,
-            specHubCollectionGeneration: 0,
-            specHubCollectionSync: 0,
-            temporaryOpenApiSpecCreate: 0,
-            temporaryOpenApiSpecDelete: 0,
-            v3PerItemCollectionCreate: 0,
-            postCreateScriptPatch: 0,
-            retries: 0
-          };
-          observedLocalOpenApiPostman = observeLocalOpenApiOperations(dependencies.postman, counts);
-          observedLocalOpenApiIntegration = dependencies.internalIntegration ? observeLocalOpenApiOperations(dependencies.internalIntegration, counts) : void 0;
-          let conversionMs;
-          let importCount = 0;
-          let updateCount = 0;
-          let payloads;
-          const conversionStarted = Date.now();
-          try {
-            counts.localConversion += 1;
-            payloads = await generateLocalOpenApiRolePayloads(bundledCompatibilitySpecContent, conversionOptions);
-            conversionMs = Math.max(0, Date.now() - conversionStarted);
-          } catch (error) {
-            await failOwned("local-conversion", error);
-            throw error;
-          }
-          for (const warning of payloads.warnings) {
-            dependencies.core.warning(warning);
-          }
-          const repoRoot = resolveWorkspaceRoot2();
-          localOpenApiRepoRoot = repoRoot;
-          const runTempDir = await (0, import_promises3.mkdtemp)(path9.join(process.env.RUNNER_TEMP || (0, import_node_os2.tmpdir)(), "bootstrap-local-openapi-"));
-          let materialized;
-          try {
-            materialized = await materializeLocalCollectionArtifacts({
-              repoRoot,
-              runTempDir,
-              roles: collectionRoles.map((role) => ({
-                role: role.role,
-                collectionName: artifactRoleNames[role.role],
-                collection: payloads.roles[role.role].collection,
-                payloadDigest: payloads.roles[role.role].payloadDigest
-              })),
-              ...inputs.specPath ? {
-                specPath: inputs.specPath,
-                options: { ...localOpenApiGenerationOptions },
-                syncOptions: { syncExamples: inputs.syncExamples }
-              } : {}
-            });
-            artifactRestore = materialized.restore;
-          } catch (error) {
-            await failOwned("materialize-artifacts", error);
-            throw error;
-          }
-          const discoveredIds = /* @__PURE__ */ new Map();
-          try {
+            if (!dependencies.postman.importV2Collection || !dependencies.postman.deepUpdateV2Collection) {
+              throw new Error(
+                "LOCAL_OPENAPI_ORCHESTRATION_FAILED: importV2Collection/deepUpdateV2Collection require access-token gateway support"
+              );
+            }
+            const roleNames = {};
+            const artifactRoleNames = {};
             for (const role of collectionRoles) {
-              if (!role.existingId && collectionBranchMarker && workspaceId && inputs.collectionSyncMode === "refresh" && dependencies.postman.findAdoptableSameMarkerCollection) {
-                discoveredIds.set(role.role, await dependencies.postman.findAdoptableSameMarkerCollection(
-                  workspaceId,
-                  roleNames[role.role],
-                  collectionBranchMarker
-                ));
-              }
+              const effectivePrefix = branchDecision.tier === "channel" && branchDecision.channel ? channelAssetName(role.prefix, branchDecision.channel.code).trim() : role.prefix;
+              roleNames[role.role] = [effectivePrefix, assetProjectName].filter(Boolean).join(" ").replace(/[\r\n\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim();
+              artifactRoleNames[role.role] = [effectivePrefix, artifactProjectName].filter(Boolean).join(" ").trim();
             }
-            const reuseIds = collectionRoles.map((role) => role.existingId || discoveredIds.get(role.role)).filter((id) => Boolean(id) && inputs.collectionSyncMode === "refresh");
-            if (reuseIds.length > 0) {
-              if (!dependencies.postman.exportV2Collection) {
-                throw new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support");
-              }
-              for (const collectionId of new Set(reuseIds)) {
-                const collection = await dependencies.postman.exportV2Collection(collectionId);
-                deepUpdateSnapshots.set(collectionId, { collection, payloadDigest: computePayloadDigest(collection) });
-              }
-            }
-          } catch (error) {
-            await failOwned("collection-preflight", error);
-          }
-          const importStarted = Date.now();
-          const writeRole = async (role) => {
-            const payload = payloads.roles[role.role];
-            const finalName = roleNames[role.role];
-            const reuseId = role.existingId || discoveredIds.get(role.role);
-            const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === "refresh";
-            if (useDeepUpdate) {
-              if (!deepUpdateSnapshots.has(reuseId)) {
-                throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing rollback snapshot for ${reuseId}`);
-              }
-              attemptedDeepUpdates.add(reuseId);
-              const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection(
-                reuseId,
-                payload.collection,
-                payload.payloadDigest
-              );
-              return {
-                role: role.role,
-                outputKey: role.outputKey,
-                kind: "deep-update",
-                collectionId: preservedId
-              };
-            }
-            const imported = await observedLocalOpenApiPostman.importV2Collection(
-              workspaceId || "",
-              payload.collection,
-              finalName
-            );
-            if (collectionBranchMarker) {
-              if (!dependencies.postman.updateCollectionDescription) {
-                throw new Error(
-                  "Branch-scoped generated collections require updateCollectionDescription support"
-                );
-              }
-              try {
-                await dependencies.postman.updateCollectionDescription(
-                  imported.collectionId,
-                  collectionBranchMarker
-                );
-              } catch (error) {
-                if (imported.deleteVerifiedCleanup) {
-                  await imported.deleteVerifiedCleanup(imported.journaledRootIds);
-                } else if (dependencies.postman.deleteVerifiedRunOwnedCollections) {
-                  await dependencies.postman.deleteVerifiedRunOwnedCollections(
-                    workspaceId || "",
-                    imported.journaledRootIds
-                  );
-                }
-                throw error;
-              }
-            }
-            return {
-              role: role.role,
-              outputKey: role.outputKey,
-              kind: "import",
-              collectionId: imported.collectionId,
-              journaledRootIds: [...imported.journaledRootIds]
+            const conversionOptions = {
+              openApiVersion: detectedOpenapiVersion,
+              requestNameSource: inputs.requestNameSource,
+              folderStrategy: inputs.folderStrategy,
+              nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+              secretsResolverProvider: inputs.secretsResolverProvider,
+              names: roleNames,
+              ...collectionBranchMarker ? { description: collectionBranchMarker } : {},
+              contractIndex
             };
-          };
-          const settledWrites = new Array(collectionRoles.length);
-          let nextRoleIndex = 0;
-          let writeFailed = false;
-          const writeWorker = async () => {
-            while (!writeFailed) {
-              const roleIndex = nextRoleIndex;
-              nextRoleIndex += 1;
-              const role = collectionRoles[roleIndex];
-              if (!role) return;
-              try {
-                settledWrites[roleIndex] = { status: "fulfilled", value: await writeRole(role) };
-              } catch (reason) {
-                settledWrites[roleIndex] = { status: "rejected", reason };
-                writeFailed = true;
-              }
-            }
-          };
-          await Promise.all([writeWorker(), writeWorker()]);
-          const importMs = Math.max(0, Date.now() - importStarted);
-          const roleOrder = collectionRoles.map((role) => role.role);
-          const fulfilledByRole = /* @__PURE__ */ new Map();
-          const failures = [];
-          for (let i = 0; i < settledWrites.length; i += 1) {
-            const settled = settledWrites[i];
-            if (!settled) continue;
-            const role = roleOrder[i];
-            if (settled.status === "fulfilled") {
-              fulfilledByRole.set(role, settled.value);
-            } else {
-              failures.push(settled.reason);
-            }
-          }
-          for (const role of collectionRoles) {
-            const result = fulfilledByRole.get(role.role);
-            if (!result) continue;
-            outputs[result.outputKey] = result.collectionId;
-            if (result.kind === "import") {
-              for (const id of result.journaledRootIds) {
-                if (!ownedLedger.includes(id)) ownedLedger.push(id);
-              }
-              importCount += 1;
-              dependencies.core.info(
-                `Imported ${result.role} collection ${result.collectionId} from local OpenAPI payload`
-              );
-            } else {
-              updateCount += 1;
-              dependencies.core.info(
-                `Deep-updated existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
-              );
-            }
-          }
-          if (failures.length > 0) {
-            await failOwned(
-              importCount > 0 && updateCount > 0 ? "mixed-import-deep-update" : importCount > 0 ? "partial-import" : updateCount > 0 ? "deep-update" : "cloud-collection-write",
-              failures[0]
-            );
-          }
-          if (importCount > 0 && dependencies.postman.reconcileDuplicateFinalCollections && workspaceId && collectionBranchMarker) {
-            const importedFinals = collectionRoles.filter((role) => fulfilledByRole.get(role.role)?.kind === "import").map((role) => ({
-              finalName: roleNames[role.role],
-              desiredDescription: collectionBranchMarker
-            }));
+            localOpenApiGenerationOptions = buildLocalOpenApiConversionOptions(conversionOptions);
+            const counts = {
+              localConversion: 0,
+              wholeCollectionImport: 0,
+              deepUpdate: 0,
+              specHubCollectionGeneration: 0,
+              specHubCollectionSync: 0,
+              temporaryOpenApiSpecCreate: 0,
+              temporaryOpenApiSpecDelete: 0,
+              v3PerItemCollectionCreate: 0,
+              postCreateScriptPatch: 0,
+              retries: 0
+            };
+            observedLocalOpenApiPostman = observeLocalOpenApiOperations(dependencies.postman, counts);
+            observedLocalOpenApiIntegration = dependencies.internalIntegration ? observeLocalOpenApiOperations(dependencies.internalIntegration, counts) : void 0;
+            let conversionMs;
+            let importCount = 0;
+            let updateCount = 0;
+            let payloads;
+            const conversionStarted = Date.now();
             try {
-              const winners = await dependencies.postman.reconcileDuplicateFinalCollections(
-                workspaceId,
-                importedFinals
-              );
+              counts.localConversion += 1;
+              payloads = await generateLocalOpenApiRolePayloads(bundledCompatibilitySpecContent, conversionOptions);
+              conversionMs = Math.max(0, Date.now() - conversionStarted);
+            } catch (error) {
+              await failOwned("local-conversion", error);
+              throw error;
+            }
+            for (const warning of payloads.warnings) {
+              dependencies.core.warning(warning);
+            }
+            const repoRoot = resolveWorkspaceRoot2();
+            localOpenApiRepoRoot = repoRoot;
+            const runTempDir = await (0, import_promises3.mkdtemp)(path9.join(process.env.RUNNER_TEMP || (0, import_node_os2.tmpdir)(), "bootstrap-local-openapi-"));
+            let materialized;
+            try {
+              materialized = await materializeLocalCollectionArtifacts({
+                repoRoot,
+                runTempDir,
+                roles: collectionRoles.map((role) => ({
+                  role: role.role,
+                  collectionName: artifactRoleNames[role.role],
+                  collection: payloads.roles[role.role].collection,
+                  payloadDigest: payloads.roles[role.role].payloadDigest
+                })),
+                ...inputs.specPath ? {
+                  specPath: inputs.specPath,
+                  options: { ...localOpenApiGenerationOptions },
+                  syncOptions: { syncExamples: inputs.syncExamples }
+                } : {}
+              });
+              artifactRestore = materialized.restore;
+            } catch (error) {
+              await failOwned("materialize-artifacts", error);
+              throw error;
+            }
+            const discoveredIds = /* @__PURE__ */ new Map();
+            try {
               for (const role of collectionRoles) {
-                const result = fulfilledByRole.get(role.role);
-                if (!result || result.kind !== "import") continue;
-                const finalName = roleNames[role.role];
-                const winnerId = winners[finalName];
-                if (!winnerId) continue;
-                if (result.collectionId !== winnerId) {
-                  if (!deepUpdateSnapshots.has(winnerId)) {
-                    if (!dependencies.postman.exportV2Collection) {
-                      throw new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support");
-                    }
-                    const collection = await dependencies.postman.exportV2Collection(winnerId);
-                    deepUpdateSnapshots.set(winnerId, {
-                      collection,
-                      payloadDigest: computePayloadDigest(collection)
-                    });
-                  }
-                  attemptedDeepUpdates.add(winnerId);
-                  await observedLocalOpenApiPostman.deepUpdateV2Collection(
-                    winnerId,
-                    payloads.roles[role.role].collection,
-                    payloads.roles[role.role].payloadDigest
-                  );
-                  for (const id of result.journaledRootIds) {
-                    const idx = ownedLedger.indexOf(id);
-                    if (idx >= 0) ownedLedger.splice(idx, 1);
-                  }
-                  result.journaledRootIds = [];
-                  result.collectionId = winnerId;
-                  outputs[result.outputKey] = winnerId;
+                if (!role.existingId && collectionBranchMarker && workspaceId && inputs.collectionSyncMode === "refresh" && dependencies.postman.findAdoptableSameMarkerCollection) {
+                  discoveredIds.set(role.role, await dependencies.postman.findAdoptableSameMarkerCollection(
+                    workspaceId,
+                    roleNames[role.role],
+                    collectionBranchMarker
+                  ));
+                }
+              }
+              const reuseIds = collectionRoles.map((role) => role.existingId || discoveredIds.get(role.role)).filter((id) => Boolean(id) && inputs.collectionSyncMode === "refresh");
+              if (reuseIds.length > 0) {
+                if (!dependencies.postman.exportV2Collection) {
+                  throw new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support");
+                }
+                for (const collectionId of new Set(reuseIds)) {
+                  const collection = await dependencies.postman.exportV2Collection(collectionId);
+                  deepUpdateSnapshots.set(collectionId, { collection, payloadDigest: computePayloadDigest(collection) });
                 }
               }
             } catch (error) {
-              await failOwned("cloud-collection-write", error);
+              await failOwned("collection-preflight", error);
             }
-          }
-          const finalized = finalizeLocalOpenApiArtifactManifest(materialized.manifest, {
-            baseline: outputs["baseline-collection-id"],
-            smoke: outputs["smoke-collection-id"],
-            contract: outputs["contract-collection-id"]
-          });
-          pendingFinalizedLocalOpenApiManifest = finalized;
-          outputs["prebuilt-collections-json"] = JSON.stringify(finalized);
-          const phase = importCount > 0 && updateCount > 0 ? "mixed-import-deep-update" : updateCount > 0 ? "changed-deep-update" : "fresh";
-          const ledger = {
-            schemaVersion: 1,
-            mode: "local",
-            phase,
-            roleCount: 3,
-            counts,
-            timings: {
-              conversionMs,
-              importMs,
-              totalMs: Math.max(0, Date.now() - orchestrationStarted)
-            }
-          };
-          openApiOperationLedger = ledger;
-          outputs["openapi-operation-ledger-json"] = JSON.stringify(ledger);
-          const ledgerRel = path9.join(".postman", "bootstrap-openapi-operation-ledger.json");
-          const ledgerAbs = path9.join(repoRoot, ledgerRel);
-          await (0, import_promises3.mkdir)(path9.dirname(ledgerAbs), { recursive: true });
-          await (0, import_promises3.writeFile)(ledgerAbs, `${JSON.stringify(ledger)}
-`, "utf8");
-          dependencies.core.info(
-            `Local OpenAPI orchestration phase=${phase} imports=${importCount} deepUpdates=${updateCount} conversionMs=${conversionMs} importMs=${importMs}`
-          );
-        }
-      )
-    );
-    outputs["collections-json"] = JSON.stringify({
-      baseline: outputs["baseline-collection-id"],
-      contract: outputs["contract-collection-id"],
-      smoke: outputs["smoke-collection-id"]
-    });
-    rollbackTriggerStage = "Validate Collection Outputs";
-    assertDistinctCollectionIds({
-      baseline: outputs["baseline-collection-id"],
-      contract: outputs["contract-collection-id"],
-      smoke: outputs["smoke-collection-id"]
-    });
-    if (additionalCollections.length > 0) {
-      await runRollbackStage(
-        "Sync Additional Collections",
-        async () => runGroup(
-          dependencies.core,
-          "Sync Additional Collections",
-          async () => {
-            const additionalResults = await syncAdditionalCollections({
-              collectionFiles: additionalCollections,
-              core: dependencies.core,
-              postman: dependencies.postman,
-              resourcesState: writableResourcesState,
-              writeResourcesState: () => void 0,
-              workspaceId: workspaceId || ""
-            });
-            for (const result of additionalResults) {
+            const importStarted = Date.now();
+            const writeRole = async (role) => {
+              const payload = payloads.roles[role.role];
+              const finalName = roleNames[role.role];
+              const reuseId = role.existingId || discoveredIds.get(role.role);
+              const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === "refresh";
+              if (useDeepUpdate) {
+                if (!deepUpdateSnapshots.has(reuseId)) {
+                  throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing rollback snapshot for ${reuseId}`);
+                }
+                attemptedDeepUpdates.add(reuseId);
+                const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection(
+                  reuseId,
+                  payload.collection,
+                  payload.payloadDigest
+                );
+                return {
+                  role: role.role,
+                  outputKey: role.outputKey,
+                  kind: "deep-update",
+                  collectionId: preservedId
+                };
+              }
+              const imported = await observedLocalOpenApiPostman.importV2Collection(
+                workspaceId || "",
+                payload.collection,
+                finalName
+              );
               if (collectionBranchMarker) {
                 if (!dependencies.postman.updateCollectionDescription) {
-                  throw new Error("Branch-scoped collections require updateCollectionDescription support");
+                  throw new Error(
+                    "Branch-scoped generated collections require updateCollectionDescription support"
+                  );
                 }
-                await dependencies.postman.updateCollectionDescription(result.collectionId, collectionBranchMarker);
+                try {
+                  await dependencies.postman.updateCollectionDescription(
+                    imported.collectionId,
+                    collectionBranchMarker
+                  );
+                } catch (error) {
+                  if (imported.deleteVerifiedCleanup) {
+                    await imported.deleteVerifiedCleanup(imported.journaledRootIds);
+                  } else if (dependencies.postman.deleteVerifiedRunOwnedCollections) {
+                    await dependencies.postman.deleteVerifiedRunOwnedCollections(
+                      workspaceId || "",
+                      imported.journaledRootIds
+                    );
+                  }
+                  throw error;
+                }
               }
-              completedExternalSideEffects.push(
-                `${result.operation}AdditionalCollection(${result.collectionId} from ${result.displayPath})`
+              return {
+                role: role.role,
+                outputKey: role.outputKey,
+                kind: "import",
+                collectionId: imported.collectionId,
+                journaledRootIds: [...imported.journaledRootIds]
+              };
+            };
+            const settledWrites = new Array(collectionRoles.length);
+            let nextRoleIndex = 0;
+            let writeFailed = false;
+            const writeWorker = async () => {
+              while (!writeFailed) {
+                const roleIndex = nextRoleIndex;
+                nextRoleIndex += 1;
+                const role = collectionRoles[roleIndex];
+                if (!role) return;
+                try {
+                  settledWrites[roleIndex] = { status: "fulfilled", value: await writeRole(role) };
+                } catch (reason) {
+                  settledWrites[roleIndex] = { status: "rejected", reason };
+                  writeFailed = true;
+                }
+              }
+            };
+            await Promise.all([writeWorker(), writeWorker()]);
+            const importMs = Math.max(0, Date.now() - importStarted);
+            const roleOrder = collectionRoles.map((role) => role.role);
+            const fulfilledByRole = /* @__PURE__ */ new Map();
+            const failures = [];
+            for (let i = 0; i < settledWrites.length; i += 1) {
+              const settled = settledWrites[i];
+              if (!settled) continue;
+              const role = roleOrder[i];
+              if (settled.status === "fulfilled") {
+                fulfilledByRole.set(role, settled.value);
+              } else {
+                failures.push(settled.reason);
+              }
+            }
+            for (const role of collectionRoles) {
+              const result = fulfilledByRole.get(role.role);
+              if (!result) continue;
+              outputs[result.outputKey] = result.collectionId;
+              if (result.kind === "import") {
+                for (const id of result.journaledRootIds) {
+                  if (!ownedLedger.includes(id)) ownedLedger.push(id);
+                }
+                importCount += 1;
+                dependencies.core.info(
+                  `Imported ${result.role} collection ${result.collectionId} from local OpenAPI payload`
+                );
+              } else {
+                updateCount += 1;
+                dependencies.core.info(
+                  `Deep-updated existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
+                );
+              }
+            }
+            if (failures.length > 0) {
+              await failOwned(
+                importCount > 0 && updateCount > 0 ? "mixed-import-deep-update" : importCount > 0 ? "partial-import" : updateCount > 0 ? "deep-update" : "cloud-collection-write",
+                failures[0]
               );
             }
+            if (importCount > 0 && dependencies.postman.reconcileDuplicateFinalCollections && workspaceId && collectionBranchMarker) {
+              const importedFinals = collectionRoles.filter((role) => fulfilledByRole.get(role.role)?.kind === "import").map((role) => ({
+                finalName: roleNames[role.role],
+                desiredDescription: collectionBranchMarker
+              }));
+              try {
+                const winners = await dependencies.postman.reconcileDuplicateFinalCollections(
+                  workspaceId,
+                  importedFinals
+                );
+                for (const role of collectionRoles) {
+                  const result = fulfilledByRole.get(role.role);
+                  if (!result || result.kind !== "import") continue;
+                  const finalName = roleNames[role.role];
+                  const winnerId = winners[finalName];
+                  if (!winnerId) continue;
+                  if (result.collectionId !== winnerId) {
+                    if (!deepUpdateSnapshots.has(winnerId)) {
+                      if (!dependencies.postman.exportV2Collection) {
+                        throw new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support");
+                      }
+                      const collection = await dependencies.postman.exportV2Collection(winnerId);
+                      deepUpdateSnapshots.set(winnerId, {
+                        collection,
+                        payloadDigest: computePayloadDigest(collection)
+                      });
+                    }
+                    attemptedDeepUpdates.add(winnerId);
+                    await observedLocalOpenApiPostman.deepUpdateV2Collection(
+                      winnerId,
+                      payloads.roles[role.role].collection,
+                      payloads.roles[role.role].payloadDigest
+                    );
+                    for (const id of result.journaledRootIds) {
+                      const idx = ownedLedger.indexOf(id);
+                      if (idx >= 0) ownedLedger.splice(idx, 1);
+                    }
+                    result.journaledRootIds = [];
+                    result.collectionId = winnerId;
+                    outputs[result.outputKey] = winnerId;
+                  }
+                }
+              } catch (error) {
+                await failOwned("cloud-collection-write", error);
+              }
+            }
+            const finalized = finalizeLocalOpenApiArtifactManifest(materialized.manifest, {
+              baseline: outputs["baseline-collection-id"],
+              smoke: outputs["smoke-collection-id"],
+              contract: outputs["contract-collection-id"]
+            });
+            pendingFinalizedLocalOpenApiManifest = finalized;
+            outputs["prebuilt-collections-json"] = JSON.stringify(finalized);
+            const phase = importCount > 0 && updateCount > 0 ? "mixed-import-deep-update" : updateCount > 0 ? "changed-deep-update" : "fresh";
+            const ledger = {
+              schemaVersion: 1,
+              mode: "local",
+              phase,
+              roleCount: 3,
+              counts,
+              timings: {
+                conversionMs,
+                importMs,
+                totalMs: Math.max(0, Date.now() - orchestrationStarted)
+              }
+            };
+            openApiOperationLedger = ledger;
+            outputs["openapi-operation-ledger-json"] = JSON.stringify(ledger);
+            const ledgerRel = path9.join(".postman", "bootstrap-openapi-operation-ledger.json");
+            const ledgerAbs = path9.join(repoRoot, ledgerRel);
+            await (0, import_promises3.mkdir)(path9.dirname(ledgerAbs), { recursive: true });
+            await (0, import_promises3.writeFile)(ledgerAbs, `${JSON.stringify(ledger)}
+`, "utf8");
+            dependencies.core.info(
+              `Local OpenAPI orchestration phase=${phase} imports=${importCount} deepUpdates=${updateCount} conversionMs=${conversionMs} importMs=${importMs}`
+            );
           }
         )
       );
-    }
-    const linkedCollectionIds = [
-      outputs["baseline-collection-id"],
-      outputs["smoke-collection-id"],
-      outputs["contract-collection-id"]
-    ].filter(Boolean);
-    if (linkedCollectionIds.length > 0) {
-      if (observedLocalOpenApiIntegration) {
-        const localIntegration = observedLocalOpenApiIntegration;
+      outputs["collections-json"] = JSON.stringify({
+        baseline: outputs["baseline-collection-id"],
+        contract: outputs["contract-collection-id"],
+        smoke: outputs["smoke-collection-id"]
+      });
+      rollbackTriggerStage = "Validate Collection Outputs";
+      assertDistinctCollectionIds({
+        baseline: outputs["baseline-collection-id"],
+        contract: outputs["contract-collection-id"],
+        smoke: outputs["smoke-collection-id"]
+      });
+      if (additionalCollections.length > 0) {
         await runRollbackStage(
-          "Link Collections to Specification",
+          "Sync Additional Collections",
           async () => runGroup(
             dependencies.core,
-            "Link Collections to Specification",
+            "Sync Additional Collections",
             async () => {
-              const generationOptions = localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
-                openApiVersion: detectedOpenapiVersion,
-                requestNameSource: inputs.requestNameSource,
-                folderStrategy: inputs.folderStrategy,
-                nestedFolderHierarchy: inputs.nestedFolderHierarchy,
-                secretsResolverProvider: inputs.secretsResolverProvider,
-                names: {
-                  baseline: collectionAssetProjectName,
-                  smoke: `[Smoke] ${collectionAssetProjectName}`,
-                  contract: `[Contract] ${collectionAssetProjectName}`
-                },
-                contractIndex
+              const additionalResults = await syncAdditionalCollections({
+                collectionFiles: additionalCollections,
+                core: dependencies.core,
+                postman: dependencies.postman,
+                resourcesState: writableResourcesState,
+                writeResourcesState: () => void 0,
+                workspaceId: workspaceId || ""
               });
-              const linkOptions = { ...generationOptions };
-              delete linkOptions.includeWebhooks;
-              const expectedSyncOptions = { syncExamples: inputs.syncExamples };
-              const linkResult = await localIntegration.linkCollectionsToSpecification(
-                outputs["spec-id"],
-                linkedCollectionIds.map((collectionId) => ({
-                  collectionId,
-                  options: { ...linkOptions },
-                  syncOptions: expectedSyncOptions
-                }))
-              );
-              const lockedRetries = linkResult && typeof linkResult === "object" && "lockedRetries" in linkResult ? Number(linkResult.lockedRetries ?? 0) : 0;
-              if (openApiOperationLedger && Number.isFinite(lockedRetries) && lockedRetries > 0) {
-                const nextCounts = {
-                  ...openApiOperationLedger.counts,
-                  retries: Number(openApiOperationLedger.counts.retries ?? 0) + lockedRetries
-                };
-                openApiOperationLedger = {
-                  ...openApiOperationLedger,
-                  counts: nextCounts
-                };
-                outputs["openapi-operation-ledger-json"] = JSON.stringify(openApiOperationLedger);
-                const ledgerRel = path9.join(".postman", "bootstrap-openapi-operation-ledger.json");
-                const ledgerAbs = path9.join(resolveWorkspaceRoot2(), ledgerRel);
-                await (0, import_promises3.mkdir)(path9.dirname(ledgerAbs), { recursive: true });
-                await (0, import_promises3.writeFile)(ledgerAbs, `${JSON.stringify(openApiOperationLedger)}
-`, "utf8");
-              }
-              completedExternalSideEffects.push(
-                `linkCollectionsToSpecification(${outputs["spec-id"]}: ${linkedCollectionIds.join(", ")}; syncExamples=${inputs.syncExamples})`
-              );
-              const settleRelations = localIntegration.settleSpecificationCollectionRelations?.bind(
-                localIntegration
-              );
-              if (!settleRelations) {
-                throw new Error(
-                  "LOCAL_OPENAPI_LINK_READBACK_FAILED: settleSpecificationCollectionRelations is required"
+              for (const result of additionalResults) {
+                if (collectionBranchMarker) {
+                  if (!dependencies.postman.updateCollectionDescription) {
+                    throw new Error("Branch-scoped collections require updateCollectionDescription support");
+                  }
+                  await dependencies.postman.updateCollectionDescription(result.collectionId, collectionBranchMarker);
+                }
+                completedExternalSideEffects.push(
+                  `${result.operation}AdditionalCollection(${result.collectionId} from ${result.displayPath})`
                 );
               }
-              const expectedIds = [...new Set(linkedCollectionIds)];
-              if (expectedIds.length !== 3) {
-                throw new Error(
-                  `LOCAL_OPENAPI_LINK_READBACK_FAILED: expected exactly 3 distinct collection ids, observed ${expectedIds.length}`
-                );
-              }
-              const settled = await settleRelations(outputs["spec-id"], expectedIds);
-              const settleAttempts = Number(settled?.attempts ?? 0);
-              const relations = Array.isArray(settled?.relations) ? settled.relations : [];
-              const byId = new Map(
-                relations.filter((row) => expectedIds.includes(row.collectionId)).map((row) => [row.collectionId, row])
-              );
-              if (byId.size !== 3) {
-                throw new Error(
-                  `LOCAL_OPENAPI_LINK_READBACK_FAILED: expected 3 linked collections, observed ${byId.size}`
-                );
-              }
-              const recognizedStates = /* @__PURE__ */ new Set(["in-sync", "out-of-sync"]);
-              const linkRelationStates = {};
-              for (const collectionId of expectedIds) {
-                const row = byId.get(collectionId);
-                if (!row) {
-                  throw new Error(
-                    `LOCAL_OPENAPI_LINK_READBACK_FAILED: missing relation for collection ${collectionId}`
-                  );
-                }
-                const state = String(row.state || "").trim();
-                if (!recognizedStates.has(state)) {
-                  throw new Error(
-                    `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} state=${state || "<empty>"}`
-                  );
-                }
-                linkRelationStates[collectionId] = state;
-                if (!includesRequestedJsonSemantics(row.options, linkOptions)) {
-                  throw new Error(
-                    `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} options mismatch`
-                  );
-                }
-                if (!includesRequestedJsonSemantics(row.syncOptions, expectedSyncOptions)) {
-                  throw new Error(
-                    `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} syncOptions mismatch`
-                  );
-                }
-              }
-              if (openApiOperationLedger && Number.isFinite(settleAttempts) && settleAttempts > 0) {
-                openApiOperationLedger = {
-                  ...openApiOperationLedger,
-                  counts: {
-                    ...openApiOperationLedger.counts,
-                    linkRelationSettleReads: settleAttempts
-                  },
-                  linkRelationStates
-                };
-                outputs["openapi-operation-ledger-json"] = JSON.stringify(openApiOperationLedger);
-                const ledgerRel = path9.join(".postman", "bootstrap-openapi-operation-ledger.json");
-                const ledgerAbs = path9.join(resolveWorkspaceRoot2(), ledgerRel);
-                await (0, import_promises3.mkdir)(path9.dirname(ledgerAbs), { recursive: true });
-                await (0, import_promises3.writeFile)(ledgerAbs, `${JSON.stringify(openApiOperationLedger)}
-`, "utf8");
-              }
-              dependencies.core.info(
-                `OpenAPI link relation settle completed after ${settleAttempts} read(s); states=${expectedIds.map((id) => `${id}:${linkRelationStates[id]}`).join(",")}`
-              );
             }
           )
         );
-      } else {
-        dependencies.core.warning(
-          "Skipping cloud spec-to-collection linking because postman-access-token is not configured"
-        );
       }
-    }
-    await runRollbackStage(
-      "Tag Collections",
-      async () => runGroup(
-        dependencies.core,
-        "Tag Collections",
-        async () => {
-          await dependencies.postman.tagCollection(outputs["baseline-collection-id"], [
-            "generated-docs"
-          ]);
-          completedExternalSideEffects.push(
-            `tagCollection(${outputs["baseline-collection-id"]}, generated-docs)`
+      const linkedCollectionIds = [
+        outputs["baseline-collection-id"],
+        outputs["smoke-collection-id"],
+        outputs["contract-collection-id"]
+      ].filter(Boolean);
+      if (linkedCollectionIds.length > 0) {
+        if (observedLocalOpenApiIntegration) {
+          const localIntegration = observedLocalOpenApiIntegration;
+          await runRollbackStage(
+            "Link Collections to Specification",
+            async () => runGroup(
+              dependencies.core,
+              "Link Collections to Specification",
+              async () => {
+                const generationOptions = localOpenApiGenerationOptions ?? buildLocalOpenApiConversionOptions({
+                  openApiVersion: detectedOpenapiVersion,
+                  requestNameSource: inputs.requestNameSource,
+                  folderStrategy: inputs.folderStrategy,
+                  nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+                  secretsResolverProvider: inputs.secretsResolverProvider,
+                  names: {
+                    baseline: collectionAssetProjectName,
+                    smoke: `[Smoke] ${collectionAssetProjectName}`,
+                    contract: `[Contract] ${collectionAssetProjectName}`
+                  },
+                  contractIndex
+                });
+                const linkOptions = { ...generationOptions };
+                delete linkOptions.includeWebhooks;
+                const expectedSyncOptions = { syncExamples: inputs.syncExamples };
+                const linkResult = await localIntegration.linkCollectionsToSpecification(
+                  outputs["spec-id"],
+                  linkedCollectionIds.map((collectionId) => ({
+                    collectionId,
+                    options: { ...linkOptions },
+                    syncOptions: expectedSyncOptions
+                  }))
+                );
+                const lockedRetries = linkResult && typeof linkResult === "object" && "lockedRetries" in linkResult ? Number(linkResult.lockedRetries ?? 0) : 0;
+                if (openApiOperationLedger && Number.isFinite(lockedRetries) && lockedRetries > 0) {
+                  const nextCounts = {
+                    ...openApiOperationLedger.counts,
+                    retries: Number(openApiOperationLedger.counts.retries ?? 0) + lockedRetries
+                  };
+                  openApiOperationLedger = {
+                    ...openApiOperationLedger,
+                    counts: nextCounts
+                  };
+                  outputs["openapi-operation-ledger-json"] = JSON.stringify(openApiOperationLedger);
+                  const ledgerRel = path9.join(".postman", "bootstrap-openapi-operation-ledger.json");
+                  const ledgerAbs = path9.join(resolveWorkspaceRoot2(), ledgerRel);
+                  await (0, import_promises3.mkdir)(path9.dirname(ledgerAbs), { recursive: true });
+                  await (0, import_promises3.writeFile)(ledgerAbs, `${JSON.stringify(openApiOperationLedger)}
+`, "utf8");
+                }
+                completedExternalSideEffects.push(
+                  `linkCollectionsToSpecification(${outputs["spec-id"]}: ${linkedCollectionIds.join(", ")}; syncExamples=${inputs.syncExamples})`
+                );
+                const settleRelations = localIntegration.settleSpecificationCollectionRelations?.bind(
+                  localIntegration
+                );
+                if (!settleRelations) {
+                  throw new Error(
+                    "LOCAL_OPENAPI_LINK_READBACK_FAILED: settleSpecificationCollectionRelations is required"
+                  );
+                }
+                const expectedIds = [...new Set(linkedCollectionIds)];
+                if (expectedIds.length !== 3) {
+                  throw new Error(
+                    `LOCAL_OPENAPI_LINK_READBACK_FAILED: expected exactly 3 distinct collection ids, observed ${expectedIds.length}`
+                  );
+                }
+                const settled = await settleRelations(outputs["spec-id"], expectedIds);
+                const settleAttempts = Number(settled?.attempts ?? 0);
+                const relations = Array.isArray(settled?.relations) ? settled.relations : [];
+                const byId = new Map(
+                  relations.filter((row) => expectedIds.includes(row.collectionId)).map((row) => [row.collectionId, row])
+                );
+                if (byId.size !== 3) {
+                  throw new Error(
+                    `LOCAL_OPENAPI_LINK_READBACK_FAILED: expected 3 linked collections, observed ${byId.size}`
+                  );
+                }
+                const recognizedStates = /* @__PURE__ */ new Set(["in-sync", "out-of-sync"]);
+                const linkRelationStates = {};
+                for (const collectionId of expectedIds) {
+                  const row = byId.get(collectionId);
+                  if (!row) {
+                    throw new Error(
+                      `LOCAL_OPENAPI_LINK_READBACK_FAILED: missing relation for collection ${collectionId}`
+                    );
+                  }
+                  const state = String(row.state || "").trim();
+                  if (!recognizedStates.has(state)) {
+                    throw new Error(
+                      `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} state=${state || "<empty>"}`
+                    );
+                  }
+                  linkRelationStates[collectionId] = state;
+                  if (!includesRequestedJsonSemantics(row.options, linkOptions)) {
+                    throw new Error(
+                      `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} options mismatch`
+                    );
+                  }
+                  if (!includesRequestedJsonSemantics(row.syncOptions, expectedSyncOptions)) {
+                    throw new Error(
+                      `LOCAL_OPENAPI_LINK_READBACK_FAILED: collection ${collectionId} syncOptions mismatch`
+                    );
+                  }
+                }
+                if (openApiOperationLedger && Number.isFinite(settleAttempts) && settleAttempts > 0) {
+                  openApiOperationLedger = {
+                    ...openApiOperationLedger,
+                    counts: {
+                      ...openApiOperationLedger.counts,
+                      linkRelationSettleReads: settleAttempts
+                    },
+                    linkRelationStates
+                  };
+                  outputs["openapi-operation-ledger-json"] = JSON.stringify(openApiOperationLedger);
+                  const ledgerRel = path9.join(".postman", "bootstrap-openapi-operation-ledger.json");
+                  const ledgerAbs = path9.join(resolveWorkspaceRoot2(), ledgerRel);
+                  await (0, import_promises3.mkdir)(path9.dirname(ledgerAbs), { recursive: true });
+                  await (0, import_promises3.writeFile)(ledgerAbs, `${JSON.stringify(openApiOperationLedger)}
+`, "utf8");
+                }
+                dependencies.core.info(
+                  `OpenAPI link relation settle completed after ${settleAttempts} read(s); states=${expectedIds.map((id) => `${id}:${linkRelationStates[id]}`).join(",")}`
+                );
+              }
+            )
           );
-          await dependencies.postman.tagCollection(outputs["smoke-collection-id"], [
-            "generated-smoke"
-          ]);
-          completedExternalSideEffects.push(
-            `tagCollection(${outputs["smoke-collection-id"]}, generated-smoke)`
-          );
-          await dependencies.postman.tagCollection(outputs["contract-collection-id"], [
-            "generated-contract"
-          ]);
-          completedExternalSideEffects.push(
-            `tagCollection(${outputs["contract-collection-id"]}, generated-contract)`
+        } else {
+          dependencies.core.warning(
+            "Skipping cloud spec-to-collection linking because postman-access-token is not configured"
           );
         }
-      )
-    );
-    if (pendingFinalizedLocalOpenApiManifest && localOpenApiRepoRoot) {
-      await persistLocalOpenApiArtifactManifest(
-        localOpenApiRepoRoot,
-        pendingFinalizedLocalOpenApiManifest
+      }
+      await runRollbackStage(
+        "Tag Collections",
+        async () => runGroup(
+          dependencies.core,
+          "Tag Collections",
+          async () => {
+            await dependencies.postman.tagCollection(outputs["baseline-collection-id"], [
+              "generated-docs"
+            ]);
+            completedExternalSideEffects.push(
+              `tagCollection(${outputs["baseline-collection-id"]}, generated-docs)`
+            );
+            await dependencies.postman.tagCollection(outputs["smoke-collection-id"], [
+              "generated-smoke"
+            ]);
+            completedExternalSideEffects.push(
+              `tagCollection(${outputs["smoke-collection-id"]}, generated-smoke)`
+            );
+            await dependencies.postman.tagCollection(outputs["contract-collection-id"], [
+              "generated-contract"
+            ]);
+            completedExternalSideEffects.push(
+              `tagCollection(${outputs["contract-collection-id"]}, generated-contract)`
+            );
+          }
+        )
       );
+      if (pendingFinalizedLocalOpenApiManifest && localOpenApiRepoRoot) {
+        await persistLocalOpenApiArtifactManifest(
+          localOpenApiRepoRoot,
+          pendingFinalizedLocalOpenApiManifest
+        );
+      }
+      recordCurrentBootstrapResources({
+        assetProjectName: artifactProjectName,
+        inputs,
+        outputs,
+        persistWorkspaceId,
+        releaseLabel,
+        resourcesState: writableResourcesState
+      });
+      stateStore.write(writableResourcesState);
+      createdNewSpec = false;
     }
-    recordCurrentBootstrapResources({
-      assetProjectName: artifactProjectName,
-      inputs,
-      outputs,
-      persistWorkspaceId,
-      releaseLabel,
-      resourcesState: writableResourcesState
-    });
-    stateStore.write(writableResourcesState);
-    createdNewSpec = false;
   } catch (error) {
     const mask = createBootstrapSecretMasker(inputs);
     const reason = formatMaskedOneLine(error, mask);
@@ -384739,6 +384830,7 @@ var cliInputNames = [
   "smoke-collection-id",
   "contract-collection-id",
   "additional-collections-dir",
+  "sync-generated-assets",
   "sync-examples",
   "collection-sync-mode",
   "spec-sync-mode",

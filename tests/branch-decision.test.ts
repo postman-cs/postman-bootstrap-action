@@ -422,9 +422,17 @@ describe('durable spec marker', () => {
     });
     const source = 'openapi: 3.0.3\ninfo:\n  title: Payments\n  version: 1.0.0\npaths: {}\n';
 
-    const marked = embedSpecBranchMarker(source, preview, 'https://github.com/org/repo');
+    const marked = embedSpecBranchMarker(
+      source,
+      preview,
+      'https://github.com/org/repo',
+      undefined,
+      new Date('2026-07-15T00:00:00Z')
+    );
     expect(marked).toContain('x-postman-onboarding:');
     expect(marked).toContain('rawBranch: feature/payments');
+    expect(marked).toContain('createdAt: 2026-07-15T00:00:00.000Z');
+    expect(marked).toContain('lastSyncedAt: 2026-07-15T00:00:00.000Z');
 
     const canonical = resolveBranchDecision({
       strategy: 'publish-gate',

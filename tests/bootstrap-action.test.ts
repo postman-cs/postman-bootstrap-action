@@ -248,6 +248,7 @@ function createDefaultImportV2Collection() {
   });
 }
 
+
 function createDefaultExportV2Collection() {
   return vi.fn().mockImplementation(async (collectionUid: string) => ({
     info: {
@@ -785,6 +786,221 @@ describe('bootstrap action', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it('supports workspace and spec onboarding without generated collection assets', async () => {
+    const postman = createRollbackPostman();
+    const internalIntegration = createRollbackIntegration();
+
+    const result = await runExistingSpecBootstrap(postman, {
+      inputs: {
+        additionalCollectionsDir: 'does-not-need-to-exist',
+        baselineCollectionId: 'col-baseline-existing',
+        contractCollectionId: 'col-contract-existing',
+        smokeCollectionId: 'col-smoke-existing',
+        syncGeneratedAssets: false
+      },
+      internalIntegration
+    });
+
+    expect(result).toMatchObject({
+      'workspace-id': 'ws-existing',
+      'spec-id': 'spec-existing',
+      'baseline-collection-id': '',
+      'smoke-collection-id': '',
+      'contract-collection-id': '',
+      'collections-json': JSON.stringify({ baseline: '', contract: '', smoke: '' })
+    });
+    expect(postman.generateCollection).not.toHaveBeenCalled();
+    expect(postman.importV2Collection).not.toHaveBeenCalled();
+    expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+    expect(postman.injectContractTests).not.toHaveBeenCalled();
+    expect(postman.injectTests).not.toHaveBeenCalled();
+    expect(postman.tagCollection).not.toHaveBeenCalled();
+    expect(postman.createCollection).not.toHaveBeenCalled();
+    expect(postman.updateCollection).not.toHaveBeenCalled();
+    expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+    expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+  });
+
+  it('drops tracked asset ids when specs-only onboarding targets a different workspace', async () => {
+    const postman = createRollbackPostman({
+      uploadSpec: vi.fn().mockResolvedValue('spec-target')
+    });
+    const writes: Array<Record<string, unknown>> = [];
+    const trackedState = {
+      version: 2,
+      workspace: { id: 'ws-prior' },
+      canonical: {
+        collections: {
+          '../postman/collections/core-payments': 'col-prior'
+        },
+        specs: {
+          'spec-url:https://example.test/openapi.yaml': 'spec-prior'
+        }
+      },
+      cloudResources: {
+        collections: {
+          '../postman/collections/core-payments': 'col-prior'
+        },
+        specs: {
+          'spec-url:https://example.test/openapi.yaml': 'spec-prior'
+        }
+      }
+    };
+
+    const result = await runExistingSpecBootstrap(postman, {
+      inputs: {
+        workspaceId: 'ws-target',
+        specId: undefined,
+        syncGeneratedAssets: false
+      },
+      resourcesState: {
+        read: () => trackedState,
+        write: (state) => writes.push(structuredClone(state))
+      }
+    });
+
+    expect(result).toMatchObject({
+      'workspace-id': 'ws-target',
+      'spec-id': 'spec-target',
+      'baseline-collection-id': '',
+      'smoke-collection-id': '',
+      'contract-collection-id': ''
+    });
+    expect(writes.at(-1)).toMatchObject({
+      workspace: { id: 'ws-target' },
+      cloudResources: {
+        specs: {
+          'spec-url:https://example.test/openapi.yaml': 'spec-target'
+        }
+      }
+    });
+    expect(writes.at(-1)).not.toHaveProperty('canonical');
+    expect(writes.at(-1)).not.toHaveProperty('cloudResources.collections');
+    expect(postman.uploadSpec).toHaveBeenCalledWith(
+      'ws-target',
+      'core-payments',
+      expect.any(String),
+      '3.1'
+    );
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+  });
+
+  it('drops tracked asset ids when specs-only onboarding adopts a different linked workspace', async () => {
+    const postman = createRollbackPostman({
+      uploadSpec: vi.fn().mockResolvedValue('spec-target')
+    });
+    const writes: Array<Record<string, unknown>> = [];
+    const trackedState = {
+      version: 2,
+      workspace: { id: 'ws-prior' },
+      cloudResources: {
+        collections: {
+          '../postman/collections/core-payments': 'col-prior'
+        },
+        specs: {
+          'spec-url:https://example.test/openapi.yaml': 'spec-prior'
+        }
+      }
+    };
+    const findWorkspaceForRepo = vi.fn().mockResolvedValue({
+      state: 'linked-visible',
+      workspace: { id: 'ws-target', name: 'Target Workspace' }
+    });
+
+    const result = await runExistingSpecBootstrap(postman, {
+      inputs: {
+        workspaceId: undefined,
+        specId: undefined,
+        syncGeneratedAssets: false
+      },
+      internalIntegration: createRollbackIntegration({ findWorkspaceForRepo }),
+      resourcesState: {
+        read: () => trackedState,
+        write: (state) => writes.push(structuredClone(state))
+      }
+    });
+
+    expect(result).toMatchObject({
+      'workspace-id': 'ws-target',
+      'spec-id': 'spec-target',
+      'baseline-collection-id': '',
+      'smoke-collection-id': '',
+      'contract-collection-id': ''
+    });
+    expect(findWorkspaceForRepo).toHaveBeenCalledWith(
+      'https://github.com/postman-cs/bootstrap-action-test'
+    );
+    expect(writes.at(-1)).toMatchObject({
+      workspace: { id: 'ws-target' },
+      cloudResources: {
+        specs: {
+          'spec-url:https://example.test/openapi.yaml': 'spec-target'
+        }
+      }
+    });
+    expect(writes.at(-1)).not.toHaveProperty('cloudResources.collections');
+    expect(postman.uploadSpec).toHaveBeenCalledWith(
+      'ws-target',
+      'core-payments',
+      expect.any(String),
+      '3.1'
+    );
+    expect(postman.getSpecContent).not.toHaveBeenCalled();
+    expect(postman.updateSpec).not.toHaveBeenCalled();
+  });
+
+  it.each(['graphql', 'grpc', 'soap', 'asyncapi'] as const)(
+    'skips the generated %s contract collection when generated asset sync is disabled',
+    async (protocol) => {
+      const postman = createRollbackPostman();
+      const createExtensibleCollection = vi.fn().mockResolvedValue('col-unexpected');
+      const { core, outputs } = createCoreStub();
+
+      const result = await runBootstrap(
+        createInputs({
+          protocol,
+          specUrl: `https://example.test/${protocol}`,
+          specPath: '',
+          workspaceId: 'ws-existing',
+          specId: undefined,
+          baselineCollectionId: undefined,
+          smokeCollectionId: undefined,
+          contractCollectionId: undefined,
+          syncGeneratedAssets: false
+        }),
+        {
+          core,
+          exec: createExecStub(),
+          io: createIoStub(),
+          postman: withContractHelpers(postman),
+          ecClient: {
+            createExtensibleCollection,
+            populateFromTree: vi.fn(),
+            getExtensibleCollection: vi.fn(),
+            deleteExtensibleCollection: vi.fn(),
+            listExtensibleCollectionItems: vi.fn().mockResolvedValue([]),
+            configureTeamContext: vi.fn()
+          },
+          specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+            new Response('protocol definition', { status: 200 })
+          )
+        }
+      );
+
+      expect(result).toMatchObject({
+        'workspace-id': 'ws-existing',
+        'baseline-collection-id': '',
+        'smoke-collection-id': '',
+        'contract-collection-id': '',
+        'collections-json': JSON.stringify({ baseline: '', contract: '', smoke: '' })
+      });
+      expect(createExtensibleCollection).not.toHaveBeenCalled();
+      expect(postman.createCollection).not.toHaveBeenCalled();
+      expect(postman.tagCollection).not.toHaveBeenCalled();
+      expect(outputs).toMatchObject(result);
+    }
+  );
 
   it('uploads original preserve-mode bytes while local conversion consumes the bundled compatibility document', async () => {
     const source = `openapi: 3.0.3
@@ -4899,4 +5115,3 @@ describe('OpenAPI 3.0 lint compatibility', () => {
     expect(postman.createWorkspace).toHaveBeenCalled();
     expect(outputs['workspace-id']).toBe('ws-created');
   });
-

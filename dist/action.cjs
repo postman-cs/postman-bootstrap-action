@@ -348547,7 +348547,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "b09ce3fde57b1d5a4ca7f1cb08aa1a9a958be24b",
+  bootstrapCommit: "01e43ed070e8383ca52b5bc0e2ea48432ba7174c",
   legs: [
     {
       mode: "nonorg",
@@ -383752,7 +383752,9 @@ function resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel) {
   return resourcesState?.cloudResources?.specs?.[key];
 }
 function scopeResourcesStateToTargetWorkspace(inputs, resourcesState) {
-  const requestedWorkspaceId = inputs.workspaceId?.trim();
+  return scopeResourcesStateToWorkspace(resourcesState, inputs.workspaceId?.trim());
+}
+function scopeResourcesStateToWorkspace(resourcesState, requestedWorkspaceId) {
   const trackedWorkspaceId = resourcesState?.workspace?.id?.trim();
   if (!resourcesState || !requestedWorkspaceId || !trackedWorkspaceId || requestedWorkspaceId === trackedWorkspaceId) {
     return resourcesState;
@@ -384493,8 +384495,8 @@ async function createExtensibleContractCollection(workspaceId, built, inputs, de
 }
 async function runBootstrapInner(inputs, dependencies, telemetry) {
   const outputs = createPlannedOutputs(inputs);
-  const branchDecision = decideBranchTier(inputs);
-  const branchMarkerTimestamp = /* @__PURE__ */ new Date();
+  const branchDecision = dependencies.branchDecision ?? decideBranchTier(inputs);
+  const branchMarkerTimestamp = dependencies.branchMarkerTimestamp ?? /* @__PURE__ */ new Date();
   const isCanonicalWriter = branchDecision.tier === "legacy" || branchDecision.tier === "canonical";
   const canonicalProjectName = inputs.projectName;
   const workspaceName = createWorkspaceName(inputs);
@@ -384548,7 +384550,18 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const artifactProjectName = deriveArtifactSafeCollectionName(collectionAssetProjectName);
   const rawStateStore = resolveResourcesStateStore(dependencies);
   const trackedState = rawStateStore.read();
-  const workspaceScopedTrackedState = scopeResourcesStateToTargetWorkspace(inputs, trackedState);
+  let workspaceScopedTrackedState = scopeResourcesStateToTargetWorkspace(inputs, trackedState);
+  if (workspaceScopedTrackedState === trackedState && !inputs.workspaceId?.trim() && trackedState?.workspace?.id?.trim() && trackedState.cloudResources && inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo) {
+    const repositoryWorkspace = await dependencies.internalIntegration.findWorkspaceForRepo(
+      inputs.repoUrl
+    );
+    if (repositoryWorkspace.state === "linked-visible") {
+      workspaceScopedTrackedState = scopeResourcesStateToWorkspace(
+        trackedState,
+        repositoryWorkspace.workspace.id
+      );
+    }
+  }
   if (workspaceScopedTrackedState !== trackedState) {
     dependencies.core.info(
       "Target workspace differs from .postman/resources.yaml; ignoring tracked asset ids from the prior workspace"
@@ -385804,7 +385817,8 @@ async function runGatedValidation(inputs, decision, actionCore) {
   }
   return outputs;
 }
-async function runAction(actionCore = core_exports, actionExec = exec_exports, actionIo = io_exports) {
+async function runAction(actionCore = core_exports, actionExec = exec_exports, actionIo = io_exports, options = {}) {
+  const branchMarkerTimestamp = options.branchMarkerTimestamp ?? /* @__PURE__ */ new Date();
   const inputs = readActionInputs(actionCore);
   const branchDecision = decideBranchTier(inputs);
   process.env[BRANCH_DECISION_ENV] = serializeBranchDecision(branchDecision);
@@ -385901,7 +385915,7 @@ async function runAction(actionCore = core_exports, actionExec = exec_exports, a
       "Skipping governance assignment because postman-access-token is not configured"
     );
   }
-  return runBootstrap(inputs, dependencies);
+  return runBootstrap(inputs, { ...dependencies, branchDecision, branchMarkerTimestamp });
 }
 function createRoutingPostmanClient(options) {
   const { gateway } = options;

@@ -2623,6 +2623,7 @@ async function runBootstrapInner(
   // it cannot carry a spec mapping into a different target workspace.
   let repositoryWorkspaceProbe: RepositoryWorkspaceProbe | undefined;
   let resourcesState = defaultResourcesState;
+  let deferWorkspaceStateWriteUntilSpecSync = false;
   if (onboardingScope === 'spec-only') {
     repositoryWorkspaceProbe =
       inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo
@@ -2634,6 +2635,7 @@ async function runBootstrapInner(
         : inputs.workspaceId?.trim() || trackedState?.workspace?.id?.trim();
     const scopedTrackedState = scopeResourcesStateToWorkspace(trackedState, selectedWorkspaceId);
     if (scopedTrackedState !== trackedState) {
+      deferWorkspaceStateWriteUntilSpecSync = true;
       dependencies.core.info(
         'Selected workspace does not exactly match the tracked workspace; ignoring tracked asset ids'
       );
@@ -2829,16 +2831,24 @@ async function runBootstrapInner(
   const workspaceId = provisioned.workspaceId;
   const persistWorkspaceId = provisioned.persistable;
   outputs['workspace-id'] = workspaceId || '';
-  // Workspace-only state may persist immediately; spec/collection ids wait.
-  persistWorkspaceOnlyState(
-    stateStore,
-    writableResourcesState,
-    inputs,
-    outputs,
-    persistWorkspaceId,
-    collectionAssetProjectName,
-    releaseLabel
-  );
+  // When spec-only onboarding switches workspace ownership, keep the scoped
+  // state in memory until the spec mutation succeeds. Otherwise a failed spec
+  // upload would replace the prior workspace/spec mappings with partial state.
+  if (deferWorkspaceStateWriteUntilSpecSync) {
+    dependencies.core.info(
+      'Deferring workspace state write until spec-only onboarding completes successfully.'
+    );
+  } else {
+    persistWorkspaceOnlyState(
+      stateStore,
+      writableResourcesState,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      collectionAssetProjectName,
+      releaseLabel
+    );
+  }
 
   let baselineCollectionId = onboardingScope === 'full' ? inputs.baselineCollectionId : undefined;
   let smokeCollectionId = onboardingScope === 'full' ? inputs.smokeCollectionId : undefined;
@@ -3178,7 +3188,7 @@ async function runBootstrapInner(
         }
         outputs['spec-id'] = specId;
         // Defer resources-state persistence of spec-id until verified sync +
-        // generation/linking succeed (workspace-only state already written).
+        // generation/linking succeed (workspace-only state may already be written).
       }
     )
   );
@@ -3895,7 +3905,7 @@ async function runBootstrapInner(
   }
 
   // Persist spec-id + collection resources only after verified linking.
-  // generation/linking succeed. Workspace-only state was written earlier.
+  // Workspace-only state was either written earlier or intentionally deferred.
   recordCurrentBootstrapResources({
     assetProjectName: artifactProjectName,
     inputs,
@@ -3976,9 +3986,17 @@ export async function runGatedValidation(
       content = await safeFetchText(inputs.specUrl, { depth: 0 });
     }
     if (content) {
-      const specType = bundle
-        ? definitionFormatToSpecType(bundle.format)
-        : detectSpecType(content, inputs.specPath);
+      const specType: SpecType =
+        inputs.protocol && inputs.protocol !== 'auto'
+          ? inputs.protocol
+          : bundle
+            ? definitionFormatToSpecType(bundle.format)
+            : detectSpecType(content, inputs.specPath);
+      if (inputs.onboardingScope === 'spec-only' && specType !== 'openapi') {
+        throw new Error(
+          `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${specType}`
+        );
+      }
       if (specType === 'openapi') {
         const document = parseOpenApiDocument(content);
         const index = buildContractIndex(document);

@@ -384617,11 +384617,13 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   }
   let repositoryWorkspaceProbe;
   let resourcesState = defaultResourcesState;
+  let deferWorkspaceStateWriteUntilSpecSync = false;
   if (onboardingScope === "spec-only") {
     repositoryWorkspaceProbe = inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo ? await dependencies.internalIntegration.findWorkspaceForRepo(inputs.repoUrl) : void 0;
     const selectedWorkspaceId = repositoryWorkspaceProbe?.state === "linked-visible" ? repositoryWorkspaceProbe.workspace.id : inputs.workspaceId?.trim() || trackedState?.workspace?.id?.trim();
     const scopedTrackedState = scopeResourcesStateToWorkspace(trackedState, selectedWorkspaceId);
     if (scopedTrackedState !== trackedState) {
+      deferWorkspaceStateWriteUntilSpecSync = true;
       dependencies.core.info(
         "Selected workspace does not exactly match the tracked workspace; ignoring tracked asset ids"
       );
@@ -384793,15 +384795,21 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const workspaceId = provisioned.workspaceId;
   const persistWorkspaceId = provisioned.persistable;
   outputs["workspace-id"] = workspaceId || "";
-  persistWorkspaceOnlyState(
-    stateStore,
-    writableResourcesState,
-    inputs,
-    outputs,
-    persistWorkspaceId,
-    collectionAssetProjectName,
-    releaseLabel
-  );
+  if (deferWorkspaceStateWriteUntilSpecSync) {
+    dependencies.core.info(
+      "Deferring workspace state write until spec-only onboarding completes successfully."
+    );
+  } else {
+    persistWorkspaceOnlyState(
+      stateStore,
+      writableResourcesState,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      collectionAssetProjectName,
+      releaseLabel
+    );
+  }
   let baselineCollectionId = onboardingScope === "full" ? inputs.baselineCollectionId : void 0;
   let smokeCollectionId = onboardingScope === "full" ? inputs.smokeCollectionId : void 0;
   let contractCollectionId = onboardingScope === "full" ? inputs.contractCollectionId : void 0;
@@ -385749,7 +385757,12 @@ async function runGatedValidation(inputs, decision, actionCore) {
       content = await safeFetchText(inputs.specUrl, { depth: 0 });
     }
     if (content) {
-      const specType = bundle3 ? definitionFormatToSpecType(bundle3.format) : detectSpecType(content, inputs.specPath);
+      const specType = inputs.protocol && inputs.protocol !== "auto" ? inputs.protocol : bundle3 ? definitionFormatToSpecType(bundle3.format) : detectSpecType(content, inputs.specPath);
+      if (inputs.onboardingScope === "spec-only" && specType !== "openapi") {
+        throw new Error(
+          `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${specType}`
+        );
+      }
       if (specType === "openapi") {
         const document2 = parseOpenApiDocument(content);
         const index = buildContractIndex(document2);

@@ -886,6 +886,53 @@ describe('bootstrap action', () => {
     expect(postman.updateSpec).not.toHaveBeenCalled();
   });
 
+  it('preserves prior tracked state when a different-workspace spec-only upload fails', async () => {
+    const postman = createRollbackPostman({
+      uploadSpec: vi.fn().mockRejectedValue(new Error('spec upload failed'))
+    });
+    const writes: Array<Record<string, unknown>> = [];
+    const trackedState = {
+      version: 2,
+      workspace: { id: 'ws-prior' },
+      cloudResources: {
+        collections: {
+          '../postman/collections/core-payments': 'col-prior'
+        },
+        specs: {
+          'spec-url:https://example.test/openapi.yaml': 'spec-prior'
+        }
+      }
+    };
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        inputs: {
+          workspaceId: 'ws-target',
+          specId: undefined,
+          onboardingScope: 'spec-only'
+        },
+        resourcesState: {
+          read: () => trackedState,
+          write: (state) => writes.push(structuredClone(state))
+        }
+      })
+    ).rejects.toThrow(/spec upload failed/);
+
+    expect(writes).toEqual([]);
+    expect(trackedState).toEqual({
+      version: 2,
+      workspace: { id: 'ws-prior' },
+      cloudResources: {
+        collections: {
+          '../postman/collections/core-payments': 'col-prior'
+        },
+        specs: {
+          'spec-url:https://example.test/openapi.yaml': 'spec-prior'
+        }
+      }
+    });
+  });
+
   it('drops tracked asset ids when spec-only onboarding adopts a different linked workspace', async () => {
     const postman = createRollbackPostman({
       uploadSpec: vi.fn().mockResolvedValue('spec-target')

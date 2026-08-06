@@ -94,14 +94,14 @@ describe('bootstrap action contract', () => {
       'false'
     ]);
     expect(actionManifest.inputs['sync-examples'].default).toBe('true');
-    expect(bootstrapActionContract.inputs['sync-generated-assets'].default).toBe('true');
-    expect(bootstrapActionContract.inputs['sync-generated-assets'].allowedValues).toEqual([
-      'true',
-      'false'
+    expect(bootstrapActionContract.inputs['onboarding-scope'].default).toBe('full');
+    expect(bootstrapActionContract.inputs['onboarding-scope'].allowedValues).toEqual([
+      'full',
+      'spec-only'
     ]);
-    expect(actionManifest.inputs['sync-generated-assets'].default).toBe('true');
-    expect(resolveInputs({}).syncGeneratedAssets).toBe(true);
-    expect(resolveInputs({ INPUT_SYNC_GENERATED_ASSETS: 'false' }).syncGeneratedAssets).toBe(false);
+    expect(actionManifest.inputs['onboarding-scope'].default).toBe('full');
+    expect(resolveInputs({}).onboardingScope).toBe('full');
+    expect(resolveInputs({ INPUT_ONBOARDING_SCOPE: 'spec-only' }).onboardingScope).toBe('spec-only');
     expect(resolveInputs({}).syncExamples).toBe(true);
 
     expect(bootstrapActionContract.inputs['collection-sync-mode'].default).toBe('refresh');

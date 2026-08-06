@@ -64,6 +64,7 @@ function createIoStub(): IOLike {
 function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   return {
     projectName: 'Payments',
+    onboardingScope: 'full',
     syncExamples: true,
     collectionSyncMode: 'refresh',
     specSyncMode: 'update',

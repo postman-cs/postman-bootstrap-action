@@ -114,6 +114,7 @@ function createExecStub(): ExecLike {
 function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   return {
     projectName: 'orchestration-api',
+    onboardingScope: 'full',
     syncExamples: true,
     collectionSyncMode: 'refresh',
     specSyncMode: 'update',

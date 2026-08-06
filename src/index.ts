@@ -125,7 +125,7 @@ export interface ResolvedInputs {
   smokeCollectionId?: string;
   contractCollectionId?: string;
   additionalCollectionsDir?: string;
-  syncGeneratedAssets?: boolean;
+  onboardingScope: 'full' | 'spec-only';
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
@@ -697,10 +697,10 @@ export function resolveInputs(
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
     additionalCollectionsDir: getInput('additional-collections-dir', env),
-    syncGeneratedAssets: parseBooleanInput(
-      'sync-generated-assets',
-      getInput('sync-generated-assets', env),
-      true
+    onboardingScope: parseEnumInput<'full' | 'spec-only'>(
+      'onboarding-scope',
+      getInput('onboarding-scope', env),
+      'full'
     ),
     syncExamples: parseBooleanInput('sync-examples', getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
@@ -1048,9 +1048,9 @@ export function readActionInputs(
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, 'additional-collections-dir'),
-    INPUT_SYNC_GENERATED_ASSETS:
-      optionalInput(actionCore, 'sync-generated-assets') ??
-      bootstrapActionContract.inputs['sync-generated-assets'].default,
+    INPUT_ONBOARDING_SCOPE:
+      optionalInput(actionCore, 'onboarding-scope') ??
+      bootstrapActionContract.inputs['onboarding-scope'].default,
     INPUT_SYNC_EXAMPLES:
       optionalInput(actionCore, 'sync-examples') ??
       bootstrapActionContract.inputs['sync-examples'].default,
@@ -2439,6 +2439,7 @@ async function runBootstrapInner(
   dependencies: BootstrapExecutionDependencies,
   telemetry: TelemetryContext
 ): Promise<PlannedOutputs> {
+  inputs = { ...inputs, onboardingScope: inputs.onboardingScope ?? 'full' };
   const outputs = createPlannedOutputs(inputs);
 
   // Branch-aware sync: the effective BranchDecision (inherited from the
@@ -2465,7 +2466,7 @@ async function runBootstrapInner(
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
   const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
-  const syncGeneratedAssets = inputs.syncGeneratedAssets !== false;
+  const onboardingScope = inputs.onboardingScope;
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -2478,7 +2479,7 @@ async function runBootstrapInner(
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ['spec-id', inputs.specId],
-      ...(syncGeneratedAssets
+      ...(onboardingScope === 'full'
         ? [
             ['baseline-collection-id', inputs.baselineCollectionId],
             ['smoke-collection-id', inputs.smokeCollectionId],
@@ -2495,7 +2496,7 @@ async function runBootstrapInner(
 
   const requiresReleaseLabel =
     inputs.specSyncMode === 'version' ||
-    (syncGeneratedAssets && inputs.collectionSyncMode === 'version');
+    (onboardingScope === 'full' && inputs.collectionSyncMode === 'version');
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -2536,6 +2537,14 @@ async function runBootstrapInner(
       'branch-aware sync: canonical asset ids in .postman/resources.yaml are not resolved on a non-canonical run'
     );
   }
+  const defaultResourcesState = isCanonicalWriter
+    ? trackedState
+    : trackedState?.workspace
+      ? { workspace: trackedState.workspace }
+      : null;
+  const additionalCollections = onboardingScope === 'full'
+    ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, defaultResourcesState)
+    : [];
 
   let previousSpecContent: string | undefined;
   let previousSpecRollbackHash: string | undefined;
@@ -2591,9 +2600,9 @@ async function runBootstrapInner(
         ? definitionFormatToSpecType(sourceDefinitionBundle.format)
         : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== 'openapi') {
-    if (!syncGeneratedAssets) {
+    if (onboardingScope === 'spec-only') {
       throw new Error(
-        `sync-generated-assets=false currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
+        `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
       );
     }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
@@ -2609,32 +2618,33 @@ async function runBootstrapInner(
     );
   }
 
-  const repositoryWorkspaceProbe =
-    inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo
-      ? await dependencies.internalIntegration.findWorkspaceForRepo(inputs.repoUrl)
-      : undefined;
-  const selectedWorkspaceId =
-    repositoryWorkspaceProbe?.state === 'linked-visible'
-      ? repositoryWorkspaceProbe.workspace.id
-      : inputs.workspaceId?.trim() || trackedState?.workspace?.id?.trim();
-  const workspaceScopedTrackedState = scopeResourcesStateToWorkspace(
-    trackedState,
-    selectedWorkspaceId
-  );
-  if (workspaceScopedTrackedState !== trackedState) {
-    dependencies.core.info(
-      'Selected workspace does not exactly match the tracked workspace; ignoring tracked asset ids'
-    );
+  // Preserve the pre-flag state-resolution contract when generated assets are
+  // enabled. Specs-only mode scopes tracked IDs to an exact workspace match so
+  // it cannot carry a spec mapping into a different target workspace.
+  let repositoryWorkspaceProbe: RepositoryWorkspaceProbe | undefined;
+  let resourcesState = defaultResourcesState;
+  if (onboardingScope === 'spec-only') {
+    repositoryWorkspaceProbe =
+      inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo
+        ? await dependencies.internalIntegration.findWorkspaceForRepo(inputs.repoUrl)
+        : undefined;
+    const selectedWorkspaceId =
+      repositoryWorkspaceProbe?.state === 'linked-visible'
+        ? repositoryWorkspaceProbe.workspace.id
+        : inputs.workspaceId?.trim() || trackedState?.workspace?.id?.trim();
+    const scopedTrackedState = scopeResourcesStateToWorkspace(trackedState, selectedWorkspaceId);
+    if (scopedTrackedState !== trackedState) {
+      dependencies.core.info(
+        'Selected workspace does not exactly match the tracked workspace; ignoring tracked asset ids'
+      );
+    }
+    resourcesState = isCanonicalWriter
+      ? scopedTrackedState
+      : scopedTrackedState?.workspace
+        ? { workspace: scopedTrackedState.workspace }
+        : null;
   }
-  const resourcesState = isCanonicalWriter
-    ? workspaceScopedTrackedState
-    : workspaceScopedTrackedState?.workspace
-      ? { workspace: workspaceScopedTrackedState.workspace }
-      : null;
   const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
-  const additionalCollections = syncGeneratedAssets
-    ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, resourcesState)
-    : [];
   let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
   if (!inputs.specId && specId) {
     dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
@@ -2830,12 +2840,12 @@ async function runBootstrapInner(
     releaseLabel
   );
 
-  let baselineCollectionId = syncGeneratedAssets ? inputs.baselineCollectionId : undefined;
-  let smokeCollectionId = syncGeneratedAssets ? inputs.smokeCollectionId : undefined;
-  let contractCollectionId = syncGeneratedAssets ? inputs.contractCollectionId : undefined;
+  let baselineCollectionId = onboardingScope === 'full' ? inputs.baselineCollectionId : undefined;
+  let smokeCollectionId = onboardingScope === 'full' ? inputs.smokeCollectionId : undefined;
+  let contractCollectionId = onboardingScope === 'full' ? inputs.contractCollectionId : undefined;
 
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (syncGeneratedAssets && !baselineCollectionId) {
+  if (onboardingScope === 'full' && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -2844,7 +2854,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
     }
   }
-  if (syncGeneratedAssets && !smokeCollectionId) {
+  if (onboardingScope === 'full' && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -2857,7 +2867,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
     }
   }
-  if (syncGeneratedAssets && !contractCollectionId) {
+  if (onboardingScope === 'full' && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -3197,13 +3207,13 @@ async function runBootstrapInner(
       }
     | undefined;
   void openApiOperationLedger;
-  if (!syncGeneratedAssets) {
+  if (onboardingScope === 'spec-only') {
     outputs['baseline-collection-id'] = '';
     outputs['smoke-collection-id'] = '';
     outputs['contract-collection-id'] = '';
     outputs['collections-json'] = JSON.stringify({ baseline: '', contract: '', smoke: '' });
     dependencies.core.info(
-      'Generated asset sync disabled; preserving workspace/spec onboarding and skipping collections.'
+      'onboarding-scope=spec-only; preserving workspace/spec onboarding and skipping collections.'
     );
     recordCurrentBootstrapResources({
       assetProjectName: artifactProjectName,

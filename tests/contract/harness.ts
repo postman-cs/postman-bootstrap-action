@@ -38,6 +38,8 @@ export const VALID_SPEC_31 = `{
 const NEUTRALIZED_ENV_VARS = [
   'GITHUB_REPOSITORY',
   'GITHUB_SERVER_URL',
+  // The host runner's PR payload must not override scenario-pinned identity.
+  'GITHUB_EVENT_PATH',
   'CI_PROJECT_URL',
   'CI_PROJECT_PATH',
   'CI_PROJECT_NAME',

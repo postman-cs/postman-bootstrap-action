@@ -169,6 +169,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `smoke-collection-id` | Existing smoke collection ID | no |  |
 | `contract-collection-id` | Existing contract collection ID | no |  |
 | `additional-collections-dir` | Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update. | no |  |
+| `sync-generated-assets` | Whether to create or update generated collections and curated collection assets. Set false for OpenAPI workspace/spec-only onboarding; existing generated assets are left unchanged. | no | `true` |
 | `sync-examples` | Whether linked spec/collection relations should enable example syncing | no | `true` |
 | `collection-sync-mode` | Collection lifecycle policy (refresh or version) | no | `refresh` |
 | `spec-sync-mode` | Spec lifecycle policy (update or version) | no | `update` |

@@ -125,6 +125,7 @@ export interface ResolvedInputs {
   smokeCollectionId?: string;
   contractCollectionId?: string;
   additionalCollectionsDir?: string;
+  syncGeneratedAssets?: boolean;
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
@@ -696,6 +697,11 @@ export function resolveInputs(
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
     additionalCollectionsDir: getInput('additional-collections-dir', env),
+    syncGeneratedAssets: parseBooleanInput(
+      'sync-generated-assets',
+      getInput('sync-generated-assets', env),
+      true
+    ),
     syncExamples: parseBooleanInput('sync-examples', getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
@@ -1042,6 +1048,9 @@ export function readActionInputs(
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, 'additional-collections-dir'),
+    INPUT_SYNC_GENERATED_ASSETS:
+      optionalInput(actionCore, 'sync-generated-assets') ??
+      bootstrapActionContract.inputs['sync-generated-assets'].default,
     INPUT_SYNC_EXAMPLES:
       optionalInput(actionCore, 'sync-examples') ??
       bootstrapActionContract.inputs['sync-examples'].default,
@@ -1404,6 +1413,25 @@ function resolveSpecIdFromResourcesState(
   return resourcesState?.cloudResources?.specs?.[key];
 }
 
+function scopeResourcesStateToWorkspace(
+  resourcesState: PostmanResourcesState | null,
+  selectedWorkspaceId?: string
+): PostmanResourcesState | null {
+  const trackedWorkspaceId = resourcesState?.workspace?.id?.trim();
+  if (!resourcesState || (trackedWorkspaceId && selectedWorkspaceId === trackedWorkspaceId)) {
+    return resourcesState;
+  }
+
+  const workspaceScopedState = { ...resourcesState };
+  delete workspaceScopedState.canonical;
+  delete workspaceScopedState.cloudResources;
+  if (!selectedWorkspaceId) {
+    delete workspaceScopedState.workspace;
+    return workspaceScopedState;
+  }
+  return { ...workspaceScopedState, workspace: { id: selectedWorkspaceId } };
+}
+
 function recordCurrentBootstrapResources(options: {
   assetProjectName: string;
   inputs: ResolvedInputs;
@@ -1591,6 +1619,10 @@ type ProvisionedWorkspace = {
   persistable: boolean;
 };
 
+type RepositoryWorkspaceProbe = Awaited<
+  ReturnType<InternalIntegrationAdapter['findWorkspaceForRepo']>
+>;
+
 /**
  * Resolve, reuse, or create the Postman workspace (with org-mode sub-team
  * handling and visibility checks), assign governance, invite the requester, and
@@ -1606,7 +1638,8 @@ async function provisionWorkspace(
   outputs: PlannedOutputs,
   resourcesState: PostmanResourcesState | null,
   workspaceName: string,
-  aboutText: string
+  aboutText: string,
+  repositoryWorkspaceProbe?: RepositoryWorkspaceProbe
 ): Promise<ProvisionedWorkspace> {
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
@@ -1633,7 +1666,9 @@ async function provisionWorkspace(
   // before name-based selection/create so a cross-team invisible owner fails
   // admission with zero asset writes, and a visible owner is adopted.
   if (repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo) {
-    const probe = await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl);
+    const probe =
+      repositoryWorkspaceProbe ??
+      (await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl));
     if (probe.state === 'linked-invisible') {
       const orgTail = inputs.workspaceTeamId
         ? ' Verify workspace-team-id; if the owner is in another sub-team, ask that sub-team\'s admin to disconnect it.'
@@ -2430,6 +2465,7 @@ async function runBootstrapInner(
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
   const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
+  const syncGeneratedAssets = inputs.syncGeneratedAssets !== false;
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -2442,9 +2478,13 @@ async function runBootstrapInner(
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ['spec-id', inputs.specId],
-      ['baseline-collection-id', inputs.baselineCollectionId],
-      ['smoke-collection-id', inputs.smokeCollectionId],
-      ['contract-collection-id', inputs.contractCollectionId]
+      ...(syncGeneratedAssets
+        ? [
+            ['baseline-collection-id', inputs.baselineCollectionId],
+            ['smoke-collection-id', inputs.smokeCollectionId],
+            ['contract-collection-id', inputs.contractCollectionId]
+          ]
+        : [])
     ].filter(([, value]) => Boolean(value));
     if (explicitCanonicalIds.length > 0) {
       throw new Error(
@@ -2454,7 +2494,8 @@ async function runBootstrapInner(
   }
 
   const requiresReleaseLabel =
-    inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
+    inputs.specSyncMode === 'version' ||
+    (syncGeneratedAssets && inputs.collectionSyncMode === 'version');
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -2490,25 +2531,10 @@ async function runBootstrapInner(
           );
         }
       };
-  const resourcesState = isCanonicalWriter
-    ? trackedState
-    : trackedState?.workspace
-      ? { workspace: trackedState.workspace }
-      : null;
   if (!isCanonicalWriter && trackedState?.cloudResources) {
     dependencies.core.info(
       'branch-aware sync: canonical asset ids in .postman/resources.yaml are not resolved on a non-canonical run'
     );
-  }
-  const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
-  const additionalCollections = loadAdditionalCollectionFiles(
-    inputs.additionalCollectionsDir,
-    resourcesState
-  );
-
-  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
-  if (!inputs.specId && specId) {
-    dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
   }
 
   let previousSpecContent: string | undefined;
@@ -2565,6 +2591,11 @@ async function runBootstrapInner(
         ? definitionFormatToSpecType(sourceDefinitionBundle.format)
         : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== 'openapi') {
+    if (!syncGeneratedAssets) {
+      throw new Error(
+        `sync-generated-assets=false currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
+      );
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     // Protocol collections are local EC generation; protobuf never uploads to Spec Hub.
     return runProtocolBootstrap(
@@ -2576,6 +2607,37 @@ async function runBootstrapInner(
       telemetry,
       sourceDefinitionBundle
     );
+  }
+
+  const repositoryWorkspaceProbe =
+    inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo
+      ? await dependencies.internalIntegration.findWorkspaceForRepo(inputs.repoUrl)
+      : undefined;
+  const selectedWorkspaceId =
+    repositoryWorkspaceProbe?.state === 'linked-visible'
+      ? repositoryWorkspaceProbe.workspace.id
+      : inputs.workspaceId?.trim() || trackedState?.workspace?.id?.trim();
+  const workspaceScopedTrackedState = scopeResourcesStateToWorkspace(
+    trackedState,
+    selectedWorkspaceId
+  );
+  if (workspaceScopedTrackedState !== trackedState) {
+    dependencies.core.info(
+      'Selected workspace does not exactly match the tracked workspace; ignoring tracked asset ids'
+    );
+  }
+  const resourcesState = isCanonicalWriter
+    ? workspaceScopedTrackedState
+    : workspaceScopedTrackedState?.workspace
+      ? { workspace: workspaceScopedTrackedState.workspace }
+      : null;
+  const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
+  const additionalCollections = syncGeneratedAssets
+    ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, resourcesState)
+    : [];
+  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
+  if (!inputs.specId && specId) {
+    dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
   }
 
   const useMultiFileSync = Boolean(sourceDefinitionBundle && sourceDefinitionBundle.files.size > 1);
@@ -2751,7 +2813,8 @@ async function runBootstrapInner(
     outputs,
     resourcesState,
     workspaceName,
-    aboutText
+    aboutText,
+    repositoryWorkspaceProbe
   );
   const workspaceId = provisioned.workspaceId;
   const persistWorkspaceId = provisioned.persistable;
@@ -2767,12 +2830,12 @@ async function runBootstrapInner(
     releaseLabel
   );
 
-  let baselineCollectionId = inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.smokeCollectionId;
-  let contractCollectionId = inputs.contractCollectionId;
+  let baselineCollectionId = syncGeneratedAssets ? inputs.baselineCollectionId : undefined;
+  let smokeCollectionId = syncGeneratedAssets ? inputs.smokeCollectionId : undefined;
+  let contractCollectionId = syncGeneratedAssets ? inputs.contractCollectionId : undefined;
 
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (!baselineCollectionId) {
+  if (syncGeneratedAssets && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -2781,7 +2844,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
     }
   }
-  if (!smokeCollectionId) {
+  if (syncGeneratedAssets && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -2794,7 +2857,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
     }
   }
-  if (!contractCollectionId) {
+  if (syncGeneratedAssets && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -3134,6 +3197,30 @@ async function runBootstrapInner(
       }
     | undefined;
   void openApiOperationLedger;
+  if (!syncGeneratedAssets) {
+    outputs['baseline-collection-id'] = '';
+    outputs['smoke-collection-id'] = '';
+    outputs['contract-collection-id'] = '';
+    outputs['collections-json'] = JSON.stringify({ baseline: '', contract: '', smoke: '' });
+    dependencies.core.info(
+      'Generated asset sync disabled; preserving workspace/spec onboarding and skipping collections.'
+    );
+    recordCurrentBootstrapResources({
+      assetProjectName: artifactProjectName,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      releaseLabel,
+      resourcesState: writableResourcesState
+    });
+    stateStore.write(writableResourcesState);
+    createdNewSpec = false;
+    for (const [name, value] of Object.entries(outputs)) {
+      dependencies.core.setOutput(name, value);
+    }
+    return outputs;
+  }
+
   if (specContentUnchanged) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.

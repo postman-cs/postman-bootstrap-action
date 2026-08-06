@@ -24,6 +24,10 @@ inputs:
   additional-collections-dir:
     description: Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update.
     required: false
+  sync-generated-assets:
+    description: Whether to create or update generated collections and curated collection assets. Set false for OpenAPI workspace/spec-only onboarding; existing generated assets are left unchanged.
+    required: false
+    default: 'true'
   sync-examples:
     description: Whether linked spec/collection relations should enable example syncing
     required: false

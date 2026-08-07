@@ -319859,6 +319859,12 @@ var bootstrapActionContract = {
       description: "Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update.",
       required: false
     },
+    "onboarding-scope": {
+      description: "Onboarding scope. Use full for the complete pipeline or spec-only for OpenAPI workspace and specification onboarding without generated assets.",
+      required: false,
+      default: "full",
+      allowedValues: ["full", "spec-only"]
+    },
     "sync-examples": {
       description: "Whether linked spec/collection relations should enable example syncing.",
       required: false,
@@ -348541,7 +348547,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "b09ce3fde57b1d5a4ca7f1cb08aa1a9a958be24b",
+  bootstrapCommit: "0b622522d88c967a693801a9addaac1324964da2",
   legs: [
     {
       mode: "nonorg",
@@ -383298,6 +383304,11 @@ function resolveInputs(env = process.env) {
     smokeCollectionId: getInput2("smoke-collection-id", env),
     contractCollectionId: getInput2("contract-collection-id", env),
     additionalCollectionsDir: getInput2("additional-collections-dir", env),
+    onboardingScope: parseEnumInput(
+      "onboarding-scope",
+      getInput2("onboarding-scope", env),
+      "full"
+    ),
     syncExamples: parseBooleanInput("sync-examples", getInput2("sync-examples", env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput2("collection-sync-mode", env)),
     specSyncMode: parseSpecSyncMode(getInput2("spec-sync-mode", env)),
@@ -383544,6 +383555,7 @@ function readActionInputs(actionCore) {
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, "smoke-collection-id"),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, "contract-collection-id"),
     INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, "additional-collections-dir"),
+    INPUT_ONBOARDING_SCOPE: optionalInput(actionCore, "onboarding-scope") ?? bootstrapActionContract.inputs["onboarding-scope"].default,
     INPUT_SYNC_EXAMPLES: optionalInput(actionCore, "sync-examples") ?? bootstrapActionContract.inputs["sync-examples"].default,
     INPUT_COLLECTION_SYNC_MODE: optionalInput(actionCore, "collection-sync-mode") ?? bootstrapActionContract.inputs["collection-sync-mode"].default,
     INPUT_SPEC_SYNC_MODE: optionalInput(actionCore, "spec-sync-mode") ?? bootstrapActionContract.inputs["spec-sync-mode"].default,
@@ -383739,6 +383751,20 @@ function resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel) {
   }
   return resourcesState?.cloudResources?.specs?.[key];
 }
+function scopeResourcesStateToWorkspace(resourcesState, selectedWorkspaceId) {
+  const trackedWorkspaceId = resourcesState?.workspace?.id?.trim();
+  if (!resourcesState || trackedWorkspaceId && selectedWorkspaceId === trackedWorkspaceId) {
+    return resourcesState;
+  }
+  const workspaceScopedState = { ...resourcesState };
+  delete workspaceScopedState.canonical;
+  delete workspaceScopedState.cloudResources;
+  if (!selectedWorkspaceId) {
+    delete workspaceScopedState.workspace;
+    return workspaceScopedState;
+  }
+  return { ...workspaceScopedState, workspace: { id: selectedWorkspaceId } };
+}
 function recordCurrentBootstrapResources(options) {
   const { assetProjectName, inputs, outputs, persistWorkspaceId, releaseLabel, resourcesState } = options;
   if (persistWorkspaceId && outputs["workspace-id"]) {
@@ -383890,7 +383916,7 @@ async function runBootstrap(inputs, dependencies) {
     throw error2;
   }
 }
-async function provisionWorkspace(inputs, dependencies, telemetry, outputs, resourcesState, workspaceName, aboutText) {
+async function provisionWorkspace(inputs, dependencies, telemetry, outputs, resourcesState, workspaceName, aboutText, repositoryWorkspaceProbe) {
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
     explicitWorkspaceId = resourcesState.workspace.id;
@@ -383906,7 +383932,7 @@ async function provisionWorkspace(inputs, dependencies, telemetry, outputs, reso
   telemetry.setTeamId(teamId);
   const repoUrl = inputs.repoUrl || "";
   if (repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo) {
-    const probe = await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl);
+    const probe = repositoryWorkspaceProbe ?? await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl);
     if (probe.state === "linked-invisible") {
       const orgTail = inputs.workspaceTeamId ? " Verify workspace-team-id; if the owner is in another sub-team, ask that sub-team's admin to disconnect it." : "";
       throw new Error(
@@ -384463,6 +384489,7 @@ async function createExtensibleContractCollection(workspaceId, built, inputs, de
   );
 }
 async function runBootstrapInner(inputs, dependencies, telemetry) {
+  inputs = { ...inputs, onboardingScope: inputs.onboardingScope ?? "full" };
   const outputs = createPlannedOutputs(inputs);
   const branchDecision = decideBranchTier(inputs);
   const isCanonicalWriter = branchDecision.tier === "legacy" || branchDecision.tier === "canonical";
@@ -384483,6 +384510,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
   const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
+  const onboardingScope = inputs.onboardingScope;
   if (branchDecision.tier !== "legacy") {
     outputs["sync-status"] = "synced";
     outputs["branch-decision"] = serializeBranchDecision(branchDecision);
@@ -384490,9 +384518,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ["spec-id", inputs.specId],
-      ["baseline-collection-id", inputs.baselineCollectionId],
-      ["smoke-collection-id", inputs.smokeCollectionId],
-      ["contract-collection-id", inputs.contractCollectionId]
+      ...onboardingScope === "full" ? [
+        ["baseline-collection-id", inputs.baselineCollectionId],
+        ["smoke-collection-id", inputs.smokeCollectionId],
+        ["contract-collection-id", inputs.contractCollectionId]
+      ] : []
     ].filter(([, value]) => Boolean(value));
     if (explicitCanonicalIds.length > 0) {
       throw new Error(
@@ -384500,7 +384530,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       );
     }
   }
-  const requiresReleaseLabel = inputs.collectionSyncMode === "version" || inputs.specSyncMode === "version";
+  const requiresReleaseLabel = inputs.specSyncMode === "version" || onboardingScope === "full" && inputs.collectionSyncMode === "version";
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : void 0;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -384519,21 +384549,13 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       );
     }
   };
-  const resourcesState = isCanonicalWriter ? trackedState : trackedState?.workspace ? { workspace: trackedState.workspace } : null;
   if (!isCanonicalWriter && trackedState?.cloudResources) {
     dependencies.core.info(
       "branch-aware sync: canonical asset ids in .postman/resources.yaml are not resolved on a non-canonical run"
     );
   }
-  const writableResourcesState = resourcesState ?? {};
-  const additionalCollections = loadAdditionalCollectionFiles(
-    inputs.additionalCollectionsDir,
-    resourcesState
-  );
-  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
-  if (!inputs.specId && specId) {
-    dependencies.core.info("Resolved spec-id from .postman/resources.yaml");
-  }
+  const defaultResourcesState = isCanonicalWriter ? trackedState : trackedState?.workspace ? { workspace: trackedState.workspace } : null;
+  const additionalCollections = onboardingScope === "full" ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, defaultResourcesState) : [];
   let previousSpecContent;
   let previousSpecRollbackHash;
   let previousBundleSnapshot;
@@ -384577,6 +384599,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const specSourceName = inputs.specPath || inputs.specUrl;
   const resolvedSpecType = inputs.protocol && inputs.protocol !== "auto" ? inputs.protocol : sourceDefinitionBundle ? definitionFormatToSpecType(sourceDefinitionBundle.format) : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== "openapi") {
+    if (onboardingScope === "spec-only") {
+      throw new Error(
+        `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
+      );
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     return runProtocolBootstrap(
       resolvedSpecType,
@@ -384587,6 +384614,26 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       telemetry,
       sourceDefinitionBundle
     );
+  }
+  let repositoryWorkspaceProbe;
+  let resourcesState = defaultResourcesState;
+  let deferWorkspaceStateWriteUntilSpecSync = false;
+  if (onboardingScope === "spec-only") {
+    repositoryWorkspaceProbe = inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo ? await dependencies.internalIntegration.findWorkspaceForRepo(inputs.repoUrl) : void 0;
+    const selectedWorkspaceId = repositoryWorkspaceProbe?.state === "linked-visible" ? repositoryWorkspaceProbe.workspace.id : inputs.workspaceId?.trim() || trackedState?.workspace?.id?.trim();
+    const scopedTrackedState = scopeResourcesStateToWorkspace(trackedState, selectedWorkspaceId);
+    if (scopedTrackedState !== trackedState) {
+      deferWorkspaceStateWriteUntilSpecSync = true;
+      dependencies.core.info(
+        "Selected workspace does not exactly match the tracked workspace; ignoring tracked asset ids"
+      );
+    }
+    resourcesState = isCanonicalWriter ? scopedTrackedState : scopedTrackedState?.workspace ? { workspace: scopedTrackedState.workspace } : null;
+  }
+  const writableResourcesState = resourcesState ?? {};
+  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
+  if (!inputs.specId && specId) {
+    dependencies.core.info("Resolved spec-id from .postman/resources.yaml");
   }
   const useMultiFileSync = Boolean(sourceDefinitionBundle && sourceDefinitionBundle.files.size > 1);
   const specContent = await runGroup(
@@ -384742,25 +384789,32 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     outputs,
     resourcesState,
     workspaceName,
-    aboutText
+    aboutText,
+    repositoryWorkspaceProbe
   );
   const workspaceId = provisioned.workspaceId;
   const persistWorkspaceId = provisioned.persistable;
   outputs["workspace-id"] = workspaceId || "";
-  persistWorkspaceOnlyState(
-    stateStore,
-    writableResourcesState,
-    inputs,
-    outputs,
-    persistWorkspaceId,
-    collectionAssetProjectName,
-    releaseLabel
-  );
-  let baselineCollectionId = inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.smokeCollectionId;
-  let contractCollectionId = inputs.contractCollectionId;
+  if (deferWorkspaceStateWriteUntilSpecSync) {
+    dependencies.core.info(
+      "Deferring workspace state write until spec-only onboarding completes successfully."
+    );
+  } else {
+    persistWorkspaceOnlyState(
+      stateStore,
+      writableResourcesState,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      collectionAssetProjectName,
+      releaseLabel
+    );
+  }
+  let baselineCollectionId = onboardingScope === "full" ? inputs.baselineCollectionId : void 0;
+  let smokeCollectionId = onboardingScope === "full" ? inputs.smokeCollectionId : void 0;
+  let contractCollectionId = onboardingScope === "full" ? inputs.contractCollectionId : void 0;
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (!baselineCollectionId) {
+  if (onboardingScope === "full" && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -384769,7 +384823,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info("Resolved baseline-collection-id from .postman/resources.yaml");
     }
   }
-  if (!smokeCollectionId) {
+  if (onboardingScope === "full" && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -384782,7 +384836,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info("Resolved smoke-collection-id from .postman/resources.yaml");
     }
   }
-  if (!contractCollectionId) {
+  if (onboardingScope === "full" && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -385076,6 +385130,29 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     let observedLocalOpenApiIntegration = dependencies.internalIntegration;
     let openApiOperationLedger;
     void openApiOperationLedger;
+    if (onboardingScope === "spec-only") {
+      outputs["baseline-collection-id"] = "";
+      outputs["smoke-collection-id"] = "";
+      outputs["contract-collection-id"] = "";
+      outputs["collections-json"] = JSON.stringify({ baseline: "", contract: "", smoke: "" });
+      dependencies.core.info(
+        "onboarding-scope=spec-only; preserving workspace/spec onboarding and skipping collections."
+      );
+      recordCurrentBootstrapResources({
+        assetProjectName: artifactProjectName,
+        inputs,
+        outputs,
+        persistWorkspaceId,
+        releaseLabel,
+        resourcesState: writableResourcesState
+      });
+      stateStore.write(writableResourcesState);
+      createdNewSpec = false;
+      for (const [name, value] of Object.entries(outputs)) {
+        dependencies.core.setOutput(name, value);
+      }
+      return outputs;
+    }
     if (specContentUnchanged) {
       outputs["baseline-collection-id"] = baselineCollectionId || "";
       outputs["smoke-collection-id"] = smokeCollectionId || "";
@@ -385680,7 +385757,12 @@ async function runGatedValidation(inputs, decision, actionCore) {
       content = await safeFetchText(inputs.specUrl, { depth: 0 });
     }
     if (content) {
-      const specType = bundle3 ? definitionFormatToSpecType(bundle3.format) : detectSpecType(content, inputs.specPath);
+      const specType = inputs.protocol && inputs.protocol !== "auto" ? inputs.protocol : bundle3 ? definitionFormatToSpecType(bundle3.format) : detectSpecType(content, inputs.specPath);
+      if (inputs.onboardingScope === "spec-only" && specType !== "openapi") {
+        throw new Error(
+          `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${specType}`
+        );
+      }
       if (specType === "openapi") {
         const document2 = parseOpenApiDocument(content);
         const index = buildContractIndex(document2);

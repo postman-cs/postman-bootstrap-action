@@ -94,6 +94,14 @@ describe('bootstrap action contract', () => {
       'false'
     ]);
     expect(actionManifest.inputs['sync-examples'].default).toBe('true');
+    expect(bootstrapActionContract.inputs['onboarding-scope'].default).toBe('full');
+    expect(bootstrapActionContract.inputs['onboarding-scope'].allowedValues).toEqual([
+      'full',
+      'spec-only'
+    ]);
+    expect(actionManifest.inputs['onboarding-scope'].default).toBe('full');
+    expect(resolveInputs({}).onboardingScope).toBe('full');
+    expect(resolveInputs({ INPUT_ONBOARDING_SCOPE: 'spec-only' }).onboardingScope).toBe('spec-only');
     expect(resolveInputs({}).syncExamples).toBe(true);
 
     expect(bootstrapActionContract.inputs['collection-sync-mode'].default).toBe('refresh');

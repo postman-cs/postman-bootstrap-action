@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -66,6 +66,7 @@ function createIoStub(): IOLike {
 function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   return {
     projectName: 'Payments',
+    onboardingScope: 'full',
     syncExamples: true,
     collectionSyncMode: 'refresh',
     specSyncMode: 'update',
@@ -345,6 +346,34 @@ describe('branch-aware bootstrap runs', () => {
       tier: 'canonical',
       canonicalBranch: 'main'
     });
+  });
+
+  it('rejects non-OpenAPI spec-only input during a credential-free gated run', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'branch-gated-spec-only-'));
+    writeFileSync(join(workspace, 'schema.graphql'), 'type Query { hello: String }\n');
+    vi.stubEnv('GITHUB_WORKSPACE', workspace);
+    vi.stubEnv('GITHUB_ACTIONS', 'true');
+    vi.stubEnv('GITHUB_REPOSITORY', 'postman-cs/postman-bootstrap-action');
+    vi.stubEnv('GITHUB_REF', 'refs/heads/feature/spec-only');
+    vi.stubEnv('GITHUB_REF_NAME', 'feature/spec-only');
+    vi.stubEnv('GITHUB_HEAD_REF', '');
+    vi.stubEnv('GITHUB_BASE_REF', '');
+    const core = createCoreStub();
+    core.getInput = vi.fn((name: string) => {
+      if (name === 'branch-strategy') return 'publish-gate';
+      if (name === 'canonical-branch') return 'main';
+      if (name === 'spec-path') return 'schema.graphql';
+      if (name === 'onboarding-scope') return 'spec-only';
+      return '';
+    });
+
+    try {
+      await expect(runAction(core, createExecStub(), createIoStub())).rejects.toThrow(
+        /onboarding-scope=spec-only currently supports OpenAPI specifications only; detected graphql/
+      );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('preview run creates a suffixed asset set, never writes tracked state, never resolves canonical ids', async () => {

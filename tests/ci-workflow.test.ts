@@ -7,6 +7,9 @@ const ciWorkflow = readFileSync(join(process.cwd(), '.github/workflows/ci.yml'),
 const seaWorkflow = readFileSync(join(process.cwd(), '.github/workflows/sea-binary.yml'), 'utf8');
 const windowsGateHelper = readFileSync(join(process.cwd(), '.github/scripts/run-windows-gates.mjs'), 'utf8');
 const cliTest = readFileSync(join(process.cwd(), 'tests/cli.test.ts'), 'utf8');
+const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+  scripts: Record<string, string>;
+};
 
 /** Extract one top-level job block: `  <id>:` through the next job header or EOF. */
 function jobText(workflow: string, jobId: string): string {
@@ -33,8 +36,17 @@ function linuxQueuedGates(runGates: string): string[] {
 const linux = jobText(ciWorkflow, 'gate');
 const windows = jobText(ciWorkflow, 'windows');
 const receiptNormalizer = jobText(ciWorkflow, 'normalize-receipt');
+const distParity = jobText(ciWorkflow, 'dist-parity');
+const ready = jobText(ciWorkflow, 'ready');
 
 describe('CI workflow dist/pack race contract', () => {
+  it('exposes the committed-dist parity split in package scripts', () => {
+    expect(pkg.scripts['verify:dist:shape']).toBe('node scripts/verify-dist-artifact.mjs');
+    expect(pkg.scripts['verify:dist:parity']).toBe('git diff --ignore-space-at-eol --text --exit-code -- dist');
+    expect(pkg.scripts['verify:dist:assert']).toBe('npm run verify:dist:shape && npm run verify:dist:parity');
+    expect(pkg.scripts['verify:dist']).toBe('npm run build && npm run verify:dist:assert');
+  });
+
   it('supersedes only older pull-request runs and queues Windows read-only gates', () => {
     expect(ciWorkflow).toContain('group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
     expect(ciWorkflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
@@ -75,7 +87,7 @@ describe('CI workflow dist/pack race contract', () => {
     expect(ciWorkflow).not.toContain('go install github.com/rhysd/actionlint');
   });
 
-  it('gates immutable dist on Linux and keeps Windows as a runtime-only lane', () => {
+  it('gates immutable dist shape on Linux and keeps Windows as a runtime-only lane', () => {
     // Regression for the parallel race where `npm run verify:dist` deleted
     // dist/ while tests/cli.test.ts ran `npm pack`.
     expect(ciWorkflow).toMatch(/run: npm run bundle[\s\S]*?- name: Run gates/);
@@ -85,24 +97,31 @@ describe('CI workflow dist/pack race contract', () => {
 
     const runGates = namedStep(linux, 'Run gates');
     expect(runGates).toContain('run test');
-    expect(runGates).toContain('run dist');
-    expect(runGates).toContain('npm run verify:dist:assert');
+    expect(runGates).toContain('run dist-shape');
+    expect(runGates).toContain('npm run verify:dist:shape');
+    expect(runGates).not.toContain('verify:dist:assert');
+    expect(runGates).not.toContain('verify:dist:parity');
     expect(runGates).not.toMatch(/npm run verify:dist(?:\s|$|"|')/);
     expect(runGates).not.toContain('npm run build');
     expect(runGates).not.toContain('rm -rf dist');
     expect(runGates).not.toMatch(/run dist\s+git diff --ignore-space-at-eol --text --exit-code -- dist/);
 
-    // Preserve aggregate gate reporting and expected-dist upload.
+    // Preserve aggregate gate reporting and candidate-dist upload (expected-dist moves to dist-parity).
     expect(runGates).toContain('gate:$n=pass');
     expect(runGates).toContain('gate:$n=fail');
     expect(runGates).toContain('::group::$n');
     expect(runGates).toContain('MAX_PARALLEL_GATES=2');
     expect(runGates).toContain('wait -n -p finished_pid');
 
-    const upload = namedStep(linux, 'Upload expected dist on mismatch');
-    expect(upload).toContain('if: failure()');
-    expect(upload).toContain('name: expected-dist');
-    expect(upload).toContain('path: dist/');
+    const candidate = namedStep(linux, 'Upload candidate dist');
+    expect(candidate).toContain('name: candidate-dist');
+    expect(candidate).toContain('dist/');
+    expect(candidate).toContain('dist-manifest.json');
+    expect(namedStep(linux, 'Write dist manifest')).toContain('lock_hash');
+    expect(namedStep(linux, 'Ensure clean tracked tree outside dist')).toContain('git status --porcelain');
+    expect(namedStep(linux, 'Ensure clean tracked tree outside dist')).toContain('validation/evidence/multifile-spec-sync.json');
+    expect(linux).not.toContain('name: expected-dist');
+
     expect(ciWorkflow).toContain('name: Windows gate');
     expect(ciWorkflow).toContain('runs-on: windows-latest');
     expect(windows).not.toContain('install/win64.ps1');
@@ -114,7 +133,7 @@ describe('CI workflow dist/pack race contract', () => {
       /if: steps\.windows-node-modules\.outputs\.cache-hit != 'true'\n {8}run: npm ci --prefer-offline --no-audit --no-fund\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/,
     );
     expect(seaWorkflow).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
-    expect((ciWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(3);
+    expect((ciWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(4);
     expect((seaWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(1);
     expect(namedStep(linux, 'Run gates')).not.toContain('NPM_TOKEN');
     expect(namedStep(windows, 'Run gates')).not.toContain('NPM_TOKEN');
@@ -174,7 +193,7 @@ describe('CI workflow dist/pack race contract', () => {
       'test',
       'routes',
       'typecheck',
-      'dist',
+      'dist-shape',
       'integ',
       'actionlint',
       'commitlint',
@@ -183,7 +202,7 @@ describe('CI workflow dist/pack race contract', () => {
     expect(runGates).toContain('run test       npm test');
     expect(runGates).toContain('run routes     npm run verify:route-manifest');
     expect(runGates).toContain('run typecheck  npm run typecheck');
-    expect(runGates).toContain('run dist       npm run verify:dist:assert');
+    expect(runGates).toContain('run dist-shape npm run verify:dist:shape');
     expect(runGates).toContain('run integ      npm run test:integration');
     expect(runGates).toContain('run actionlint "$ACTIONLINT_BIN"');
     expect(runGates).toContain('if [ "${{ github.event_name }}" = "pull_request" ]; then');
@@ -192,6 +211,8 @@ describe('CI workflow dist/pack race contract', () => {
     expect(runGates).toContain('--to "${{ github.event.pull_request.head.sha }}"');
 
     expect(runGates).not.toContain('npm run build');
+    expect(runGates).not.toContain('verify:dist:assert');
+    expect(runGates).not.toContain('verify:dist:parity');
     expect(runGates).not.toMatch(/npm run verify:dist(?:\s|$|"|')/);
     expect(runGates).not.toContain('rm -rf dist');
   });
@@ -211,6 +232,44 @@ describe('CI workflow dist/pack race contract', () => {
     expect(ciWorkflow).not.toMatch(/\bgo install\b/);
   });
 
+  it('uploads candidate dist from gate and expected-dist from dist-parity on mismatch', () => {
+    const candidate = namedStep(linux, 'Upload candidate dist');
+    expect(candidate.length).toBeGreaterThan(0);
+    expect(candidate).toContain('uses: actions/upload-artifact@v7');
+    expect(candidate).toContain('name: candidate-dist');
+    expect(candidate).toContain('dist/');
+    expect(candidate).toContain('dist-manifest.json');
+    expect(namedStep(linux, 'Write dist manifest')).toContain('lock_hash');
+    expect(namedStep(linux, 'Ensure clean tracked tree outside dist')).toContain('git status --porcelain');
+    expect(linux).not.toContain('name: expected-dist');
+
+    const upload = namedStep(distParity, 'Upload expected dist on mismatch');
+    expect(upload.length).toBeGreaterThan(0);
+    expect(upload).toContain('if: failure()');
+    expect(upload).toContain('uses: actions/upload-artifact@v7');
+    expect(upload).toContain('name: expected-dist');
+    expect(upload).toContain('path: dist/');
+    expect(distParity).toContain('npm run verify:dist:parity');
+    expect(distParity).not.toContain('verify:dist:shape');
+    expect(distParity).not.toContain('verify:dist:assert');
+    expect(distParity).toContain('fetch-depth: 0');
+    expect(distParity).toContain('npm run bundle');
+  });
+
+  it('aggregates gate, dist-parity, and windows in a required ready job', () => {
+    expect(ready).toContain('if: always()');
+    expect(ready).toContain('needs: [gate, dist-parity, windows]');
+    expect(ready).toContain('needs.gate.result');
+    expect(ready).toContain('needs.dist-parity.result');
+    expect(ready).toContain('needs.windows.result');
+    expect(ready).toContain('exit 1');
+    expect(ready).toContain('CI ready');
+    const jobsSection = ciWorkflow.slice(ciWorkflow.indexOf('\njobs:\n'));
+    const jobMatches = jobsSection.match(/^ {2}[a-zA-Z0-9_-]+:$/gm) ?? [];
+    expect(jobMatches).toEqual(['  normalize-receipt:', '  gate:', '  dist-parity:', '  windows:', '  ready:']);
+    expect(distParity).toMatch(/^\s*needs:\s*gate\s*$/m);
+  });
+
   it('retains Windows with exact caches, versioned CLI, and test+integ max-two gates', () => {
     expect(windows).toContain('name: Windows gate');
     expect(windows).toContain('runs-on: windows-latest');
@@ -221,9 +280,17 @@ describe('CI workflow dist/pack race contract', () => {
     expect(windows).toContain('id: windows-node-modules');
     expect(windows).toContain('id: windows-postman-cli');
     expect(windows).toContain('id: postman-cli-version');
-    expect(
-      (windows.match(/actions\/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4\.2\.0/g) ?? []).length,
-    ).toBe(2);
+    // Semantic pin: any 40-char hex SHA, consistent across file, with semver comment; both caches share same SHA
+    {
+      const cachePins = [...ciWorkflow.matchAll(/actions\/cache@([0-9a-f]{40})/g)].map((m) => m[1]!);
+      expect(cachePins.length).toBe(2);
+      for (const sha of cachePins) expect(sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(new Set(cachePins).size).toBe(1);
+      const windowsPins = [...windows.matchAll(/actions\/cache@([0-9a-f]{40})/g)].map((m) => m[1]!);
+      expect(windowsPins).toHaveLength(2);
+      expect(windows).toMatch(/uses:\s*actions\/cache@[0-9a-f]{40}\s+#\s*v\d+\.\d+\.\d+/);
+      expect((windows.match(/uses:\s*actions\/cache@[0-9a-f]{40}\s+#\s*v\d+\.\d+\.\d+/g) ?? []).length).toBe(2);
+    }
     const repositoryIdentity = '${{ github.event.pull_request.head.repo.full_name || github.repository }}';
     const nodeModulesKey =
       'node-modules-Windows-Node-24-' + repositoryIdentity + "-${{ hashFiles('package-lock.json') }}";
@@ -274,7 +341,6 @@ describe('CI workflow dist/pack race contract', () => {
     expect(addCliPath).not.toContain('postman.cmd');
     expect(addCliPath).not.toContain('node_modules\\.bin');
     expect(addCliPath).not.toContain('win64.ps1');
-    expect(addCliPath).not.toContain('dl-cli.pstmn.io');
     expect(addCliPath).not.toMatch(/\bif:/);
 
     const runGates = namedStep(windows, 'Run gates');

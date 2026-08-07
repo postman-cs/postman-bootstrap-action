@@ -166,6 +166,7 @@ jobs:
           import { createHash } from 'node:crypto';
           import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
           import { join, resolve } from 'node:path';
+          import { execSync } from 'node:child_process';
           const manifest = JSON.parse(readFileSync('/tmp/candidate/dist-manifest.json','utf8'));
           const expectedRepo = process.env.GITHUB_REPOSITORY;
           const expectedHead = process.env.PR_HEAD_SHA;
@@ -173,7 +174,7 @@ jobs:
           if (manifest.repository !== expectedRepo) throw new Error(`manifest repository ${manifest.repository} != ${expectedRepo}`);
           if (manifest.head_sha !== expectedHead) throw new Error(`manifest head_sha mismatch`);
           if (Number(manifest.pull_request) !== expectedPr) throw new Error(`manifest PR mismatch`);
-          const lock = require('node:child_process').execSync(`git show ${process.env.PR_HEAD_SHA}:package-lock.json`, {encoding: 'utf8'});
+          const lock = execSync(`git show ${process.env.PR_HEAD_SHA}:package-lock.json`, {encoding: 'utf8'});
           const lockHash = createHash('sha256').update(lock).digest('hex');
           if (manifest.lock_hash !== lockHash) throw new Error(`lock hash mismatch ${manifest.lock_hash} != ${lockHash}`);
           const allowlist = new Set(['dist/action.cjs','dist/cli.cjs','dist/index.cjs']);

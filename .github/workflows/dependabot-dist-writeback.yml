@@ -4,6 +4,9 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+    branches:
+      - main
+      - "dependabot/**"
   workflow_dispatch:
     inputs:
       pr_number:

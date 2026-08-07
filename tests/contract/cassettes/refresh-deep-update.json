@@ -1,0 +1,195 @@
+{
+  "interactions": [
+    {
+      "body": "{\"consumerType\":\"service_account\",\"data\":{\"user\":{\"id\":2002,\"roles\":[\"admin\"]}},\"identity\":{\"domain\":\"jared-demo\",\"team\":1001}}",
+      "key": "GET https://iapub.postman.co/api/sessions/current",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"message\":\"Squad feature is not available\"}",
+      "key": "proxy:ums GET /api/teams/1001/squads?settings=true&userRoles=true",
+      "repeatLast": true,
+      "requestQuery": "settings=true&userRoles=true",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 400
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-workspace-1\",\"visibilityStatus\":\"team\"}}",
+      "key": "proxy:workspaces GET /workspaces/cassette-workspace-1",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":[],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
+      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
+      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-specification-1\"}}",
+      "key": "proxy:specification POST /specifications?containerId=cassette-workspace-1&containerType=workspace #body-sha256=f574ec1afba9efb3703f4e44ba55e6c657cb1f4739c651665aeb36cf908bd86d",
+      "requestBodySha256": "f574ec1afba9efb3703f4e44ba55e6c657cb1f4739c651665aeb36cf908bd86d",
+      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":[{\"id\":\"cassette-specification-1\",\"name\":\"contract-payments\"}],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
+      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
+      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":[{\"id\":\"cassette-specification-1\",\"name\":\"contract-payments\"}],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
+      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
+      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":[{\"id\":\"cassette-specification-1\",\"name\":\"contract-payments\"}],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
+      "key": "proxy:specification GET /specifications?containerId=cassette-workspace-1&containerType=workspace",
+      "requestQuery": "containerId=cassette-workspace-1&containerType=workspace",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-specification-1\",\"name\":\"contract-payments\"}}",
+      "key": "proxy:specification GET /specifications/cassette-specification-1",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"collection\":{\"info\":{\"_postman_id\":\"cassette-collection-4\",\"name\":\"contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}}",
+      "key": "proxy:collection GET /v3/collections/cassette-collection-4/export",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"collection\":{\"info\":{\"_postman_id\":\"cassette-collection-5\",\"name\":\"[Smoke] contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}}",
+      "key": "proxy:collection GET /v3/collections/cassette-collection-5/export",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"collection\":{\"info\":{\"_postman_id\":\"cassette-collection-6\",\"name\":\"[Contract] contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}}",
+      "key": "proxy:collection GET /v3/collections/cassette-collection-6/export",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-collection-4\"}}",
+      "key": "proxy:sync PUT /collection/deepupdate/cassette-collection-4?format=2.1.0 #body-sha256=59a45e0ef5930d92810e2fe8a991faf467bea4e214feb54aecbf99fb050053a9",
+      "requestBodySha256": "59a45e0ef5930d92810e2fe8a991faf467bea4e214feb54aecbf99fb050053a9",
+      "requestQuery": "format=2.1.0",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-collection-5\"}}",
+      "key": "proxy:sync PUT /collection/deepupdate/cassette-collection-5?format=2.1.0 #body-sha256=73b733788cbab0f49707c7fbd7a9621daeffb59b2ac3d307235da592287977ad",
+      "requestBodySha256": "73b733788cbab0f49707c7fbd7a9621daeffb59b2ac3d307235da592287977ad",
+      "requestQuery": "format=2.1.0",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-collection-6\"}}",
+      "key": "proxy:sync PUT /collection/deepupdate/cassette-collection-6?format=2.1.0 #body-sha256=17fb6443296096752d685b851134452ba23e9bf5a7b00ccbf5fac6c1e77c5bd6",
+      "requestBodySha256": "17fb6443296096752d685b851134452ba23e9bf5a7b00ccbf5fac6c1e77c5bd6",
+      "requestQuery": "format=2.1.0",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"updated\":3}}",
+      "key": "proxy:specification PUT /specifications/cassette-specification-1/collections #body-sha256=19fae278294bb608bcd95174fdbbf2f1f56f9eb3ee13c93e0a92c24f4fbb646b",
+      "requestBodySha256": "19fae278294bb608bcd95174fdbbf2f1f56f9eb3ee13c93e0a92c24f4fbb646b",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":[{\"collection\":\"cassette-collection-4\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}},{\"collection\":\"cassette-collection-5\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}},{\"collection\":\"cassette-collection-6\",\"options\":{\"folderStrategy\":\"Paths\",\"parametersResolution\":\"Example\",\"requestNameSource\":\"Fallback\"},\"state\":\"in-sync\",\"syncOptions\":{\"syncExamples\":true}}],\"meta\":{\"cursor\":{\"next\":\"\"}}}",
+      "key": "proxy:specification GET /specifications/cassette-specification-1/collections?fields=syncOptions%2Coptions",
+      "requestQuery": "fields=syncOptions%2Coptions",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"tags\":[{\"slug\":\"generated-smoke\"}]}",
+      "key": "proxy:tagging PUT /v1/tags/collections/cassette-collection-4 #body-sha256=344b3eca6629df409d5da0423dea6cbd505c3286b244aae9cff2f7f71e022a5c",
+      "requestBodySha256": "344b3eca6629df409d5da0423dea6cbd505c3286b244aae9cff2f7f71e022a5c",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"tags\":[{\"slug\":\"generated-smoke\"}]}",
+      "key": "proxy:tagging PUT /v1/tags/collections/cassette-collection-5 #body-sha256=58c5199f2da151f321f8bc7b43b0db2a88d1a122e0a37996d86fc5836f98bc81",
+      "requestBodySha256": "58c5199f2da151f321f8bc7b43b0db2a88d1a122e0a37996d86fc5836f98bc81",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"tags\":[{\"slug\":\"generated-smoke\"}]}",
+      "key": "proxy:tagging PUT /v1/tags/collections/cassette-collection-6 #body-sha256=512fbbf5d73937971993f0253221fb9c2fde80d7ee0056e249c0c4ede9a7c6f4",
+      "requestBodySha256": "512fbbf5d73937971993f0253221fb9c2fde80d7ee0056e249c0c4ede9a7c6f4",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    }
+  ],
+  "recordedAt": "2000-01-01T00:00:00.000Z",
+  "version": 2
+}

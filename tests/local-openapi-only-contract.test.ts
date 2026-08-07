@@ -82,6 +82,7 @@ function createExecStub(): ExecLike {
 function createTestInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   return {
     projectName: 'local-openapi-contract-api',
+    onboardingScope: 'full',
     syncExamples: true,
     collectionSyncMode: 'refresh',
     specSyncMode: 'update',

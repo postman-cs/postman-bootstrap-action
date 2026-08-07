@@ -1,7 +1,6 @@
-import { retry } from '../retry.js';
+import { retry, type GatewayRetryEvent as RetryEvent } from '@postman-cse/automation-core';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { formatRejectedMint, inspectPmakIdentity, maskPmakDiagnostic, type PmakDiagnosticResult } from './pmak-diagnostics.js';
-import type { RetryEvent } from './gateway-client.js';
 
 export interface AccessTokenProviderOptions {
   accessToken?: string;

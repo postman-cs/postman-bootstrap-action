@@ -36,6 +36,8 @@ interface FixtureOptions {
   shebang?: boolean;
   mode?: number;
   helpBody?: string;
+  hangHelp?: boolean;
+  hangVersion?: boolean;
   cliVersion?: string;
   pkgVersion?: string;
   extraDistFile?: string;
@@ -44,6 +46,13 @@ interface FixtureOptions {
   brokenEntry?: string;
   requireSpecifier?: string;
   requireExampleOnly?: string;
+  contractEntry?: string;
+  contractEnv?: Record<string, string>;
+  libraryGetterThrows?: boolean;
+  actionBootThrows?: boolean;
+  dynamicVariableRegistry?: unknown;
+  dynamicVariablesExport?: string;
+  dynamicVariablesReport?: { generators: number; failures: string[] };
 }
 
 async function writeFixture(root: string, options: FixtureOptions = {}): Promise<void> {
@@ -71,6 +80,10 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
       'utf8'
     );
   }
+  if (options.contractEntry !== undefined || options.contractEnv !== undefined || options.actionBootThrows || options.dynamicVariableRegistry !== undefined) {
+    await mkdir(path.join(root, 'scripts'), { recursive: true });
+    await writeFile(path.join(root, 'scripts', 'dist-boot-contract.json'), JSON.stringify({ entry: options.contractEntry ?? CONFIG.actionMain, exitCode: 0, outputIncludes: [], ...(options.contractEnv === undefined ? {} : { env: options.contractEnv }), ...(options.dynamicVariableRegistry === undefined ? {} : { dynamicVariableRegistry: options.dynamicVariableRegistry }) }), 'utf8');
+  }
 
   const shebang = options.shebang === false ? '' : '#!/usr/bin/env node\n';
   const helpBody = options.helpBody ?? `Usage: ${CONFIG.binName} [options]\n`;
@@ -82,15 +95,25 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
     : '';
   const cliSource = `${shebang}${requireLine}${requireExample}const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
-  process.stdout.write(${JSON.stringify(helpBody)});
-  process.exit(0);
+  if (${Boolean(options.hangHelp)}) {
+    setInterval(() => {}, 1_000);
+  } else {
+    process.stdout.write(${JSON.stringify(helpBody)});
+    process.exit(0);
+  }
 }
-if (args.includes('--version') || args.includes('-V')) {
-  process.stdout.write(${JSON.stringify(`${cliVersion}\n`)});
-  process.exit(0);
+else if (args.includes('--version') || args.includes('-V')) {
+  if (${Boolean(options.hangVersion)}) {
+    setInterval(() => {}, 1_000);
+  } else {
+    process.stdout.write(${JSON.stringify(`${cliVersion}\n`)});
+    process.exit(0);
+  }
 }
-process.stderr.write('unexpected\\n');
-process.exit(1);
+else {
+  process.stderr.write('unexpected\\n');
+  process.exit(1);
+}
 `;
   const cliPath = path.join(distDir, 'cli.cjs');
   await writeFile(cliPath, cliSource, { encoding: 'utf8', mode: options.mode ?? 0o755 });
@@ -105,7 +128,7 @@ process.exit(1);
       await symlink(cliPath, path.join(distDir, name));
       continue;
     }
-    const body = name === options.brokenEntry ? 'const = broken;\n' : 'module.exports = {};\n';
+    const body = name === options.brokenEntry ? 'const = broken;\n' : options.libraryGetterThrows && name === path.posix.basename(CONFIG.pkgMain) ? "Object.defineProperty(module.exports, 'broken', { enumerable: true, get() { throw new TypeError('getter-only library export'); } });\n" : options.actionBootThrows && name === path.posix.basename(CONFIG.actionMain ?? '') ? "throw new TypeError('action boot failure');\n" : options.dynamicVariablesReport && name === path.posix.basename(CONFIG.pkgMain) ? `let dynamicFixtureCalls = 0;\nprocess.on('exit', () => { if (dynamicFixtureCalls > 0) process.stdout.write('DYNAMIC_FIXTURE_INVOKED ' + dynamicFixtureCalls + '\\n'); });\nmodule.exports[${JSON.stringify(options.dynamicVariablesExport ?? 'observeBundledDynamicVariables')}] = () => { dynamicFixtureCalls += 1; return ${JSON.stringify(options.dynamicVariablesReport)}; };\n` : 'module.exports = {};\n';
     await writeFile(path.join(distDir, name), body, 'utf8');
   }
   if (options.extraDistFile) {
@@ -113,14 +136,32 @@ process.exit(1);
   }
 }
 
-async function runVerify(root: string): Promise<{ code: number; stdout: string; stderr: string }> {
+async function runVerify(
+  root: string,
+  options: {
+    cliProbeTimeoutMs?: number | string;
+    /** Leave VERIFY_DIST_CLI_PROBE_TIMEOUT_MS unset so the script keeps its 5s default. */
+    useStrictCliProbeTimeout?: boolean;
+  } = {}
+): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
+    // Full-suite runs saturate cores and fixture CLI boots can exceed the
+    // script's strict 5s default. Grant 30s headroom unless a timeout-contract
+    // test explicitly pins the unset/strict default or an override value.
+    const timeoutEnv = options.useStrictCliProbeTimeout
+      ? {}
+      : {
+          VERIFY_DIST_CLI_PROBE_TIMEOUT_MS: String(
+            options.cliProbeTimeoutMs !== undefined ? options.cliProbeTimeoutMs : 30_000
+          )
+        };
     const result = await execFileAsync(process.execPath, [verifyScript, root], {
       encoding: 'utf8',
       env: {
         PATH: process.env.PATH ?? '',
         HOME: process.env.HOME ?? '',
-        TMPDIR: process.env.TMPDIR ?? ''
+        TMPDIR: process.env.TMPDIR ?? '',
+        ...timeoutEnv
       },
       maxBuffer: 1024 * 1024
     });
@@ -136,12 +177,12 @@ async function runVerify(root: string): Promise<{ code: number; stdout: string; 
 }
 
 describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
-  it('passes against the committed dist artifact', async () => {
+  it('passes against the committed dist artifact', { timeout: 60_000 }, async () => {
     const result = await runVerify(repoRoot);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('verify-dist-artifact: ok');
-  }, 15_000);
+  });
 
   it('passes a well-formed temporary dist tree', async () => {
     const root = await makeTempDir('verify-dist-ok-');
@@ -149,6 +190,99 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.stderr).toBe('');
     expect(result.code).toBe(0);
+  }, 15_000);
+
+  it('rejects invalid CLI probe timeout overrides before probing', async () => {
+    for (const value of [0, -1, 1.5, 'not-a-number', 'Infinity', 30_001]) {
+      const root = await makeTempDir('verify-dist-timeout-invalid-');
+      await writeFixture(root, { hangHelp: true });
+      const startedAt = Date.now();
+      const result = await runVerify(root, { cliProbeTimeoutMs: value });
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/VERIFY_DIST_CLI_PROBE_TIMEOUT_MS must be a finite integer between 1 and 30000ms/);
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    }
+  }, 15_000);
+
+  it('fails the real verifier on the historical getter-only library export boot failure', async () => {
+    const root = await makeTempDir('verify-dist-libboot-');
+    await writeFixture(root, { libraryGetterThrows: true });
+    const result = await runVerify(root);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/LIBRARY_EXPORT_ACCESS_FAILED|library entrypoint.*failed to boot/);
+  }, 15_000);
+
+  it('uses dynamicVariableRegistry as the sole registry trigger and expectation source', async () => {
+    const absent = await makeTempDir('verify-dist-dynamic-absent-');
+    await writeFixture(absent, { dynamicVariablesReport: { generators: 118, failures: ['must not be observed'] } });
+    const skipped = await runVerify(absent);
+    expect(skipped.code).toBe(0);
+    expect(skipped.stdout).not.toContain('DYNAMIC_FIXTURE_INVOKED');
+
+    const success = await makeTempDir('verify-dist-dynamic-success-');
+    await writeFixture(success, { dynamicVariableRegistry: { export: 'fixtureRegistry', expectedGeneratorCount: 3 }, dynamicVariablesExport: 'fixtureRegistry', dynamicVariablesReport: { generators: 3, failures: [] } });
+    const result = await runVerify(success);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('DYNAMIC_VARS_BOOT_OK fixtureRegistry 3 runs=1000');
+    expect(await readFile(verifyScript, 'utf8')).toContain('for (let run = 1; run <= ${DYNAMIC_VARIABLE_REGISTRY_RUNS}; run += 1)');
+  }, 15_000);
+
+  it('rejects missing, malformed, and mismatched dynamic-variable registries', async () => {
+    const missing = await makeTempDir('verify-dist-dynamic-missing-');
+    await writeFixture(missing, { dynamicVariableRegistry: { export: 'missingRegistry', expectedGeneratorCount: 1 } });
+    expect((await runVerify(missing)).stderr).toContain('DYNAMIC_VARS_BOOT_FAILED missing export=missingRegistry');
+    for (const registry of [null, { export: 'not-valid', expectedGeneratorCount: 1 }, { export: 'fixtureRegistry', expectedGeneratorCount: 0 }]) {
+      const root = await makeTempDir('verify-dist-dynamic-malformed-');
+      await writeFixture(root, { dynamicVariableRegistry: registry });
+      expect((await runVerify(root)).stderr).toMatch(/dynamicVariableRegistry/);
+    }
+    const mismatch = await makeTempDir('verify-dist-dynamic-count-');
+    await writeFixture(mismatch, { dynamicVariableRegistry: { export: 'fixtureRegistry', expectedGeneratorCount: 3 }, dynamicVariablesExport: 'fixtureRegistry', dynamicVariablesReport: { generators: 2, failures: [] } });
+    expect((await runVerify(mismatch)).stderr).toContain('DYNAMIC_VARS_BOOT_FAILED');
+  }, 15_000);
+
+  it('fails when the configured dynamic-variable registry reports generator failures', async () => {
+    const root = await makeTempDir('verify-dist-dynamic-failures-');
+    await writeFixture(root, { dynamicVariableRegistry: { export: 'fixtureRegistry', expectedGeneratorCount: 3 }, dynamicVariablesExport: 'fixtureRegistry', dynamicVariablesReport: { generators: 3, failures: ['x: boom'] } });
+    const result = await runVerify(root);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('DYNAMIC_VARS_BOOT_FAILED');
+    expect(result.stderr).toContain('x: boom');
+  }, 15_000);
+
+
+  it('rejects a boot contract entry that differs from action.yml runs.main', async () => {
+    const root = await makeTempDir('verify-dist-contract-mismatch-');
+    await writeFixture(root, { contractEntry: 'dist/cli.cjs' });
+    const result = await runVerify(root);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/does not match action.yml runs\.main/);
+  }, 15_000);
+
+  it('rejects a traversing boot contract entry', async () => {
+    const root = await makeTempDir('verify-dist-contract-traversal-');
+    await writeFixture(root, { contractEntry: '../outside.cjs' });
+    const result = await runVerify(root);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/must not traverse outside dist/);
+  }, 15_000);
+
+  it('rejects a boot contract entry outside dist', async () => {
+    const root = await makeTempDir('verify-dist-contract-nondist-');
+    await writeFixture(root, { contractEntry: 'outside.cjs' });
+    const result = await runVerify(root);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toMatch(/must point under dist/);
+  }, 15_000);
+
+  it('rejects boot contracts that override protected boot environment', async () => {
+    for (const env of [{ NODE_OPTIONS: '--require=fixture' }, { GITHUB_OUTPUT: '/tmp/fixture-output' }] as Record<string, string>[]) {
+      const root = await makeTempDir('verify-dist-protected-env-');
+      await writeFixture(root, { contractEnv: env });
+      const result = await runVerify(root);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/protected boot environment/);
+    }
   }, 15_000);
 
   it('fails when the CLI shebang is missing', async () => {
@@ -224,6 +358,25 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     expect(result.stderr).toMatch(/missing usage banner/);
   }, 15_000);
 
+  it('fails within the test budget when direct --help or --version hangs', async () => {
+    // Keep the strict 5s default on both probes; overlap the wall waits in one
+    // test so afterEach temp cleanup cannot race a sibling concurrent case.
+    const helpRoot = await makeTempDir('verify-dist-help-timeout-');
+    const versionRoot = await makeTempDir('verify-dist-version-timeout-');
+    await writeFixture(helpRoot, { hangHelp: true });
+    await writeFixture(versionRoot, { hangVersion: true });
+    const startedAt = Date.now();
+    const [help, version] = await Promise.all([
+      runVerify(helpRoot, { useStrictCliProbeTimeout: true }),
+      runVerify(versionRoot, { useStrictCliProbeTimeout: true })
+    ]);
+    expect(help.code).not.toBe(0);
+    expect(help.stderr).toMatch(/direct dist[\\/]cli\.cjs --help timed out after 5000ms/);
+    expect(version.code).not.toBe(0);
+    expect(version.stderr).toMatch(/direct dist[\\/]cli\.cjs --version timed out after 5000ms/);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+  }, 15_000);
+
   it('fails when direct --version drifts from package.json', async () => {
     const root = await makeTempDir('verify-dist-version-');
     await writeFixture(root, { cliVersion: '0.0.0-drift' });
@@ -278,6 +431,33 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     expect(prefixed.stderr).toBe('');
     expect(prefixed.code).toBe(0);
   }, 15_000);
+
+  it.skipIf(process.platform === 'win32')('rejects symlinked dist roots, caught network calls, and unconsumed GitHub output markers', async () => {
+    const actionMain = CONFIG.actionMain as string;
+    const symlinkRoot = await makeTempDir('verify-dist-parent-symlink-');
+    await writeFixture(symlinkRoot);
+    await rm(path.join(symlinkRoot, 'dist'), { recursive: true });
+    await symlink(symlinkRoot, path.join(symlinkRoot, 'dist'));
+    expect((await runVerify(symlinkRoot)).stderr).toMatch(/dist root must be a regular non-symlink directory/);
+
+    const networkRoot = await makeTempDir('verify-dist-network-');
+    await writeFixture(networkRoot, { contractEntry: actionMain });
+    await writeFile(path.join(networkRoot, actionMain), "try { require('node:https').get('https://example.invalid'); } catch {}\nmodule.exports = {};\n", 'utf8');
+    expect((await runVerify(networkRoot)).stderr).toMatch(/attempted network I\/O/);
+
+    const outputRoot = await makeTempDir('verify-dist-github-output-');
+    await writeFixture(outputRoot, { contractEntry: actionMain });
+    await writeFile(path.join(outputRoot, 'scripts', 'dist-boot-contract.json'), JSON.stringify({ entry: actionMain, exitCode: 0, outputIncludes: [], githubOutputIncludes: ['fixture-output=ok'] }), 'utf8');
+    await writeFile(path.join(outputRoot, actionMain), "require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT, 'fixture-output=ok\\n');\nmodule.exports = {};\n", 'utf8');
+    expect((await runVerify(outputRoot)).code).toBe(0);
+    await writeFile(path.join(outputRoot, 'scripts', 'dist-boot-contract.json'), JSON.stringify({ entry: actionMain, exitCode: 0, outputIncludes: [], githubOutputIncludes: ['missing-output'] }), 'utf8');
+    expect((await runVerify(outputRoot)).stderr).toMatch(/GitHub output missing contract marker/);
+
+    const throwRoot = await makeTempDir('verify-dist-direct-action-throw-');
+    await writeFixture(throwRoot, { contractEntry: actionMain });
+    await writeFile(path.join(throwRoot, actionMain), "throw new TypeError('direct action boot failure');\n", 'utf8');
+    expect((await runVerify(throwRoot)).stderr).toMatch(/action entrypoint.*boot exited|direct action boot failure/);
+  });
 
   it('accepts the documented optional peer allowlist', async () => {
     const root = await makeTempDir('verify-dist-peer-');

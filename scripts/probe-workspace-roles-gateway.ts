@@ -53,7 +53,7 @@
  *   not introduced by this roles cutover.
  */
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
+import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
 import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
 
 const IAPUB = POSTMAN_ENDPOINT_PROFILES.prod.iapubBaseUrl;

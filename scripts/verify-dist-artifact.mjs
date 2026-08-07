@@ -23,7 +23,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import console from 'node:console';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -35,6 +35,24 @@ const defaultRoot = path.resolve(scriptDir, '..');
 const root = path.resolve(process.argv[2] ?? defaultRoot);
 const distDir = path.join(root, 'dist');
 const SHEBANG = '#!/usr/bin/env node\n';
+// 5s is generous for an uncontended boot of the bundled CLI. Under a full
+// vitest run every core is saturated and the same boot can take >5s, so the
+// suite may grant explicit headroom; the standalone gate keeps the strict
+// default.
+const DEFAULT_CLI_PROBE_TIMEOUT_MS = 5_000;
+// Explicit suite headroom is capped so environment input cannot turn a
+// verifier probe into an arbitrarily long hang.
+const MAX_CLI_PROBE_TIMEOUT_MS = 30_000;
+function parseCliProbeTimeoutMs(value) {
+  if (value === undefined || value.trim() === '') return DEFAULT_CLI_PROBE_TIMEOUT_MS;
+  const timeoutMs = Number(value);
+  if (!Number.isFinite(timeoutMs) || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_CLI_PROBE_TIMEOUT_MS) {
+    fail(`VERIFY_DIST_CLI_PROBE_TIMEOUT_MS must be a finite integer between 1 and ${MAX_CLI_PROBE_TIMEOUT_MS}ms, got ${JSON.stringify(value)}`);
+  }
+  return timeoutMs;
+}
+const CLI_PROBE_TIMEOUT_MS = parseCliProbeTimeoutMs(process.env.VERIFY_DIST_CLI_PROBE_TIMEOUT_MS);
+const DYNAMIC_VARIABLE_REGISTRY_RUNS = 1_000;
 
 // Optional third-party peers that bundled runtimes (e.g. node-fetch) try to
 // require and swallow on failure. These are NOT runtime dependencies of the
@@ -42,6 +60,21 @@ const SHEBANG = '#!/usr/bin/env node\n';
 // catch swallows any error. Kept narrow, explicit, and documented so any NEW
 // third-party require() in code position still fails the gate.
 const OPTIONAL_PEER_ALLOWLIST = Object.freeze(['encoding']);
+const PROTECTED_BOOT_ENVIRONMENT_NAMES = new Set([
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME',
+  'GITHUB_WORKSPACE',
+  'GITHUB_OUTPUT',
+  'NODE_OPTIONS',
+  'VERIFY_DIST_NETWORK_SENTINEL'
+]);
 
 function fail(message) {
   console.error(`verify-dist-artifact: ${message}`);
@@ -80,6 +113,32 @@ function actionRunsMain(packageRoot) {
     }
   }
   return null;
+}
+
+function normalizedActionEntry(entryRel, source) {
+  if (typeof entryRel !== 'string' || entryRel.length === 0) fail(`${source} must declare a non-empty entry path`);
+  if (path.isAbsolute(entryRel) || path.win32.isAbsolute(entryRel)) fail(`${source} must point to a relative path under dist/, found ${JSON.stringify(entryRel)}`);
+  if (entryRel.split(/[\\/]/).some((segment) => segment === '..')) fail(`${source} must not traverse outside dist/, found ${JSON.stringify(entryRel)}`);
+  const normalized = path.posix.normalize(entryRel.replaceAll('\\', '/'));
+  if (!normalized.startsWith('dist/') || normalized === 'dist/') fail(`${source} must point under dist/, found ${JSON.stringify(entryRel)}`);
+  return normalized;
+}
+function validatedActionEntry(entryRel, source) {
+  const normalized = normalizedActionEntry(entryRel, source);
+  let segmentPath = root;
+  for (const segment of normalized.split('/')) {
+    segmentPath = path.join(segmentPath, segment);
+    let segmentStat;
+    try { segmentStat = lstatSync(segmentPath); } catch (error) { fail(`${source} path segment ${path.relative(root, segmentPath)} is unreadable: ${error instanceof Error ? error.message : error}`); }
+    if (segmentStat.isSymbolicLink()) fail(`${source} path segment ${path.relative(root, segmentPath)} must not be a symlink`);
+  }
+  const entryAbs = path.resolve(root, normalized);
+  const relativeToDist = path.relative(distDir, entryAbs);
+  if (relativeToDist === '' || relativeToDist.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToDist)) fail(`${source} must resolve under dist/, found ${JSON.stringify(entryRel)}`);
+  let entry;
+  try { entry = lstatSync(entryAbs); } catch (error) { fail(`${source} entry ${normalized} is unreadable: ${error instanceof Error ? error.message : error}`); }
+  if (!entry.isFile() || entry.isSymbolicLink()) fail(`${source} entry ${normalized} must be a regular non-symlink file`);
+  return { normalized, entryAbs };
 }
 
 function deriveManifest() {
@@ -297,6 +356,8 @@ function literalRequireSpecifiers(source) {
 function assertExactCensus() {
   let entries;
   try {
+    const dist = lstatSync(distDir);
+    if (!dist.isDirectory() || dist.isSymbolicLink()) fail('dist root must be a regular non-symlink directory');
     entries = readdirSync(distDir, { withFileTypes: true }).sort((left, right) =>
       left.name.localeCompare(right.name)
     );
@@ -373,6 +434,16 @@ function assertGitIndexExec() {
     fail(`unable to read git index for ${CLI_REL}: ${error instanceof Error ? error.message : error}`);
   }
   if (!stage) {
+    // Dist-off-main worktrees intentionally keep generated artifacts ignored and untracked.
+    try {
+      execFileSync('git', ['check-ignore', '--quiet', '--', cliPathspec], {
+        cwd: git.toplevel,
+        stdio: 'ignore'
+      });
+      return;
+    } catch {
+      // Fall through to the existing untracked-file failure.
+    }
     fail(`${CLI_REL} is not tracked in the git index`);
   }
   const mode = stage.split(' ', 1)[0];
@@ -411,8 +482,12 @@ function assertDirectHelpAndVersion() {
     const help = spawnSync(command, [...cliArgs, '--help'], {
       cwd: root,
       encoding: 'utf8',
-      env: sandboxedEnv
+      env: sandboxedEnv,
+      timeout: CLI_PROBE_TIMEOUT_MS
     });
+    if (help.error?.code === 'ETIMEDOUT') {
+      fail(`direct ${CLI_REL} --help timed out after ${CLI_PROBE_TIMEOUT_MS}ms`);
+    }
     if (help.status !== 0) {
       fail(`direct ${CLI_REL} --help exited ${help.status}: ${help.stderr || help.stdout}`);
     }
@@ -426,8 +501,12 @@ function assertDirectHelpAndVersion() {
     const version = spawnSync(command, [...cliArgs, '--version'], {
       cwd: root,
       encoding: 'utf8',
-      env: sandboxedEnv
+      env: sandboxedEnv,
+      timeout: CLI_PROBE_TIMEOUT_MS
     });
+    if (version.error?.code === 'ETIMEDOUT') {
+      fail(`direct ${CLI_REL} --version timed out after ${CLI_PROBE_TIMEOUT_MS}ms`);
+    }
     if (version.status !== 0) {
       fail(`direct ${CLI_REL} --version exited ${version.status}: ${version.stderr || version.stdout}`);
     }
@@ -492,6 +571,46 @@ function createSandbox(prefix) {
   return { sandbox, env };
 }
 
+function createNetworkGuard(sandbox) {
+  const sentinel = path.join(sandbox, 'network-attempted');
+  const preload = path.join(sandbox, 'network-guard.cjs');
+  writeFileSync(preload, [
+    "const { appendFileSync } = require('node:fs');",
+    "const sentinel = process.env.VERIFY_DIST_NETWORK_SENTINEL;",
+    "function block(kind) { appendFileSync(sentinel, kind + '\\n'); throw new Error('VERIFY_DIST_NETWORK_FORBIDDEN ' + kind); }",
+    "function patch(mod, names) { const target = require(mod); for (const name of names) { if (typeof target[name] === 'function') target[name] = (...args) => block(mod + '.' + name); } }",
+    "patch('node:net', ['connect', 'createConnection']);",
+    "const net = require('node:net'); if (net.Socket && net.Socket.prototype) net.Socket.prototype.connect = (...args) => block('node:net.Socket.connect');",
+    "patch('node:tls', ['connect']);",
+    "patch('node:http', ['request', 'get']);",
+    "patch('node:https', ['request', 'get']);",
+    "globalThis.fetch = (...args) => block('global.fetch');"
+  ].join('\n'), 'utf8');
+  return { sentinel, preload };
+}
+
+function dynamicVariableRegistryConfig() {
+  const contractFile = path.join(root, 'scripts', 'dist-boot-contract.json');
+  if (!existsSync(contractFile)) return null;
+  const contract = readJson(contractFile);
+  if (!Object.hasOwn(contract, 'dynamicVariableRegistry')) return null;
+  const registry = contract.dynamicVariableRegistry;
+  if (typeof registry !== 'object' || registry === null || Array.isArray(registry)) {
+    fail('dist-boot-contract.json dynamicVariableRegistry must be an object');
+  }
+  if (typeof registry.export !== 'string' || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(registry.export)) {
+    fail('dist-boot-contract.json dynamicVariableRegistry.export must be a non-empty safe JavaScript identifier');
+  }
+  if (!Number.isInteger(registry.expectedGeneratorCount) || registry.expectedGeneratorCount <= 0) {
+    fail('dist-boot-contract.json dynamicVariableRegistry.expectedGeneratorCount must be a positive integer');
+  }
+  return { exportName: registry.export, expectedGeneratorCount: registry.expectedGeneratorCount };
+}
+
+function assertNoNetworkAttempt(sentinel, entryRel) {
+  if (existsSync(sentinel)) fail(`entrypoint ${entryRel} attempted network I/O during boot: ${readFileSync(sentinel, 'utf8').trim()}`);
+}
+
 // Runtime failure classes that must never appear when booting a shipped
 // artifact. The getter-only-core bundler bug surfaced exactly as a TypeError
 // at load time, invisible to src/-importing tests and to node --check.
@@ -505,7 +624,7 @@ const BOOT_FAILURE_PATTERN = /TypeError:|ReferenceError:|is not a function|Canno
  * class) explode. Skipped when the library entrypoint IS the Action
  * entrypoint (single-entry actions execute on require; leg 2 covers them).
  */
-function assertLibraryEntrypointBoots() {
+function assertLibraryEntrypointBoots(dynamicVariableRegistry) {
   const pkg = readJson(path.join(root, 'package.json'));
   const mainRel = typeof pkg.main === 'string' ? pkg.main : null;
   if (!mainRel) {
@@ -536,23 +655,58 @@ function assertLibraryEntrypointBoots() {
     "  console.error('LIBRARY_EXPORT_ACCESS_FAILED ' + failures.join('; '));",
     '  process.exit(1);',
     '}',
+    `const dynamicVariableRegistry = ${JSON.stringify(dynamicVariableRegistry)};`,
+    'if (dynamicVariableRegistry) {',
+    '  let report;',
+    '  const originalConsoleWarn = console.warn;',
+    '  if (typeof m[dynamicVariableRegistry.exportName] !== \'function\') {',
+    "    console.error('DYNAMIC_VARS_BOOT_FAILED missing export=' + dynamicVariableRegistry.exportName);",
+    '    process.exit(1);',
+    '  }',
+    '  try {',
+    '    console.warn = () => {};',
+    `    for (let run = 1; run <= ${DYNAMIC_VARIABLE_REGISTRY_RUNS}; run += 1) {`,
+    '      report = m[dynamicVariableRegistry.exportName]();',
+    '      if (!report || report.generators !== dynamicVariableRegistry.expectedGeneratorCount || !Array.isArray(report.failures) || report.failures.length > 0) {',
+    "        console.error('DYNAMIC_VARS_BOOT_FAILED run=' + run + ' result=' + JSON.stringify(report));",
+    '        process.exit(1);',
+    '      }',
+    '    }',
+    '  } catch (error) {',
+    "    console.error('DYNAMIC_VARS_BOOT_FAILED result=' + JSON.stringify(report) + ' error=' + (error && error.stack ? error.stack : error));",
+    '    process.exit(1);',
+    '  } finally {',
+    '    console.warn = originalConsoleWarn;',
+    '  }',
+    `  console.log('DYNAMIC_VARS_BOOT_OK ' + dynamicVariableRegistry.exportName + ' ' + report.generators + ' runs=${DYNAMIC_VARIABLE_REGISTRY_RUNS}');`,
+    '} else {',
+    "  console.log('DYNAMIC_VARS_BOOT_SKIPPED');",
+    '}',
     "console.log('LIBRARY_BOOT_OK ' + Object.keys(m).length);",
-    'process.exit(0);'
+    'process.exitCode = 0;'
   ].join('\n');
   const { sandbox, env } = createSandbox('verify-dist-libboot-');
+  const networkGuard = createNetworkGuard(sandbox);
   try {
     const result = spawnSync(process.execPath, ['-e', probe], {
       cwd: sandbox,
       encoding: 'utf8',
-      env,
+      env: { ...env, NODE_OPTIONS: `--require=${networkGuard.preload}`, VERIFY_DIST_NETWORK_SENTINEL: networkGuard.sentinel },
       timeout: 120_000
     });
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    assertNoNetworkAttempt(networkGuard.sentinel, mainRel);
     if (result.status !== 0) {
       fail(`library entrypoint ${mainRel} failed to boot under require(): ${output.trim()}`);
     }
     if (!/LIBRARY_BOOT_OK \d+/.test(result.stdout ?? '')) {
       fail(`library entrypoint ${mainRel} boot probe produced no receipt: ${output.trim()}`);
+    }
+    if (!/DYNAMIC_VARS_BOOT_(?:OK [A-Za-z_$][A-Za-z0-9_$]* \d+ runs=1000|SKIPPED)/.test(result.stdout ?? '')) {
+      fail(`library entrypoint ${mainRel} dynamic-variable probe produced no receipt: ${output.trim()}`);
+    }
+    if (dynamicVariableRegistry) {
+      console.log(`DYNAMIC_VARS_BOOT_OK ${dynamicVariableRegistry.exportName} ${dynamicVariableRegistry.expectedGeneratorCount} runs=${DYNAMIC_VARIABLE_REGISTRY_RUNS}`);
     }
     if (BOOT_FAILURE_PATTERN.test(output)) {
       fail(`library entrypoint ${mainRel} boot emitted a runtime failure class: ${output.trim()}`);
@@ -579,9 +733,12 @@ function assertActionEntrypointBoots() {
     return;
   }
   const contract = readJson(contractFile);
-  const entryRel = typeof contract.entry === 'string' ? contract.entry : actionRunsMain(root);
-  if (!entryRel) {
-    fail('dist-boot-contract.json present but no entry: action.yml runs.main missing and contract.entry not set');
+  const runsMain = actionRunsMain(root);
+  if (!runsMain) fail('dist-boot-contract.json present but action.yml runs.main is missing');
+  const actionEntry = validatedActionEntry(runsMain, 'action.yml runs.main');
+  if (Object.hasOwn(contract, 'entry')) {
+    const contractEntry = normalizedActionEntry(contract.entry, 'dist-boot-contract.json entry');
+    if (contractEntry !== actionEntry.normalized) fail(`dist-boot-contract.json entry ${JSON.stringify(contract.entry)} does not match action.yml runs.main ${JSON.stringify(runsMain)}`);
   }
   if (!Number.isInteger(contract.exitCode)) {
     fail('dist-boot-contract.json must declare an integer exitCode');
@@ -589,11 +746,15 @@ function assertActionEntrypointBoots() {
   if (!Array.isArray(contract.outputIncludes) || contract.outputIncludes.some((m) => typeof m !== 'string' || m.length === 0)) {
     fail('dist-boot-contract.json must declare outputIncludes as an array of non-empty strings');
   }
+  if (Object.hasOwn(contract, 'githubOutputIncludes') && (!Array.isArray(contract.githubOutputIncludes) || contract.githubOutputIncludes.some((m) => typeof m !== 'string' || m.length === 0))) fail('dist-boot-contract.json githubOutputIncludes must be an array of non-empty strings');
   const contractEnv = contract.env ?? {};
   if (typeof contractEnv !== 'object' || Array.isArray(contractEnv)) {
     fail('dist-boot-contract.json env must be an object of string values');
   }
   for (const [name, value] of Object.entries(contractEnv)) {
+    if (PROTECTED_BOOT_ENVIRONMENT_NAMES.has(name)) {
+      fail(`dist-boot-contract.json env.${name} is a protected boot environment`);
+    }
     if (typeof value !== 'string') {
       fail(`dist-boot-contract.json env.${name} must be a string`);
     }
@@ -601,8 +762,10 @@ function assertActionEntrypointBoots() {
       fail(`dist-boot-contract.json env.${name} looks credential-shaped; gated boots are credential-free by contract`);
     }
   }
-  const entryAbs = path.join(root, entryRel.split('/').join(path.sep));
+  const entryRel = actionEntry.normalized;
+  const entryAbs = actionEntry.entryAbs;
   const { sandbox, env } = createSandbox('verify-dist-actionboot-');
+  const networkGuard = createNetworkGuard(sandbox);
   try {
     const githubOutput = path.join(sandbox, 'github-output');
     writeFileSync(githubOutput, '', 'utf8');
@@ -611,13 +774,17 @@ function assertActionEntrypointBoots() {
       encoding: 'utf8',
       env: {
         ...env,
+        ...contractEnv,
         GITHUB_WORKSPACE: root,
         GITHUB_OUTPUT: githubOutput,
-        ...contractEnv
+        NODE_OPTIONS: `--require=${networkGuard.preload}`,
+        VERIFY_DIST_NETWORK_SENTINEL: networkGuard.sentinel
       },
       timeout: 120_000
     });
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    const githubOutputContents = readFileSync(githubOutput, 'utf8');
+    assertNoNetworkAttempt(networkGuard.sentinel, entryRel);
     if (result.status !== contract.exitCode) {
       fail(`action entrypoint ${entryRel} boot exited ${result.status}, contract expects ${contract.exitCode}: ${output.trim().slice(0, 2000)}`);
     }
@@ -625,6 +792,9 @@ function assertActionEntrypointBoots() {
       if (!output.includes(marker)) {
         fail(`action entrypoint ${entryRel} boot output missing contract marker ${JSON.stringify(marker)}: ${output.trim().slice(0, 2000)}`);
       }
+    }
+    for (const marker of contract.githubOutputIncludes ?? []) {
+      if (!githubOutputContents.includes(marker)) fail(`action entrypoint ${entryRel} GitHub output missing contract marker ${JSON.stringify(marker)}: ${githubOutputContents.trim().slice(0, 2000)}`);
     }
     if (BOOT_FAILURE_PATTERN.test(output)) {
       fail(`action entrypoint ${entryRel} boot emitted a runtime failure class: ${output.trim().slice(0, 2000)}`);
@@ -641,7 +811,8 @@ assertGitIndexExec();
 assertDirectHelpAndVersion();
 assertNodeCheck();
 assertLiteralRequiresAreBuiltins();
-assertLibraryEntrypointBoots();
+const dynamicVariableRegistry = dynamicVariableRegistryConfig();
+assertLibraryEntrypointBoots(dynamicVariableRegistry);
 assertActionEntrypointBoots();
 
 console.log('verify-dist-artifact: ok');

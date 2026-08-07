@@ -66,6 +66,7 @@ describe('vitest config: CI timeout contract', () => {
     const [ci, local] = await Promise.all([loadTestConfig('true'), loadTestConfig(undefined)]);
     for (const config of [ci, local]) {
       expect(config.environment).toBe('node');
+      expect(config.execArgv).toEqual(['--no-experimental-webstorage']);
       expect(config.include).toEqual(['tests/**/*.test.ts']);
       expect(config.setupFiles).toEqual(['tests/setup.ts']);
       expect(config.env).toEqual({ POSTMAN_ACTIONS_TELEMETRY: 'off' });

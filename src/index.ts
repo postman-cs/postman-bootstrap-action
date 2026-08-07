@@ -10,7 +10,6 @@ import dynamicVariables from 'postman-collection/lib/superstring/dynamic-variabl
 
 import { bootstrapActionContract } from './contracts.js';
 import { GitHubApiClient } from './lib/github/github-api-client.js';
-import { HttpError } from './lib/http-error.js';
 import {
   createBreakingChangeSummaryJson,
   runOpenApiBreakingChangeCheck,
@@ -38,13 +37,19 @@ import {
   type PreflightMode
 } from './lib/postman/credential-identity.js';
 import { isAmbiguousTransportError } from './lib/postman/create-reconciliation.js';
-import { adviseFromHttpError } from './lib/postman/error-advice.js';
+import {
+  adviseFromHttpError,
+  squadDiscoveryUnavailableAdvice
+} from './lib/postman/error-advice.js';
 import { createInternalIntegrationAdapter, type InternalIntegrationAdapter } from './lib/postman/internal-integration-adapter.js';
 import { classifySafeFetchRetryability } from './lib/spec/safe-spec-fetch.js';
 import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
-import { PostmanGatewayAssetsClient } from './lib/postman/postman-gateway-assets-client.js';
-import { AccessTokenGatewayClient } from './lib/postman/gateway-client.js';
+import {
+  PostmanGatewayAssetsClient,
+  SquadDiscoveryUnavailableError
+} from './lib/postman/postman-gateway-assets-client.js';
+import { PostmanAppVersionProvider } from './lib/postman/app-version.js';
 import { AccessTokenProvider, mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
 import {
   definitionBundleToSnapshot,
@@ -62,12 +67,15 @@ import {
   type FinalizedLocalOpenApiArtifactManifest,
   type MaterializeLocalCollectionArtifactsResult
 } from './lib/repo/local-collection-artifacts.js';
-import { retry } from './lib/retry.js';
 import { createSecretMasker, createMutableSecretMasker, type SecretMasker } from './lib/secrets.js';
 import {
+  AccessTokenGatewayClient,
+  HttpError,
   actionSink,
   createLogger,
   createTelemetryContext,
+  retry,
+  type GatewayRetryEvent,
   type Logger,
   type TelemetryContext
 } from '@postman-cse/automation-core';
@@ -117,6 +125,7 @@ export interface ResolvedInputs {
   smokeCollectionId?: string;
   contractCollectionId?: string;
   additionalCollectionsDir?: string;
+  onboardingScope: 'full' | 'spec-only';
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
@@ -161,6 +170,7 @@ export interface ResolvedInputs {
   postmanFallbackBase: string;
   postmanGatewayBase: string;
   postmanIapubBase: string;
+  postmanAppVersionBase?: string;
   githubRefName?: string;
   githubHeadRef?: string;
   githubRef?: string;
@@ -494,7 +504,7 @@ export interface BootstrapDependencyFactories {
 
 function reportRetry(
   core: Pick<CoreLike, 'info'>,
-  event: import('./lib/postman/gateway-client.js').RetryEvent
+  event: GatewayRetryEvent
 ): void {
   core.info(
     `[postman retry] action=bootstrap class=${event.class} status=${event.status ?? 'none'} attempt=${event.attempt} delayMs=${event.delay}`
@@ -674,7 +684,7 @@ export function resolveInputs(
 
   const postmanRegion = parsePostmanRegion(getInput('postman-region', env));
   const postmanStack = parsePostmanStack(getInput('postman-stack', env));
-  const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion);
+  const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion, env);
 
   return {
     projectName: getInput('project-name', env)
@@ -687,6 +697,11 @@ export function resolveInputs(
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
     additionalCollectionsDir: getInput('additional-collections-dir', env),
+    onboardingScope: parseEnumInput<'full' | 'spec-only'>(
+      'onboarding-scope',
+      getInput('onboarding-scope', env),
+      'full'
+    ),
     syncExamples: parseBooleanInput('sync-examples', getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
@@ -750,6 +765,7 @@ export function resolveInputs(
     postmanFallbackBase: endpointProfile.fallbackBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
     postmanIapubBase: endpointProfile.iapubBaseUrl,
+    postmanAppVersionBase: endpointProfile.appVersionBaseUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -1032,6 +1048,9 @@ export function readActionInputs(
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, 'additional-collections-dir'),
+    INPUT_ONBOARDING_SCOPE:
+      optionalInput(actionCore, 'onboarding-scope') ??
+      bootstrapActionContract.inputs['onboarding-scope'].default,
     INPUT_SYNC_EXAMPLES:
       optionalInput(actionCore, 'sync-examples') ??
       bootstrapActionContract.inputs['sync-examples'].default,
@@ -1394,6 +1413,25 @@ function resolveSpecIdFromResourcesState(
   return resourcesState?.cloudResources?.specs?.[key];
 }
 
+function scopeResourcesStateToWorkspace(
+  resourcesState: PostmanResourcesState | null,
+  selectedWorkspaceId?: string
+): PostmanResourcesState | null {
+  const trackedWorkspaceId = resourcesState?.workspace?.id?.trim();
+  if (!resourcesState || (trackedWorkspaceId && selectedWorkspaceId === trackedWorkspaceId)) {
+    return resourcesState;
+  }
+
+  const workspaceScopedState = { ...resourcesState };
+  delete workspaceScopedState.canonical;
+  delete workspaceScopedState.cloudResources;
+  if (!selectedWorkspaceId) {
+    delete workspaceScopedState.workspace;
+    return workspaceScopedState;
+  }
+  return { ...workspaceScopedState, workspace: { id: selectedWorkspaceId } };
+}
+
 function recordCurrentBootstrapResources(options: {
   assetProjectName: string;
   inputs: ResolvedInputs;
@@ -1581,6 +1619,10 @@ type ProvisionedWorkspace = {
   persistable: boolean;
 };
 
+type RepositoryWorkspaceProbe = Awaited<
+  ReturnType<InternalIntegrationAdapter['findWorkspaceForRepo']>
+>;
+
 /**
  * Resolve, reuse, or create the Postman workspace (with org-mode sub-team
  * handling and visibility checks), assign governance, invite the requester, and
@@ -1596,7 +1638,8 @@ async function provisionWorkspace(
   outputs: PlannedOutputs,
   resourcesState: PostmanResourcesState | null,
   workspaceName: string,
-  aboutText: string
+  aboutText: string,
+  repositoryWorkspaceProbe?: RepositoryWorkspaceProbe
 ): Promise<ProvisionedWorkspace> {
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
@@ -1623,7 +1666,9 @@ async function provisionWorkspace(
   // before name-based selection/create so a cross-team invisible owner fails
   // admission with zero asset writes, and a visible owner is adopted.
   if (repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo) {
-    const probe = await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl);
+    const probe =
+      repositoryWorkspaceProbe ??
+      (await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl));
     if (probe.state === 'linked-invisible') {
       const orgTail = inputs.workspaceTeamId
         ? ' Verify workspace-team-id; if the owner is in another sub-team, ask that sub-team\'s admin to disconnect it.'
@@ -1742,6 +1787,17 @@ async function provisionWorkspace(
     } catch (err) {
       if (err instanceof Error && err.message.includes('Org-mode account detected')) {
         throw err;
+      }
+      // Indeterminate squad discovery is fatal HERE, where a workspace still has
+      // to be created. Continuing would pick the personal-then-flip branch on
+      // what may well be an org account and surface a late 403 on
+      // PUT /workspaces/:id/visibility instead of naming the missing input.
+      if (err instanceof SquadDiscoveryUnavailableError) {
+        const mask = createBootstrapSecretMasker(inputs);
+        throw new Error(
+          formatMaskedOneLine(squadDiscoveryUnavailableAdvice(err.observedStatus || 'none'), mask),
+          { cause: err }
+        );
       }
       const mask = createBootstrapSecretMasker(inputs);
       const cause = formatMaskedOneLine(err, mask);
@@ -2383,6 +2439,7 @@ async function runBootstrapInner(
   dependencies: BootstrapExecutionDependencies,
   telemetry: TelemetryContext
 ): Promise<PlannedOutputs> {
+  inputs = { ...inputs, onboardingScope: inputs.onboardingScope ?? 'full' };
   const outputs = createPlannedOutputs(inputs);
 
   // Branch-aware sync: the effective BranchDecision (inherited from the
@@ -2409,6 +2466,7 @@ async function runBootstrapInner(
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
   const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
+  const onboardingScope = inputs.onboardingScope;
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -2421,9 +2479,13 @@ async function runBootstrapInner(
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ['spec-id', inputs.specId],
-      ['baseline-collection-id', inputs.baselineCollectionId],
-      ['smoke-collection-id', inputs.smokeCollectionId],
-      ['contract-collection-id', inputs.contractCollectionId]
+      ...(onboardingScope === 'full'
+        ? [
+            ['baseline-collection-id', inputs.baselineCollectionId],
+            ['smoke-collection-id', inputs.smokeCollectionId],
+            ['contract-collection-id', inputs.contractCollectionId]
+          ]
+        : [])
     ].filter(([, value]) => Boolean(value));
     if (explicitCanonicalIds.length > 0) {
       throw new Error(
@@ -2433,7 +2495,8 @@ async function runBootstrapInner(
   }
 
   const requiresReleaseLabel =
-    inputs.collectionSyncMode === 'version' || inputs.specSyncMode === 'version';
+    inputs.specSyncMode === 'version' ||
+    (onboardingScope === 'full' && inputs.collectionSyncMode === 'version');
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -2469,26 +2532,19 @@ async function runBootstrapInner(
           );
         }
       };
-  const resourcesState = isCanonicalWriter
-    ? trackedState
-    : trackedState?.workspace
-      ? { workspace: trackedState.workspace }
-      : null;
   if (!isCanonicalWriter && trackedState?.cloudResources) {
     dependencies.core.info(
       'branch-aware sync: canonical asset ids in .postman/resources.yaml are not resolved on a non-canonical run'
     );
   }
-  const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
-  const additionalCollections = loadAdditionalCollectionFiles(
-    inputs.additionalCollectionsDir,
-    resourcesState
-  );
-
-  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
-  if (!inputs.specId && specId) {
-    dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
-  }
+  const defaultResourcesState = isCanonicalWriter
+    ? trackedState
+    : trackedState?.workspace
+      ? { workspace: trackedState.workspace }
+      : null;
+  const additionalCollections = onboardingScope === 'full'
+    ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, defaultResourcesState)
+    : [];
 
   let previousSpecContent: string | undefined;
   let previousSpecRollbackHash: string | undefined;
@@ -2544,6 +2600,11 @@ async function runBootstrapInner(
         ? definitionFormatToSpecType(sourceDefinitionBundle.format)
         : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== 'openapi') {
+    if (onboardingScope === 'spec-only') {
+      throw new Error(
+        `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
+      );
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     // Protocol collections are local EC generation; protobuf never uploads to Spec Hub.
     return runProtocolBootstrap(
@@ -2555,6 +2616,40 @@ async function runBootstrapInner(
       telemetry,
       sourceDefinitionBundle
     );
+  }
+
+  // Preserve the pre-flag state-resolution contract when generated assets are
+  // enabled. Specs-only mode scopes tracked IDs to an exact workspace match so
+  // it cannot carry a spec mapping into a different target workspace.
+  let repositoryWorkspaceProbe: RepositoryWorkspaceProbe | undefined;
+  let resourcesState = defaultResourcesState;
+  let deferWorkspaceStateWriteUntilSpecSync = false;
+  if (onboardingScope === 'spec-only') {
+    repositoryWorkspaceProbe =
+      inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo
+        ? await dependencies.internalIntegration.findWorkspaceForRepo(inputs.repoUrl)
+        : undefined;
+    const selectedWorkspaceId =
+      repositoryWorkspaceProbe?.state === 'linked-visible'
+        ? repositoryWorkspaceProbe.workspace.id
+        : inputs.workspaceId?.trim() || trackedState?.workspace?.id?.trim();
+    const scopedTrackedState = scopeResourcesStateToWorkspace(trackedState, selectedWorkspaceId);
+    if (scopedTrackedState !== trackedState) {
+      deferWorkspaceStateWriteUntilSpecSync = true;
+      dependencies.core.info(
+        'Selected workspace does not exactly match the tracked workspace; ignoring tracked asset ids'
+      );
+    }
+    resourcesState = isCanonicalWriter
+      ? scopedTrackedState
+      : scopedTrackedState?.workspace
+        ? { workspace: scopedTrackedState.workspace }
+        : null;
+  }
+  const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
+  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
+  if (!inputs.specId && specId) {
+    dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
   }
 
   const useMultiFileSync = Boolean(sourceDefinitionBundle && sourceDefinitionBundle.files.size > 1);
@@ -2730,28 +2825,37 @@ async function runBootstrapInner(
     outputs,
     resourcesState,
     workspaceName,
-    aboutText
+    aboutText,
+    repositoryWorkspaceProbe
   );
   const workspaceId = provisioned.workspaceId;
   const persistWorkspaceId = provisioned.persistable;
   outputs['workspace-id'] = workspaceId || '';
-  // Workspace-only state may persist immediately; spec/collection ids wait.
-  persistWorkspaceOnlyState(
-    stateStore,
-    writableResourcesState,
-    inputs,
-    outputs,
-    persistWorkspaceId,
-    collectionAssetProjectName,
-    releaseLabel
-  );
+  // When spec-only onboarding switches workspace ownership, keep the scoped
+  // state in memory until the spec mutation succeeds. Otherwise a failed spec
+  // upload would replace the prior workspace/spec mappings with partial state.
+  if (deferWorkspaceStateWriteUntilSpecSync) {
+    dependencies.core.info(
+      'Deferring workspace state write until spec-only onboarding completes successfully.'
+    );
+  } else {
+    persistWorkspaceOnlyState(
+      stateStore,
+      writableResourcesState,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      collectionAssetProjectName,
+      releaseLabel
+    );
+  }
 
-  let baselineCollectionId = inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.smokeCollectionId;
-  let contractCollectionId = inputs.contractCollectionId;
+  let baselineCollectionId = onboardingScope === 'full' ? inputs.baselineCollectionId : undefined;
+  let smokeCollectionId = onboardingScope === 'full' ? inputs.smokeCollectionId : undefined;
+  let contractCollectionId = onboardingScope === 'full' ? inputs.contractCollectionId : undefined;
 
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (!baselineCollectionId) {
+  if (onboardingScope === 'full' && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -2760,7 +2864,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
     }
   }
-  if (!smokeCollectionId) {
+  if (onboardingScope === 'full' && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -2773,7 +2877,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
     }
   }
-  if (!contractCollectionId) {
+  if (onboardingScope === 'full' && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -3084,7 +3188,7 @@ async function runBootstrapInner(
         }
         outputs['spec-id'] = specId;
         // Defer resources-state persistence of spec-id until verified sync +
-        // generation/linking succeed (workspace-only state already written).
+        // generation/linking succeed (workspace-only state may already be written).
       }
     )
   );
@@ -3113,6 +3217,30 @@ async function runBootstrapInner(
       }
     | undefined;
   void openApiOperationLedger;
+  if (onboardingScope === 'spec-only') {
+    outputs['baseline-collection-id'] = '';
+    outputs['smoke-collection-id'] = '';
+    outputs['contract-collection-id'] = '';
+    outputs['collections-json'] = JSON.stringify({ baseline: '', contract: '', smoke: '' });
+    dependencies.core.info(
+      'onboarding-scope=spec-only; preserving workspace/spec onboarding and skipping collections.'
+    );
+    recordCurrentBootstrapResources({
+      assetProjectName: artifactProjectName,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      releaseLabel,
+      resourcesState: writableResourcesState
+    });
+    stateStore.write(writableResourcesState);
+    createdNewSpec = false;
+    for (const [name, value] of Object.entries(outputs)) {
+      dependencies.core.setOutput(name, value);
+    }
+    return outputs;
+  }
+
   if (specContentUnchanged) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
@@ -3777,7 +3905,7 @@ async function runBootstrapInner(
   }
 
   // Persist spec-id + collection resources only after verified linking.
-  // generation/linking succeed. Workspace-only state was written earlier.
+  // Workspace-only state was either written earlier or intentionally deferred.
   recordCurrentBootstrapResources({
     assetProjectName: artifactProjectName,
     inputs,
@@ -3858,9 +3986,17 @@ export async function runGatedValidation(
       content = await safeFetchText(inputs.specUrl, { depth: 0 });
     }
     if (content) {
-      const specType = bundle
-        ? definitionFormatToSpecType(bundle.format)
-        : detectSpecType(content, inputs.specPath);
+      const specType: SpecType =
+        inputs.protocol && inputs.protocol !== 'auto'
+          ? inputs.protocol
+          : bundle
+            ? definitionFormatToSpecType(bundle.format)
+            : detectSpecType(content, inputs.specPath);
+      if (inputs.onboardingScope === 'spec-only' && specType !== 'openapi') {
+        throw new Error(
+          `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${specType}`
+        );
+      }
       if (specType === 'openapi') {
         const document = parseOpenApiDocument(content);
         const index = buildContractIndex(document);
@@ -3970,6 +4106,16 @@ export async function runAction(
           tokenProvider: probeProvider,
           bifrostBaseUrl: inputs.postmanBifrostBase,
           fallbackBaseUrl: inputs.postmanFallbackBase,
+          fallbackOn: 'error',
+          jitterRounding: 'floor',
+          refreshEmptyToken: true,
+          defaultInnerErrorStatus: 502,
+          classifyInnerAuthError: false,
+          refreshOnInnerAuthError: false,
+          includeFallbackStatusInRetryEvent: false,
+          appVersionProvider: new PostmanAppVersionProvider({
+            baseUrl: inputs.postmanAppVersionBase
+          }),
           teamId: inputs.teamId || '',
           orgMode: false,
           secretMasker: createSecretMasker([inputs.postmanAccessToken])
@@ -4161,6 +4307,9 @@ export function createBootstrapDependencies(
     inputs.postmanAccessToken
   ]);
   const secretMasker = mutableMasker.mask;
+  const appVersionProvider = new PostmanAppVersionProvider({
+    baseUrl: inputs.postmanAppVersionBase
+  });
 
   const tokenProvider = new AccessTokenProvider({
     accessToken: inputs.postmanAccessToken,
@@ -4178,6 +4327,14 @@ export function createBootstrapDependencies(
         tokenProvider,
         bifrostBaseUrl: inputs.postmanBifrostBase,
         fallbackBaseUrl: inputs.postmanFallbackBase,
+        fallbackOn: 'error',
+        jitterRounding: 'floor',
+        refreshEmptyToken: true,
+        defaultInnerErrorStatus: 502,
+        classifyInnerAuthError: false,
+        refreshOnInnerAuthError: false,
+        includeFallbackStatusInRetryEvent: false,
+        appVersionProvider,
         teamId: inputs.teamId || '',
         orgMode,
         secretMasker,
@@ -4210,6 +4367,7 @@ export function createBootstrapDependencies(
         backend: inputs.integrationBackend,
         bifrostBaseUrl: inputs.postmanBifrostBase,
         gatewayBaseUrl: inputs.postmanGatewayBase,
+        appVersionProvider,
         orgMode,
         secretMasker,
         teamId: inputs.teamId || ''
@@ -4224,6 +4382,7 @@ export function createBootstrapDependencies(
         accessToken: inputs.postmanAccessToken,
         tokenProvider,
         bifrostBaseUrl: inputs.postmanBifrostBase,
+        appVersionProvider,
         orgMode,
         secretMasker,
         teamId: inputs.teamId || '',

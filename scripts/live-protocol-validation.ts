@@ -42,7 +42,7 @@ import * as path from 'node:path';
 import { PostmanAssetsClient } from '../src/lib/postman/postman-assets-client.js';
 import { PostmanExtensibleCollectionClient } from '../src/lib/postman/postman-ec-client.js';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
+import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
 import { buildProtocolCollection, type ProtocolSpecType } from '../src/lib/protocols/dispatch.js';
 
 // Resolve fixtures from PROTOCOL_FIXTURES_DIR when set (the bundled runner sets

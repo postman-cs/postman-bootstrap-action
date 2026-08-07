@@ -4,6 +4,15 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      e2e_verification_mode:
+        description: Enforce correlated E2E success before moving the rolling alias, or explicitly report-only.
+        required: true
+        type: choice
+        options:
+          - enforce
+          - report-only
+        default: enforce
 
 permissions:
   contents: read
@@ -58,6 +67,7 @@ jobs:
       contents: read
     outputs:
       release_kind: ${{ needs.classify.outputs.release_kind }}
+      release_tgz_sha256: ${{ steps.artifact-digests.outputs.release_tgz_sha256 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -75,7 +85,7 @@ jobs:
       - run: postman --version
       - name: Install actionlint
         run: |
-          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.11 "$RUNNER_TEMP"
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/393031adb9afb225ee52ae2ccd7a5af5525e03e8/scripts/download-actionlint.bash) 1.7.11 "$RUNNER_TEMP"
           echo "ACTIONLINT_BIN=$RUNNER_TEMP/actionlint" >> "$GITHUB_ENV"
       - run: npm run bundle
       - name: Run gates
@@ -131,6 +141,19 @@ jobs:
           }, null, 2));
           NODE
           node scripts/verify-release-artifacts.mjs release-artifacts
+      - name: Record trusted tarball digest
+        id: artifact-digests
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const tgz = crypto.createHash('sha256').update(fs.readFileSync('release-artifacts/release.tgz')).digest('hex');
+          if (!/^[a-f0-9]{64}$/.test(tgz)) {
+            console.error('::error::failed to compute trusted tarball digest');
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `release_tgz_sha256=${tgz}\n`);
+          NODE
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ github.run_id }}-${{ github.run_attempt }}
@@ -157,6 +180,20 @@ jobs:
         with:
           name: release-${{ github.run_id }}-${{ github.run_attempt }}
           path: .
+      - name: Authenticate transferred tarball
+        env:
+          EXPECTED_RELEASE_TGZ_SHA256: ${{ needs.verify-package.outputs.release_tgz_sha256 }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const expected = process.env.EXPECTED_RELEASE_TGZ_SHA256;
+          const actual = crypto.createHash('sha256').update(fs.readFileSync('release.tgz')).digest('hex');
+          if (!/^[a-f0-9]{64}$/.test(expected ?? '') || actual !== expected) {
+            console.error('::error::release.tgz hash does not match trusted verify-package output');
+            process.exit(1);
+          }
+          NODE
       - name: Verify staged release artifacts
         run: |
           node --input-type=module - <<'TRUSTED_PUBLISHER_VERIFIER'
@@ -291,26 +328,38 @@ jobs:
             postman-bootstrap-*-linux-x64
             postman-bootstrap-*-linux-x64.sha256
 
-  dispatch-live-monitor:
-    needs: [verify-package, publish]
-    if: ${{ needs.verify-package.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
-    continue-on-error: true
+  verify-release-e2e:
+    needs: [classify, verify-package, publish]
+    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.verifier.outputs.e2e_outcome }}
+      correlation_id: ${{ steps.verifier.outputs.e2e_correlation_id }}
+      workflow_run_id: ${{ steps.verifier.outputs.e2e_workflow_run_id }}
+      run_url: ${{ steps.verifier.outputs.e2e_run_url }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - name: Dispatch postman-actions-e2e live monitor
+      - name: Dispatch and await exact correlated E2E verifier
+        id: verifier
         env:
           E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
+          E2E_GATE_MODE: ${{ inputs.e2e_verification_mode || 'enforce' }}
+          E2E_GATE_ACTION: postman-bootstrap-action
           E2E_GATE_SUITE: full
           E2E_GATE_REF: ${{ github.ref_name }}
-        run: node .github/scripts/dispatch-e2e-monitor.mjs
+          E2E_GATE_SOURCE_DIGEST: ${{ needs.verify-package.outputs.release_tgz_sha256 }}
+          E2E_GATE_REGISTRY_REVISION: 0b77666e38737189cd619db2c640ba483a054d70f1cd90b5f68e2294a289667a
+          E2E_GATE_CONTRACT_SCENARIOS: '["bootstrap.fresh-import-finalize"]'
+        run: node .github/scripts/verify-e2e-release.mjs
 
   advance-major-alias:
-    needs: [verify-package, publish]
-    if: ${{ !cancelled() && needs.verify-package.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
+    needs: [classify, verify-package, publish, verify-release-e2e]
+    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -352,3 +401,44 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -fa "$MAJOR" -m "Rolling $MAJOR alias -> $GITHUB_REF_NAME" "$CANDIDATE_COMMIT"
           git push origin "refs/tags/$MAJOR" --force
+
+  # Tells postman-api-onboarding-action that a release landed here so its
+  # advance-pins workflow can move the composite's immutable sibling pin without
+  # waiting for the daily cron backstop. Release runs are GITHUB_TOKEN-created,
+  # so `workflow_run` cascades off Release never fire; dispatch lives here on
+  # the release path that actually executes on tags.
+  #
+  # The dispatch crosses repositories, which GITHUB_TOKEN cannot do. The
+  # postman-suite-pin-bot GitHub App (org-owned, installed on the five suite
+  # repos) mints a one-hour installation token scoped to the composite repo for
+  # the call; no long-lived credential is stored. If the App secrets are absent
+  # the composite's daily cron still picks the release up.
+  notify-composite:
+    needs: [classify, verify-package, publish, verify-release-e2e, advance-major-alias]
+    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.advance-major-alias.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Mint composite-scoped App token
+        id: app-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUITE_PIN_BOT_APP_ID }}
+          private-key: ${{ secrets.SUITE_PIN_BOT_PRIVATE_KEY }}
+          owner: postman-cs
+          repositories: postman-api-onboarding-action
+
+      - name: Dispatch sibling-release to the composite
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice::App token unavailable (secrets missing or mint failed); the composite's daily cron will pick this release up."
+            exit 0
+          fi
+          gh api repos/postman-cs/postman-api-onboarding-action/dispatches \
+            -f event_type=sibling-release \
+            -f "client_payload[repository]=${GITHUB_REPOSITORY}" \
+            -f "client_payload[run]=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

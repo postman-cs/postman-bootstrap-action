@@ -16,7 +16,8 @@ src/
       workspace-selection.ts      # Canonical workspace resolution
     github/github-api-client.ts   # Repo var read/write
     repo/context.ts               # Auto-detect repo URL/provider/branch
-    retry.ts, secrets.ts, http-error.ts
+    secrets.ts                  # Package-specific secret handling
+  @postman-cse/automation-core  # Published shared gateway/retry/HttpError foundations
 tests/
 ```
 

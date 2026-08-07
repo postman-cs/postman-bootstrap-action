@@ -13,6 +13,12 @@ const CI_TIMEOUT_MS = 30_000;
 export default defineConfig({
   test: {
     environment: 'node',
+    // Node 25 exposes globalThis.localStorage by default. The legacy
+    // util-deprecate bundle inside openapi-to-postmanv2 probes that getter at
+    // import time, which emits a warning unless a persistence file is set.
+    // Tests do not use Web Storage, so preserve the Node 24 runtime shape and
+    // avoid introducing shared on-disk state between parallel workers.
+    execArgv: ['--no-experimental-webstorage'],
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
     ...(process.env.CI

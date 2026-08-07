@@ -1,8 +1,7 @@
 import { itemsByType } from '@postman/runtime.models/extensible';
 
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
-import { HttpError } from '../http-error.js';
-import { retry } from '../retry.js';
+import { HttpError, retry } from '@postman-cse/automation-core';
 import { createSecretMasker, type SecretMasker } from '../secrets.js';
 import type { AccessTokenProvider } from './token-provider.js';
 import { postmanAppVersionProvider, type AppVersionProvider } from './app-version.js';

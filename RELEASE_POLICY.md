@@ -31,6 +31,14 @@ the immutable tag rather than transient runner state, but only while `main`'s
 receipt binding is older than the source commit covered by that tag. Divergent
 receipt bindings stop recovery rather than choosing either side.
 
+The immutable npm package and GitHub release publish after deterministic artifact
+verification. The release workflow then dispatches the exact released tag to the
+live E2E harness with a digest-bound correlation ID and waits for that exact run
+to finish. The rolling major alias advances only after terminal success. Manual
+workflow dispatch can select `report-only` as an explicit override; enforcement
+is the default and missing tokens, correlation, or verifier availability block
+the alias.
+
 Do not push `vX.Y.Z` tags by hand. The pre-push hook refuses them, because a
 hand-pushed tag becomes a public identifier before any gate has run against it.
 

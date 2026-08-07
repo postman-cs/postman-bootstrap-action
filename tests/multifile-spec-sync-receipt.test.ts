@@ -17,6 +17,13 @@ import * as probeModule from '../scripts/probe-multifile-spec-sync.mjs';
 const CAPABILITY_KEYS = probeModule.CAPABILITY_KEYS as string[];
 const REQUIRED_LEG_MODES = probeModule.REQUIRED_LEG_MODES as string[];
 const REQUIRED_PROBE_IDS = probeModule.REQUIRED_PROBE_IDS as string[];
+const parseBoundedIntegerEnv = probeModule.parseBoundedIntegerEnv as (
+  name: string,
+  value: string | undefined,
+  defaultValue: number,
+  minimum: number,
+  maximum: number
+) => number;
 const validateMultifileSpecSyncReceipt = probeModule.validateMultifileSpecSyncReceipt as (
   receipt: unknown
 ) => unknown;
@@ -186,6 +193,72 @@ function completeReceipt(options: {
 }
 
 describe('multifile-spec-sync probe generation/cleanup helpers', () => {
+  it('parses bounded generation polling environment settings before probe work', () => {
+    const settings = [
+      {
+        name: 'POSTMAN_GENERATION_POLL_ATTEMPTS',
+        defaultValue: 180,
+        minimum: 1,
+        maximum: 300,
+        endpoints: [1, 300],
+        invalid: ['not-a-number', 'Infinity', '1.5', '-1', '0', '301']
+      },
+      {
+        name: 'POSTMAN_GENERATION_POLL_DELAY_MS',
+        defaultValue: 1000,
+        minimum: 0,
+        maximum: 5000,
+        endpoints: [0, 5000],
+        invalid: ['not-a-number', 'Infinity', '1.5', '-1', '5001']
+      }
+    ];
+
+    for (const setting of settings) {
+      expect(
+        parseBoundedIntegerEnv(
+          setting.name,
+          undefined,
+          setting.defaultValue,
+          setting.minimum,
+          setting.maximum
+        )
+      ).toBe(setting.defaultValue);
+      expect(
+        parseBoundedIntegerEnv(
+          setting.name,
+          '',
+          setting.defaultValue,
+          setting.minimum,
+          setting.maximum
+        )
+      ).toBe(setting.defaultValue);
+
+      for (const endpoint of setting.endpoints) {
+        expect(
+          parseBoundedIntegerEnv(
+            setting.name,
+            String(endpoint),
+            setting.defaultValue,
+            setting.minimum,
+            setting.maximum
+          )
+        ).toBe(endpoint);
+      }
+
+      for (const invalid of setting.invalid) {
+        expect(() =>
+          parseBoundedIntegerEnv(
+            setting.name,
+            invalid,
+            setting.defaultValue,
+            setting.minimum,
+            setting.maximum
+          )
+        ).toThrow(setting.name);
+      }
+    }
+  });
+
   it('omits request identifiers from persisted response shapes', () => {
     const shaped = shapeOf({
       requestId: 'request-sensitive-123',

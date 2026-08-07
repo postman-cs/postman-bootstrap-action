@@ -1322,7 +1322,7 @@ var require_util = __commonJS({
         return new BodyAsyncIterable(body2);
       } else if (body2 && isFormDataLike(body2)) {
         return body2;
-      } else if (body2 && typeof body2 !== "string" && !ArrayBuffer.isView(body2) && isIterable2(body2)) {
+      } else if (body2 && typeof body2 !== "string" && !ArrayBuffer.isView(body2) && isIterable3(body2)) {
         return new BodyAsyncIterable(body2);
       } else {
         return body2;
@@ -1434,7 +1434,7 @@ var require_util = __commonJS({
     function isAsyncIterable2(obj) {
       return !!(obj != null && typeof obj[Symbol.asyncIterator] === "function");
     }
-    function isIterable2(obj) {
+    function isIterable3(obj) {
       return !!(obj != null && (typeof obj[Symbol.iterator] === "function" || typeof obj[Symbol.asyncIterator] === "function"));
     }
     function hasSafeIterator(obj) {
@@ -2096,7 +2096,7 @@ var require_util = __commonJS({
       parseURL,
       getServerName,
       isStream,
-      isIterable: isIterable2,
+      isIterable: isIterable3,
       hasSafeIterator,
       isAsyncIterable: isAsyncIterable2,
       isDestroyed,
@@ -2404,7 +2404,7 @@ var require_request = __commonJS({
       destroy,
       isBuffer,
       isFormDataLike,
-      isIterable: isIterable2,
+      isIterable: isIterable3,
       hasSafeIterator,
       isBlobLike,
       serializePathWithQuery,
@@ -2559,7 +2559,7 @@ var require_request = __commonJS({
           this.body = body2.byteLength ? Buffer.from(body2) : null;
         } else if (typeof body2 === "string") {
           this.body = body2.length ? Buffer.from(body2) : null;
-        } else if (isFormDataLike(body2) || isIterable2(body2) || isBlobLike(body2)) {
+        } else if (isFormDataLike(body2) || isIterable3(body2) || isBlobLike(body2)) {
           this.body = body2;
         } else {
           throw new InvalidArgumentError("body must be a string, a Buffer, a Readable stream, an iterable, or an async iterable");
@@ -220146,13 +220146,13 @@ var require_aggregate_error = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     var isObject = require_is_object();
     var _globalThis$Aggregate;
-    function isIterable2(value) {
+    function isIterable3(value) {
       return isObject["default"](value) && typeof value[Symbol.iterator] === "function";
     }
     var AggregateError2 = (_globalThis$Aggregate = globalThis.AggregateError) !== null && _globalThis$Aggregate !== void 0 ? _globalThis$Aggregate : class AggregateError extends Error {
       constructor(errors, message = "") {
         super(message);
-        if (!Array.isArray(errors) && !isIterable2(errors)) {
+        if (!Array.isArray(errors) && !isIterable3(errors)) {
           throw new TypeError(`${errors} is not an iterable`);
         }
         this.errors = [...errors];
@@ -318700,6 +318700,12 @@ var bootstrapActionContract = {
       description: "Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update.",
       required: false
     },
+    "onboarding-scope": {
+      description: "Onboarding scope. Use full for the complete pipeline or spec-only for OpenAPI workspace and specification onboarding without generated assets.",
+      required: false,
+      default: "full",
+      allowedValues: ["full", "spec-only"]
+    },
     "sync-examples": {
       description: "Whether linked spec/collection relations should enable example syncing.",
       required: false,
@@ -318984,14 +318990,6 @@ var contractOutputNames = Object.keys(bootstrapActionContract.outputs);
 
 // src/lib/secrets.ts
 var REDACTED = "[REDACTED]";
-var SENSITIVE_HEADER_NAMES = /* @__PURE__ */ new Set([
-  "authorization",
-  "cookie",
-  "proxy-authorization",
-  "set-cookie",
-  "x-access-token",
-  "x-api-key"
-]);
 function isIterable(value) {
   return value !== null && value !== void 0 && typeof value !== "string" && typeof value[Symbol.iterator] === "function";
 }
@@ -319048,26 +319046,6 @@ function createMutableSecretMasker(initialSecretValues = [], replacement = REDAC
       }
     }
   };
-}
-function headerEntries(headers) {
-  if (headers instanceof Headers) {
-    return Array.from(headers.entries());
-  }
-  if (Array.isArray(headers)) {
-    return headers.map(([name, value]) => [name, String(value)]);
-  }
-  return Object.entries(headers).map(([name, value]) => [name, String(value)]);
-}
-function sanitizeHeaders(headers, secretValues) {
-  if (!headers) {
-    return {};
-  }
-  const sanitized = {};
-  for (const [name, value] of headerEntries(headers)) {
-    const normalizedName = name.toLowerCase();
-    sanitized[normalizedName] = SENSITIVE_HEADER_NAMES.has(normalizedName) ? REDACTED : redactSecrets(value, secretValues);
-  }
-  return sanitized;
 }
 
 // src/lib/github/github-api-client.ts
@@ -319297,64 +319275,6 @@ function describeRateLimitCause(response, body2) {
   }
   return "rate limit";
 }
-
-// src/lib/http-error.ts
-function truncate(value, limit) {
-  if (value.length <= limit) {
-    return value;
-  }
-  return `${value.slice(0, limit)}...[truncated]`;
-}
-function buildMessage(init) {
-  const method = String(init.method || "GET").toUpperCase();
-  const status = `${init.status}${init.statusText ? ` ${init.statusText}` : ""}`;
-  const url = redactSecrets(init.url, init.secretValues);
-  const body2 = truncate(
-    redactSecrets(init.responseBody || "", init.secretValues),
-    Math.max(0, init.bodyLimit ?? 800)
-  );
-  return body2 ? `${method} ${url} failed: ${status} - ${body2}` : `${method} ${url} failed: ${status}`;
-}
-var HttpError = class _HttpError extends Error {
-  method;
-  requestHeaders;
-  responseBody;
-  secretValues;
-  status;
-  statusText;
-  url;
-  constructor(init) {
-    super(buildMessage(init));
-    this.name = "HttpError";
-    this.method = String(init.method || "GET").toUpperCase();
-    this.requestHeaders = init.requestHeaders;
-    this.responseBody = init.responseBody || "";
-    this.secretValues = init.secretValues;
-    this.status = init.status;
-    this.statusText = init.statusText;
-    this.url = init.url;
-  }
-  static async fromResponse(response, init) {
-    const responseBody = init.responseBody ?? await response.text().catch(() => "");
-    return new _HttpError({
-      ...init,
-      responseBody,
-      status: response.status,
-      statusText: response.statusText
-    });
-  }
-  toJSON() {
-    return {
-      method: this.method,
-      name: this.name,
-      requestHeaders: sanitizeHeaders(this.requestHeaders, this.secretValues),
-      responseBody: redactSecrets(this.responseBody, this.secretValues),
-      status: this.status,
-      statusText: this.statusText,
-      url: redactSecrets(this.url, this.secretValues)
-    };
-  }
-};
 
 // src/lib/openapi-changes.ts
 var import_node_crypto = require("node:crypto");
@@ -320706,6 +320626,7 @@ var POSTMAN_ENDPOINT_PROFILES = {
   prod: {
     apiBaseUrl: "https://api.getpostman.com",
     bifrostBaseUrl: "https://bifrost-premium-https-v4.gw.postman.com",
+    appVersionBaseUrl: "https://dl.pstmn.io",
     fallbackBaseUrl: "https://go.postman.co/_api",
     cliInstallUrl: "https://dl-cli.pstmn.io/install/unix.sh",
     cliWindowsInstallUrl: "https://dl-cli.pstmn.io/install/win64.ps1",
@@ -320715,6 +320636,7 @@ var POSTMAN_ENDPOINT_PROFILES = {
   beta: {
     apiBaseUrl: "https://api.getpostman-beta.com",
     bifrostBaseUrl: "https://bifrost-https-v4.gw.postman-beta.com",
+    appVersionBaseUrl: "https://dl.pstmn.io",
     fallbackBaseUrl: "https://go.postman-beta.co/_api",
     cliInstallUrl: "https://dl-cli.pstmn-beta.io/install/unix.sh",
     cliWindowsInstallUrl: "https://dl-cli.pstmn-beta.io/install/win64.ps1",
@@ -320722,6 +320644,48 @@ var POSTMAN_ENDPOINT_PROFILES = {
     iapubBaseUrl: "https://iapub.postman.co"
   }
 };
+var EMULATOR_PROFILE_ENV = "POSTMAN_TEST_EMULATOR_PROFILE";
+var EMULATOR_PROFILE_NAME = "emulator";
+var ENDPOINT_OVERRIDE_ENV = {
+  apiBaseUrl: "POSTMAN_TEST_API_BASE_URL",
+  bifrostBaseUrl: "POSTMAN_TEST_BIFROST_BASE_URL",
+  gatewayBaseUrl: "POSTMAN_TEST_GATEWAY_BASE_URL",
+  iapubBaseUrl: "POSTMAN_TEST_IAPUB_BASE_URL",
+  appVersionBaseUrl: "POSTMAN_TEST_APP_VERSION_BASE_URL"
+};
+var OVERRIDE_FIELDS = Object.keys(ENDPOINT_OVERRIDE_ENV);
+function readEndpointEnv(env, name) {
+  return String(env[name] ?? "").trim();
+}
+function normalizeEndpointOverride(envName, raw) {
+  const invalid = (reason) => new Error(`ENDPOINT_PROFILE_OVERRIDE_INVALID: ${envName} ${reason}`);
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw invalid("must be an absolute http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw invalid(`must use http or https, got "${parsed.protocol}"`);
+  }
+  if (parsed.username || parsed.password) {
+    throw invalid("must not embed credentials");
+  }
+  if (parsed.search || parsed.hash) {
+    throw invalid("must not carry a query string or fragment");
+  }
+  return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
+}
+function assertNoUnarmedOverrides(env) {
+  const set2 = OVERRIDE_FIELDS.map((field) => ENDPOINT_OVERRIDE_ENV[field]).filter(
+    (name) => Object.hasOwn(env, name)
+  );
+  if (set2.length > 0) {
+    throw new Error(
+      `ENDPOINT_PROFILE_NOT_ARMED: ${set2.join(", ")} set without ${EMULATOR_PROFILE_ENV}=${EMULATOR_PROFILE_NAME}; endpoint overrides are ignored unless the emulator profile is armed, so this would have hit live hosts.`
+    );
+  }
+}
 function parsePostmanRegion(value) {
   const normalized = String(value || "us").trim().toLowerCase();
   if (normalized === "us" || normalized === "eu") {
@@ -320736,18 +320700,37 @@ function parsePostmanStack(value) {
   }
   throw new Error(`Unsupported postman-stack "${value}". Supported values: prod, beta`);
 }
-function resolvePostmanEndpointProfile(stack, region = "us") {
+function resolvePostmanEndpointProfile(stack, region = "us", env = process.env) {
   if (stack === "beta" && region !== "us") {
     throw new Error("postman-region=eu is only supported with postman-stack=prod");
   }
-  const profile = POSTMAN_ENDPOINT_PROFILES[stack];
-  if (region === "eu") {
-    return {
-      ...profile,
-      apiBaseUrl: "https://api.eu.postman.com"
-    };
+  const profile = region === "eu" ? { ...POSTMAN_ENDPOINT_PROFILES[stack], apiBaseUrl: "https://api.eu.postman.com" } : POSTMAN_ENDPOINT_PROFILES[stack];
+  const profileName = readEndpointEnv(env, EMULATOR_PROFILE_ENV);
+  if (!profileName) {
+    assertNoUnarmedOverrides(env);
+    return profile;
   }
-  return profile;
+  if (profileName !== EMULATOR_PROFILE_NAME) {
+    throw new Error(
+      `ENDPOINT_PROFILE_UNKNOWN: ${EMULATOR_PROFILE_ENV}="${profileName}"; supported values: ${EMULATOR_PROFILE_NAME}`
+    );
+  }
+  const resolved = {};
+  for (const field of OVERRIDE_FIELDS) {
+    const envName = ENDPOINT_OVERRIDE_ENV[field];
+    const raw = readEndpointEnv(env, envName);
+    if (!raw) {
+      throw new Error(
+        `ENDPOINT_PROFILE_OVERRIDE_MISSING: ${envName} is required when ${EMULATOR_PROFILE_ENV}=${EMULATOR_PROFILE_NAME}; the emulator profile never falls back to a live host.`
+      );
+    }
+    resolved[field] = normalizeEndpointOverride(envName, raw);
+  }
+  return {
+    ...profile,
+    ...resolved,
+    fallbackBaseUrl: resolved.bifrostBaseUrl
+  };
 }
 
 // src/lib/postman/credential-identity.ts
@@ -321034,6 +321017,9 @@ function adoptExactMatch(identityKey, matches, formatMatch) {
 
 // src/lib/postman/error-advice.ts
 var WORKSPACE_PERSONAL_ONLY_ADVICE = "Workspace creation failed: This may be an Org-mode account that requires a workspace-team-id input. The Postman API does not allow creating team workspaces at the organization level. Use the workspace-team-id input to specify which sub-team should own this workspace.";
+function squadDiscoveryUnavailableAdvice(observedStatus) {
+  return `Cannot determine whether this is an Org-mode account: the Postman sub-team (squad) list could not be read (observed UMS status ${observedStatus}). Creating a workspace without that answer risks a personal-only workspace that org accounts reject with 403 on the visibility change. Set the workspace-team-id input to the numeric id of the sub-team that should own this workspace (GitHub Actions: workspace-team-id; env: POSTMAN_WORKSPACE_TEAM_ID; CLI: --workspace-team-id <id>). If you believe this account is genuinely not Org-mode, re-run once the squads endpoint is readable, or pass an existing workspace-id so no workspace has to be created.`;
+}
 function expiryAdvice(code) {
   return `postman: Bifrost rejected the access token (${code}). Service-account access tokens expire after about 1 to 1.5 hours; this run likely outlived its token. Re-mint a fresh token with postman-resolve-service-token-action and re-run. If it was just minted, confirm postman-access-token is the token for the same parent org as postman-api-key.`;
 }
@@ -321084,6 +321070,1404 @@ function adviseFromHttpError(err, ctx) {
   return new Error(withUnderlyingCause(advice, err.message, ctx.mask), { cause: err });
 }
 
+// node_modules/@postman-cse/automation-core/dist/ci-context.js
+function norm(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function detectEventTrigger(env = process.env) {
+  const ghEvent = norm(env.GITHUB_EVENT_NAME)?.toLowerCase();
+  if (ghEvent) {
+    if (ghEvent === "push")
+      return "push";
+    if (ghEvent === "pull_request" || ghEvent === "pull_request_target")
+      return "pull_request";
+    if (ghEvent === "schedule")
+      return "schedule";
+    if (ghEvent === "workflow_dispatch" || ghEvent === "repository_dispatch")
+      return "manual";
+    return "other";
+  }
+  const glSource = norm(env.CI_PIPELINE_SOURCE)?.toLowerCase();
+  if (glSource) {
+    if (glSource === "push")
+      return "push";
+    if (glSource === "merge_request_event")
+      return "pull_request";
+    if (glSource === "schedule")
+      return "schedule";
+    if (glSource === "web" || glSource === "api" || glSource === "trigger" || glSource === "pipeline") {
+      return "manual";
+    }
+    return "other";
+  }
+  if (norm(env.BITBUCKET_PR_ID))
+    return "pull_request";
+  if (norm(env.CI) || norm(env.BUILD_BUILDID) || norm(env.JENKINS_URL) || norm(env.TEAMCITY_VERSION)) {
+    return "other";
+  }
+  return "unknown";
+}
+function detectRunnerOs(env = process.env) {
+  const runnerOs = norm(env.RUNNER_OS)?.toLowerCase();
+  if (runnerOs === "linux")
+    return "linux";
+  if (runnerOs === "macos")
+    return "macos";
+  if (runnerOs === "windows")
+    return "windows";
+  const platform2 = typeof process !== "undefined" ? process.platform : void 0;
+  if (platform2 === "linux")
+    return "linux";
+  if (platform2 === "darwin")
+    return "macos";
+  if (platform2 === "win32")
+    return "windows";
+  return "unknown";
+}
+function detectCiContext(env = process.env) {
+  const provider = detectCiProviderContext(env);
+  return {
+    ...provider,
+    eventTrigger: detectEventTrigger(env),
+    runnerOs: detectRunnerOs(env)
+  };
+}
+function detectCiProviderContext(env = process.env) {
+  if (norm(env.GITHUB_ACTIONS)) {
+    const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
+    const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "github",
+      runId: norm(env.GITHUB_RUN_ID),
+      runnerKind
+    };
+  }
+  if (norm(env.GITLAB_CI)) {
+    return {
+      ciProvider: "gitlab",
+      runId: norm(env.CI_PIPELINE_ID) ?? norm(env.CI_PIPELINE_IID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.CIRCLECI)) {
+    return {
+      ciProvider: "circleci",
+      runId: norm(env.CIRCLE_WORKFLOW_ID) ?? norm(env.CIRCLE_BUILD_NUM),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.BUILDKITE)) {
+    const computeType = norm(env.BUILDKITE_COMPUTE_TYPE);
+    const runnerKind = computeType === "hosted" ? "hosted" : computeType === "self-hosted" ? "self-hosted" : "unknown";
+    return {
+      ciProvider: "buildkite",
+      runId: norm(env.BUILDKITE_BUILD_ID) ?? norm(env.BUILDKITE_BUILD_NUMBER),
+      runnerKind
+    };
+  }
+  if (norm(env.TF_BUILD)) {
+    return {
+      ciProvider: "azure",
+      runId: norm(env.BUILD_BUILDID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.CODEBUILD_BUILD_ID)) {
+    return {
+      ciProvider: "codebuild",
+      runId: norm(env.CODEBUILD_BUILD_ID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.BITBUCKET_BUILD_NUMBER)) {
+    return {
+      ciProvider: "bitbucket",
+      runId: norm(env.BITBUCKET_BUILD_NUMBER),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.TEAMCITY_VERSION)) {
+    return {
+      ciProvider: "teamcity",
+      runId: norm(env.BUILD_NUMBER),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.HARNESS_BUILD_ID)) {
+    return {
+      ciProvider: "harness",
+      runId: norm(env.HARNESS_EXECUTION_ID) ?? norm(env.HARNESS_BUILD_ID),
+      runnerKind: "unknown"
+    };
+  }
+  if (norm(env.JENKINS_URL)) {
+    return {
+      ciProvider: "jenkins",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NUMBER) ?? norm(env.BUILD_TAG),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.ATC_EXTERNAL_URL) || norm(env.BUILD_ID) && norm(env.BUILD_PIPELINE_NAME)) {
+    return {
+      ciProvider: "concourse",
+      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NAME),
+      runnerKind: "self-hosted"
+    };
+  }
+  if (norm(env.CI)) {
+    return { ciProvider: "other", runnerKind: "unknown" };
+  }
+  return { ciProvider: "unknown", runnerKind: "unknown" };
+}
+
+// node_modules/@postman-cse/automation-core/dist/repo-context.js
+function normalize(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function normalizeRepoUrl(url) {
+  const raw = normalize(url);
+  if (!raw) {
+    return void 0;
+  }
+  const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    const host = sshMatch[1];
+    const path11 = sshMatch[2];
+    return `https://${host}/${path11}`;
+  }
+  return raw.replace(/\.git$/, "");
+}
+function parseProvider(explicitProvider, repoUrl, env) {
+  const explicit = normalize(explicitProvider)?.toLowerCase();
+  if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
+    return explicit;
+  }
+  const url = (repoUrl ?? "").toLowerCase();
+  if (url.includes("github")) {
+    return "github";
+  }
+  if (url.includes("gitlab")) {
+    return "gitlab";
+  }
+  if (url.includes("bitbucket")) {
+    return "bitbucket";
+  }
+  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
+    return "azure-devops";
+  }
+  if (normalize(env.GITHUB_REPOSITORY)) {
+    return "github";
+  }
+  if (normalize(env.CI_PROJECT_PATH) || normalize(env.GITLAB_CI)) {
+    return "gitlab";
+  }
+  if (normalize(env.BITBUCKET_REPO_SLUG)) {
+    return "bitbucket";
+  }
+  if (normalize(env.BUILD_REPOSITORY_URI)) {
+    return "azure-devops";
+  }
+  return "unknown";
+}
+function classifyRefKind(env = process.env) {
+  const githubRefType = normalize(env.GITHUB_REF_TYPE)?.toLowerCase();
+  const githubRef = normalize(env.GITHUB_REF);
+  const azureRef = normalize(env.BUILD_SOURCEBRANCH);
+  if (githubRefType === "tag" || githubRef?.startsWith("refs/tags/") || normalize(env.CI_COMMIT_TAG) || normalize(env.BITBUCKET_TAG) || azureRef?.startsWith("refs/tags/")) {
+    return "tag";
+  }
+  const githubRefName = normalize(env.GITHUB_REF_NAME);
+  const githubDefault = normalize(env.GITHUB_DEFAULT_BRANCH);
+  if (githubRefName && githubDefault) {
+    return githubRefName === githubDefault ? "default-branch" : "branch";
+  }
+  const gitlabRef = normalize(env.CI_COMMIT_REF_NAME);
+  const gitlabDefault = normalize(env.CI_DEFAULT_BRANCH);
+  if (gitlabRef && gitlabDefault) {
+    return gitlabRef === gitlabDefault ? "default-branch" : "branch";
+  }
+  if (githubRefName || githubRef?.startsWith("refs/heads/") || gitlabRef || normalize(env.BITBUCKET_BRANCH) || normalize(env.BUILD_SOURCEBRANCHNAME) || azureRef?.startsWith("refs/heads/")) {
+    return "branch";
+  }
+  return "unknown";
+}
+function detectRepoContext(input, env = process.env) {
+  const repoUrl = normalizeRepoUrl(input.repoUrl) ?? normalizeRepoUrl(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl(env.CI_PROJECT_URL) ?? normalizeRepoUrl(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl(env.BUILD_REPOSITORY_URI);
+  const repoSlug = normalize(input.repoSlug) ?? normalize(env.GITHUB_REPOSITORY) ?? normalize(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize(env.BUILD_REPOSITORY_NAME);
+  const ref = normalize(input.ref) ?? normalize(env.GITHUB_REF_NAME) ?? normalize(env.CI_COMMIT_REF_NAME) ?? normalize(env.BITBUCKET_BRANCH) ?? normalize(env.BUILD_SOURCEBRANCHNAME);
+  const sha = normalize(input.sha) ?? normalize(env.GITHUB_SHA) ?? normalize(env.CI_COMMIT_SHA) ?? normalize(env.BITBUCKET_COMMIT) ?? normalize(env.BUILD_SOURCEVERSION);
+  const provider = parseProvider(input.gitProvider, repoUrl, env);
+  const refKind = classifyRefKind(env);
+  return {
+    provider,
+    repoUrl,
+    repoSlug,
+    ref,
+    sha,
+    refKind
+  };
+}
+
+// node_modules/@postman-cse/automation-core/dist/telemetry.js
+var import_node_crypto2 = require("node:crypto");
+var import_undici2 = __toESM(require_undici(), 1);
+var SCHEMA_VERSION = 3;
+var DEFAULT_TIMEOUT_MS = 1500;
+var DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
+var proxyDispatcher;
+function getProxyDispatcher() {
+  return proxyDispatcher ??= new import_undici2.EnvHttpProxyAgent();
+}
+function resolveActionVersion(explicit, env = process.env) {
+  if (explicit) {
+    return explicit;
+  }
+  const ref = env.GITHUB_ACTION_REF?.trim();
+  if (ref) {
+    return ref;
+  }
+  return typeof __ACTION_VERSION__ !== "undefined" && __ACTION_VERSION__ ? __ACTION_VERSION__ : "unknown";
+}
+function telemetryDisabled(env) {
+  const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
+  if (flag === "off" || flag === "0" || flag === "false" || flag === "no") {
+    return true;
+  }
+  const dnt = String(env.DO_NOT_TRACK ?? "").trim().toLowerCase();
+  if (dnt && dnt !== "0" && dnt !== "false") {
+    return true;
+  }
+  return false;
+}
+function sha2562(value) {
+  return (0, import_node_crypto2.createHash)("sha256").update(value).digest("hex");
+}
+function accountTypeFromConsumer(consumerType) {
+  const t = (consumerType ?? "").trim().toLowerCase();
+  if (!t) {
+    return "unknown";
+  }
+  return t === "service_account" ? "service" : "user";
+}
+var noticeShown = false;
+function maybeNotice(logger) {
+  if (noticeShown || !logger) {
+    return;
+  }
+  noticeShown = true;
+  logger.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type, run trigger, runner OS). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
+}
+function buildTelemetryEvent(params) {
+  const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
+  const ci = detectCiContext(env);
+  const repo = detectRepoContext({}, env);
+  const repoSlug = repo.repoSlug;
+  const repoSource = repoSlug ?? repo.repoUrl;
+  const owner = repoSlug && repoSlug.includes("/") ? repoSlug.split("/")[0] : void 0;
+  return {
+    schema_version: SCHEMA_VERSION,
+    event: "completion",
+    action,
+    action_version: actionVersion || "unknown",
+    team_id: teamId,
+    ci_provider: ci.ciProvider,
+    git_provider: repo.provider,
+    run_id: ci.runId,
+    runner_kind: ci.runnerKind,
+    repo_id: repoSource ? sha2562(repoSource) : void 0,
+    org_id: owner ? sha2562(owner) : void 0,
+    account_type: accountType,
+    event_trigger: ci.eventTrigger,
+    runner_os: ci.runnerOs,
+    ref_kind: repo.refKind,
+    outcome,
+    ts: now()
+  };
+}
+async function send(event2, options) {
+  const env = options.env ?? process.env;
+  const endpoint = options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
+  const transport = options.transport ?? import_undici2.fetch;
+  const dispatcher = options.dispatcher ?? getProxyDispatcher();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  timer.unref?.();
+  const init = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(event2),
+    signal: controller.signal
+  };
+  init.dispatcher = dispatcher;
+  try {
+    await transport(endpoint, init);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function createTelemetryContext(options) {
+  const env = options.env ?? process.env;
+  const now = options.now ?? Date.now;
+  const actionVersion = resolveActionVersion(options.actionVersion, env);
+  let teamId = "";
+  let accountType = "unknown";
+  let emitted = false;
+  return {
+    setTeamId(value) {
+      if (value) {
+        teamId = String(value);
+      }
+    },
+    setAccountType(consumerType) {
+      accountType = accountTypeFromConsumer(consumerType);
+    },
+    emitCompletion(outcome) {
+      if (emitted) {
+        return;
+      }
+      emitted = true;
+      try {
+        if (telemetryDisabled(env) || !teamId) {
+          return;
+        }
+        const event2 = buildTelemetryEvent({
+          action: options.action,
+          actionVersion,
+          teamId,
+          accountType,
+          outcome,
+          env,
+          now
+        });
+        maybeNotice(options.logger);
+        void send(event2, options).catch(() => {
+        });
+      } catch {
+      }
+    }
+  };
+}
+
+// node_modules/@postman-cse/automation-core/dist/logger.js
+var LEVEL_ORDER = {
+  debug: 10,
+  info: 20,
+  warning: 30,
+  error: 40
+};
+function defaultCorrelationId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+function resolveLogLevel(env = process.env) {
+  const explicit = String(env.POSTMAN_ACTIONS_LOG_LEVEL ?? "").trim().toLowerCase();
+  if (explicit === "debug" || explicit === "trace" || explicit === "verbose")
+    return "debug";
+  if (explicit === "info")
+    return "info";
+  if (explicit === "warn" || explicit === "warning")
+    return "warning";
+  if (explicit === "error" || explicit === "quiet")
+    return "error";
+  if (isTruthyFlag(env.RUNNER_DEBUG) || isTruthyFlag(env.ACTIONS_STEP_DEBUG))
+    return "debug";
+  if (isTruthyFlag(env.POSTMAN_ACTIONS_DEBUG))
+    return "debug";
+  return "info";
+}
+function isTruthyFlag(value) {
+  if (!value)
+    return false;
+  const flag = value.trim().toLowerCase();
+  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+}
+function actionSink(core2) {
+  return {
+    debug: (message) => core2.debug?.(message),
+    info: (message) => core2.info(message),
+    warning: (message) => (core2.warning ?? core2.info)(message),
+    error: (message) => (core2.error ?? core2.warning ?? core2.info)(message),
+    startGroup: core2.startGroup ? (name) => core2.startGroup?.(name) : void 0,
+    endGroup: core2.endGroup ? () => core2.endGroup?.() : void 0,
+    isDebug: core2.isDebug ? () => core2.isDebug?.() ?? false : void 0
+  };
+}
+var MIN_SECRET_LENGTH = 4;
+function renderValue(value, maxLength = 512) {
+  if (value === void 0)
+    return "undefined";
+  if (value === null)
+    return "null";
+  if (typeof value === "string")
+    return truncate(value, maxLength);
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (value instanceof Error)
+    return truncate(describeError(value), maxLength);
+  if (Array.isArray(value)) {
+    return truncate(`[${value.map((entry) => renderValue(entry, 120)).join(", ")}]`, maxLength);
+  }
+  try {
+    return truncate(JSON.stringify(value) ?? String(value), maxLength);
+  } catch {
+    return "<unserializable>";
+  }
+}
+function truncate(text, maxLength) {
+  if (text.length <= maxLength)
+    return text;
+  return `${text.slice(0, maxLength)}\u2026 (+${text.length - maxLength} chars)`;
+}
+function describeError(error, maxDepth = 5) {
+  const parts = [];
+  let current = error;
+  let depth = 0;
+  while (current !== void 0 && current !== null && depth < maxDepth) {
+    if (current instanceof Error) {
+      const code = current.code;
+      parts.push(code ? `${current.name}[${code}]: ${current.message}` : `${current.name}: ${current.message}`);
+      current = current.cause;
+    } else if (typeof current === "object") {
+      try {
+        parts.push(JSON.stringify(current) ?? String(current));
+      } catch {
+        parts.push(String(current));
+      }
+      current = void 0;
+    } else {
+      parts.push(String(current));
+      current = void 0;
+    }
+    depth += 1;
+  }
+  if (parts.length === 0)
+    return "unknown error";
+  return parts.join(" <- caused by ");
+}
+function createLogger(options) {
+  const env = options.env ?? process.env;
+  const level = options.level ?? resolveLogLevel(env);
+  const secrets = options.secrets ?? /* @__PURE__ */ new Set();
+  const correlationId = options.correlationId ?? defaultCorrelationId();
+  const now = options.now ?? (() => Date.now());
+  const threshold = LEVEL_ORDER[level];
+  function addSecret(value) {
+    if (typeof value !== "string")
+      return;
+    const trimmed = value.trim();
+    if (trimmed.length < MIN_SECRET_LENGTH)
+      return;
+    secrets.add(trimmed);
+  }
+  function redact(text) {
+    let output = typeof text === "string" ? text : renderValue(text, 4096);
+    for (const secret of secrets) {
+      if (!secret)
+        continue;
+      output = output.split(secret).join("***");
+      const encoded = encodeURIComponent(secret);
+      if (encoded !== secret)
+        output = output.split(encoded).join("***");
+    }
+    return output;
+  }
+  function build(baseFields) {
+    function emit(target, message, fields) {
+      if (LEVEL_ORDER[target] < threshold)
+        return;
+      const merged = { ...baseFields, ...fields ?? {} };
+      const rendered = Object.entries(merged).filter(([, value]) => value !== void 0).map(([key, value]) => `${key}=${redact(renderValue(value))}`).join(" ");
+      const line = rendered ? `${redact(message)} | ${rendered}` : redact(message);
+      switch (target) {
+        case "debug":
+          options.sink.debug(line);
+          break;
+        case "info":
+          options.sink.info(line);
+          break;
+        case "warning":
+          options.sink.warning(line);
+          break;
+        case "error":
+          options.sink.error(line);
+          break;
+      }
+    }
+    const logger = {
+      level,
+      correlationId,
+      addSecret,
+      redact,
+      isDebug: () => threshold <= LEVEL_ORDER.debug,
+      debug: (message, fields) => emit("debug", message, fields),
+      info: (message, fields) => emit("info", message, fields),
+      warning: (message, fields) => emit("warning", message, fields),
+      error: (message, fields) => emit("error", message, fields),
+      failure: (message, error, fields) => emit("error", message, { ...fields ?? {}, error: describeError(error) }),
+      child: (fields) => build({ ...baseFields, ...fields }),
+      async phase(name, fn, fields) {
+        const scoped = build({ ...baseFields, ...fields ?? {}, phase: name });
+        const started = now();
+        scoped.debug("phase start");
+        options.sink.startGroup?.(name);
+        try {
+          const result = await fn();
+          scoped.debug("phase ok", { duration_ms: Math.round(now() - started) });
+          return result;
+        } catch (error) {
+          scoped.failure("phase failed", error, { duration_ms: Math.round(now() - started) });
+          throw error;
+        } finally {
+          options.sink.endGroup?.();
+        }
+      }
+    };
+    return logger;
+  }
+  const root = build({ run: correlationId, ...options.fields ?? {} });
+  return root;
+}
+
+// node_modules/@postman-cse/automation-core/dist/secrets-resolver.js
+var SECRETS_RESOLVER_PROVIDERS = ["none", "aws", "azure", "gcp"];
+var SECRETS_RESOLVER_ITEM_NAME = "00 - Resolve Secrets";
+var DEFAULT_SECRETS_RESOLVER_PROVIDER = "none";
+function parseSecretsResolverProvider(value, fallback = DEFAULT_SECRETS_RESOLVER_PROVIDER) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw)
+    return fallback;
+  if (raw === "true")
+    return "aws";
+  if (raw === "false" || raw === "off")
+    return "none";
+  if (SECRETS_RESOLVER_PROVIDERS.includes(raw)) {
+    return raw;
+  }
+  throw new Error(`SECRETS_RESOLVER_PROVIDER_INVALID: expected one of ${SECRETS_RESOLVER_PROVIDERS.join(", ")} (or legacy true/false), received "${value}"`);
+}
+function isSecretsResolverEnabled(provider) {
+  return provider !== "none";
+}
+function resolverExecTail(extractExpression) {
+  return [
+    'if (pm.environment.get("CI") === "true") { return; }',
+    "const body = pm.response.json();",
+    `const raw = ${extractExpression};`,
+    "if (raw) {",
+    "  const secrets = JSON.parse(raw);",
+    "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
+    "}"
+  ];
+}
+function assertSecretsResolverEnabled(provider) {
+  if (provider === "none") {
+    throw new Error('SECRETS_RESOLVER_DISABLED: provider "none" cannot create a secrets resolver');
+  }
+}
+function createSecretsResolverExec(provider) {
+  assertSecretsResolverEnabled(provider);
+  switch (provider) {
+    case "azure":
+      return resolverExecTail("body.value");
+    case "gcp":
+      return [
+        'if (pm.environment.get("CI") === "true") { return; }',
+        "const body = pm.response.json();",
+        "const encoded = body.payload && body.payload.data;",
+        "if (encoded) {",
+        '  const secrets = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));',
+        "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
+        "}"
+      ];
+    case "aws":
+    default:
+      return [
+        'if (pm.environment.get("CI") === "true") { return; }',
+        "const body = pm.response.json();",
+        "if (body.SecretString) {",
+        "  const secrets = JSON.parse(body.SecretString);",
+        "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
+        "}"
+      ];
+  }
+}
+function createSecretsResolverItem(provider) {
+  assertSecretsResolverEnabled(provider);
+  if (provider === "azure") {
+    return {
+      name: SECRETS_RESOLVER_ITEM_NAME,
+      request: {
+        auth: {
+          type: "bearer",
+          bearer: [{ key: "token", value: "{{AZURE_ACCESS_TOKEN}}" }]
+        },
+        method: "GET",
+        header: [{ key: "Accept", value: "application/json" }],
+        url: {
+          raw: "https://{{AZURE_KEY_VAULT_NAME}}.vault.azure.net/secrets/{{AZURE_SECRET_NAME}}?api-version=7.4",
+          protocol: "https",
+          host: ["{{AZURE_KEY_VAULT_NAME}}", "vault", "azure", "net"],
+          path: ["secrets", "{{AZURE_SECRET_NAME}}"],
+          query: [{ key: "api-version", value: "7.4" }]
+        }
+      },
+      event: [
+        {
+          listen: "test",
+          script: { type: "text/javascript", exec: createSecretsResolverExec("azure") }
+        }
+      ]
+    };
+  }
+  if (provider === "gcp") {
+    return {
+      name: SECRETS_RESOLVER_ITEM_NAME,
+      request: {
+        auth: {
+          type: "bearer",
+          bearer: [{ key: "token", value: "{{GCP_ACCESS_TOKEN}}" }]
+        },
+        method: "GET",
+        header: [{ key: "Accept", value: "application/json" }],
+        url: {
+          raw: "https://secretmanager.googleapis.com/v1/projects/{{GCP_PROJECT_ID}}/secrets/{{GCP_SECRET_NAME}}/versions/latest:access",
+          protocol: "https",
+          host: ["secretmanager", "googleapis", "com"],
+          path: [
+            "v1",
+            "projects",
+            "{{GCP_PROJECT_ID}}",
+            "secrets",
+            "{{GCP_SECRET_NAME}}",
+            "versions",
+            "latest:access"
+          ]
+        }
+      },
+      event: [
+        {
+          listen: "test",
+          script: { type: "text/javascript", exec: createSecretsResolverExec("gcp") }
+        }
+      ]
+    };
+  }
+  return {
+    name: SECRETS_RESOLVER_ITEM_NAME,
+    request: {
+      auth: {
+        type: "awsv4",
+        awsv4: [
+          { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
+          { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
+          { key: "region", value: "{{AWS_REGION}}" },
+          { key: "service", value: "secretsmanager" }
+        ]
+      },
+      method: "POST",
+      header: [
+        { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
+        { key: "Content-Type", value: "application/x-amz-json-1.1" }
+      ],
+      body: { mode: "raw", raw: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
+      url: {
+        raw: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
+        protocol: "https",
+        host: ["secretsmanager", "{{AWS_REGION}}", "amazonaws", "com"]
+      }
+    },
+    event: [
+      {
+        listen: "test",
+        script: { type: "text/javascript", exec: createSecretsResolverExec("aws") }
+      }
+    ]
+  };
+}
+function createSecretsResolverV3Body(provider) {
+  assertSecretsResolverEnabled(provider);
+  if (provider === "azure") {
+    return {
+      $kind: "http-request",
+      name: SECRETS_RESOLVER_ITEM_NAME,
+      method: "GET",
+      url: "https://{{AZURE_KEY_VAULT_NAME}}.vault.azure.net/secrets/{{AZURE_SECRET_NAME}}?api-version=7.4",
+      headers: [{ key: "Accept", value: "application/json" }],
+      auth: {
+        type: "bearer",
+        credentials: [{ key: "token", value: "{{AZURE_ACCESS_TOKEN}}" }]
+      }
+    };
+  }
+  if (provider === "gcp") {
+    return {
+      $kind: "http-request",
+      name: SECRETS_RESOLVER_ITEM_NAME,
+      method: "GET",
+      url: "https://secretmanager.googleapis.com/v1/projects/{{GCP_PROJECT_ID}}/secrets/{{GCP_SECRET_NAME}}/versions/latest:access",
+      headers: [{ key: "Accept", value: "application/json" }],
+      auth: {
+        type: "bearer",
+        credentials: [{ key: "token", value: "{{GCP_ACCESS_TOKEN}}" }]
+      }
+    };
+  }
+  return {
+    $kind: "http-request",
+    name: SECRETS_RESOLVER_ITEM_NAME,
+    method: "POST",
+    url: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
+    headers: [
+      { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
+      { key: "Content-Type", value: "application/x-amz-json-1.1" }
+    ],
+    body: { type: "json", content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
+    auth: {
+      type: "awsv4",
+      credentials: [
+        { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
+        { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
+        { key: "region", value: "{{AWS_REGION}}" },
+        { key: "service", value: "secretsmanager" }
+      ]
+    }
+  };
+}
+function isSecretsResolverItemName(name) {
+  return String(name ?? "").trim() === SECRETS_RESOLVER_ITEM_NAME;
+}
+
+// node_modules/@postman-cse/automation-core/dist/http/http-error.js
+var REDACTED2 = "[REDACTED]";
+var SENSITIVE_HEADER_NAMES = /* @__PURE__ */ new Set([
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "set-cookie",
+  "x-access-token",
+  "x-api-key"
+]);
+function isIterable2(value) {
+  return value !== null && value !== void 0 && typeof value !== "string" && typeof value[Symbol.iterator] === "function";
+}
+function appendStringSecret(value, results) {
+  const normalized = value.trim();
+  if (!normalized)
+    return;
+  results.push(normalized);
+  try {
+    const encoded = encodeURIComponent(normalized);
+    if (encoded !== normalized)
+      results.push(encoded);
+  } catch {
+  }
+  try {
+    const url = new URL("http://localhost/");
+    url.password = normalized;
+    if (url.password && url.password !== normalized)
+      results.push(url.password);
+  } catch {
+  }
+}
+function appendSecretValues2(value, results) {
+  if (value === null || value === void 0)
+    return;
+  if (typeof value === "string") {
+    appendStringSecret(value, results);
+    return;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    appendStringSecret(String(value), results);
+    return;
+  }
+  if (Array.isArray(value) || isIterable2(value)) {
+    for (const entry of value)
+      appendSecretValues2(entry, results);
+  }
+}
+function normalizeSecretValues2(secretValues) {
+  const values = [];
+  appendSecretValues2(secretValues, values);
+  return [...new Set(values)].sort((left, right) => right.length - left.length);
+}
+function redactSecrets2(input, secretValues, replacement = REDACTED2) {
+  let output = String(input ?? "");
+  for (const secret of normalizeSecretValues2(secretValues)) {
+    output = output.split(secret).join(replacement);
+  }
+  return output;
+}
+function toOneLine2(value) {
+  const source = String(value ?? "");
+  let output = "";
+  let pendingSpace = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    if (code <= 32 || code === 127) {
+      pendingSpace = output.length > 0;
+      continue;
+    }
+    if (pendingSpace) {
+      output += " ";
+      pendingSpace = false;
+    }
+    output += source.charAt(index);
+  }
+  return output;
+}
+function headerEntries(headers) {
+  if (headers instanceof Headers)
+    return Array.from(headers.entries());
+  if (Array.isArray(headers)) {
+    return headers.map(([name, value]) => [name, String(value)]);
+  }
+  return Object.entries(headers).map(([name, value]) => [name, String(value)]);
+}
+function sanitizeHeaders(headers, secretValues) {
+  if (!headers)
+    return {};
+  const sanitized = {};
+  for (const [name, value] of headerEntries(headers)) {
+    const normalizedName = name.toLowerCase();
+    sanitized[normalizedName] = SENSITIVE_HEADER_NAMES.has(normalizedName) ? REDACTED2 : redactSecrets2(value, secretValues);
+  }
+  return sanitized;
+}
+function truncate2(value, limit) {
+  if (value.length <= limit)
+    return value;
+  return `${value.slice(0, limit)}...[truncated]`;
+}
+function buildMessage(init) {
+  if (init.message !== void 0)
+    return init.message;
+  const format3 = init.oneLine ? toOneLine2 : String;
+  const method = String(init.method || "GET").toUpperCase();
+  const status = `${init.status}${init.statusText ? ` ${init.statusText}` : ""}`;
+  const url = format3(redactSecrets2(init.url, init.secretValues));
+  const body2 = format3(truncate2(redactSecrets2(init.responseBody || "", init.secretValues), Math.max(0, init.bodyLimit ?? 800)));
+  return body2 ? `${method} ${url} failed: ${status} - ${body2}` : `${method} ${url} failed: ${status}`;
+}
+var HttpError = class _HttpError extends Error {
+  method;
+  requestHeaders;
+  responseBody;
+  secretValues;
+  status;
+  statusText;
+  url;
+  constructor(initOrMessage, legacyStatus) {
+    const init = typeof initOrMessage === "string" ? {
+      method: "",
+      url: "",
+      status: legacyStatus ?? 0,
+      statusText: "",
+      message: initOrMessage
+    } : initOrMessage;
+    super(buildMessage(init));
+    this.name = "HttpError";
+    this.method = String(init.method || "GET").toUpperCase();
+    this.requestHeaders = init.requestHeaders;
+    this.responseBody = init.responseBody || "";
+    this.secretValues = init.secretValues;
+    this.status = init.status;
+    this.statusText = init.statusText;
+    this.url = init.url;
+  }
+  static async fromResponse(response, init) {
+    const responseBody = init.responseBody ?? await response.text().catch(() => "");
+    return new _HttpError({
+      ...init,
+      responseBody,
+      status: response.status,
+      statusText: response.statusText
+    });
+  }
+  toJSON() {
+    return {
+      method: this.method,
+      name: this.name,
+      requestHeaders: sanitizeHeaders(this.requestHeaders, this.secretValues),
+      responseBody: redactSecrets2(this.responseBody, this.secretValues),
+      status: this.status,
+      statusText: this.statusText,
+      url: redactSecrets2(this.url, this.secretValues)
+    };
+  }
+};
+
+// node_modules/@postman-cse/automation-core/dist/http/retry.js
+function sleep(delayMs) {
+  return new Promise((resolve6) => {
+    setTimeout(resolve6, delayMs);
+  });
+}
+function normalizeRetryOptions(options) {
+  return {
+    maxAttempts: Math.max(1, options.maxAttempts ?? 3),
+    delayMs: Math.max(0, options.delayMs ?? 2e3),
+    backoffMultiplier: Math.max(1, options.backoffMultiplier ?? 1),
+    maxDelayMs: options.maxDelayMs === void 0 ? Number.POSITIVE_INFINITY : Math.max(0, options.maxDelayMs),
+    onRetry: options.onRetry ?? (async () => void 0),
+    shouldRetry: options.shouldRetry ?? (() => true),
+    sleep: options.sleep ?? sleep
+  };
+}
+async function retry(operation, options = {}) {
+  const normalized = normalizeRetryOptions(options);
+  let nextDelayMs = normalized.delayMs;
+  for (let attempt = 1; attempt <= normalized.maxAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const shouldRetry = attempt < normalized.maxAttempts && normalized.shouldRetry(error, {
+        attempt,
+        maxAttempts: normalized.maxAttempts
+      });
+      if (!shouldRetry)
+        throw error;
+      await normalized.onRetry({
+        attempt,
+        maxAttempts: normalized.maxAttempts,
+        delayMs: nextDelayMs,
+        error
+      });
+      await normalized.sleep(nextDelayMs);
+      nextDelayMs = Math.min(normalized.maxDelayMs, Math.round(nextDelayMs * normalized.backoffMultiplier));
+    }
+  }
+  throw new Error("Retry exhausted without returning or throwing");
+}
+function fullJitterDelayMs(attempt, baseMs = 400, capMs = 5e3, random = Math.random, rounding = "floor") {
+  const ceiling = Math.max(0, Math.min(Math.max(0, capMs), Math.max(0, baseMs) * 2 ** Math.max(0, attempt)));
+  const delay = random() * ceiling;
+  return rounding === "round" ? Math.round(delay) : Math.floor(delay);
+}
+function parseRetryAfterMs2(value, nowMs = Date.now()) {
+  const trimmed = value?.trim();
+  if (!trimmed)
+    return void 0;
+  if (/^\d+$/.test(trimmed))
+    return Number(trimmed) * 1e3;
+  const dateMs = Date.parse(trimmed);
+  return Number.isNaN(dateMs) ? void 0 : Math.max(0, dateMs - nowMs);
+}
+function isTransientHttpStatus(status) {
+  return status === 408 || status === 429 || status >= 500;
+}
+var RETRYABLE_GATEWAY_BODY = /ESOCKETTIMEDOUT|ETIMEDOUT|ECONNRESET|serverError|downstream/i;
+function isRetryableGatewayFailure(status, body2 = "") {
+  return isTransientHttpStatus(status) || RETRYABLE_GATEWAY_BODY.test(body2);
+}
+
+// node_modules/@postman-cse/automation-core/dist/http/gateway-client.js
+var DEFAULT_POSTMAN_BIFROST_BASE_URL = "https://bifrost-premium-https-v4.gw.postman.com";
+function isExpiredAuthError(status, body2) {
+  return status === 401 || body2.includes("UNAUTHENTICATED") || body2.includes("authenticationError");
+}
+function asRecord4(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+function numericStatus(value) {
+  if (typeof value === "number" && Number.isFinite(value))
+    return value;
+  if (typeof value === "string" && /^\d+$/.test(value))
+    return Number(value);
+  return void 0;
+}
+function defaultSleep(ms) {
+  return new Promise((resolve6) => setTimeout(resolve6, ms));
+}
+function normalizedBaseUrl(value) {
+  return value.replace(/\/+$/, "");
+}
+var AccessTokenGatewayClient = class {
+  tokenProvider;
+  bifrostBaseUrl;
+  teamId;
+  orgMode;
+  fetchImpl;
+  secretMasker;
+  maxRetries;
+  fallbackBaseUrl;
+  fallbackOn;
+  retryBaseDelayMs;
+  retryMaxDelayMs;
+  jitterRounding;
+  requestTimeoutMs;
+  sleepImpl;
+  randomImpl;
+  appVersionProvider;
+  onRetry;
+  onRetryEvent;
+  refreshEmptyToken;
+  refreshOnInnerAuthError;
+  classifyInnerAuthError;
+  defaultInnerErrorStatus;
+  includeFallbackStatusInRetryEvent;
+  constructor(options) {
+    this.tokenProvider = options.tokenProvider;
+    this.bifrostBaseUrl = normalizedBaseUrl(String(options.bifrostBaseUrl || DEFAULT_POSTMAN_BIFROST_BASE_URL));
+    this.teamId = String(options.teamId || "").trim();
+    this.orgMode = options.orgMode ?? false;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.secretMasker = options.secretMasker ?? ((input) => redactSecrets2(input, [this.tokenProvider.current()]));
+    this.maxRetries = Math.max(0, options.maxRetries ?? 3);
+    const fallbackDisabled = (options.env ?? process.env).POSTMAN_ITEM_CREATE_FALLBACK === "off";
+    this.fallbackBaseUrl = fallbackDisabled || !options.fallbackBaseUrl ? void 0 : normalizedBaseUrl(options.fallbackBaseUrl);
+    this.fallbackOn = options.fallbackOn ?? "error";
+    this.retryBaseDelayMs = Math.max(0, options.retryBaseDelayMs ?? 400);
+    this.retryMaxDelayMs = Math.max(0, options.retryMaxDelayMs ?? 5e3);
+    this.jitterRounding = options.jitterRounding ?? "floor";
+    this.requestTimeoutMs = Math.max(0, options.requestTimeoutMs ?? 3e4);
+    this.sleepImpl = options.sleepImpl ?? defaultSleep;
+    this.randomImpl = options.randomImpl ?? Math.random;
+    this.appVersionProvider = options.appVersionProvider;
+    this.onRetry = options.onRetry;
+    this.onRetryEvent = options.onRetryEvent;
+    this.refreshEmptyToken = options.refreshEmptyToken ?? true;
+    this.refreshOnInnerAuthError = options.refreshOnInnerAuthError ?? false;
+    this.classifyInnerAuthError = options.classifyInnerAuthError ?? false;
+    this.defaultInnerErrorStatus = options.defaultInnerErrorStatus ?? 502;
+    this.includeFallbackStatusInRetryEvent = options.includeFallbackStatusInRetryEvent ?? true;
+  }
+  configureTeamContext(teamId, orgMode) {
+    this.teamId = String(teamId || "").trim();
+    this.orgMode = orgMode;
+  }
+  async resolveAppVersion() {
+    if (this.appVersionProvider?.resolve)
+      return this.appVersionProvider.resolve();
+    if (this.appVersionProvider?.get)
+      return this.appVersionProvider.get();
+    return void 0;
+  }
+  async buildHeaders(extra) {
+    const headers = {
+      "Content-Type": "application/json",
+      ...extra ?? {}
+    };
+    headers["x-access-token"] = this.tokenProvider.current();
+    if (this.teamId && this.orgMode)
+      headers["x-entity-team-id"] = this.teamId;
+    const appVersion = await this.resolveAppVersion();
+    if (appVersion)
+      headers["x-app-version"] = appVersion;
+    return headers;
+  }
+  errorHeaders(extra) {
+    return {
+      "Content-Type": "application/json",
+      ...extra ?? {},
+      "x-access-token": this.tokenProvider.current(),
+      ...this.teamId && this.orgMode ? { "x-entity-team-id": this.teamId } : {}
+    };
+  }
+  async send(request, baseUrl = this.bifrostBaseUrl) {
+    return this.fetchWithDeadline(`${baseUrl}/ws/proxy`, {
+      method: "POST",
+      headers: await this.buildHeaders(request.headers),
+      body: JSON.stringify({
+        service: request.service,
+        method: request.method,
+        path: request.path,
+        ...request.query !== void 0 ? { query: request.query } : {},
+        ...request.body !== void 0 ? { body: request.body } : {}
+      })
+    });
+  }
+  async sendDirect(request) {
+    const method = request.method ?? "get";
+    return this.fetchWithDeadline(`${this.bifrostBaseUrl}${request.path}`, {
+      method: method.toUpperCase(),
+      headers: await this.buildHeaders(request.headers),
+      ...request.body === void 0 ? {} : { body: JSON.stringify(request.body) }
+    });
+  }
+  async fetchWithDeadline(url, init) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    try {
+      return await this.fetchImpl(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  detectInnerStatus(body2) {
+    const trimmed = body2.trim();
+    if (!trimmed)
+      return void 0;
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return void 0;
+    }
+    const envelope = asRecord4(parsed);
+    if (!envelope)
+      return void 0;
+    const error = envelope.error;
+    const errorRecord = asRecord4(error);
+    const source = errorRecord ?? envelope;
+    const status = numericStatus(source.status) ?? numericStatus(source.statusCode) ?? numericStatus(envelope.status) ?? numericStatus(envelope.statusCode);
+    const hasError = error !== void 0 && error !== null && !(errorRecord && Object.keys(errorRecord).length === 0) || source.success === false || envelope.success === false || status !== void 0 && status >= 400;
+    if (!hasError)
+      return void 0;
+    if (status !== void 0 && status >= 400)
+      return status;
+    if (this.classifyInnerAuthError && isExpiredAuthError(0, body2))
+      return 401;
+    return this.defaultInnerErrorStatus;
+  }
+  async inspect(response) {
+    const body2 = await response.text().catch(() => "");
+    return {
+      response,
+      body: body2,
+      ...response.ok ? { innerStatus: this.detectInnerStatus(body2) } : {}
+    };
+  }
+  resolveRetryMode(request, options) {
+    if (request.retry)
+      return request.retry;
+    if (options.retryTransient !== void 0) {
+      return options.retryTransient ? "safe" : "none";
+    }
+    if (request.maxRetries !== void 0) {
+      return request.maxRetries > 0 ? "safe" : "none";
+    }
+    return request.method === "get" ? "safe" : "none";
+  }
+  shouldRetry(mode, status, body2) {
+    if (mode === "rate-limit")
+      return status === 429;
+    return mode === "safe" && isRetryableGatewayFailure(status, body2);
+  }
+  retryDelayMs(attempt, retryAfterMs) {
+    if (retryAfterMs !== void 0)
+      return Math.min(this.retryMaxDelayMs, retryAfterMs);
+    return fullJitterDelayMs(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs, this.randomImpl, this.jitterRounding);
+  }
+  emitRetryEvent(event2) {
+    this.onRetryEvent?.(event2);
+    if (this.onRetry && this.onRetry !== this.onRetryEvent)
+      this.onRetry(event2);
+  }
+  fallbackEligible(request, retryMode, transient) {
+    if (!this.fallbackBaseUrl || request.fallback === "none")
+      return false;
+    if (retryMode !== "safe" && request.fallback !== "auto")
+      return false;
+    return this.fallbackOn === "error" || transient;
+  }
+  async attemptFallback(request, retryMode, transient, status) {
+    if (!this.fallbackEligible(request, retryMode, transient))
+      return null;
+    this.emitRetryEvent({
+      class: "fallback",
+      ...this.includeFallbackStatusInRetryEvent && status !== void 0 ? { status } : {},
+      attempt: 1,
+      delay: 0
+    });
+    let inspected;
+    try {
+      inspected = await this.inspect(await this.send(request, this.fallbackBaseUrl));
+    } catch {
+      return null;
+    }
+    const effectiveStatus = inspected.innerStatus ?? inspected.response.status;
+    if (inspected.response.ok && inspected.innerStatus === void 0) {
+      return this.rebuildResponse(inspected.response, inspected.body);
+    }
+    if (isRetryableGatewayFailure(effectiveStatus, inspected.body))
+      return null;
+    if (inspected.innerStatus !== void 0) {
+      throw this.toInnerHttpError(request, inspected.innerStatus, inspected.body);
+    }
+    throw this.toHttpError(request, inspected.response, inspected.body);
+  }
+  async request(request, options = {}) {
+    if (this.refreshEmptyToken && !this.tokenProvider.current() && this.tokenProvider.canRefresh()) {
+      await this.tokenProvider.refresh();
+    }
+    const retryMode = this.resolveRetryMode(request, options);
+    const maxRetries = Math.max(0, request.maxRetries ?? this.maxRetries);
+    let attempt = 0;
+    let authRefreshed = false;
+    for (; ; ) {
+      let inspected;
+      try {
+        inspected = await this.inspect(await this.send(request));
+      } catch (error) {
+        if (retryMode === "safe" && attempt < maxRetries) {
+          const delay = this.retryDelayMs(attempt);
+          attempt += 1;
+          this.emitRetryEvent({ class: "transport", attempt, delay });
+          await this.sleepImpl(delay);
+          continue;
+        }
+        const fallback2 = await this.attemptFallback(request, retryMode, true);
+        if (fallback2)
+          return fallback2;
+        throw error;
+      }
+      const effectiveStatus = inspected.innerStatus ?? inspected.response.status;
+      if (inspected.response.ok && inspected.innerStatus === void 0) {
+        return this.rebuildResponse(inspected.response, inspected.body);
+      }
+      const authFailure = isExpiredAuthError(effectiveStatus, inspected.body);
+      const refreshAllowed = inspected.innerStatus === void 0 || this.refreshOnInnerAuthError;
+      if (!authRefreshed && authFailure && refreshAllowed && this.tokenProvider.canRefresh()) {
+        authRefreshed = true;
+        this.emitRetryEvent({
+          class: "auth",
+          status: effectiveStatus,
+          attempt: 1,
+          delay: 0
+        });
+        await this.tokenProvider.refresh();
+        continue;
+      }
+      const transient = isRetryableGatewayFailure(effectiveStatus, inspected.body);
+      if (this.shouldRetry(retryMode, effectiveStatus, inspected.body) && attempt < maxRetries) {
+        const retryAfterMs = inspected.innerStatus === void 0 ? parseRetryAfterMs2(inspected.response.headers.get("retry-after")) : void 0;
+        const delay = this.retryDelayMs(attempt, retryAfterMs);
+        attempt += 1;
+        this.emitRetryEvent({
+          class: inspected.innerStatus === void 0 ? "http" : "inner",
+          status: effectiveStatus,
+          attempt,
+          delay
+        });
+        await this.sleepImpl(delay);
+        continue;
+      }
+      const fallback = await this.attemptFallback(request, retryMode, transient, effectiveStatus);
+      if (fallback)
+        return fallback;
+      if (inspected.innerStatus !== void 0) {
+        throw this.toInnerHttpError(request, inspected.innerStatus, inspected.body);
+      }
+      throw this.toHttpError(request, inspected.response, inspected.body);
+    }
+  }
+  async requestJson(request, options = {}) {
+    const response = await this.request(request, options);
+    return this.responseJson(response);
+  }
+  async requestDirectJson(requestOrPath) {
+    const request = typeof requestOrPath === "string" ? { path: requestOrPath, method: "get" } : requestOrPath;
+    if (!request.path.startsWith("/")) {
+      throw new Error(`Direct Bifrost path must start with '/': ${request.path}`);
+    }
+    if (this.refreshEmptyToken && !this.tokenProvider.current() && this.tokenProvider.canRefresh()) {
+      await this.tokenProvider.refresh();
+    }
+    const method = request.method ?? "get";
+    const retryMode = request.retry ?? (method === "get" ? "safe" : "none");
+    const maxRetries = Math.max(0, request.maxRetries ?? this.maxRetries);
+    let attempt = 0;
+    let authRefreshed = false;
+    for (; ; ) {
+      let response;
+      try {
+        response = await this.sendDirect(request);
+      } catch (error) {
+        if (retryMode === "safe" && attempt < maxRetries) {
+          const delay = this.retryDelayMs(attempt);
+          attempt += 1;
+          this.emitRetryEvent({ class: "transport", attempt, delay });
+          await this.sleepImpl(delay);
+          continue;
+        }
+        throw error;
+      }
+      const body2 = await response.text().catch(() => "");
+      if (response.ok)
+        return this.textJson(body2);
+      if (!authRefreshed && isExpiredAuthError(response.status, body2) && this.tokenProvider.canRefresh()) {
+        authRefreshed = true;
+        this.emitRetryEvent({
+          class: "auth",
+          status: response.status,
+          attempt: 1,
+          delay: 0
+        });
+        await this.tokenProvider.refresh();
+        continue;
+      }
+      if (this.shouldRetry(retryMode, response.status, body2) && attempt < maxRetries) {
+        const delay = this.retryDelayMs(attempt, parseRetryAfterMs2(response.headers.get("retry-after")));
+        attempt += 1;
+        this.emitRetryEvent({
+          class: "http",
+          status: response.status,
+          attempt,
+          delay
+        });
+        await this.sleepImpl(delay);
+        continue;
+      }
+      throw this.toDirectHttpError(request, response, body2);
+    }
+  }
+  async responseJson(response) {
+    return this.textJson(await response.text().catch(() => ""));
+  }
+  textJson(text) {
+    if (!text.trim())
+      return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+  rebuildResponse(response, body2) {
+    const nullBody = response.status === 204 || response.status === 205 || response.status === 304;
+    return new Response(nullBody ? null : body2, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers
+    });
+  }
+  toHttpError(request, response, body2) {
+    return new HttpError({
+      method: request.method.toUpperCase(),
+      url: `${this.bifrostBaseUrl}/ws/proxy (${request.service}: ${request.method} ${request.path})`,
+      status: response.status,
+      statusText: response.statusText,
+      requestHeaders: this.errorHeaders(request.headers),
+      responseBody: this.secretMasker(body2),
+      secretValues: [this.tokenProvider.current()]
+    });
+  }
+  toInnerHttpError(request, status, body2) {
+    return new HttpError({
+      method: request.method.toUpperCase(),
+      url: `${this.bifrostBaseUrl}/ws/proxy (${request.service}: ${request.method} ${request.path}) [inner]`,
+      status,
+      statusText: "Inner Error",
+      requestHeaders: this.errorHeaders(request.headers),
+      responseBody: this.secretMasker(body2),
+      secretValues: [this.tokenProvider.current()]
+    });
+  }
+  toDirectHttpError(request, response, body2) {
+    return new HttpError({
+      method: (request.method ?? "get").toUpperCase(),
+      url: `${this.bifrostBaseUrl}${request.path}`,
+      status: response.status,
+      statusText: response.statusText,
+      requestHeaders: this.errorHeaders(request.headers),
+      responseBody: this.secretMasker(body2),
+      secretValues: [this.tokenProvider.current()]
+    });
+  }
+};
+
 // src/lib/postman/git-url.ts
 function normalizeGitRepoUrl(url) {
   const raw = String(url || "").trim();
@@ -321105,15 +322489,18 @@ function normalizeGitRepoUrl(url) {
 
 // src/lib/postman/app-version.ts
 var FLOOR_VERSION = "12.0.0";
-var VERSION_URL = "https://dl.pstmn.io/update/status?currentVersion=12.0.0&platform=osx_arm64";
+var DEFAULT_VERSION_BASE_URL = "https://dl.pstmn.io";
+var VERSION_PATH = "/update/status?currentVersion=12.0.0&platform=osx_arm64";
 var VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 var PostmanAppVersionProvider = class {
   fetchImpl;
   requestTimeoutMs;
+  versionUrl;
   resolved;
   constructor(options = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 2e3;
+    this.versionUrl = `${String(options.baseUrl ?? DEFAULT_VERSION_BASE_URL).replace(/\/+$/, "")}${VERSION_PATH}`;
   }
   resolve() {
     if (process.env.POSTMAN_GATEWAY_APP_VERSION === "off") return Promise.resolve(void 0);
@@ -321122,7 +322509,7 @@ var PostmanAppVersionProvider = class {
   }
   async lookup() {
     try {
-      const response = await this.fetchImpl(VERSION_URL, {
+      const response = await this.fetchImpl(this.versionUrl, {
         method: "GET",
         signal: AbortSignal.timeout(this.requestTimeoutMs)
       });
@@ -321144,6 +322531,12 @@ function normalizeCollectionModelIdentity(value) {
   const id = String(value ?? "").trim();
   if (BARE_COLLECTION_UUID_RE.test(id)) return id.toLowerCase();
   return PUBLIC_COLLECTION_UID_RE.exec(id)?.[1]?.toLowerCase() ?? id;
+}
+function isBareCollectionUuid(value) {
+  return BARE_COLLECTION_UUID_RE.test(String(value ?? "").trim());
+}
+function isFullPublicCollectionUid(value) {
+  return PUBLIC_COLLECTION_UID_RE.test(String(value ?? "").trim());
 }
 
 // src/lib/postman/internal-integration-adapter.ts
@@ -322043,74 +323436,13 @@ async function safeFetchText(input, options = {}) {
 
 // src/lib/postman/postman-ec-client.ts
 var import_extensible = __toESM(require_extensible(), 1);
-
-// src/lib/retry.ts
-function sleep(delayMs) {
-  return new Promise((resolve6) => {
-    setTimeout(resolve6, delayMs);
-  });
-}
-function normalizeRetryOptions(options) {
-  return {
-    maxAttempts: Math.max(1, options.maxAttempts ?? 3),
-    delayMs: Math.max(0, options.delayMs ?? 2e3),
-    backoffMultiplier: Math.max(1, options.backoffMultiplier ?? 1),
-    maxDelayMs: options.maxDelayMs === void 0 ? Number.POSITIVE_INFINITY : Math.max(0, options.maxDelayMs),
-    onRetry: options.onRetry ?? (async () => void 0),
-    shouldRetry: options.shouldRetry ?? (() => true),
-    sleep: options.sleep ?? sleep
-  };
-}
-async function retry(operation, options = {}) {
-  const normalized = normalizeRetryOptions(options);
-  let nextDelayMs = normalized.delayMs;
-  for (let attempt = 1; attempt <= normalized.maxAttempts; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      const shouldRetry = attempt < normalized.maxAttempts && normalized.shouldRetry(error, {
-        attempt,
-        maxAttempts: normalized.maxAttempts
-      });
-      if (!shouldRetry) {
-        throw error;
-      }
-      await normalized.onRetry({
-        attempt,
-        maxAttempts: normalized.maxAttempts,
-        delayMs: nextDelayMs,
-        error
-      });
-      await normalized.sleep(nextDelayMs);
-      nextDelayMs = Math.min(
-        normalized.maxDelayMs,
-        Math.round(nextDelayMs * normalized.backoffMultiplier)
-      );
-    }
-  }
-  throw new Error("Retry exhausted without returning or throwing");
-}
-function fullJitterDelayMs(attempt, baseMs, capMs, random = Math.random) {
-  const ceiling = Math.min(capMs, baseMs * 2 ** Math.max(0, attempt));
-  return Math.floor(random() * Math.max(0, ceiling));
-}
-function parseRetryAfterMs2(value) {
-  if (!value) return void 0;
-  const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1e3;
-  const when = Date.parse(trimmed);
-  if (!Number.isNaN(when)) return Math.max(0, when - Date.now());
-  return void 0;
-}
-
-// src/lib/postman/postman-ec-client.ts
 var EC_WRITE_MAX_ATTEMPTS = 3;
 var EC_EVENT_LISTEN_BY_V2 = {
   prerequest: "beforeRequest",
   test: "afterResponse"
 };
 var EC_CHILD_BEARING_REQUEST_TYPES = /* @__PURE__ */ new Set(["ws-raw-request", "ws-socketio-request"]);
-function asRecord4(value) {
+function asRecord5(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -322123,9 +323455,9 @@ function execToString(exec3) {
   return "";
 }
 function normalizeEcEvent(raw) {
-  const event2 = asRecord4(raw);
+  const event2 = asRecord5(raw);
   if (!event2) return raw;
-  const script = asRecord4(event2.script);
+  const script = asRecord5(event2.script);
   if (!script) return raw;
   return { ...event2, script: { ...script, exec: execToString(script.exec) } };
 }
@@ -322242,7 +323574,7 @@ var PostmanExtensibleCollectionClient = class {
     if (!envelope) return;
     const innerStatus = this.innerStatus(envelope);
     const error = envelope.error;
-    const errorRecord = asRecord4(error);
+    const errorRecord = asRecord5(error);
     const hasError = error !== void 0 && error !== null && !(errorRecord !== null && Object.keys(errorRecord).length === 0) || envelope.success === false || typeof innerStatus === "number" && innerStatus >= 400;
     if (!hasError) return;
     const status = typeof innerStatus === "number" && innerStatus >= 400 ? innerStatus : 502;
@@ -322311,8 +323643,8 @@ var PostmanExtensibleCollectionClient = class {
     }
     const type2 = item.type;
     const title = item.title ?? item.name;
-    const extensions = this.mergeEventExtensions(item, asRecord4(item.extensions) ?? {});
-    const payload = asRecord4(item.payload) ?? {};
+    const extensions = this.mergeEventExtensions(item, asRecord5(item.extensions) ?? {});
+    const payload = asRecord5(item.payload) ?? {};
     this.reportEcItemShapeIssues(type2, { type: type2, title, payload, extensions });
     const body2 = {
       type: type2,
@@ -322333,8 +323665,8 @@ var PostmanExtensibleCollectionClient = class {
       if (!isAmbiguousTransportError(error)) throw error;
       const expectedParent = String(parentId || collectionId);
       const matches = (await this.listExtensibleCollectionItems(collectionId)).filter((candidate) => {
-        const position = asRecord4(candidate.position);
-        const parent = asRecord4(position?.parent);
+        const position = asRecord5(candidate.position);
+        const parent = asRecord5(position?.parent);
         const candidateParent = String(parent?.id ?? position?.parent ?? "").trim();
         return String(candidate.id ?? "").trim() && String(candidate.type ?? candidate.$kind ?? "") === String(type2 ?? "") && String(candidate.title ?? candidate.name ?? "") === String(title ?? "") && candidateParent === expectedParent;
       });
@@ -322363,9 +323695,9 @@ var PostmanExtensibleCollectionClient = class {
    */
   mergeEventExtensions(item, extensions) {
     const mapped = asArray(item.event).map((raw) => {
-      const event2 = asRecord4(raw);
+      const event2 = asRecord5(raw);
       if (!event2) return null;
-      const script = asRecord4(event2.script);
+      const script = asRecord5(event2.script);
       if (!script) return null;
       const v2Listen = typeof event2.listen === "string" ? event2.listen : "";
       const listen = EC_EVENT_LISTEN_BY_V2[v2Listen] ?? v2Listen;
@@ -322412,7 +323744,7 @@ var PostmanExtensibleCollectionClient = class {
       void 0,
       "getExtensibleCollection"
     );
-    return asRecord4(response?.data) ?? asRecord4(response);
+    return asRecord5(response?.data) ?? asRecord5(response);
   }
   async deleteExtensibleCollection(collectionId) {
     if (!collectionId) {
@@ -322444,8 +323776,8 @@ var PostmanExtensibleCollectionClient = class {
       "listExtensibleCollectionItems"
     );
     const root = response?.data ?? response;
-    const items = Array.isArray(root) ? root : asArray(asRecord4(root)?.items);
-    return items.map((raw) => asRecord4(raw)).filter((record) => record !== null);
+    const items = Array.isArray(root) ? root : asArray(asRecord5(root)?.items);
+    return items.map((raw) => asRecord5(raw)).filter((record) => record !== null);
   }
   /**
    * Fetch a single EC item via `GET /collections/:id/items/:itemId`
@@ -322469,7 +323801,7 @@ var PostmanExtensibleCollectionClient = class {
       void 0,
       "getExtensibleCollectionItem"
     );
-    return asRecord4(response?.data) ?? asRecord4(response);
+    return asRecord5(response?.data) ?? asRecord5(response);
   }
   /**
    * Walk a built EC collection tree and materialize it in the cloud: create each
@@ -322494,7 +323826,7 @@ var PostmanExtensibleCollectionClient = class {
     const childrenOf = (node) => node.children !== void 0 ? asArray(node.children) : asArray(node.item);
     const createChildren = async (nodes, parentId) => {
       for (const raw of nodes) {
-        const node = asRecord4(raw);
+        const node = asRecord5(raw);
         if (!node) continue;
         const children4 = childrenOf(node);
         const type2 = typeof node.type === "string" ? node.type : "";
@@ -322515,7 +323847,7 @@ var PostmanExtensibleCollectionClient = class {
           await createChildren(children4, createdId);
         } else if (isChildBearingRequest) {
           for (const childRaw of children4) {
-            const childNode = asRecord4(childRaw);
+            const childNode = asRecord5(childRaw);
             if (!childNode) continue;
             const childBody = { ...childNode };
             delete childBody.item;
@@ -322533,7 +323865,7 @@ var PostmanExtensibleCollectionClient = class {
     return leafCount;
   }
   extractId(response) {
-    const data = asRecord4(response?.data) ?? response;
+    const data = asRecord5(response?.data) ?? response;
     const id = data ? data.id ?? data.uid : void 0;
     return typeof id === "string" ? id.trim() : "";
   }
@@ -322544,775 +323876,6 @@ var V2 = __toESM(require_v2(), 1);
 var V3 = __toESM(require_v32(), 1);
 var import_transforms = __toESM(require_transforms(), 1);
 var import_node_crypto7 = require("node:crypto");
-
-// node_modules/@postman-cse/automation-core/dist/ci-context.js
-function norm(value) {
-  const trimmed = (value ?? "").trim();
-  return trimmed.length > 0 ? trimmed : void 0;
-}
-function detectEventTrigger(env = process.env) {
-  const ghEvent = norm(env.GITHUB_EVENT_NAME)?.toLowerCase();
-  if (ghEvent) {
-    if (ghEvent === "push")
-      return "push";
-    if (ghEvent === "pull_request" || ghEvent === "pull_request_target")
-      return "pull_request";
-    if (ghEvent === "schedule")
-      return "schedule";
-    if (ghEvent === "workflow_dispatch" || ghEvent === "repository_dispatch")
-      return "manual";
-    return "other";
-  }
-  const glSource = norm(env.CI_PIPELINE_SOURCE)?.toLowerCase();
-  if (glSource) {
-    if (glSource === "push")
-      return "push";
-    if (glSource === "merge_request_event")
-      return "pull_request";
-    if (glSource === "schedule")
-      return "schedule";
-    if (glSource === "web" || glSource === "api" || glSource === "trigger" || glSource === "pipeline") {
-      return "manual";
-    }
-    return "other";
-  }
-  if (norm(env.BITBUCKET_PR_ID))
-    return "pull_request";
-  if (norm(env.CI) || norm(env.BUILD_BUILDID) || norm(env.JENKINS_URL) || norm(env.TEAMCITY_VERSION)) {
-    return "other";
-  }
-  return "unknown";
-}
-function detectRunnerOs(env = process.env) {
-  const runnerOs = norm(env.RUNNER_OS)?.toLowerCase();
-  if (runnerOs === "linux")
-    return "linux";
-  if (runnerOs === "macos")
-    return "macos";
-  if (runnerOs === "windows")
-    return "windows";
-  const platform2 = typeof process !== "undefined" ? process.platform : void 0;
-  if (platform2 === "linux")
-    return "linux";
-  if (platform2 === "darwin")
-    return "macos";
-  if (platform2 === "win32")
-    return "windows";
-  return "unknown";
-}
-function detectCiContext(env = process.env) {
-  const provider = detectCiProviderContext(env);
-  return {
-    ...provider,
-    eventTrigger: detectEventTrigger(env),
-    runnerOs: detectRunnerOs(env)
-  };
-}
-function detectCiProviderContext(env = process.env) {
-  if (norm(env.GITHUB_ACTIONS)) {
-    const runnerEnv = norm(env.RUNNER_ENVIRONMENT);
-    const runnerKind = runnerEnv === "github-hosted" ? "hosted" : runnerEnv === "self-hosted" ? "self-hosted" : "unknown";
-    return {
-      ciProvider: "github",
-      runId: norm(env.GITHUB_RUN_ID),
-      runnerKind
-    };
-  }
-  if (norm(env.GITLAB_CI)) {
-    return {
-      ciProvider: "gitlab",
-      runId: norm(env.CI_PIPELINE_ID) ?? norm(env.CI_PIPELINE_IID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.CIRCLECI)) {
-    return {
-      ciProvider: "circleci",
-      runId: norm(env.CIRCLE_WORKFLOW_ID) ?? norm(env.CIRCLE_BUILD_NUM),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.BUILDKITE)) {
-    const computeType = norm(env.BUILDKITE_COMPUTE_TYPE);
-    const runnerKind = computeType === "hosted" ? "hosted" : computeType === "self-hosted" ? "self-hosted" : "unknown";
-    return {
-      ciProvider: "buildkite",
-      runId: norm(env.BUILDKITE_BUILD_ID) ?? norm(env.BUILDKITE_BUILD_NUMBER),
-      runnerKind
-    };
-  }
-  if (norm(env.TF_BUILD)) {
-    return {
-      ciProvider: "azure",
-      runId: norm(env.BUILD_BUILDID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.CODEBUILD_BUILD_ID)) {
-    return {
-      ciProvider: "codebuild",
-      runId: norm(env.CODEBUILD_BUILD_ID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.BITBUCKET_BUILD_NUMBER)) {
-    return {
-      ciProvider: "bitbucket",
-      runId: norm(env.BITBUCKET_BUILD_NUMBER),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.TEAMCITY_VERSION)) {
-    return {
-      ciProvider: "teamcity",
-      runId: norm(env.BUILD_NUMBER),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.HARNESS_BUILD_ID)) {
-    return {
-      ciProvider: "harness",
-      runId: norm(env.HARNESS_EXECUTION_ID) ?? norm(env.HARNESS_BUILD_ID),
-      runnerKind: "unknown"
-    };
-  }
-  if (norm(env.JENKINS_URL)) {
-    return {
-      ciProvider: "jenkins",
-      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NUMBER) ?? norm(env.BUILD_TAG),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.ATC_EXTERNAL_URL) || norm(env.BUILD_ID) && norm(env.BUILD_PIPELINE_NAME)) {
-    return {
-      ciProvider: "concourse",
-      runId: norm(env.BUILD_ID) ?? norm(env.BUILD_NAME),
-      runnerKind: "self-hosted"
-    };
-  }
-  if (norm(env.CI)) {
-    return { ciProvider: "other", runnerKind: "unknown" };
-  }
-  return { ciProvider: "unknown", runnerKind: "unknown" };
-}
-
-// node_modules/@postman-cse/automation-core/dist/repo-context.js
-function normalize(value) {
-  const trimmed = (value ?? "").trim();
-  return trimmed.length > 0 ? trimmed : void 0;
-}
-function normalizeRepoUrl(url) {
-  const raw = normalize(url);
-  if (!raw) {
-    return void 0;
-  }
-  const sshMatch = raw.match(/^git@([^:]+):(.+?)(?:\.git)?$/);
-  if (sshMatch) {
-    const host = sshMatch[1];
-    const path11 = sshMatch[2];
-    return `https://${host}/${path11}`;
-  }
-  return raw.replace(/\.git$/, "");
-}
-function parseProvider(explicitProvider, repoUrl, env) {
-  const explicit = normalize(explicitProvider)?.toLowerCase();
-  if (explicit === "github" || explicit === "gitlab" || explicit === "bitbucket" || explicit === "azure-devops") {
-    return explicit;
-  }
-  const url = (repoUrl ?? "").toLowerCase();
-  if (url.includes("github")) {
-    return "github";
-  }
-  if (url.includes("gitlab")) {
-    return "gitlab";
-  }
-  if (url.includes("bitbucket")) {
-    return "bitbucket";
-  }
-  if (url.includes("dev.azure.com") || url.includes("visualstudio.com")) {
-    return "azure-devops";
-  }
-  if (normalize(env.GITHUB_REPOSITORY)) {
-    return "github";
-  }
-  if (normalize(env.CI_PROJECT_PATH) || normalize(env.GITLAB_CI)) {
-    return "gitlab";
-  }
-  if (normalize(env.BITBUCKET_REPO_SLUG)) {
-    return "bitbucket";
-  }
-  if (normalize(env.BUILD_REPOSITORY_URI)) {
-    return "azure-devops";
-  }
-  return "unknown";
-}
-function classifyRefKind(env = process.env) {
-  const githubRefType = normalize(env.GITHUB_REF_TYPE)?.toLowerCase();
-  const githubRef = normalize(env.GITHUB_REF);
-  const azureRef = normalize(env.BUILD_SOURCEBRANCH);
-  if (githubRefType === "tag" || githubRef?.startsWith("refs/tags/") || normalize(env.CI_COMMIT_TAG) || normalize(env.BITBUCKET_TAG) || azureRef?.startsWith("refs/tags/")) {
-    return "tag";
-  }
-  const githubRefName = normalize(env.GITHUB_REF_NAME);
-  const githubDefault = normalize(env.GITHUB_DEFAULT_BRANCH);
-  if (githubRefName && githubDefault) {
-    return githubRefName === githubDefault ? "default-branch" : "branch";
-  }
-  const gitlabRef = normalize(env.CI_COMMIT_REF_NAME);
-  const gitlabDefault = normalize(env.CI_DEFAULT_BRANCH);
-  if (gitlabRef && gitlabDefault) {
-    return gitlabRef === gitlabDefault ? "default-branch" : "branch";
-  }
-  if (githubRefName || githubRef?.startsWith("refs/heads/") || gitlabRef || normalize(env.BITBUCKET_BRANCH) || normalize(env.BUILD_SOURCEBRANCHNAME) || azureRef?.startsWith("refs/heads/")) {
-    return "branch";
-  }
-  return "unknown";
-}
-function detectRepoContext(input, env = process.env) {
-  const repoUrl = normalizeRepoUrl(input.repoUrl) ?? normalizeRepoUrl(env.GITHUB_SERVER_URL && env.GITHUB_REPOSITORY ? `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}` : void 0) ?? normalizeRepoUrl(env.CI_PROJECT_URL) ?? normalizeRepoUrl(env.BITBUCKET_GIT_HTTP_ORIGIN) ?? normalizeRepoUrl(env.BUILD_REPOSITORY_URI);
-  const repoSlug = normalize(input.repoSlug) ?? normalize(env.GITHUB_REPOSITORY) ?? normalize(env.CI_PROJECT_PATH) ?? (env.BITBUCKET_WORKSPACE && env.BITBUCKET_REPO_SLUG ? normalize(`${env.BITBUCKET_WORKSPACE}/${env.BITBUCKET_REPO_SLUG}`) : void 0) ?? normalize(env.BUILD_REPOSITORY_NAME);
-  const ref = normalize(input.ref) ?? normalize(env.GITHUB_REF_NAME) ?? normalize(env.CI_COMMIT_REF_NAME) ?? normalize(env.BITBUCKET_BRANCH) ?? normalize(env.BUILD_SOURCEBRANCHNAME);
-  const sha = normalize(input.sha) ?? normalize(env.GITHUB_SHA) ?? normalize(env.CI_COMMIT_SHA) ?? normalize(env.BITBUCKET_COMMIT) ?? normalize(env.BUILD_SOURCEVERSION);
-  const provider = parseProvider(input.gitProvider, repoUrl, env);
-  const refKind = classifyRefKind(env);
-  return {
-    provider,
-    repoUrl,
-    repoSlug,
-    ref,
-    sha,
-    refKind
-  };
-}
-
-// node_modules/@postman-cse/automation-core/dist/telemetry.js
-var import_node_crypto2 = require("node:crypto");
-var import_undici2 = __toESM(require_undici(), 1);
-var SCHEMA_VERSION = 3;
-var DEFAULT_TIMEOUT_MS = 1500;
-var DEFAULT_ENDPOINT = "https://events.pm-cse.dev/v1/events";
-var proxyDispatcher;
-function getProxyDispatcher() {
-  return proxyDispatcher ??= new import_undici2.EnvHttpProxyAgent();
-}
-function resolveActionVersion(explicit, env = process.env) {
-  if (explicit) {
-    return explicit;
-  }
-  const ref = env.GITHUB_ACTION_REF?.trim();
-  if (ref) {
-    return ref;
-  }
-  return typeof __ACTION_VERSION__ !== "undefined" && __ACTION_VERSION__ ? __ACTION_VERSION__ : "unknown";
-}
-function telemetryDisabled(env) {
-  const flag = String(env.POSTMAN_ACTIONS_TELEMETRY ?? "").trim().toLowerCase();
-  if (flag === "off" || flag === "0" || flag === "false" || flag === "no") {
-    return true;
-  }
-  const dnt = String(env.DO_NOT_TRACK ?? "").trim().toLowerCase();
-  if (dnt && dnt !== "0" && dnt !== "false") {
-    return true;
-  }
-  return false;
-}
-function sha2562(value) {
-  return (0, import_node_crypto2.createHash)("sha256").update(value).digest("hex");
-}
-function accountTypeFromConsumer(consumerType) {
-  const t = (consumerType ?? "").trim().toLowerCase();
-  if (!t) {
-    return "unknown";
-  }
-  return t === "service_account" ? "service" : "user";
-}
-var noticeShown = false;
-function maybeNotice(logger) {
-  if (noticeShown || !logger) {
-    return;
-  }
-  noticeShown = true;
-  logger.info("note: postman-actions sends anonymous usage data (team id, action, CI provider, account type, run trigger, runner OS). Disable with POSTMAN_ACTIONS_TELEMETRY=off or DO_NOT_TRACK=1.");
-}
-function buildTelemetryEvent(params) {
-  const { action, actionVersion, teamId, accountType, outcome, env, now } = params;
-  const ci = detectCiContext(env);
-  const repo = detectRepoContext({}, env);
-  const repoSlug = repo.repoSlug;
-  const repoSource = repoSlug ?? repo.repoUrl;
-  const owner = repoSlug && repoSlug.includes("/") ? repoSlug.split("/")[0] : void 0;
-  return {
-    schema_version: SCHEMA_VERSION,
-    event: "completion",
-    action,
-    action_version: actionVersion || "unknown",
-    team_id: teamId,
-    ci_provider: ci.ciProvider,
-    git_provider: repo.provider,
-    run_id: ci.runId,
-    runner_kind: ci.runnerKind,
-    repo_id: repoSource ? sha2562(repoSource) : void 0,
-    org_id: owner ? sha2562(owner) : void 0,
-    account_type: accountType,
-    event_trigger: ci.eventTrigger,
-    runner_os: ci.runnerOs,
-    ref_kind: repo.refKind,
-    outcome,
-    ts: now()
-  };
-}
-async function send(event2, options) {
-  const env = options.env ?? process.env;
-  const endpoint = options.endpoint ?? env.POSTMAN_ACTIONS_TELEMETRY_ENDPOINT ?? DEFAULT_ENDPOINT;
-  const transport = options.transport ?? import_undici2.fetch;
-  const dispatcher = options.dispatcher ?? getProxyDispatcher();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  timer.unref?.();
-  const init = {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(event2),
-    signal: controller.signal
-  };
-  init.dispatcher = dispatcher;
-  try {
-    await transport(endpoint, init);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-function createTelemetryContext(options) {
-  const env = options.env ?? process.env;
-  const now = options.now ?? Date.now;
-  const actionVersion = resolveActionVersion(options.actionVersion, env);
-  let teamId = "";
-  let accountType = "unknown";
-  let emitted = false;
-  return {
-    setTeamId(value) {
-      if (value) {
-        teamId = String(value);
-      }
-    },
-    setAccountType(consumerType) {
-      accountType = accountTypeFromConsumer(consumerType);
-    },
-    emitCompletion(outcome) {
-      if (emitted) {
-        return;
-      }
-      emitted = true;
-      try {
-        if (telemetryDisabled(env) || !teamId) {
-          return;
-        }
-        const event2 = buildTelemetryEvent({
-          action: options.action,
-          actionVersion,
-          teamId,
-          accountType,
-          outcome,
-          env,
-          now
-        });
-        maybeNotice(options.logger);
-        void send(event2, options).catch(() => {
-        });
-      } catch {
-      }
-    }
-  };
-}
-
-// node_modules/@postman-cse/automation-core/dist/logger.js
-var LEVEL_ORDER = {
-  debug: 10,
-  info: 20,
-  warning: 30,
-  error: 40
-};
-function defaultCorrelationId() {
-  return Math.random().toString(36).slice(2, 10);
-}
-function resolveLogLevel(env = process.env) {
-  const explicit = String(env.POSTMAN_ACTIONS_LOG_LEVEL ?? "").trim().toLowerCase();
-  if (explicit === "debug" || explicit === "trace" || explicit === "verbose")
-    return "debug";
-  if (explicit === "info")
-    return "info";
-  if (explicit === "warn" || explicit === "warning")
-    return "warning";
-  if (explicit === "error" || explicit === "quiet")
-    return "error";
-  if (isTruthyFlag(env.RUNNER_DEBUG) || isTruthyFlag(env.ACTIONS_STEP_DEBUG))
-    return "debug";
-  if (isTruthyFlag(env.POSTMAN_ACTIONS_DEBUG))
-    return "debug";
-  return "info";
-}
-function isTruthyFlag(value) {
-  if (!value)
-    return false;
-  const flag = value.trim().toLowerCase();
-  return flag === "1" || flag === "true" || flag === "yes" || flag === "on";
-}
-function actionSink(core2) {
-  return {
-    debug: (message) => core2.debug?.(message),
-    info: (message) => core2.info(message),
-    warning: (message) => (core2.warning ?? core2.info)(message),
-    error: (message) => (core2.error ?? core2.warning ?? core2.info)(message),
-    startGroup: core2.startGroup ? (name) => core2.startGroup?.(name) : void 0,
-    endGroup: core2.endGroup ? () => core2.endGroup?.() : void 0,
-    isDebug: core2.isDebug ? () => core2.isDebug?.() ?? false : void 0
-  };
-}
-var MIN_SECRET_LENGTH = 4;
-function renderValue(value, maxLength = 512) {
-  if (value === void 0)
-    return "undefined";
-  if (value === null)
-    return "null";
-  if (typeof value === "string")
-    return truncate2(value, maxLength);
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value);
-  }
-  if (value instanceof Error)
-    return truncate2(describeError(value), maxLength);
-  if (Array.isArray(value)) {
-    return truncate2(`[${value.map((entry) => renderValue(entry, 120)).join(", ")}]`, maxLength);
-  }
-  try {
-    return truncate2(JSON.stringify(value) ?? String(value), maxLength);
-  } catch {
-    return "<unserializable>";
-  }
-}
-function truncate2(text, maxLength) {
-  if (text.length <= maxLength)
-    return text;
-  return `${text.slice(0, maxLength)}\u2026 (+${text.length - maxLength} chars)`;
-}
-function describeError(error, maxDepth = 5) {
-  const parts = [];
-  let current = error;
-  let depth = 0;
-  while (current !== void 0 && current !== null && depth < maxDepth) {
-    if (current instanceof Error) {
-      const code = current.code;
-      parts.push(code ? `${current.name}[${code}]: ${current.message}` : `${current.name}: ${current.message}`);
-      current = current.cause;
-    } else if (typeof current === "object") {
-      try {
-        parts.push(JSON.stringify(current) ?? String(current));
-      } catch {
-        parts.push(String(current));
-      }
-      current = void 0;
-    } else {
-      parts.push(String(current));
-      current = void 0;
-    }
-    depth += 1;
-  }
-  if (parts.length === 0)
-    return "unknown error";
-  return parts.join(" <- caused by ");
-}
-function createLogger(options) {
-  const env = options.env ?? process.env;
-  const level = options.level ?? resolveLogLevel(env);
-  const secrets = options.secrets ?? /* @__PURE__ */ new Set();
-  const correlationId = options.correlationId ?? defaultCorrelationId();
-  const now = options.now ?? (() => Date.now());
-  const threshold = LEVEL_ORDER[level];
-  function addSecret(value) {
-    if (typeof value !== "string")
-      return;
-    const trimmed = value.trim();
-    if (trimmed.length < MIN_SECRET_LENGTH)
-      return;
-    secrets.add(trimmed);
-  }
-  function redact(text) {
-    let output = typeof text === "string" ? text : renderValue(text, 4096);
-    for (const secret of secrets) {
-      if (!secret)
-        continue;
-      output = output.split(secret).join("***");
-      const encoded = encodeURIComponent(secret);
-      if (encoded !== secret)
-        output = output.split(encoded).join("***");
-    }
-    return output;
-  }
-  function build(baseFields) {
-    function emit(target, message, fields) {
-      if (LEVEL_ORDER[target] < threshold)
-        return;
-      const merged = { ...baseFields, ...fields ?? {} };
-      const rendered = Object.entries(merged).filter(([, value]) => value !== void 0).map(([key, value]) => `${key}=${redact(renderValue(value))}`).join(" ");
-      const line = rendered ? `${redact(message)} | ${rendered}` : redact(message);
-      switch (target) {
-        case "debug":
-          options.sink.debug(line);
-          break;
-        case "info":
-          options.sink.info(line);
-          break;
-        case "warning":
-          options.sink.warning(line);
-          break;
-        case "error":
-          options.sink.error(line);
-          break;
-      }
-    }
-    const logger = {
-      level,
-      correlationId,
-      addSecret,
-      redact,
-      isDebug: () => threshold <= LEVEL_ORDER.debug,
-      debug: (message, fields) => emit("debug", message, fields),
-      info: (message, fields) => emit("info", message, fields),
-      warning: (message, fields) => emit("warning", message, fields),
-      error: (message, fields) => emit("error", message, fields),
-      failure: (message, error, fields) => emit("error", message, { ...fields ?? {}, error: describeError(error) }),
-      child: (fields) => build({ ...baseFields, ...fields }),
-      async phase(name, fn, fields) {
-        const scoped = build({ ...baseFields, ...fields ?? {}, phase: name });
-        const started = now();
-        scoped.debug("phase start");
-        options.sink.startGroup?.(name);
-        try {
-          const result = await fn();
-          scoped.debug("phase ok", { duration_ms: Math.round(now() - started) });
-          return result;
-        } catch (error) {
-          scoped.failure("phase failed", error, { duration_ms: Math.round(now() - started) });
-          throw error;
-        } finally {
-          options.sink.endGroup?.();
-        }
-      }
-    };
-    return logger;
-  }
-  const root = build({ run: correlationId, ...options.fields ?? {} });
-  return root;
-}
-
-// node_modules/@postman-cse/automation-core/dist/secrets-resolver.js
-var SECRETS_RESOLVER_PROVIDERS = ["none", "aws", "azure", "gcp"];
-var SECRETS_RESOLVER_ITEM_NAME = "00 - Resolve Secrets";
-var DEFAULT_SECRETS_RESOLVER_PROVIDER = "none";
-function parseSecretsResolverProvider(value, fallback = DEFAULT_SECRETS_RESOLVER_PROVIDER) {
-  const raw = String(value ?? "").trim().toLowerCase();
-  if (!raw)
-    return fallback;
-  if (raw === "true")
-    return "aws";
-  if (raw === "false" || raw === "off")
-    return "none";
-  if (SECRETS_RESOLVER_PROVIDERS.includes(raw)) {
-    return raw;
-  }
-  throw new Error(`SECRETS_RESOLVER_PROVIDER_INVALID: expected one of ${SECRETS_RESOLVER_PROVIDERS.join(", ")} (or legacy true/false), received "${value}"`);
-}
-function isSecretsResolverEnabled(provider) {
-  return provider !== "none";
-}
-function resolverExecTail(extractExpression) {
-  return [
-    'if (pm.environment.get("CI") === "true") { return; }',
-    "const body = pm.response.json();",
-    `const raw = ${extractExpression};`,
-    "if (raw) {",
-    "  const secrets = JSON.parse(raw);",
-    "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
-    "}"
-  ];
-}
-function assertSecretsResolverEnabled(provider) {
-  if (provider === "none") {
-    throw new Error('SECRETS_RESOLVER_DISABLED: provider "none" cannot create a secrets resolver');
-  }
-}
-function createSecretsResolverExec(provider) {
-  assertSecretsResolverEnabled(provider);
-  switch (provider) {
-    case "azure":
-      return resolverExecTail("body.value");
-    case "gcp":
-      return [
-        'if (pm.environment.get("CI") === "true") { return; }',
-        "const body = pm.response.json();",
-        "const encoded = body.payload && body.payload.data;",
-        "if (encoded) {",
-        '  const secrets = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));',
-        "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
-        "}"
-      ];
-    case "aws":
-    default:
-      return [
-        'if (pm.environment.get("CI") === "true") { return; }',
-        "const body = pm.response.json();",
-        "if (body.SecretString) {",
-        "  const secrets = JSON.parse(body.SecretString);",
-        "  Object.entries(secrets).forEach(([k, v]) => pm.collectionVariables.set(k, v));",
-        "}"
-      ];
-  }
-}
-function createSecretsResolverItem(provider) {
-  assertSecretsResolverEnabled(provider);
-  if (provider === "azure") {
-    return {
-      name: SECRETS_RESOLVER_ITEM_NAME,
-      request: {
-        auth: {
-          type: "bearer",
-          bearer: [{ key: "token", value: "{{AZURE_ACCESS_TOKEN}}" }]
-        },
-        method: "GET",
-        header: [{ key: "Accept", value: "application/json" }],
-        url: {
-          raw: "https://{{AZURE_KEY_VAULT_NAME}}.vault.azure.net/secrets/{{AZURE_SECRET_NAME}}?api-version=7.4",
-          protocol: "https",
-          host: ["{{AZURE_KEY_VAULT_NAME}}", "vault", "azure", "net"],
-          path: ["secrets", "{{AZURE_SECRET_NAME}}"],
-          query: [{ key: "api-version", value: "7.4" }]
-        }
-      },
-      event: [
-        {
-          listen: "test",
-          script: { type: "text/javascript", exec: createSecretsResolverExec("azure") }
-        }
-      ]
-    };
-  }
-  if (provider === "gcp") {
-    return {
-      name: SECRETS_RESOLVER_ITEM_NAME,
-      request: {
-        auth: {
-          type: "bearer",
-          bearer: [{ key: "token", value: "{{GCP_ACCESS_TOKEN}}" }]
-        },
-        method: "GET",
-        header: [{ key: "Accept", value: "application/json" }],
-        url: {
-          raw: "https://secretmanager.googleapis.com/v1/projects/{{GCP_PROJECT_ID}}/secrets/{{GCP_SECRET_NAME}}/versions/latest:access",
-          protocol: "https",
-          host: ["secretmanager", "googleapis", "com"],
-          path: [
-            "v1",
-            "projects",
-            "{{GCP_PROJECT_ID}}",
-            "secrets",
-            "{{GCP_SECRET_NAME}}",
-            "versions",
-            "latest:access"
-          ]
-        }
-      },
-      event: [
-        {
-          listen: "test",
-          script: { type: "text/javascript", exec: createSecretsResolverExec("gcp") }
-        }
-      ]
-    };
-  }
-  return {
-    name: SECRETS_RESOLVER_ITEM_NAME,
-    request: {
-      auth: {
-        type: "awsv4",
-        awsv4: [
-          { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
-          { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
-          { key: "region", value: "{{AWS_REGION}}" },
-          { key: "service", value: "secretsmanager" }
-        ]
-      },
-      method: "POST",
-      header: [
-        { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
-        { key: "Content-Type", value: "application/x-amz-json-1.1" }
-      ],
-      body: { mode: "raw", raw: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-      url: {
-        raw: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
-        protocol: "https",
-        host: ["secretsmanager", "{{AWS_REGION}}", "amazonaws", "com"]
-      }
-    },
-    event: [
-      {
-        listen: "test",
-        script: { type: "text/javascript", exec: createSecretsResolverExec("aws") }
-      }
-    ]
-  };
-}
-function createSecretsResolverV3Body(provider) {
-  assertSecretsResolverEnabled(provider);
-  if (provider === "azure") {
-    return {
-      $kind: "http-request",
-      name: SECRETS_RESOLVER_ITEM_NAME,
-      method: "GET",
-      url: "https://{{AZURE_KEY_VAULT_NAME}}.vault.azure.net/secrets/{{AZURE_SECRET_NAME}}?api-version=7.4",
-      headers: [{ key: "Accept", value: "application/json" }],
-      auth: {
-        type: "bearer",
-        credentials: [{ key: "token", value: "{{AZURE_ACCESS_TOKEN}}" }]
-      }
-    };
-  }
-  if (provider === "gcp") {
-    return {
-      $kind: "http-request",
-      name: SECRETS_RESOLVER_ITEM_NAME,
-      method: "GET",
-      url: "https://secretmanager.googleapis.com/v1/projects/{{GCP_PROJECT_ID}}/secrets/{{GCP_SECRET_NAME}}/versions/latest:access",
-      headers: [{ key: "Accept", value: "application/json" }],
-      auth: {
-        type: "bearer",
-        credentials: [{ key: "token", value: "{{GCP_ACCESS_TOKEN}}" }]
-      }
-    };
-  }
-  return {
-    $kind: "http-request",
-    name: SECRETS_RESOLVER_ITEM_NAME,
-    method: "POST",
-    url: "https://secretsmanager.{{AWS_REGION}}.amazonaws.com",
-    headers: [
-      { key: "X-Amz-Target", value: "secretsmanager.GetSecretValue" },
-      { key: "Content-Type", value: "application/x-amz-json-1.1" }
-    ],
-    body: { type: "json", content: '{"SecretId": "{{AWS_SECRET_NAME}}"}' },
-    auth: {
-      type: "awsv4",
-      credentials: [
-        { key: "accessKey", value: "{{AWS_ACCESS_KEY_ID}}" },
-        { key: "secretKey", value: "{{AWS_SECRET_ACCESS_KEY}}" },
-        { key: "region", value: "{{AWS_REGION}}" },
-        { key: "service", value: "secretsmanager" }
-      ]
-    }
-  };
-}
-function isSecretsResolverItemName(name) {
-  return String(name ?? "").trim() === SECRETS_RESOLVER_ITEM_NAME;
-}
 
 // src/lib/spec/iana-registries.ts
 var PROXY_STATUS_ERROR_TYPES = [
@@ -323507,7 +324070,7 @@ function mergedParams(root, pathItem, operation) {
   const seen = /* @__PURE__ */ new Map();
   const collect = (arr) => {
     for (const raw of asArray2(arr)) {
-      const p = resolveInternalRef(root, raw) ?? asRecord5(raw);
+      const p = resolveInternalRef(root, raw) ?? asRecord6(raw);
       if (!p) continue;
       const key = String(p.in ?? "").toLowerCase() + ":" + String(p.name ?? "").toLowerCase();
       seen.set(key, p);
@@ -323525,20 +324088,20 @@ function effectiveSecurity(root, operation) {
   return operation.security !== void 0 ? asArray2(operation.security) : asArray2(root.security);
 }
 function usesBearerScheme(root, operation) {
-  const schemes = asRecord5(asRecord5(root.components)?.securitySchemes) ?? {};
+  const schemes = asRecord6(asRecord6(root.components)?.securitySchemes) ?? {};
   return effectiveSecurity(root, operation).some((req) => {
-    const names = Object.keys(asRecord5(req) ?? {});
+    const names = Object.keys(asRecord6(req) ?? {});
     return names.some((name) => {
-      const s = resolveInternalRef(root, schemes[name]) ?? asRecord5(schemes[name]);
+      const s = resolveInternalRef(root, schemes[name]) ?? asRecord6(schemes[name]);
       return !!s && String(s.type ?? "").toLowerCase() === "http" && String(s.scheme ?? "").toLowerCase() === "bearer";
     });
   });
 }
 function substituteServerUrl(root, server) {
   let url = typeof server.url === "string" ? server.url : "";
-  const vars = asRecord5(server.variables) ?? {};
+  const vars = asRecord6(server.variables) ?? {};
   for (const [name, rawVar] of Object.entries(vars)) {
-    const v = asRecord5(rawVar);
+    const v = asRecord6(rawVar);
     const def = v && typeof v.default === "string" ? v.default : "";
     url = url.split("{" + name + "}").join(def);
   }
@@ -323552,23 +324115,23 @@ function collectHttpSemanticStaticLints(root, method, path11, pathItem, operatio
   const queryParams = params.filter((p) => String(p.in ?? "").toLowerCase() === "query").map((p) => String(p.name ?? ""));
   const byStatus = /* @__PURE__ */ new Map();
   for (const [status, rawResp] of Object.entries(responses)) {
-    const resp = resolveInternalRef(root, rawResp) ?? asRecord5(rawResp);
+    const resp = resolveInternalRef(root, rawResp) ?? asRecord6(rawResp);
     if (!resp) continue;
-    const headersRec = asRecord5(resp.headers) ?? {};
+    const headersRec = asRecord6(resp.headers) ?? {};
     const headers = /* @__PURE__ */ new Set();
     const requiredHeaders = /* @__PURE__ */ new Set();
     for (const [hn, rawH] of Object.entries(headersRec)) {
       const h = hn.toLowerCase();
       headers.add(h);
-      const hr = resolveInternalRef(root, rawH) ?? asRecord5(rawH);
+      const hr = resolveInternalRef(root, rawH) ?? asRecord6(rawH);
       if (hr && hr.required === true) requiredHeaders.add(h);
     }
-    const contentRec = asRecord5(resp.content) ?? {};
+    const contentRec = asRecord6(resp.content) ?? {};
     const content = new Set(Object.keys(contentRec).map((c) => (c.toLowerCase().split(";")[0] ?? "").trim()));
-    const linksRec = asRecord5(resp.links) ?? {};
+    const linksRec = asRecord6(resp.links) ?? {};
     const links = [];
     for (const rawLink of Object.values(linksRec)) {
-      const link = resolveInternalRef(root, rawLink) ?? asRecord5(rawLink);
+      const link = resolveInternalRef(root, rawLink) ?? asRecord6(rawLink);
       if (link) links.push(link);
     }
     byStatus.set(status, { headers, requiredHeaders, content, links });
@@ -323671,7 +324234,7 @@ function collectHttpSemanticStaticLints(root, method, path11, pathItem, operatio
   for (const [status, r] of byStatus) {
     for (const link of r.links) {
       if (typeof link.operationRef === "string") out.push("CONTRACT_LINK_OPERATION_REF_NOT_VALIDATED: " + where + " status " + status + " link uses operationRef " + String(link.operationRef) + "; its resolution to a single Operation Object is not statically proven");
-      const lp = asRecord5(link.parameters);
+      const lp = asRecord6(link.parameters);
       if (lp && Object.keys(lp).length > 0) {
         out.push("CONTRACT_LINK_PARAMETERS_NOT_VALIDATED: " + where + " status " + status + " link parameters are not statically matched against the target operation parameters (OpenAPI Link Object)");
         for (const v of Object.values(lp)) {
@@ -323689,7 +324252,7 @@ function collectHttpSemanticStaticLints(root, method, path11, pathItem, operatio
   const servers = [...asArray2(root.servers), ...asArray2(pathItem.servers), ...asArray2(operation.servers)];
   const seenServer = /* @__PURE__ */ new Set();
   for (const rawServer of servers) {
-    const s = asRecord5(rawServer);
+    const s = asRecord6(rawServer);
     if (!s) continue;
     const rawUrl = typeof s.url === "string" ? s.url : "";
     if (seenServer.has(rawUrl)) continue;
@@ -323751,8 +324314,8 @@ function isJsonMediaType(t) {
 function mediaExampleCandidates(root, media) {
   const out = [];
   if (Object.prototype.hasOwnProperty.call(media, "example")) out.push({ label: "example", value: media.example });
-  for (const [name, rawEx] of Object.entries(asRecord5(media.examples) ?? {})) {
-    const ex = resolveInternalRef(root, rawEx) ?? asRecord5(rawEx);
+  for (const [name, rawEx] of Object.entries(asRecord6(media.examples) ?? {})) {
+    const ex = resolveInternalRef(root, rawEx) ?? asRecord6(rawEx);
     if (ex && Object.prototype.hasOwnProperty.call(ex, "value")) out.push({ label: `examples.${name}`, value: ex.value });
   }
   return out;
@@ -323761,7 +324324,7 @@ function mergedParams2(root, pathItem, operation) {
   const seen = /* @__PURE__ */ new Map();
   const collect = (arr) => {
     for (const raw of asArray2(arr)) {
-      const p = resolveInternalRef(root, raw) ?? asRecord5(raw);
+      const p = resolveInternalRef(root, raw) ?? asRecord6(raw);
       if (!p) continue;
       seen.set(String(p.in ?? "").toLowerCase() + ":" + String(p.name ?? "").toLowerCase(), p);
     }
@@ -323773,24 +324336,24 @@ function mergedParams2(root, pathItem, operation) {
 function collectSchemaObjectLints(root, record, version, context) {
   const out = [];
   const types2 = typeNames(record);
-  const disc = asRecord5(record.discriminator);
+  const disc = asRecord6(record.discriminator);
   if (disc) {
     const members = [...asArray2(record.oneOf), ...asArray2(record.anyOf)];
     for (const m of members) {
-      const mr = asRecord5(m);
+      const mr = asRecord6(m);
       if (mr && typeof mr.$ref !== "string") out.push("CONTRACT_DISCRIMINATOR_INVALID: " + context + " has an inline oneOf/anyOf branch that a discriminator mapping cannot reference; use a named $ref branch");
     }
-    const memberRefs = new Set(members.map((m) => asRecord5(m)?.$ref).filter((x) => typeof x === "string"));
-    for (const [key, rawVal] of Object.entries(asRecord5(disc.mapping) ?? {})) {
+    const memberRefs = new Set(members.map((m) => asRecord6(m)?.$ref).filter((x) => typeof x === "string"));
+    for (const [key, rawVal] of Object.entries(asRecord6(disc.mapping) ?? {})) {
       if (typeof rawVal !== "string") continue;
       const isName2 = !rawVal.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/i.test(rawVal) && !rawVal.includes("/");
       const target = isName2 ? "#/components/schemas/" + rawVal : rawVal;
-      if (isName2 && asRecord5(asRecord5(asRecord5(root.components)?.schemas))?.[rawVal] === void 0) out.push("CONTRACT_DISCRIMINATOR_INVALID: " + context + " discriminator mapping key " + key + " names schema " + rawVal + ", which is not a component schema");
+      if (isName2 && asRecord6(asRecord6(asRecord6(root.components)?.schemas))?.[rawVal] === void 0) out.push("CONTRACT_DISCRIMINATOR_INVALID: " + context + " discriminator mapping key " + key + " names schema " + rawVal + ", which is not a component schema");
       if (memberRefs.size > 0 && !memberRefs.has(target)) out.push("CONTRACT_DISCRIMINATOR_INVALID: " + context + " discriminator mapping key " + key + " points to " + rawVal + ", which is not one of the oneOf/anyOf branches");
       if (version === "3.1" && !rawVal.startsWith("#") && rawVal.includes("/") && !/^[a-z][a-z0-9+.-]*:/i.test(rawVal)) out.push("CONTRACT_DISCRIMINATOR_INVALID: " + context + " discriminator mapping " + rawVal + " is a relative URI whose base is ambiguous under OpenAPI 3.1");
     }
   }
-  const xml = asRecord5(record.xml);
+  const xml = asRecord6(record.xml);
   if (xml) {
     if (typeof xml.namespace === "string" && xml.namespace !== "" && !isAbs(xml.namespace)) out.push("CONTRACT_XML_OBJECT_INVALID: " + context + " xml.namespace " + xml.namespace + " is not an absolute URI");
     if (typeof xml.prefix === "string" && xml.prefix !== "" && xml.namespace === void 0) out.push("CONTRACT_XML_OBJECT_INVALID: " + context + " xml.prefix is set without an xml.namespace to bind it");
@@ -323801,8 +324364,8 @@ function collectSchemaObjectLints(root, record, version, context) {
     if (xml.wrapped === true && !types2.includes("array")) out.push("CONTRACT_XML_OBJECT_INVALID: " + context + " xml.wrapped applies only to array schemas");
     if (xml.attribute === true && (types2.includes("object") || types2.includes("array"))) out.push("CONTRACT_XML_OBJECT_INVALID: " + context + " xml.attribute cannot serialize an object or array as an XML attribute");
     if (types2.includes("array") && xml.wrapped !== true) {
-      const items = asRecord5(record.items);
-      if (items && asRecord5(items.xml)?.name !== void 0) out.push("CONTRACT_XML_OBJECT_INVALID: " + context + " array item declares xml.name but the array is not xml.wrapped, so element naming is advisory only");
+      const items = asRecord6(record.items);
+      if (items && asRecord6(items.xml)?.name !== void 0) out.push("CONTRACT_XML_OBJECT_INVALID: " + context + " array item declares xml.name but the array is not xml.wrapped, so element naming is advisory only");
     }
   }
   if (typeof record.$id === "string" && record.$id !== "" && !isUriRef(record.$id)) out.push("CONTRACT_SCHEMA_ID_INVALID: " + context + " $id " + record.$id + " is not a valid URI reference");
@@ -323819,24 +324382,24 @@ function collectMediaParamLints(root, version, pathItem, operation, operationId)
     const loc = String(p.in ?? "").toLowerCase();
     const name = String(p.name ?? "");
     const style = typeof p.style === "string" ? p.style : "";
-    const schema3 = resolveInternalRef(root, p.schema) ?? asRecord5(p.schema);
+    const schema3 = resolveInternalRef(root, p.schema) ?? asRecord6(p.schema);
     const ptypes = schema3 ? typeNames(schema3) : [];
     if (style && arrayObjectStyles[style] && ptypes.length > 0 && !ptypes.some((t) => arrayObjectStyles[style].includes(t))) {
       out.push("CONTRACT_PARAMETER_STYLE_TYPE_INVALID: " + operationId + " parameter " + loc + ":" + name + " style " + style + " applies only to " + arrayObjectStyles[style].join("/") + " typed parameters");
     }
     if (style === "deepObject") {
       if (p.explode === false) out.push("CONTRACT_PARAMETER_DEEPOBJECT_INVALID: " + operationId + " parameter " + loc + ":" + name + " deepObject requires explode: true");
-      const props = schema3 ? asRecord5(schema3.properties) : null;
+      const props = schema3 ? asRecord6(schema3.properties) : null;
       if (props) for (const [pn, ps] of Object.entries(props)) {
-        const pr = resolveInternalRef(root, ps) ?? asRecord5(ps);
+        const pr = resolveInternalRef(root, ps) ?? asRecord6(ps);
         const pt = pr ? typeNames(pr) : [];
         if (pt.some((t) => t === "object" || t === "array")) out.push("CONTRACT_PARAMETER_DEEPOBJECT_INVALID: " + operationId + " parameter " + loc + ":" + name + " deepObject property " + pn + " is not a scalar and is not supported");
       }
     }
     if (loc === "header" && style && style !== "simple") out.push("CONTRACT_HEADER_STYLE_INVALID: " + operationId + " header parameter " + name + " must use style simple (found " + style + ")");
-    if ((p.example !== void 0 || asRecord5(p.examples)) && style && style !== "simple" && style !== "form") out.push("CONTRACT_PARAMETER_EXAMPLE_NOT_VALIDATED: " + operationId + " parameter " + loc + ":" + name + " example is a raw value; its serialized " + style + " form is not statically validated");
-    for (const [en, rawEx] of Object.entries(asRecord5(p.examples) ?? {})) {
-      const ex = resolveInternalRef(root, rawEx) ?? asRecord5(rawEx);
+    if ((p.example !== void 0 || asRecord6(p.examples)) && style && style !== "simple" && style !== "form") out.push("CONTRACT_PARAMETER_EXAMPLE_NOT_VALIDATED: " + operationId + " parameter " + loc + ":" + name + " example is a raw value; its serialized " + style + " form is not statically validated");
+    for (const [en, rawEx] of Object.entries(asRecord6(p.examples) ?? {})) {
+      const ex = resolveInternalRef(root, rawEx) ?? asRecord6(rawEx);
       if (!ex) continue;
       if (ex.value !== void 0 && ex.externalValue !== void 0) out.push("CONTRACT_EXAMPLE_OBJECT_INVALID: " + operationId + " parameter " + loc + ":" + name + " example " + en + " sets both value and externalValue, which are mutually exclusive");
       const ev = ex.externalValue;
@@ -323845,14 +324408,14 @@ function collectMediaParamLints(root, version, pathItem, operation, operationId)
   }
   const mediaEntries = [];
   const rb = resolveInternalRef(root, operation.requestBody);
-  for (const [ct, m] of Object.entries(asRecord5(rb?.content) ?? {})) {
-    const mm = asRecord5(m);
+  for (const [ct, m] of Object.entries(asRecord6(rb?.content) ?? {})) {
+    const mm = asRecord6(m);
     if (mm) mediaEntries.push({ ctx: operationId + " request body", ct, media: mm, request: true });
   }
-  for (const [status, rr] of Object.entries(asRecord5(operation.responses) ?? {})) {
-    const resp = resolveInternalRef(root, rr) ?? asRecord5(rr);
-    for (const [ct, m] of Object.entries(asRecord5(resp?.content) ?? {})) {
-      const mm = asRecord5(m);
+  for (const [status, rr] of Object.entries(asRecord6(operation.responses) ?? {})) {
+    const resp = resolveInternalRef(root, rr) ?? asRecord6(rr);
+    for (const [ct, m] of Object.entries(asRecord6(resp?.content) ?? {})) {
+      const mm = asRecord6(m);
       if (mm) mediaEntries.push({ ctx: operationId + " response " + status, ct, media: mm, request: false });
     }
   }
@@ -323860,25 +324423,25 @@ function collectMediaParamLints(root, version, pathItem, operation, operationId)
     const base = mediaBase(ct);
     const isForm = base === "application/x-www-form-urlencoded";
     const isMultipart = base.startsWith("multipart/");
-    const encoding = asRecord5(media.encoding);
+    const encoding = asRecord6(media.encoding);
     if (encoding) {
       if (!request || !isForm && !isMultipart) out.push("CONTRACT_ENCODING_APPLICABILITY_INVALID: " + ctx + " " + ct + " declares an encoding map, which applies only to request-body multipart or urlencoded media");
       for (const [field, rawEnc] of Object.entries(encoding)) {
-        const enc = asRecord5(rawEnc);
+        const enc = asRecord6(rawEnc);
         if (!enc) continue;
         if (typeof enc.contentType === "string") for (const part of enc.contentType.split(",")) {
           const t = part.trim();
           if (t && !isValidMediaType(t)) out.push("CONTRACT_ENCODING_CONTENT_TYPE_INVALID: " + ctx + " encoding." + field + ".contentType " + t + " is not a valid media type");
         }
         if ((enc.style !== void 0 || enc.explode !== void 0 || enc.allowReserved !== void 0) && !isForm) out.push("CONTRACT_ENCODING_FIELD_IGNORED: " + ctx + " encoding." + field + " style/explode/allowReserved are ignored outside application/x-www-form-urlencoded");
-        if (asRecord5(enc.headers) && !isMultipart) out.push("CONTRACT_ENCODING_FIELD_IGNORED: " + ctx + " encoding." + field + ".headers are ignored outside multipart media");
+        if (asRecord6(enc.headers) && !isMultipart) out.push("CONTRACT_ENCODING_FIELD_IGNORED: " + ctx + " encoding." + field + ".headers are ignored outside multipart media");
         if (version === "3.1" && typeof enc.contentType === "string" && (enc.style !== void 0 || enc.explode !== void 0 || enc.allowReserved !== void 0)) out.push("CONTRACT_ENCODING_CONTENT_TYPE_PRECEDENCE: " + ctx + " encoding." + field + " sets contentType and style/explode/allowReserved; OpenAPI 3.1 gives contentType precedence and ignores RFC 6570 serialization");
         if (isMultipart && (enc.style !== void 0 || enc.explode !== void 0 || enc.allowReserved !== void 0)) out.push("CONTRACT_MULTIPART_SERIALIZATION_ADVISORY: " + ctx + " encoding." + field + " RFC 6570 serialization on multipart parts is advisory and not runtime-validated");
       }
     }
-    const examples = asRecord5(media.examples);
+    const examples = asRecord6(media.examples);
     for (const [en, rawEx] of Object.entries(examples ?? {})) {
-      const ex = resolveInternalRef(root, rawEx) ?? asRecord5(rawEx);
+      const ex = resolveInternalRef(root, rawEx) ?? asRecord6(rawEx);
       if (!ex) continue;
       if (ex.value !== void 0 && ex.externalValue !== void 0) out.push("CONTRACT_EXAMPLE_OBJECT_INVALID: " + ctx + " example " + en + " sets both value and externalValue, which are mutually exclusive");
       const ev = ex.externalValue;
@@ -323888,12 +324451,12 @@ function collectMediaParamLints(root, version, pathItem, operation, operationId)
       const candidates = mediaExampleCandidates(root, media);
       let fullyUnvalidated = candidates.length > 0;
       for (const candidate of candidates) {
-        const candidateRecord = asRecord5(candidate.value);
+        const candidateRecord = asRecord6(candidate.value);
         if (!candidateRecord) continue;
         let checkedField = false;
         let invalidField = false;
         for (const [field, rawEnc] of Object.entries(encoding)) {
-          const enc = asRecord5(rawEnc);
+          const enc = asRecord6(rawEnc);
           const encodedValue = candidateRecord[field];
           if (!enc || encodedValue === void 0 || typeof enc.contentType !== "string" || !isJsonMediaType(enc.contentType)) continue;
           checkedField = true;
@@ -324017,7 +324580,7 @@ function isCompilablePattern(pattern) {
 }
 var DRAFT_2020_12_ONLY_KEYS = /* @__PURE__ */ new Set(["prefixItems", "dependentRequired", "dependentSchemas", "minContains", "maxContains", "unevaluatedItems", "unevaluatedProperties"]);
 var DRAFT_07_ONLY_KEYS = /* @__PURE__ */ new Set(["dependencies", "additionalItems"]);
-function asRecord6(value) {
+function asRecord7(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -324029,7 +324592,7 @@ function decodePointerSegment(segment) {
 }
 function resolvePointer(root, ref) {
   if (!ref.startsWith("#/")) return void 0;
-  return ref.slice(2).split("/").map(decodePointerSegment).reduce((node, segment) => asRecord6(node)?.[segment], root);
+  return ref.slice(2).split("/").map(decodePointerSegment).reduce((node, segment) => asRecord7(node)?.[segment], root);
 }
 function unsupported2(message) {
   return { unsupported: message };
@@ -324039,7 +324602,7 @@ function mergeRequiredWithoutStripped(required, strippedProperties) {
   return values.length > 0 ? values : void 0;
 }
 function hasUnsupported(child4) {
-  return asRecord6(child4)?.unsupported;
+  return asRecord7(child4)?.unsupported;
 }
 function rootDialect(root, version, schemaRecord) {
   if (version === "3.0") return DRAFT_07_SCHEMA_URI;
@@ -324079,7 +324642,7 @@ function normalizeSchema(ctx, schema3, options) {
     const bad = normalized2.map(hasUnsupported).find(Boolean);
     return bad ? unsupported2(bad) : normalized2;
   }
-  const record = asRecord6(schema3);
+  const record = asRecord7(schema3);
   if (!record) return schema3;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (ref) {
@@ -324110,20 +324673,20 @@ function normalizeSchema(ctx, schema3, options) {
   const sourceSchema = { ...record };
   const nullable = sourceSchema.nullable === true && ctx.version === "3.0";
   delete sourceSchema.nullable;
-  const discriminator = asRecord6(sourceSchema.discriminator);
+  const discriminator = asRecord7(sourceSchema.discriminator);
   if (discriminator && typeof discriminator.propertyName === "string" && discriminator.propertyName) {
     const propertyName = discriminator.propertyName;
     const branchKey = Array.isArray(sourceSchema.oneOf) ? "oneOf" : Array.isArray(sourceSchema.anyOf) ? "anyOf" : "";
     const members = branchKey ? sourceSchema[branchKey] : [];
     const memberRefs = members.map((member) => {
-      const memberRecord = asRecord6(member);
+      const memberRecord = asRecord7(member);
       const memberRef = memberRecord && Object.keys(memberRecord).length === 1 && typeof memberRecord.$ref === "string" ? memberRecord.$ref : "";
       return memberRef.startsWith("#/") ? memberRef : "";
     });
     if (branchKey && members.length > 0 && memberRefs.every(Boolean)) {
       const valuesByRef = /* @__PURE__ */ new Map();
       const refByMappingKey = /* @__PURE__ */ new Map();
-      for (const [value, target] of Object.entries(asRecord6(discriminator.mapping) ?? {})) {
+      for (const [value, target] of Object.entries(asRecord7(discriminator.mapping) ?? {})) {
         if (typeof target !== "string" || !target) continue;
         const targetRef = target.startsWith("#/") ? target : `#/components/schemas/${target}`;
         valuesByRef.set(targetRef, [...valuesByRef.get(targetRef) ?? [], value]);
@@ -324144,12 +324707,12 @@ function normalizeSchema(ctx, schema3, options) {
   }
   const directionStrippedFlag = ctx.direction === "request" ? "readOnly" : "writeOnly";
   const strippedProperties = /* @__PURE__ */ new Set();
-  const rawProperties = asRecord6(sourceSchema.properties);
+  const rawProperties = asRecord7(sourceSchema.properties);
   if (rawProperties) {
     for (const [propertyName, propertySchema] of Object.entries(rawProperties)) {
-      let flagSource = asRecord6(propertySchema);
+      let flagSource = asRecord7(propertySchema);
       if (typeof flagSource?.$ref === "string" && flagSource.$ref.startsWith("#/")) {
-        flagSource = asRecord6(resolvePointer(ctx.root, flagSource.$ref)) ?? flagSource;
+        flagSource = asRecord7(resolvePointer(ctx.root, flagSource.$ref)) ?? flagSource;
       }
       if (flagSource?.[directionStrippedFlag] === true) strippedProperties.add(propertyName);
     }
@@ -324199,7 +324762,7 @@ function normalizeSchema(ctx, schema3, options) {
       );
     }
     if (key === "patternProperties" || key === "dependentSchemas") {
-      const map2 = asRecord6(value);
+      const map2 = asRecord7(value);
       if (!map2) continue;
       const next = {};
       for (const [mapKey, mapSchema] of Object.entries(map2)) {
@@ -324212,7 +324775,7 @@ function normalizeSchema(ctx, schema3, options) {
       continue;
     }
     if (key === "dependentRequired") {
-      const map2 = asRecord6(value);
+      const map2 = asRecord7(value);
       if (!map2) continue;
       for (const names of Object.values(map2)) {
         if (!Array.isArray(names) || names.some((name) => typeof name !== "string")) {
@@ -324223,7 +324786,7 @@ function normalizeSchema(ctx, schema3, options) {
       continue;
     }
     if (key === "dependencies") {
-      const map2 = asRecord6(value);
+      const map2 = asRecord7(value);
       if (!map2) continue;
       const next = {};
       for (const [mapKey, dependency] of Object.entries(map2)) {
@@ -324241,7 +324804,7 @@ function normalizeSchema(ctx, schema3, options) {
       continue;
     }
     if (key === "properties") {
-      const properties = asRecord6(value);
+      const properties = asRecord7(value);
       if (!properties) continue;
       const nextProperties = {};
       for (const [propertyName, propertySchema] of Object.entries(properties)) {
@@ -324327,7 +324890,7 @@ function packSchema(root, schema3, version, direction = "response") {
   try {
     if (schema3 === true) return { schema: { $schema: rootDialect(root, version) } };
     if (schema3 === false) return unsupported2("Boolean false JSON Schema rejects every instance and is unsupported");
-    const dialect = rootDialect(root, version, asRecord6(schema3) ?? void 0);
+    const dialect = rootDialect(root, version, asRecord7(schema3) ?? void 0);
     const ctx = { root, version, direction, dialect, defs: /* @__PURE__ */ new Map(), notes: /* @__PURE__ */ new Set() };
     const normalized = normalizeSchema(ctx, schema3, { depth: 0, rootSchema: true });
     const message = hasUnsupported(normalized);
@@ -324335,7 +324898,7 @@ function packSchema(root, schema3, version, direction = "response") {
     const aliasTargets = /* @__PURE__ */ new Map();
     for (const entry of ctx.defs.values()) {
       if (entry.unsupported) return unsupported2(entry.unsupported);
-      const entrySchema = asRecord6(entry.schema);
+      const entrySchema = asRecord7(entry.schema);
       const ref = entrySchema && Object.keys(entrySchema).length === 1 && typeof entrySchema.$ref === "string" ? entrySchema.$ref : "";
       if (ref.startsWith("#/$defs/")) aliasTargets.set(entry.name, ref.slice("#/$defs/".length));
     }
@@ -324349,7 +324912,7 @@ function packSchema(root, schema3, version, direction = "response") {
       }
     }
     if (ctx.defs.size > 0) {
-      const normalizedRecord = asRecord6(normalized);
+      const normalizedRecord = asRecord7(normalized);
       if (!normalizedRecord) return unsupported2("Referenced schemas require an object root schema");
       normalizedRecord.$defs = Object.fromEntries([...ctx.defs.values()].map((entry) => [entry.name, entry.schema]));
     }
@@ -324426,7 +324989,7 @@ function compileSchemaValidatorCode(schema3) {
 
 // src/lib/spec/contract-index.ts
 var HTTP_METHODS = /* @__PURE__ */ new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
-function asRecord5(value) {
+function asRecord6(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -324443,12 +325006,12 @@ function detectOpenApiVersion(root) {
   return match[1] === "1" ? "3.1" : "3.0";
 }
 function resolveInternalRef(root, value) {
-  const record = asRecord5(value);
+  const record = asRecord6(value);
   if (!record) return null;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (!ref) return record;
   if (!ref.startsWith("#/")) throw new Error(`CONTRACT_UNRESOLVED_REF: External ref remained after bundling: ${ref}`);
-  const resolved = asRecord5(resolvePointer(root, ref));
+  const resolved = asRecord6(resolvePointer(root, ref));
   if (!resolved) throw new Error(`CONTRACT_UNRESOLVED_REF: Unresolved OpenAPI $ref: ${ref}`);
   return resolved;
 }
@@ -324468,11 +325031,11 @@ function normalizePath(path11) {
   return trimmed.split("/").map((segment, index) => index === 0 ? "" : safeDecodeSegment(segment)).join("/") || "/";
 }
 function pathItemServers(pathItem) {
-  return asArray2(pathItem.servers).map((entry) => asRecord5(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
+  return asArray2(pathItem.servers).map((entry) => asRecord6(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
 }
 function operationServers(root, pathItem, operation) {
   const rawServers = asArray2(operation.servers).length > 0 ? asArray2(operation.servers) : pathItemServers(pathItem).length > 0 ? asArray2(pathItem.servers) : asArray2(root.servers);
-  const values = rawServers.map((entry) => asRecord5(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
+  const values = rawServers.map((entry) => asRecord6(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
   return values.length > 0 ? values : [""];
 }
 function serverPathPrefix(url) {
@@ -324500,10 +325063,10 @@ function responseBodyExpectation(method, status, content) {
   return Object.keys(content).length > 0 ? "declared" : "unknown";
 }
 function collectSecurityApiKeys(root, operation) {
-  const securitySchemes = asRecord5(asRecord5(root.components)?.securitySchemes);
+  const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
   const names = /* @__PURE__ */ new Set();
-  for (const requirement of requirements.map((entry) => asRecord5(entry)).filter(Boolean)) {
+  for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
       const scheme = resolveInternalRef(root, securitySchemes?.[schemeName]);
       if (scheme?.type === "apiKey" && typeof scheme.name === "string" && ["query", "header", "cookie"].includes(String(scheme.in))) {
@@ -324521,10 +325084,10 @@ function securitySchemeKind(scheme) {
   return type2;
 }
 function collectSecuritySchemeWarnings(root, operation) {
-  const securitySchemes = asRecord5(asRecord5(root.components)?.securitySchemes);
+  const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
   const warnings = /* @__PURE__ */ new Set();
-  for (const requirement of requirements.map((entry) => asRecord5(entry)).filter(Boolean)) {
+  for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
       const scheme = resolveInternalRef(root, securitySchemes?.[schemeName]);
       warnings.add(
@@ -324556,10 +325119,10 @@ function securityCheckFor(schemeName, scheme) {
   return { scheme: schemeName, kind, checkable: false };
 }
 function collectSecurityRuntimeChecks(root, operation) {
-  const securitySchemes = asRecord5(asRecord5(root.components)?.securitySchemes);
+  const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
   const alternatives = [];
-  for (const requirement of requirements.map((entry) => asRecord5(entry)).filter(Boolean)) {
+  for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     const schemeNames = Object.keys(requirement);
     if (schemeNames.length === 0) return void 0;
     alternatives.push(schemeNames.map((schemeName) => securityCheckFor(schemeName, resolveInternalRef(root, securitySchemes?.[schemeName]))));
@@ -324582,14 +325145,14 @@ function isIgnoredParameter(location2, name) {
   return location2 === "header" && IGNORED_HEADER_PARAMS.has(name.toLowerCase());
 }
 function jsonContentParameterMedia(param) {
-  const content = asRecord5(param.content);
+  const content = asRecord6(param.content);
   if (!content) return void 0;
   const entries = Object.entries(content);
   if (entries.length !== 1) return void 0;
   const [contentType2, mediaObject] = entries[0];
   const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
   if (!isJsonBaseType(base)) return void 0;
-  const schema3 = asRecord5(mediaObject)?.schema;
+  const schema3 = asRecord6(mediaObject)?.schema;
   return schema3 === void 0 ? void 0 : schema3;
 }
 function collectSerializationWarnings(root, pathItem, operation, decodedKeys) {
@@ -324622,7 +325185,7 @@ function typelessScalarSchema(record) {
 }
 function packedScalarSchema(packed) {
   if (packed.unsupported || packed.schema === void 0) return void 0;
-  const record = asRecord5(packed.schema);
+  const record = asRecord6(packed.schema);
   if (!record) return void 0;
   if (typelessScalarSchema(record)) return packed.schema;
   const types2 = Array.isArray(record.type) ? record.type : [record.type];
@@ -324631,13 +325194,13 @@ function packedScalarSchema(packed) {
 }
 function packedArrayItemsSchema(packed) {
   if (packed.unsupported || packed.schema === void 0) return void 0;
-  const record = asRecord5(packed.schema);
+  const record = asRecord6(packed.schema);
   if (!record) return void 0;
   const types2 = Array.isArray(record.type) ? record.type : [record.type];
   if (types2.length !== 1 || types2[0] !== "array") return void 0;
   if (record.prefixItems !== void 0 || Array.isArray(record.items)) return void 0;
   if (record.items === void 0) return {};
-  const items = asRecord5(record.items);
+  const items = asRecord6(record.items);
   if (!items || typeof items.$ref === "string") return void 0;
   const itemTypes = Array.isArray(items.type) ? items.type : [items.type];
   if (!itemTypes.every((entry) => typeof entry === "string" && SCALAR_SCHEMA_TYPES.has(entry))) return void 0;
@@ -324722,10 +325285,10 @@ function collectParameterChecks(root, pathItem, operation, version, operationId,
       continue;
     }
     if (location2 === "query" && style === "deepObject" && explode) {
-      const objectSchema = asRecord5(packed.schema);
-      const properties = objectSchema ? asRecord5(objectSchema.properties) : null;
+      const objectSchema = asRecord6(packed.schema);
+      const properties = objectSchema ? asRecord6(objectSchema.properties) : null;
       const allScalar = properties !== null && Object.keys(properties).length > 0 && Object.values(properties).every((prop) => {
-        const record = asRecord5(prop);
+        const record = asRecord6(prop);
         if (!record) return false;
         const types2 = Array.isArray(record.type) ? record.type : [record.type];
         return types2.every((entry) => typeof entry === "string" && SCALAR_SCHEMA_TYPES.has(entry));
@@ -324805,7 +325368,7 @@ function mergeObjectSchema(root, rawSchema, depth) {
   if (!schema3) return null;
   const merged = {
     required: asArray2(schema3.required).map((entry) => String(entry)).filter(Boolean),
-    properties: { ...asRecord5(schema3.properties) ?? {} }
+    properties: { ...asRecord6(schema3.properties) ?? {} }
   };
   for (const member of asArray2(schema3.allOf)) {
     const child4 = mergeObjectSchema(root, member, depth + 1);
@@ -324838,7 +325401,7 @@ function propertyIsBinary(root, properties, name) {
   return media !== "application/json" && !media.endsWith("+json") && !media.startsWith("text/");
 }
 function fieldEncodings(root, base, mediaObject, properties, operationId, warnings) {
-  const declared = asRecord5(mediaObject?.encoding);
+  const declared = asRecord6(mediaObject?.encoding);
   const encodings = {};
   for (const name of Object.keys(properties)) {
     if (base === "multipart/form-data" && propertyIsBinary(root, properties, name)) {
@@ -324847,7 +325410,7 @@ function fieldEncodings(root, base, mediaObject, properties, operationId, warnin
   }
   if (declared) {
     for (const [name, rawEncoding] of Object.entries(declared)) {
-      const encoding = asRecord5(rawEncoding);
+      const encoding = asRecord6(rawEncoding);
       if (!encoding) continue;
       if (!(name in properties)) {
         warnings.push(`CONTRACT_MULTIPART_ENCODING_FIELD_UNKNOWN: ${operationId} ${base} encoding map names field ${name}, which is not a property of the request body schema`);
@@ -324857,7 +325420,7 @@ function fieldEncodings(root, base, mediaObject, properties, operationId, warnin
       if (typeof encoding.contentType === "string" && encoding.contentType.trim()) {
         entry.contentType = encoding.contentType.toLowerCase();
       }
-      if (base === "multipart/form-data" && asRecord5(encoding.headers)) {
+      if (base === "multipart/form-data" && asRecord6(encoding.headers)) {
         entry.hasHeaders = true;
       }
       if (base === "application/x-www-form-urlencoded") {
@@ -324892,7 +325455,7 @@ function requestBodyFieldRules(root, content, version, operationId, warnings) {
   for (const [contentType2, mediaObject] of Object.entries(content)) {
     const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
     if (!isJsonBaseType(base) && !BODY_FIELD_RULE_TYPES.has(base)) continue;
-    const mediaRecord = asRecord5(mediaObject);
+    const mediaRecord = asRecord6(mediaObject);
     const merged = mergeObjectSchema(root, mediaRecord?.schema, 0);
     if (!merged) continue;
     const readOnly = Object.keys(merged.properties).filter((name) => propertyIsReadOnly(root, merged.properties, name));
@@ -324914,7 +325477,7 @@ function requestBodyJsonSchemas(root, content, version, operationId, warnings) {
   const exampleWarnings = /* @__PURE__ */ new Set();
   for (const [contentType2, mediaObject] of Object.entries(content)) {
     const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
-    const mediaRecord = asRecord5(mediaObject);
+    const mediaRecord = asRecord6(mediaObject);
     const schema3 = mediaRecord?.schema;
     if (!isJsonBaseType(base)) {
       if (schema3 !== void 0 && !BODY_FIELD_RULE_TYPES.has(base)) {
@@ -324938,9 +325501,9 @@ function requestBodyJsonSchemas(root, content, version, operationId, warnings) {
 function collectRequestBody(root, operation, version, operationId, warnings) {
   const body2 = resolveInternalRef(root, operation.requestBody);
   if (!body2) return void 0;
-  const content = asRecord5(body2.content);
+  const content = asRecord6(body2.content);
   for (const [contentType2, mediaObject] of Object.entries(content ?? {})) {
-    if (asRecord5(mediaObject)?.schema === void 0) {
+    if (asRecord6(mediaObject)?.schema === void 0) {
       warnings.push(
         `CONTRACT_REQUEST_SCHEMA_UNDOCUMENTED: request body ${contentType2} on ${operationId} declares no schema; generated request payload shape is not validated`
       );
@@ -324973,7 +325536,7 @@ function collectRequestBody(root, operation, version, operationId, warnings) {
 function exampleCandidates(root, mediaObject) {
   const candidates = [];
   if ("example" in mediaObject) candidates.push({ label: "example", value: mediaObject.example });
-  const examples = asRecord5(mediaObject.examples);
+  const examples = asRecord6(mediaObject.examples);
   if (examples) {
     for (const [name, rawExample] of Object.entries(examples)) {
       let example;
@@ -325000,11 +325563,11 @@ function validateExamples(root, mediaObject, packed, contentType2, context, warn
   }
 }
 function responseContent(root, version, response, context, warnings) {
-  const content = asRecord5(response.content);
+  const content = asRecord6(response.content);
   if (!content) return {};
   const media = {};
   for (const [contentType2, mediaObject] of Object.entries(content)) {
-    const mediaRecord = asRecord5(mediaObject);
+    const mediaRecord = asRecord6(mediaObject);
     const schema3 = mediaRecord?.schema;
     let packed = schema3 === void 0 ? {} : packSchema(root, schema3, version);
     for (const warning of packNoteWarnings(packed, `response ${contentType2} of ${context}`)) warnings.add(warning);
@@ -325019,7 +325582,7 @@ function responseContent(root, version, response, context, warnings) {
   return media;
 }
 function responseHeaders(root, version, response, context, warnings) {
-  const headers = asRecord5(response.headers);
+  const headers = asRecord6(response.headers);
   if (!headers) return [];
   const entries = [];
   for (const [name, rawHeader] of Object.entries(headers)) {
@@ -325086,10 +325649,10 @@ function httpsUrlLint(value, label, schemeName) {
   return void 0;
 }
 function collectSecurityStaticLints(root, operation) {
-  const securitySchemes = asRecord5(asRecord5(root.components)?.securitySchemes);
+  const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
   const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
   const warnings = /* @__PURE__ */ new Set();
-  for (const requirement of requirements.map((entry) => asRecord5(entry)).filter((entry) => Boolean(entry))) {
+  for (const requirement of requirements.map((entry) => asRecord6(entry)).filter((entry) => Boolean(entry))) {
     for (const [schemeName, requiredScopes] of Object.entries(requirement)) {
       let scheme;
       try {
@@ -325118,12 +325681,12 @@ function collectSecurityStaticLints(root, operation) {
         }
       }
       if (scheme.type === "oauth2") {
-        const flows = asRecord5(scheme.flows) ?? {};
+        const flows = asRecord6(scheme.flows) ?? {};
         const declaredScopes = /* @__PURE__ */ new Set();
         for (const [flowName, rawFlow] of Object.entries(flows)) {
-          const flow = asRecord5(rawFlow);
+          const flow = asRecord6(rawFlow);
           if (!flow) continue;
-          for (const scope of Object.keys(asRecord5(flow.scopes) ?? {})) declaredScopes.add(scope);
+          for (const scope of Object.keys(asRecord6(flow.scopes) ?? {})) declaredScopes.add(scope);
           const urlFields = [["refreshUrl", flow.refreshUrl]];
           if (flowName === "implicit" || flowName === "authorizationCode") urlFields.push(["authorizationUrl", flow.authorizationUrl]);
           if (flowName === "password" || flowName === "clientCredentials" || flowName === "authorizationCode") urlFields.push(["tokenUrl", flow.tokenUrl]);
@@ -325147,7 +325710,7 @@ function collectSecurityStaticLints(root, operation) {
 function collectSecurityResponseLints(root, operation, responses, operationId) {
   const warnings = [];
   const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
-  const requirementRecords = requirements.map((entry) => asRecord5(entry)).filter((entry) => Boolean(entry));
+  const requirementRecords = requirements.map((entry) => asRecord6(entry)).filter((entry) => Boolean(entry));
   const secured = requirementRecords.length > 0 && requirementRecords.every((entry) => Object.keys(entry).length > 0);
   const statusKeys = new Set(Object.keys(responses));
   const hasCatchAll = statusKeys.has("default") || statusKeys.has("4XX");
@@ -325167,13 +325730,13 @@ function collectSecurityResponseLints(root, operation, responses, operationId) {
 }
 function resolveLinkTargetOperation(root, link) {
   if (typeof link.operationRef === "string" && link.operationRef.startsWith("#/")) {
-    const operation = asRecord5(resolvePointer(root, link.operationRef));
+    const operation = asRecord6(resolvePointer(root, link.operationRef));
     if (!operation) return null;
-    const pathItem = asRecord5(resolvePointer(root, link.operationRef.replace(/\/[^/]+$/, ""))) ?? {};
+    const pathItem = asRecord6(resolvePointer(root, link.operationRef.replace(/\/[^/]+$/, ""))) ?? {};
     return { operation, pathItem };
   }
   if (typeof link.operationId === "string") {
-    const paths = asRecord5(root.paths);
+    const paths = asRecord6(root.paths);
     if (!paths) return null;
     for (const rawPathItem of Object.values(paths)) {
       const pathItem = resolveInternalRef(root, rawPathItem);
@@ -325188,11 +325751,11 @@ function resolveLinkTargetOperation(root, link) {
   return null;
 }
 function jsonRequestBodySchema(root, requestBody) {
-  const content = asRecord5(requestBody?.content);
+  const content = asRecord6(requestBody?.content);
   if (!content) return void 0;
   for (const [contentType2, mediaObject] of Object.entries(content)) {
     const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
-    if (isJsonBaseType(base)) return asRecord5(mediaObject)?.schema;
+    if (isJsonBaseType(base)) return asRecord6(mediaObject)?.schema;
   }
   return void 0;
 }
@@ -325201,7 +325764,7 @@ function linkParameterSchema(param) {
   return jsonContentParameterMedia(param) ?? param.schema;
 }
 function collectLinkExpressions(root, response, operationId, warnings, version, targetSchemas) {
-  const links = asRecord5(response.links);
+  const links = asRecord6(response.links);
   if (!links) return [];
   const expressions = [];
   let unevaluated = false;
@@ -325228,10 +325791,10 @@ function collectLinkExpressions(root, response, operationId, warnings, version, 
       if (!paramByKey.has(nm)) paramByKey.set(nm, parameter);
       if (parameter.required === true) requiredKeys.add(`${loc}.${nm}`);
     }
-    const targetRequestBody = target ? asRecord5(resolveInternalRef(root, target.operation.requestBody)) : null;
+    const targetRequestBody = target ? asRecord6(resolveInternalRef(root, target.operation.requestBody)) : null;
     const targetRequestBodyRequired = targetRequestBody?.required === true;
     const matchParam = (key) => paramByKey.get(key) ?? paramByKey.get(key.replace(/^(path|query|header|cookie)\./i, ""));
-    const entries = Object.entries(asRecord5(link.parameters) ?? {}).map(([key, value]) => ({ key, value }));
+    const entries = Object.entries(asRecord6(link.parameters) ?? {}).map(([key, value]) => ({ key, value }));
     if (link.requestBody !== void 0) entries.push({ key: "$requestBody", value: link.requestBody });
     if (entries.length === 0) unevaluated = true;
     const providedKeys = /* @__PURE__ */ new Set();
@@ -325305,7 +325868,7 @@ function collectResponseWriteOnlyNames(root, response) {
       schema3 = null;
     }
     if (!schema3) return;
-    const properties = asRecord5(schema3.properties);
+    const properties = asRecord6(schema3.properties);
     if (properties) {
       for (const [name, rawProp] of Object.entries(properties)) {
         let prop;
@@ -325322,14 +325885,14 @@ function collectResponseWriteOnlyNames(root, response) {
       for (const member of asArray2(schema3[key])) visit4(member, depth + 1);
     }
   };
-  for (const mediaObject of Object.values(asRecord5(response.content) ?? {})) {
-    const media = asRecord5(mediaObject);
+  for (const mediaObject of Object.values(asRecord6(response.content) ?? {})) {
+    const media = asRecord6(mediaObject);
     if (media?.schema !== void 0) visit4(media.schema, 0);
   }
   return [...writeOnly].filter((name) => !plain.has(name));
 }
 function collectCallbackExpressions(root, operation) {
-  const callbacks = asRecord5(operation.callbacks);
+  const callbacks = asRecord6(operation.callbacks);
   if (!callbacks) return void 0;
   const expressions = [];
   for (const [callbackName, rawCallback] of Object.entries(callbacks)) {
@@ -325373,15 +325936,15 @@ function serverAdvisoryPatterns(root, pathItem, operation) {
   const servers = serverLists.find((list) => list.length > 0) ?? [];
   const patterns = [];
   for (const rawServer of servers) {
-    const server = asRecord5(rawServer);
+    const server = asRecord6(rawServer);
     if (!server) continue;
     const url = typeof server.url === "string" ? server.url.trim() : "";
     if (!url || url === "/") continue;
-    const variables = asRecord5(server.variables);
+    const variables = asRecord6(server.variables);
     const pattern = url.split(/(\{[^}]+\})/).map((part) => {
       const varMatch = part.match(/^\{([^}]+)\}$/);
       if (!varMatch) return escapeRegExpLiteral(part);
-      const variable = asRecord5(variables?.[varMatch[1]]);
+      const variable = asRecord6(variables?.[varMatch[1]]);
       const enumValues = asArray2(variable?.enum).filter((entry) => typeof entry === "string");
       if (enumValues.length > 0) return `(${enumValues.map(escapeRegExpLiteral).join("|")})`;
       return "[^/]*";
@@ -325402,7 +325965,7 @@ function validateParameterExamples(root, param, packed, context, warnings) {
   const defaultExplode = style === "form";
   const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
   const itemsSchema = packedArrayItemsSchema(packed);
-  const itemType = asRecord5(itemsSchema)?.type;
+  const itemType = asRecord6(itemsSchema)?.type;
   const serializedArrayDecode = location2 === "query" ? QUERY_ARRAY_DECODES[`${style}:${explode}`] : location2 === "header" && style === "simple" && !explode ? "csv" : void 0;
   for (const candidate of candidates) {
     const decodedItems = typeof candidate.value === "string" && serializedArrayDecode && itemsSchema !== void 0 ? (serializedArrayDecode === "ssv" ? candidate.value.split(" ") : serializedArrayDecode === "pipes" ? candidate.value.split("|") : candidate.value.split(",")).map((entry) => {
@@ -325464,7 +326027,7 @@ function matchesSchemaType(type2, value) {
   }
 }
 function requiresProperty(root, schema3, propertyName, seen = /* @__PURE__ */ new Set()) {
-  const record = resolveInternalRef(root, schema3) ?? asRecord5(schema3);
+  const record = resolveInternalRef(root, schema3) ?? asRecord6(schema3);
   if (!record || seen.has(record)) return false;
   seen.add(record);
   if (asArray2(record.required).map(String).includes(propertyName)) return true;
@@ -325478,7 +326041,7 @@ function defaultMatchesPackedSchema(root, schema3, version, value) {
   return validate4(value);
 }
 function collectSchemaStaticLints(root, schema3, version, context, warnings, seen = /* @__PURE__ */ new Set()) {
-  const rawRecord = asRecord5(schema3);
+  const rawRecord = asRecord6(schema3);
   if (typeof rawRecord?.$ref === "string" && version === "3.0" && Object.keys(rawRecord).some((key) => key !== "$ref" && key !== "description" && key !== "summary")) {
     warnings.add(`CONTRACT_REF_SIBLING_INVALID: ${context} has sibling keywords beside $ref that OpenAPI 3.0 ignores`);
   }
@@ -325486,7 +326049,7 @@ function collectSchemaStaticLints(root, schema3, version, context, warnings, see
   try {
     record = resolveInternalRef(root, schema3);
   } catch {
-    record = asRecord5(schema3);
+    record = asRecord6(schema3);
   }
   if (!record || seen.has(record)) return;
   seen.add(record);
@@ -325541,12 +326104,12 @@ function collectSchemaStaticLints(root, schema3, version, context, warnings, see
   }
   if (record.readOnly === true && record.writeOnly === true) warnings.add(`CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE: ${context} cannot be both readOnly and writeOnly`);
   if (record.discriminator !== void 0) {
-    const discriminator = asRecord5(record.discriminator);
+    const discriminator = asRecord6(record.discriminator);
     const propertyName = typeof discriminator?.propertyName === "string" ? discriminator.propertyName : "";
     const declaresDiscriminator = (value) => {
-      const schema4 = asRecord5(resolveInternalRef(root, value));
+      const schema4 = asRecord6(resolveInternalRef(root, value));
       if (!schema4) return false;
-      return asRecord5(schema4.properties)?.[propertyName] !== void 0 || asArray2(schema4.required).map(String).includes(propertyName);
+      return asRecord6(schema4.properties)?.[propertyName] !== void 0 || asArray2(schema4.required).map(String).includes(propertyName);
     };
     if (!propertyName) {
       warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator must declare propertyName`);
@@ -325560,24 +326123,24 @@ function collectSchemaStaticLints(root, schema3, version, context, warnings, see
       warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator propertyName must be required by the base schema`);
     }
     if (record.oneOf === void 0 && record.anyOf === void 0 && record.allOf === void 0) warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator must appear beside oneOf, anyOf, or allOf`);
-    for (const value of Object.values(asRecord5(discriminator?.mapping) ?? {})) {
+    for (const value of Object.values(asRecord6(discriminator?.mapping) ?? {})) {
       if (typeof value === "string" && value.startsWith("#/") && resolvePointer(root, value) === void 0) warnings.add(`CONTRACT_DISCRIMINATOR_INVALID: ${context} discriminator mapping ${value} does not resolve`);
     }
   }
   const variants = [...asArray2(record.oneOf), ...asArray2(record.anyOf)];
   for (let i = 0; i < variants.length; i += 1) {
-    const left = asRecord5(variants[i]);
+    const left = asRecord6(variants[i]);
     const leftValues = new Set(asArray2(left?.enum).concat(left?.const !== void 0 ? [left.const] : []).map((entry) => JSON.stringify(entry)));
     for (let j = i + 1; j < variants.length; j += 1) {
-      const right = asRecord5(variants[j]);
+      const right = asRecord6(variants[j]);
       const rightValues = new Set(asArray2(right?.enum).concat(right?.const !== void 0 ? [right.const] : []).map((entry) => JSON.stringify(entry)));
       if (leftValues.size > 0 && [...leftValues].some((entry) => rightValues.has(entry))) warnings.add(`CONTRACT_ONEOF_OVERLAP: ${context} has finite oneOf/anyOf branches with overlapping const/enum values`);
     }
   }
   for (const [key, value] of Object.entries(record)) {
     if (key === "$ref") continue;
-    if (key === "properties" && asRecord5(value)) {
-      for (const [propName2, propSchema] of Object.entries(asRecord5(value))) collectSchemaStaticLints(root, propSchema, version, `${context}.properties.${propName2}`, warnings, seen);
+    if (key === "properties" && asRecord6(value)) {
+      for (const [propName2, propSchema] of Object.entries(asRecord6(value))) collectSchemaStaticLints(root, propSchema, version, `${context}.properties.${propName2}`, warnings, seen);
     } else if (["items", "additionalProperties", "not"].includes(key) || key.endsWith("Schema")) {
       collectSchemaStaticLints(root, value, version, `${context}.${key}`, warnings, seen);
     } else if (["allOf", "oneOf", "anyOf", "prefixItems"].includes(key)) {
@@ -325588,22 +326151,22 @@ function collectSchemaStaticLints(root, schema3, version, context, warnings, see
 }
 function collectDocumentStaticLints(root, version) {
   const warnings = /* @__PURE__ */ new Set();
-  if (version === "3.0" && asRecord5(root.webhooks)) warnings.add("CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD: OpenAPI 3.0 documents cannot use top-level webhooks");
-  if (version === "3.0" && asRecord5(asRecord5(root.components)?.pathItems)) warnings.add("CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD: OpenAPI 3.0 documents cannot use components.pathItems");
+  if (version === "3.0" && asRecord6(root.webhooks)) warnings.add("CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD: OpenAPI 3.0 documents cannot use top-level webhooks");
+  if (version === "3.0" && asRecord6(asRecord6(root.components)?.pathItems)) warnings.add("CONTRACT_OAS_VERSION_UNSUPPORTED_FIELD: OpenAPI 3.0 documents cannot use components.pathItems");
   const dialect = root.jsonSchemaDialect;
   if (dialect !== void 0 && (!isAbsoluteUrl(dialect) || !/2020-12|draft-07|json-schema.org/i.test(String(dialect)))) warnings.add(`CONTRACT_JSON_SCHEMA_DIALECT_UNSUPPORTED: jsonSchemaDialect must be an absolute supported JSON Schema dialect URI: ${String(dialect)}`);
   const operationIds = /* @__PURE__ */ new Map();
   const linkOperationIds = [];
-  const tags = new Set(asArray2(root.tags).map((entry) => String(asRecord5(entry)?.name || "")).filter(Boolean));
+  const tags = new Set(asArray2(root.tags).map((entry) => String(asRecord6(entry)?.name || "")).filter(Boolean));
   const usedTags = /* @__PURE__ */ new Set();
   const templates = /* @__PURE__ */ new Map();
   const checkServers = (rawServers, context) => {
-    for (const server of asArray2(rawServers).map((entry) => asRecord5(entry)).filter((entry) => Boolean(entry))) {
+    for (const server of asArray2(rawServers).map((entry) => asRecord6(entry)).filter((entry) => Boolean(entry))) {
       const url = typeof server.url === "string" ? server.url : "";
       const urlVars = new Set([...url.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]));
-      const variables = asRecord5(server.variables) ?? {};
+      const variables = asRecord6(server.variables) ?? {};
       for (const variable of urlVars) {
-        const definition = asRecord5(variables[variable]);
+        const definition = asRecord6(variables[variable]);
         if (!definition) warnings.add(`CONTRACT_SERVER_VARIABLE_INVALID: ${context} server URL variable {${variable}} has no variables entry`);
         else {
           if (definition.default === void 0) warnings.add(`CONTRACT_SERVER_VARIABLE_INVALID: ${context} server variable ${variable} must declare a default`);
@@ -325616,7 +326179,7 @@ function collectDocumentStaticLints(root, version) {
     }
   };
   checkServers(root.servers, "root");
-  for (const [path11, rawPathItem] of Object.entries(asRecord5(root.paths) ?? {})) {
+  for (const [path11, rawPathItem] of Object.entries(asRecord6(root.paths) ?? {})) {
     const skeleton = normalizePath(path11).replace(/\{[^}]+\}/g, "{}");
     const previous = templates.get(skeleton);
     if (previous && previous !== path11) warnings.add(`CONTRACT_TEMPLATED_PATH_COLLISION: paths ${previous} and ${path11} have identical hierarchy after template names are erased`);
@@ -325639,9 +326202,9 @@ function collectDocumentStaticLints(root, version) {
         usedTags.add(tag);
         if (tags.size > 0 && !tags.has(tag)) warnings.add(`CONTRACT_TAG_UNDECLARED: ${method.toUpperCase()} ${path11} uses undeclared top-level tag ${tag}`);
       }
-      for (const rawResponse of Object.values(asRecord5(operation.responses) ?? {})) {
+      for (const rawResponse of Object.values(asRecord6(operation.responses) ?? {})) {
         const response = resolveInternalRef(root, rawResponse);
-        for (const [linkName, rawLink] of Object.entries(asRecord5(response?.links) ?? {})) {
+        for (const [linkName, rawLink] of Object.entries(asRecord6(response?.links) ?? {})) {
           const link = resolveInternalRef(root, rawLink);
           if (typeof link?.operationId === "string") linkOperationIds.push({ context: `${method.toUpperCase()} ${path11} link ${linkName}`, operationId: link.operationId });
         }
@@ -325652,7 +326215,7 @@ function collectDocumentStaticLints(root, version) {
     if (!operationIds.has(link.operationId)) warnings.add(`CONTRACT_LINK_TARGET_INVALID: ${link.context} references unresolved operationId ${link.operationId}`);
   }
   for (const tag of tags) if (!usedTags.has(tag)) warnings.add(`CONTRACT_TAG_UNUSED: top-level tag ${tag} is not used by any operation`);
-  for (const [name, schema3] of Object.entries(asRecord5(asRecord5(root.components)?.schemas) ?? {})) collectSchemaStaticLints(root, schema3, version, `components.schemas.${name}`, warnings);
+  for (const [name, schema3] of Object.entries(asRecord6(asRecord6(root.components)?.schemas) ?? {})) collectSchemaStaticLints(root, schema3, version, `components.schemas.${name}`, warnings);
   return [...warnings];
 }
 function collectOperationStaticLints(root, version, path11, pathItem, operation, responses, operationId) {
@@ -325676,12 +326239,12 @@ function collectOperationStaticLints(root, version, path11, pathItem, operation,
     if (!validStyle) warnings.add(`CONTRACT_PARAMETER_STYLE_INVALID: ${operationId} parameter ${location2}:${name} uses style ${String(style)} invalid for its location`);
     if (param.allowReserved === true && location2 !== "query") warnings.add(`CONTRACT_PARAMETER_ALLOW_RESERVED_INVALID: ${operationId} parameter ${location2}:${name} uses allowReserved outside query`);
     if (style === "deepObject") {
-      const schema3 = asRecord5(param.schema);
+      const schema3 = asRecord6(param.schema);
       if (location2 !== "query" || !schemaTypeNames(schema3 ?? {}).includes("object")) warnings.add(`CONTRACT_PARAMETER_DEEPOBJECT_INVALID: ${operationId} parameter ${location2}:${name} uses deepObject without a query object schema`);
-      if (asRecord5(schema3?.properties) && Object.values(asRecord5(schema3?.properties)).some((prop) => schemaTypeNames(asRecord5(prop) ?? {}).includes("object"))) warnings.add(`CONTRACT_PARAMETER_DEEPOBJECT_NESTED: ${operationId} parameter query:${name} uses nested deepObject properties that are not interoperably defined`);
+      if (asRecord6(schema3?.properties) && Object.values(asRecord6(schema3?.properties)).some((prop) => schemaTypeNames(asRecord6(prop) ?? {}).includes("object"))) warnings.add(`CONTRACT_PARAMETER_DEEPOBJECT_NESTED: ${operationId} parameter query:${name} uses nested deepObject properties that are not interoperably defined`);
     }
     if (param.schema !== void 0 && param.content !== void 0) warnings.add(`CONTRACT_PARAMETER_SCHEMA_CONTENT_XOR: ${operationId} parameter ${location2}:${name} declares both schema and content`);
-    const content = asRecord5(param.content);
+    const content = asRecord6(param.content);
     if (content && Object.keys(content).length !== 1) warnings.add(`CONTRACT_PARAMETER_CONTENT_INVALID: ${operationId} parameter ${location2}:${name} content must contain exactly one media type`);
     if (param.schema !== void 0) collectSchemaStaticLints(root, param.schema, version, `${operationId} parameter ${location2}:${name}`, warnings);
   }
@@ -325692,15 +326255,15 @@ function collectOperationStaticLints(root, version, path11, pathItem, operation,
   const responseHeaders2 = /* @__PURE__ */ new Set();
   for (const rawResponse of Object.values(responses)) {
     const response = resolveInternalRef(root, rawResponse);
-    for (const headerName of Object.keys(asRecord5(response?.headers) ?? {})) responseHeaders2.add(headerName.toLowerCase());
+    for (const headerName of Object.keys(asRecord6(response?.headers) ?? {})) responseHeaders2.add(headerName.toLowerCase());
     const plainJsonMedia = [];
     const suffixJsonMedia = [];
     const shadowWarn = (left, right) => {
-      if (JSON.stringify(asRecord5(left[1])?.schema ?? {}) !== JSON.stringify(asRecord5(right[1])?.schema ?? {})) {
+      if (JSON.stringify(asRecord6(left[1])?.schema ?? {}) !== JSON.stringify(asRecord6(right[1])?.schema ?? {})) {
         warnings.add(`CONTRACT_MEDIA_RANGE_SHADOWING: ${operationId} response declares ${left[0]} and ${right[0]} with different schemas`);
       }
     };
-    for (const mediaEntry of Object.entries(asRecord5(response?.content) ?? {})) {
+    for (const mediaEntry of Object.entries(asRecord6(response?.content) ?? {})) {
       const mediaBase2 = mediaEntry[0].toLowerCase().split(";")[0] ?? "";
       if (mediaBase2 === "application/json") {
         for (const prior of suffixJsonMedia) shadowWarn(prior, mediaEntry);
@@ -325710,41 +326273,41 @@ function collectOperationStaticLints(root, version, path11, pathItem, operation,
         suffixJsonMedia.push(mediaEntry);
       }
     }
-    for (const [contentType2, mediaObject] of Object.entries(asRecord5(response?.content) ?? {})) {
-      const media = asRecord5(mediaObject);
+    for (const [contentType2, mediaObject] of Object.entries(asRecord6(response?.content) ?? {})) {
+      const media = asRecord6(mediaObject);
       if (media?.schema !== void 0) collectSchemaStaticLints(root, media.schema, version, `${operationId} response ${contentType2}`, warnings);
-      const schema3 = asRecord5(media?.schema);
-      const properties = asRecord5(schema3?.properties) ?? {};
+      const schema3 = asRecord6(media?.schema);
+      const properties = asRecord6(schema3?.properties) ?? {};
       const required = new Set(asArray2(schema3?.required).map(String));
-      const writeOnlyRequired = Object.entries(properties).filter(([name, prop]) => required.has(name) && asRecord5(prop)?.writeOnly === true).map(([name]) => name);
+      const writeOnlyRequired = Object.entries(properties).filter(([name, prop]) => required.has(name) && asRecord6(prop)?.writeOnly === true).map(([name]) => name);
       if (writeOnlyRequired.length > 0) warnings.add(`CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE: ${operationId} response ${contentType2} requires writeOnly-only properties: ${writeOnlyRequired.join(", ")}`);
     }
-    for (const rawLink of Object.values(asRecord5(response?.links) ?? {})) {
+    for (const rawLink of Object.values(asRecord6(response?.links) ?? {})) {
       const link = resolveInternalRef(root, rawLink);
       if (!link) continue;
       if (link.operationId === void 0 === (link.operationRef === void 0)) warnings.add(`CONTRACT_LINK_TARGET_INVALID: ${operationId} link must declare exactly one of operationId or operationRef`);
       if (typeof link.operationRef === "string" && link.operationRef.startsWith("#/") && resolvePointer(root, link.operationRef) === void 0) warnings.add(`CONTRACT_LINK_TARGET_INVALID: ${operationId} link operationRef ${link.operationRef} does not resolve`);
     }
   }
-  const requestContent = asRecord5(asRecord5(resolveInternalRef(root, operation.requestBody))?.content) ?? {};
+  const requestContent = asRecord6(asRecord6(resolveInternalRef(root, operation.requestBody))?.content) ?? {};
   for (const [contentType2, mediaObject] of Object.entries(requestContent)) {
-    const media = asRecord5(mediaObject);
-    const schema3 = asRecord5(media?.schema);
-    const properties = asRecord5(schema3?.properties) ?? {};
+    const media = asRecord6(mediaObject);
+    const schema3 = asRecord6(media?.schema);
+    const properties = asRecord6(schema3?.properties) ?? {};
     const required = new Set(asArray2(schema3?.required).map(String));
-    const readOnlyRequired = Object.entries(properties).filter(([name, prop]) => required.has(name) && asRecord5(prop)?.readOnly === true).map(([name]) => name);
+    const readOnlyRequired = Object.entries(properties).filter(([name, prop]) => required.has(name) && asRecord6(prop)?.readOnly === true).map(([name]) => name);
     if (readOnlyRequired.length > 0) warnings.add(`CONTRACT_SCHEMA_IMPOSSIBLE_MESSAGE: ${operationId} request ${contentType2} requires readOnly-only properties: ${readOnlyRequired.join(", ")}`);
-    const encoding = asRecord5(media?.encoding) ?? {};
+    const encoding = asRecord6(media?.encoding) ?? {};
     for (const [field, rawEncoding] of Object.entries(encoding)) {
       if (!Object.prototype.hasOwnProperty.call(properties, field)) warnings.add(`CONTRACT_ENCODING_FIELD_UNKNOWN: ${operationId} encoding key ${field} is not a schema property`);
-      if (asRecord5(rawEncoding)?.headers && Object.keys(asRecord5(rawEncoding)?.headers ?? {}).some((name) => name.toLowerCase() === "content-type")) warnings.add(`CONTRACT_ENCODING_HEADER_INVALID: ${operationId} encoding ${field} headers must not include Content-Type`);
+      if (asRecord6(rawEncoding)?.headers && Object.keys(asRecord6(rawEncoding)?.headers ?? {}).some((name) => name.toLowerCase() === "content-type")) warnings.add(`CONTRACT_ENCODING_HEADER_INVALID: ${operationId} encoding ${field} headers must not include Content-Type`);
     }
   }
-  for (const [name, rawCallback] of Object.entries(asRecord5(operation.callbacks) ?? {})) {
+  for (const [name, rawCallback] of Object.entries(asRecord6(operation.callbacks) ?? {})) {
     if (!/^(\$url|\$method|\$statusCode|\$request\.|\$response\.)/.test(name) && !/^https?:\/\//.test(name)) warnings.add(`CONTRACT_CALLBACK_EXPRESSION_INVALID: ${operationId} callback key ${name} is not a valid runtime expression`);
     const bodyMatch = name.match(/^\$request\.body#(\/.*)$/);
     if (bodyMatch) {
-      const requestSchemas = Object.values(requestContent).map((media) => asRecord5(asRecord5(media)?.schema)).filter(Boolean);
+      const requestSchemas = Object.values(requestContent).map((media) => asRecord6(asRecord6(media)?.schema)).filter(Boolean);
       if (!requestSchemas.some((schema3) => resolvePointer(schema3, `#${bodyMatch[1]}`) !== void 0)) warnings.add(`CONTRACT_CALLBACK_EXPRESSION_INVALID: ${operationId} callback key ${name} references a request body pointer that does not resolve`);
     }
     void rawCallback;
@@ -325756,11 +326319,11 @@ function buildContractIndex(root) {
   if (root.swagger === "2.0") throw new Error("CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (found swagger 2.0)");
   if (!("openapi" in root)) throw new Error("CONTRACT_UNSUPPORTED_OPENAPI_VERSION: Dynamic contract tests require OpenAPI 3.0 or 3.1 (missing openapi)");
   const version = detectOpenApiVersion(root);
-  const paths = asRecord5(root.paths);
+  const paths = asRecord6(root.paths);
   const operations = [];
   const warnings = collectDocumentStaticLints(root, version);
   const webhookOperations = [];
-  const webhooks = asRecord5(root.webhooks);
+  const webhooks = asRecord6(root.webhooks);
   if (webhooks) {
     warnings.push("CONTRACT_WEBHOOKS_NOT_VALIDATED: OpenAPI webhooks are not validated by dynamic contract tests");
     for (const [name, rawWebhook] of Object.entries(webhooks)) {
@@ -325808,7 +326371,7 @@ function buildContractIndex(root) {
         if (operation.requestBody !== void 0 && ["get", "head", "delete"].includes(lowerMethod)) {
           warnings.push(`CONTRACT_METHOD_BODY_SEMANTICS: ${lowerMethod.toUpperCase()} ${path11} declares a request body; RFC 9110 defines no request-body semantics for ${lowerMethod.toUpperCase()}`);
         }
-        const responses = asRecord5(operation.responses);
+        const responses = asRecord6(operation.responses);
         if (!responses || Object.keys(responses).length === 0) {
           throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path11} must define at least one response`);
         }
@@ -325833,8 +326396,8 @@ function buildContractIndex(root) {
               `CONTRACT_RESPONSE_BODY_UNDOCUMENTED: ${responseContext} declares no response content; body presence, media type, and shape are not validated`
             );
           }
-          for (const [contentType2, mediaObject] of Object.entries(asRecord5(response.content) ?? {})) {
-            if (asRecord5(mediaObject)?.schema === void 0) {
+          for (const [contentType2, mediaObject] of Object.entries(asRecord6(response.content) ?? {})) {
+            if (asRecord6(mediaObject)?.schema === void 0) {
               responseWarnings.add(
                 `CONTRACT_RESPONSE_SCHEMA_UNDOCUMENTED: response ${contentType2} on ${responseContext} declares no schema; body shape is not validated`
               );
@@ -325842,7 +326405,7 @@ function buildContractIndex(root) {
           }
           for (const [contentType2, media] of Object.entries(content)) {
             const base = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
-            const schemaType = asRecord5(media.schema)?.type;
+            const schemaType = asRecord6(media.schema)?.type;
             if (!isJsonBaseType(base) && media.schema !== void 0 && !media.unsupported && schemaType !== "string") {
               responseWarnings.add(`CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED: response schema for ${contentType2} on ${responseContext} is not validated at runtime`);
             }
@@ -325938,7 +326501,7 @@ function buildContractIndex(root) {
 }
 
 // src/lib/spec/smoke-tests.ts
-function asRecord7(value) {
+function asRecord8(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -325983,7 +326546,7 @@ function isSecretsResolverItem(item) {
 function injectSmokeEvents(item, exec3) {
   if (isSecretsResolverItem(item)) return;
   if (item.request) {
-    const events2 = asArray4(item.event).filter((entry) => asRecord7(entry)?.listen !== "test");
+    const events2 = asArray4(item.event).filter((entry) => asRecord8(entry)?.listen !== "test");
     item.event = [
       ...events2,
       {
@@ -325993,14 +326556,14 @@ function injectSmokeEvents(item, exec3) {
     ];
   }
   for (const child4 of asArray4(item.item)) {
-    const childRecord = asRecord7(child4);
+    const childRecord = asRecord8(child4);
     if (childRecord) injectSmokeEvents(childRecord, exec3);
   }
 }
 function instrumentSmokeCollection(collection, provider = "none") {
   const cloned = deepClone(collection);
   const exec3 = createSmokeTestExec();
-  const items = asArray4(cloned.item).map((entry) => asRecord7(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isSecretsResolverItem(entry));
+  const items = asArray4(cloned.item).map((entry) => asRecord8(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isSecretsResolverItem(entry));
   for (const item of items) injectSmokeEvents(item, exec3);
   cloned.item = isSecretsResolverEnabled(provider) ? [createSecretsResolverItem(provider), ...items] : items;
   return cloned;
@@ -326012,7 +326575,7 @@ var CONTRACT_SIZE_LIMITS = {
   maxTestScriptBytes: 9e5,
   maxCollectionUpdateBytes: 4e6
 };
-function asRecord8(value) {
+function asRecord9(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -326021,7 +326584,7 @@ function asArray5(value) {
 }
 function stringifyPathSegment(segment) {
   if (typeof segment === "string") return segment;
-  const record = asRecord8(segment);
+  const record = asRecord9(segment);
   if (!record) return String(segment ?? "");
   for (const key of ["value", "key", "name"]) {
     if (typeof record[key] === "string" && record[key]) return String(record[key]);
@@ -326039,10 +326602,10 @@ function pathFromRaw(raw) {
   }
 }
 function requestPath(request) {
-  const record = asRecord8(request);
+  const record = asRecord9(request);
   const url = record?.url ?? request;
   if (typeof url === "string") return pathFromRaw(url);
-  const urlRecord = asRecord8(url);
+  const urlRecord = asRecord9(url);
   if (!urlRecord) return "/";
   if (Array.isArray(urlRecord.path)) return normalizePath(`/${urlRecord.path.map(stringifyPathSegment).filter(Boolean).join("/")}`);
   if (typeof urlRecord.path === "string") return normalizePath(urlRecord.path);
@@ -326100,7 +326663,7 @@ function matchCandidate(candidate, request) {
   return { matched: true, staticCount, templateCount };
 }
 function matchOperation(index, request) {
-  const record = asRecord8(request);
+  const record = asRecord9(request);
   const method = String(record?.method || "").toUpperCase();
   const path11 = requestPath(request);
   const candidates = index.operations.filter((operation) => operation.method === method).flatMap((operation) => operation.candidates.map((candidate) => ({ operation, score: matchCandidate(candidate, path11), serverFull: candidate !== normalizePath(operation.path) }))).filter((entry) => entry.score.matched).map((entry) => ({ operation: entry.operation, score: [entry.score.staticCount, entry.serverFull ? 2 : 1, -entry.score.templateCount] })).sort((a, b) => {
@@ -327352,17 +327915,17 @@ function createMappingFailureScript(message) {
 }
 function isResolverItem(item) {
   if (item.name !== "00 - Resolve Secrets") return false;
-  const request = asRecord8(item.request);
+  const request = asRecord9(item.request);
   if (String(request?.method || "").toUpperCase() !== "POST") return false;
-  const headers = asArray5(request?.header).map((entry) => asRecord8(entry));
+  const headers = asArray5(request?.header).map((entry) => asRecord9(entry));
   const target = headers.find((entry) => entry?.key === "X-Amz-Target");
   return String(target?.value || "") === "secretsmanager.GetSecretValue" && !requestPath(request).includes("secretsmanager");
 }
 function requestQueryNames(request) {
-  const url = asRecord8(request.url);
+  const url = asRecord9(request.url);
   const names = /* @__PURE__ */ new Set();
   if (Array.isArray(url?.query)) {
-    for (const entry of url.query.map((item) => asRecord8(item)).filter(Boolean)) {
+    for (const entry of url.query.map((item) => asRecord9(item)).filter(Boolean)) {
       if (entry.disabled !== true && typeof entry.key === "string") names.add(entry.key.toLowerCase());
     }
   }
@@ -327377,17 +327940,17 @@ function requestQueryNames(request) {
 }
 function requestHeaderNames(request) {
   const names = /* @__PURE__ */ new Set();
-  for (const entry of asArray5(request.header).map((item) => asRecord8(item)).filter(Boolean)) {
+  for (const entry of asArray5(request.header).map((item) => asRecord9(item)).filter(Boolean)) {
     if (entry.disabled !== true && typeof entry.key === "string") names.add(entry.key.toLowerCase());
   }
   return names;
 }
 function requestHeaderValue(request, name) {
-  const match = asArray5(request.header).map((item) => asRecord8(item)).filter(Boolean).find((entry) => String(entry.key || "").toLowerCase() === name.toLowerCase() && entry.disabled !== true);
+  const match = asArray5(request.header).map((item) => asRecord9(item)).filter(Boolean).find((entry) => String(entry.key || "").toLowerCase() === name.toLowerCase() && entry.disabled !== true);
   return typeof match?.value === "string" ? match.value : void 0;
 }
 function hasRequestBody(request) {
-  const body2 = asRecord8(request.body);
+  const body2 = asRecord9(request.body);
   if (!body2) return false;
   if (typeof body2.raw === "string" && body2.raw.trim()) return true;
   return ["urlencoded", "formdata", "graphql"].some((key) => Array.isArray(body2[key]) ? body2[key].length > 0 : Boolean(body2[key]));
@@ -327436,7 +327999,7 @@ function assertStaticRequestShape(operation, request) {
   return warnings;
 }
 function requestBodyFieldNames(request, base) {
-  const body2 = asRecord8(request.body);
+  const body2 = asRecord9(request.body);
   if (!body2) return void 0;
   if (base === "application/json" || /\+json$/.test(base)) {
     if (body2.mode !== "raw" || typeof body2.raw !== "string") return void 0;
@@ -327446,18 +328009,18 @@ function requestBodyFieldNames(request, base) {
     } catch {
       return void 0;
     }
-    const record = asRecord8(parsed);
+    const record = asRecord9(parsed);
     return record ? Object.keys(record) : void 0;
   }
   const mode = base === "application/x-www-form-urlencoded" ? "urlencoded" : base === "multipart/form-data" ? "formdata" : "";
   if (!mode || !Array.isArray(body2[mode])) return void 0;
-  return body2[mode].map((entry) => asRecord8(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true).map((entry) => String(entry.key || "")).filter(Boolean);
+  return body2[mode].map((entry) => asRecord9(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true).map((entry) => String(entry.key || "")).filter(Boolean);
 }
 function requestBodyEntries(request, base) {
-  const body2 = asRecord8(request.body);
+  const body2 = asRecord9(request.body);
   const mode = base === "application/x-www-form-urlencoded" ? "urlencoded" : base === "multipart/form-data" ? "formdata" : "";
   if (!body2 || !mode || !Array.isArray(body2[mode])) return void 0;
-  return body2[mode].map((entry) => asRecord8(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true);
+  return body2[mode].map((entry) => asRecord9(entry)).filter((entry) => Boolean(entry)).filter((entry) => entry.disabled !== true);
 }
 function mediaTypeMatchesPattern(pattern, actual) {
   return pattern.split(",").some((candidate) => {
@@ -327519,7 +328082,7 @@ function collectStaticEncodingWarnings(operation, request, base, rule) {
   return warnings;
 }
 function coerceFormValue(value, schema3) {
-  const record = asRecord8(schema3);
+  const record = asRecord9(schema3);
   const type2 = record?.type;
   const types2 = Array.isArray(type2) ? type2 : [type2];
   if ((types2.includes("integer") || types2.includes("number")) && /^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/.test(value.trim())) return Number(value);
@@ -327587,21 +328150,21 @@ function validateScript(script) {
   return void 0;
 }
 function scriptExecLines(script) {
-  const record = asRecord8(script);
+  const record = asRecord9(script);
   if (!record) return [];
   if (Array.isArray(record.exec)) return record.exec.map((line) => String(line));
   if (typeof record.exec === "string") return [record.exec];
   return [];
 }
 function scanExecutableScripts(node, warnings) {
-  for (const event2 of asArray5(node.event).map((entry) => asRecord8(entry)).filter(Boolean)) {
+  for (const event2 of asArray5(node.event).map((entry) => asRecord9(entry)).filter(Boolean)) {
     const lines = scriptExecLines(event2.script);
     if (lines.length === 0) continue;
     const warning = validateScript(lines);
     if (warning) warnings.push(warning);
   }
   for (const child4 of asArray5(node.item)) {
-    const childRecord = asRecord8(child4);
+    const childRecord = asRecord9(child4);
     if (childRecord) scanExecutableScripts(childRecord, warnings);
   }
 }
@@ -327615,7 +328178,7 @@ function instrumentContractCollection(collection, index, limits = {}) {
   const inject = (item) => {
     if (isResolverItem(item)) return;
     if (item.request) {
-      const request = asRecord8(item.request) ?? {};
+      const request = asRecord9(item.request) ?? {};
       const result = matchOperation(index, request);
       let script;
       if (result.operation) {
@@ -327632,15 +328195,15 @@ function instrumentContractCollection(collection, index, limits = {}) {
       } else {
         script = createMappingFailureScript(`No OpenAPI operation matched request ${result.method} ${result.path}`);
       }
-      const events2 = asArray5(item.event).filter((entry) => asRecord8(entry)?.listen !== "test");
+      const events2 = asArray5(item.event).filter((entry) => asRecord9(entry)?.listen !== "test");
       item.event = [...events2, { listen: "test", script: { type: "text/javascript", exec: script } }];
     }
     for (const child4 of asArray5(item.item)) {
-      const childRecord = asRecord8(child4);
+      const childRecord = asRecord9(child4);
       if (childRecord) inject(childRecord);
     }
   };
-  const items = asArray5(collection.item).map((entry) => asRecord8(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isResolverItem(entry));
+  const items = asArray5(collection.item).map((entry) => asRecord9(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isResolverItem(entry));
   collection.item = items;
   for (const item of items) inject(item);
   const missing = index.operations.filter((operation) => !covered.has(operation.id));
@@ -327662,7 +328225,7 @@ function instrumentContractCollection(collection, index, limits = {}) {
 }
 function v3ItemToContractRequest(item) {
   const method = String(item.method ?? "");
-  const urlRecord = asRecord8(item.url);
+  const urlRecord = asRecord9(item.url);
   const rawUrl = typeof item.url === "string" ? item.url : typeof urlRecord?.raw === "string" ? String(urlRecord.raw) : "";
   const query = [];
   const queryStart = rawUrl.indexOf("?");
@@ -327678,13 +328241,13 @@ function v3ItemToContractRequest(item) {
       if (key) query.push({ key });
     }
   }
-  const header = asArray5(item.headers).map((entry) => asRecord8(entry)).filter((entry) => Boolean(entry)).map((entry) => ({
+  const header = asArray5(item.headers).map((entry) => asRecord9(entry)).filter((entry) => Boolean(entry)).map((entry) => ({
     key: entry.key,
     value: entry.value,
     ...entry.disabled != null ? { disabled: entry.disabled } : {}
   }));
   const request = { method, url: { raw: rawUrl, query }, header };
-  const bodyRecord = asRecord8(item.body);
+  const bodyRecord = asRecord9(item.body);
   if (bodyRecord && typeof bodyRecord.content === "string") {
     request.body = { mode: "raw", raw: bodyRecord.content };
   }
@@ -344618,7 +345181,7 @@ function detectDefinitionFormat(content, fileName) {
       return "openapi-yaml";
   }
 }
-function asRecord9(value) {
+function asRecord10(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -344634,7 +345197,7 @@ function collectExternalRefTargets(node, refs) {
     node.forEach((entry) => collectExternalRefTargets(entry, refs));
     return;
   }
-  const record = asRecord9(node);
+  const record = asRecord10(node);
   if (!record) return;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (ref && !ref.startsWith("#")) {
@@ -345093,7 +345656,7 @@ async function acquireDefinitionBundle(options) {
 }
 
 // src/lib/spec/openapi-loader.ts
-function asRecord10(value) {
+function asRecord11(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -345108,7 +345671,7 @@ function parseOpenApiDocument(content) {
       throw new Error("CONTRACT_SPEC_PARSE_FAILED: Spec content is not valid JSON or YAML");
     }
   }
-  const doc = asRecord10(parsed);
+  const doc = asRecord11(parsed);
   if (!doc) throw new Error("CONTRACT_SPEC_PARSE_FAILED: Spec content must be a JSON or YAML object");
   return doc;
 }
@@ -345136,7 +345699,7 @@ function collectExternalRefs(node, baseUrl, refs) {
     node.forEach((entry) => collectExternalRefs(entry, baseUrl, refs));
     return;
   }
-  const record = asRecord10(node);
+  const record = asRecord11(node);
   if (!record) return;
   const ref = typeof record.$ref === "string" ? record.$ref : "";
   if (ref && !ref.startsWith("#")) {
@@ -345249,7 +345812,7 @@ function typeNullPath(pathSegments) {
   return pathSegments.map(String).join(".");
 }
 function isNullOnlySchema(value) {
-  const record = asRecord10(value);
+  const record = asRecord11(value);
   if (!record || record.type !== "null") return false;
   return Object.keys(record).every((key) => key === "type" || key.startsWith("x-"));
 }
@@ -345261,7 +345824,7 @@ function createOas30TypeNullCompatibilityDocument(sourceDocument) {
       value.forEach((entry, index) => visit4(entry, [...pathSegments, index]));
       return;
     }
-    const record = asRecord10(value);
+    const record = asRecord11(value);
     if (!record) return;
     const oneOf = Array.isArray(record.oneOf) ? record.oneOf : void 0;
     const nullIndexes = oneOf ? oneOf.flatMap((entry, index) => isNullOnlySchema(entry) ? [index] : []) : [];
@@ -345273,7 +345836,7 @@ function createOas30TypeNullCompatibilityDocument(sourceDocument) {
       }
       const nullIndex = nullIndexes[0];
       const nonNullIndex = nullIndex === 0 ? 1 : 0;
-      const nonNullSchema = asRecord10(oneOf[nonNullIndex]);
+      const nonNullSchema = asRecord11(oneOf[nonNullIndex]);
       if (!nonNullSchema || nonNullSchema.type === "null") {
         throw new Error(
           `CONTRACT_OAS30_TYPE_NULL_UNSUPPORTED: ${typeNullPath(pathSegments)} must pair the null-only member with one non-null schema`
@@ -346824,8 +347387,8 @@ function parseAssetMarker(description) {
 // validation/evidence/multifile-spec-sync.json
 var multifile_spec_sync_default = {
   schemaVersion: 1,
-  testedAt: "2026-07-27T20:25:07.973Z",
-  bootstrapCommit: "c6fb845c7b5dc3112c4fd3cf4fda0f8a9ec47784",
+  testedAt: "2026-07-31T18:47:42.753Z",
+  bootstrapCommit: "0b622522d88c967a693801a9addaac1324964da2",
   legs: [
     {
       mode: "nonorg",
@@ -347637,7 +348200,7 @@ function orderPerFileReconcileOps(input) {
 function fail4(code, message) {
   throw new Error(`${code}: ${message}`);
 }
-function asRecord11(value) {
+function asRecord12(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
 }
@@ -347650,12 +348213,12 @@ function definitionRoleToCloudType(role) {
   return role === "root" ? "ROOT" : "DEFAULT";
 }
 function listFilesFromGatewayResponse(json3) {
-  const root = asRecord11(json3);
+  const root = asRecord12(json3);
   const data = root?.data ?? json3;
-  const list = Array.isArray(data) ? data : Array.isArray(asRecord11(data)?.files) ? asRecord11(data).files : [];
+  const list = Array.isArray(data) ? data : Array.isArray(asRecord12(data)?.files) ? asRecord12(data).files : [];
   const out = [];
   for (const entry of list) {
-    const record = asRecord11(entry);
+    const record = asRecord12(entry);
     if (!record) continue;
     const type2 = String(record.type ?? "").trim();
     if (type2 !== "ROOT" && type2 !== "DEFAULT") continue;
@@ -347672,8 +348235,8 @@ function listFilesFromGatewayResponse(json3) {
   return out;
 }
 function contentFromGatewayFileRead(json3) {
-  const root = asRecord11(json3);
-  const data = asRecord11(root?.data) ?? root;
+  const root = asRecord12(json3);
+  const data = asRecord12(root?.data) ?? root;
   const content = data?.content;
   return typeof content === "string" ? content : void 0;
 }
@@ -347915,12 +348478,46 @@ function specTreeNextCursor(value) {
 function asItemArray(value) {
   return Array.isArray(value) ? value : [];
 }
-function asRecord12(value) {
+function asRecord13(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   return value;
 }
+var NON_ORG_SQUAD_SENTINEL = /squad feature is not available/i;
+var SQUAD_DISCOVERY_BODY_DIGEST_LIMIT = 200;
+function parsePositiveSafeInteger(value) {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) return null;
+    if (String(parsed) !== trimmed) return null;
+    return parsed;
+  }
+  return null;
+}
+var SquadDiscoveryUnavailableError = class extends Error {
+  observedStatus;
+  bodyDigest;
+  constructor(cause) {
+    const status = cause instanceof HttpError ? cause.status : 0;
+    const rawBody = cause instanceof HttpError ? cause.responseBody || cause.message || "" : cause instanceof Error ? cause.message : String(cause ?? "");
+    const digest = String(rawBody).replace(/\s+/g, " ").trim().slice(0, SQUAD_DISCOVERY_BODY_DIGEST_LIMIT);
+    super(
+      `Org sub-team (squad) discovery is unavailable (observed UMS status ${status || "none"})` + (digest ? `: ${digest}` : "")
+    );
+    this.name = "SquadDiscoveryUnavailableError";
+    this.observedStatus = status;
+    this.bodyDigest = digest;
+    if (cause !== void 0) {
+      this.cause = cause;
+    }
+  }
+};
 function isMissingPatchValueError(error) {
   return error instanceof HttpError && error.status === 400 && error.responseBody.includes("Remove operation must point to an existing value");
 }
@@ -347946,10 +348543,10 @@ function deepEqual(a, b) {
   return JSON.stringify(canonicalize(a)) === JSON.stringify(canonicalize(b));
 }
 function nextPageCursor(response) {
-  const root = asRecord12(response);
-  const meta = asRecord12(root?.meta);
-  const cursor = asRecord12(meta?.cursor);
-  const pagination = asRecord12(meta?.pagination);
+  const root = asRecord13(response);
+  const meta = asRecord13(root?.meta);
+  const cursor = asRecord13(meta?.cursor);
+  const pagination = asRecord13(meta?.pagination);
   const candidates = [cursor?.next, meta?.nextCursor, pagination?.nextPage, root?.nextCursor];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
@@ -348001,7 +348598,7 @@ function extractGitRepoUrl(value) {
     }
     return null;
   }
-  const record = asRecord12(value);
+  const record = asRecord13(value);
   if (!record) return null;
   for (const key of ["repo", "repository", "repoUrl", "repo_url", "remoteUrl", "remote_url", "origin"]) {
     const repoUrl = extractGitRepoUrl(record[key]);
@@ -348072,6 +348669,28 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
     return _PostmanGatewayAssetsClient.PREVIEW_ASSET_NAME_SUFFIX.test(finalName) ? _PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS : _PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
   }
   /**
+   * Inventory-visibility schedule for resolving a bare Sync model id to the
+   * ROOT-addressable uid the finalize PATCH needs: this final name's settle
+   * window, extended by the live-proven preview continuation when the standard
+   * window is the one in play.
+   *
+   * This is deliberately the same total budget {@link
+   * electImportedCollectionIdentity} spends waiting for the very same inventory
+   * row. The rename cannot be deferred to election as a fallback — election
+   * matches candidates by exact final name, so a root still carrying its
+   * run-unique temp name is invisible there — and the ROOT PATCH has no bare-id
+   * fallback. Any shorter budget would therefore fail imports whose inventory
+   * visibility merely lags, which is the case election was built to survive.
+   */
+  static rootUidResolveDelaysForFinalName(finalName) {
+    const settle = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+    if (settle !== _PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS) return settle;
+    return [
+      ...settle,
+      ..._PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(settle.length)
+    ];
+  }
+  /**
    * Bounded eventual-consistency verification after a successful owned-root delete.
    * HTTP 404 on collection-root GET proves absence; service-account sessions that
    * 403 on root GET fall back to workspace inventory with normalized identity
@@ -348129,29 +348748,68 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
    * list comes from `ums GET /api/teams/:orgTeamId/squads?settings=true&userRoles=true`
    * → `{ data:[{ id, name, handle, organizationId, … }] }`. Each squad carries
    * `organizationId`, so the caller's `teams.some(t => t.organizationId != null)`
-   * org-mode test works unchanged. Non-org accounts get `400 "Squad feature is not
-   * available"` (live-proven, team 10490519) → resolved as `[]` (not org-mode).
-   * PMAK is never consulted (reserved for token mint + CLI login).
+   * org-mode test works unchanged. PMAK is never consulted (reserved for token
+   * mint + CLI login).
+   *
+   * Outcomes are classified, never collapsed. Exactly one endpoint response
+   * means "not org-mode": `400` whose body matches
+   * `/squad feature is not available/i` (live-proven, team 10490519) → `[]`.
+   * Everything else - other `4xx`, terminal `5xx`/transport after the gateway's
+   * safe-read retries, a non-array or empty `data`, or any row without a usable
+   * numeric id, non-empty name, and positive safe organizationId - is
+   * indeterminate and raises `SquadDiscoveryUnavailableError`. Successful
+   * payloads are validated whole rather than filtered: dropping bad rows can
+   * turn a two-squad account into an unsafe single-squad auto-pick. A missing
+   * memoized session identity still returns `[]`, because there is no org id to
+   * query with.
    */
   async getTeams() {
     const orgTeamId = getMemoizedSessionIdentity()?.teamId;
     if (!orgTeamId) return [];
+    let res;
     try {
-      const res = await this.gateway.requestJson({
+      res = await this.gateway.requestJson({
         service: "ums",
         method: "get",
         path: `/api/teams/${orgTeamId}/squads?settings=true&userRoles=true`
       });
-      const list = Array.isArray(res?.data) ? res.data : [];
-      return list.filter((s) => s?.id != null && s?.name != null).map((s) => ({
-        id: Number(s.id),
-        name: String(s.name),
-        handle: String(s.handle ?? ""),
-        ...s.organizationId != null ? { organizationId: Number(s.organizationId) } : {}
-      }));
-    } catch {
-      return [];
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 400 && NON_ORG_SQUAD_SENTINEL.test(err.responseBody || err.message || "")) {
+        return [];
+      }
+      throw new SquadDiscoveryUnavailableError(err);
     }
+    if (!Array.isArray(res?.data)) {
+      throw new SquadDiscoveryUnavailableError(
+        new Error("ums squads response did not contain a data array")
+      );
+    }
+    const list = res.data;
+    if (list.length === 0) {
+      throw new SquadDiscoveryUnavailableError(
+        new Error("ums squads response contained an empty data array")
+      );
+    }
+    return list.map((row) => {
+      const squad = asRecord13(row);
+      if (!squad) {
+        throw new SquadDiscoveryUnavailableError(
+          new Error("ums squads response contained a row that is not an object")
+        );
+      }
+      const id = parsePositiveSafeInteger(squad.id);
+      const organizationId = parsePositiveSafeInteger(squad.organizationId);
+      const name = typeof squad.name === "string" ? squad.name.trim() : "";
+      if (id === null || organizationId === null || !name) {
+        throw new SquadDiscoveryUnavailableError(
+          new Error(
+            "ums squads response contained a row without usable id, name, and organizationId"
+          )
+        );
+      }
+      const handle = typeof squad.handle === "string" ? squad.handle : String(squad.handle ?? "");
+      return { id, name, handle, organizationId };
+    });
   }
   /**
    * Create an OpenAPI spec in Spec Hub via the gateway specification service.
@@ -348209,7 +348867,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
       if (!match) throw error;
       created = { data: { id: match.id } };
     }
-    const createdSpecId = String(asRecord12(created?.data)?.id ?? created?.id ?? "").trim();
+    const createdSpecId = String(asRecord13(created?.data)?.id ?? created?.id ?? "").trim();
     if (!createdSpecId) {
       throw new Error("Spec upload did not return an ID");
     }
@@ -348326,10 +348984,10 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
         path: `/specifications?containerType=workspace&containerId=${workspaceId}`,
         ...cursor ? { query: { cursor } } : {}
       }),
-      (page) => Array.isArray(asRecord12(page)?.data) ? asRecord12(page).data : [],
+      (page) => Array.isArray(asRecord13(page)?.data) ? asRecord13(page).data : [],
       "SPEC_LIST"
     );
-    return entries.map((value) => asRecord12(value)).filter((value) => value !== null).map((value) => ({
+    return entries.map((value) => asRecord13(value)).filter((value) => value !== null).map((value) => ({
       id: String(value.id ?? value.uid ?? "").trim(),
       name: String(value.name ?? "").trim()
     })).filter((value) => value.id && value.name === name).sort((a, b) => a.id.localeCompare(b.id));
@@ -348379,7 +349037,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
         path: `/specifications/${specId}/files/${fileId}`,
         query: { fields: "content" }
       });
-      const content = asRecord12(file?.data)?.content ?? file?.content;
+      const content = asRecord13(file?.data)?.content ?? file?.content;
       return typeof content === "string" ? content : void 0;
     } catch {
       return void 0;
@@ -348454,7 +349112,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
         outcome
       };
     }
-    const createdSpecId = String(asRecord12(created?.data)?.id ?? created?.id ?? "").trim();
+    const createdSpecId = String(asRecord13(created?.data)?.id ?? created?.id ?? "").trim();
     if (!createdSpecId) {
       throw new Error("Spec bundle upload did not return an ID");
     }
@@ -348794,7 +349452,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
       retry: "none",
       body: { name: trimmed }
     });
-    const record = asRecord12(created?.data) ?? created ?? {};
+    const record = asRecord13(created?.data) ?? created ?? {};
     return {
       id: String(record.id ?? "").trim(),
       name: String(record.name ?? trimmed).trim()
@@ -348809,7 +349467,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
       query: { limit: "50" }
     });
     const entries = Array.isArray(response?.data) ? response.data : [];
-    return entries.map((value) => asRecord12(value)).filter((value) => value !== null).map((value) => ({
+    return entries.map((value) => asRecord13(value)).filter((value) => value !== null).map((value) => ({
       id: String(value.id ?? "").trim(),
       // listTags returns `message`; createTag returns `name`. Accept both.
       name: String(value.name ?? value.message ?? "").trim()
@@ -348833,9 +349491,9 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
         ...cursor ? { query: { cursor } } : {}
       }),
       (page) => {
-        const files = asRecord12(page);
+        const files = asRecord13(page);
         if (Array.isArray(files?.data)) return files.data;
-        const nested = asRecord12(files?.data);
+        const nested = asRecord13(files?.data);
         return Array.isArray(nested?.files) ? nested.files : [];
       },
       "SPEC_FILES_LIST"
@@ -348933,7 +349591,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
             }
             throw error;
           }
-          const status = String(asRecord12(task?.data)?.[taskId] ?? "").toLowerCase();
+          const status = String(asRecord13(task?.data)?.[taskId] ?? "").toLowerCase();
           if (status === "failed" || status === "error") {
             taskFailed = true;
             lastError = new Error(`Collection generation task failed for ${prefix}`);
@@ -349099,7 +349757,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
           retry: "none",
           body: body2
         });
-        return { taskId: String(asRecord12(created?.data)?.taskId ?? "").trim() };
+        return { taskId: String(asRecord13(created?.data)?.taskId ?? "").trim() };
       } catch (error) {
         const locked = error instanceof HttpError && error.status === 423;
         if (!locked || lockedAttempt >= _PostmanGatewayAssetsClient.GENERATION_LOCKED_MAX_RETRIES) {
@@ -349142,12 +349800,12 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
     };
     const entries = await collectPagedList(
       (cursor) => readRelationPage(cursor),
-      (page) => Array.isArray(asRecord12(page)?.data) ? asRecord12(page).data : [],
+      (page) => Array.isArray(asRecord13(page)?.data) ? asRecord13(page).data : [],
       "SPEC_COLLECTION_RELATIONS"
     );
     const results = [];
     for (const raw of entries) {
-      const entry = asRecord12(raw);
+      const entry = asRecord13(raw);
       const id = String(entry?.collection ?? entry?.collectionId ?? entry?.id ?? entry?.uid ?? "").trim();
       if (!id) continue;
       const entryName = String(entry?.name ?? entry?.title ?? "").trim();
@@ -349165,8 +349823,8 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
     try {
       const response = await this.gateway.requestDirectJson(path11);
       const entities = Array.isArray(response?.entities) ? response.entities : [];
-      const first = asRecord12(entities[0]);
-      const data = asRecord12(first?.data);
+      const first = asRecord13(entities[0]);
+      const data = asRecord13(first?.data);
       return String(data?.name ?? "").trim() || void 0;
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) return void 0;
@@ -349183,7 +349841,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
       await this.gateway.requestJson({
         service: "collection",
         method: "patch",
-        path: `/v3/collections/${this.bareModelId(collectionId)}`,
+        path: `/v3/collections/${this.collectionRootId(collectionId)}`,
         // Replacing a generated collection's name with the same value is idempotent.
         retry: "safe",
         body: [{ op: "replace", path: "/name", value: name }]
@@ -349207,11 +349865,19 @@ ${error.responseBody ?? ""}`
    * {@link renameGeneratedCollection}.
    */
   async renameImportedCollectionCanonical(workspaceId, collectionId, finalName) {
+    const rootId = await this.resolveCollectionRootUid(
+      workspaceId,
+      collectionId,
+      _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName)
+    );
+    if (!rootId) {
+      return;
+    }
     try {
       await this.gateway.requestJson({
         service: "collection",
         method: "patch",
-        path: `/v3/collections/${this.bareModelId(collectionId)}`,
+        path: `/v3/collections/${rootId}`,
         retry: "none",
         body: [{ op: "replace", path: "/name", value: finalName }]
       });
@@ -349286,7 +349952,7 @@ ${error.responseBody ?? ""}`
         createdByThisRun2 = false;
         created2 = { data: { id: match.id } };
       }
-      const workspaceId2 = String(asRecord12(created2?.data)?.id ?? created2?.id ?? "").trim();
+      const workspaceId2 = String(asRecord13(created2?.data)?.id ?? created2?.id ?? "").trim();
       if (!workspaceId2) {
         throw new Error("Workspace create did not return an id");
       }
@@ -349322,7 +349988,7 @@ ${error.responseBody ?? ""}`
       createdByThisRun = false;
       created = { data: { id: match.id } };
     }
-    const workspaceId = String(asRecord12(created?.data)?.id ?? created?.id ?? "").trim();
+    const workspaceId = String(asRecord13(created?.data)?.id ?? created?.id ?? "").trim();
     if (!workspaceId) {
       throw new Error("Workspace create did not return an id");
     }
@@ -349379,7 +350045,7 @@ ${error.responseBody ?? ""}`
         method: "get",
         path: `/workspaces/${workspaceId}`
       });
-      const data = asRecord12(response?.data) ?? asRecord12(response?.workspace) ?? asRecord12(response);
+      const data = asRecord13(response?.data) ?? asRecord13(response?.workspace) ?? asRecord13(response);
       const visibility = data?.visibility ?? data?.visibilityStatus;
       return typeof visibility === "string" ? visibility : null;
     } catch {
@@ -349387,27 +350053,23 @@ ${error.responseBody ?? ""}`
     }
   }
   async findWorkspacesByName(name) {
-    const all2 = [];
-    const seenCursors = /* @__PURE__ */ new Set();
-    let cursor;
-    do {
-      const response = await this.gateway.requestJson({
+    const all2 = await collectPagedList(
+      (cursor) => this.gateway.requestJson({
         service: "workspaces",
         method: "get",
         path: "/workspaces",
         ...cursor ? { query: { cursor } } : {}
-      });
-      const data = asRecord12(response);
-      const page = Array.isArray(data?.data) ? data.data : Array.isArray(data?.workspaces) ? data.workspaces : [];
-      for (const entry of page) {
-        const record = asRecord12(entry);
-        if (record?.id && record?.name) all2.push(record);
-      }
-      const meta = asRecord12(data?.meta);
-      const next = String(meta?.nextCursor ?? data?.nextCursor ?? "").trim();
-      cursor = next && !seenCursors.has(next) ? next : void 0;
-      if (cursor) seenCursors.add(cursor);
-    } while (cursor);
+      }),
+      (response) => {
+        const data = asRecord13(response);
+        const page = Array.isArray(data?.data) ? data.data : Array.isArray(data?.workspaces) ? data.workspaces : [];
+        return page.flatMap((entry) => {
+          const record = asRecord13(entry);
+          return record?.id && record?.name ? [record] : [];
+        });
+      },
+      "WORKSPACE"
+    );
     return all2.filter((w) => String(w.name) === name).map((w) => ({ id: String(w.id), name: String(w.name) })).sort((a, b) => a.id.localeCompare(b.id));
   }
   /**
@@ -349424,7 +350086,7 @@ ${error.responseBody ?? ""}`
         method: "get",
         path: `/workspaces/${workspaceId}/filesystem`
       });
-      const data = asRecord12(response)?.data ?? response;
+      const data = asRecord13(response)?.data ?? response;
       return extractGitRepoUrl(data);
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) return null;
@@ -349434,21 +350096,78 @@ ${error.responseBody ?? ""}`
   // --- collection v3 mutation + tagging (live-proven 2026-06-30; see docs/REST-to-gateway.md) ---
   //
   // These retire bootstrap's last asset-op PMAK dependencies. Collection ROOT
-  // routes (GET/PATCH/DELETE `/v3/collections/:id`) accept the bare model id.
+  // routes (GET/PATCH `/v3/collections/:id`) must use the FULL public uid
+  // (`<owner>-<uuid>`): bare model ids are rejected 403 FORBIDDEN (live-proven
+  // 2026-08-03 on non-org team 10490519 and org team 172912 — the same ACL
+  // tightening that reached the items surface on 2026-07-14). `/export` and
+  // DELETE still accept the bare id (same 2026-08-03 live A/B: bare=200) but
+  // are addressed by the full uid too whenever the caller holds one, so a
+  // single vocabulary covers the whole collection service and those routes
+  // stay safe if the tightening spreads again.
   // Collection ITEMS routes (`/v3/collections/:id/items/...`) must use the FULL
-  // public uid (`<owner>-<uuid>`): bare model ids are flaky on org-mode squads
-  // (live-proven 2026-07-14 on team 172912 / Northwind — immediate post-generation
-  // `GET .../items/` returns 403 FORBIDDEN with bare id, 200 with full uid).
+  // public uid (live-proven 2026-07-14 on team 172912 / Northwind — immediate
+  // post-generation `GET .../items/` returns 403 FORBIDDEN with bare id).
   // The tagging service is distinct and takes the FULL uid.
+  // Sync routes (`/collection/import`, `/collection/deepupdate/:id`) keep the
+  // BARE model id, which is also the form the import envelope returns.
   /**
-   * `<owner>-<uuid>` public uid -> bare `<uuid>` model id (collection ROOT routes
-   * only). Strip ONLY the numeric owner prefix of a full public uid; a bare UUID
-   * (which itself contains hyphens) must pass through unchanged, so a naive
-   * split on the first hyphen — which would lop off a UUID's first segment — is
-   * rejected here in favour of an anchored `<digits>-<uuid>` match.
+   * `<owner>-<uuid>` public uid -> bare `<uuid>` model id. Used for the SYNC
+   * routes and for identity comparison only — never to build a collection ROOT
+   * or ITEMS URL. Strip ONLY the numeric owner prefix of a full public uid; a
+   * bare UUID (which itself contains hyphens) must pass through unchanged, so a
+   * naive split on the first hyphen — which would lop off a UUID's first
+   * segment — is rejected here in favour of an anchored `<digits>-<uuid>` match.
    */
   bareModelId(uid) {
     return normalizeCollectionModelIdentity(uid);
+  }
+  /**
+   * Collection id for ROOT routes (`GET`/`PATCH /v3/collections/:id`). Preserve
+   * legacy non-UUID aliases, but reject a known bare UUID locally: production
+   * rejects that shape 403, so callers must resolve it through inventory first.
+   */
+  collectionRootId(uid) {
+    const id = String(uid ?? "").trim();
+    if (isBareCollectionUuid(id)) {
+      throw new Error(
+        "COLLECTION_ROOT_UID_REQUIRED: a bare collection model id cannot address Collection ROOT"
+      );
+    }
+    return id;
+  }
+  /**
+   * Resolve a collection's ROOT-addressable id from workspace inventory — the
+   * only surface that carries the numeric owner prefix. The prefix is not
+   * derivable from a bare uuid, and inferring it from the service-account
+   * identity would be a guess (the collection owner is not necessarily the
+   * caller), so inventory is the sole authority here.
+   *
+   * A ROOT-addressable input is returned unchanged without spending a read. A
+   * bare model id is polled across `delays` until inventory reports the exact
+   * normalized identity, absorbing import read-after-write lag rather than
+   * letting a bare id reach a route that would reject it 403.
+   *
+   * Returns `undefined` only when the identity never became inventory-visible
+   * within the budget (or inventory stayed unreadable throughout) — the caller
+   * decides how to fail, since there is no safe bare-id fallback.
+   */
+  async resolveCollectionRootUid(workspaceId, collectionId, delays, retryPolicy = "safe") {
+    const id = String(collectionId ?? "").trim();
+    if (!id) return void 0;
+    if (!isBareCollectionUuid(id)) return id;
+    const targetIdentity = normalizeCollectionModelIdentity(id);
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      try {
+        const inventory = await this.listWorkspaceCollections(workspaceId, retryPolicy);
+        const match = inventory.find(
+          (entry) => normalizeCollectionModelIdentity(entry.id) === targetIdentity
+        );
+        if (match?.id && isFullPublicCollectionUid(match.id)) return match.id;
+      } catch {
+      }
+      if (observation < delays.length) await this.sleep(delays[observation]);
+    }
+    return void 0;
   }
   /**
    * Collection id for ITEMS routes. Prefer the full public uid; fall back to the
@@ -349595,7 +350314,7 @@ ${error.responseBody ?? ""}`
         position: { parent: { id: cid, $kind: "collection" } }
       }
     });
-    const newItemId = String(asRecord12(created?.data)?.id ?? "").trim();
+    const newItemId = String(asRecord13(created?.data)?.id ?? "").trim();
     if (!newItemId) return;
     await this.patchNewItemScripts(
       cid,
@@ -349715,7 +350434,7 @@ ${error.responseBody ?? ""}`
         path: `/v3/collections/${cid}/items/${itemId}`,
         headers: { "X-Entity-Type": "http-request" }
       });
-      httpItems.push({ itemId, item: asRecord12(full?.data) ?? listItem });
+      httpItems.push({ itemId, item: asRecord13(full?.data) ?? listItem });
     }
     const plan = planContractItemScripts(httpItems, index);
     const toV3Scripts = (exec3) => [
@@ -349747,7 +350466,7 @@ ${error.responseBody ?? ""}`
           position: { parent: { id: cid, $kind: "collection" } }
         }
       });
-      const newItemId = String(asRecord12(created?.data)?.id ?? "").trim();
+      const newItemId = String(asRecord13(created?.data)?.id ?? "").trim();
       if (newItemId) {
         await this.patchNewItemScripts(
           cid,
@@ -349824,7 +350543,7 @@ ${error.responseBody ?? ""}`
   toRootScripts(scripts) {
     if (!Array.isArray(scripts)) return [];
     return scripts.map((entry) => {
-      const script = asRecord12(entry);
+      const script = asRecord13(entry);
       if (!script) return entry;
       return { ...script, type: this.toRootScriptType(script.type) };
     });
@@ -349833,7 +350552,7 @@ ${error.responseBody ?? ""}`
     if (!node || typeof node !== "object") return;
     if (Array.isArray(node.scripts)) {
       node.scripts = node.scripts.map((entry) => {
-        const script = asRecord12(entry);
+        const script = asRecord13(entry);
         if (!script) return entry;
         return { ...script, type: normalizeLocalViewScriptType(script.type) };
       });
@@ -349865,7 +350584,7 @@ ${error.responseBody ?? ""}`
   }
   /** Accept either legacy v2.1 input or canonical collection v3 input. */
   normalizeCollectionForWrite(collection) {
-    const record = asRecord12(collection);
+    const record = asRecord13(collection);
     if (record?.$kind === "collection") {
       const v32 = typeof structuredClone === "function" ? structuredClone(record) : JSON.parse(JSON.stringify(record));
       for (const item of asItemArray(v32.items)) {
@@ -349944,8 +350663,8 @@ ${error.responseBody ?? ""}`
             const matches = (await this.listCollectionItems(cid)).filter((candidate) => {
               if (String(candidate.name ?? candidate.title ?? "") !== name) return false;
               if (String(candidate.$kind ?? candidate.type ?? "http-request") !== kind) return false;
-              const position = asRecord12(candidate.position);
-              const parent = asRecord12(position?.parent);
+              const position = asRecord13(candidate.position);
+              const parent = asRecord13(position?.parent);
               const candidateParent = String(parent?.id ?? position?.parent ?? candidate.parent ?? "").trim();
               return Boolean(candidateParent) && this.bareModelId(candidateParent) === this.bareModelId(parentId);
             });
@@ -349974,7 +350693,7 @@ ${error.responseBody ?? ""}`
             continue;
           }
         }
-        newId = String(asRecord12(created?.data)?.id ?? "").trim();
+        newId = String(asRecord13(created?.data)?.id ?? "").trim();
         if (newId) break;
       }
       if (!newId) {
@@ -350001,7 +350720,7 @@ ${error.responseBody ?? ""}`
       throw new Error("Collection item listing did not return an array");
     }
     return listed.data.map((entry, index) => {
-      const item = asRecord12(entry);
+      const item = asRecord13(entry);
       const itemId = String(item?.id ?? "").trim();
       if (!item || !itemId) {
         throw new Error(`Existing collection item listing entry ${index} did not return an id`);
@@ -350048,7 +350767,7 @@ ${error.responseBody ?? ""}`
         shouldRetry: (error) => error instanceof HttpError && error.status === 404
       }
     );
-    return asRecord12(got?.data);
+    return asRecord13(got?.data);
   }
   async applyCollectionLevelSettings(cid, v3, options = {}) {
     const ops = [];
@@ -350117,7 +350836,7 @@ ${error.responseBody ?? ""}`
         method: "get",
         path: `/v3/collections/${cid}`
       });
-      current = asRecord12(got?.data);
+      current = asRecord13(got?.data);
     } catch {
       return false;
     }
@@ -350159,10 +350878,10 @@ ${error.responseBody ?? ""}`
         ...cursor ? { query: { cursor } } : {},
         ...retryPolicy ? { retry: retryPolicy } : {}
       }),
-      (page) => Array.isArray(asRecord12(page)?.data) ? asRecord12(page).data : [],
+      (page) => Array.isArray(asRecord13(page)?.data) ? asRecord13(page).data : [],
       "COLLECTION_LIST"
     );
-    return entries.map((value) => asRecord12(value)).filter((value) => value !== null).map((value) => ({
+    return entries.map((value) => asRecord13(value)).filter((value) => value !== null).map((value) => ({
       id: String(value.id ?? value.uid ?? "").trim(),
       name: String(value.name ?? value.title ?? "").trim(),
       ...String(value.description ?? "").trim() ? { description: String(value.description).trim() } : {}
@@ -350202,12 +350921,12 @@ ${error.responseBody ?? ""}`
       if (!match) throw error;
       created = { data: { id: match.id } };
     }
-    const rawId = String(asRecord12(created?.data)?.id ?? "").trim();
+    const rawId = String(asRecord13(created?.data)?.id ?? "").trim();
     if (!rawId) {
       throw new Error("Collection create did not return an id");
     }
     const itemsCid = this.collectionItemsId(rawId);
-    const rootCid = this.bareModelId(rawId);
+    const rootCid = this.collectionRootId(rawId);
     await options.onRootCreated?.(rawId);
     try {
       await this.createItemTree(itemsCid, asItemArray(v3.items), itemsCid);
@@ -350241,7 +350960,7 @@ ${error.responseBody ?? ""}`
    * add /description op means the intended value is already present.
    */
   async updateCollectionDescription(collectionUid, description) {
-    const cid = this.bareModelId(collectionUid);
+    const cid = this.collectionRootId(collectionUid);
     const ops = [{ op: "add", path: "/description", value: description }];
     try {
       await retry(
@@ -350282,7 +351001,7 @@ ${error.responseBody ?? ""}`
    */
   async updateCollection(collectionUid, collection) {
     const itemsCid = this.collectionItemsId(collectionUid);
-    const rootCid = this.bareModelId(collectionUid);
+    const rootCid = this.collectionRootId(collectionUid);
     const v3 = this.normalizeCollectionForWrite(collection);
     const existingItems = await this.listCollectionItems(itemsCid);
     for (const item of existingItems) {
@@ -350329,11 +351048,11 @@ ${error.responseBody ?? ""}`
       throw new Error("LOCAL_OPENAPI_IMPORT_FAILED: final collection name is required");
     }
     const prepared = this.prepareV2ImportPayload(collection, desiredName);
-    const desiredDescription = String(asRecord12(prepared.info)?.description ?? "").trim();
+    const desiredDescription = String(asRecord13(prepared.info)?.description ?? "").trim();
     const runToken = this.createIdentity();
     const tempName = `${desiredName} [bootstrap:${runToken}]`;
     const importPayload = this.cloneJson(prepared);
-    const info = asRecord12(importPayload.info) ?? {};
+    const info = asRecord13(importPayload.info) ?? {};
     info.name = tempName;
     info._postman_id = (0, import_node_crypto7.randomUUID)();
     importPayload.info = info;
@@ -350429,7 +351148,7 @@ ${error.responseBody ?? ""}`
     }
     const bareId = this.bareModelId(uid);
     const prepared = this.prepareV2ImportPayload(collection, void 0);
-    const info = asRecord12(prepared.info) ?? {};
+    const info = asRecord13(prepared.info) ?? {};
     info._postman_id = bareId;
     prepared.info = info;
     this.assertV21Collection(prepared);
@@ -350478,13 +351197,23 @@ ${error.responseBody ?? ""}`
     }
   }
   /**
-   * Single absence observation. 404 proves gone. GET 200/403 fall back to
-   * workspace inventory (never treating 403 alone as absence). Transient
-   * >=500 is not absence.
+   * Single absence observation. A full public uid can use ROOT GET: 404 proves
+   * gone, while GET 200/403 falls back to workspace inventory (never treating
+   * 403 alone as absence). A bare journal id skips ROOT GET entirely because
+   * that route rejects it; normalized workspace inventory is its authority.
+   * Transient >=500 is not absence.
+   *
+   * A caller holding the full public uid gets a real ROOT GET; a caller holding
+   * only a bare journal id skips ROOT GET and is resolved through normalized
+   * inventory, the authority for that case.
    */
   async verifyCollectionAbsentOnce(workspaceId, collectionId) {
-    const path11 = `/v3/collections/${this.bareModelId(collectionId)}`;
-    const targetIdentity = normalizeCollectionModelIdentity(collectionId);
+    const id = String(collectionId ?? "").trim();
+    const targetIdentity = normalizeCollectionModelIdentity(id);
+    if (isBareCollectionUuid(id)) {
+      return await this.inventoryOmitsNormalizedIdentity(workspaceId, targetIdentity) === true;
+    }
+    const path11 = `/v3/collections/${this.collectionRootId(id)}`;
     try {
       await this.gateway.requestJson({
         service: "collection",
@@ -350521,9 +351250,9 @@ ${error.responseBody ?? ""}`
     );
   }
   prepareV2ImportPayload(collection, forceName) {
-    const clone2 = this.cloneJson(asRecord12(collection) ?? {});
+    const clone2 = this.cloneJson(asRecord13(collection) ?? {});
     if (forceName !== void 0) {
-      const info = asRecord12(clone2.info) ?? {};
+      const info = asRecord13(clone2.info) ?? {};
       info.name = forceName;
       clone2.info = info;
     }
@@ -350546,9 +351275,9 @@ ${error.responseBody ?? ""}`
       if (typeof value !== "string") return "";
       return value.trim();
     };
-    const data = asRecord12(created.data);
-    const info = asRecord12(data?.info);
-    const nested = asRecord12(data?.collection) ?? asRecord12(created.collection);
+    const data = asRecord13(created.data);
+    const info = asRecord13(data?.info);
+    const nested = asRecord13(data?.collection) ?? asRecord13(created.collection);
     const candidates = [
       info?._postman_id,
       created.model_id,
@@ -350575,7 +351304,7 @@ ${error.responseBody ?? ""}`
       const inventory = await this.listWorkspaceCollections(workspaceId, "safe");
       sameNameSurvivors = inventory.filter((entry) => entry.name === finalName).sort((a, b) => a.id.localeCompare(b.id));
       eligible = sameNameSurvivors.filter(
-        (entry) => !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
+        (entry) => !isBareCollectionUuid(entry.id) && !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
       );
       ownCanonical = eligible.find(
         (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
@@ -350595,14 +351324,15 @@ ${error.responseBody ?? ""}`
     }
     if (!ownCanonical) {
       const adoptable = await this.adoptableSameMarkerFinal(
-        sameNameSurvivors,
+        sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
         desiredDescription
       );
-      if (adoptable && await this.verifyCollectionAbsentOnce(workspaceId, preferredId)) {
+      if (adoptable) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [preferredId]);
         return adoptable;
       }
       throw new Error(
-        `Imported collection did not become inventory-visible with canonical identity`
+        "COLLECTION_ROOT_UID_RESOLUTION_FAILED: imported collection did not become inventory-visible with a ROOT-addressable canonical uid"
       );
     }
     const winner = eligible[0];
@@ -350636,7 +351366,7 @@ ${error.responseBody ?? ""}`
         if (!description) {
           try {
             const exported = await this.exportV2Collection(entry.id);
-            description = String(asRecord12(exported.info)?.description ?? "").trim() || void 0;
+            description = String(asRecord13(exported.info)?.description ?? "").trim() || void 0;
           } catch {
             description = void 0;
           }
@@ -350693,7 +351423,7 @@ ${error.responseBody ?? ""}`
       if (!description) {
         try {
           const exported = await this.exportV2Collection(entry.id);
-          description = String(asRecord12(exported.info)?.description ?? "").trim() || void 0;
+          description = String(asRecord13(exported.info)?.description ?? "").trim() || void 0;
         } catch {
           description = void 0;
         }
@@ -350721,13 +351451,13 @@ ${error.responseBody ?? ""}`
       path: `/v3/collections/${bareId}/export`,
       retry: "safe"
     });
-    const data = asRecord12(exported?.data) ?? exported;
-    const collection = asRecord12(asRecord12(data)?.collection) ?? asRecord12(data) ?? {};
-    if (asRecord12(collection)?.$kind === "collection" || Array.isArray(asRecord12(collection)?.items)) {
+    const data = asRecord13(exported?.data) ?? exported;
+    const collection = asRecord13(asRecord13(data)?.collection) ?? asRecord13(data) ?? {};
+    if (asRecord13(collection)?.$kind === "collection" || Array.isArray(asRecord13(collection)?.items)) {
       const model = V3.Collection;
       const parsed = model.parse(collection);
       const v2 = (0, import_transforms.transform)(model, import_transforms.FormatVersion.V2, parsed);
-      return asRecord12(v2) ?? {};
+      return asRecord13(v2) ?? {};
     }
     this.assertV21Collection(collection);
     return collection;
@@ -350743,388 +351473,6 @@ ${error.responseBody ?? ""}`
   sanitizeDeepUpdateError(stage, error) {
     const cause = error instanceof Error ? error.message.replace(/\s+/g, " ").trim().slice(0, 240) : "failure";
     return new Error(`LOCAL_OPENAPI_DEEP_UPDATE_FAILED: stage=${stage} cause=${cause}`);
-  }
-};
-
-// src/lib/postman/gateway-client.ts
-function isExpiredAuthError(status, body2) {
-  return status === 401 || body2.includes("UNAUTHENTICATED") || body2.includes("authenticationError");
-}
-var DEFAULT_REQUEST_TIMEOUT_MS = 3e4;
-function asRecord13(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
-}
-function innerEnvelopeStatus(envelope) {
-  for (const key of ["status", "statusCode"]) {
-    const value = envelope[key];
-    if (typeof value === "number") return value;
-    if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
-  }
-  return void 0;
-}
-function detectInnerError(body2) {
-  const trimmed = body2.trim();
-  if (!trimmed) return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-  const envelope = asRecord13(parsed);
-  if (!envelope) return null;
-  const innerStatus = innerEnvelopeStatus(envelope);
-  const error = envelope.error;
-  const errorRecord = asRecord13(error);
-  const hasError = error !== void 0 && error !== null && !(errorRecord !== null && Object.keys(errorRecord).length === 0) || envelope.success === false || typeof innerStatus === "number" && innerStatus >= 400;
-  if (!hasError) return null;
-  return typeof innerStatus === "number" && innerStatus >= 400 ? innerStatus : 502;
-}
-function isTransientGatewayError(status, body2) {
-  if (status === 429) return true;
-  if (status >= 500) return true;
-  void body2;
-  return false;
-}
-function defaultSleep(ms) {
-  return new Promise((resolve6) => setTimeout(resolve6, ms));
-}
-var AccessTokenGatewayClient = class {
-  tokenProvider;
-  bifrostBaseUrl;
-  teamId;
-  orgMode;
-  fetchImpl;
-  secretMasker;
-  fallbackBaseUrl;
-  maxRetries;
-  retryBaseDelayMs;
-  retryMaxDelayMs;
-  requestTimeoutMs;
-  sleepImpl;
-  randomImpl;
-  appVersionProvider;
-  onRetry;
-  constructor(options) {
-    this.tokenProvider = options.tokenProvider;
-    this.bifrostBaseUrl = String(
-      options.bifrostBaseUrl || POSTMAN_ENDPOINT_PROFILES.prod.bifrostBaseUrl
-    ).replace(/\/+$/, "");
-    this.teamId = String(options.teamId || "").trim();
-    this.orgMode = options.orgMode ?? false;
-    this.fetchImpl = options.fetchImpl ?? fetch;
-    this.secretMasker = options.secretMasker ?? createSecretMasker([this.tokenProvider.current()]);
-    const fallbackEnv = typeof process !== "undefined" ? process.env?.POSTMAN_ITEM_CREATE_FALLBACK : void 0;
-    this.fallbackBaseUrl = fallbackEnv === "off" ? void 0 : options.fallbackBaseUrl?.replace(/\/+$/, "");
-    this.maxRetries = options.maxRetries ?? 3;
-    this.retryBaseDelayMs = options.retryBaseDelayMs ?? 400;
-    this.retryMaxDelayMs = options.retryMaxDelayMs ?? 5e3;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-    this.sleepImpl = options.sleepImpl ?? defaultSleep;
-    this.randomImpl = options.randomImpl ?? Math.random;
-    this.appVersionProvider = options.appVersionProvider ?? postmanAppVersionProvider;
-    this.onRetry = options.onRetry;
-  }
-  configureTeamContext(teamId, orgMode) {
-    this.teamId = String(teamId || "").trim();
-    this.orgMode = orgMode;
-  }
-  buildHeaders(extra, appVersion) {
-    const headers = {
-      "Content-Type": "application/json",
-      ...extra || {}
-    };
-    headers["x-access-token"] = this.tokenProvider.current();
-    if (this.teamId && this.orgMode) {
-      headers["x-entity-team-id"] = this.teamId;
-    }
-    if (appVersion) headers["x-app-version"] = appVersion;
-    return headers;
-  }
-  async send(request, baseUrl) {
-    const url = `${baseUrl ?? this.bifrostBaseUrl}/ws/proxy`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
-    try {
-      return await this.fetchImpl(url, {
-        method: "POST",
-        headers: this.buildHeaders(request.headers, await this.appVersionProvider.resolve()),
-        signal: controller.signal,
-        body: JSON.stringify({
-          service: request.service,
-          method: request.method,
-          path: request.path,
-          ...request.query !== void 0 ? { query: request.query } : {},
-          ...request.body !== void 0 ? { body: request.body } : {}
-        })
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  async sendDirect(path11) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
-    try {
-      return await this.fetchImpl(`${this.bifrostBaseUrl}${path11}`, {
-        method: "GET",
-        headers: this.buildHeaders(void 0, await this.appVersionProvider.resolve()),
-        signal: controller.signal
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  /**
-   * Send a gateway request, refreshing the token once on an auth failure and
-   * retrying transient failures with exponential backoff. Transient covers both
-   * HTTP 5xx / Bifrost read timeouts AND transport-level rejections (fetch
-   * throwing on a socket hangup or the per-request deadline aborting) — a
-   * `retry: 'safe'` request retries either; a `retry: 'none'` mutation surfaces
-   * the failure so the caller reconciles instead of blindly resending. An HTTP
-   * 200 envelope carrying an inner collection-service error is treated as that
-   * inner status. The auth-refresh-once path is independent of the retry budget.
-   */
-  /**
-   * One cold, serial attempt against the fallback base URL after the primary
-   * budget is exhausted on a transient failure. Never hedged in parallel with
-   * the primary; only fires when the request would otherwise throw. Callers
-   * with `retry: 'none'` still reconcile first — the fallback attempt here is
-   * the resend, so it is only used for requests whose mutation is known
-   * idempotent or already reconciled by the caller's adopt-on-ambiguous loop.
-   */
-  async tryFallback(request) {
-    if (!this.fallbackBaseUrl) return null;
-    try {
-      return await this.send(request, this.fallbackBaseUrl);
-    } catch {
-      return null;
-    }
-  }
-  /**
-   * Run the fallback attempt and classify its response the same way the
-   * primary path would. Returns the rebuilt success response, or null when the
-   * fallback also failed transiently (caller then throws the original error).
-   * Non-transient fallback failures (4xx, inner errors) surface as their own
-   * HttpError since they are the freshest authoritative answer.
-   */
-  fallbackEligible(request) {
-    if (!this.fallbackBaseUrl) return false;
-    const retryMode = request.retry ?? (request.method === "get" ? "safe" : "none");
-    return retryMode === "safe" || request.fallback === "auto";
-  }
-  async attemptFallback(request) {
-    if (!this.fallbackEligible(request)) return null;
-    this.onRetry?.({ class: "fallback", attempt: 1, delay: 0 });
-    const response = await this.tryFallback(request);
-    if (!response) return null;
-    const body2 = await response.text().catch(() => "");
-    if (response.ok) {
-      const innerStatus = detectInnerError(body2);
-      if (innerStatus !== null) {
-        if (isTransientGatewayError(innerStatus, body2)) return null;
-        throw this.toInnerHttpError(request, innerStatus, body2);
-      }
-      return this.rebuildResponse(response, body2);
-    }
-    if (isTransientGatewayError(response.status, body2)) return null;
-    throw this.toHttpError(request, response, body2);
-  }
-  async request(request) {
-    if (!this.tokenProvider.current() && this.tokenProvider.canRefresh()) {
-      await this.tokenProvider.refresh();
-    }
-    const retryMode = request.retry ?? (request.method === "get" ? "safe" : "none");
-    let attempt = 0;
-    let authRefreshed = false;
-    for (; ; ) {
-      let response;
-      try {
-        response = await this.send(request);
-      } catch (error) {
-        if (retryMode === "safe" && attempt < this.maxRetries) {
-          const delay = this.retryDelayMs(attempt);
-          attempt += 1;
-          this.onRetry?.({ class: "transport", attempt, delay });
-          await this.sleepImpl(delay);
-          continue;
-        }
-        const fallbackResponse2 = await this.attemptFallback(request);
-        if (fallbackResponse2) return fallbackResponse2;
-        throw error;
-      }
-      if (response.ok) {
-        const okBody = await response.text().catch(() => "");
-        const innerStatus = detectInnerError(okBody);
-        if (innerStatus !== null) {
-          const retryInner = retryMode === "safe" && isTransientGatewayError(innerStatus, okBody) || retryMode === "rate-limit" && innerStatus === 429;
-          if (retryInner && attempt < this.maxRetries) {
-            const delay = this.retryDelayMs(attempt);
-            attempt += 1;
-            this.onRetry?.({ class: "inner", status: innerStatus, attempt, delay });
-            await this.sleepImpl(delay);
-            continue;
-          }
-          const fallbackResponse2 = await this.attemptFallback(request);
-          if (fallbackResponse2) return fallbackResponse2;
-          throw this.toInnerHttpError(request, innerStatus, okBody);
-        }
-        return this.rebuildResponse(response, okBody);
-      }
-      const body2 = await response.text().catch(() => "");
-      if (!authRefreshed && isExpiredAuthError(response.status, body2) && this.tokenProvider.canRefresh()) {
-        authRefreshed = true;
-        this.onRetry?.({ class: "auth", status: response.status, attempt: 1, delay: 0 });
-        await this.tokenProvider.refresh();
-        continue;
-      }
-      const retryResponse = retryMode === "safe" && isTransientGatewayError(response.status, body2) || retryMode === "rate-limit" && response.status === 429;
-      if (retryResponse && attempt < this.maxRetries) {
-        const delay = this.retryDelayMs(
-          attempt,
-          parseRetryAfterMs2(response.headers.get("retry-after"))
-        );
-        attempt += 1;
-        this.onRetry?.({ class: "http", status: response.status, attempt, delay });
-        await this.sleepImpl(delay);
-        continue;
-      }
-      const fallbackResponse = await this.attemptFallback(request);
-      if (fallbackResponse) return fallbackResponse;
-      throw this.toHttpError(request, response, body2);
-    }
-  }
-  /**
-   * Full-jitter backoff (uniform in [0, min(cap, base * 2^attempt))) so
-   * concurrent CI runners that fail together never retry in lockstep against
-   * the shared gateway. A server-sent Retry-After beats the heuristic: it is
-   * authoritative backpressure, honored verbatim (capped by the ceiling).
-   */
-  retryDelayMs(attempt, retryAfterMs) {
-    if (retryAfterMs !== void 0) {
-      return Math.min(this.retryMaxDelayMs, retryAfterMs);
-    }
-    return fullJitterDelayMs(attempt, this.retryBaseDelayMs, this.retryMaxDelayMs, this.randomImpl);
-  }
-  /**
-   * The success path reads the body to inspect for an inner error, which
-   * consumes the stream. Hand callers a fresh Response over the buffered text so
-   * `requestJson` can still parse it.
-   */
-  rebuildResponse(response, body2) {
-    const nullBody = response.status === 204 || response.status === 205 || response.status === 304;
-    return new Response(nullBody ? null : body2, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers
-    });
-  }
-  /** Send a gateway request and parse the JSON body, or null when empty. */
-  async requestJson(request) {
-    const response = await this.request(request);
-    const text = await response.text().catch(() => "");
-    if (!text.trim()) {
-      return null;
-    }
-    try {
-      return JSON.parse(text);
-    } catch {
-      return null;
-    }
-  }
-  /**
-   * Read an app-native Bifrost route that is not exposed through `/ws/proxy`.
-   * Collection sync hydration uses this path in the Postman app and supports
-   * org-mode service accounts that the v3 collection-root proxy rejects.
-   */
-  async requestDirectJson(path11) {
-    if (!path11.startsWith("/")) {
-      throw new Error(`Direct Bifrost path must start with '/': ${path11}`);
-    }
-    if (!this.tokenProvider.current() && this.tokenProvider.canRefresh()) {
-      await this.tokenProvider.refresh();
-    }
-    let attempt = 0;
-    for (; ; ) {
-      let response;
-      try {
-        response = await this.sendDirect(path11);
-      } catch (error) {
-        if (attempt < this.maxRetries) {
-          const delay = this.retryDelayMs(attempt);
-          attempt += 1;
-          await this.sleepImpl(delay);
-          continue;
-        }
-        throw error;
-      }
-      const body2 = await response.text().catch(() => "");
-      if (response.ok) {
-        if (!body2.trim()) return null;
-        try {
-          return JSON.parse(body2);
-        } catch {
-          return null;
-        }
-      }
-      if (isExpiredAuthError(response.status, body2) && this.tokenProvider.canRefresh()) {
-        await this.tokenProvider.refresh();
-        response = await this.sendDirect(path11);
-        const refreshedBody = await response.text().catch(() => "");
-        if (response.ok) {
-          if (!refreshedBody.trim()) return null;
-          try {
-            return JSON.parse(refreshedBody);
-          } catch {
-            return null;
-          }
-        }
-        throw this.toDirectHttpError(path11, response, refreshedBody);
-      }
-      if (isTransientGatewayError(response.status, body2) && attempt < this.maxRetries) {
-        const delay = this.retryDelayMs(
-          attempt,
-          parseRetryAfterMs2(response.headers.get("retry-after"))
-        );
-        attempt += 1;
-        await this.sleepImpl(delay);
-        continue;
-      }
-      throw this.toDirectHttpError(path11, response, body2);
-    }
-  }
-  toHttpError(request, response, body2) {
-    return new HttpError({
-      method: request.method.toUpperCase(),
-      url: `${this.bifrostBaseUrl}/ws/proxy (${request.service}: ${request.method} ${request.path})`,
-      status: response.status,
-      statusText: response.statusText,
-      requestHeaders: this.buildHeaders(request.headers),
-      responseBody: this.secretMasker(body2),
-      secretValues: [this.tokenProvider.current()]
-    });
-  }
-  toInnerHttpError(request, status, body2) {
-    return new HttpError({
-      method: request.method.toUpperCase(),
-      url: `${this.bifrostBaseUrl}/ws/proxy (${request.service}: ${request.method} ${request.path}) [inner]`,
-      status,
-      statusText: "Inner Error",
-      requestHeaders: this.buildHeaders(request.headers),
-      responseBody: this.secretMasker(body2),
-      secretValues: [this.tokenProvider.current()]
-    });
-  }
-  toDirectHttpError(path11, response, body2) {
-    return new HttpError({
-      method: "GET",
-      url: `${this.bifrostBaseUrl}${path11}`,
-      status: response.status,
-      statusText: response.statusText,
-      requestHeaders: this.buildHeaders(),
-      responseBody: this.secretMasker(body2),
-      secretValues: [this.tokenProvider.current()]
-    });
   }
 };
 
@@ -381782,7 +382130,7 @@ function resolveInputs(env = process.env) {
   }
   const postmanRegion = parsePostmanRegion(getInput("postman-region", env));
   const postmanStack = parsePostmanStack(getInput("postman-stack", env));
-  const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion);
+  const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion, env);
   return {
     projectName: getInput("project-name", env) ?? env.GITHUB_REPOSITORY?.split("/").pop() ?? env.CI_PROJECT_NAME ?? "",
     workspaceId: getInput("workspace-id", env),
@@ -381791,6 +382139,11 @@ function resolveInputs(env = process.env) {
     smokeCollectionId: getInput("smoke-collection-id", env),
     contractCollectionId: getInput("contract-collection-id", env),
     additionalCollectionsDir: getInput("additional-collections-dir", env),
+    onboardingScope: parseEnumInput(
+      "onboarding-scope",
+      getInput("onboarding-scope", env),
+      "full"
+    ),
     syncExamples: parseBooleanInput("sync-examples", getInput("sync-examples", env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput("collection-sync-mode", env)),
     specSyncMode: parseSpecSyncMode(getInput("spec-sync-mode", env)),
@@ -381848,6 +382201,7 @@ function resolveInputs(env = process.env) {
     postmanFallbackBase: endpointProfile.fallbackBaseUrl,
     postmanGatewayBase: endpointProfile.gatewayBaseUrl,
     postmanIapubBase: endpointProfile.iapubBaseUrl,
+    postmanAppVersionBase: endpointProfile.appVersionBaseUrl,
     githubRefName: env.GITHUB_REF_NAME,
     githubHeadRef: env.GITHUB_HEAD_REF,
     githubRef: env.GITHUB_REF,
@@ -382135,6 +382489,20 @@ function resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel) {
   }
   return resourcesState?.cloudResources?.specs?.[key];
 }
+function scopeResourcesStateToWorkspace(resourcesState, selectedWorkspaceId) {
+  const trackedWorkspaceId = resourcesState?.workspace?.id?.trim();
+  if (!resourcesState || trackedWorkspaceId && selectedWorkspaceId === trackedWorkspaceId) {
+    return resourcesState;
+  }
+  const workspaceScopedState = { ...resourcesState };
+  delete workspaceScopedState.canonical;
+  delete workspaceScopedState.cloudResources;
+  if (!selectedWorkspaceId) {
+    delete workspaceScopedState.workspace;
+    return workspaceScopedState;
+  }
+  return { ...workspaceScopedState, workspace: { id: selectedWorkspaceId } };
+}
 function recordCurrentBootstrapResources(options) {
   const { assetProjectName, inputs, outputs, persistWorkspaceId, releaseLabel, resourcesState } = options;
   if (persistWorkspaceId && outputs["workspace-id"]) {
@@ -382286,7 +382654,7 @@ async function runBootstrap(inputs, dependencies) {
     throw error;
   }
 }
-async function provisionWorkspace(inputs, dependencies, telemetry, outputs, resourcesState, workspaceName, aboutText) {
+async function provisionWorkspace(inputs, dependencies, telemetry, outputs, resourcesState, workspaceName, aboutText, repositoryWorkspaceProbe) {
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
     explicitWorkspaceId = resourcesState.workspace.id;
@@ -382302,7 +382670,7 @@ async function provisionWorkspace(inputs, dependencies, telemetry, outputs, reso
   telemetry.setTeamId(teamId);
   const repoUrl = inputs.repoUrl || "";
   if (repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo) {
-    const probe = await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl);
+    const probe = repositoryWorkspaceProbe ?? await dependencies.internalIntegration.findWorkspaceForRepo(repoUrl);
     if (probe.state === "linked-invisible") {
       const orgTail = inputs.workspaceTeamId ? " Verify workspace-team-id; if the owner is in another sub-team, ask that sub-team's admin to disconnect it." : "";
       throw new Error(
@@ -382403,6 +382771,13 @@ For CLI usage, pass --workspace-team-id <id> or export POSTMAN_WORKSPACE_TEAM_ID
     } catch (err) {
       if (err instanceof Error && err.message.includes("Org-mode account detected")) {
         throw err;
+      }
+      if (err instanceof SquadDiscoveryUnavailableError) {
+        const mask2 = createBootstrapSecretMasker(inputs);
+        throw new Error(
+          formatMaskedOneLine(squadDiscoveryUnavailableAdvice(err.observedStatus || "none"), mask2),
+          { cause: err }
+        );
       }
       const mask = createBootstrapSecretMasker(inputs);
       const cause = formatMaskedOneLine(err, mask);
@@ -382852,6 +383227,7 @@ async function createExtensibleContractCollection(workspaceId, built, inputs, de
   );
 }
 async function runBootstrapInner(inputs, dependencies, telemetry) {
+  inputs = { ...inputs, onboardingScope: inputs.onboardingScope ?? "full" };
   const outputs = createPlannedOutputs(inputs);
   const branchDecision = decideBranchTier(inputs);
   const isCanonicalWriter = branchDecision.tier === "legacy" || branchDecision.tier === "canonical";
@@ -382872,6 +383248,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     dependencies.core.info(`branch-aware sync: channel asset set "${inputs.projectName}"`);
   }
   const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
+  const onboardingScope = inputs.onboardingScope;
   if (branchDecision.tier !== "legacy") {
     outputs["sync-status"] = "synced";
     outputs["branch-decision"] = serializeBranchDecision(branchDecision);
@@ -382879,9 +383256,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ["spec-id", inputs.specId],
-      ["baseline-collection-id", inputs.baselineCollectionId],
-      ["smoke-collection-id", inputs.smokeCollectionId],
-      ["contract-collection-id", inputs.contractCollectionId]
+      ...onboardingScope === "full" ? [
+        ["baseline-collection-id", inputs.baselineCollectionId],
+        ["smoke-collection-id", inputs.smokeCollectionId],
+        ["contract-collection-id", inputs.contractCollectionId]
+      ] : []
     ].filter(([, value]) => Boolean(value));
     if (explicitCanonicalIds.length > 0) {
       throw new Error(
@@ -382889,7 +383268,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       );
     }
   }
-  const requiresReleaseLabel = inputs.collectionSyncMode === "version" || inputs.specSyncMode === "version";
+  const requiresReleaseLabel = inputs.specSyncMode === "version" || onboardingScope === "full" && inputs.collectionSyncMode === "version";
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : void 0;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -382908,21 +383287,13 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       );
     }
   };
-  const resourcesState = isCanonicalWriter ? trackedState : trackedState?.workspace ? { workspace: trackedState.workspace } : null;
   if (!isCanonicalWriter && trackedState?.cloudResources) {
     dependencies.core.info(
       "branch-aware sync: canonical asset ids in .postman/resources.yaml are not resolved on a non-canonical run"
     );
   }
-  const writableResourcesState = resourcesState ?? {};
-  const additionalCollections = loadAdditionalCollectionFiles(
-    inputs.additionalCollectionsDir,
-    resourcesState
-  );
-  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
-  if (!inputs.specId && specId) {
-    dependencies.core.info("Resolved spec-id from .postman/resources.yaml");
-  }
+  const defaultResourcesState = isCanonicalWriter ? trackedState : trackedState?.workspace ? { workspace: trackedState.workspace } : null;
+  const additionalCollections = onboardingScope === "full" ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, defaultResourcesState) : [];
   let previousSpecContent;
   let previousSpecRollbackHash;
   let previousBundleSnapshot;
@@ -382966,6 +383337,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const specSourceName = inputs.specPath || inputs.specUrl;
   const resolvedSpecType = inputs.protocol && inputs.protocol !== "auto" ? inputs.protocol : sourceDefinitionBundle ? definitionFormatToSpecType(sourceDefinitionBundle.format) : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== "openapi") {
+    if (onboardingScope === "spec-only") {
+      throw new Error(
+        `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
+      );
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     return runProtocolBootstrap(
       resolvedSpecType,
@@ -382976,6 +383352,26 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       telemetry,
       sourceDefinitionBundle
     );
+  }
+  let repositoryWorkspaceProbe;
+  let resourcesState = defaultResourcesState;
+  let deferWorkspaceStateWriteUntilSpecSync = false;
+  if (onboardingScope === "spec-only") {
+    repositoryWorkspaceProbe = inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo ? await dependencies.internalIntegration.findWorkspaceForRepo(inputs.repoUrl) : void 0;
+    const selectedWorkspaceId = repositoryWorkspaceProbe?.state === "linked-visible" ? repositoryWorkspaceProbe.workspace.id : inputs.workspaceId?.trim() || trackedState?.workspace?.id?.trim();
+    const scopedTrackedState = scopeResourcesStateToWorkspace(trackedState, selectedWorkspaceId);
+    if (scopedTrackedState !== trackedState) {
+      deferWorkspaceStateWriteUntilSpecSync = true;
+      dependencies.core.info(
+        "Selected workspace does not exactly match the tracked workspace; ignoring tracked asset ids"
+      );
+    }
+    resourcesState = isCanonicalWriter ? scopedTrackedState : scopedTrackedState?.workspace ? { workspace: scopedTrackedState.workspace } : null;
+  }
+  const writableResourcesState = resourcesState ?? {};
+  let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
+  if (!inputs.specId && specId) {
+    dependencies.core.info("Resolved spec-id from .postman/resources.yaml");
   }
   const useMultiFileSync = Boolean(sourceDefinitionBundle && sourceDefinitionBundle.files.size > 1);
   const specContent = await runGroup(
@@ -383131,25 +383527,32 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     outputs,
     resourcesState,
     workspaceName,
-    aboutText
+    aboutText,
+    repositoryWorkspaceProbe
   );
   const workspaceId = provisioned.workspaceId;
   const persistWorkspaceId = provisioned.persistable;
   outputs["workspace-id"] = workspaceId || "";
-  persistWorkspaceOnlyState(
-    stateStore,
-    writableResourcesState,
-    inputs,
-    outputs,
-    persistWorkspaceId,
-    collectionAssetProjectName,
-    releaseLabel
-  );
-  let baselineCollectionId = inputs.baselineCollectionId;
-  let smokeCollectionId = inputs.smokeCollectionId;
-  let contractCollectionId = inputs.contractCollectionId;
+  if (deferWorkspaceStateWriteUntilSpecSync) {
+    dependencies.core.info(
+      "Deferring workspace state write until spec-only onboarding completes successfully."
+    );
+  } else {
+    persistWorkspaceOnlyState(
+      stateStore,
+      writableResourcesState,
+      inputs,
+      outputs,
+      persistWorkspaceId,
+      collectionAssetProjectName,
+      releaseLabel
+    );
+  }
+  let baselineCollectionId = onboardingScope === "full" ? inputs.baselineCollectionId : void 0;
+  let smokeCollectionId = onboardingScope === "full" ? inputs.smokeCollectionId : void 0;
+  let contractCollectionId = onboardingScope === "full" ? inputs.contractCollectionId : void 0;
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (!baselineCollectionId) {
+  if (onboardingScope === "full" && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -383158,7 +383561,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info("Resolved baseline-collection-id from .postman/resources.yaml");
     }
   }
-  if (!smokeCollectionId) {
+  if (onboardingScope === "full" && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -383171,7 +383574,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info("Resolved smoke-collection-id from .postman/resources.yaml");
     }
   }
-  if (!contractCollectionId) {
+  if (onboardingScope === "full" && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -383465,6 +383868,29 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     let observedLocalOpenApiIntegration = dependencies.internalIntegration;
     let openApiOperationLedger;
     void openApiOperationLedger;
+    if (onboardingScope === "spec-only") {
+      outputs["baseline-collection-id"] = "";
+      outputs["smoke-collection-id"] = "";
+      outputs["contract-collection-id"] = "";
+      outputs["collections-json"] = JSON.stringify({ baseline: "", contract: "", smoke: "" });
+      dependencies.core.info(
+        "onboarding-scope=spec-only; preserving workspace/spec onboarding and skipping collections."
+      );
+      recordCurrentBootstrapResources({
+        assetProjectName: artifactProjectName,
+        inputs,
+        outputs,
+        persistWorkspaceId,
+        releaseLabel,
+        resourcesState: writableResourcesState
+      });
+      stateStore.write(writableResourcesState);
+      createdNewSpec = false;
+      for (const [name, value] of Object.entries(outputs)) {
+        dependencies.core.setOutput(name, value);
+      }
+      return outputs;
+    }
     if (specContentUnchanged) {
       outputs["baseline-collection-id"] = baselineCollectionId || "";
       outputs["smoke-collection-id"] = smokeCollectionId || "";
@@ -384069,7 +384495,12 @@ async function runGatedValidation(inputs, decision, actionCore) {
       content = await safeFetchText(inputs.specUrl, { depth: 0 });
     }
     if (content) {
-      const specType = bundle3 ? definitionFormatToSpecType(bundle3.format) : detectSpecType(content, inputs.specPath);
+      const specType = inputs.protocol && inputs.protocol !== "auto" ? inputs.protocol : bundle3 ? definitionFormatToSpecType(bundle3.format) : detectSpecType(content, inputs.specPath);
+      if (inputs.onboardingScope === "spec-only" && specType !== "openapi") {
+        throw new Error(
+          `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${specType}`
+        );
+      }
       if (specType === "openapi") {
         const document2 = parseOpenApiDocument(content);
         const index = buildContractIndex(document2);
@@ -384203,6 +384634,9 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
     inputs.postmanAccessToken
   ]);
   const secretMasker = mutableMasker.mask;
+  const appVersionProvider = new PostmanAppVersionProvider({
+    baseUrl: inputs.postmanAppVersionBase
+  });
   const tokenProvider = new AccessTokenProvider({
     accessToken: inputs.postmanAccessToken,
     apiKey: inputs.postmanApiKey,
@@ -384217,6 +384651,14 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
     tokenProvider,
     bifrostBaseUrl: inputs.postmanBifrostBase,
     fallbackBaseUrl: inputs.postmanFallbackBase,
+    fallbackOn: "error",
+    jitterRounding: "floor",
+    refreshEmptyToken: true,
+    defaultInnerErrorStatus: 502,
+    classifyInnerAuthError: false,
+    refreshOnInnerAuthError: false,
+    includeFallbackStatusInRetryEvent: false,
+    appVersionProvider,
     teamId: inputs.teamId || "",
     orgMode,
     secretMasker,
@@ -384239,6 +384681,7 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
     backend: inputs.integrationBackend,
     bifrostBaseUrl: inputs.postmanBifrostBase,
     gatewayBaseUrl: inputs.postmanGatewayBase,
+    appVersionProvider,
     orgMode,
     secretMasker,
     teamId: inputs.teamId || ""
@@ -384247,6 +384690,7 @@ function createBootstrapDependencies(inputs, factories, orgMode = false) {
     accessToken: inputs.postmanAccessToken,
     tokenProvider,
     bifrostBaseUrl: inputs.postmanBifrostBase,
+    appVersionProvider,
     orgMode,
     secretMasker,
     teamId: inputs.teamId || "",
@@ -384376,6 +384820,7 @@ var cliInputNames = [
   "smoke-collection-id",
   "contract-collection-id",
   "additional-collections-dir",
+  "onboarding-scope",
   "sync-examples",
   "collection-sync-mode",
   "spec-sync-mode",

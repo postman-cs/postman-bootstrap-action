@@ -127,8 +127,9 @@ jobs:
 
           run lint       npm run lint
           run test       npm test
+          run routes     npm run verify:route-manifest
           run typecheck  npm run typecheck
-          run dist       npm run verify:dist:assert
+          run dist-shape npm run verify:dist:shape
           run integ      npm run test:integration
           run actionlint "$ACTIONLINT_BIN"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -146,6 +147,74 @@ jobs:
             echo "::group::$n"; cat "$n.log"; echo "::endgroup::"
           done
           exit $fail
+      - name: Ensure clean tracked tree outside dist
+        run: |
+          set -euo pipefail
+          outside=()
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            file="${line:3}"
+            case "$file" in
+              dist/*) ;;
+              validation/evidence/multifile-spec-sync.json) ;;
+              *) outside+=("$file") ;;
+            esac
+          done < <(git status --porcelain)
+          if [ "${#outside[@]}" -gt 0 ]; then
+            echo "Unexpected changes outside dist/:"
+            printf '%s\n' "${outside[@]}"
+            exit 1
+          fi
+      - name: Write dist manifest
+        run: |
+          node <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const lock = readFileSync('package-lock.json');
+          writeFileSync(
+            'dist-manifest.json',
+            `${JSON.stringify(
+              {
+                repository: process.env.GITHUB_REPOSITORY,
+                pull_request: Number(process.env.GITHUB_EVENT_PULL_REQUEST_NUMBER || 0),
+                head_sha: process.env.GITHUB_SHA,
+                lock_hash: createHash('sha256').update(lock).digest('hex'),
+              },
+              null,
+              2,
+            )}\n`,
+          );
+          NODE
+        env:
+          GITHUB_EVENT_PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || '' }}
+      - name: Upload candidate dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-dist
+          path: |
+            dist/
+            dist-manifest.json
+
+  dist-parity:
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm run bundle
+      - run: npm run verify:dist:parity
       - name: Upload expected dist on mismatch
         if: failure()
         uses: actions/upload-artifact@v7
@@ -224,3 +293,21 @@ jobs:
           ) | ConvertTo-Json -Compress
           node .github/scripts/run-windows-gates.mjs --gate-json $gates
           exit $LASTEXITCODE
+
+  ready:
+    needs: [gate, dist-parity, windows]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all CI jobs succeeded
+        run: |
+          echo "gate=${{ needs.gate.result }}"
+          echo "dist-parity=${{ needs.dist-parity.result }}"
+          echo "windows=${{ needs.windows.result }}"
+          for result in "${{ needs.gate.result }}" "${{ needs.dist-parity.result }}" "${{ needs.windows.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "CI not ready: one or more required jobs did not succeed"
+              exit 1
+            fi
+          done
+          echo "CI ready"

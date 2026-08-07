@@ -1,0 +1,94 @@
+{
+  "interactions": [
+    {
+      "body": "{\"consumerType\":\"service_account\",\"data\":{\"user\":{\"id\":2002,\"roles\":[\"admin\"]}},\"identity\":{\"domain\":\"jared-demo\",\"team\":1001}}",
+      "key": "GET https://iapub.postman.co/api/sessions/current",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"message\":\"Squad feature is not available\"}",
+      "key": "proxy:ums GET /api/teams/1001/squads?settings=true&userRoles=true",
+      "repeatLast": true,
+      "requestQuery": "settings=true&userRoles=true",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 400
+    },
+    {
+      "body": "{\"message\":\"Squad feature is not available\"}",
+      "key": "proxy:ums GET /api/teams/1001/squads?settings=true&userRoles=true",
+      "repeatLast": true,
+      "requestQuery": "settings=true&userRoles=true",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 400
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-workspace-1\"}}",
+      "key": "proxy:workspaces POST /workspaces #body-sha256=92918c731c43a6ea38549a8c3e9b08bb764e695239f5cfdf6c068c627f727ac5",
+      "requestBodySha256": "92918c731c43a6ea38549a8c3e9b08bb764e695239f5cfdf6c068c627f727ac5",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-workspace-1\",\"visibilityStatus\":\"team\"}}",
+      "key": "proxy:workspaces PUT /workspaces/cassette-workspace-1/visibility #body-sha256=6b5045559cdfd20dd106a82d2dff17d22afd4a8785257b8a3846d5ea8fc96c8d",
+      "requestBodySha256": "6b5045559cdfd20dd106a82d2dff17d22afd4a8785257b8a3846d5ea8fc96c8d",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-workspace-1\",\"visibilityStatus\":\"team\"}}",
+      "key": "proxy:workspaces GET /workspaces/cassette-workspace-1",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-collection-1\"}}",
+      "key": "proxy:collection POST /collections/ #body-sha256=c2bc9ec0da70a89bd3521f8f56d0e4a5a2878e65a1cc7bbf6b9a034401401ccb",
+      "requestBodySha256": "c2bc9ec0da70a89bd3521f8f56d0e4a5a2878e65a1cc7bbf6b9a034401401ccb",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-collection-1\"}}",
+      "key": "proxy:collection POST /collections/cassette-collection-1/items/ #body-sha256=c364f8bc9f229785a30c095f798ec9810872b412cb1d325eb689a1630ceac711",
+      "requestBodySha256": "c364f8bc9f229785a30c095f798ec9810872b412cb1d325eb689a1630ceac711",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    },
+    {
+      "body": "{\"data\":{\"id\":\"cassette-collection-1\"}}",
+      "key": "proxy:collection POST /collections/cassette-collection-1/items/ #body-sha256=9d9ae4485727a5023fbcfa0a61f1cbbb65db6c4a7f325b8a77d42fd035fc354a",
+      "requestBodySha256": "9d9ae4485727a5023fbcfa0a61f1cbbb65db6c4a7f325b8a77d42fd035fc354a",
+      "requestQuery": "",
+      "responseHeaders": {
+        "content-type": "text/plain;charset=UTF-8"
+      },
+      "status": 200
+    }
+  ],
+  "recordedAt": "2000-01-01T00:00:00.000Z",
+  "version": 2
+}

@@ -9,5 +9,13 @@
   "outputIncludes": [
     "gated run",
     "credential-free static validation"
-  ]
+  ],
+  "githubOutputIncludes": [
+    "sync-status",
+    "skipped-branch-gate"
+  ],
+  "dynamicVariableRegistry": {
+    "export": "observeBundledDynamicVariables",
+    "expectedGeneratorCount": 118
+  }
 }

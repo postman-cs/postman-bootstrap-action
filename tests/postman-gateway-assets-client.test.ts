@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AccessTokenGatewayClient } from '../src/lib/postman/gateway-client.js';
+import { AccessTokenGatewayClient, HttpError } from '@postman-cse/automation-core';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
+import {
+  PostmanGatewayAssetsClient,
+  SquadDiscoveryUnavailableError
+} from '../src/lib/postman/postman-gateway-assets-client.js';
 import { __resetIdentityMemo, resolveSessionIdentity } from '../src/lib/postman/credential-identity.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from '../src/lib/postman/error-advice.js';
 import { normalizeCollectionModelIdentity } from '../src/lib/postman/collection-model-identity.js';
@@ -293,7 +296,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.path === '/tasks') {
           return jsonResponse({ data: { 'task-org': 'completed' } });
         }
-        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+        if (env.method === 'patch' && env.path === `/v3/collections/${collectionUid}`) {
           currentName = '[Smoke] Telecom';
           return jsonResponse({ data: { id: modelId } });
         }
@@ -386,7 +389,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.path === '/tasks') {
           return jsonResponse({ data: { 'task-nameless': 'completed' } });
         }
-        if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+        if (env.method === 'patch' && env.path === `/v3/collections/${generatedUid}`) {
           currentName = '[Smoke] Telecom';
           return jsonResponse({ data: { id: generatedModelId } });
         }
@@ -453,7 +456,7 @@ describe('PostmanGatewayAssetsClient', () => {
           if (env.path === '/tasks') {
             return jsonResponse({ data: { 'task-enrich': 'completed' } });
           }
-          if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
+          if (env.method === 'patch' && env.path === `/v3/collections/${generatedUid}`) {
             enrichedName = '[Contract] Telecom';
             return jsonResponse({ data: { id: generatedModelId } });
           }
@@ -566,6 +569,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
     it('re-POSTs once when an ambiguous generation 500 did not commit an exact-name relation', async () => {
       const generatedModelId = '33333333-3333-3333-3333-333333333333';
+      const generatedUid = `132319-${generatedModelId}`;
       let createPosts = 0;
       const submittedNames: string[] = [];
       let identities = 0;
@@ -579,7 +583,7 @@ describe('PostmanGatewayAssetsClient', () => {
             const submittedName = submittedNames[1] ?? '';
             return jsonResponse({
               data: submittedName
-                ? [{ collection: generatedModelId, name: submittedName }]
+                ? [{ collection: generatedUid, name: submittedName }]
                 : []
             });
           }
@@ -597,8 +601,8 @@ describe('PostmanGatewayAssetsClient', () => {
           if (env.path === '/tasks') {
             return jsonResponse({ data: { 'task-repost': 'completed' } });
           }
-          if (env.method === 'patch' && env.path === `/v3/collections/${generatedModelId}`) {
-            return jsonResponse({ data: { id: generatedModelId } });
+          if (env.method === 'patch' && env.path === `/v3/collections/${generatedUid}`) {
+            return jsonResponse({ data: { id: generatedUid } });
           }
           if (env.service === 'collection' && env.method === 'get') {
             return jsonResponse({ error: { code: 'FORBIDDEN' } }, { status: 403 });
@@ -613,7 +617,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await expect(
         client.generateCollection('spec-1', 'Telecom', '[Contract]', 'Tags', false, 'Fallback')
-      ).resolves.toBe(generatedModelId);
+      ).resolves.toBe(generatedUid);
 
       expect(createPosts).toBe(2);
       expect(
@@ -843,9 +847,9 @@ describe('PostmanGatewayAssetsClient', () => {
     it('does not delete peer-owned generated collections after winning convergence', async () => {
       let posted = false;
       const deleted = new Set<string>();
-      const ours = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-      const peerFinal = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
-      const peerTemp = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+      const ours = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const peerFinal = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const peerTemp = '200-cccccccc-cccc-cccc-cccc-cccccccccccc';
       let oursName = '[Smoke] P [bootstrap:test-run]';
       const { client } = makeClient((env) => {
         if (env.method === 'post' && env.path.endsWith('/collections')) {
@@ -1080,6 +1084,28 @@ describe('PostmanGatewayAssetsClient', () => {
       ]);
       expect(calls[1]).toMatchObject({ query: { cursor: 'c2' } });
     });
+
+    it('fails loudly when a cursor repeats', async () => {
+      const { client, calls } = makeClient((env, i) => jsonResponse({
+        meta: { nextCursor: i === 0 ? 'c2' : 'c2' },
+        data: [{ id: `ws-${i}`, name: 'Telecom' }]
+      }));
+
+      await expect(client.findWorkspacesByName('Telecom')).rejects.toThrow('WORKSPACE_CURSOR_REPEATED');
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toMatchObject({ query: { cursor: 'c2' } });
+    });
+
+    it('fails at the page ceiling for endlessly unique cursors', async () => {
+      const { client, calls } = makeClient((_env, i) => jsonResponse({
+        meta: { nextCursor: `cursor-${i + 1}` },
+        data: [{ id: `ws-${i}`, name: 'Telecom' }]
+      }));
+
+      await expect(client.findWorkspacesByName('Telecom')).rejects.toThrow('WORKSPACE_PAGE_LIMIT_EXCEEDED');
+      expect(calls).toHaveLength(200);
+      expect(calls[199]).toMatchObject({ query: { cursor: 'cursor-199' } });
+    });
   });
 
   describe('getWorkspaceGitRepoUrl', () => {
@@ -1288,6 +1314,146 @@ describe('PostmanGatewayAssetsClient', () => {
       );
       expect(await client.getTeams()).toEqual([]);
     });
+
+    it('raises SquadDiscoveryUnavailableError on a 400 whose body is not the non-org sentinel', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() =>
+        jsonResponse({ error: { name: 'BadRequest', message: 'settings query parameter is invalid' } }, { status: 400 })
+      );
+      await expect(client.getTeams()).rejects.toBeInstanceOf(SquadDiscoveryUnavailableError);
+      await expect(client.getTeams()).rejects.toMatchObject({ observedStatus: 400 });
+    });
+
+    it('raises SquadDiscoveryUnavailableError on a 403, preserving the cause and status', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() =>
+        jsonResponse({ message: 'You are not authorized to perform this action' }, { status: 403 })
+      );
+      const error = await client.getTeams().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+      expect(error).toBeInstanceOf(SquadDiscoveryUnavailableError);
+      const typed = error as SquadDiscoveryUnavailableError;
+      expect(typed.observedStatus).toBe(403);
+      expect(typed.bodyDigest).toContain('not authorized');
+      expect(typed.cause).toBeInstanceOf(HttpError);
+    });
+
+    it('raises SquadDiscoveryUnavailableError on a terminal 5xx after the gateway retries', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() => jsonResponse({ message: 'internal error' }, { status: 503 }));
+      await expect(client.getTeams()).rejects.toMatchObject({
+        name: 'SquadDiscoveryUnavailableError',
+        observedStatus: 503
+      });
+    });
+
+    it('raises SquadDiscoveryUnavailableError on a terminal transport rejection after the gateway retries, preserving the cause and status 0', async () => {
+      await seedSession(13347347);
+      const transportError = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+      const { client } = makeClient(() => {
+        throw transportError;
+      });
+      const error = await client.getTeams().then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+      expect(error).toBeInstanceOf(SquadDiscoveryUnavailableError);
+      const typed = error as SquadDiscoveryUnavailableError;
+      expect(typed.observedStatus).toBe(0);
+      expect(typed.bodyDigest).toContain('ECONNRESET');
+      expect(typed.cause).toBe(transportError);
+    });
+
+    it('raises SquadDiscoveryUnavailableError when data is not an array', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() => jsonResponse({ data: { id: 132319, name: 'CSE v12' } }));
+      await expect(client.getTeams()).rejects.toBeInstanceOf(SquadDiscoveryUnavailableError);
+    });
+
+    it('raises SquadDiscoveryUnavailableError when data is an empty array', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() => jsonResponse({ data: [] }));
+      await expect(client.getTeams()).rejects.toBeInstanceOf(SquadDiscoveryUnavailableError);
+    });
+
+    it('accepts positive safe integer ids and organizationIds from decimal digit strings', async () => {
+      await seedSession(13347347);
+      const { client } = makeClient(() =>
+        jsonResponse({
+          data: [
+            {
+              id: '132319',
+              name: 'CSE v12',
+              handle: 'cse-v12',
+              organizationId: '13347347'
+            }
+          ]
+        })
+      );
+      await expect(client.getTeams()).resolves.toEqual([
+        { id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347 }
+      ]);
+    });
+
+    it.each([
+      {
+        label: 'null row',
+        data: [null]
+      },
+      {
+        label: 'primitive string row',
+        data: ['not-a-squad']
+      },
+      {
+        label: 'boolean id',
+        data: [{ id: true, name: 'CSE v12', organizationId: 13347347 }]
+      },
+      {
+        label: 'negative id',
+        data: [{ id: -1, name: 'CSE v12', organizationId: 13347347 }]
+      },
+      {
+        label: 'fractional id',
+        data: [{ id: 132319.5, name: 'CSE v12', organizationId: 13347347 }]
+      },
+      {
+        label: 'unsafe id',
+        data: [{ id: Number.MAX_SAFE_INTEGER + 1, name: 'CSE v12', organizationId: 13347347 }]
+      },
+      {
+        label: 'non-string name',
+        data: [{ id: 132319, name: 42, organizationId: 13347347 }]
+      },
+      {
+        label: 'empty name',
+        data: [{ id: 132319, name: '   ', organizationId: 13347347 }]
+      },
+      {
+        label: 'missing organizationId',
+        data: [{ id: 132319, name: 'CSE v12', handle: 'cse-v12' }]
+      },
+      {
+        label: 'invalid organizationId',
+        data: [{ id: 132319, name: 'CSE v12', organizationId: 'not-a-number' }]
+      },
+      {
+        label: 'valid row followed by invalid id row',
+        data: [
+          { id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347 },
+          { id: null, name: 'CSE v13', organizationId: 13347347 }
+        ]
+      }
+    ])(
+      'raises SquadDiscoveryUnavailableError instead of filtering when a squad row is unusable ($label)',
+      async ({ data }) => {
+        await seedSession(13347347);
+        const { client } = makeClient(() => jsonResponse({ data }));
+        await expect(client.getTeams()).rejects.toBeInstanceOf(SquadDiscoveryUnavailableError);
+      }
+    );
+
 
     it('returns [] when no session identity is memoized (no PMAK /me, no org id)', async () => {
       __resetIdentityMemo();
@@ -2168,6 +2334,15 @@ describe('PostmanGatewayAssetsClient', () => {
     const collectionUid = `132319-${modelId}`;
     const description = 'branch:feature/preview';
 
+    it('rejects a bare UUID before issuing a collection ROOT request', async () => {
+      const { client, calls } = makeClient(() => jsonResponse({ data: { ok: true } }));
+
+      await expect(client.updateCollectionDescription(modelId, description)).rejects.toThrow(
+        /COLLECTION_ROOT_UID_REQUIRED/
+      );
+      expect(calls).toEqual([]);
+    });
+
     it('keeps an arbitrary hyphenated alias exact on the collection root route', async () => {
       const alias = 'custom-owner-alias';
       const { client, calls } = makeClient((env) => {
@@ -2196,7 +2371,7 @@ describe('PostmanGatewayAssetsClient', () => {
             { status: 403 }
           );
         }
-        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+        if (env.method === 'patch' && env.path === `/v3/collections/${collectionUid}`) {
           return jsonResponse({ data: { id: modelId } });
         }
         return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
@@ -2208,7 +2383,7 @@ describe('PostmanGatewayAssetsClient', () => {
         expect.objectContaining({
           service: 'collection',
           method: 'patch',
-          path: `/v3/collections/${modelId}`,
+          path: `/v3/collections/${collectionUid}`,
           body: [{ op: 'add', path: '/description', value: description }]
         })
       ]);
@@ -2226,7 +2401,7 @@ describe('PostmanGatewayAssetsClient', () => {
               { status: 403 }
             );
           }
-          if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+          if (env.method === 'patch' && env.path === `/v3/collections/${collectionUid}`) {
             patchAttempts += 1;
             return patchAttempts === 1
               ? jsonResponse(
@@ -2245,7 +2420,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(patchAttempts).toBe(2);
       expect(sleep).toHaveBeenCalled();
       const patches = calls.filter(
-        (call) => call.method === 'patch' && call.path === `/v3/collections/${modelId}`
+        (call) => call.method === 'patch' && call.path === `/v3/collections/${collectionUid}`
       );
       expect(patches).toHaveLength(2);
       expect(patches[0]?.body).toEqual([{ op: 'add', path: '/description', value: description }]);
@@ -2261,7 +2436,7 @@ describe('PostmanGatewayAssetsClient', () => {
             { status: 403 }
           );
         }
-        if (env.method === 'patch' && env.path === `/v3/collections/${modelId}`) {
+        if (env.method === 'patch' && env.path === `/v3/collections/${collectionUid}`) {
           return jsonResponse(
             {
               error: {
@@ -2281,7 +2456,7 @@ describe('PostmanGatewayAssetsClient', () => {
         expect.objectContaining({
           service: 'collection',
           method: 'patch',
-          path: `/v3/collections/${modelId}`,
+          path: `/v3/collections/${collectionUid}`,
           body: [{ op: 'add', path: '/description', value: description }]
         })
       ]);
@@ -2536,11 +2711,13 @@ describe('PostmanGatewayAssetsClient', () => {
     });
   });
 
-  describe('collection ROOT bare-model-id parsing (strict UID)', () => {
-    it('strips the owner prefix from a full <owner>-<uuid> public uid', async () => {
+  describe('collection ROOT id addressing (strict UID)', () => {
+    it('strips the owner prefix for the DELETE route, which accepts the bare id', async () => {
       const { client, calls } = makeClient(() => jsonResponse({ data: {} }));
       await client.deleteCollection('55363555-11111111-2222-3333-4444-555555555555');
       const del = calls.find((c) => c.method === 'delete');
+      // DELETE is outside the ROOT GET/PATCH ACL tightening (2026-08-03 live
+      // A/B: bare=200), so it keeps the vocabulary that is actually proven.
       expect(del?.path).toBe('/v3/collections/11111111-2222-3333-4444-555555555555');
     });
 
@@ -2551,6 +2728,32 @@ describe('PostmanGatewayAssetsClient', () => {
       // A naive split on the first hyphen would corrupt this to
       // '2222-3333-4444-555555555555'; the strict guard preserves it.
       expect(del?.path).toBe('/v3/collections/11111111-2222-3333-4444-555555555555');
+    });
+
+    it('still strips the owner prefix for the sync deep-update route', async () => {
+      const calls: Array<{ service: string; method: string; path: string }> = [];
+      const { client } = makeClient((env) => {
+        calls.push({ service: env.service, method: env.method, path: env.path });
+        return jsonResponse({ data: { ok: true } });
+      });
+      const payload = {
+        info: {
+          name: 'Payments',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+          _postman_id: '11111111-2222-3333-4444-555555555555'
+        },
+        item: []
+      };
+      const { computePayloadDigest } = await import(
+        '../src/lib/spec/local-openapi-collection-generation.js'
+      );
+      await client.deepUpdateV2Collection(
+        '55363555-11111111-2222-3333-4444-555555555555',
+        payload,
+        computePayloadDigest(payload)
+      );
+      const put = calls.find((call) => call.service === 'sync' && call.method === 'put');
+      expect(put?.path).toBe('/collection/deepupdate/11111111-2222-3333-4444-555555555555');
     });
   });
 
@@ -3727,6 +3930,17 @@ describe('PostmanGatewayAssetsClient', () => {
       250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000
     ] as const;
     const DELETE_ABSENCE_SETTLE_DELAYS_MS = [250, 500, 750, 1000, 1500, 2000, 3000] as const;
+    // Bare-model-id -> ROOT-addressable uid resolution before the finalize PATCH.
+    // Sync returns a bare id and collection ROOT PATCH rejects it 403, so every
+    // import spends one inventory read here, and polls this schedule -- the same
+    // visibility window election gets -- while the imported row is still hidden.
+    const ROOT_UID_RESOLVE_DELAYS_MS = [
+      ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+      ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
+        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+      )
+    ] as const;
+    const ROOT_UID_RESOLVE_MAX_READS = ROOT_UID_RESOLVE_DELAYS_MS.length + 1;
     const PREVIEW_FINAL_NAME = 'Payments @feature-x-abc123';
 
     const v21Collection = {
@@ -3789,11 +4003,12 @@ describe('PostmanGatewayAssetsClient', () => {
 
     it('accepts the live Sync import envelope model_id / data.info._postman_id (Q11)', async () => {
       const bareId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const canonicalId = `12345678-${bareId}`;
       const inventory: Array<{ id: string; name: string }> = [];
       const { client, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
           const body = env.body as { info?: { name?: string } };
-          inventory.push({ id: bareId, name: String(body.info?.name || '') });
+          inventory.push({ id: canonicalId, name: String(body.info?.name || '') });
           // Documented live SyncService envelope — no top-level data.id/uid.
           return jsonResponse({
             model_id: bareId,
@@ -3808,26 +4023,26 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && String(env.path).startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'patch') {
+        if (env.service === 'collection' && env.method === 'patch' && env.path === `/v3/collections/${canonicalId}`) {
           const ops = env.body as Array<{ path?: string; value?: string }>;
           const nameOp = ops.find((op) => op.path === '/name');
           if (nameOp?.value) {
-            const hit = inventory.find((entry) => entry.id === bareId);
+            const hit = inventory.find((entry) => entry.id === canonicalId);
             if (hit) hit.name = String(nameOp.value);
           }
-          return jsonResponse({ data: { id: bareId } });
+          return jsonResponse({ data: { id: canonicalId } });
         }
         return jsonResponse({ data: { ok: true } });
       });
 
       const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
-      expect(result.collectionId).toBe(bareId);
-      expect(result.journaledRootIds).toEqual([bareId]);
+      expect(result.collectionId).toBe(canonicalId);
+      expect(result.journaledRootIds).toEqual([canonicalId]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
-      expect(
-        calls.some((call) => call.service === 'collection' && call.method === 'patch')
-      ).toBe(true);
-      expect(inventory.some((entry) => entry.id === bareId && entry.name === 'Payments')).toBe(true);
+      expect(calls.filter(
+        (call) => call.service === 'collection' && call.method === 'patch'
+      ).map((call) => call.path)).toEqual([`/v3/collections/${canonicalId}`]);
+      expect(inventory.some((entry) => entry.id === canonicalId && entry.name === 'Payments')).toBe(true);
     });
 
     it('promotes bare Sync model_id to canonical workspace UID without emptying the journal (Q13)', async () => {
@@ -4124,7 +4339,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (
           env.service === 'collection' &&
           env.method === 'get' &&
-          env.path === `/v3/collections/${ownBare}`
+          env.path === `/v3/collections/${ownId}`
         ) {
           return jsonResponse({ error: 'missing' }, { status: 404 });
         }
@@ -4198,7 +4413,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (
           env.service === 'collection' &&
           env.method === 'get' &&
-          env.path === `/v3/collections/${ownBare}`
+          env.path === `/v3/collections/${ownId}`
         ) {
           return jsonResponse({ data: { id: ownId, name: 'Payments' } });
         }
@@ -4268,7 +4483,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (
           env.service === 'collection' &&
           env.method === 'get' &&
-          env.path === `/v3/collections/${ownBare}`
+          env.path === `/v3/collections/${ownId}`
         ) {
           return jsonResponse({ error: 'missing' }, { status: 404 });
         }
@@ -4280,7 +4495,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(result.collectionId).toBe(peerId);
       expect(result.journaledRootIds).toEqual([]);
       // Nothing is deleted: the own root is already gone and the peer is not ours.
-      expect(deleted).toEqual([]);
+      expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
       // Adopted survivor content must converge to this run's payload.
       expect(adoptDeepUpdates).toHaveLength(1);
       expect(adoptDeepUpdates[0]?.path).toBe('/collection/deepupdate/11111111-1111-1111-1111-111111111111');
@@ -4305,6 +4520,7 @@ describe('PostmanGatewayAssetsClient', () => {
       });
       const finalName = PREVIEW_FINAL_NAME;
       const ownBare = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+      const ownId = `300-${ownBare}`;
       const peerBare = '33333333-3333-3333-3333-333333333333';
       const peerId = `100-${peerBare}`;
       const marked = { ...v21Collection, info: { ...v21Collection.info, description: marker } };
@@ -4356,7 +4572,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (
           env.service === 'collection' &&
           env.method === 'get' &&
-          env.path === `/v3/collections/${ownBare}`
+          env.path === `/v3/collections/${ownId}`
         ) {
           return jsonResponse({ error: 'missing' }, { status: 404 });
         }
@@ -4366,7 +4582,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const result = await client.importV2Collection('ws-1', marked, finalName);
       expect(result.collectionId).toBe(peerId);
       expect(result.journaledRootIds).toEqual([]);
-      expect(deleted).toEqual([]);
+      expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
       expect(imported).toBe(true);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
     });
@@ -4464,7 +4680,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).resolves.toBeUndefined();
       expect(deletes).toBe(3);
-      expect(rootReads).toBe(3);
+      expect(rootReads).toBe(0);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         DELETE_ABSENCE_SETTLE_DELAYS_MS[0],
         DELETE_ABSENCE_SETTLE_DELAYS_MS[1]
@@ -4513,7 +4729,10 @@ describe('PostmanGatewayAssetsClient', () => {
           electionObs += 1;
           // Own preview final is visible first; lower peer final appears only
           // after the historic six-observation / 3.75s standard election budget.
-          if (electionObs < 7) {
+          // Observation 1 is the finalize resolve read (own row already visible,
+          // so it resolves on the first look and sleeps zero times); election
+          // observations follow.
+          if (electionObs < 8) {
             return jsonResponse({ data: [{ id: ownId, name: finalName }] });
           }
           return jsonResponse({
@@ -4530,7 +4749,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (
           env.service === 'collection' &&
           env.method === 'get' &&
-          env.path === `/v3/collections/${ownBare}`
+          env.path === `/v3/collections/${ownId}`
         ) {
           ownRootReads += 1;
           if (ownRootReads === 1) {
@@ -4551,7 +4770,8 @@ describe('PostmanGatewayAssetsClient', () => {
         `/v3/collections/${ownBare}`
       ]);
       expect(ownRootReads).toBe(2);
-      expect(electionObs).toBe(PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+      // One resolve read for the finalize PATCH uid + the full election window.
+      expect(electionObs).toBe(1 + PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
       expect(cleanupInventoryReads).toBe(1);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
@@ -4597,7 +4817,9 @@ describe('PostmanGatewayAssetsClient', () => {
         ) {
           if (!imported) return jsonResponse({ data: [] });
           electionObs += 1;
-          if (electionObs < 7) {
+          // Observation 1 is the finalize resolve read; the peer must not appear
+          // before the standard election window is otherwise exhausted.
+          if (electionObs < 8) {
             return jsonResponse({ data: [{ id: ownId, name: finalName }] });
           }
           return jsonResponse({
@@ -4614,7 +4836,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (
           env.service === 'collection' &&
           env.method === 'get' &&
-          env.path === `/v3/collections/${ownBare}`
+          env.path === `/v3/collections/${ownId}`
         ) {
           return jsonResponse({ error: 'missing' }, { status: 404 });
         }
@@ -4625,7 +4847,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(result.collectionId).toBe(ownId);
       expect(result.journaledRootIds).toEqual([ownId]);
       expect(deleted).toEqual([]);
-      expect(electionObs).toBe(STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+      expect(electionObs).toBe(1 + STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
@@ -4880,6 +5102,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           if (!imported) return jsonResponse({ data: [] });
           observations += 1;
+          // Surface only after the historic six-observation / 3.75s window.
           return jsonResponse({
             data: observations < 7 ? [] : [{ id: canonicalId, name: 'Payments' }]
           });
@@ -4891,13 +5114,22 @@ describe('PostmanGatewayAssetsClient', () => {
         collectionId: canonicalId,
         journaledRootIds: [canonicalId]
       });
+      // Resolve polls past the historic window (6 gaps) and finds the row on the
+      // 7th read; election then observes its own full standard window.
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
-        ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
-          STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
-        )
+        ...ROOT_UID_RESOLVE_DELAYS_MS.slice(0, 6),
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
       ]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      // No ROOT GET/PATCH may ever carry the bare Sync id.
+      expect(
+        calls.filter(
+          (call) =>
+            call.service === 'collection' &&
+            (call.method === 'patch' || call.method === 'get') &&
+            String(call.path) === `/v3/collections/${bareId}`
+        )
+      ).toHaveLength(0);
     });
 
     it('bounds canonical visibility polling and cleans only the run-owned root', async () => {
@@ -4931,18 +5163,26 @@ describe('PostmanGatewayAssetsClient', () => {
       );
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(calls.filter((call) => call.path === '/v3/collections/?workspace=ws-1')).toHaveLength(
-        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length +
-          PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
-            STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
-          ).length +
-          2
+          ROOT_UID_RESOLVE_MAX_READS +
+            STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length +
+            PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
+              STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+            ).length + 1 +
+            2
       );
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        ...ROOT_UID_RESOLVE_DELAYS_MS,
         ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
         ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
           STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
         )
       ]);
+      // Resolution exhausted without a ROOT-addressable uid: the finalize PATCH
+      // is never attempted with the bare id, and the run fails closed on
+      // election rather than shipping a temp-named collection.
+      expect(
+        calls.filter((call) => call.service === 'collection' && call.method === 'patch')
+      ).toHaveLength(0);
       expect(deleted).toEqual([`/v3/collections/${bareId}`]);
     });
 
@@ -4981,7 +5221,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (
           env.service === 'collection' &&
           env.method === 'get' &&
-          env.path === `/v3/collections/${ownBare}`
+          env.path === `/v3/collections/${ownId}`
         ) {
           return jsonResponse({ error: 'missing' }, { status: 404 });
         }
@@ -5060,9 +5300,9 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       await client.deleteVerifiedRunOwnedCollections('ws-1', [
-        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-        'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-        'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        '12345678-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+        '12345678-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+        '12345678-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
       ]);
       expect(deleted).toEqual([
         '/v3/collections/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
@@ -5343,7 +5583,7 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).resolves.toBeUndefined();
-      expect(rootReads).toBe(1);
+      expect(rootReads).toBe(0);
     });
 
     it('deleteVerifiedRunOwnedCollections fails closed when absence is only HTTP 500', async () => {
@@ -5392,7 +5632,7 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).resolves.toBeUndefined();
       // Inventory proves absence on first stale GET 200 — no settle sleep needed.
-      expect(rootReads).toBe(1);
+      expect(rootReads).toBe(0);
       expect(sleep).not.toHaveBeenCalled();
     });
 
@@ -5425,7 +5665,7 @@ describe('PostmanGatewayAssetsClient', () => {
       await expect(client.deleteVerifiedRunOwnedCollections('ws-1', [id])).rejects.toThrow(
         /LOCAL_OPENAPI_CLEANUP_FAILED: owned collection eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee absence unverifiable/
       );
-      expect(rootReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
+      expect(rootReads).toBe(0);
       expect(inventoryReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([...DELETE_ABSENCE_SETTLE_DELAYS_MS]);
     });
@@ -5463,7 +5703,7 @@ describe('PostmanGatewayAssetsClient', () => {
         client.deleteVerifiedRunOwnedCollections('ws-403-absent', [bareId])
       ).resolves.toBeUndefined();
 
-      expect(rootReads).toBe(1);
+      expect(rootReads).toBe(0);
       expect(inventoryReads).toBe(1);
       expect(sleep).not.toHaveBeenCalled();
       expect(
@@ -5520,7 +5760,7 @@ describe('PostmanGatewayAssetsClient', () => {
         client.deleteVerifiedRunOwnedCollections('ws-403-settle', [bareId])
       ).resolves.toBeUndefined();
 
-      expect(rootReads).toBe(3);
+      expect(rootReads).toBe(0);
       expect(inventoryReads).toBe(3);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         DELETE_ABSENCE_SETTLE_DELAYS_MS[0],
@@ -5577,7 +5817,7 @@ describe('PostmanGatewayAssetsClient', () => {
         /LOCAL_OPENAPI_CLEANUP_FAILED: owned collection cccccccc-dddd-eeee-ffff-000000000001 absence unverifiable/
       );
 
-      expect(rootReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
+      expect(rootReads).toBe(0);
       expect(inventoryReads).toBe(DELETE_ABSENCE_SETTLE_DELAYS_MS.length + 1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([...DELETE_ABSENCE_SETTLE_DELAYS_MS]);
     });

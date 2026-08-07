@@ -178,7 +178,7 @@ jobs:
               {
                 repository: process.env.GITHUB_REPOSITORY,
                 pull_request: Number(process.env.GITHUB_EVENT_PULL_REQUEST_NUMBER || 0),
-                head_sha: process.env.GITHUB_SHA,
+                head_sha: process.env.GITHUB_EVENT_NAME === "pull_request" ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")).pull_request.head.sha : process.env.GITHUB_SHA,
                 lock_hash: createHash('sha256').update(lock).digest('hex'),
               },
               null,

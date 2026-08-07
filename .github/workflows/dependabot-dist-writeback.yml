@@ -36,7 +36,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      actions: read
+      actions: write
     steps:
       - name: Checkout trusted main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -173,7 +173,7 @@ jobs:
           if (manifest.repository !== expectedRepo) throw new Error(`manifest repository ${manifest.repository} != ${expectedRepo}`);
           if (manifest.head_sha !== expectedHead) throw new Error(`manifest head_sha mismatch`);
           if (Number(manifest.pull_request) !== expectedPr) throw new Error(`manifest PR mismatch`);
-          const lock = readFileSync('package-lock.json');
+          const lock = require('node:child_process').execSync(`git show ${process.env.PR_HEAD_SHA}:package-lock.json`, {encoding: 'utf8'});
           const lockHash = createHash('sha256').update(lock).digest('hex');
           if (manifest.lock_hash !== lockHash) throw new Error(`lock hash mismatch ${manifest.lock_hash} != ${lockHash}`);
           const allowlist = new Set(['dist/action.cjs','dist/cli.cjs','dist/index.cjs']);

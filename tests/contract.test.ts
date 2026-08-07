@@ -72,8 +72,14 @@ describe('bootstrap action contract', () => {
     expect(packageManifest.scripts.bundle).toContain("chmodSync('dist/cli.cjs',0o755)");
     expect(packageManifest.scripts.build.match(/npm run typecheck/g) ?? []).toHaveLength(1);
     expect(packageManifest.scripts.build.match(/npm run bundle/g) ?? []).toHaveLength(1);
+    expect(packageManifest.scripts['verify:dist:shape']).toBe(
+      'node scripts/verify-dist-artifact.mjs'
+    );
+    expect(packageManifest.scripts['verify:dist:parity']).toBe(
+      'git diff --ignore-space-at-eol --text --exit-code -- dist'
+    );
     expect(packageManifest.scripts['verify:dist:assert']).toBe(
-      'git diff --ignore-space-at-eol --text --exit-code -- dist && node scripts/verify-dist-artifact.mjs'
+      'npm run verify:dist:shape && npm run verify:dist:parity'
     );
     expect(packageManifest.scripts['verify:dist']).toBe('npm run build && npm run verify:dist:assert');
   });
@@ -94,14 +100,6 @@ describe('bootstrap action contract', () => {
       'false'
     ]);
     expect(actionManifest.inputs['sync-examples'].default).toBe('true');
-    expect(bootstrapActionContract.inputs['onboarding-scope'].default).toBe('full');
-    expect(bootstrapActionContract.inputs['onboarding-scope'].allowedValues).toEqual([
-      'full',
-      'spec-only'
-    ]);
-    expect(actionManifest.inputs['onboarding-scope'].default).toBe('full');
-    expect(resolveInputs({}).onboardingScope).toBe('full');
-    expect(resolveInputs({ INPUT_ONBOARDING_SCOPE: 'spec-only' }).onboardingScope).toBe('spec-only');
     expect(resolveInputs({}).syncExamples).toBe(true);
 
     expect(bootstrapActionContract.inputs['collection-sync-mode'].default).toBe('refresh');

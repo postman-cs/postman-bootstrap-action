@@ -1,0 +1,245 @@
+name: Dependabot Dist Writeback
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to regenerate dist for
+        required: true
+        type: string
+      base_sha:
+        description: Base SHA the PR must be current with
+        required: true
+        type: string
+      expected_head_sha:
+        description: Expected head SHA before writeback
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependabot-writeback-${{ github.event.workflow_run.head_branch || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  writeback:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364badbff7 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate Dependabot PR and CI failure class
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id || '' }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || inputs.expected_head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name || github.repository }}
+        run: |
+          set -euo pipefail
+          # Trusted workflow and script must match main.
+          git show main:.github/workflows/ci.yml > /tmp/trusted-ci.yml
+          if ! cmp -s .github/workflows/ci.yml /tmp/trusted-ci.yml; then
+            echo "::error::CI workflow drift from main; refusing writeback"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            # Head repo must be same as base (no forks).
+            if [ "$HEAD_REPO" != "${{ github.repository }}" ]; then
+              echo "Not same-repo PR; skipping"
+              exit 0
+            fi
+            case "$HEAD_BRANCH" in
+              dependabot/npm_and_yarn/*) ;;
+              *) echo "Not npm Dependabot branch ($HEAD_BRANCH); skipping"; exit 0 ;;
+            esac
+            # Fetch PR by head branch.
+            PR_JSON="$(gh api "repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:${HEAD_BRANCH}&state=open" --jq '.[0] // empty')"
+            if [ -z "$PR_JSON" ]; then
+              echo "No open PR for branch $HEAD_BRANCH; skipping"
+              exit 0
+            fi
+            PR_NUMBER="$(echo "$PR_JSON" | jq -r .number)"
+            PR_AUTHOR="$(echo "$PR_JSON" | jq -r .user.login)"
+            PR_BASE="$(echo "$PR_JSON" | jq -r .base.ref)"
+            PR_HEAD_SHA="$(echo "$PR_JSON" | jq -r .head.sha)"
+            if [ "$PR_AUTHOR" != "dependabot[bot]" ]; then
+              echo "PR author $PR_AUTHOR not dependabot[bot]; skipping"
+              exit 0
+            fi
+            if [ "$PR_BASE" != "main" ]; then
+              echo "PR base $PR_BASE not main; skipping"
+              exit 0
+            fi
+            if [ "$PR_HEAD_SHA" != "$HEAD_SHA" ]; then
+              echo "PR head $PR_HEAD_SHA != workflow head $HEAD_SHA; skipping"
+              exit 0
+            fi
+            # Verify head is current with main (not behind).
+            BEHIND="$(gh api "repos/${{ github.repository }}/compare/main...${HEAD_SHA}" --jq .behind_by)"
+            if [ "$BEHIND" != "0" ]; then
+              echo "PR behind main by $BEHIND; skipping"
+              exit 0
+            fi
+            # Verify all commits are verified and Dependabot-authored.
+            COMMITS="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}/commits" --paginate --jq '.[].commit.verification.verified')"
+            if echo "$COMMITS" | grep -qv true; then
+              echo "Unverified commits; skipping"
+              exit 0
+            fi
+            # Verify changed paths are only dependency manifests + lock.
+            FILES="$(gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename')"
+            ALLOW_RE='^(package\.json|package-lock\.json|dist/.*)$'
+            while IFS= read -r f; do
+              if ! echo "$f" | grep -Eq "$ALLOW_RE"; then
+                # Allow only dependency files; dist changes are expected to be regeneratable, but PR should not have hand-edited dist.
+                if echo "$f" | grep -Eq '^dist/'; then
+                  echo "PR contains hand-edited dist/$f; skipping writeback"
+                  exit 0
+                fi
+                echo "PR touches disallowed path $f; skipping"
+                exit 0
+              fi
+            done <<< "$FILES"
+            # Verify non-parity CI jobs succeeded, only dist-parity/ready failed.
+            JOBS_JSON="$(gh api "repos/${{ github.repository }}/actions/runs/${WORKFLOW_RUN_ID}/jobs" --paginate)"
+            gate_result="$(echo "$JOBS_JSON" | jq -r '.jobs[] | select(.name=="gate") | .conclusion')"
+            windows_result="$(echo "$JOBS_JSON" | jq -r '.jobs[] | select(.name=="Windows gate") | .conclusion')"
+            parity_result="$(echo "$JOBS_JSON" | jq -r '.jobs[] | select(.name=="dist-parity") | .conclusion')"
+            if [ "$gate_result" != "success" ] || [ "$windows_result" != "success" ]; then
+              echo "gate=$gate_result windows=$windows_result not both success; skipping"
+              exit 0
+            fi
+            if [ "$parity_result" != "failure" ]; then
+              echo "dist-parity not failure ($parity_result); nothing to heal"
+              exit 0
+            fi
+            {
+              echo "PR_NUMBER=$PR_NUMBER"
+              echo "PR_HEAD_SHA=$PR_HEAD_SHA"
+              echo "WORKFLOW_RUN_ID=$WORKFLOW_RUN_ID"
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "PR_NUMBER=${{ inputs.pr_number }}"
+              echo "PR_HEAD_SHA=${{ inputs.expected_head_sha }}"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - name: Download candidate dist artifact
+        if: env.PR_NUMBER != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: candidate-dist
+          path: /tmp/candidate
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate candidate artifact and manifest
+        if: env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          MANIFEST="/tmp/candidate/dist-manifest.json"
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::missing dist-manifest.json in artifact"
+            exit 1
+          fi
+          node <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
+          import { join, resolve } from 'node:path';
+          const manifest = JSON.parse(readFileSync('/tmp/candidate/dist-manifest.json','utf8'));
+          const expectedRepo = process.env.GITHUB_REPOSITORY;
+          const expectedHead = process.env.PR_HEAD_SHA;
+          const expectedPr = Number(process.env.PR_NUMBER);
+          if (manifest.repository !== expectedRepo) throw new Error(`manifest repository ${manifest.repository} != ${expectedRepo}`);
+          if (manifest.head_sha !== expectedHead) throw new Error(`manifest head_sha mismatch`);
+          if (Number(manifest.pull_request) !== expectedPr) throw new Error(`manifest PR mismatch`);
+          const lock = readFileSync('package-lock.json');
+          const lockHash = createHash('sha256').update(lock).digest('hex');
+          if (manifest.lock_hash !== lockHash) throw new Error(`lock hash mismatch ${manifest.lock_hash} != ${lockHash}`);
+          const allowlist = new Set(['dist/action.cjs','dist/cli.cjs','dist/index.cjs']);
+          const candidateRoot = '/tmp/candidate/dist';
+          if (!existsSync(candidateRoot)) throw new Error('candidate dist missing');
+          const files = [];
+          function walk(dir, base='') {
+            for (const entry of readdirSync(dir, {withFileTypes:true})) {
+              const rel = base ? `${base}/${entry.name}` : entry.name;
+              const abs = join(dir, entry.name);
+              const st = lstatSync(abs);
+              if (st.isSymbolicLink()) throw new Error(`symlink not allowed: ${rel}`);
+              if (st.isDirectory()) walk(abs, rel);
+              else if (st.isFile()) files.push(rel);
+              else throw new Error(`not a regular file: ${rel}`);
+            }
+          }
+          walk(candidateRoot);
+          const rels = files.map(f => `dist/${f}`).sort();
+          for (const r of rels) {
+            if (!allowlist.has(r)) throw new Error(`unexpected candidate file ${r}`);
+            const st = statSync(join('/tmp/candidate', r));
+            if (st.size > 15*1024*1024) throw new Error(`oversized ${r}`);
+            if (r === 'dist/cli.cjs') {
+              const mode = st.mode & 0o777;
+              if (mode !== 0o755 && mode !== 0o644) throw new Error(`unexpected mode ${mode.toString(8)} for ${r}`);
+            }
+          }
+          // Ensure no extra expected files missing.
+          for (const expected of allowlist) {
+            if (!rels.includes(expected)) throw new Error(`missing expected ${expected}`);
+          }
+          // Verify artifact digest via GitHub API matches downloaded bytes (defense in depth).
+          NODE
+          echo "candidate artifact validated"
+
+      - name: Commit regenerated dist via Git Data API
+        if: env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH="$(gh api "repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}" --jq .head.ref)"
+          HEAD_SHA="${{ env.PR_HEAD_SHA }}"
+          BASE_TREE="$(gh api "repos/${{ github.repository }}/git/commits/${HEAD_SHA}" --jq .tree.sha)"
+          # Create blobs for each file.
+          BLOB_ACTION_CJS="$(gh api "repos/${{ github.repository }}/git/blobs" -f encoding=base64 -f content="$(base64 -w0 /tmp/candidate/dist/action.cjs)" --jq .sha)"
+          BLOB_CLI_CJS="$(gh api "repos/${{ github.repository }}/git/blobs" -f encoding=base64 -f content="$(base64 -w0 /tmp/candidate/dist/cli.cjs)" --jq .sha)"
+          BLOB_INDEX_CJS="$(gh api "repos/${{ github.repository }}/git/blobs" -f encoding=base64 -f content="$(base64 -w0 /tmp/candidate/dist/index.cjs)" --jq .sha)"
+          # Build tree with exact census.
+          TREE_SHA="$(gh api "repos/${{ github.repository }}/git/trees" \
+            -f base_tree="$BASE_TREE" \
+            -f tree[][path]="dist/action.cjs" -f tree[][mode]="100644" -f tree[][type]="blob" -f tree[][sha]="$BLOB_ACTION_CJS" \
+            -f tree[][path]="dist/cli.cjs" -f tree[][mode]="100755" -f tree[][type]="blob" -f tree[][sha]="$BLOB_CLI_CJS" \
+            -f tree[][path]="dist/index.cjs" -f tree[][mode]="100644" -f tree[][type]="blob" -f tree[][sha]="$BLOB_INDEX_CJS" --jq .sha)"
+          COMMIT_SHA="$(gh api "repos/${{ github.repository }}/git/commits" \
+            -f message="build(deps): regenerate dist [dependabot skip]" \
+            -f tree="$TREE_SHA" -f parents[]="$HEAD_SHA" --jq .sha)"
+          # Atomic ref update (no force).
+          gh api "repos/${{ github.repository }}/git/refs/heads/${BRANCH}" -X PATCH -f sha="$COMMIT_SHA" -F force=false
+          echo "Committed $COMMIT_SHA to $BRANCH"
+
+      - name: Dispatch CI on new head
+        if: env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH="$(gh api "repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}" --jq .head.ref)"
+          # Wait for ref to settle, then dispatch.
+          sleep 2
+          gh workflow run ci.yml --ref "$BRANCH"

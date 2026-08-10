@@ -122,7 +122,7 @@ jobs:
             while [ "${#pid[@]}" -ge "$MAX_PARALLEL_GATES" ]; do finish_one; done
             local n=$1; shift
             names+=("$n")
-            ( "$@" ) >"$n.log" 2>&1 & pid[$n]=$!
+            ( "$@" ) >"$RUNNER_TEMP/$n.log" 2>&1 & pid[$n]=$!
           }
 
           run lint       npm run lint
@@ -144,7 +144,7 @@ jobs:
             if [ "${result[$n]}" -eq 0 ]; then echo "gate:$n=pass"; else echo "gate:$n=fail"; fail=1; fi
           done
           for n in "${names[@]}"; do
-            echo "::group::$n"; cat "$n.log"; echo "::endgroup::"
+            echo "::group::$n"; cat "$RUNNER_TEMP/$n.log"; echo "::endgroup::"
           done
           exit $fail
       - name: Ensure clean tracked tree outside dist

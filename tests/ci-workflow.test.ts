@@ -112,6 +112,8 @@ describe('CI workflow dist/pack race contract', () => {
     expect(runGates).toContain('::group::$n');
     expect(runGates).toContain('MAX_PARALLEL_GATES=2');
     expect(runGates).toContain('wait -n -p finished_pid');
+    expect(runGates).toContain('>"$RUNNER_TEMP/$n.log"');
+    expect(runGates).toContain('cat "$RUNNER_TEMP/$n.log"');
 
     const candidate = namedStep(linux, 'Upload candidate dist');
     expect(candidate).toContain('name: candidate-dist');

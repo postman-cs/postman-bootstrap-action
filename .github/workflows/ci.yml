@@ -198,6 +198,7 @@ jobs:
 
   dist-parity:
     needs: gate
+    if: ${{ always() && needs.gate.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

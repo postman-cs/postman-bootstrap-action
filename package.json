@@ -61,18 +61,27 @@
     "openapi-to-postmanv2": "6.3.0",
     "postman-collection": "^5.3.1",
     "punycode": "^2.3.1",
-    "undici": "^8.8.0"
+    "undici": "^8.10.0"
   },
   "overrides": {
     "@faker-js/faker": "6.3.1",
-    "undici": "^8.8.0",
     "picomatch": ">=4.0.4",
-    "lodash": "^4.18.1",
     "uuid": "^11.1.1",
+    "lodash": "^4.18.1",
     "flatted": "^3.4.2",
-    "brace-expansion": "^5.0.8",
-    "js-yaml": "^4.3.0",
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.0",
+    "brace-expansion@1": "1.1.18",
+    "brace-expansion@2": "2.1.4",
+    "brace-expansion@3": "3.0.6",
+    "brace-expansion@4": "5.0.9",
+    "brace-expansion@5": "5.0.9",
+    "fast-uri": ">=3.1.5",
+    "nanoid@3": "3.3.18",
+    "js-yaml@4": "4.3.1",
+    "postcss": ">=8.5.26",
+    "undici": "^8.10.0",
+    "ws": ">=8.21.3",
+    "sharp": ">=0.35.0"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.0.2",

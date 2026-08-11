@@ -259,6 +259,7 @@ describe('CI workflow dist/pack race contract', () => {
   });
 
   it('aggregates gate, dist-parity, and windows in a required ready job', () => {
+    expect(distParity).toContain("if: ${{ always() && needs.gate.result == 'success' }}");
     expect(ready).toContain('if: always()');
     expect(ready).toContain('needs: [gate, dist-parity, windows]');
     expect(ready).toContain('needs.gate.result');

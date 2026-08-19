@@ -22,6 +22,7 @@ import {
   readResourcesState,
   syncAdditionalCollections,
   writeResourcesState,
+  type AdditionalCollectionSyncResult,
   type PostmanResourcesState
 } from './lib/postman/additional-collections.js';
 import {
@@ -117,6 +118,8 @@ import {
 } from './lib/repo/branch-decision.js';
 import { buildProtocolCollection, type ProtocolCollectionResult } from './lib/protocols/dispatch.js';
 
+export type OnboardingScope = 'full' | 'spec-only' | 'spec-with-additional-collections';
+
 export interface ResolvedInputs {
   projectName: string;
   workspaceId?: string;
@@ -125,7 +128,7 @@ export interface ResolvedInputs {
   smokeCollectionId?: string;
   contractCollectionId?: string;
   additionalCollectionsDir?: string;
-  onboardingScope: 'full' | 'spec-only';
+  onboardingScope: OnboardingScope;
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
   specSyncMode: 'update' | 'version';
@@ -191,6 +194,7 @@ export interface PlannedOutputs {
   'smoke-collection-id': string;
   'contract-collection-id': string;
   'collections-json': string;
+  'additional-collections-json': string;
   'lint-summary-json': string;
   'breaking-change-status': string;
   'breaking-change-summary-json': string;
@@ -697,7 +701,7 @@ export function resolveInputs(
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
     additionalCollectionsDir: getInput('additional-collections-dir', env),
-    onboardingScope: parseEnumInput<'full' | 'spec-only'>(
+    onboardingScope: parseEnumInput<OnboardingScope>(
       'onboarding-scope',
       getInput('onboarding-scope', env),
       'full'
@@ -959,6 +963,7 @@ export function createPlannedOutputs(inputs: ResolvedInputs): PlannedOutputs {
       smoke: '',
       contract: ''
     }),
+    'additional-collections-json': '[]',
     'lint-summary-json': JSON.stringify({
       errors: 0,
       total: 0,
@@ -2467,6 +2472,9 @@ async function runBootstrapInner(
   }
   const collectionBranchMarker = renderCollectionBranchMarker(branchDecision, inputs.repoUrl);
   const onboardingScope = inputs.onboardingScope;
+  const shouldGenerateCollections = onboardingScope === 'full';
+  const shouldSyncAdditionalCollections =
+    shouldGenerateCollections || onboardingScope === 'spec-with-additional-collections';
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -2479,7 +2487,7 @@ async function runBootstrapInner(
   if (!isCanonicalWriter) {
     const explicitCanonicalIds = [
       ['spec-id', inputs.specId],
-      ...(onboardingScope === 'full'
+      ...(shouldGenerateCollections
         ? [
             ['baseline-collection-id', inputs.baselineCollectionId],
             ['smoke-collection-id', inputs.smokeCollectionId],
@@ -2496,7 +2504,7 @@ async function runBootstrapInner(
 
   const requiresReleaseLabel =
     inputs.specSyncMode === 'version' ||
-    (onboardingScope === 'full' && inputs.collectionSyncMode === 'version');
+    (shouldGenerateCollections && inputs.collectionSyncMode === 'version');
   const releaseLabel = requiresReleaseLabel ? deriveReleaseLabel(inputs) : undefined;
   if (requiresReleaseLabel && !releaseLabel) {
     throw new Error(
@@ -2542,7 +2550,7 @@ async function runBootstrapInner(
     : trackedState?.workspace
       ? { workspace: trackedState.workspace }
       : null;
-  const additionalCollections = onboardingScope === 'full'
+  const fullScopeAdditionalCollections = shouldGenerateCollections
     ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, defaultResourcesState)
     : [];
 
@@ -2600,9 +2608,9 @@ async function runBootstrapInner(
         ? definitionFormatToSpecType(sourceDefinitionBundle.format)
         : detectSpecType(rawSpecContent, specSourceName);
   if (resolvedSpecType !== 'openapi') {
-    if (onboardingScope === 'spec-only') {
+    if (!shouldGenerateCollections) {
       throw new Error(
-        `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
+        `onboarding-scope=${onboardingScope} currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
       );
     }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
@@ -2619,12 +2627,13 @@ async function runBootstrapInner(
   }
 
   // Preserve the pre-flag state-resolution contract when generated assets are
-  // enabled. Specs-only mode scopes tracked IDs to an exact workspace match so
-  // it cannot carry a spec mapping into a different target workspace.
+  // enabled. Non-generated OpenAPI modes scope tracked IDs to an exact workspace
+  // match so they cannot carry spec/additional collection mappings into a
+  // different target workspace.
   let repositoryWorkspaceProbe: RepositoryWorkspaceProbe | undefined;
   let resourcesState = defaultResourcesState;
   let deferWorkspaceStateWriteUntilSpecSync = false;
-  if (onboardingScope === 'spec-only') {
+  if (!shouldGenerateCollections) {
     repositoryWorkspaceProbe =
       inputs.repoUrl && dependencies.internalIntegration?.findWorkspaceForRepo
         ? await dependencies.internalIntegration.findWorkspaceForRepo(inputs.repoUrl)
@@ -2647,6 +2656,11 @@ async function runBootstrapInner(
         : null;
   }
   const writableResourcesState: PostmanResourcesState = resourcesState ?? {};
+  const additionalCollections = shouldGenerateCollections
+    ? fullScopeAdditionalCollections
+    : shouldSyncAdditionalCollections
+      ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, resourcesState)
+      : [];
   let specId = resolveSpecIdFromResourcesState(inputs, resourcesState, releaseLabel);
   if (!inputs.specId && specId) {
     dependencies.core.info('Resolved spec-id from .postman/resources.yaml');
@@ -2836,7 +2850,7 @@ async function runBootstrapInner(
   // upload would replace the prior workspace/spec mappings with partial state.
   if (deferWorkspaceStateWriteUntilSpecSync) {
     dependencies.core.info(
-      'Deferring workspace state write until spec-only onboarding completes successfully.'
+      `Deferring workspace state write until ${onboardingScope} onboarding completes successfully.`
     );
   } else {
     persistWorkspaceOnlyState(
@@ -2850,12 +2864,12 @@ async function runBootstrapInner(
     );
   }
 
-  let baselineCollectionId = onboardingScope === 'full' ? inputs.baselineCollectionId : undefined;
-  let smokeCollectionId = onboardingScope === 'full' ? inputs.smokeCollectionId : undefined;
-  let contractCollectionId = onboardingScope === 'full' ? inputs.contractCollectionId : undefined;
+  let baselineCollectionId = shouldGenerateCollections ? inputs.baselineCollectionId : undefined;
+  let smokeCollectionId = shouldGenerateCollections ? inputs.smokeCollectionId : undefined;
+  let contractCollectionId = shouldGenerateCollections ? inputs.contractCollectionId : undefined;
 
   const cloudCollections = resourcesState?.cloudResources?.collections;
-  if (onboardingScope === 'full' && !baselineCollectionId) {
+  if (shouldGenerateCollections && !baselineCollectionId) {
     baselineCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesBaselineCollectionResource(filePath, artifactProjectName)
@@ -2864,7 +2878,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved baseline-collection-id from .postman/resources.yaml');
     }
   }
-  if (onboardingScope === 'full' && !smokeCollectionId) {
+  if (shouldGenerateCollections && !smokeCollectionId) {
     smokeCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -2877,7 +2891,7 @@ async function runBootstrapInner(
       dependencies.core.info('Resolved smoke-collection-id from .postman/resources.yaml');
     }
   }
-  if (onboardingScope === 'full' && !contractCollectionId) {
+  if (shouldGenerateCollections && !contractCollectionId) {
     contractCollectionId = findCloudResourceId(
       cloudCollections,
       (filePath) => matchesPrefixedCollectionResource(
@@ -3205,6 +3219,7 @@ async function runBootstrapInner(
   let localOpenApiGenerationOptions: ReturnType<typeof buildLocalOpenApiConversionOptions> | undefined;
   let observedLocalOpenApiPostman = dependencies.postman;
   let observedLocalOpenApiIntegration = dependencies.internalIntegration;
+  let additionalCollectionResults: AdditionalCollectionSyncResult[] = [];
   let openApiOperationLedger:
     | {
         schemaVersion: 1;
@@ -3241,7 +3256,15 @@ async function runBootstrapInner(
     return outputs;
   }
 
-  if (specContentUnchanged) {
+  if (!shouldGenerateCollections) {
+    outputs['baseline-collection-id'] = '';
+    outputs['smoke-collection-id'] = '';
+    outputs['contract-collection-id'] = '';
+    outputs['collections-json'] = JSON.stringify({ baseline: '', contract: '', smoke: '' });
+    dependencies.core.info(
+      `onboarding-scope=${onboardingScope}; preserving workspace/spec onboarding and syncing authored additional collections only.`
+    );
+  } else if (specContentUnchanged) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
     outputs['baseline-collection-id'] = baselineCollectionId || '';
@@ -3690,7 +3713,7 @@ async function runBootstrapInner(
         dependencies.core,
         'Sync Additional Collections',
         async () => {
-          const additionalResults = await syncAdditionalCollections({
+          additionalCollectionResults = await syncAdditionalCollections({
             collectionFiles: additionalCollections,
             core: dependencies.core,
             postman: dependencies.postman,
@@ -3698,7 +3721,7 @@ async function runBootstrapInner(
             writeResourcesState: () => undefined,
             workspaceId: workspaceId || ''
           });
-          for (const result of additionalResults) {
+          for (const result of additionalCollectionResults) {
             if (collectionBranchMarker) {
               if (!dependencies.postman.updateCollectionDescription) {
                 throw new Error('Branch-scoped collections require updateCollectionDescription support');
@@ -3713,6 +3736,7 @@ async function runBootstrapInner(
       )
     );
   }
+  outputs['additional-collections-json'] = JSON.stringify(additionalCollectionResults);
 
   const linkedCollectionIds = [
     outputs['baseline-collection-id'],
@@ -3868,33 +3892,35 @@ async function runBootstrapInner(
     }
   }
 
-  await runRollbackStage(
-    'Tag Collections',
-    async () => runGroup(
-      dependencies.core,
+  if (shouldGenerateCollections) {
+    await runRollbackStage(
       'Tag Collections',
-      async () => {
-        await dependencies.postman.tagCollection(outputs['baseline-collection-id'], [
-          'generated-docs'
-        ]);
-        completedExternalSideEffects.push(
-          `tagCollection(${outputs['baseline-collection-id']}, generated-docs)`
-        );
-        await dependencies.postman.tagCollection(outputs['smoke-collection-id'], [
-          'generated-smoke'
-        ]);
-        completedExternalSideEffects.push(
-          `tagCollection(${outputs['smoke-collection-id']}, generated-smoke)`
-        );
-        await dependencies.postman.tagCollection(outputs['contract-collection-id'], [
-          'generated-contract'
-        ]);
-        completedExternalSideEffects.push(
-          `tagCollection(${outputs['contract-collection-id']}, generated-contract)`
-        );
-      }
-    )
-  );
+      async () => runGroup(
+        dependencies.core,
+        'Tag Collections',
+        async () => {
+          await dependencies.postman.tagCollection(outputs['baseline-collection-id'], [
+            'generated-docs'
+          ]);
+          completedExternalSideEffects.push(
+            `tagCollection(${outputs['baseline-collection-id']}, generated-docs)`
+          );
+          await dependencies.postman.tagCollection(outputs['smoke-collection-id'], [
+            'generated-smoke'
+          ]);
+          completedExternalSideEffects.push(
+            `tagCollection(${outputs['smoke-collection-id']}, generated-smoke)`
+          );
+          await dependencies.postman.tagCollection(outputs['contract-collection-id'], [
+            'generated-contract'
+          ]);
+          completedExternalSideEffects.push(
+            `tagCollection(${outputs['contract-collection-id']}, generated-contract)`
+          );
+        }
+      )
+    );
+  }
 
   // Persist digest-bound manifest with cloud IDs only after link readback + tags.
   if (pendingFinalizedLocalOpenApiManifest && localOpenApiRepoRoot) {
@@ -3992,9 +4018,9 @@ export async function runGatedValidation(
           : bundle
             ? definitionFormatToSpecType(bundle.format)
             : detectSpecType(content, inputs.specPath);
-      if (inputs.onboardingScope === 'spec-only' && specType !== 'openapi') {
+      if (inputs.onboardingScope !== 'full' && specType !== 'openapi') {
         throw new Error(
-          `onboarding-scope=spec-only currently supports OpenAPI specifications only; detected ${specType}`
+          `onboarding-scope=${inputs.onboardingScope} currently supports OpenAPI specifications only; detected ${specType}`
         );
       }
       if (specType === 'openapi') {

@@ -30,6 +30,7 @@ type CliOutputs = {
   'smoke-collection-id': string;
   'contract-collection-id': string;
   'collections-json': string;
+  'additional-collections-json': string;
   'lint-summary-json': string;
   'breaking-change-status': string;
   'breaking-change-summary-json': string;
@@ -49,6 +50,7 @@ function createCliOutputs(overrides: Partial<CliOutputs> = {}): CliOutputs {
     'smoke-collection-id': 'col-smoke',
     'contract-collection-id': 'col-contract',
     'collections-json': '{}',
+    'additional-collections-json': '[]',
     'lint-summary-json': '{"errors":0}',
     'breaking-change-status': 'skipped',
     'breaking-change-summary-json': '{"status":"skipped"}',

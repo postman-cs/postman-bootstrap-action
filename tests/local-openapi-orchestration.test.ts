@@ -1365,6 +1365,7 @@ describe('local OpenAPI orchestration', () => {
         INPUT_SPEC_PATH: 'openapi.yaml'
       })
     );
+    expect(planned['additional-collections-json']).toBe('[]');
     expect(planned['prebuilt-collections-json']).toBe('');
     expect(planned['openapi-operation-ledger-json']).toBe('');
   });

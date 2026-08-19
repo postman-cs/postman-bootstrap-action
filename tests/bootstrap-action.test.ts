@@ -913,6 +913,114 @@ describe('bootstrap action', () => {
     }
   });
 
+  it('requires additional-collections-dir for spec-with-additional-collections scope', async () => {
+    const postman = createRollbackPostman();
+    const execStub = createExecStub();
+
+    await expect(
+      runExistingSpecBootstrap(postman, {
+        exec: execStub,
+        inputs: {
+          onboardingScope: 'spec-with-additional-collections'
+        }
+      })
+    ).rejects.toThrow(/ADDITIONAL_COLLECTIONS_DIR_REQUIRED/);
+
+    expect(execStub.exec).not.toHaveBeenCalled();
+    expect(postman.createWorkspace).not.toHaveBeenCalled();
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.createCollection).not.toHaveBeenCalled();
+  });
+
+  it('uses same-marker adoption for branch-scoped authored additional collections', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-additional-preview-'));
+    mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(createCuratedCollection('Payments curated'), null, 2)
+    );
+
+    try {
+      await withCwd(workspace, async () => {
+        const coreStub = createCoreStub();
+        const previousEnv = {
+          GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+          GITHUB_EVENT_NAME: process.env.GITHUB_EVENT_NAME,
+          GITHUB_HEAD_REF: process.env.GITHUB_HEAD_REF,
+          GITHUB_REF: process.env.GITHUB_REF,
+          GITHUB_SHA: process.env.GITHUB_SHA
+        };
+        const findAdoptableSameMarkerCollection = vi.fn().mockResolvedValue('col-preview-payments');
+        const postman = createRollbackPostman({
+          createCollection: vi.fn().mockResolvedValue({
+            collectionId: 'col-preview-payments',
+            operation: 'updated'
+          }),
+          findAdoptableSameMarkerCollection,
+          uploadSpec: vi.fn().mockResolvedValue('spec-preview'),
+          updateCollectionDescription: vi.fn().mockResolvedValue(undefined)
+        });
+
+        try {
+          process.env.GITHUB_ACTIONS = 'true';
+          process.env.GITHUB_EVENT_NAME = 'pull_request';
+          process.env.GITHUB_HEAD_REF = 'feature/collections';
+          process.env.GITHUB_REF = 'refs/pull/5/merge';
+          process.env.GITHUB_SHA = 'abcdef1234567890';
+
+          await runExistingSpecBootstrap(postman, {
+            core: coreStub.core,
+            resourcesState: { read: readResourcesState, write: writeResourcesState },
+            inputs: {
+              additionalCollectionsDir: 'postman/curated',
+              branchStrategy: 'preview',
+              canonicalBranch: 'main',
+              onboardingScope: 'spec-with-additional-collections',
+              specId: undefined
+            }
+          });
+        } finally {
+          for (const [key, value] of Object.entries(previousEnv)) {
+            if (value === undefined) {
+              delete process.env[key];
+            } else {
+              process.env[key] = value;
+            }
+          }
+        }
+
+        expect(findAdoptableSameMarkerCollection).toHaveBeenCalledWith(
+          'ws-existing',
+          'Payments curated',
+          expect.stringContaining('"role":"preview"')
+        );
+        expect(postman.createCollection).toHaveBeenCalledWith(
+          'ws-existing',
+          expect.objectContaining({
+            info: expect.objectContaining({ name: 'Payments curated' })
+          }),
+          expect.objectContaining({
+            adoptableCollectionId: 'col-preview-payments',
+            allowExactNameAdoption: false,
+            onRootCreated: expect.any(Function),
+            returnOperation: true
+          })
+        );
+        expect(JSON.parse(coreStub.outputs['additional-collections-json'])).toEqual([
+          {
+            collectionId: 'col-preview-payments',
+            displayPath: 'postman/curated/payments.json',
+            name: 'Payments curated',
+            operation: 'updated',
+            resourcePath: '../postman/curated/payments.json'
+          }
+        ]);
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('supports workspace and spec onboarding without generated collection assets', async () => {
     const postman = createRollbackPostman();
     const internalIntegration = createRollbackIntegration();

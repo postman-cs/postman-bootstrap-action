@@ -341671,6 +341671,13 @@ async function runBootstrap(inputs, dependencies) {
     throw error2;
   }
 }
+function assertAdditionalCollectionsScopeConfigured(inputs) {
+  if (inputs.onboardingScope === "spec-with-additional-collections" && !inputs.additionalCollectionsDir?.trim()) {
+    throw new Error(
+      "ADDITIONAL_COLLECTIONS_DIR_REQUIRED: onboarding-scope=spec-with-additional-collections requires additional-collections-dir"
+    );
+  }
+}
 async function provisionWorkspace(inputs, dependencies, telemetry, outputs, resourcesState, workspaceName, aboutText, repositoryWorkspaceProbe) {
   let explicitWorkspaceId = inputs.workspaceId;
   if (!explicitWorkspaceId && resourcesState?.workspace?.id) {
@@ -342268,11 +342275,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const onboardingScope = inputs.onboardingScope;
   const shouldGenerateCollections = onboardingScope === "full";
   const shouldSyncAdditionalCollections = shouldGenerateCollections || onboardingScope === "spec-with-additional-collections";
-  if (onboardingScope === "spec-with-additional-collections" && !inputs.additionalCollectionsDir?.trim()) {
-    throw new Error(
-      "ADDITIONAL_COLLECTIONS_DIR_REQUIRED: onboarding-scope=spec-with-additional-collections requires additional-collections-dir"
-    );
-  }
+  assertAdditionalCollectionsScopeConfigured(inputs);
   if (branchDecision.tier !== "legacy") {
     outputs["sync-status"] = "synced";
     outputs["branch-decision"] = serializeBranchDecision(branchDecision);
@@ -343520,6 +343523,10 @@ async function runGatedValidation(inputs, decision, actionCore) {
   let violations = [];
   let validated = false;
   try {
+    if (inputs.onboardingScope === "spec-with-additional-collections") {
+      assertAdditionalCollectionsScopeConfigured(inputs);
+      loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, null);
+    }
     let content;
     let bundle4;
     if (inputs.specPath) {

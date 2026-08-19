@@ -1628,6 +1628,19 @@ export async function runBootstrap(
   }
 }
 
+function assertAdditionalCollectionsScopeConfigured(
+  inputs: Pick<ResolvedInputs, 'additionalCollectionsDir' | 'onboardingScope'>
+): void {
+  if (
+    inputs.onboardingScope === 'spec-with-additional-collections' &&
+    !inputs.additionalCollectionsDir?.trim()
+  ) {
+    throw new Error(
+      'ADDITIONAL_COLLECTIONS_DIR_REQUIRED: onboarding-scope=spec-with-additional-collections requires additional-collections-dir'
+    );
+  }
+}
+
 type ProvisionedWorkspace = {
   workspaceId: string | undefined;
   /** Whether the resolved id may be durably written to resources.yaml. */
@@ -2485,14 +2498,7 @@ async function runBootstrapInner(
   const shouldGenerateCollections = onboardingScope === 'full';
   const shouldSyncAdditionalCollections =
     shouldGenerateCollections || onboardingScope === 'spec-with-additional-collections';
-  if (
-    onboardingScope === 'spec-with-additional-collections' &&
-    !inputs.additionalCollectionsDir?.trim()
-  ) {
-    throw new Error(
-      'ADDITIONAL_COLLECTIONS_DIR_REQUIRED: onboarding-scope=spec-with-additional-collections requires additional-collections-dir'
-    );
-  }
+  assertAdditionalCollectionsScopeConfigured(inputs);
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -4018,6 +4024,11 @@ export async function runGatedValidation(
   let violations: string[] = [];
   let validated = false;
   try {
+    if (inputs.onboardingScope === 'spec-with-additional-collections') {
+      assertAdditionalCollectionsScopeConfigured(inputs);
+      loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, null);
+    }
+
     let content: string | undefined;
     let bundle: DefinitionBundle | undefined;
     if (inputs.specPath) {

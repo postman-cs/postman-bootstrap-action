@@ -378,11 +378,6 @@ export interface BootstrapExecutionDependencies {
       workspaceId: string,
       candidates: Array<{ finalName: string; desiredDescription: string }>
     ): Promise<Record<string, string>>;
-    findAdoptableSameMarkerCollection?(
-      workspaceId: string,
-      finalName: string,
-      desiredDescription: string
-    ): Promise<string | undefined>;
   };
   ecClient?: Pick<
     PostmanExtensibleCollectionClient,

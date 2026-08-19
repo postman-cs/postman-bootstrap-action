@@ -3113,13 +3113,16 @@ export class PostmanGatewayAssetsClient {
     const desiredName = String(v3.name ?? 'Untitled Collection');
     const allowExactNameAdoption = options.allowExactNameAdoption ?? true;
     const returnOperation = options.returnOperation ?? false;
+    const exactNameCandidates = !options.adoptableCollectionId && allowExactNameAdoption
+      ? await this.findCanonicalAdoptableCollectionsByExactName(workspaceId, desiredName)
+      : [];
     const existing = options.adoptableCollectionId
       ? { id: options.adoptableCollectionId, name: desiredName }
       : !allowExactNameAdoption
         ? undefined
       : adoptExactMatch(
           `collection:${workspaceId}:${desiredName}`,
-          await this.findCollectionsByExactName(workspaceId, desiredName),
+          exactNameCandidates,
           (entry) => entry.id
         );
     if (existing) {
@@ -3748,6 +3751,28 @@ export class PostmanGatewayAssetsClient {
       }
     }
     return winners;
+  }
+
+  private async findCanonicalAdoptableCollectionsByExactName(
+    workspaceId: string,
+    desiredName: string
+  ): Promise<Array<{ id: string; name: string; description?: string }>> {
+    const candidates = await this.findCollectionsByExactName(workspaceId, desiredName);
+    const adoptable: Array<{ id: string; name: string; description?: string }> = [];
+    for (const entry of candidates) {
+      let description = entry.description;
+      if (!description) {
+        try {
+          const exported = await this.exportV2Collection(entry.id);
+          description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
+        } catch {
+          description = undefined;
+        }
+      }
+      if (parseAssetMarker(description)) continue;
+      adoptable.push({ ...entry, ...(description ? { description } : {}) });
+    }
+    return adoptable;
   }
 
   /**

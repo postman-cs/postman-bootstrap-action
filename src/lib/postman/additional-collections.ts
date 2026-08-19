@@ -69,6 +69,11 @@ export interface AdditionalCollectionSyncResult {
   resourcePath: string;
 }
 
+export interface AdditionalCollectionCreateResult {
+  collectionId: string;
+  operation: 'created' | 'updated';
+}
+
 export interface AdditionalCollectionsLogger {
   info(message: string): void;
   warning(message: string): void;
@@ -78,9 +83,19 @@ export interface AdditionalCollectionsPostmanClient {
   createCollection?: (
     workspaceId: string,
     collection: unknown,
-    options?: { onRootCreated?: (id: string) => void | Promise<void> }
-  ) => Promise<string>;
+    options?: {
+      onRootCreated?: (id: string) => void | Promise<void>;
+      adoptableCollectionId?: string;
+      allowExactNameAdoption?: boolean;
+      returnOperation?: boolean;
+    }
+  ) => Promise<string | AdditionalCollectionCreateResult>;
   updateCollection?: (collectionUid: string, collection: unknown) => Promise<void>;
+  findAdoptableSameMarkerCollection?(
+    workspaceId: string,
+    finalName: string,
+    desiredDescription: string
+  ): Promise<string | undefined>;
 }
 
 const ADDITIONAL_COLLECTION_EXTENSIONS = new Set(['.json', '.yaml', '.yml']);
@@ -700,6 +715,7 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 async function createAdditionalCollection(options: {
+  branchMarker?: string;
   core: AdditionalCollectionsLogger;
   file: AdditionalCollectionFile;
   postman: AdditionalCollectionsPostmanClient;
@@ -707,33 +723,42 @@ async function createAdditionalCollection(options: {
   writeResourcesState: (state: PostmanResourcesState) => void;
   workspaceId: string;
 }): Promise<AdditionalCollectionSyncResult> {
-  const { core, file, postman, resourcesState, workspaceId, writeResourcesState } = options;
+  const { branchMarker, core, file, postman, resourcesState, workspaceId, writeResourcesState } = options;
   if (!postman.createCollection) {
     throw new Error(
       'Additional collection creates require createCollection support from the Postman client'
     );
   }
+  const adoptableCollectionId = branchMarker
+    ? await postman.findAdoptableSameMarkerCollection?.(workspaceId, file.name, branchMarker)
+    : undefined;
   const persistRoot = (collectionId: string): void => {
     ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId;
     writeResourcesState(resourcesState);
   };
-  const collectionId = await postman.createCollection(workspaceId, file.collection, {
-    onRootCreated: persistRoot
+  const created = await postman.createCollection(workspaceId, file.collection, {
+    allowExactNameAdoption: !branchMarker,
+    adoptableCollectionId,
+    onRootCreated: persistRoot,
+    returnOperation: true
   });
+  const collectionId = typeof created === 'string' ? created : created.collectionId;
+  const operation = typeof created === 'string' ? 'created' : created.operation;
   persistRoot(collectionId);
   core.info(
-    `Created additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
+    `${operation === 'created' ? 'Created' : 'Updated'} additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
   );
   return {
     collectionId,
     displayPath: file.displayPath,
     name: file.name,
-    operation: 'created',
+    operation,
     resourcePath: file.resourcePath
   };
 }
 
 export async function syncAdditionalCollections(options: {
+  branchMarker?: string;
   collectionFiles: AdditionalCollectionFile[];
   core: AdditionalCollectionsLogger;
   postman: AdditionalCollectionsPostmanClient;
@@ -742,6 +767,7 @@ export async function syncAdditionalCollections(options: {
   workspaceId: string;
 }): Promise<AdditionalCollectionSyncResult[]> {
   const {
+    branchMarker,
     collectionFiles,
     core,
     postman,
@@ -768,6 +794,7 @@ export async function syncAdditionalCollections(options: {
           `Existing additional collection ${file.existingCollectionId} was not found; creating ${file.name} in the current workspace`
         );
         results.push(await createAdditionalCollection({
+          branchMarker,
           core,
           file,
           postman,
@@ -793,6 +820,7 @@ export async function syncAdditionalCollections(options: {
     }
 
     results.push(await createAdditionalCollection({
+      branchMarker,
       core,
       file,
       postman,

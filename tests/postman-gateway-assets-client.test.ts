@@ -1632,6 +1632,108 @@ describe('PostmanGatewayAssetsClient', () => {
       ]);
     });
 
+    it('does not adopt exact-name collections when exact-name adoption is disabled', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-canonical-root', name: 'Curated' }]
+          });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-preview-root' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { allowExactNameAdoption: false }
+        )
+      ).resolves.toBe('55363555-preview-root');
+
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-canonical-root')).toBe(false);
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(true);
+    });
+
+    it('updates an explicit adoptable collection and reports an update', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-preview-root/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            description: 'branch marker',
+            items: []
+          },
+          {
+            adoptableCollectionId: '55363555-preview-root',
+            allowExactNameAdoption: false,
+            returnOperation: true
+          }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-preview-root',
+        operation: 'updated'
+      });
+
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-preview-root')).toBe(true);
+    });
+
+    it('reports exact-name adoption as an update when operation metadata is requested', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-existing-root', name: 'Curated' }]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-existing-root',
+        operation: 'updated'
+      });
+
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-existing-root')).toBe(true);
+    });
+
     it('applies root description via JSON Patch on create, not the root POST body', async () => {
       const { client, calls } = makeClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {

@@ -336,8 +336,13 @@ export interface BootstrapExecutionDependencies {
     createCollection?(
       workspaceId: string,
       collection: unknown,
-      options?: { onRootCreated?: (id: string) => void | Promise<void> }
-    ): Promise<string>;
+      options?: {
+        onRootCreated?: (id: string) => void | Promise<void>;
+        adoptableCollectionId?: string;
+        allowExactNameAdoption?: boolean;
+        returnOperation?: boolean;
+      }
+    ): Promise<string | { collectionId: string; operation: 'created' | 'updated' }>;
     createRunOwnedCollection?(
       workspaceId: string,
       collection: unknown,
@@ -363,6 +368,11 @@ export interface BootstrapExecutionDependencies {
       expectedPayloadDigest: string
     ): Promise<string>;
     exportV2Collection?(collectionUid: string): Promise<Record<string, unknown>>;
+    findAdoptableSameMarkerCollection?(
+      workspaceId: string,
+      finalName: string,
+      desiredDescription: string
+    ): Promise<string | undefined>;
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
       workspaceId: string,
@@ -2475,6 +2485,14 @@ async function runBootstrapInner(
   const shouldGenerateCollections = onboardingScope === 'full';
   const shouldSyncAdditionalCollections =
     shouldGenerateCollections || onboardingScope === 'spec-with-additional-collections';
+  if (
+    onboardingScope === 'spec-with-additional-collections' &&
+    !inputs.additionalCollectionsDir?.trim()
+  ) {
+    throw new Error(
+      'ADDITIONAL_COLLECTIONS_DIR_REQUIRED: onboarding-scope=spec-with-additional-collections requires additional-collections-dir'
+    );
+  }
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);
@@ -3714,6 +3732,7 @@ async function runBootstrapInner(
         'Sync Additional Collections',
         async () => {
           additionalCollectionResults = await syncAdditionalCollections({
+            branchMarker: collectionBranchMarker,
             collectionFiles: additionalCollections,
             core: dependencies.core,
             postman: dependencies.postman,

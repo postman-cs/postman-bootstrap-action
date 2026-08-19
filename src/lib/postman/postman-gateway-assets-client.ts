@@ -3098,22 +3098,35 @@ export class PostmanGatewayAssetsClient {
   async createCollection(
     workspaceId: string,
     collection: unknown,
-    options: { onRootCreated?: (id: string) => void | Promise<void> } = {}
-  ): Promise<string> {
+    options: {
+      onRootCreated?: (id: string) => void | Promise<void>;
+      adoptableCollectionId?: string;
+      allowExactNameAdoption?: boolean;
+      returnOperation?: boolean;
+    } = {}
+  ): Promise<string | { collectionId: string; operation: 'created' | 'updated' }> {
     const v3 = this.normalizeCollectionForWrite(collection);
     // Root create accepts name only; description/auth/variables/scripts are applied
     // via JSON Patch in applyCollectionLevelSettings (live-proven). Putting
     // description on the POST body makes a later add /description a no-op that
     // can 400 when the patch set is otherwise empty or redundant.
     const desiredName = String(v3.name ?? 'Untitled Collection');
-    const existing = adoptExactMatch(
-      `collection:${workspaceId}:${desiredName}`,
-      await this.findCollectionsByExactName(workspaceId, desiredName),
-      (entry) => entry.id
-    );
+    const allowExactNameAdoption = options.allowExactNameAdoption ?? true;
+    const returnOperation = options.returnOperation ?? false;
+    const existing = options.adoptableCollectionId
+      ? { id: options.adoptableCollectionId, name: desiredName }
+      : !allowExactNameAdoption
+        ? undefined
+      : adoptExactMatch(
+          `collection:${workspaceId}:${desiredName}`,
+          await this.findCollectionsByExactName(workspaceId, desiredName),
+          (entry) => entry.id
+        );
     if (existing) {
       await this.updateCollection(existing.id, collection);
-      return existing.id;
+      return returnOperation
+        ? { collectionId: existing.id, operation: 'updated' }
+        : existing.id;
     }
     const submittedName = `${desiredName} [bootstrap:${this.createIdentity()}]`;
     const rootBody: JsonRecord = { name: submittedName };
@@ -3166,7 +3179,9 @@ export class PostmanGatewayAssetsClient {
       }
       throw error;
     }
-    return rawId;
+    return returnOperation
+      ? { collectionId: rawId, operation: 'created' }
+      : rawId;
   }
 
   /**

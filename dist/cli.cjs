@@ -273115,33 +273115,40 @@ function isNotFoundError(error) {
   return error.status === 404;
 }
 async function createAdditionalCollection(options) {
-  const { core: core2, file, postman, resourcesState, workspaceId, writeResourcesState: writeResourcesState2 } = options;
+  const { branchMarker, core: core2, file, postman, resourcesState, workspaceId, writeResourcesState: writeResourcesState2 } = options;
   if (!postman.createCollection) {
     throw new Error(
       "Additional collection creates require createCollection support from the Postman client"
     );
   }
+  const adoptableCollectionId = branchMarker ? await postman.findAdoptableSameMarkerCollection?.(workspaceId, file.name, branchMarker) : void 0;
   const persistRoot = (collectionId2) => {
     ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId2;
     writeResourcesState2(resourcesState);
   };
-  const collectionId = await postman.createCollection(workspaceId, file.collection, {
-    onRootCreated: persistRoot
+  const created = await postman.createCollection(workspaceId, file.collection, {
+    allowExactNameAdoption: !branchMarker,
+    adoptableCollectionId,
+    onRootCreated: persistRoot,
+    returnOperation: true
   });
+  const collectionId = typeof created === "string" ? created : created.collectionId;
+  const operation = typeof created === "string" ? "created" : created.operation;
   persistRoot(collectionId);
   core2.info(
-    `Created additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
+    `${operation === "created" ? "Created" : "Updated"} additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
   );
   return {
     collectionId,
     displayPath: file.displayPath,
     name: file.name,
-    operation: "created",
+    operation,
     resourcePath: file.resourcePath
   };
 }
 async function syncAdditionalCollections(options) {
   const {
+    branchMarker,
     collectionFiles,
     core: core2,
     postman,
@@ -273167,6 +273174,7 @@ async function syncAdditionalCollections(options) {
           `Existing additional collection ${file.existingCollectionId} was not found; creating ${file.name} in the current workspace`
         );
         results.push(await createAdditionalCollection({
+          branchMarker,
           core: core2,
           file,
           postman,
@@ -273191,6 +273199,7 @@ async function syncAdditionalCollections(options) {
       continue;
     }
     results.push(await createAdditionalCollection({
+      branchMarker,
       core: core2,
       file,
       postman,
@@ -308583,14 +308592,16 @@ ${error.responseBody ?? ""}`
   async createCollection(workspaceId, collection, options = {}) {
     const v3 = this.normalizeCollectionForWrite(collection);
     const desiredName = String(v3.name ?? "Untitled Collection");
-    const existing = adoptExactMatch(
+    const allowExactNameAdoption = options.allowExactNameAdoption ?? true;
+    const returnOperation = options.returnOperation ?? false;
+    const existing = options.adoptableCollectionId ? { id: options.adoptableCollectionId, name: desiredName } : !allowExactNameAdoption ? void 0 : adoptExactMatch(
       `collection:${workspaceId}:${desiredName}`,
       await this.findCollectionsByExactName(workspaceId, desiredName),
       (entry) => entry.id
     );
     if (existing) {
       await this.updateCollection(existing.id, collection);
-      return existing.id;
+      return returnOperation ? { collectionId: existing.id, operation: "updated" } : existing.id;
     }
     const submittedName = `${desiredName} [bootstrap:${this.createIdentity()}]`;
     const rootBody = { name: submittedName };
@@ -308640,7 +308651,7 @@ ${error.responseBody ?? ""}`
       }
       throw error;
     }
-    return rawId;
+    return returnOperation ? { collectionId: rawId, operation: "created" } : rawId;
   }
   /**
    * Patch only the durable collection description without reconciling its item tree.
@@ -340945,6 +340956,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   const onboardingScope = inputs.onboardingScope;
   const shouldGenerateCollections = onboardingScope === "full";
   const shouldSyncAdditionalCollections = shouldGenerateCollections || onboardingScope === "spec-with-additional-collections";
+  if (onboardingScope === "spec-with-additional-collections" && !inputs.additionalCollectionsDir?.trim()) {
+    throw new Error(
+      "ADDITIONAL_COLLECTIONS_DIR_REQUIRED: onboarding-scope=spec-with-additional-collections requires additional-collections-dir"
+    );
+  }
   if (branchDecision.tier !== "legacy") {
     outputs["sync-status"] = "synced";
     outputs["branch-decision"] = serializeBranchDecision(branchDecision);
@@ -341949,6 +341965,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
           "Sync Additional Collections",
           async () => {
             additionalCollectionResults = await syncAdditionalCollections({
+              branchMarker: collectionBranchMarker,
               collectionFiles: additionalCollections,
               core: dependencies.core,
               postman: dependencies.postman,

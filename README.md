@@ -169,7 +169,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `smoke-collection-id` | Existing smoke collection ID | no |  |
 | `contract-collection-id` | Existing contract collection ID | no |  |
 | `additional-collections-dir` | Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update. | no |  |
-| `onboarding-scope` | Onboarding scope. Use full for the complete pipeline or spec-only for OpenAPI workspace and specification onboarding without generated assets. | no | `full` |
+| `onboarding-scope` | Onboarding scope. Use full for the complete pipeline, spec-only for OpenAPI workspace and specification onboarding without collections, or spec-with-additional-collections for OpenAPI workspace/spec onboarding plus authored additional collections without generated assets. | no | `full` |
 | `sync-examples` | Whether linked spec/collection relations should enable example syncing | no | `true` |
 | `collection-sync-mode` | Collection lifecycle policy (refresh or version) | no | `refresh` |
 | `spec-sync-mode` | Spec lifecycle policy (update or version) | no | `update` |
@@ -210,6 +210,8 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `postman-region` | Postman data residency region for access-token minting and gateway calls. | no | `us` |
 <!-- inputs-table:end -->
 
+`onboarding-scope: spec-with-additional-collections` uploads or updates the OpenAPI workspace/spec and syncs authored collections from `additional-collections-dir` without creating generated baseline, smoke, or contract collections. The synced authored collection IDs are emitted in `additional-collections-json` so a downstream pipeline can select the intended collection, such as an authored baseline, for mock or environment setup.
+
 ## Outputs
 
 <!-- outputs-table:start -->
@@ -223,6 +225,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `smoke-collection-id` | Smoke collection ID | n/a | n/a |
 | `contract-collection-id` | Contract collection ID | n/a | n/a |
 | `collections-json` | JSON summary of generated collections | n/a | n/a |
+| `additional-collections-json` | JSON array of authored additional collection sync results, including collectionId, name, displayPath, resourcePath, and operation | n/a | n/a |
 | `prebuilt-collections-json` | Digest-bound JSON manifest of locally materialized Collection v3 trees (schemaVersion 1) for repo-sync reuse | n/a | n/a |
 | `openapi-operation-ledger-json` | Sanitized local OpenAPI orchestration operation ledger (schemaVersion 1) with counts and timings | n/a | n/a |
 | `lint-summary-json` | JSON summary of validation findings. Bootstrap does not invoke an API-key-authenticated Postman CLI lint. | n/a | n/a |

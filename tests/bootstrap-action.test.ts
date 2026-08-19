@@ -706,7 +706,7 @@ describe('bootstrap action', () => {
         });
         const internalIntegration = createRollbackIntegration();
 
-        await runExistingSpecBootstrap(postman, {
+        const result = await runExistingSpecBootstrap(postman, {
           core,
           internalIntegration,
           resourcesState: { read: readResourcesState, write: writeResourcesState },
@@ -738,6 +738,22 @@ describe('bootstrap action', () => {
           '../postman/curated/nested/refunds.yaml': 'col-refunds-created',
           '../postman/curated/payments.json': 'col-payments-existing'
         });
+        expect(JSON.parse(result['additional-collections-json'])).toEqual([
+          {
+            collectionId: 'col-refunds-created',
+            displayPath: 'postman/curated/nested/refunds.yaml',
+            name: 'Refunds curated',
+            operation: 'created',
+            resourcePath: '../postman/curated/nested/refunds.yaml'
+          },
+          {
+            collectionId: 'col-payments-existing',
+            displayPath: 'postman/curated/payments.json',
+            name: 'Payments curated',
+            operation: 'updated',
+            resourcePath: '../postman/curated/payments.json'
+          }
+        ]);
         expect(resources.workspace).toEqual({ id: 'ws-existing' });
         expect(resources.canonical?.specs).toEqual({
           'spec-url:https://example.test/openapi.yaml': 'spec-existing'
@@ -780,6 +796,117 @@ describe('bootstrap action', () => {
           ]
         );
         expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('syncs authored additional collections without generated assets', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-additional-'));
+    mkdirSync(join(workspace, 'postman/curated/nested'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(createCuratedCollection('Payments curated'), null, 2)
+    );
+    writeFileSync(
+      join(workspace, 'postman/curated/nested/refunds.yaml'),
+      stringifyYaml(createCuratedCollection('Refunds curated'))
+    );
+    mkdirSync(join(workspace, '.postman'), { recursive: true });
+    writeFileSync(
+      join(workspace, '.postman/resources.yaml'),
+      stringifyYaml({
+        version: 2,
+        workspace: { id: 'ws-existing' },
+        canonical: {
+          additionalCollections: {
+            '../postman/curated/payments.json': 'col-payments-existing'
+          },
+          specs: {
+            'spec-url:https://example.test/openapi.yaml': 'spec-existing'
+          }
+        }
+      })
+    );
+
+    try {
+      await withCwd(workspace, async () => {
+        const { core, outputs } = createCoreStub();
+        const postman = createRollbackPostman({
+          createCollection: vi.fn().mockResolvedValue('col-refunds-created'),
+          updateCollection: vi.fn().mockResolvedValue(undefined)
+        });
+        const internalIntegration = createRollbackIntegration();
+
+        const result = await runExistingSpecBootstrap(postman, {
+          core,
+          internalIntegration,
+          resourcesState: { read: readResourcesState, write: writeResourcesState },
+          inputs: {
+            additionalCollectionsDir: 'postman/curated',
+            baselineCollectionId: 'col-baseline-existing',
+            contractCollectionId: 'col-contract-existing',
+            smokeCollectionId: 'col-smoke-existing',
+            onboardingScope: 'spec-with-additional-collections'
+          }
+        });
+
+        expect(result).toMatchObject({
+          'workspace-id': 'ws-existing',
+          'spec-id': 'spec-existing',
+          'baseline-collection-id': '',
+          'smoke-collection-id': '',
+          'contract-collection-id': '',
+          'collections-json': JSON.stringify({ baseline: '', contract: '', smoke: '' })
+        });
+        expect(JSON.parse(outputs['additional-collections-json'])).toEqual([
+          {
+            collectionId: 'col-refunds-created',
+            displayPath: 'postman/curated/nested/refunds.yaml',
+            name: 'Refunds curated',
+            operation: 'created',
+            resourcePath: '../postman/curated/nested/refunds.yaml'
+          },
+          {
+            collectionId: 'col-payments-existing',
+            displayPath: 'postman/curated/payments.json',
+            name: 'Payments curated',
+            operation: 'updated',
+            resourcePath: '../postman/curated/payments.json'
+          }
+        ]);
+        expect(postman.createCollection).toHaveBeenCalledWith(
+          'ws-existing',
+          expect.objectContaining({
+            info: expect.objectContaining({ name: 'Refunds curated' })
+          }),
+          expect.objectContaining({ onRootCreated: expect.any(Function) })
+        );
+        expect(postman.updateCollection).toHaveBeenCalledWith(
+          'col-payments-existing',
+          expect.objectContaining({
+            info: expect.objectContaining({ name: 'Payments curated' })
+          })
+        );
+        expect(postman.generateCollection).not.toHaveBeenCalled();
+        expect(postman.importV2Collection).not.toHaveBeenCalled();
+        expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+        expect(postman.injectContractTests).not.toHaveBeenCalled();
+        expect(postman.injectTests).not.toHaveBeenCalled();
+        expect(postman.tagCollection).not.toHaveBeenCalled();
+        expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+        expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
+
+        const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8'));
+        expect(resources.canonical?.additionalCollections).toMatchObject({
+          '../postman/curated/nested/refunds.yaml': 'col-refunds-created',
+          '../postman/curated/payments.json': 'col-payments-existing'
+        });
+        expect(resources.canonical?.specs).toEqual({
+          'spec-url:https://example.test/openapi.yaml': 'spec-existing'
+        });
+        expect(resources.canonical?.collections ?? {}).toEqual({});
       });
     } finally {
       rmSync(workspace, { recursive: true, force: true });
@@ -1294,6 +1421,15 @@ components:
             })
           ).rejects.toThrow(/ADDITIONAL_COLLECTION_INVALID/);
         }
+        await expect(
+          runExistingSpecBootstrap(postman, {
+            exec: execStub,
+            inputs: {
+              additionalCollectionsDir: 'postman/curated',
+              onboardingScope: 'spec-with-additional-collections'
+            }
+          })
+        ).rejects.toThrow(/ADDITIONAL_COLLECTION_INVALID/);
 
         expect(execStub.exec).not.toHaveBeenCalled();
         expect(postman.createCollection).not.toHaveBeenCalled();

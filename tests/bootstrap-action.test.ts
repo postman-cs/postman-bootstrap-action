@@ -14,6 +14,7 @@ import {
   normalizeSpecDocument,
   readActionInputs,
   runBootstrap,
+  runGatedValidation,
   type CoreLike,
   type ExecLike,
   type IOLike,
@@ -25,6 +26,7 @@ import {
 } from '../src/lib/spec/definition-bundle.js';
 import { definitionBundleToSnapshot } from '../src/lib/postman/spec-file-reconcile.js';
 import { SquadDiscoveryUnavailableError } from '../src/lib/postman/postman-gateway-assets-client.js';
+import type { BranchDecision } from '../src/lib/repo/branch-decision.js';
 import { createHash as createNodeHash } from 'node:crypto';
 
 const VALID_SPEC_31 = `{
@@ -179,6 +181,25 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     githubRef: undefined,
     githubSha: undefined,
     ...overrides
+  };
+}
+
+function createGatedDecision(): BranchDecision {
+  return {
+    tier: 'gated',
+    strategy: 'publish-gate',
+    identity: {
+      provider: 'github',
+      headBranch: 'feature/collections',
+      rawRef: 'refs/heads/feature/collections',
+      defaultBranch: 'main',
+      refKind: 'branch',
+      isPrContext: false,
+      isForkPr: false,
+      headSha: 'abcdef1234567890'
+    },
+    canonicalBranch: 'main',
+    reason: 'branch feature/collections under branch-strategy publish-gate'
   };
 }
 
@@ -932,6 +953,57 @@ describe('bootstrap action', () => {
     expect(postman.createCollection).not.toHaveBeenCalled();
   });
 
+  it('requires additional-collections-dir during gated spec-with-additional-collections validation', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-gated-additional-missing-'));
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+
+    try {
+      await withCwd(workspace, async () => {
+        await expect(
+          runGatedValidation(
+            createInputs({
+              branchStrategy: 'publish-gate',
+              canonicalBranch: 'main',
+              onboardingScope: 'spec-with-additional-collections',
+              specPath: 'openapi.yaml'
+            }),
+            createGatedDecision(),
+            createCoreStub().core
+          )
+        ).rejects.toThrow(/ADDITIONAL_COLLECTIONS_DIR_REQUIRED/);
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed authored collections during gated validation', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-gated-additional-invalid-'));
+    mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+    writeFileSync(join(workspace, 'postman/curated/broken.json'), '{');
+
+    try {
+      await withCwd(workspace, async () => {
+        await expect(
+          runGatedValidation(
+            createInputs({
+              additionalCollectionsDir: 'postman/curated',
+              branchStrategy: 'publish-gate',
+              canonicalBranch: 'main',
+              onboardingScope: 'spec-with-additional-collections',
+              specPath: 'openapi.yaml'
+            }),
+            createGatedDecision(),
+            createCoreStub().core
+          )
+        ).rejects.toThrow(/ADDITIONAL_COLLECTION_PARSE_FAILED/);
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('uses same-marker adoption for branch-scoped authored additional collections', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-additional-preview-'));
     mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
@@ -945,10 +1017,15 @@ describe('bootstrap action', () => {
         const coreStub = createCoreStub();
         const previousEnv = {
           GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
+          GITHUB_BASE_REF: process.env.GITHUB_BASE_REF,
           GITHUB_EVENT_NAME: process.env.GITHUB_EVENT_NAME,
+          GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
           GITHUB_HEAD_REF: process.env.GITHUB_HEAD_REF,
           GITHUB_REF: process.env.GITHUB_REF,
-          GITHUB_SHA: process.env.GITHUB_SHA
+          GITHUB_REF_NAME: process.env.GITHUB_REF_NAME,
+          GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
+          GITHUB_SHA: process.env.GITHUB_SHA,
+          POSTMAN_BRANCH_DECISION: process.env.POSTMAN_BRANCH_DECISION
         };
         const findAdoptableSameMarkerCollection = vi.fn().mockResolvedValue('col-preview-payments');
         const postman = createRollbackPostman({
@@ -962,10 +1039,15 @@ describe('bootstrap action', () => {
         });
 
         try {
+          delete process.env.POSTMAN_BRANCH_DECISION;
           process.env.GITHUB_ACTIONS = 'true';
+          process.env.GITHUB_BASE_REF = 'main';
           process.env.GITHUB_EVENT_NAME = 'pull_request';
+          delete process.env.GITHUB_EVENT_PATH;
           process.env.GITHUB_HEAD_REF = 'feature/collections';
           process.env.GITHUB_REF = 'refs/pull/5/merge';
+          process.env.GITHUB_REF_NAME = '5/merge';
+          process.env.GITHUB_REPOSITORY = 'postman-cs/bootstrap-action-test';
           process.env.GITHUB_SHA = 'abcdef1234567890';
 
           await runExistingSpecBootstrap(postman, {

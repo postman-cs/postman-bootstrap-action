@@ -96,6 +96,10 @@ export interface AdditionalCollectionsPostmanClient {
     finalName: string,
     desiredDescription: string
   ): Promise<string | undefined>;
+  reconcileDuplicateFinalCollections?(
+    workspaceId: string,
+    candidates: Array<{ finalName: string; desiredDescription: string }>
+  ): Promise<Record<string, string>>;
 }
 
 const ADDITIONAL_COLLECTION_EXTENSIONS = new Set(['.json', '.yaml', '.yml']);
@@ -145,6 +149,18 @@ function fileNameWithoutSuffix(filePath: string, suffix: string): string {
 function structuredCloneSafe<T>(value: T): T {
   if (typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function collectionWithDescription(collection: JsonRecord, description: string): JsonRecord {
+  const copy = structuredCloneSafe(collection);
+  const target = asRecord(copy.collection) ?? copy;
+  const info = asRecord(target.info);
+  if (info) {
+    info.description = description;
+  } else {
+    target.description = description;
+  }
+  return copy;
 }
 
 function assertInsideWorkspace(
@@ -732,18 +748,37 @@ async function createAdditionalCollection(options: {
   const adoptableCollectionId = branchMarker
     ? await postman.findAdoptableSameMarkerCollection?.(workspaceId, file.name, branchMarker)
     : undefined;
+  const collection = branchMarker
+    ? collectionWithDescription(file.collection, branchMarker)
+    : file.collection;
   const persistRoot = (collectionId: string): void => {
     ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId;
     writeResourcesState(resourcesState);
   };
-  const created = await postman.createCollection(workspaceId, file.collection, {
+  const created = await postman.createCollection(workspaceId, collection, {
     allowExactNameAdoption: !branchMarker,
     adoptableCollectionId,
     onRootCreated: persistRoot,
     returnOperation: true
   });
-  const collectionId = typeof created === 'string' ? created : created.collectionId;
-  const operation = typeof created === 'string' ? 'created' : created.operation;
+  let collectionId = typeof created === 'string' ? created : created.collectionId;
+  let operation = typeof created === 'string' ? 'created' : created.operation;
+  if (branchMarker && operation === 'created' && postman.reconcileDuplicateFinalCollections) {
+    const winners = await postman.reconcileDuplicateFinalCollections(workspaceId, [
+      { finalName: file.name, desiredDescription: branchMarker }
+    ]);
+    const electedCollectionId = winners[file.name];
+    if (electedCollectionId && electedCollectionId !== collectionId) {
+      if (!postman.updateCollection) {
+        throw new Error(
+          'Additional collection branch reconciliation requires updateCollection support from the Postman client'
+        );
+      }
+      await postman.updateCollection(electedCollectionId, collection);
+      collectionId = electedCollectionId;
+      operation = 'updated';
+    }
+  }
   persistRoot(collectionId);
   core.info(
     `${operation === 'created' ? 'Created' : 'Updated'} additional collection ${file.name} (${collectionId}) from ${file.displayPath}`

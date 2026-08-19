@@ -1734,6 +1734,107 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.some((c) => c.path === '/v3/collections/55363555-existing-root')).toBe(true);
     });
 
+    it('does not canonically adopt exact-name branch-owned collections', async () => {
+      const marker = renderAssetMarker({
+        repo: 'org/repo',
+        rawBranch: 'feature/x',
+        sanitizedBranch: 'feature-x',
+        role: 'preview',
+        createdAt: '2026-07-23T00:00:00Z',
+        lastSyncedAt: '2026-07-23T00:00:00Z'
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-preview-root', name: 'Curated', description: marker }]
+          });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-canonical-root' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-canonical-root',
+        operation: 'created'
+      });
+
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-preview-root')).toBe(false);
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(true);
+    });
+
+    it('keeps unmarked exact-name canonical adoption when branch-owned peers exist', async () => {
+      const marker = renderAssetMarker({
+        repo: 'org/repo',
+        rawBranch: 'feature/x',
+        sanitizedBranch: 'feature-x',
+        role: 'preview',
+        createdAt: '2026-07-23T00:00:00Z',
+        lastSyncedAt: '2026-07-23T00:00:00Z'
+      });
+      const exportedCollection = {
+        info: {
+          name: 'Curated',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+          description: ''
+        },
+        item: []
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [
+              { id: '55363555-preview-root', name: 'Curated', description: marker },
+              { id: '55363555-existing-root', name: 'Curated' }
+            ]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/export') {
+          return jsonResponse({ data: { collection: exportedCollection } });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-existing-root',
+        operation: 'updated'
+      });
+
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-existing-root')).toBe(true);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-preview-root')).toBe(false);
+    });
+
     it('applies root description via JSON Patch on create, not the root POST body', async () => {
       const { client, calls } = makeClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {

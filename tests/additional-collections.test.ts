@@ -477,6 +477,79 @@ describe('additional local collection provisioning', () => {
     });
   });
 
+  it('marks branch-created collections and reconciles to a concurrent same-marker winner', async () => {
+    const workspace = makeTempWorkspace();
+    tempDirs.push(workspace);
+    mkdirSync(path.join(workspace, 'postman/curated'), { recursive: true });
+    mkdirSync(path.join(workspace, '.postman'), { recursive: true });
+    writeFileSync(
+      path.join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(collection('Payments curated'), null, 2)
+    );
+
+    const marker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+
+    await withCwdAsync(workspace, async () => {
+      const resourcesState: PostmanResourcesState = {};
+      const loaded = loadAdditionalCollectionFiles('postman/curated', resourcesState);
+      const postman = {
+        createCollection: vi.fn().mockResolvedValue({
+          collectionId: 'col-loser',
+          operation: 'created' as const
+        }),
+        findAdoptableSameMarkerCollection: vi.fn().mockResolvedValue(undefined),
+        reconcileDuplicateFinalCollections: vi.fn().mockResolvedValue({
+          'Payments curated': 'col-winner'
+        }),
+        updateCollection: vi.fn().mockResolvedValue(undefined)
+      };
+      const core = {
+        info: vi.fn(),
+        warning: vi.fn()
+      };
+
+      const results = await syncAdditionalCollections({
+        branchMarker: marker,
+        collectionFiles: loaded,
+        core,
+        postman,
+        resourcesState,
+        workspaceId: 'ws-preview'
+      });
+
+      const markedCollection = expect.objectContaining({
+        info: expect.objectContaining({
+          description: marker,
+          name: 'Payments curated'
+        })
+      });
+      expect(postman.createCollection).toHaveBeenCalledWith(
+        'ws-preview',
+        markedCollection,
+        expect.objectContaining({
+          allowExactNameAdoption: false,
+          returnOperation: true
+        })
+      );
+      expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledWith(
+        'ws-preview',
+        [{ finalName: 'Payments curated', desiredDescription: marker }]
+      );
+      expect(postman.updateCollection).toHaveBeenCalledWith('col-winner', markedCollection);
+      expect(results).toEqual([
+        expect.objectContaining({
+          collectionId: 'col-winner',
+          operation: 'updated',
+          resourcePath: '../postman/curated/payments.json'
+        })
+      ]);
+      expect(resourcesState.cloudResources?.additionalCollections).toEqual({
+        '../postman/curated/payments.json': 'col-winner'
+      });
+    });
+  });
+
   it('does not recreate a persisted additional collection mapping for non-404 update failures', async () => {
     const workspace = makeTempWorkspace();
     tempDirs.push(workspace);

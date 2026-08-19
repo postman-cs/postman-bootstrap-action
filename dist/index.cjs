@@ -273836,6 +273836,17 @@ function structuredCloneSafe(value) {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
 }
+function collectionWithDescription(collection, description) {
+  const copy = structuredCloneSafe(collection);
+  const target = asRecord2(copy.collection) ?? copy;
+  const info2 = asRecord2(target.info);
+  if (info2) {
+    info2.description = description;
+  } else {
+    target.description = description;
+  }
+  return copy;
+}
 function assertInsideWorkspace(workspaceRoot, candidate, inputName) {
   const relative3 = import_node_path2.default.relative(workspaceRoot, candidate);
   if (relative3.startsWith("..") || import_node_path2.default.isAbsolute(relative3)) {
@@ -274307,18 +274318,35 @@ async function createAdditionalCollection(options) {
     );
   }
   const adoptableCollectionId = branchMarker ? await postman.findAdoptableSameMarkerCollection?.(workspaceId, file.name, branchMarker) : void 0;
+  const collection = branchMarker ? collectionWithDescription(file.collection, branchMarker) : file.collection;
   const persistRoot = (collectionId2) => {
     ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId2;
     writeResourcesState2(resourcesState);
   };
-  const created = await postman.createCollection(workspaceId, file.collection, {
+  const created = await postman.createCollection(workspaceId, collection, {
     allowExactNameAdoption: !branchMarker,
     adoptableCollectionId,
     onRootCreated: persistRoot,
     returnOperation: true
   });
-  const collectionId = typeof created === "string" ? created : created.collectionId;
-  const operation = typeof created === "string" ? "created" : created.operation;
+  let collectionId = typeof created === "string" ? created : created.collectionId;
+  let operation = typeof created === "string" ? "created" : created.operation;
+  if (branchMarker && operation === "created" && postman.reconcileDuplicateFinalCollections) {
+    const winners = await postman.reconcileDuplicateFinalCollections(workspaceId, [
+      { finalName: file.name, desiredDescription: branchMarker }
+    ]);
+    const electedCollectionId = winners[file.name];
+    if (electedCollectionId && electedCollectionId !== collectionId) {
+      if (!postman.updateCollection) {
+        throw new Error(
+          "Additional collection branch reconciliation requires updateCollection support from the Postman client"
+        );
+      }
+      await postman.updateCollection(electedCollectionId, collection);
+      collectionId = electedCollectionId;
+      operation = "updated";
+    }
+  }
   persistRoot(collectionId);
   core2.info(
     `${operation === "created" ? "Created" : "Updated"} additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
@@ -309779,9 +309807,10 @@ ${error2.responseBody ?? ""}`
     const desiredName = String(v3.name ?? "Untitled Collection");
     const allowExactNameAdoption = options.allowExactNameAdoption ?? true;
     const returnOperation = options.returnOperation ?? false;
+    const exactNameCandidates = !options.adoptableCollectionId && allowExactNameAdoption ? await this.findCanonicalAdoptableCollectionsByExactName(workspaceId, desiredName) : [];
     const existing = options.adoptableCollectionId ? { id: options.adoptableCollectionId, name: desiredName } : !allowExactNameAdoption ? void 0 : adoptExactMatch(
       `collection:${workspaceId}:${desiredName}`,
-      await this.findCollectionsByExactName(workspaceId, desiredName),
+      exactNameCandidates,
       (entry) => entry.id
     );
     if (existing) {
@@ -310281,6 +310310,24 @@ ${error2.responseBody ?? ""}`
       }
     }
     return winners;
+  }
+  async findCanonicalAdoptableCollectionsByExactName(workspaceId, desiredName) {
+    const candidates = await this.findCollectionsByExactName(workspaceId, desiredName);
+    const adoptable = [];
+    for (const entry of candidates) {
+      let description = entry.description;
+      if (!description) {
+        try {
+          const exported = await this.exportV2Collection(entry.id);
+          description = String(asRecord13(exported.info)?.description ?? "").trim() || void 0;
+        } catch {
+          description = void 0;
+        }
+      }
+      if (parseAssetMarker(description)) continue;
+      adoptable.push({ ...entry, ...description ? { description } : {} });
+    }
+    return adoptable;
   }
   /**
    * Sole existing final with this exact name carrying the same durable branch

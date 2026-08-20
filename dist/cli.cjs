@@ -305139,7 +305139,7 @@ async function generateLocalOpenApiRolePayloads(bundledOpenApi, options, depende
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "67f9b37cdf6bbf18ad51d176fcf5cd54143008e7",
+  bootstrapCommit: "b117aa5f18dccdfee4cae02a753dee6092beea3d",
   legs: [
     {
       mode: "nonorg",

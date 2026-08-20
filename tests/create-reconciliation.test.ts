@@ -483,6 +483,11 @@ describe('Wave 2 create reconciliation', () => {
         if (env.method === 'get' && env.path.startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: [{ id: 'col-existing', name: 'Payments curated' }] });
         }
+        if (env.method === 'get' && env.path === '/v3/collections/col-existing/export') {
+          return jsonResponse({
+            data: { collection: createCuratedCollection('Payments curated') }
+          });
+        }
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) createPosts += 1;
         if (env.method === 'get' && env.path === '/v3/collections/col-existing/items/') {
           return jsonResponse({ data: [] });

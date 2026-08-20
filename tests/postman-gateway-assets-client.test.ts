@@ -1700,11 +1700,105 @@ describe('PostmanGatewayAssetsClient', () => {
     });
 
     it('reports exact-name adoption as an update when operation metadata is requested', async () => {
+      const exportedCollection = {
+        info: {
+          name: 'Curated',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+          description: ''
+        },
+        item: []
+      };
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({
             data: [{ id: '55363555-existing-root', name: 'Curated' }]
           });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/export') {
+          return jsonResponse({ data: { collection: exportedCollection } });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-existing-root',
+        operation: 'updated'
+      });
+
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-existing-root')).toBe(true);
+    });
+
+    it('does not canonically adopt exact-name candidates when ownership cannot be read', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-unknown-root', name: 'Curated' }]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-unknown-root/export') {
+          return jsonResponse({ error: 'forbidden' }, { status: 403 });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-new-root' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-new-root',
+        operation: 'created'
+      });
+
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-unknown-root')).toBe(false);
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(true);
+    });
+
+    it('canonically adopts exact-name candidates when export proves no description', async () => {
+      const exportedCollection = {
+        info: {
+          name: 'Curated',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+        },
+        item: []
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-existing-root', name: 'Curated' }]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/export') {
+          return jsonResponse({ data: { collection: exportedCollection } });
         }
         if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/items/') {
           return jsonResponse({ data: [] });
@@ -5530,8 +5624,10 @@ describe('PostmanGatewayAssetsClient', () => {
         { id: '200-cccccccc-cccc-cccc-cccc-cccccccccccc', name: 'Other' }
       ];
       const deleted: string[] = [];
+      let listCalls = 0;
       const { client } = makeClient((env) => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          listCalls += 1;
           return jsonResponse({ data: entries });
         }
         if (env.service === 'collection' && env.method === 'delete') {
@@ -5564,12 +5660,64 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(winners.__proto__).toBe(prototypeNameId);
       expect(Object.hasOwn(winners, '__proto__')).toBe(true);
       expect(deleted).toEqual([`/v3/collections/${high.slice(4)}`]);
+      expect(listCalls).toBe(1);
       expect(entries.map((e) => e.id).sort()).toEqual([
         '200-cccccccc-cccc-cccc-cccc-cccccccccccc',
         low,
         prototypeNameId,
         stranger
       ].sort());
+    });
+
+    it('settles visibility before reconciling delayed same-marker peers when requested', async () => {
+      const low = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const high = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      let listCalls = 0;
+      let deletedHigh = false;
+      const sleep = vi.fn<(delayMs: number) => Promise<undefined>>(async () => undefined);
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          listCalls += 1;
+          return jsonResponse({
+            data: listCalls <= 2
+              ? [{ id: high, name: 'Payments curated', description: marker }]
+              : [
+                  ...(deletedHigh ? [] : [{ id: high, name: 'Payments curated', description: marker }]),
+                  { id: low, name: 'Payments curated', description: marker }
+                ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          if (env.path === `/v3/collections/${high.slice(4)}`) deletedHigh = true;
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.startsWith('/v3/collections/') &&
+          !env.path.includes('?workspace=')
+        ) {
+          const bare = String(env.path).replace('/v3/collections/', '');
+          if (bare === high.slice(4) && deletedHigh) {
+            return jsonResponse({ error: 'missing' }, { status: 404 });
+          }
+          return jsonResponse({ data: { id: bare, name: 'Payments curated' } });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections(
+          'ws-1',
+          [{ finalName: 'Payments curated', desiredDescription: marker }],
+          { settleForVisibility: true }
+        )
+      ).resolves.toEqual({ 'Payments curated': low });
+      expect(deletedHigh).toBe(true);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500, 750, 1000, 1250]);
+      expect(listCalls).toBeGreaterThanOrEqual(6);
     });
 
     it('findAdoptableSameMarkerCollection returns the sole same-marker exact-name final', async () => {

@@ -1007,9 +1007,11 @@ describe('bootstrap action', () => {
   it('uses same-marker adoption for branch-scoped authored additional collections', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-additional-preview-'));
     mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    const authoredCollection = createCuratedCollection('Payments curated');
+    (authoredCollection.info as Record<string, unknown>).description = 'Authored payment docs';
     writeFileSync(
       join(workspace, 'postman/curated/payments.json'),
-      JSON.stringify(createCuratedCollection('Payments curated'), null, 2)
+      JSON.stringify(authoredCollection, null, 2)
     );
 
     try {
@@ -1028,6 +1030,7 @@ describe('bootstrap action', () => {
           POSTMAN_BRANCH_DECISION: process.env.POSTMAN_BRANCH_DECISION
         };
         const findAdoptableSameMarkerCollection = vi.fn().mockResolvedValue('col-preview-payments');
+        const updateCollectionDescription = vi.fn().mockResolvedValue(undefined);
         const postman = createRollbackPostman({
           createCollection: vi.fn().mockResolvedValue({
             collectionId: 'col-preview-payments',
@@ -1035,7 +1038,7 @@ describe('bootstrap action', () => {
           }),
           findAdoptableSameMarkerCollection,
           uploadSpec: vi.fn().mockResolvedValue('spec-preview'),
-          updateCollectionDescription: vi.fn().mockResolvedValue(undefined)
+          updateCollectionDescription
         });
 
         try {
@@ -1079,7 +1082,12 @@ describe('bootstrap action', () => {
         expect(postman.createCollection).toHaveBeenCalledWith(
           'ws-existing',
           expect.objectContaining({
-            info: expect.objectContaining({ name: 'Payments curated' })
+            info: expect.objectContaining({
+              description: expect.stringMatching(
+                /^Authored payment docs\n\nx-pm-onboarding: .*"role":"preview"/
+              ),
+              name: 'Payments curated'
+            })
           }),
           expect.objectContaining({
             adoptableCollectionId: 'col-preview-payments',
@@ -1088,6 +1096,7 @@ describe('bootstrap action', () => {
             returnOperation: true
           })
         );
+        expect(updateCollectionDescription).not.toHaveBeenCalled();
         expect(JSON.parse(coreStub.outputs['additional-collections-json'])).toEqual([
           {
             collectionId: 'col-preview-payments',

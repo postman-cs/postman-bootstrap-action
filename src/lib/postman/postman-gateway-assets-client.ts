@@ -3703,7 +3703,8 @@ export class PostmanGatewayAssetsClient {
    */
   async reconcileDuplicateFinalCollections(
     workspaceId: string,
-    candidates: Array<{ finalName: string; desiredDescription: string }>
+    candidates: Array<{ finalName: string; desiredDescription: string }>,
+    options: { settleForVisibility?: boolean } = {}
   ): Promise<Record<string, string>> {
     const uniqueCandidates = new Map<string, string>();
     for (const candidate of candidates) {
@@ -3714,24 +3715,27 @@ export class PostmanGatewayAssetsClient {
     }
     const winners: Record<string, string> = Object.create(null);
     if (uniqueCandidates.size === 0) return winners;
-    const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
+    let inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
     for (const [finalName, desiredDescription] of uniqueCandidates) {
+      if (options.settleForVisibility) {
+        const delays =
+          PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+        for (const delay of delays) {
+          await this.sleep(delay);
+          inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
+        }
+      }
       const matches: Array<{ id: string; name: string; description?: string }> = [];
       for (const entry of inventory.filter((candidate) => candidate.name === finalName)) {
-        let description = entry.description;
-        if (!description) {
-          // Org inventory omits root descriptions. The export route remains
-          // readable for generated collections and carries info.description.
-          // If export cannot prove ownership, leave the candidate untouched.
-          try {
-            const exported = await this.exportV2Collection(entry.id);
-            description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
-          } catch {
-            description = undefined;
-          }
-        }
-        if (this.hasSameBranchAssetMarker(description, desiredDescription)) {
-          matches.push({ ...entry, ...(description ? { description } : {}) });
+        const ownership = await this.readCollectionOwnershipDescription(entry);
+        if (
+          ownership.known &&
+          this.hasSameBranchAssetMarker(ownership.description, desiredDescription)
+        ) {
+          matches.push({
+            ...entry,
+            ...(ownership.description ? { description: ownership.description } : {})
+          });
         }
       }
       matches.sort((a, b) => a.id.localeCompare(b.id));
@@ -3760,19 +3764,49 @@ export class PostmanGatewayAssetsClient {
     const candidates = await this.findCollectionsByExactName(workspaceId, desiredName);
     const adoptable: Array<{ id: string; name: string; description?: string }> = [];
     for (const entry of candidates) {
-      let description = entry.description;
-      if (!description) {
-        try {
-          const exported = await this.exportV2Collection(entry.id);
-          description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
-        } catch {
-          description = undefined;
-        }
-      }
-      if (parseAssetMarker(description)) continue;
-      adoptable.push({ ...entry, ...(description ? { description } : {}) });
+      const ownership = await this.readCollectionOwnershipDescription(entry);
+      if (!ownership.known || parseAssetMarker(ownership.description)) continue;
+      adoptable.push({
+        ...entry,
+        ...(ownership.description ? { description: ownership.description } : {})
+      });
     }
     return adoptable;
+  }
+
+  private async readCollectionOwnershipDescription(
+    entry: { id: string; description?: string }
+  ): Promise<{ known: boolean; description?: string }> {
+    if (typeof entry.description === 'string') {
+      const description = entry.description.trim();
+      return { known: true, ...(description ? { description } : {}) };
+    }
+
+    try {
+      const exported = await this.exportV2Collection(entry.id);
+      const info = asRecord(exported.info);
+      if (!info) return { known: false };
+      if (!Object.prototype.hasOwnProperty.call(info, 'description') || info.description === null) {
+        return { known: true };
+      }
+      if (typeof info.description === 'string') {
+        const description = info.description.trim();
+        return { known: true, ...(description ? { description } : {}) };
+      }
+      const structuredDescription = asRecord(info.description);
+      if (!structuredDescription) return { known: false };
+      if (
+        !Object.prototype.hasOwnProperty.call(structuredDescription, 'content') ||
+        structuredDescription.content === null
+      ) {
+        return { known: true };
+      }
+      if (typeof structuredDescription.content !== 'string') return { known: false };
+      const description = structuredDescription.content.trim();
+      return { known: true, ...(description ? { description } : {}) };
+    } catch {
+      return { known: false };
+    }
   }
 
   /**
@@ -3809,16 +3843,13 @@ export class PostmanGatewayAssetsClient {
     if (!parseAssetMarker(desiredDescription)) return undefined;
     const matches: string[] = [];
     for (const entry of eligible) {
-      let description = entry.description;
-      if (!description) {
-        try {
-          const exported = await this.exportV2Collection(entry.id);
-          description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
-        } catch {
-          description = undefined;
-        }
+      const ownership = await this.readCollectionOwnershipDescription(entry);
+      if (
+        ownership.known &&
+        this.hasSameBranchAssetMarker(ownership.description, desiredDescription)
+      ) {
+        matches.push(entry.id);
       }
-      if (this.hasSameBranchAssetMarker(description, desiredDescription)) matches.push(entry.id);
     }
     if (matches.length === 0) return undefined;
     if (matches.length === 1) return matches[0];

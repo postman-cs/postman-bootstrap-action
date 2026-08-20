@@ -15,6 +15,7 @@ import {
   assertSupportedLocalViewContract,
   normalizeLocalViewScriptType
 } from './local-view-contract.js';
+import { MARKER_KEY } from '../repo/branch-decision.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -98,7 +99,8 @@ export interface AdditionalCollectionsPostmanClient {
   ): Promise<string | undefined>;
   reconcileDuplicateFinalCollections?(
     workspaceId: string,
-    candidates: Array<{ finalName: string; desiredDescription: string }>
+    candidates: Array<{ finalName: string; desiredDescription: string }>,
+    options?: { settleForVisibility?: boolean }
   ): Promise<Record<string, string>>;
 }
 
@@ -151,14 +153,35 @@ function structuredCloneSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function collectionWithDescription(collection: JsonRecord, description: string): JsonRecord {
+function descriptionWithMarker(existingDescription: unknown, marker: string): unknown {
+  if (typeof existingDescription === 'string') {
+    const prose = existingDescription
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith(`${MARKER_KEY}:`))
+      .join('\n')
+      .trim();
+    return prose ? `${prose}\n\n${marker}` : marker;
+  }
+
+  const structuredDescription = asRecord(existingDescription);
+  if (structuredDescription) {
+    return {
+      ...structuredDescription,
+      content: descriptionWithMarker(structuredDescription.content, marker)
+    };
+  }
+
+  return marker;
+}
+
+function collectionWithDescriptionMarker(collection: JsonRecord, marker: string): JsonRecord {
   const copy = structuredCloneSafe(collection);
   const target = asRecord(copy.collection) ?? copy;
   const info = asRecord(target.info);
   if (info) {
-    info.description = description;
+    info.description = descriptionWithMarker(info.description, marker);
   } else {
-    target.description = description;
+    target.description = descriptionWithMarker(target.description, marker);
   }
   return copy;
 }
@@ -749,7 +772,7 @@ async function createAdditionalCollection(options: {
     ? await postman.findAdoptableSameMarkerCollection?.(workspaceId, file.name, branchMarker)
     : undefined;
   const collection = branchMarker
-    ? collectionWithDescription(file.collection, branchMarker)
+    ? collectionWithDescriptionMarker(file.collection, branchMarker)
     : file.collection;
   const persistRoot = (collectionId: string): void => {
     ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId;
@@ -766,7 +789,7 @@ async function createAdditionalCollection(options: {
   if (branchMarker && operation === 'created' && postman.reconcileDuplicateFinalCollections) {
     const winners = await postman.reconcileDuplicateFinalCollections(workspaceId, [
       { finalName: file.name, desiredDescription: branchMarker }
-    ]);
+    ], { settleForVisibility: true });
     const electedCollectionId = winners[file.name];
     if (electedCollectionId && electedCollectionId !== collectionId) {
       if (!postman.updateCollection) {
@@ -819,8 +842,11 @@ export async function syncAdditionalCollections(options: {
           'Additional collection updates require updateCollection support from the Postman client'
         );
       }
+      const collection = branchMarker
+        ? collectionWithDescriptionMarker(file.collection, branchMarker)
+        : file.collection;
       try {
-        await postman.updateCollection(file.existingCollectionId, file.collection);
+        await postman.updateCollection(file.existingCollectionId, collection);
       } catch (error) {
         if (!isNotFoundError(error)) {
           throw error;

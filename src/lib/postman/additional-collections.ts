@@ -99,7 +99,11 @@ export interface AdditionalCollectionsPostmanClient {
   ): Promise<string | undefined>;
   reconcileDuplicateFinalCollections?(
     workspaceId: string,
-    candidates: Array<{ finalName: string; desiredDescription: string }>,
+    candidates: Array<{
+      finalName: string;
+      desiredDescription: string;
+      ownedCollectionId?: string;
+    }>,
     options?: { settleForVisibility?: boolean }
   ): Promise<Record<string, string>>;
 }
@@ -788,7 +792,11 @@ async function createAdditionalCollection(options: {
   let operation = typeof created === 'string' ? 'created' : created.operation;
   if (branchMarker && operation === 'created' && postman.reconcileDuplicateFinalCollections) {
     const winners = await postman.reconcileDuplicateFinalCollections(workspaceId, [
-      { finalName: file.name, desiredDescription: branchMarker }
+      {
+        finalName: file.name,
+        desiredDescription: branchMarker,
+        ownedCollectionId: collectionId
+      }
     ], { settleForVisibility: true });
     const electedCollectionId = winners[file.name];
     if (electedCollectionId && electedCollectionId !== collectionId) {

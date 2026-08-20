@@ -274677,7 +274677,11 @@ async function createAdditionalCollection(options) {
   let operation = typeof created === "string" ? "created" : created.operation;
   if (branchMarker && operation === "created" && postman.reconcileDuplicateFinalCollections) {
     const winners = await postman.reconcileDuplicateFinalCollections(workspaceId, [
-      { finalName: file.name, desiredDescription: branchMarker }
+      {
+        finalName: file.name,
+        desiredDescription: branchMarker,
+        ownedCollectionId: collectionId
+      }
     ], { settleForVisibility: true });
     const electedCollectionId = winners[file.name];
     if (electedCollectionId && electedCollectionId !== collectionId) {
@@ -310279,9 +310283,9 @@ ${error2.responseBody ?? ""}`
     return ownCanonical.id;
   }
   /**
-   * Collapse duplicate preview/channel finals to the lowest UID. Exact name is
-   * not an ownership boundary: only roots carrying the same durable branch
-   * marker are eligible. Canonical and stranger collections are never touched.
+   * Elect the lowest same-marker preview/channel final and retract only this
+   * run's created root when it loses. Exact name is not an ownership boundary:
+   * canonical, stranger, and peer-owned collections are never deleted.
    */
   async reconcileDuplicateFinalCollections(workspaceId, candidates, options = {}) {
     const uniqueCandidates = /* @__PURE__ */ new Map();
@@ -310289,12 +310293,17 @@ ${error2.responseBody ?? ""}`
       const finalName = String(candidate.finalName || "").trim();
       const desiredDescription = String(candidate.desiredDescription || "").trim();
       if (!finalName || !parseAssetMarker(desiredDescription)) continue;
-      uniqueCandidates.set(finalName, desiredDescription);
+      const ownedCollectionId = String(candidate.ownedCollectionId || "").trim();
+      uniqueCandidates.set(finalName, {
+        desiredDescription,
+        ...ownedCollectionId ? { ownedCollectionId } : {}
+      });
     }
     const winners = {};
     if (uniqueCandidates.size === 0) return winners;
     let inventory = await this.listWorkspaceCollections(workspaceId, "safe");
-    for (const [finalName, desiredDescription] of uniqueCandidates) {
+    for (const [finalName, candidate] of uniqueCandidates) {
+      const { desiredDescription, ownedCollectionId } = candidate;
       if (options.settleForVisibility) {
         const delays = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
         for (const delay of delays) {
@@ -310302,31 +310311,31 @@ ${error2.responseBody ?? ""}`
           inventory = await this.listWorkspaceCollections(workspaceId, "safe");
         }
       }
-      const matches = [];
-      for (const entry of inventory.filter((candidate) => candidate.name === finalName)) {
+      const matchesByIdentity = /* @__PURE__ */ new Map();
+      for (const entry of inventory.filter((candidate2) => candidate2.name === finalName)) {
         const ownership = await this.readCollectionOwnershipDescription(entry);
         if (ownership.known && this.hasSameBranchAssetMarker(ownership.description, desiredDescription)) {
-          matches.push({
+          const match = {
             ...entry,
             ...ownership.description ? { description: ownership.description } : {}
-          });
+          };
+          if (isBareCollectionUuid(entry.id)) continue;
+          const identity = normalizeCollectionModelIdentity(entry.id);
+          const prior = matchesByIdentity.get(identity);
+          if (!prior || match.id.localeCompare(prior.id) < 0) {
+            matchesByIdentity.set(identity, match);
+          }
         }
       }
+      const matches = [...matchesByIdentity.values()];
       matches.sort((a, b) => a.id.localeCompare(b.id));
       if (matches.length === 0) continue;
       const winnerId = matches[0].id;
       winners[finalName] = winnerId;
-      if (matches.length === 1) continue;
-      const losers = matches.slice(1).map((entry) => entry.id);
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, losers);
-      for (const id of losers) {
-        const identity = normalizeCollectionModelIdentity(id);
-        for (let i = inventory.length - 1; i >= 0; i -= 1) {
-          if (normalizeCollectionModelIdentity(inventory[i].id) === identity) {
-            inventory.splice(i, 1);
-          }
-        }
-      }
+      if (!ownedCollectionId) continue;
+      const ownedIdentity = normalizeCollectionModelIdentity(ownedCollectionId);
+      if (normalizeCollectionModelIdentity(winnerId) === ownedIdentity) continue;
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownedCollectionId]);
     }
     return winners;
   }
@@ -310375,8 +310384,8 @@ ${error2.responseBody ?? ""}`
    * Sole existing final with this exact name carrying the same durable branch
    * marker as this run's payload, or undefined. Lets a channel/preview rerun
    * deep-update its prior-run asset in place instead of importing a fresh root
-   * and re-electing. Zero same-marker survivors return undefined; multiple
-   * same-marker survivors fail closed rather than selecting an arbitrary asset.
+   * and re-electing. Multiple proven same-marker survivors are adopted by the
+   * same lowest-UID election used by reconciliation, without deleting peers.
    */
   async findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription) {
     const name = String(finalName || "").trim();
@@ -310384,29 +310393,56 @@ ${error2.responseBody ?? ""}`
     if (!name || !parseAssetMarker(description)) return void 0;
     const survivors = await this.findCollectionsByExactName(workspaceId, name, "safe");
     if (survivors.length === 0) return void 0;
-    return this.adoptableSameMarkerFinal(survivors, description);
+    const matches = await this.adoptableSameMarkerFinals(survivors, description);
+    const identities = new Set(matches.map((id) => normalizeCollectionModelIdentity(id)));
+    for (const entry of survivors.filter((candidate) => isBareCollectionUuid(candidate.id))) {
+      const identity = normalizeCollectionModelIdentity(entry.id);
+      if (identities.has(identity)) continue;
+      const ownership = await this.readCollectionOwnershipDescription(entry);
+      if (!ownership.known || !this.hasSameBranchAssetMarker(ownership.description, description)) {
+        continue;
+      }
+      const resolved = await this.resolveCollectionRootUid(
+        workspaceId,
+        entry.id,
+        _PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
+      );
+      if (!resolved) {
+        throw new Error(
+          "COLLECTION_ROOT_UID_RESOLUTION_FAILED: same-marker collection did not become ROOT-addressable during refresh discovery"
+        );
+      }
+      identities.add(identity);
+      matches.push(resolved);
+    }
+    return matches.sort((a, b) => a.localeCompare(b))[0];
   }
   /**
    * Sole exact-name final carrying the same durable branch marker as this run's
    * payload, or undefined. Org inventory omits root descriptions, so fall back
    * to the v2.1 export route; an unprovable candidate is never adoptable. More
-   * than one same-marker survivor is ambiguous and fails closed before a caller
-   * can mutate or elect an arbitrary winner.
+   * than one proven same-marker survivor is resolved deterministically without
+   * deleting any candidate.
    */
   async adoptableSameMarkerFinal(eligible, desiredDescription) {
-    if (!parseAssetMarker(desiredDescription)) return void 0;
-    const matches = [];
+    return (await this.adoptableSameMarkerFinals(eligible, desiredDescription))[0];
+  }
+  async adoptableSameMarkerFinals(eligible, desiredDescription) {
+    if (!parseAssetMarker(desiredDescription)) return [];
+    const matchesByIdentity = /* @__PURE__ */ new Map();
     for (const entry of eligible) {
+      if (isBareCollectionUuid(entry.id)) continue;
       const ownership = await this.readCollectionOwnershipDescription(entry);
       if (ownership.known && this.hasSameBranchAssetMarker(ownership.description, desiredDescription)) {
-        matches.push(entry.id);
+        const identity = normalizeCollectionModelIdentity(entry.id);
+        const prior = matchesByIdentity.get(identity);
+        if (!prior || entry.id.localeCompare(prior) < 0) {
+          matchesByIdentity.set(identity, entry.id);
+        }
       }
     }
-    if (matches.length === 0) return void 0;
-    if (matches.length === 1) return matches[0];
-    throw new Error(
-      "SAME_MARKER_COLLECTION_AMBIGUOUS: multiple exact-name collections carry the same branch marker"
-    );
+    const matches = [...matchesByIdentity.values()];
+    return matches.sort((a, b) => a.localeCompare(b));
   }
   hasSameBranchAssetMarker(candidateDescription, desiredDescription) {
     const candidate = parseAssetMarker(candidateDescription);
@@ -343266,10 +343302,15 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             );
           }
           if (importCount > 0 && dependencies.postman.reconcileDuplicateFinalCollections && workspaceId && collectionBranchMarker) {
-            const importedFinals = collectionRoles.filter((role) => fulfilledByRole.get(role.role)?.kind === "import").map((role) => ({
-              finalName: roleNames[role.role],
-              desiredDescription: collectionBranchMarker
-            }));
+            const importedFinals = collectionRoles.filter((role) => fulfilledByRole.get(role.role)?.kind === "import").map((role) => {
+              const result = fulfilledByRole.get(role.role);
+              const ownsReturnedCollection = result.kind === "import" && result.journaledRootIds.includes(result.collectionId);
+              return {
+                finalName: roleNames[role.role],
+                desiredDescription: collectionBranchMarker,
+                ...ownsReturnedCollection ? { ownedCollectionId: result.collectionId } : {}
+              };
+            });
             try {
               const winners = await dependencies.postman.reconcileDuplicateFinalCollections(
                 workspaceId,

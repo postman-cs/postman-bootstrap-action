@@ -540,7 +540,13 @@ describe('additional local collection provisioning', () => {
       );
       expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledWith(
         'ws-preview',
-        [{ finalName: 'Payments curated', desiredDescription: marker }],
+        [
+          {
+            finalName: 'Payments curated',
+            desiredDescription: marker,
+            ownedCollectionId: 'col-loser'
+          }
+        ],
         { settleForVisibility: true }
       );
       expect(postman.updateCollection).toHaveBeenCalledWith('col-winner', markedCollection);

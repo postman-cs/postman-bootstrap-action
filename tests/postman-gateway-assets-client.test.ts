@@ -5650,7 +5650,11 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       const winners = await client.reconcileDuplicateFinalCollections('ws-1', [
-        { finalName: 'Payments @feature-x', desiredDescription: marker },
+        {
+          finalName: 'Payments @feature-x',
+          desiredDescription: marker,
+          ownedCollectionId: high
+        },
         { finalName: 'Missing', desiredDescription: marker }
       ]);
       expect(winners).toEqual({ 'Payments @feature-x': low });
@@ -5705,13 +5709,133 @@ describe('PostmanGatewayAssetsClient', () => {
       await expect(
         client.reconcileDuplicateFinalCollections(
           'ws-1',
-          [{ finalName: 'Payments curated', desiredDescription: marker }],
+          [
+            {
+              finalName: 'Payments curated',
+              desiredDescription: marker,
+              ownedCollectionId: high
+            }
+          ],
           { settleForVisibility: true }
         )
       ).resolves.toEqual({ 'Payments curated': low });
       expect(deletedHigh).toBe(true);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500, 750, 1000, 1250]);
       expect(listCalls).toBeGreaterThanOrEqual(6);
+    });
+
+    it('never deletes a published peer when a late owned root sorts first', async () => {
+      const lateOwned = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const publishedPeer = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [
+              { id: publishedPeer, name: 'Payments curated', description: marker },
+              { id: lateOwned, name: 'Payments curated', description: marker }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-1', [
+          {
+            finalName: 'Payments curated',
+            desiredDescription: marker,
+            ownedCollectionId: lateOwned
+          }
+        ])
+      ).resolves.toEqual({ 'Payments curated': lateOwned });
+      expect(deleted).toEqual([]);
+    });
+
+    it('deletes a losing run-owned root when inventory exposes only its bare id', async () => {
+      const ownedBare = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const publishedPeer = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const entries = [
+        { id: ownedBare, name: 'Payments curated', description: marker },
+        { id: publishedPeer, name: 'Payments curated', description: marker }
+      ];
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          const bare = String(env.path).split('/').pop();
+          const index = entries.findIndex((entry) => entry.id === bare);
+          if (index >= 0) entries.splice(index, 1);
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-1', [
+          {
+            finalName: 'Payments curated',
+            desiredDescription: marker,
+            ownedCollectionId: ownedBare
+          }
+        ])
+      ).resolves.toEqual({ 'Payments curated': publishedPeer });
+      expect(deleted).toEqual([`/v3/collections/${ownedBare}`]);
+    });
+
+    it('deletes the journaled owned root when its marker export is unreadable', async () => {
+      const peer = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const owned = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const entries = [
+        { id: peer, name: 'Payments curated', description: marker },
+        { id: owned, name: 'Payments curated' }
+      ];
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ error: 'unavailable' }, { status: 503 });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          entries.splice(entries.findIndex((entry) => entry.id === owned), 1);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${owned}`
+        ) {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-1', [
+          {
+            finalName: 'Payments curated',
+            desiredDescription: marker,
+            ownedCollectionId: owned
+          }
+        ])
+      ).resolves.toEqual({ 'Payments curated': peer });
+      expect(deleted).toEqual([`/v3/collections/${owned.slice(4)}`]);
     });
 
     it('findAdoptableSameMarkerCollection returns the sole same-marker exact-name final', async () => {
@@ -5741,10 +5865,15 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(deleted).toEqual([]);
     });
 
-    it('findAdoptableSameMarkerCollection rejects ambiguity before any mutation', async () => {
+    it('findAdoptableSameMarkerCollection deterministically adopts retained same-marker duplicates', async () => {
       const marker =
         'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
       const entries = [
+        {
+          id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+          name: '[DRUM] Payments',
+          description: marker
+        },
         { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: '[DRUM] Payments', description: marker },
         { id: '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: '[DRUM] Payments', description: marker }
       ];
@@ -5759,10 +5888,46 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await expect(
         client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
-      ).rejects.toThrow(
-        'SAME_MARKER_COLLECTION_AMBIGUOUS: multiple exact-name collections carry the same branch marker'
-      );
+      ).resolves.toBe('100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
       expect(mutations).toEqual([]);
+    });
+
+    it('resolves distinct bare same-marker roots before deterministic refresh adoption', async () => {
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const bare = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const full = `200-${bare}`;
+      let listCalls = 0;
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          listCalls += 1;
+          return jsonResponse({
+            data: listCalls === 1
+              ? [
+                  { id: bare, name: '[DRUM] Payments', description: marker },
+                  {
+                    id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    name: '[DRUM] Payments',
+                    description: marker
+                  }
+                ]
+              : [
+                  { id: full, name: '[DRUM] Payments', description: marker },
+                  {
+                    id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    name: '[DRUM] Payments',
+                    description: marker
+                  }
+                ]
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
+      ).resolves.toBe('100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+      expect(listCalls).toBe(2);
     });
 
     it('findAdoptableSameMarkerCollection returns undefined for absence or unmarked payload', async () => {
@@ -5882,7 +6047,11 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await expect(
         client.reconcileDuplicateFinalCollections('ws-org', [
-          { finalName: 'Payments @feature-x', desiredDescription: marker }
+          {
+            finalName: 'Payments @feature-x',
+            desiredDescription: marker,
+            ownedCollectionId: high
+          }
         ])
       ).resolves.toEqual({ 'Payments @feature-x': low });
       expect(deleted).toEqual([`/v3/collections/${high.slice(4)}`]);

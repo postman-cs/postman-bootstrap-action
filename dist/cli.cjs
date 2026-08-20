@@ -272445,7 +272445,7 @@ var runOpenApiBreakingChangeCheck = async (inputs, dependencies) => {
 };
 
 // src/lib/postman/additional-collections.ts
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var import_node_path2 = __toESM(require("node:path"), 1);
 var import_yaml = __toESM(require_dist(), 1);
 
@@ -272603,6 +272603,334 @@ function assertSupportedLocalViewContract(node, options) {
   });
 }
 
+// src/lib/repo/branch-decision.ts
+var import_node_fs2 = require("node:fs");
+var import_node_crypto2 = require("node:crypto");
+var ContractError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(`${code}: ${message}`);
+    this.code = code;
+    this.name = "ContractError";
+  }
+};
+function clean(value) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : void 0;
+}
+function stripRefPrefix(ref) {
+  const raw = clean(ref);
+  if (!raw) {
+    return { kind: "unknown" };
+  }
+  if (raw.startsWith("refs/heads/")) {
+    return { name: raw.slice("refs/heads/".length), kind: "branch" };
+  }
+  if (raw.startsWith("refs/tags/")) {
+    return { name: raw.slice("refs/tags/".length), kind: "tag" };
+  }
+  if (raw.startsWith("refs/pull/") || raw.startsWith("refs/merge")) {
+    return { kind: "unknown" };
+  }
+  return { name: raw, kind: "branch" };
+}
+function detectProvider(env) {
+  if (clean(env.GITHUB_ACTIONS) || clean(env.GITHUB_REPOSITORY)) return "github";
+  if (clean(env.GITLAB_CI) || clean(env.CI_PROJECT_PATH)) return "gitlab";
+  if (clean(env.BITBUCKET_REPO_SLUG) || clean(env.BITBUCKET_BRANCH)) return "bitbucket";
+  if (clean(env.TF_BUILD) || clean(env.BUILD_REPOSITORY_URI)) return "azure-devops";
+  return "unknown";
+}
+function readGithubEvent(env) {
+  const path11 = clean(env.GITHUB_EVENT_PATH);
+  if (!path11) return void 0;
+  try {
+    return JSON.parse((0, import_node_fs2.readFileSync)(path11, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+function resolveBranchIdentity(env = process.env, overrides = {}) {
+  const provider = detectProvider(env);
+  const explicitDefault = clean(overrides.defaultBranch);
+  let headBranch;
+  let rawRef;
+  let refKind;
+  let isPrContext = false;
+  let isForkPr = false;
+  let defaultBranch = explicitDefault;
+  let headSha;
+  switch (provider) {
+    case "github": {
+      const event2 = readGithubEvent(env);
+      headSha = clean(env.GITHUB_SHA);
+      defaultBranch ??= clean(event2?.repository?.default_branch);
+      const headRef = clean(env.GITHUB_HEAD_REF);
+      if (headRef) {
+        isPrContext = true;
+        headBranch = headRef;
+        rawRef = clean(env.GITHUB_REF) ?? headRef;
+        refKind = "branch";
+        const headRepo = event2?.pull_request?.head?.repo?.full_name;
+        const baseRepo = event2?.pull_request?.base?.repo?.full_name ?? event2?.repository?.full_name;
+        isForkPr = Boolean(headRepo && baseRepo && headRepo !== baseRepo);
+        headSha = clean(event2?.pull_request?.head?.sha) ?? headSha;
+      } else {
+        rawRef = clean(env.GITHUB_REF) ?? clean(env.GITHUB_REF_NAME);
+        const parsed = stripRefPrefix(rawRef);
+        headBranch = parsed.kind === "branch" ? parsed.name : void 0;
+        refKind = parsed.kind;
+      }
+      break;
+    }
+    case "gitlab": {
+      headSha = clean(env.CI_COMMIT_SHA);
+      defaultBranch ??= clean(env.CI_DEFAULT_BRANCH);
+      const mrSource = clean(env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME);
+      if (mrSource) {
+        isPrContext = true;
+        headBranch = mrSource;
+        rawRef = mrSource;
+        refKind = "branch";
+        const sourceProject = clean(env.CI_MERGE_REQUEST_SOURCE_PROJECT_ID);
+        const targetProject = clean(env.CI_MERGE_REQUEST_PROJECT_ID);
+        isForkPr = Boolean(sourceProject && targetProject && sourceProject !== targetProject);
+      } else if (clean(env.CI_COMMIT_TAG)) {
+        rawRef = clean(env.CI_COMMIT_TAG);
+        refKind = "tag";
+      } else {
+        headBranch = clean(env.CI_COMMIT_BRANCH) ?? clean(env.CI_COMMIT_REF_NAME);
+        rawRef = headBranch;
+        refKind = headBranch ? "branch" : "unknown";
+      }
+      break;
+    }
+    case "bitbucket": {
+      headSha = clean(env.BITBUCKET_COMMIT);
+      if (clean(env.BITBUCKET_TAG)) {
+        rawRef = clean(env.BITBUCKET_TAG);
+        refKind = "tag";
+      } else {
+        headBranch = clean(env.BITBUCKET_BRANCH);
+        rawRef = headBranch;
+        refKind = headBranch ? "branch" : "unknown";
+        isPrContext = Boolean(clean(env.BITBUCKET_PR_ID));
+      }
+      break;
+    }
+    case "azure-devops": {
+      headSha = clean(env.BUILD_SOURCEVERSION);
+      const prSource = clean(env.SYSTEM_PULLREQUEST_SOURCEBRANCH);
+      if (prSource) {
+        isPrContext = true;
+        const parsed = stripRefPrefix(prSource);
+        headBranch = parsed.kind === "branch" ? parsed.name : void 0;
+        rawRef = prSource;
+        refKind = parsed.kind;
+        const forkFlag = clean(env.SYSTEM_PULLREQUEST_ISFORK);
+        isForkPr = forkFlag?.toLowerCase() === "true";
+      } else {
+        rawRef = clean(env.BUILD_SOURCEBRANCH);
+        const parsed = stripRefPrefix(rawRef);
+        headBranch = parsed.kind === "branch" ? parsed.name : void 0;
+        refKind = parsed.kind;
+      }
+      break;
+    }
+    default: {
+      refKind = "unknown";
+    }
+  }
+  if (refKind === "branch" && headBranch && defaultBranch && headBranch === defaultBranch) {
+    refKind = "default-branch";
+  }
+  return { provider, headBranch, rawRef, defaultBranch, refKind, isPrContext, isForkPr, headSha };
+}
+function parseChannelRules(input) {
+  const raw = clean(input);
+  const rules = [];
+  for (const part of raw ? raw.split(",") : []) {
+    const entry = part.trim();
+    if (!entry) continue;
+    const eq = entry.indexOf("=");
+    if (eq <= 0 || eq === entry.length - 1) {
+      throw new ContractError(
+        "CONTRACT_CHANNELS_INPUT_INVALID",
+        `channels entry "${entry}" must be <branch-or-glob>=<CODE>`
+      );
+    }
+    const pattern = entry.slice(0, eq).trim();
+    const code = entry.slice(eq + 1).trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9_-]{0,15}$/.test(code)) {
+      throw new ContractError(
+        "CONTRACT_CHANNELS_INPUT_INVALID",
+        `channel code "${code}" must be 1-16 chars, A-Z 0-9 _ -, starting with a letter`
+      );
+    }
+    rules.push({ pattern, code });
+  }
+  if (!rules.some((rule) => rule.pattern === "release/*")) {
+    rules.push({ pattern: "release/*", code: "RC" });
+  }
+  return rules;
+}
+function matchChannel(branch, rules) {
+  for (const rule of rules) {
+    if (rule.pattern.endsWith("*")) {
+      const prefix = rule.pattern.slice(0, -1);
+      if (branch.startsWith(prefix)) return rule;
+    } else if (branch === rule.pattern) {
+      return rule;
+    }
+  }
+  return void 0;
+}
+function resolveBranchDecision(options) {
+  const { strategy, identity } = options;
+  const channels = options.channels ?? [];
+  if (strategy === "legacy") {
+    return {
+      tier: "legacy",
+      strategy,
+      identity,
+      canonicalBranch: clean(options.canonicalBranch) ?? identity.defaultBranch,
+      reason: "branch-strategy legacy: branch-blind pre-v2 behavior"
+    };
+  }
+  const canonicalBranch = clean(options.canonicalBranch) ?? identity.defaultBranch;
+  if (!canonicalBranch) {
+    throw new ContractError(
+      "CONTRACT_DEFAULT_BRANCH_UNRESOLVED",
+      `cannot resolve the canonical branch on ${identity.provider} (no explicit canonical-branch input and the provider exposes no default-branch variable). Set the canonical-branch input.`
+    );
+  }
+  if (identity.refKind === "tag" || identity.refKind === "unknown" || !identity.headBranch) {
+    return {
+      tier: "gated",
+      strategy,
+      identity,
+      canonicalBranch,
+      reason: `ref kind ${identity.refKind}: never canonical/preview-eligible; no-op with annotation`
+    };
+  }
+  if (identity.headBranch === canonicalBranch) {
+    return {
+      tier: "canonical",
+      strategy,
+      identity,
+      canonicalBranch,
+      reason: `head branch equals canonical branch ${canonicalBranch}`
+    };
+  }
+  const channel = matchChannel(identity.headBranch, channels);
+  if (channel) {
+    return {
+      tier: "channel",
+      strategy,
+      identity,
+      canonicalBranch,
+      channel,
+      reason: `branch ${identity.headBranch} matches channel ${channel.pattern}=${channel.code}`
+    };
+  }
+  if (strategy === "preview") {
+    if (identity.isForkPr) {
+      return {
+        tier: "gated",
+        strategy,
+        identity,
+        canonicalBranch,
+        reason: "fork PR: preview-ineligible (same-repo gate), gated instead"
+      };
+    }
+    return {
+      tier: "preview",
+      strategy,
+      identity,
+      canonicalBranch,
+      reason: `branch ${identity.headBranch} under branch-strategy preview`
+    };
+  }
+  return {
+    tier: "gated",
+    strategy,
+    identity,
+    canonicalBranch,
+    reason: `branch ${identity.headBranch} under branch-strategy publish-gate`
+  };
+}
+var BRANCH_DECISION_ENV = "POSTMAN_BRANCH_DECISION";
+function serializeBranchDecision(decision) {
+  return JSON.stringify(decision);
+}
+function parseBranchDecision(raw) {
+  const value = clean(raw);
+  if (!value) return void 0;
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new ContractError("CONTRACT_BRANCH_DECISION_INVALID", "POSTMAN_BRANCH_DECISION is not valid JSON");
+  }
+  const candidate = parsed;
+  const tiers = ["canonical", "channel", "preview", "gated", "legacy"];
+  if (!candidate || typeof candidate !== "object" || !tiers.includes(candidate.tier) || !candidate.identity) {
+    throw new ContractError("CONTRACT_BRANCH_DECISION_INVALID", "POSTMAN_BRANCH_DECISION does not carry a valid BranchDecision");
+  }
+  return candidate;
+}
+function resolveEffectiveBranchDecision(options, env = process.env) {
+  const inherited = parseBranchDecision(env[BRANCH_DECISION_ENV]);
+  if (inherited) return inherited;
+  return resolveBranchDecision(options);
+}
+var PREVIEW_SLUG_MAX = 30;
+function buildBranchSlug(rawBranch) {
+  const sanitized = rawBranch.replace(/^refs\/heads\//, "").replace(/\s+/g, "-").replace(/[^A-Za-z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^[._-]+|[._-]+$/g, "");
+  const truncated = sanitized.slice(0, PREVIEW_SLUG_MAX);
+  const lossy = truncated !== rawBranch.replace(/^refs\/heads\//, "");
+  if (!lossy) {
+    return { suffix: truncated, slug: truncated, lossy };
+  }
+  const hash = (0, import_node_crypto2.createHash)("sha256").update(rawBranch).digest("hex").slice(0, 6);
+  return { suffix: `${truncated}-${hash}`, slug: truncated, lossy };
+}
+function previewAssetName(baseName, rawBranch) {
+  return `${baseName} @${buildBranchSlug(rawBranch).suffix}`;
+}
+function channelAssetName(baseName, code) {
+  return `[${code}] ${baseName}`;
+}
+var MARKER_KEY = "x-pm-onboarding";
+function renderAssetMarker(marker) {
+  return `${MARKER_KEY}: ${JSON.stringify(marker)}`;
+}
+function parseAssetMarker(description) {
+  if (!description) return void 0;
+  const index = description.indexOf(`${MARKER_KEY}:`);
+  if (index === -1) return void 0;
+  const jsonStart = description.indexOf("{", index);
+  if (jsonStart === -1) return void 0;
+  let depth = 0;
+  for (let i = jsonStart; i < description.length; i += 1) {
+    const ch = description[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(description.slice(jsonStart, i + 1));
+          if (parsed && typeof parsed === "object" && parsed.repo && parsed.role) return parsed;
+        } catch {
+          return void 0;
+        }
+        return void 0;
+      }
+    }
+  }
+  return void 0;
+}
+
 // src/lib/postman/additional-collections.ts
 var RESOURCES_STATE_VERSION = 2;
 var SUPPORTED_STATE_VERSIONS = /* @__PURE__ */ new Set([1, RESOURCES_STATE_VERSION]);
@@ -272631,7 +272959,7 @@ function asRecord2(value) {
 function workspaceRootForLocalInputs() {
   const root = import_node_path2.default.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
   try {
-    return (0, import_node_fs2.realpathSync)(root);
+    return (0, import_node_fs3.realpathSync)(root);
   } catch {
     return root;
   }
@@ -272651,14 +272979,30 @@ function structuredCloneSafe(value) {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));
 }
-function collectionWithDescription(collection, description) {
+function descriptionWithMarker(existingDescription, marker) {
+  if (typeof existingDescription === "string") {
+    const prose = existingDescription.split(/\r?\n/).filter((line) => !line.trimStart().startsWith(`${MARKER_KEY}:`)).join("\n").trim();
+    return prose ? `${prose}
+
+${marker}` : marker;
+  }
+  const structuredDescription = asRecord2(existingDescription);
+  if (structuredDescription) {
+    return {
+      ...structuredDescription,
+      content: descriptionWithMarker(structuredDescription.content, marker)
+    };
+  }
+  return marker;
+}
+function collectionWithDescriptionMarker(collection, marker) {
   const copy = structuredCloneSafe(collection);
   const target = asRecord2(copy.collection) ?? copy;
   const info = asRecord2(target.info);
   if (info) {
-    info.description = description;
+    info.description = descriptionWithMarker(info.description, marker);
   } else {
-    target.description = description;
+    target.description = descriptionWithMarker(target.description, marker);
   }
   return copy;
 }
@@ -272671,7 +273015,7 @@ function assertInsideWorkspace(workspaceRoot, candidate, inputName) {
   }
 }
 function resolveInsideWorkspace(workspaceRoot, candidate, inputName) {
-  const resolved = (0, import_node_fs2.realpathSync)(candidate);
+  const resolved = (0, import_node_fs3.realpathSync)(candidate);
   assertInsideWorkspace(workspaceRoot, resolved, inputName);
   return resolved;
 }
@@ -272681,7 +273025,7 @@ function resourcesStatePath() {
 function readResourcesState() {
   let raw;
   try {
-    raw = (0, import_node_fs2.readFileSync)(resourcesStatePath(), "utf8");
+    raw = (0, import_node_fs3.readFileSync)(resourcesStatePath(), "utf8");
   } catch {
     return null;
   }
@@ -272714,11 +273058,11 @@ function readResourcesState() {
 }
 function writeResourcesState(state) {
   const target = resourcesStatePath();
-  (0, import_node_fs2.mkdirSync)(import_node_path2.default.dirname(target), { recursive: true });
+  (0, import_node_fs3.mkdirSync)(import_node_path2.default.dirname(target), { recursive: true });
   const canonical = state.cloudResources ?? state.canonical ?? {};
   const persisted = { ...state, version: RESOURCES_STATE_VERSION, canonical };
   delete persisted.cloudResources;
-  (0, import_node_fs2.writeFileSync)(target, (0, import_yaml.stringify)(persisted), "utf8");
+  (0, import_node_fs3.writeFileSync)(target, (0, import_yaml.stringify)(persisted), "utf8");
 }
 function findCloudResourceId(map2, matcher) {
   if (!map2) {
@@ -272735,7 +273079,7 @@ function resolveAdditionalCollectionsDir(directoryInput) {
   const resolved = import_node_path2.default.isAbsolute(directoryInput) ? import_node_path2.default.resolve(directoryInput) : import_node_path2.default.resolve(workspaceRoot, directoryInput);
   let directoryPath;
   try {
-    directoryPath = (0, import_node_fs2.realpathSync)(resolved);
+    directoryPath = (0, import_node_fs3.realpathSync)(resolved);
   } catch (error) {
     throw new Error(
       `ADDITIONAL_COLLECTIONS_DIR_NOT_FOUND: additional-collections-dir does not exist or cannot be read: ${directoryInput}`,
@@ -272743,7 +273087,7 @@ function resolveAdditionalCollectionsDir(directoryInput) {
     );
   }
   assertInsideWorkspace(workspaceRoot, directoryPath, "additional-collections-dir");
-  if (!(0, import_node_fs2.statSync)(directoryPath).isDirectory()) {
+  if (!(0, import_node_fs3.statSync)(directoryPath).isDirectory()) {
     throw new Error(
       `ADDITIONAL_COLLECTIONS_DIR_NOT_DIRECTORY: additional-collections-dir must be a directory: ${directoryInput}`
     );
@@ -272766,7 +273110,7 @@ function parseAdditionalCollectionDocument(content, extension, displayPath) {
 }
 function parseYamlDocument(filePath, displayPath) {
   try {
-    return (0, import_yaml.parse)((0, import_node_fs2.readFileSync)(filePath, "utf8"));
+    return (0, import_yaml.parse)((0, import_node_fs3.readFileSync)(filePath, "utf8"));
   } catch (error) {
     throw new Error(
       `ADDITIONAL_COLLECTION_PARSE_FAILED: ${displayPath} is not valid YAML`,
@@ -272883,7 +273227,7 @@ function extractPostmanCollectionPayload(document2, displayPath) {
   return collection;
 }
 function collectSupportedCollectionPaths(directoryPath, workspaceRoot, files, skippedDirectories = /* @__PURE__ */ new Set(), visitedDirectories = /* @__PURE__ */ new Set()) {
-  const realDirectoryPath = (0, import_node_fs2.realpathSync)(directoryPath);
+  const realDirectoryPath = (0, import_node_fs3.realpathSync)(directoryPath);
   assertInsideWorkspace(workspaceRoot, realDirectoryPath, "additional-collections-dir");
   if (skippedDirectories.has(realDirectoryPath)) {
     return;
@@ -272892,12 +273236,12 @@ function collectSupportedCollectionPaths(directoryPath, workspaceRoot, files, sk
     return;
   }
   visitedDirectories.add(realDirectoryPath);
-  const entries = (0, import_node_fs2.readdirSync)(realDirectoryPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  const entries = (0, import_node_fs3.readdirSync)(realDirectoryPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
     const entryPath = import_node_path2.default.join(realDirectoryPath, entry.name);
-    const realEntryPath = (0, import_node_fs2.realpathSync)(entryPath);
+    const realEntryPath = (0, import_node_fs3.realpathSync)(entryPath);
     assertInsideWorkspace(workspaceRoot, realEntryPath, "additional-collections-dir");
-    const stats = (0, import_node_fs2.statSync)(realEntryPath);
+    const stats = (0, import_node_fs3.statSync)(realEntryPath);
     if (stats.isDirectory()) {
       collectSupportedCollectionPaths(
         realEntryPath,
@@ -272919,10 +273263,10 @@ function collectSupportedCollectionPaths(directoryPath, workspaceRoot, files, sk
   }
 }
 function hasV3CollectionDefinition(directoryPath) {
-  return (0, import_node_fs2.existsSync)(import_node_path2.default.join(directoryPath, V3_DEFINITION_PATH));
+  return (0, import_node_fs3.existsSync)(import_node_path2.default.join(directoryPath, V3_DEFINITION_PATH));
 }
 function collectV3CollectionDirectories(directoryPath, workspaceRoot, directories, visitedDirectories = /* @__PURE__ */ new Set()) {
-  const realDirectoryPath = (0, import_node_fs2.realpathSync)(directoryPath);
+  const realDirectoryPath = (0, import_node_fs3.realpathSync)(directoryPath);
   assertInsideWorkspace(workspaceRoot, realDirectoryPath, "additional-collections-dir");
   if (visitedDirectories.has(realDirectoryPath)) {
     return;
@@ -272932,13 +273276,13 @@ function collectV3CollectionDirectories(directoryPath, workspaceRoot, directorie
     directories.push(realDirectoryPath);
     return;
   }
-  const entries = (0, import_node_fs2.readdirSync)(realDirectoryPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  const entries = (0, import_node_fs3.readdirSync)(realDirectoryPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
     if (!entry.isDirectory()) {
       continue;
     }
     const entryPath = import_node_path2.default.join(realDirectoryPath, entry.name);
-    const realEntryPath = (0, import_node_fs2.realpathSync)(entryPath);
+    const realEntryPath = (0, import_node_fs3.realpathSync)(entryPath);
     assertInsideWorkspace(workspaceRoot, realEntryPath, "additional-collections-dir");
     collectV3CollectionDirectories(realEntryPath, workspaceRoot, directories, visitedDirectories);
   }
@@ -272952,25 +273296,25 @@ function sortV3Items(items) {
   });
 }
 function loadV3DirectoryItems(directoryPath, workspaceRoot) {
-  const entries = (0, import_node_fs2.readdirSync)(directoryPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  const entries = (0, import_node_fs3.readdirSync)(directoryPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
   const items = [];
   for (const entry of entries) {
     if (entry.name === ".resources") {
       continue;
     }
     const entryPath = import_node_path2.default.join(directoryPath, entry.name);
-    const realEntryPath = (0, import_node_fs2.realpathSync)(entryPath);
+    const realEntryPath = (0, import_node_fs3.realpathSync)(entryPath);
     assertInsideWorkspace(workspaceRoot, realEntryPath, "additional-collections-dir");
     if (entry.isSymbolicLink()) {
       throw new Error(
         `ADDITIONAL_COLLECTION_UNSUPPORTED: symlinked Local View entry ${normalizedDisplayPath(workspaceRoot, entryPath)} is not supported`
       );
     }
-    const entryStats = (0, import_node_fs2.statSync)(realEntryPath);
+    const entryStats = (0, import_node_fs3.statSync)(realEntryPath);
     if (entryStats.isDirectory()) {
       const definitionPath = import_node_path2.default.join(realEntryPath, V3_DEFINITION_PATH);
       const displayPath2 = normalizedDisplayPath(workspaceRoot, definitionPath);
-      if (!(0, import_node_fs2.existsSync)(definitionPath)) {
+      if (!(0, import_node_fs3.existsSync)(definitionPath)) {
         throw new Error(
           `ADDITIONAL_COLLECTION_INVALID: ${displayPath2} is required for Local View folder ${import_node_path2.default.basename(realEntryPath)}`
         );
@@ -273097,7 +273441,7 @@ function loadAdditionalCollectionFiles(directoryInput, resourcesState) {
     const displayPath = normalizedDisplayPath(workspaceRoot, filePath);
     const extension = import_node_path2.default.extname(filePath).toLowerCase();
     const document2 = parseAdditionalCollectionDocument(
-      (0, import_node_fs2.readFileSync)(filePath, "utf8"),
+      (0, import_node_fs3.readFileSync)(filePath, "utf8"),
       extension,
       displayPath
     );
@@ -273133,7 +273477,7 @@ async function createAdditionalCollection(options) {
     );
   }
   const adoptableCollectionId = branchMarker ? await postman.findAdoptableSameMarkerCollection?.(workspaceId, file.name, branchMarker) : void 0;
-  const collection = branchMarker ? collectionWithDescription(file.collection, branchMarker) : file.collection;
+  const collection = branchMarker ? collectionWithDescriptionMarker(file.collection, branchMarker) : file.collection;
   const persistRoot = (collectionId2) => {
     ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId2;
     writeResourcesState2(resourcesState);
@@ -273149,7 +273493,7 @@ async function createAdditionalCollection(options) {
   if (branchMarker && operation === "created" && postman.reconcileDuplicateFinalCollections) {
     const winners = await postman.reconcileDuplicateFinalCollections(workspaceId, [
       { finalName: file.name, desiredDescription: branchMarker }
-    ]);
+    ], { settleForVisibility: true });
     const electedCollectionId = winners[file.name];
     if (electedCollectionId && electedCollectionId !== collectionId) {
       if (!postman.updateCollection) {
@@ -273192,8 +273536,9 @@ async function syncAdditionalCollections(options) {
           "Additional collection updates require updateCollection support from the Postman client"
         );
       }
+      const collection = branchMarker ? collectionWithDescriptionMarker(file.collection, branchMarker) : file.collection;
       try {
-        await postman.updateCollection(file.existingCollectionId, file.collection);
+        await postman.updateCollection(file.existingCollectionId, collection);
       } catch (error) {
         if (!isNotFoundError(error)) {
           throw error;
@@ -273929,7 +274274,7 @@ function detectRepoContext(input, env = process.env) {
 }
 
 // node_modules/@postman-cse/automation-core/dist/telemetry.js
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 var import_undici2 = __toESM(require_undici(), 1);
 var SCHEMA_VERSION = 3;
 var DEFAULT_TIMEOUT_MS = 1500;
@@ -273960,7 +274305,7 @@ function telemetryDisabled(env) {
   return false;
 }
 function sha2562(value) {
-  return (0, import_node_crypto2.createHash)("sha256").update(value).digest("hex");
+  return (0, import_node_crypto3.createHash)("sha256").update(value).digest("hex");
 }
 function accountTypeFromConsumer(consumerType) {
   const t = (consumerType ?? "").trim().toLowerCase();
@@ -280924,15 +281269,15 @@ function planContractItemScripts(items, index) {
 }
 
 // src/lib/spec/local-openapi-collection-generation.ts
-var import_node_crypto5 = require("node:crypto");
+var import_node_crypto6 = require("node:crypto");
 var import_openapi_to_postmanv2 = __toESM(require_dist4(), 1);
 
 // src/lib/spec/deterministic-schema-faker.ts
-var import_node_crypto3 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 var import_json_schema_faker = __toESM(require_json_schema_faker(), 1);
 var fakerAccess = Promise.resolve();
 function deterministicRandom(source) {
-  let state = (0, import_node_crypto3.createHash)("sha256").update(source).digest().readUInt32LE(0);
+  let state = (0, import_node_crypto4.createHash)("sha256").update(source).digest().readUInt32LE(0);
   return () => {
     state = state + 1831565813 >>> 0;
     let value = state;
@@ -280990,7 +281335,7 @@ ${stableStringify(converted)}`)
 }
 
 // src/lib/spec/openapi-loader.ts
-var import_node_fs4 = require("node:fs");
+var import_node_fs5 = require("node:fs");
 var import_node_url2 = require("node:url");
 var import_node_path4 = __toESM(require("node:path"), 1);
 
@@ -302418,7 +302763,7 @@ function compileErrors(result) {
 var import_yaml4 = __toESM(require_dist(), 1);
 
 // src/lib/spec/acquire-definition-bundle.ts
-var import_node_fs3 = require("node:fs");
+var import_node_fs4 = require("node:fs");
 var import_node_path3 = __toESM(require("node:path"), 1);
 var import_yaml3 = __toESM(require_dist(), 1);
 
@@ -302488,7 +302833,7 @@ function looksLikeIntrospection(record) {
 }
 
 // src/lib/spec/definition-bundle.ts
-var import_node_crypto4 = require("node:crypto");
+var import_node_crypto5 = require("node:crypto");
 var DEFINITION_BUNDLE_LIMITS = {
   maxFiles: 101,
   maxDepth: SAFE_FETCH_LIMITS.maxDepth,
@@ -302564,7 +302909,7 @@ function decodeStrictUtf8(bytes) {
   }
 }
 function sha256Hex(bytes) {
-  return (0, import_node_crypto4.createHash)("sha256").update(bytes).digest("hex");
+  return (0, import_node_crypto5.createHash)("sha256").update(bytes).digest("hex");
 }
 function asReadonlyMap(map2) {
   const readonly = {
@@ -302634,7 +302979,7 @@ function computeDefinitionBundleDigest(input) {
     format: input.format,
     files
   };
-  return (0, import_node_crypto4.createHash)("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
+  return (0, import_node_crypto5.createHash)("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
 }
 function createDefinitionBundle(input) {
   const rootPath = assertValidBundleRelativePath(input.rootPath, "rootPath");
@@ -302782,7 +303127,7 @@ function fail3(code, message) {
 function resolveWorkspaceRoot(workspaceRoot) {
   const resolved = import_node_path3.default.resolve(workspaceRoot);
   try {
-    return (0, import_node_fs3.realpathSync)(resolved);
+    return (0, import_node_fs4.realpathSync)(resolved);
   } catch {
     return resolved;
   }
@@ -302821,7 +303166,7 @@ function readConfinedFileBytes(workspaceRoot, workspaceRelativePath2, bundleBase
     assertInsideDir(workspaceRoot, cursor);
     let st;
     try {
-      st = (0, import_node_fs3.lstatSync)(cursor);
+      st = (0, import_node_fs4.lstatSync)(cursor);
     } catch {
       fail3("CONTRACT_SPEC_READ_FAILED", `Unable to read spec at ${workspaceRelativePath2}`);
     }
@@ -302849,9 +303194,9 @@ function readConfinedFileBytes(workspaceRoot, workspaceRelativePath2, bundleBase
   let fd;
   let result;
   try {
-    const flags = import_node_fs3.constants.O_RDONLY | (import_node_fs3.constants.O_NOFOLLOW ?? 0);
-    fd = (0, import_node_fs3.openSync)(absolutePath, flags);
-    const st = (0, import_node_fs3.fstatSync)(fd);
+    const flags = import_node_fs4.constants.O_RDONLY | (import_node_fs4.constants.O_NOFOLLOW ?? 0);
+    fd = (0, import_node_fs4.openSync)(absolutePath, flags);
+    const st = (0, import_node_fs4.fstatSync)(fd);
     if (!st.isFile()) {
       fail3("CONTRACT_SPEC_PATH_NOT_FILE", `spec-path must be a regular file: ${workspaceRelativePath2}`);
     }
@@ -302864,7 +303209,7 @@ function readConfinedFileBytes(workspaceRoot, workspaceRelativePath2, bundleBase
     const buf = Buffer.allocUnsafe(st.size);
     let offset = 0;
     while (offset < st.size) {
-      const n = (0, import_node_fs3.readSync)(fd, buf, offset, st.size - offset, offset);
+      const n = (0, import_node_fs4.readSync)(fd, buf, offset, st.size - offset, offset);
       if (n <= 0) break;
       offset += n;
     }
@@ -302878,7 +303223,7 @@ function readConfinedFileBytes(workspaceRoot, workspaceRelativePath2, bundleBase
   } finally {
     if (fd !== void 0) {
       try {
-        (0, import_node_fs3.closeSync)(fd);
+        (0, import_node_fs4.closeSync)(fd);
       } catch {
       }
     }
@@ -303678,7 +304023,7 @@ function resolveLocalFileUrl(url) {
   if (/^https?:\/\//i.test(url)) return url;
   try {
     const filePath = url.startsWith("file:") ? (0, import_node_url2.fileURLToPath)(url) : url;
-    return (0, import_node_url2.pathToFileURL)((0, import_node_fs4.realpathSync)(filePath)).toString();
+    return (0, import_node_url2.pathToFileURL)((0, import_node_fs5.realpathSync)(filePath)).toString();
   } catch {
     return url;
   }
@@ -303697,7 +304042,7 @@ async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
   const workspaceRoot = (() => {
     const root2 = import_node_path4.default.resolve(process.env.GITHUB_WORKSPACE ?? process.cwd());
     try {
-      return (0, import_node_fs4.realpathSync)(root2);
+      return (0, import_node_fs5.realpathSync)(root2);
     } catch {
       return root2;
     }
@@ -303736,7 +304081,7 @@ async function loadOpenApiContractSpecFromPath(specPath, options = {}) {
   );
   const resolvedPath = (() => {
     try {
-      return (0, import_node_fs4.realpathSync)(absolutePath);
+      return (0, import_node_fs5.realpathSync)(absolutePath);
     } catch {
       return absolutePath;
     }
@@ -304634,7 +304979,7 @@ function stableStringify2(value) {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify2(record[key])}`).join(",")}}`;
 }
 function computePayloadDigest(collection) {
-  return (0, import_node_crypto5.createHash)("sha256").update(stableStringify2(withoutStructuralIds(collection))).digest("hex");
+  return (0, import_node_crypto6.createHash)("sha256").update(stableStringify2(withoutStructuralIds(collection))).digest("hex");
 }
 function applyCollectionIdentity(source, name, description) {
   const clone2 = deepClone2(source);
@@ -304649,7 +304994,7 @@ function applyCollectionIdentity(source, name, description) {
 function rekeyStructuralCollectionIds(collection) {
   const clone2 = deepClone2(collection);
   const info = isRecord3(clone2.info) ? clone2.info : {};
-  info._postman_id = (0, import_node_crypto5.randomUUID)();
+  info._postman_id = (0, import_node_crypto6.randomUUID)();
   clone2.info = info;
   rekeyStructuralItems(clone2.item);
   return clone2;
@@ -304658,12 +305003,12 @@ function rekeyStructuralItems(items) {
   if (!Array.isArray(items)) return;
   for (const raw of items) {
     if (!isRecord3(raw)) continue;
-    raw.id = (0, import_node_crypto5.randomUUID)();
-    if (isRecord3(raw.request)) raw.request.id = (0, import_node_crypto5.randomUUID)();
+    raw.id = (0, import_node_crypto6.randomUUID)();
+    if (isRecord3(raw.request)) raw.request.id = (0, import_node_crypto6.randomUUID)();
     if (Array.isArray(raw.item)) rekeyStructuralItems(raw.item);
     if (Array.isArray(raw.response)) {
       for (const resp of raw.response) {
-        if (isRecord3(resp)) resp.id = (0, import_node_crypto5.randomUUID)();
+        if (isRecord3(resp)) resp.id = (0, import_node_crypto6.randomUUID)();
       }
     }
   }
@@ -304784,334 +305129,6 @@ async function generateLocalOpenApiRolePayloads(bundledOpenApi, options, depende
     }
   };
   return { roles, warnings };
-}
-
-// src/lib/repo/branch-decision.ts
-var import_node_fs5 = require("node:fs");
-var import_node_crypto6 = require("node:crypto");
-var ContractError = class extends Error {
-  code;
-  constructor(code, message) {
-    super(`${code}: ${message}`);
-    this.code = code;
-    this.name = "ContractError";
-  }
-};
-function clean(value) {
-  const trimmed = (value ?? "").trim();
-  return trimmed.length > 0 ? trimmed : void 0;
-}
-function stripRefPrefix(ref) {
-  const raw = clean(ref);
-  if (!raw) {
-    return { kind: "unknown" };
-  }
-  if (raw.startsWith("refs/heads/")) {
-    return { name: raw.slice("refs/heads/".length), kind: "branch" };
-  }
-  if (raw.startsWith("refs/tags/")) {
-    return { name: raw.slice("refs/tags/".length), kind: "tag" };
-  }
-  if (raw.startsWith("refs/pull/") || raw.startsWith("refs/merge")) {
-    return { kind: "unknown" };
-  }
-  return { name: raw, kind: "branch" };
-}
-function detectProvider(env) {
-  if (clean(env.GITHUB_ACTIONS) || clean(env.GITHUB_REPOSITORY)) return "github";
-  if (clean(env.GITLAB_CI) || clean(env.CI_PROJECT_PATH)) return "gitlab";
-  if (clean(env.BITBUCKET_REPO_SLUG) || clean(env.BITBUCKET_BRANCH)) return "bitbucket";
-  if (clean(env.TF_BUILD) || clean(env.BUILD_REPOSITORY_URI)) return "azure-devops";
-  return "unknown";
-}
-function readGithubEvent(env) {
-  const path11 = clean(env.GITHUB_EVENT_PATH);
-  if (!path11) return void 0;
-  try {
-    return JSON.parse((0, import_node_fs5.readFileSync)(path11, "utf8"));
-  } catch {
-    return void 0;
-  }
-}
-function resolveBranchIdentity(env = process.env, overrides = {}) {
-  const provider = detectProvider(env);
-  const explicitDefault = clean(overrides.defaultBranch);
-  let headBranch;
-  let rawRef;
-  let refKind;
-  let isPrContext = false;
-  let isForkPr = false;
-  let defaultBranch = explicitDefault;
-  let headSha;
-  switch (provider) {
-    case "github": {
-      const event2 = readGithubEvent(env);
-      headSha = clean(env.GITHUB_SHA);
-      defaultBranch ??= clean(event2?.repository?.default_branch);
-      const headRef = clean(env.GITHUB_HEAD_REF);
-      if (headRef) {
-        isPrContext = true;
-        headBranch = headRef;
-        rawRef = clean(env.GITHUB_REF) ?? headRef;
-        refKind = "branch";
-        const headRepo = event2?.pull_request?.head?.repo?.full_name;
-        const baseRepo = event2?.pull_request?.base?.repo?.full_name ?? event2?.repository?.full_name;
-        isForkPr = Boolean(headRepo && baseRepo && headRepo !== baseRepo);
-        headSha = clean(event2?.pull_request?.head?.sha) ?? headSha;
-      } else {
-        rawRef = clean(env.GITHUB_REF) ?? clean(env.GITHUB_REF_NAME);
-        const parsed = stripRefPrefix(rawRef);
-        headBranch = parsed.kind === "branch" ? parsed.name : void 0;
-        refKind = parsed.kind;
-      }
-      break;
-    }
-    case "gitlab": {
-      headSha = clean(env.CI_COMMIT_SHA);
-      defaultBranch ??= clean(env.CI_DEFAULT_BRANCH);
-      const mrSource = clean(env.CI_MERGE_REQUEST_SOURCE_BRANCH_NAME);
-      if (mrSource) {
-        isPrContext = true;
-        headBranch = mrSource;
-        rawRef = mrSource;
-        refKind = "branch";
-        const sourceProject = clean(env.CI_MERGE_REQUEST_SOURCE_PROJECT_ID);
-        const targetProject = clean(env.CI_MERGE_REQUEST_PROJECT_ID);
-        isForkPr = Boolean(sourceProject && targetProject && sourceProject !== targetProject);
-      } else if (clean(env.CI_COMMIT_TAG)) {
-        rawRef = clean(env.CI_COMMIT_TAG);
-        refKind = "tag";
-      } else {
-        headBranch = clean(env.CI_COMMIT_BRANCH) ?? clean(env.CI_COMMIT_REF_NAME);
-        rawRef = headBranch;
-        refKind = headBranch ? "branch" : "unknown";
-      }
-      break;
-    }
-    case "bitbucket": {
-      headSha = clean(env.BITBUCKET_COMMIT);
-      if (clean(env.BITBUCKET_TAG)) {
-        rawRef = clean(env.BITBUCKET_TAG);
-        refKind = "tag";
-      } else {
-        headBranch = clean(env.BITBUCKET_BRANCH);
-        rawRef = headBranch;
-        refKind = headBranch ? "branch" : "unknown";
-        isPrContext = Boolean(clean(env.BITBUCKET_PR_ID));
-      }
-      break;
-    }
-    case "azure-devops": {
-      headSha = clean(env.BUILD_SOURCEVERSION);
-      const prSource = clean(env.SYSTEM_PULLREQUEST_SOURCEBRANCH);
-      if (prSource) {
-        isPrContext = true;
-        const parsed = stripRefPrefix(prSource);
-        headBranch = parsed.kind === "branch" ? parsed.name : void 0;
-        rawRef = prSource;
-        refKind = parsed.kind;
-        const forkFlag = clean(env.SYSTEM_PULLREQUEST_ISFORK);
-        isForkPr = forkFlag?.toLowerCase() === "true";
-      } else {
-        rawRef = clean(env.BUILD_SOURCEBRANCH);
-        const parsed = stripRefPrefix(rawRef);
-        headBranch = parsed.kind === "branch" ? parsed.name : void 0;
-        refKind = parsed.kind;
-      }
-      break;
-    }
-    default: {
-      refKind = "unknown";
-    }
-  }
-  if (refKind === "branch" && headBranch && defaultBranch && headBranch === defaultBranch) {
-    refKind = "default-branch";
-  }
-  return { provider, headBranch, rawRef, defaultBranch, refKind, isPrContext, isForkPr, headSha };
-}
-function parseChannelRules(input) {
-  const raw = clean(input);
-  const rules = [];
-  for (const part of raw ? raw.split(",") : []) {
-    const entry = part.trim();
-    if (!entry) continue;
-    const eq = entry.indexOf("=");
-    if (eq <= 0 || eq === entry.length - 1) {
-      throw new ContractError(
-        "CONTRACT_CHANNELS_INPUT_INVALID",
-        `channels entry "${entry}" must be <branch-or-glob>=<CODE>`
-      );
-    }
-    const pattern = entry.slice(0, eq).trim();
-    const code = entry.slice(eq + 1).trim().toUpperCase();
-    if (!/^[A-Z][A-Z0-9_-]{0,15}$/.test(code)) {
-      throw new ContractError(
-        "CONTRACT_CHANNELS_INPUT_INVALID",
-        `channel code "${code}" must be 1-16 chars, A-Z 0-9 _ -, starting with a letter`
-      );
-    }
-    rules.push({ pattern, code });
-  }
-  if (!rules.some((rule) => rule.pattern === "release/*")) {
-    rules.push({ pattern: "release/*", code: "RC" });
-  }
-  return rules;
-}
-function matchChannel(branch, rules) {
-  for (const rule of rules) {
-    if (rule.pattern.endsWith("*")) {
-      const prefix = rule.pattern.slice(0, -1);
-      if (branch.startsWith(prefix)) return rule;
-    } else if (branch === rule.pattern) {
-      return rule;
-    }
-  }
-  return void 0;
-}
-function resolveBranchDecision(options) {
-  const { strategy, identity } = options;
-  const channels = options.channels ?? [];
-  if (strategy === "legacy") {
-    return {
-      tier: "legacy",
-      strategy,
-      identity,
-      canonicalBranch: clean(options.canonicalBranch) ?? identity.defaultBranch,
-      reason: "branch-strategy legacy: branch-blind pre-v2 behavior"
-    };
-  }
-  const canonicalBranch = clean(options.canonicalBranch) ?? identity.defaultBranch;
-  if (!canonicalBranch) {
-    throw new ContractError(
-      "CONTRACT_DEFAULT_BRANCH_UNRESOLVED",
-      `cannot resolve the canonical branch on ${identity.provider} (no explicit canonical-branch input and the provider exposes no default-branch variable). Set the canonical-branch input.`
-    );
-  }
-  if (identity.refKind === "tag" || identity.refKind === "unknown" || !identity.headBranch) {
-    return {
-      tier: "gated",
-      strategy,
-      identity,
-      canonicalBranch,
-      reason: `ref kind ${identity.refKind}: never canonical/preview-eligible; no-op with annotation`
-    };
-  }
-  if (identity.headBranch === canonicalBranch) {
-    return {
-      tier: "canonical",
-      strategy,
-      identity,
-      canonicalBranch,
-      reason: `head branch equals canonical branch ${canonicalBranch}`
-    };
-  }
-  const channel = matchChannel(identity.headBranch, channels);
-  if (channel) {
-    return {
-      tier: "channel",
-      strategy,
-      identity,
-      canonicalBranch,
-      channel,
-      reason: `branch ${identity.headBranch} matches channel ${channel.pattern}=${channel.code}`
-    };
-  }
-  if (strategy === "preview") {
-    if (identity.isForkPr) {
-      return {
-        tier: "gated",
-        strategy,
-        identity,
-        canonicalBranch,
-        reason: "fork PR: preview-ineligible (same-repo gate), gated instead"
-      };
-    }
-    return {
-      tier: "preview",
-      strategy,
-      identity,
-      canonicalBranch,
-      reason: `branch ${identity.headBranch} under branch-strategy preview`
-    };
-  }
-  return {
-    tier: "gated",
-    strategy,
-    identity,
-    canonicalBranch,
-    reason: `branch ${identity.headBranch} under branch-strategy publish-gate`
-  };
-}
-var BRANCH_DECISION_ENV = "POSTMAN_BRANCH_DECISION";
-function serializeBranchDecision(decision) {
-  return JSON.stringify(decision);
-}
-function parseBranchDecision(raw) {
-  const value = clean(raw);
-  if (!value) return void 0;
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new ContractError("CONTRACT_BRANCH_DECISION_INVALID", "POSTMAN_BRANCH_DECISION is not valid JSON");
-  }
-  const candidate = parsed;
-  const tiers = ["canonical", "channel", "preview", "gated", "legacy"];
-  if (!candidate || typeof candidate !== "object" || !tiers.includes(candidate.tier) || !candidate.identity) {
-    throw new ContractError("CONTRACT_BRANCH_DECISION_INVALID", "POSTMAN_BRANCH_DECISION does not carry a valid BranchDecision");
-  }
-  return candidate;
-}
-function resolveEffectiveBranchDecision(options, env = process.env) {
-  const inherited = parseBranchDecision(env[BRANCH_DECISION_ENV]);
-  if (inherited) return inherited;
-  return resolveBranchDecision(options);
-}
-var PREVIEW_SLUG_MAX = 30;
-function buildBranchSlug(rawBranch) {
-  const sanitized = rawBranch.replace(/^refs\/heads\//, "").replace(/\s+/g, "-").replace(/[^A-Za-z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^[._-]+|[._-]+$/g, "");
-  const truncated = sanitized.slice(0, PREVIEW_SLUG_MAX);
-  const lossy = truncated !== rawBranch.replace(/^refs\/heads\//, "");
-  if (!lossy) {
-    return { suffix: truncated, slug: truncated, lossy };
-  }
-  const hash = (0, import_node_crypto6.createHash)("sha256").update(rawBranch).digest("hex").slice(0, 6);
-  return { suffix: `${truncated}-${hash}`, slug: truncated, lossy };
-}
-function previewAssetName(baseName, rawBranch) {
-  return `${baseName} @${buildBranchSlug(rawBranch).suffix}`;
-}
-function channelAssetName(baseName, code) {
-  return `[${code}] ${baseName}`;
-}
-var MARKER_KEY = "x-pm-onboarding";
-function renderAssetMarker(marker) {
-  return `${MARKER_KEY}: ${JSON.stringify(marker)}`;
-}
-function parseAssetMarker(description) {
-  if (!description) return void 0;
-  const index = description.indexOf(`${MARKER_KEY}:`);
-  if (index === -1) return void 0;
-  const jsonStart = description.indexOf("{", index);
-  if (jsonStart === -1) return void 0;
-  let depth = 0;
-  for (let i = jsonStart; i < description.length; i += 1) {
-    const ch = description[i];
-    if (ch === "{") depth += 1;
-    else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        try {
-          const parsed = JSON.parse(description.slice(jsonStart, i + 1));
-          if (parsed && typeof parsed === "object" && parsed.repo && parsed.role) return parsed;
-        } catch {
-          return void 0;
-        }
-        return void 0;
-      }
-    }
-  }
-  return void 0;
 }
 
 // validation/evidence/multifile-spec-sync.json
@@ -309081,7 +309098,7 @@ ${error.responseBody ?? ""}`
    * not an ownership boundary: only roots carrying the same durable branch
    * marker are eligible. Canonical and stranger collections are never touched.
    */
-  async reconcileDuplicateFinalCollections(workspaceId, candidates) {
+  async reconcileDuplicateFinalCollections(workspaceId, candidates, options = {}) {
     const uniqueCandidates = /* @__PURE__ */ new Map();
     for (const candidate of candidates) {
       const finalName = String(candidate.finalName || "").trim();
@@ -309091,21 +309108,23 @@ ${error.responseBody ?? ""}`
     }
     const winners = {};
     if (uniqueCandidates.size === 0) return winners;
-    const inventory = await this.listWorkspaceCollections(workspaceId, "safe");
+    let inventory = await this.listWorkspaceCollections(workspaceId, "safe");
     for (const [finalName, desiredDescription] of uniqueCandidates) {
+      if (options.settleForVisibility) {
+        const delays = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+        for (const delay of delays) {
+          await this.sleep(delay);
+          inventory = await this.listWorkspaceCollections(workspaceId, "safe");
+        }
+      }
       const matches = [];
       for (const entry of inventory.filter((candidate) => candidate.name === finalName)) {
-        let description = entry.description;
-        if (!description) {
-          try {
-            const exported = await this.exportV2Collection(entry.id);
-            description = String(asRecord13(exported.info)?.description ?? "").trim() || void 0;
-          } catch {
-            description = void 0;
-          }
-        }
-        if (this.hasSameBranchAssetMarker(description, desiredDescription)) {
-          matches.push({ ...entry, ...description ? { description } : {} });
+        const ownership = await this.readCollectionOwnershipDescription(entry);
+        if (ownership.known && this.hasSameBranchAssetMarker(ownership.description, desiredDescription)) {
+          matches.push({
+            ...entry,
+            ...ownership.description ? { description: ownership.description } : {}
+          });
         }
       }
       matches.sort((a, b) => a.id.localeCompare(b.id));
@@ -309130,19 +309149,42 @@ ${error.responseBody ?? ""}`
     const candidates = await this.findCollectionsByExactName(workspaceId, desiredName);
     const adoptable = [];
     for (const entry of candidates) {
-      let description = entry.description;
-      if (!description) {
-        try {
-          const exported = await this.exportV2Collection(entry.id);
-          description = String(asRecord13(exported.info)?.description ?? "").trim() || void 0;
-        } catch {
-          description = void 0;
-        }
-      }
-      if (parseAssetMarker(description)) continue;
-      adoptable.push({ ...entry, ...description ? { description } : {} });
+      const ownership = await this.readCollectionOwnershipDescription(entry);
+      if (!ownership.known || parseAssetMarker(ownership.description)) continue;
+      adoptable.push({
+        ...entry,
+        ...ownership.description ? { description: ownership.description } : {}
+      });
     }
     return adoptable;
+  }
+  async readCollectionOwnershipDescription(entry) {
+    if (typeof entry.description === "string") {
+      const description = entry.description.trim();
+      return { known: true, ...description ? { description } : {} };
+    }
+    try {
+      const exported = await this.exportV2Collection(entry.id);
+      const info = asRecord13(exported.info);
+      if (!info) return { known: false };
+      if (!Object.prototype.hasOwnProperty.call(info, "description") || info.description === null) {
+        return { known: true };
+      }
+      if (typeof info.description === "string") {
+        const description2 = info.description.trim();
+        return { known: true, ...description2 ? { description: description2 } : {} };
+      }
+      const structuredDescription = asRecord13(info.description);
+      if (!structuredDescription) return { known: false };
+      if (!Object.prototype.hasOwnProperty.call(structuredDescription, "content") || structuredDescription.content === null) {
+        return { known: true };
+      }
+      if (typeof structuredDescription.content !== "string") return { known: false };
+      const description = structuredDescription.content.trim();
+      return { known: true, ...description ? { description } : {} };
+    } catch {
+      return { known: false };
+    }
   }
   /**
    * Sole existing final with this exact name carrying the same durable branch
@@ -309170,16 +309212,10 @@ ${error.responseBody ?? ""}`
     if (!parseAssetMarker(desiredDescription)) return void 0;
     const matches = [];
     for (const entry of eligible) {
-      let description = entry.description;
-      if (!description) {
-        try {
-          const exported = await this.exportV2Collection(entry.id);
-          description = String(asRecord13(exported.info)?.description ?? "").trim() || void 0;
-        } catch {
-          description = void 0;
-        }
+      const ownership = await this.readCollectionOwnershipDescription(entry);
+      if (ownership.known && this.hasSameBranchAssetMarker(ownership.description, desiredDescription)) {
+        matches.push(entry.id);
       }
-      if (this.hasSameBranchAssetMarker(description, desiredDescription)) matches.push(entry.id);
     }
     if (matches.length === 0) return void 0;
     if (matches.length === 1) return matches[0];
@@ -342024,12 +342060,6 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               workspaceId: workspaceId || ""
             });
             for (const result of additionalCollectionResults) {
-              if (collectionBranchMarker) {
-                if (!dependencies.postman.updateCollectionDescription) {
-                  throw new Error("Branch-scoped collections require updateCollectionDescription support");
-                }
-                await dependencies.postman.updateCollectionDescription(result.collectionId, collectionBranchMarker);
-              }
               completedExternalSideEffects.push(
                 `${result.operation}AdditionalCollection(${result.collectionId} from ${result.displayPath})`
               );
@@ -342404,7 +342434,7 @@ function createRoutingPostmanClient(options) {
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) => gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
     exportV2Collection: (collectionUid) => gateway.exportV2Collection(collectionUid),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) => gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
-    reconcileDuplicateFinalCollections: (workspaceId, candidates) => gateway.reconcileDuplicateFinalCollections(workspaceId, candidates),
+    reconcileDuplicateFinalCollections: (workspaceId, candidates, options2) => gateway.reconcileDuplicateFinalCollections(workspaceId, candidates, options2),
     findAdoptableSameMarkerCollection: (workspaceId, finalName, desiredDescription) => gateway.findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription)
   };
 }

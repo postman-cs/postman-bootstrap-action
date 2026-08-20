@@ -376,7 +376,8 @@ export interface BootstrapExecutionDependencies {
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
       workspaceId: string,
-      candidates: Array<{ finalName: string; desiredDescription: string }>
+      candidates: Array<{ finalName: string; desiredDescription: string }>,
+      options?: { settleForVisibility?: boolean }
     ): Promise<Record<string, string>>;
   };
   ecClient?: Pick<
@@ -3742,12 +3743,6 @@ async function runBootstrapInner(
             workspaceId: workspaceId || ''
           });
           for (const result of additionalCollectionResults) {
-            if (collectionBranchMarker) {
-              if (!dependencies.postman.updateCollectionDescription) {
-                throw new Error('Branch-scoped collections require updateCollectionDescription support');
-              }
-              await dependencies.postman.updateCollectionDescription(result.collectionId, collectionBranchMarker);
-            }
             completedExternalSideEffects.push(
               `${result.operation}AdditionalCollection(${result.collectionId} from ${result.displayPath})`
             );
@@ -4341,8 +4336,8 @@ export function createRoutingPostmanClient(options: {
         .exportV2Collection(collectionUid),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
       gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
-    reconcileDuplicateFinalCollections: (workspaceId, candidates) =>
-      gateway.reconcileDuplicateFinalCollections(workspaceId, candidates),
+    reconcileDuplicateFinalCollections: (workspaceId, candidates, options) =>
+      gateway.reconcileDuplicateFinalCollections(workspaceId, candidates, options),
     findAdoptableSameMarkerCollection: (workspaceId, finalName, desiredDescription) =>
       gateway.findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription)
   };

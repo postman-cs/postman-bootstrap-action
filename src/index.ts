@@ -376,7 +376,11 @@ export interface BootstrapExecutionDependencies {
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
       workspaceId: string,
-      candidates: Array<{ finalName: string; desiredDescription: string }>,
+      candidates: Array<{
+        finalName: string;
+        desiredDescription: string;
+        ownedCollectionId?: string;
+      }>,
       options?: { settleForVisibility?: boolean }
     ): Promise<Record<string, string>>;
   };
@@ -3609,8 +3613,9 @@ async function runBootstrapInner(
           );
         }
 
-        // Collapse duplicate finals left when concurrent peers both finished
-        // election before seeing each other. Keeps the lowest inventory UID.
+        // Reconcile duplicate finals left when concurrent peers both finished
+        // election before seeing each other. Cleanup remains limited to roots
+        // still present in this run's ownership journal.
         if (
           importCount > 0 &&
           dependencies.postman.reconcileDuplicateFinalCollections &&
@@ -3619,10 +3624,19 @@ async function runBootstrapInner(
         ) {
           const importedFinals = collectionRoles
             .filter((role) => fulfilledByRole.get(role.role)?.kind === 'import')
-            .map((role) => ({
-              finalName: roleNames[role.role],
-              desiredDescription: collectionBranchMarker
-            }));
+            .map((role) => {
+              const result = fulfilledByRole.get(role.role)!;
+              const ownsReturnedCollection =
+                result.kind === 'import' &&
+                result.journaledRootIds.includes(result.collectionId);
+              return {
+                finalName: roleNames[role.role],
+                desiredDescription: collectionBranchMarker,
+                ...(ownsReturnedCollection
+                  ? { ownedCollectionId: result.collectionId }
+                  : {})
+              };
+            });
           try {
             const winners = await dependencies.postman.reconcileDuplicateFinalCollections(
               workspaceId,

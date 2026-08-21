@@ -2502,6 +2502,15 @@ async function runBootstrapInner(
   const shouldSyncAdditionalCollections =
     shouldGenerateCollections || onboardingScope === 'spec-with-additional-collections';
   assertAdditionalCollectionsScopeConfigured(inputs);
+  if (
+    (branchDecision.tier === 'preview' || branchDecision.tier === 'channel') &&
+    inputs.additionalCollectionsDir?.trim() &&
+    !collectionBranchMarker
+  ) {
+    throw new Error(
+      `CONTRACT_BRANCH_CANONICAL_WRITE: a ${branchDecision.tier} run syncing additional collections requires a repository URL so ownership can be recorded. Set repo-url (CLI: --repo-url) and rerun.`
+    );
+  }
   if (branchDecision.tier !== 'legacy') {
     outputs['sync-status'] = 'synced';
     outputs['branch-decision'] = serializeBranchDecision(branchDecision);

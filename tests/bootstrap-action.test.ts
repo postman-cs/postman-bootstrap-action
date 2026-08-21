@@ -1112,6 +1112,54 @@ describe('bootstrap action', () => {
     }
   });
 
+  it('rejects branch-scoped additional collections without repository ownership before mutation', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-additional-unowned-'));
+    mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    writeFileSync(
+      join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(createCuratedCollection('Payments curated'), null, 2)
+    );
+    const previousDecision = process.env.POSTMAN_BRANCH_DECISION;
+    process.env.POSTMAN_BRANCH_DECISION = JSON.stringify({
+      tier: 'preview',
+      strategy: 'preview',
+      identity: {
+        provider: 'github',
+        headBranch: 'feature/collections',
+        refKind: 'branch',
+        isPrContext: false,
+        isForkPr: false
+      },
+      canonicalBranch: 'main',
+      reason: 'inherited preview decision'
+    });
+    const postman = createRollbackPostman();
+
+    try {
+      await withCwd(workspace, async () => {
+        await expect(runExistingSpecBootstrap(postman, {
+          inputs: {
+            additionalCollectionsDir: 'postman/curated',
+            onboardingScope: 'spec-with-additional-collections',
+            repoUrl: undefined,
+            specId: undefined
+          }
+        })).rejects.toThrow(/CONTRACT_BRANCH_CANONICAL_WRITE/);
+      });
+    } finally {
+      if (previousDecision === undefined) {
+        delete process.env.POSTMAN_BRANCH_DECISION;
+      } else {
+        process.env.POSTMAN_BRANCH_DECISION = previousDecision;
+      }
+      rmSync(workspace, { recursive: true, force: true });
+    }
+
+    expect(postman.uploadSpec).not.toHaveBeenCalled();
+    expect(postman.createCollection).not.toHaveBeenCalled();
+    expect(postman.updateCollection).not.toHaveBeenCalled();
+  });
+
   it('supports workspace and spec onboarding without generated collection assets', async () => {
     const postman = createRollbackPostman();
     const internalIntegration = createRollbackIntegration();

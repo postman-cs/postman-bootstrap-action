@@ -446,6 +446,7 @@ export interface AssetMarker {
   repo: string;
   rawBranch: string;
   sanitizedBranch: string;
+  channelCode?: string;
   headRepoId?: string;
   prNumber?: number;
   role: 'preview' | 'channel';

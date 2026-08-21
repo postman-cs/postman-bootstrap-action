@@ -5919,6 +5919,36 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(deleted).toEqual([]);
     });
 
+    it('findAdoptableSameMarkerCollection adopts a shared channel across matching branches', async () => {
+      const priorMarker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"release/1","sanitizedBranch":"release-1","channelCode":"RC","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const desiredMarker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"release/2","sanitizedBranch":"release-2","channelCode":"RC","role":"channel","headSha":"def456","createdAt":"2026-07-24T00:00:00Z","lastSyncedAt":"2026-07-24T00:00:00Z"}';
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [
+              {
+                id: '050-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                name: '[RC] Payments',
+                description: desiredMarker.replace('"channelCode":"RC"', '"channelCode":"QA"')
+              },
+              {
+                id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                name: '[RC] Payments',
+                description: priorMarker
+              }
+            ]
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[RC] Payments', desiredMarker)
+      ).resolves.toBe('100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    });
+
     it('findAdoptableSameMarkerCollection deterministically adopts retained same-marker duplicates', async () => {
       const marker =
         'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';

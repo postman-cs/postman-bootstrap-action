@@ -3736,17 +3736,23 @@ export class PostmanGatewayAssetsClient {
     const winners: Record<string, string> = Object.create(null);
     if (uniqueCandidates.size === 0) return winners;
     let inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
+    if (options.settleForVisibility) {
+      const requiresPreviewSchedule = [...uniqueCandidates].some(
+        ([finalName, { desiredDescription }]) =>
+          parseAssetMarker(desiredDescription)?.role === 'preview' ||
+          PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName) ===
+            PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
+      );
+      const delays = requiresPreviewSchedule
+        ? PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
+        : PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+      for (const delay of delays) {
+        await this.sleep(delay);
+        inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
+      }
+    }
     for (const [finalName, candidate] of uniqueCandidates) {
       const { desiredDescription, ownedCollectionId } = candidate;
-      if (options.settleForVisibility) {
-        const delays = parseAssetMarker(desiredDescription)?.role === 'preview'
-          ? PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
-          : PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
-        for (const delay of delays) {
-          await this.sleep(delay);
-          inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
-        }
-      }
       const matchesByIdentity = new Map<
         string,
         { id: string; name: string; description?: string }

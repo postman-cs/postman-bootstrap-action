@@ -5723,28 +5723,40 @@ describe('PostmanGatewayAssetsClient', () => {
       ].sort());
     });
 
-    it('settles visibility before reconciling delayed same-marker peers when requested', async () => {
+    it('settles visibility once per batch before reconciling delayed same-marker peers', async () => {
       const low = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
       const high = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const refundsLow = '150-cccccccc-cccc-cccc-cccc-cccccccccccc';
+      const refundsHigh = '350-dddddddd-dddd-dddd-dddd-dddddddddddd';
       const marker =
         'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
       let listCalls = 0;
-      let deletedHigh = false;
+      const deleted = new Set<string>();
       const sleep = vi.fn<(delayMs: number) => Promise<undefined>>(async () => undefined);
       const { client } = makeClient((env) => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           listCalls += 1;
           return jsonResponse({
             data: listCalls <= 2
-              ? [{ id: high, name: 'Payments curated', description: marker }]
+              ? [
+                  { id: high, name: 'Payments curated', description: marker },
+                  { id: refundsHigh, name: 'Refunds curated', description: marker }
+                ]
               : [
-                  ...(deletedHigh ? [] : [{ id: high, name: 'Payments curated', description: marker }]),
-                  { id: low, name: 'Payments curated', description: marker }
+                  ...(!deleted.has(high)
+                    ? [{ id: high, name: 'Payments curated', description: marker }]
+                    : []),
+                  { id: low, name: 'Payments curated', description: marker },
+                  ...(!deleted.has(refundsHigh)
+                    ? [{ id: refundsHigh, name: 'Refunds curated', description: marker }]
+                    : []),
+                  { id: refundsLow, name: 'Refunds curated', description: marker }
                 ]
           });
         }
         if (env.service === 'collection' && env.method === 'delete') {
-          if (env.path === `/v3/collections/${high.slice(4)}`) deletedHigh = true;
+          const deletedId = [high, refundsHigh].find((id) => env.path.endsWith(id.slice(4)));
+          if (deletedId) deleted.add(deletedId);
           return jsonResponse({ data: {} });
         }
         if (
@@ -5754,7 +5766,7 @@ describe('PostmanGatewayAssetsClient', () => {
           !env.path.includes('?workspace=')
         ) {
           const bare = String(env.path).replace('/v3/collections/', '');
-          if (bare === high.slice(4) && deletedHigh) {
+          if ([...deleted].some((id) => id.endsWith(bare))) {
             return jsonResponse({ error: 'missing' }, { status: 404 });
           }
           return jsonResponse({ data: { id: bare, name: 'Payments curated' } });
@@ -5770,16 +5782,24 @@ describe('PostmanGatewayAssetsClient', () => {
               finalName: 'Payments curated',
               desiredDescription: marker,
               ownedCollectionId: high
+            },
+            {
+              finalName: 'Refunds curated',
+              desiredDescription: marker,
+              ownedCollectionId: refundsHigh
             }
           ],
           { settleForVisibility: true }
         )
-      ).resolves.toEqual({ 'Payments curated': low });
-      expect(deletedHigh).toBe(true);
+      ).resolves.toEqual({
+        'Payments curated': low,
+        'Refunds curated': refundsLow
+      });
+      expect(deleted).toEqual(new Set([high, refundsHigh]));
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000
       ]);
-      expect(listCalls).toBeGreaterThanOrEqual(10);
+      expect(listCalls).toBe(10);
     });
 
     it('never deletes a published peer when a late owned root sorts first', async () => {

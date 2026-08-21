@@ -788,28 +788,8 @@ async function createAdditionalCollection(options: {
     onRootCreated: persistRoot,
     returnOperation: true
   });
-  let collectionId = typeof created === 'string' ? created : created.collectionId;
-  let operation = typeof created === 'string' ? 'created' : created.operation;
-  if (branchMarker && operation === 'created' && postman.reconcileDuplicateFinalCollections) {
-    const winners = await postman.reconcileDuplicateFinalCollections(workspaceId, [
-      {
-        finalName: file.name,
-        desiredDescription: branchMarker,
-        ownedCollectionId: collectionId
-      }
-    ], { settleForVisibility: true });
-    const electedCollectionId = winners[file.name];
-    if (electedCollectionId && electedCollectionId !== collectionId) {
-      if (!postman.updateCollection) {
-        throw new Error(
-          'Additional collection branch reconciliation requires updateCollection support from the Postman client'
-        );
-      }
-      await postman.updateCollection(electedCollectionId, collection);
-      collectionId = electedCollectionId;
-      operation = 'updated';
-    }
-  }
+  const collectionId = typeof created === 'string' ? created : created.collectionId;
+  const operation = typeof created === 'string' ? 'created' : created.operation;
   persistRoot(collectionId);
   core.info(
     `${operation === 'created' ? 'Created' : 'Updated'} additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
@@ -897,6 +877,43 @@ export async function syncAdditionalCollections(options: {
       writeResourcesState: writeState,
       workspaceId
     }));
+  }
+
+  const createdResults = branchMarker && postman.reconcileDuplicateFinalCollections
+    ? results.filter((result) => result.operation === 'created')
+    : [];
+  if (branchMarker && postman.reconcileDuplicateFinalCollections && createdResults.length > 0) {
+    const winners = await postman.reconcileDuplicateFinalCollections(
+      workspaceId,
+      createdResults.map((result) => ({
+        finalName: result.name,
+        desiredDescription: branchMarker,
+        ownedCollectionId: result.collectionId
+      })),
+      { settleForVisibility: true }
+    );
+    const filesByResourcePath = new Map(collectionFiles.map((file) => [file.resourcePath, file]));
+
+    for (const result of createdResults) {
+      const electedCollectionId = winners[result.name];
+      if (!electedCollectionId || electedCollectionId === result.collectionId) {
+        continue;
+      }
+      if (!postman.updateCollection) {
+        throw new Error(
+          'Additional collection branch reconciliation requires updateCollection support from the Postman client'
+        );
+      }
+      const file = filesByResourcePath.get(result.resourcePath)!;
+      await postman.updateCollection(
+        electedCollectionId,
+        collectionWithDescriptionMarker(file.collection, branchMarker)
+      );
+      result.collectionId = electedCollectionId;
+      result.operation = 'updated';
+      ensureAdditionalCollectionsMap(resourcesState)[result.resourcePath] = electedCollectionId;
+      writeState(resourcesState);
+    }
   }
 
   return results;

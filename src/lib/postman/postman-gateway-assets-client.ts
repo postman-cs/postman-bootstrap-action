@@ -3927,12 +3927,19 @@ export class PostmanGatewayAssetsClient {
   ): boolean {
     const candidate = parseAssetMarker(candidateDescription);
     const desired = parseAssetMarker(desiredDescription);
+    const sameChannelOrBranch =
+      candidate?.role === 'channel' && desired?.role === 'channel' && desired.channelCode
+        ? candidate.channelCode
+          ? candidate.channelCode === desired.channelCode
+          : candidate.rawBranch === desired.rawBranch &&
+            candidate.sanitizedBranch === desired.sanitizedBranch
+        : candidate?.rawBranch === desired?.rawBranch &&
+          candidate?.sanitizedBranch === desired?.sanitizedBranch;
     return Boolean(
       candidate &&
       desired &&
       candidate.repo === desired.repo &&
-      candidate.rawBranch === desired.rawBranch &&
-      candidate.sanitizedBranch === desired.sanitizedBranch &&
+      sameChannelOrBranch &&
       candidate.role === desired.role &&
       candidate.headRepoId === desired.headRepoId
     );

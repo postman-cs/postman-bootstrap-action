@@ -949,6 +949,9 @@ export function renderCollectionBranchMarker(
     rawBranch,
     sanitizedBranch: rawBranch.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 30),
     role: decision.tier,
+    ...(decision.tier === 'channel' && decision.channel
+      ? { channelCode: decision.channel.code }
+      : {}),
     headSha: decision.identity.headSha,
     createdAt: timestamp,
     lastSyncedAt: timestamp

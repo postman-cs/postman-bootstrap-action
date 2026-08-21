@@ -306324,7 +306324,7 @@ async function generateLocalOpenApiRolePayloads(bundledOpenApi, options, depende
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "603eaef802eccba37269818b88cfe0557b02fb55",
+  bootstrapCommit: "a2719e7144ab22533969358e27f311ea4280e894",
   legs: [
     {
       mode: "nonorg",
@@ -310451,8 +310451,9 @@ ${error2.responseBody ?? ""}`
   hasSameBranchAssetMarker(candidateDescription, desiredDescription) {
     const candidate = parseAssetMarker(candidateDescription);
     const desired = parseAssetMarker(desiredDescription);
+    const sameChannelOrBranch = candidate?.role === "channel" && desired?.role === "channel" && desired.channelCode ? candidate.channelCode ? candidate.channelCode === desired.channelCode : candidate.rawBranch === desired.rawBranch && candidate.sanitizedBranch === desired.sanitizedBranch : candidate?.rawBranch === desired?.rawBranch && candidate?.sanitizedBranch === desired?.sanitizedBranch;
     return Boolean(
-      candidate && desired && candidate.repo === desired.repo && candidate.rawBranch === desired.rawBranch && candidate.sanitizedBranch === desired.sanitizedBranch && candidate.role === desired.role && candidate.headRepoId === desired.headRepoId
+      candidate && desired && candidate.repo === desired.repo && sameChannelOrBranch && candidate.role === desired.role && candidate.headRepoId === desired.headRepoId
     );
   }
   async exportV2Collection(collectionUid) {
@@ -341319,6 +341320,7 @@ function renderCollectionBranchMarker(decision, repo, now = /* @__PURE__ */ new 
     rawBranch,
     sanitizedBranch: rawBranch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-+/g, "-").slice(0, 30),
     role: decision.tier,
+    ...decision.tier === "channel" && decision.channel ? { channelCode: decision.channel.code } : {},
     headSha: decision.identity.headSha,
     createdAt: timestamp2,
     lastSyncedAt: timestamp2

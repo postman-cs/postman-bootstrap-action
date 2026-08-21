@@ -305139,7 +305139,7 @@ async function generateLocalOpenApiRolePayloads(bundledOpenApi, options, depende
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "b117aa5f18dccdfee4cae02a753dee6092beea3d",
+  bootstrapCommit: "603eaef802eccba37269818b88cfe0557b02fb55",
   legs: [
     {
       mode: "nonorg",
@@ -308632,11 +308632,15 @@ ${error.responseBody ?? ""}`
       (page) => Array.isArray(asRecord13(page)?.data) ? asRecord13(page).data : [],
       "COLLECTION_LIST"
     );
-    return entries.map((value) => asRecord13(value)).filter((value) => value !== null).map((value) => ({
-      id: String(value.id ?? value.uid ?? "").trim(),
-      name: String(value.name ?? value.title ?? "").trim(),
-      ...String(value.description ?? "").trim() ? { description: String(value.description).trim() } : {}
-    })).filter((value) => value.id).sort((a, b) => a.id.localeCompare(b.id));
+    return entries.map((value) => asRecord13(value)).filter((value) => value !== null).map((value) => {
+      const structuredDescription = asRecord13(value.description);
+      const description = (typeof value.description === "string" ? value.description : typeof structuredDescription?.content === "string" ? structuredDescription.content : "").trim();
+      return {
+        id: String(value.id ?? value.uid ?? "").trim(),
+        name: String(value.name ?? value.title ?? "").trim(),
+        ...description ? { description } : {}
+      };
+    }).filter((value) => value.id).sort((a, b) => a.id.localeCompare(b.id));
   }
   async createCollection(workspaceId, collection, options = {}) {
     const v3 = this.normalizeCollectionForWrite(collection);

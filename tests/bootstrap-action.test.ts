@@ -1112,7 +1112,7 @@ describe('bootstrap action', () => {
     }
   });
 
-  it('rejects branch-scoped additional collections without repository ownership before mutation', async () => {
+  it('guards repository ownership only when a branch run syncs additional collections', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-additional-unowned-'));
     mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
     writeFileSync(
@@ -1133,10 +1133,22 @@ describe('bootstrap action', () => {
       canonicalBranch: 'main',
       reason: 'inherited preview decision'
     });
-    const postman = createRollbackPostman();
-
     try {
       await withCwd(workspace, async () => {
+        const specOnlyPostman = createRollbackPostman();
+        await expect(runExistingSpecBootstrap(specOnlyPostman, {
+          inputs: {
+            additionalCollectionsDir: 'postman/curated',
+            onboardingScope: 'spec-only',
+            repoUrl: undefined,
+            specId: undefined
+          }
+        })).resolves.toMatchObject({
+          'additional-collections-json': '[]'
+        });
+        expect(specOnlyPostman.createCollection).not.toHaveBeenCalled();
+
+        const postman = createRollbackPostman();
         await expect(runExistingSpecBootstrap(postman, {
           inputs: {
             additionalCollectionsDir: 'postman/curated',
@@ -1145,6 +1157,9 @@ describe('bootstrap action', () => {
             specId: undefined
           }
         })).rejects.toThrow(/CONTRACT_BRANCH_CANONICAL_WRITE/);
+        expect(postman.uploadSpec).not.toHaveBeenCalled();
+        expect(postman.createCollection).not.toHaveBeenCalled();
+        expect(postman.updateCollection).not.toHaveBeenCalled();
       });
     } finally {
       if (previousDecision === undefined) {
@@ -1154,10 +1169,6 @@ describe('bootstrap action', () => {
       }
       rmSync(workspace, { recursive: true, force: true });
     }
-
-    expect(postman.uploadSpec).not.toHaveBeenCalled();
-    expect(postman.createCollection).not.toHaveBeenCalled();
-    expect(postman.updateCollection).not.toHaveBeenCalled();
   });
 
   it('supports workspace and spec onboarding without generated collection assets', async () => {

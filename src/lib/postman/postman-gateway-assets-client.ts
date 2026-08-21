@@ -384,8 +384,9 @@ export class PostmanGatewayAssetsClient {
     250, 500, 750, 1000, 1250
   ] as const;
   /**
-   * Extended settle schedule for branch-preview final names only
-   * (`previewAssetName` contract: `<base> @<branch-slug>`). 18s total budget
+   * Extended settle schedule for branch-preview assets. Generated assets are
+   * identified by the `previewAssetName` suffix; authored assets use their
+   * durable preview marker. The 18s total budget
    * covers the live nonorg dual-preview race where a peer final may appear after
    * the standard window.
    */
@@ -3738,8 +3739,9 @@ export class PostmanGatewayAssetsClient {
     for (const [finalName, candidate] of uniqueCandidates) {
       const { desiredDescription, ownedCollectionId } = candidate;
       if (options.settleForVisibility) {
-        const delays =
-          PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+        const delays = parseAssetMarker(desiredDescription)?.role === 'preview'
+          ? PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
+          : PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
         for (const delay of delays) {
           await this.sleep(delay);
           inventory = await this.listWorkspaceCollections(workspaceId, 'safe');

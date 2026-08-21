@@ -5776,8 +5776,10 @@ describe('PostmanGatewayAssetsClient', () => {
         )
       ).resolves.toEqual({ 'Payments curated': low });
       expect(deletedHigh).toBe(true);
-      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([250, 500, 750, 1000, 1250]);
-      expect(listCalls).toBeGreaterThanOrEqual(6);
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000
+      ]);
+      expect(listCalls).toBeGreaterThanOrEqual(10);
     });
 
     it('never deletes a published peer when a late owned root sorts first', async () => {

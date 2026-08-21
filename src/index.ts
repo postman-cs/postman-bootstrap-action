@@ -2503,6 +2503,7 @@ async function runBootstrapInner(
     shouldGenerateCollections || onboardingScope === 'spec-with-additional-collections';
   assertAdditionalCollectionsScopeConfigured(inputs);
   if (
+    shouldSyncAdditionalCollections &&
     (branchDecision.tier === 'preview' || branchDecision.tier === 'channel') &&
     inputs.additionalCollectionsDir?.trim() &&
     !collectionBranchMarker

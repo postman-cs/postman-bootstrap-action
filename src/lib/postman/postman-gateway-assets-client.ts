@@ -3084,13 +3084,21 @@ export class PostmanGatewayAssetsClient {
     return entries
       .map((value) => asRecord(value))
       .filter((value): value is JsonRecord => value !== null)
-      .map((value) => ({
-        id: String(value.id ?? value.uid ?? '').trim(),
-        name: String(value.name ?? value.title ?? '').trim(),
-        ...(String(value.description ?? '').trim()
-          ? { description: String(value.description).trim() }
-          : {})
-      }))
+      .map((value) => {
+        const structuredDescription = asRecord(value.description);
+        const description = (
+          typeof value.description === 'string'
+            ? value.description
+            : typeof structuredDescription?.content === 'string'
+              ? structuredDescription.content
+              : ''
+        ).trim();
+        return {
+          id: String(value.id ?? value.uid ?? '').trim(),
+          name: String(value.name ?? value.title ?? '').trim(),
+          ...(description ? { description } : {})
+        };
+      })
       .filter((value) => value.id)
       .sort((a, b) => a.id.localeCompare(b.id));
   }

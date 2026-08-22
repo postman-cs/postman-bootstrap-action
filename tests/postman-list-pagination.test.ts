@@ -258,6 +258,19 @@ describe('workspace collection inventory pagination', () => {
         }
         return collectionPage([{ id: 'col-existing', name: 'Telecom API - Baseline' }]);
       }
+      if (env.method === 'get' && env.path === '/v3/collections/col-existing/export') {
+        return jsonResponse({
+          data: {
+            collection: {
+              info: {
+                name: 'Telecom API - Baseline',
+                schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+              },
+              item: []
+            }
+          }
+        });
+      }
       if (env.method === 'post') {
         posts.push(env);
         return jsonResponse({ data: { id: 'col-duplicate' } });

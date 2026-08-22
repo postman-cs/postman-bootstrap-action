@@ -384,8 +384,9 @@ export class PostmanGatewayAssetsClient {
     250, 500, 750, 1000, 1250
   ] as const;
   /**
-   * Extended settle schedule for branch-preview final names only
-   * (`previewAssetName` contract: `<base> @<branch-slug>`). 18s total budget
+   * Extended settle schedule for branch-preview assets. Generated assets are
+   * identified by the `previewAssetName` suffix; authored assets use their
+   * durable preview marker. The 18s total budget
    * covers the live nonorg dual-preview race where a peer final may appear after
    * the standard window.
    */
@@ -3084,13 +3085,21 @@ export class PostmanGatewayAssetsClient {
     return entries
       .map((value) => asRecord(value))
       .filter((value): value is JsonRecord => value !== null)
-      .map((value) => ({
-        id: String(value.id ?? value.uid ?? '').trim(),
-        name: String(value.name ?? value.title ?? '').trim(),
-        ...(String(value.description ?? '').trim()
-          ? { description: String(value.description).trim() }
-          : {})
-      }))
+      .map((value) => {
+        const structuredDescription = asRecord(value.description);
+        const description = (
+          typeof value.description === 'string'
+            ? value.description
+            : typeof structuredDescription?.content === 'string'
+              ? structuredDescription.content
+              : ''
+        ).trim();
+        return {
+          id: String(value.id ?? value.uid ?? '').trim(),
+          name: String(value.name ?? value.title ?? '').trim(),
+          ...(description ? { description } : {})
+        };
+      })
       .filter((value) => value.id)
       .sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -3098,22 +3107,38 @@ export class PostmanGatewayAssetsClient {
   async createCollection(
     workspaceId: string,
     collection: unknown,
-    options: { onRootCreated?: (id: string) => void | Promise<void> } = {}
-  ): Promise<string> {
+    options: {
+      onRootCreated?: (id: string) => void | Promise<void>;
+      adoptableCollectionId?: string;
+      allowExactNameAdoption?: boolean;
+      returnOperation?: boolean;
+    } = {}
+  ): Promise<string | { collectionId: string; operation: 'created' | 'updated' }> {
     const v3 = this.normalizeCollectionForWrite(collection);
     // Root create accepts name only; description/auth/variables/scripts are applied
     // via JSON Patch in applyCollectionLevelSettings (live-proven). Putting
     // description on the POST body makes a later add /description a no-op that
     // can 400 when the patch set is otherwise empty or redundant.
     const desiredName = String(v3.name ?? 'Untitled Collection');
-    const existing = adoptExactMatch(
-      `collection:${workspaceId}:${desiredName}`,
-      await this.findCollectionsByExactName(workspaceId, desiredName),
-      (entry) => entry.id
-    );
+    const allowExactNameAdoption = options.allowExactNameAdoption ?? true;
+    const returnOperation = options.returnOperation ?? false;
+    const exactNameCandidates = !options.adoptableCollectionId && allowExactNameAdoption
+      ? await this.findCanonicalAdoptableCollectionsByExactName(workspaceId, desiredName)
+      : [];
+    const existing = options.adoptableCollectionId
+      ? { id: options.adoptableCollectionId, name: desiredName }
+      : !allowExactNameAdoption
+        ? undefined
+      : adoptExactMatch(
+          `collection:${workspaceId}:${desiredName}`,
+          exactNameCandidates,
+          (entry) => entry.id
+        );
     if (existing) {
       await this.updateCollection(existing.id, collection);
-      return existing.id;
+      return returnOperation
+        ? { collectionId: existing.id, operation: 'updated' }
+        : existing.id;
     }
     const submittedName = `${desiredName} [bootstrap:${this.createIdentity()}]`;
     const rootBody: JsonRecord = { name: submittedName };
@@ -3166,7 +3191,9 @@ export class PostmanGatewayAssetsClient {
       }
       throw error;
     }
-    return rawId;
+    return returnOperation
+      ? { collectionId: rawId, operation: 'created' }
+      : rawId;
   }
 
   /**
@@ -3679,68 +3706,152 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Collapse duplicate preview/channel finals to the lowest UID. Exact name is
-   * not an ownership boundary: only roots carrying the same durable branch
-   * marker are eligible. Canonical and stranger collections are never touched.
+   * Elect the lowest same-marker preview/channel final and retract only this
+   * run's created root when it loses. Exact name is not an ownership boundary:
+   * canonical, stranger, and peer-owned collections are never deleted.
    */
   async reconcileDuplicateFinalCollections(
     workspaceId: string,
-    candidates: Array<{ finalName: string; desiredDescription: string }>
+    candidates: Array<{
+      finalName: string;
+      desiredDescription: string;
+      ownedCollectionId?: string;
+    }>,
+    options: { settleForVisibility?: boolean } = {}
   ): Promise<Record<string, string>> {
-    const uniqueCandidates = new Map<string, string>();
+    const uniqueCandidates = new Map<
+      string,
+      { desiredDescription: string; ownedCollectionId?: string }
+    >();
     for (const candidate of candidates) {
       const finalName = String(candidate.finalName || '').trim();
       const desiredDescription = String(candidate.desiredDescription || '').trim();
       if (!finalName || !parseAssetMarker(desiredDescription)) continue;
-      uniqueCandidates.set(finalName, desiredDescription);
+      const ownedCollectionId = String(candidate.ownedCollectionId || '').trim();
+      uniqueCandidates.set(finalName, {
+        desiredDescription,
+        ...(ownedCollectionId ? { ownedCollectionId } : {})
+      });
     }
     const winners: Record<string, string> = Object.create(null);
     if (uniqueCandidates.size === 0) return winners;
-    const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
-    for (const [finalName, desiredDescription] of uniqueCandidates) {
-      const matches: Array<{ id: string; name: string; description?: string }> = [];
+    let inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
+    if (options.settleForVisibility) {
+      const requiresPreviewSchedule = [...uniqueCandidates].some(
+        ([finalName, { desiredDescription }]) =>
+          parseAssetMarker(desiredDescription)?.role === 'preview' ||
+          PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName) ===
+            PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
+      );
+      const delays = requiresPreviewSchedule
+        ? PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
+        : PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
+      for (const delay of delays) {
+        await this.sleep(delay);
+        inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
+      }
+    }
+    for (const [finalName, candidate] of uniqueCandidates) {
+      const { desiredDescription, ownedCollectionId } = candidate;
+      const matchesByIdentity = new Map<
+        string,
+        { id: string; name: string; description?: string }
+      >();
       for (const entry of inventory.filter((candidate) => candidate.name === finalName)) {
-        let description = entry.description;
-        if (!description) {
-          // Org inventory omits root descriptions. The export route remains
-          // readable for generated collections and carries info.description.
-          // If export cannot prove ownership, leave the candidate untouched.
-          try {
-            const exported = await this.exportV2Collection(entry.id);
-            description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
-          } catch {
-            description = undefined;
+        const ownership = await this.readCollectionOwnershipDescription(entry);
+        if (
+          ownership.known &&
+          this.hasSameBranchAssetMarker(ownership.description, desiredDescription)
+        ) {
+          const match = {
+            ...entry,
+            ...(ownership.description ? { description: ownership.description } : {})
+          };
+          if (isBareCollectionUuid(entry.id)) continue;
+          const identity = normalizeCollectionModelIdentity(entry.id);
+          const prior = matchesByIdentity.get(identity);
+          if (!prior || match.id.localeCompare(prior.id) < 0) {
+            matchesByIdentity.set(identity, match);
           }
         }
-        if (this.hasSameBranchAssetMarker(description, desiredDescription)) {
-          matches.push({ ...entry, ...(description ? { description } : {}) });
-        }
       }
+      const matches = [...matchesByIdentity.values()];
       matches.sort((a, b) => a.id.localeCompare(b.id));
       if (matches.length === 0) continue;
       const winnerId = matches[0]!.id;
       winners[finalName] = winnerId;
-      if (matches.length === 1) continue;
-      const losers = matches.slice(1).map((entry) => entry.id);
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, losers);
-      for (const id of losers) {
-        const identity = normalizeCollectionModelIdentity(id);
-        for (let i = inventory.length - 1; i >= 0; i -= 1) {
-          if (normalizeCollectionModelIdentity(inventory[i]!.id) === identity) {
-            inventory.splice(i, 1);
-          }
-        }
-      }
+      if (!ownedCollectionId) continue;
+      const ownedIdentity = normalizeCollectionModelIdentity(ownedCollectionId);
+      if (normalizeCollectionModelIdentity(winnerId) === ownedIdentity) continue;
+
+      // A run may retract only the root it created. Deleting peer roots can
+      // invalidate an ID that another run has already published after finishing
+      // an earlier visibility window. If a lower late peer arrives after that
+      // publication, retaining a duplicate is safer than revoking the published
+      // winner.
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownedCollectionId]);
     }
     return winners;
+  }
+
+  private async findCanonicalAdoptableCollectionsByExactName(
+    workspaceId: string,
+    desiredName: string
+  ): Promise<Array<{ id: string; name: string; description?: string }>> {
+    const candidates = await this.findCollectionsByExactName(workspaceId, desiredName);
+    const adoptable: Array<{ id: string; name: string; description?: string }> = [];
+    for (const entry of candidates) {
+      const ownership = await this.readCollectionOwnershipDescription(entry);
+      if (!ownership.known || parseAssetMarker(ownership.description)) continue;
+      adoptable.push({
+        ...entry,
+        ...(ownership.description ? { description: ownership.description } : {})
+      });
+    }
+    return adoptable;
+  }
+
+  private async readCollectionOwnershipDescription(
+    entry: { id: string; description?: string }
+  ): Promise<{ known: boolean; description?: string }> {
+    if (typeof entry.description === 'string') {
+      const description = entry.description.trim();
+      return { known: true, ...(description ? { description } : {}) };
+    }
+
+    try {
+      const exported = await this.exportV2Collection(entry.id);
+      const info = asRecord(exported.info);
+      if (!info) return { known: false };
+      if (!Object.prototype.hasOwnProperty.call(info, 'description') || info.description === null) {
+        return { known: true };
+      }
+      if (typeof info.description === 'string') {
+        const description = info.description.trim();
+        return { known: true, ...(description ? { description } : {}) };
+      }
+      const structuredDescription = asRecord(info.description);
+      if (!structuredDescription) return { known: false };
+      if (
+        !Object.prototype.hasOwnProperty.call(structuredDescription, 'content') ||
+        structuredDescription.content === null
+      ) {
+        return { known: true };
+      }
+      if (typeof structuredDescription.content !== 'string') return { known: false };
+      const description = structuredDescription.content.trim();
+      return { known: true, ...(description ? { description } : {}) };
+    } catch {
+      return { known: false };
+    }
   }
 
   /**
    * Sole existing final with this exact name carrying the same durable branch
    * marker as this run's payload, or undefined. Lets a channel/preview rerun
    * deep-update its prior-run asset in place instead of importing a fresh root
-   * and re-electing. Zero same-marker survivors return undefined; multiple
-   * same-marker survivors fail closed rather than selecting an arbitrary asset.
+   * and re-electing. Multiple proven same-marker survivors are adopted by the
+   * same lowest-UID election used by reconciliation, without deleting peers.
    */
   async findAdoptableSameMarkerCollection(
     workspaceId: string,
@@ -3752,39 +3863,70 @@ export class PostmanGatewayAssetsClient {
     if (!name || !parseAssetMarker(description)) return undefined;
     const survivors = await this.findCollectionsByExactName(workspaceId, name, 'safe');
     if (survivors.length === 0) return undefined;
-    return this.adoptableSameMarkerFinal(survivors, description);
+    const matches = await this.adoptableSameMarkerFinals(survivors, description);
+    const identities = new Set(matches.map((id) => normalizeCollectionModelIdentity(id)));
+    for (const entry of survivors.filter((candidate) => isBareCollectionUuid(candidate.id))) {
+      const identity = normalizeCollectionModelIdentity(entry.id);
+      if (identities.has(identity)) continue;
+      const ownership = await this.readCollectionOwnershipDescription(entry);
+      if (
+        !ownership.known ||
+        !this.hasSameBranchAssetMarker(ownership.description, description)
+      ) {
+        continue;
+      }
+      const resolved = await this.resolveCollectionRootUid(
+        workspaceId,
+        entry.id,
+        PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS
+      );
+      if (!resolved) {
+        throw new Error(
+          'COLLECTION_ROOT_UID_RESOLUTION_FAILED: same-marker collection did not become ROOT-addressable during refresh discovery'
+        );
+      }
+      identities.add(identity);
+      matches.push(resolved);
+    }
+    return matches.sort((a, b) => a.localeCompare(b))[0];
   }
 
   /**
    * Sole exact-name final carrying the same durable branch marker as this run's
    * payload, or undefined. Org inventory omits root descriptions, so fall back
    * to the v2.1 export route; an unprovable candidate is never adoptable. More
-   * than one same-marker survivor is ambiguous and fails closed before a caller
-   * can mutate or elect an arbitrary winner.
+   * than one proven same-marker survivor is resolved deterministically without
+   * deleting any candidate.
    */
   private async adoptableSameMarkerFinal(
     eligible: ReadonlyArray<{ id: string; name: string; description?: string }>,
     desiredDescription: string
   ): Promise<string | undefined> {
-    if (!parseAssetMarker(desiredDescription)) return undefined;
-    const matches: string[] = [];
+    return (await this.adoptableSameMarkerFinals(eligible, desiredDescription))[0];
+  }
+
+  private async adoptableSameMarkerFinals(
+    eligible: ReadonlyArray<{ id: string; name: string; description?: string }>,
+    desiredDescription: string
+  ): Promise<string[]> {
+    if (!parseAssetMarker(desiredDescription)) return [];
+    const matchesByIdentity = new Map<string, string>();
     for (const entry of eligible) {
-      let description = entry.description;
-      if (!description) {
-        try {
-          const exported = await this.exportV2Collection(entry.id);
-          description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
-        } catch {
-          description = undefined;
+      if (isBareCollectionUuid(entry.id)) continue;
+      const ownership = await this.readCollectionOwnershipDescription(entry);
+      if (
+        ownership.known &&
+        this.hasSameBranchAssetMarker(ownership.description, desiredDescription)
+      ) {
+        const identity = normalizeCollectionModelIdentity(entry.id);
+        const prior = matchesByIdentity.get(identity);
+        if (!prior || entry.id.localeCompare(prior) < 0) {
+          matchesByIdentity.set(identity, entry.id);
         }
       }
-      if (this.hasSameBranchAssetMarker(description, desiredDescription)) matches.push(entry.id);
     }
-    if (matches.length === 0) return undefined;
-    if (matches.length === 1) return matches[0];
-    throw new Error(
-      'SAME_MARKER_COLLECTION_AMBIGUOUS: multiple exact-name collections carry the same branch marker'
-    );
+    const matches = [...matchesByIdentity.values()];
+    return matches.sort((a, b) => a.localeCompare(b));
   }
 
   private hasSameBranchAssetMarker(
@@ -3793,12 +3935,19 @@ export class PostmanGatewayAssetsClient {
   ): boolean {
     const candidate = parseAssetMarker(candidateDescription);
     const desired = parseAssetMarker(desiredDescription);
+    const sameChannelOrBranch =
+      candidate?.role === 'channel' && desired?.role === 'channel' && desired.channelCode
+        ? candidate.channelCode
+          ? candidate.channelCode === desired.channelCode
+          : candidate.rawBranch === desired.rawBranch &&
+            candidate.sanitizedBranch === desired.sanitizedBranch
+        : candidate?.rawBranch === desired?.rawBranch &&
+          candidate?.sanitizedBranch === desired?.sanitizedBranch;
     return Boolean(
       candidate &&
       desired &&
       candidate.repo === desired.repo &&
-      candidate.rawBranch === desired.rawBranch &&
-      candidate.sanitizedBranch === desired.sanitizedBranch &&
+      sameChannelOrBranch &&
       candidate.role === desired.role &&
       candidate.headRepoId === desired.headRepoId
     );

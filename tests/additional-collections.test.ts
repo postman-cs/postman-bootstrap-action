@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   loadAdditionalCollectionFiles,
   syncAdditionalCollections,
+  type AdditionalCollectionFile,
   type PostmanResourcesState
 } from '../src/lib/postman/additional-collections.js';
 
@@ -475,6 +476,269 @@ describe('additional local collection provisioning', () => {
         '../postman/curated/payments.json': 'col-payments-recreated'
       });
     });
+  });
+
+  it('marks branch-created collections and reconciles to a concurrent same-marker winner', async () => {
+    const workspace = makeTempWorkspace();
+    tempDirs.push(workspace);
+    mkdirSync(path.join(workspace, 'postman/curated'), { recursive: true });
+    mkdirSync(path.join(workspace, '.postman'), { recursive: true });
+    const authoredCollection = collection('Payments curated');
+    const staleMarker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/old","sanitizedBranch":"feature-old","role":"preview","createdAt":"2026-07-22T00:00:00Z","lastSyncedAt":"2026-07-22T00:00:00Z"}';
+    (authoredCollection.info as Record<string, unknown>).description =
+      `Authored payment docs\n\n${staleMarker}`;
+    writeFileSync(
+      path.join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(authoredCollection, null, 2)
+    );
+
+    const marker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+
+    await withCwdAsync(workspace, async () => {
+      const resourcesState: PostmanResourcesState = {};
+      const loaded = loadAdditionalCollectionFiles('postman/curated', resourcesState);
+      const postman = {
+        createCollection: vi.fn().mockResolvedValue({
+          collectionId: 'col-loser',
+          operation: 'created' as const
+        }),
+        findAdoptableSameMarkerCollection: vi.fn().mockResolvedValue(undefined),
+        reconcileDuplicateFinalCollections: vi.fn().mockResolvedValue({
+          'Payments curated': 'col-winner'
+        }),
+        updateCollection: vi.fn().mockResolvedValue(undefined)
+      };
+      const core = {
+        info: vi.fn(),
+        warning: vi.fn()
+      };
+
+      const results = await syncAdditionalCollections({
+        branchMarker: marker,
+        collectionFiles: loaded,
+        core,
+        postman,
+        resourcesState,
+        workspaceId: 'ws-preview'
+      });
+
+      const markedCollection = expect.objectContaining({
+        info: expect.objectContaining({
+          description: `Authored payment docs\n\n${marker}`,
+          name: 'Payments curated'
+        })
+      });
+      expect(postman.createCollection).toHaveBeenCalledWith(
+        'ws-preview',
+        markedCollection,
+        expect.objectContaining({
+          allowExactNameAdoption: false,
+          returnOperation: true
+        })
+      );
+      expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledWith(
+        'ws-preview',
+        [
+          {
+            finalName: 'Payments curated',
+            desiredDescription: marker,
+            ownedCollectionId: 'col-loser'
+          }
+        ],
+        { settleForVisibility: true }
+      );
+      expect(postman.updateCollection).toHaveBeenCalledWith('col-winner', markedCollection);
+      expect(JSON.stringify(postman.createCollection.mock.calls)).not.toContain(staleMarker);
+      expect(results).toEqual([
+        expect.objectContaining({
+          collectionId: 'col-winner',
+          operation: 'updated',
+          resourcePath: '../postman/curated/payments.json'
+        })
+      ]);
+      expect(resourcesState.cloudResources?.additionalCollections).toEqual({
+        '../postman/curated/payments.json': 'col-winner'
+      });
+    });
+  });
+
+  it('settles visibility once for all newly created branch collections', async () => {
+    const marker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+    const collectionFiles: AdditionalCollectionFile[] = [
+      {
+        collection: collection('Payments curated'),
+        displayPath: 'postman/curated/payments.json',
+        name: 'Payments curated',
+        resourcePath: '../postman/curated/payments.json'
+      },
+      {
+        collection: collection('Refunds curated'),
+        displayPath: 'postman/curated/refunds.json',
+        name: 'Refunds curated',
+        resourcePath: '../postman/curated/refunds.json'
+      }
+    ];
+    const postman = {
+      createCollection: vi.fn()
+        .mockResolvedValueOnce({ collectionId: 'col-payments-loser', operation: 'created' as const })
+        .mockResolvedValueOnce({ collectionId: 'col-refunds', operation: 'created' as const }),
+      findAdoptableSameMarkerCollection: vi.fn().mockResolvedValue(undefined),
+      reconcileDuplicateFinalCollections: vi.fn().mockResolvedValue({
+        'Payments curated': 'col-payments-winner',
+        'Refunds curated': 'col-refunds'
+      }),
+      updateCollection: vi.fn().mockResolvedValue(undefined)
+    };
+    const resourcesState: PostmanResourcesState = {};
+
+    const results = await syncAdditionalCollections({
+      branchMarker: marker,
+      collectionFiles,
+      core: { info: vi.fn(), warning: vi.fn() },
+      postman,
+      resourcesState,
+      writeResourcesState: vi.fn(),
+      workspaceId: 'ws-preview'
+    });
+
+    expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledTimes(1);
+    expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledWith(
+      'ws-preview',
+      [
+        {
+          finalName: 'Payments curated',
+          desiredDescription: marker,
+          ownedCollectionId: 'col-payments-loser'
+        },
+        {
+          finalName: 'Refunds curated',
+          desiredDescription: marker,
+          ownedCollectionId: 'col-refunds'
+        }
+      ],
+      { settleForVisibility: true }
+    );
+    expect(postman.updateCollection).toHaveBeenCalledTimes(1);
+    expect(postman.updateCollection).toHaveBeenCalledWith(
+      'col-payments-winner',
+      expect.objectContaining({
+        info: expect.objectContaining({
+          description: marker,
+          name: 'Payments curated'
+        })
+      })
+    );
+    expect(results).toEqual([
+      expect.objectContaining({
+        collectionId: 'col-payments-winner',
+        operation: 'updated',
+        resourcePath: '../postman/curated/payments.json'
+      }),
+      expect.objectContaining({
+        collectionId: 'col-refunds',
+        operation: 'created',
+        resourcePath: '../postman/curated/refunds.json'
+      })
+    ]);
+    expect(resourcesState.cloudResources?.additionalCollections).toEqual({
+      '../postman/curated/payments.json': 'col-payments-winner',
+      '../postman/curated/refunds.json': 'col-refunds'
+    });
+  });
+
+  it('preserves v3 root descriptions when adding branch ownership markers', async () => {
+    const marker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+    const collectionFiles: AdditionalCollectionFile[] = [
+      {
+        collection: {
+          $kind: 'collection',
+          name: 'Transfers curated',
+          description: 'Authored transfer docs',
+          items: []
+        },
+        displayPath: 'postman/curated/transfers',
+        name: 'Transfers curated',
+        resourcePath: '../postman/curated/transfers'
+      }
+    ];
+    const postman = {
+      createCollection: vi.fn().mockResolvedValue({
+        collectionId: 'col-transfers',
+        operation: 'created' as const
+      }),
+      findAdoptableSameMarkerCollection: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await syncAdditionalCollections({
+      branchMarker: marker,
+      collectionFiles,
+      core: { info: vi.fn(), warning: vi.fn() },
+      postman,
+      resourcesState: {},
+      writeResourcesState: vi.fn(),
+      workspaceId: 'ws-preview'
+    });
+
+    expect(postman.createCollection).toHaveBeenCalledWith(
+      'ws-preview',
+      expect.objectContaining({
+        description: `Authored transfer docs\n\n${marker}`,
+        name: 'Transfers curated'
+      }),
+      expect.objectContaining({
+        allowExactNameAdoption: false,
+        returnOperation: true
+      })
+    );
+  });
+
+  it('updates persisted branch collections with marker-preserving descriptions', async () => {
+    const marker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+    const authoredCollection = collection('Payments curated');
+    (authoredCollection.info as Record<string, unknown>).description = {
+      content: 'Authored payment docs',
+      type: 'text/markdown'
+    };
+    const collectionFiles: AdditionalCollectionFile[] = [
+      {
+        collection: authoredCollection,
+        displayPath: 'postman/curated/payments.json',
+        existingCollectionId: 'col-existing',
+        name: 'Payments curated',
+        resourcePath: '../postman/curated/payments.json'
+      }
+    ];
+    const postman = {
+      updateCollection: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await syncAdditionalCollections({
+      branchMarker: marker,
+      collectionFiles,
+      core: { info: vi.fn(), warning: vi.fn() },
+      postman,
+      resourcesState: {},
+      writeResourcesState: vi.fn(),
+      workspaceId: 'ws-preview'
+    });
+
+    expect(postman.updateCollection).toHaveBeenCalledWith(
+      'col-existing',
+      expect.objectContaining({
+        info: expect.objectContaining({
+          description: {
+            content: `Authored payment docs\n\n${marker}`,
+            type: 'text/markdown'
+          },
+          name: 'Payments curated'
+        })
+      })
+    );
   });
 
   it('does not recreate a persisted additional collection mapping for non-404 update failures', async () => {

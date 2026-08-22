@@ -524,6 +524,7 @@ describe('bootstrap action contract', () => {
         smoke: '',
         contract: ''
       }),
+      'additional-collections-json': '[]',
       'prebuilt-collections-json': '',
       'openapi-operation-ledger-json': '',
       'lint-summary-json': JSON.stringify({

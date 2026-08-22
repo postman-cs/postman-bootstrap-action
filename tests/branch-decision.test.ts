@@ -451,6 +451,22 @@ describe('durable collection marker', () => {
       createdAt: '2026-07-15T00:00:00.000Z'
     });
 
+    const channel = resolveBranchDecision({
+      strategy: 'publish-gate',
+      identity: identity({ headBranch: 'release/2', defaultBranch: 'main' }),
+      channels: [{ pattern: 'release/*', code: 'RC' }]
+    });
+    expect(parseAssetMarker(renderCollectionBranchMarker(
+      channel,
+      'https://github.com/org/repo',
+      new Date('2026-07-15T00:00:00Z')
+    ))).toMatchObject({
+      repo: 'https://github.com/org/repo',
+      rawBranch: 'release/2',
+      channelCode: 'RC',
+      role: 'channel'
+    });
+
     const canonical = resolveBranchDecision({
       strategy: 'publish-gate',
       identity: identity({ headBranch: 'main', defaultBranch: 'main', refKind: 'default-branch' })

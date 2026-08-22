@@ -1632,6 +1632,353 @@ describe('PostmanGatewayAssetsClient', () => {
       ]);
     });
 
+    it('does not adopt exact-name collections when exact-name adoption is disabled', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-canonical-root', name: 'Curated' }]
+          });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-preview-root' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { allowExactNameAdoption: false }
+        )
+      ).resolves.toBe('55363555-preview-root');
+
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-canonical-root')).toBe(false);
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(true);
+    });
+
+    it('updates an explicit adoptable collection and reports an update', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-preview-root/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            description: 'branch marker',
+            items: []
+          },
+          {
+            adoptableCollectionId: '55363555-preview-root',
+            allowExactNameAdoption: false,
+            returnOperation: true
+          }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-preview-root',
+        operation: 'updated'
+      });
+
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-preview-root')).toBe(true);
+    });
+
+    it('reports exact-name adoption as an update when operation metadata is requested', async () => {
+      const exportedCollection = {
+        info: {
+          name: 'Curated',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+          description: ''
+        },
+        item: []
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-existing-root', name: 'Curated' }]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/export') {
+          return jsonResponse({ data: { collection: exportedCollection } });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-existing-root',
+        operation: 'updated'
+      });
+
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-existing-root')).toBe(true);
+    });
+
+    it('does not canonically adopt exact-name candidates when ownership cannot be read', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-unknown-root', name: 'Curated' }]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-unknown-root/export') {
+          return jsonResponse({ error: 'forbidden' }, { status: 403 });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-new-root' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-new-root',
+        operation: 'created'
+      });
+
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-unknown-root')).toBe(false);
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(true);
+    });
+
+    it('canonically adopts exact-name candidates when export proves no description', async () => {
+      const exportedCollection = {
+        info: {
+          name: 'Curated',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
+        },
+        item: []
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-existing-root', name: 'Curated' }]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/export') {
+          return jsonResponse({ data: { collection: exportedCollection } });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-existing-root',
+        operation: 'updated'
+      });
+
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-existing-root')).toBe(true);
+    });
+
+    it('does not canonically adopt exact-name branch-owned collections', async () => {
+      const marker = renderAssetMarker({
+        repo: 'org/repo',
+        rawBranch: 'feature/x',
+        sanitizedBranch: 'feature-x',
+        role: 'preview',
+        createdAt: '2026-07-23T00:00:00Z',
+        lastSyncedAt: '2026-07-23T00:00:00Z'
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [{ id: '55363555-preview-root', name: 'Curated', description: marker }]
+          });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-canonical-root' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-canonical-root',
+        operation: 'created'
+      });
+
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-preview-root')).toBe(false);
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(true);
+    });
+
+    it('does not canonically adopt branch ownership from a structured inventory description', async () => {
+      const marker = renderAssetMarker({
+        repo: 'org/repo',
+        rawBranch: 'feature/x',
+        sanitizedBranch: 'feature-x',
+        role: 'preview',
+        createdAt: '2026-07-23T00:00:00Z',
+        lastSyncedAt: '2026-07-23T00:00:00Z'
+      });
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [
+              {
+                id: '55363555-preview-root',
+                name: 'Curated',
+                description: { content: marker, type: 'text/markdown' }
+              }
+            ]
+          });
+        }
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-canonical-root' } });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-canonical-root',
+        operation: 'created'
+      });
+
+      expect(calls.some((c) => c.path.endsWith('/export'))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-preview-root')).toBe(false);
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(true);
+    });
+
+    it('keeps unmarked exact-name canonical adoption when branch-owned peers exist', async () => {
+      const marker = renderAssetMarker({
+        repo: 'org/repo',
+        rawBranch: 'feature/x',
+        sanitizedBranch: 'feature-x',
+        role: 'preview',
+        createdAt: '2026-07-23T00:00:00Z',
+        lastSyncedAt: '2026-07-23T00:00:00Z'
+      });
+      const exportedCollection = {
+        info: {
+          name: 'Curated',
+          schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+          description: ''
+        },
+        item: []
+      };
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [
+              { id: '55363555-preview-root', name: 'Curated', description: marker },
+              { id: '55363555-existing-root', name: 'Curated' }
+            ]
+          });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/export') {
+          return jsonResponse({ data: { collection: exportedCollection } });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-existing-root/items/') {
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'patch') {
+          return jsonResponse({ data: { id: 'patched' } });
+        }
+        return jsonResponse({});
+      });
+
+      await expect(
+        client.createCollection(
+          'ws-1',
+          {
+            $kind: 'collection',
+            name: 'Curated',
+            items: []
+          },
+          { returnOperation: true }
+        )
+      ).resolves.toEqual({
+        collectionId: '55363555-existing-root',
+        operation: 'updated'
+      });
+
+      expect(calls.some((c) => c.method === 'post' && c.path.startsWith('/v3/collections/?workspace='))).toBe(false);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-existing-root')).toBe(true);
+      expect(calls.some((c) => c.path === '/v3/collections/55363555-preview-root')).toBe(false);
+    });
+
     it('applies root description via JSON Patch on create, not the root POST body', async () => {
       const { client, calls } = makeClient((env) => {
         if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
@@ -5327,8 +5674,10 @@ describe('PostmanGatewayAssetsClient', () => {
         { id: '200-cccccccc-cccc-cccc-cccc-cccccccccccc', name: 'Other' }
       ];
       const deleted: string[] = [];
+      let listCalls = 0;
       const { client } = makeClient((env) => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          listCalls += 1;
           return jsonResponse({ data: entries });
         }
         if (env.service === 'collection' && env.method === 'delete') {
@@ -5353,7 +5702,11 @@ describe('PostmanGatewayAssetsClient', () => {
       });
 
       const winners = await client.reconcileDuplicateFinalCollections('ws-1', [
-        { finalName: 'Payments @feature-x', desiredDescription: marker },
+        {
+          finalName: 'Payments @feature-x',
+          desiredDescription: marker,
+          ownedCollectionId: high
+        },
         { finalName: '__proto__', desiredDescription: marker },
         { finalName: 'Missing', desiredDescription: marker }
       ]);
@@ -5361,6 +5714,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(winners.__proto__).toBe(prototypeNameId);
       expect(Object.hasOwn(winners, '__proto__')).toBe(true);
       expect(deleted).toEqual([`/v3/collections/${high.slice(4)}`]);
+      expect(listCalls).toBe(1);
       expect(entries.map((e) => e.id).sort()).toEqual([
         '200-cccccccc-cccc-cccc-cccc-cccccccccccc',
         low,
@@ -5369,12 +5723,209 @@ describe('PostmanGatewayAssetsClient', () => {
       ].sort());
     });
 
-    it('findAdoptableSameMarkerCollection returns the sole same-marker exact-name final', async () => {
+    it('settles visibility once per batch before reconciling delayed same-marker peers', async () => {
+      const low = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const high = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const refundsLow = '150-cccccccc-cccc-cccc-cccc-cccccccccccc';
+      const refundsHigh = '350-dddddddd-dddd-dddd-dddd-dddddddddddd';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      let listCalls = 0;
+      const deleted = new Set<string>();
+      const sleep = vi.fn<(delayMs: number) => Promise<undefined>>(async () => undefined);
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          listCalls += 1;
+          return jsonResponse({
+            data: listCalls <= 2
+              ? [
+                  { id: high, name: 'Payments curated', description: marker },
+                  { id: refundsHigh, name: 'Refunds curated', description: marker }
+                ]
+              : [
+                  ...(!deleted.has(high)
+                    ? [{ id: high, name: 'Payments curated', description: marker }]
+                    : []),
+                  { id: low, name: 'Payments curated', description: marker },
+                  ...(!deleted.has(refundsHigh)
+                    ? [{ id: refundsHigh, name: 'Refunds curated', description: marker }]
+                    : []),
+                  { id: refundsLow, name: 'Refunds curated', description: marker }
+                ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          const deletedId = [high, refundsHigh].find((id) => env.path.endsWith(id.slice(4)));
+          if (deletedId) deleted.add(deletedId);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path.startsWith('/v3/collections/') &&
+          !env.path.includes('?workspace=')
+        ) {
+          const bare = String(env.path).replace('/v3/collections/', '');
+          if ([...deleted].some((id) => id.endsWith(bare))) {
+            return jsonResponse({ error: 'missing' }, { status: 404 });
+          }
+          return jsonResponse({ data: { id: bare, name: 'Payments curated' } });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections(
+          'ws-1',
+          [
+            {
+              finalName: 'Payments curated',
+              desiredDescription: marker,
+              ownedCollectionId: high
+            },
+            {
+              finalName: 'Refunds curated',
+              desiredDescription: marker,
+              ownedCollectionId: refundsHigh
+            }
+          ],
+          { settleForVisibility: true }
+        )
+      ).resolves.toEqual({
+        'Payments curated': low,
+        'Refunds curated': refundsLow
+      });
+      expect(deleted).toEqual(new Set([high, refundsHigh]));
+      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
+        250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000
+      ]);
+      expect(listCalls).toBe(10);
+    });
+
+    it('never deletes a published peer when a late owned root sorts first', async () => {
+      const lateOwned = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const publishedPeer = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [
+              { id: publishedPeer, name: 'Payments curated', description: marker },
+              { id: lateOwned, name: 'Payments curated', description: marker }
+            ]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-1', [
+          {
+            finalName: 'Payments curated',
+            desiredDescription: marker,
+            ownedCollectionId: lateOwned
+          }
+        ])
+      ).resolves.toEqual({ 'Payments curated': lateOwned });
+      expect(deleted).toEqual([]);
+    });
+
+    it('deletes a losing run-owned root when inventory exposes only its bare id', async () => {
+      const ownedBare = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const publishedPeer = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const entries = [
+        { id: ownedBare, name: 'Payments curated', description: marker },
+        { id: publishedPeer, name: 'Payments curated', description: marker }
+      ];
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          const bare = String(env.path).split('/').pop();
+          const index = entries.findIndex((entry) => entry.id === bare);
+          if (index >= 0) entries.splice(index, 1);
+          return jsonResponse({ data: {} });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-1', [
+          {
+            finalName: 'Payments curated',
+            desiredDescription: marker,
+            ownedCollectionId: ownedBare
+          }
+        ])
+      ).resolves.toEqual({ 'Payments curated': publishedPeer });
+      expect(deleted).toEqual([`/v3/collections/${ownedBare}`]);
+    });
+
+    it('deletes the journaled owned root when its marker export is unreadable', async () => {
+      const peer = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const owned = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const entries = [
+        { id: peer, name: 'Payments curated', description: marker },
+        { id: owned, name: 'Payments curated' }
+      ];
+      const deleted: string[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: entries });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ error: 'unavailable' }, { status: 503 });
+        }
+        if (env.service === 'collection' && env.method === 'delete') {
+          deleted.push(env.path);
+          entries.splice(entries.findIndex((entry) => entry.id === owned), 1);
+          return jsonResponse({ data: {} });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${owned}`
+        ) {
+          return jsonResponse({ error: 'missing' }, { status: 404 });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.reconcileDuplicateFinalCollections('ws-1', [
+          {
+            finalName: 'Payments curated',
+            desiredDescription: marker,
+            ownedCollectionId: owned
+          }
+        ])
+      ).resolves.toEqual({ 'Payments curated': peer });
+      expect(deleted).toEqual([`/v3/collections/${owned.slice(4)}`]);
+    });
+
+    it('findAdoptableSameMarkerCollection reads a structured same-marker description', async () => {
       const marker =
         'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
       const otherMarker = marker.replace('project/drum', 'feature/y').replace('project-drum', 'feature-y');
       const entries = [
-        { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: '[DRUM] Payments', description: marker },
+        {
+          id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+          name: '[DRUM] Payments',
+          description: { content: marker, type: 'text/markdown' }
+        },
         { id: '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: '[DRUM] Payments', description: otherMarker },
         { id: '200-cccccccc-cccc-cccc-cccc-cccccccccccc', name: 'Other' }
       ];
@@ -5396,10 +5947,45 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(deleted).toEqual([]);
     });
 
-    it('findAdoptableSameMarkerCollection rejects ambiguity before any mutation', async () => {
+    it('findAdoptableSameMarkerCollection adopts a shared channel across matching branches', async () => {
+      const priorMarker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"release/1","sanitizedBranch":"release-1","channelCode":"RC","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const desiredMarker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"release/2","sanitizedBranch":"release-2","channelCode":"RC","role":"channel","headSha":"def456","createdAt":"2026-07-24T00:00:00Z","lastSyncedAt":"2026-07-24T00:00:00Z"}';
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: [
+              {
+                id: '050-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+                name: '[RC] Payments',
+                description: desiredMarker.replace('"channelCode":"RC"', '"channelCode":"QA"')
+              },
+              {
+                id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                name: '[RC] Payments',
+                description: priorMarker
+              }
+            ]
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[RC] Payments', desiredMarker)
+      ).resolves.toBe('100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+    });
+
+    it('findAdoptableSameMarkerCollection deterministically adopts retained same-marker duplicates', async () => {
       const marker =
         'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
       const entries = [
+        {
+          id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+          name: '[DRUM] Payments',
+          description: marker
+        },
         { id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', name: '[DRUM] Payments', description: marker },
         { id: '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', name: '[DRUM] Payments', description: marker }
       ];
@@ -5414,10 +6000,46 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await expect(
         client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
-      ).rejects.toThrow(
-        'SAME_MARKER_COLLECTION_AMBIGUOUS: multiple exact-name collections carry the same branch marker'
-      );
+      ).resolves.toBe('100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
       expect(mutations).toEqual([]);
+    });
+
+    it('resolves distinct bare same-marker roots before deterministic refresh adoption', async () => {
+      const marker =
+        'x-pm-onboarding: {"repo":"org/repo","rawBranch":"project/drum","sanitizedBranch":"project-drum","role":"channel","headSha":"abc123","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+      const bare = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+      const full = `200-${bare}`;
+      let listCalls = 0;
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          listCalls += 1;
+          return jsonResponse({
+            data: listCalls === 1
+              ? [
+                  { id: bare, name: '[DRUM] Payments', description: marker },
+                  {
+                    id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    name: '[DRUM] Payments',
+                    description: marker
+                  }
+                ]
+              : [
+                  { id: full, name: '[DRUM] Payments', description: marker },
+                  {
+                    id: '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+                    name: '[DRUM] Payments',
+                    description: marker
+                  }
+                ]
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      await expect(
+        client.findAdoptableSameMarkerCollection('ws-1', '[DRUM] Payments', marker)
+      ).resolves.toBe('100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa');
+      expect(listCalls).toBe(2);
     });
 
     it('findAdoptableSameMarkerCollection returns undefined for absence or unmarked payload', async () => {
@@ -5537,7 +6159,11 @@ describe('PostmanGatewayAssetsClient', () => {
 
       await expect(
         client.reconcileDuplicateFinalCollections('ws-org', [
-          { finalName: 'Payments @feature-x', desiredDescription: marker }
+          {
+            finalName: 'Payments @feature-x',
+            desiredDescription: marker,
+            ownedCollectionId: high
+          }
         ])
       ).resolves.toEqual({ 'Payments @feature-x': low });
       expect(deleted).toEqual([`/v3/collections/${high.slice(4)}`]);

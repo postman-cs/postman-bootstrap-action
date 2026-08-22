@@ -15,6 +15,7 @@ import {
   assertSupportedLocalViewContract,
   normalizeLocalViewScriptType
 } from './local-view-contract.js';
+import { MARKER_KEY } from '../repo/branch-decision.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -69,6 +70,11 @@ export interface AdditionalCollectionSyncResult {
   resourcePath: string;
 }
 
+export interface AdditionalCollectionCreateResult {
+  collectionId: string;
+  operation: 'created' | 'updated';
+}
+
 export interface AdditionalCollectionsLogger {
   info(message: string): void;
   warning(message: string): void;
@@ -78,9 +84,28 @@ export interface AdditionalCollectionsPostmanClient {
   createCollection?: (
     workspaceId: string,
     collection: unknown,
-    options?: { onRootCreated?: (id: string) => void | Promise<void> }
-  ) => Promise<string>;
+    options?: {
+      onRootCreated?: (id: string) => void | Promise<void>;
+      adoptableCollectionId?: string;
+      allowExactNameAdoption?: boolean;
+      returnOperation?: boolean;
+    }
+  ) => Promise<string | AdditionalCollectionCreateResult>;
   updateCollection?: (collectionUid: string, collection: unknown) => Promise<void>;
+  findAdoptableSameMarkerCollection?(
+    workspaceId: string,
+    finalName: string,
+    desiredDescription: string
+  ): Promise<string | undefined>;
+  reconcileDuplicateFinalCollections?(
+    workspaceId: string,
+    candidates: Array<{
+      finalName: string;
+      desiredDescription: string;
+      ownedCollectionId?: string;
+    }>,
+    options?: { settleForVisibility?: boolean }
+  ): Promise<Record<string, string>>;
 }
 
 const ADDITIONAL_COLLECTION_EXTENSIONS = new Set(['.json', '.yaml', '.yml']);
@@ -130,6 +155,39 @@ function fileNameWithoutSuffix(filePath: string, suffix: string): string {
 function structuredCloneSafe<T>(value: T): T {
   if (typeof structuredClone === 'function') return structuredClone(value);
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function descriptionWithMarker(existingDescription: unknown, marker: string): unknown {
+  if (typeof existingDescription === 'string') {
+    const prose = existingDescription
+      .split(/\r?\n/)
+      .filter((line) => !line.trimStart().startsWith(`${MARKER_KEY}:`))
+      .join('\n')
+      .trim();
+    return prose ? `${prose}\n\n${marker}` : marker;
+  }
+
+  const structuredDescription = asRecord(existingDescription);
+  if (structuredDescription) {
+    return {
+      ...structuredDescription,
+      content: descriptionWithMarker(structuredDescription.content, marker)
+    };
+  }
+
+  return marker;
+}
+
+function collectionWithDescriptionMarker(collection: JsonRecord, marker: string): JsonRecord {
+  const copy = structuredCloneSafe(collection);
+  const target = asRecord(copy.collection) ?? copy;
+  const info = asRecord(target.info);
+  if (info) {
+    info.description = descriptionWithMarker(info.description, marker);
+  } else {
+    target.description = descriptionWithMarker(target.description, marker);
+  }
+  return copy;
 }
 
 function assertInsideWorkspace(
@@ -700,6 +758,7 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 async function createAdditionalCollection(options: {
+  branchMarker?: string;
   core: AdditionalCollectionsLogger;
   file: AdditionalCollectionFile;
   postman: AdditionalCollectionsPostmanClient;
@@ -707,33 +766,45 @@ async function createAdditionalCollection(options: {
   writeResourcesState: (state: PostmanResourcesState) => void;
   workspaceId: string;
 }): Promise<AdditionalCollectionSyncResult> {
-  const { core, file, postman, resourcesState, workspaceId, writeResourcesState } = options;
+  const { branchMarker, core, file, postman, resourcesState, workspaceId, writeResourcesState } = options;
   if (!postman.createCollection) {
     throw new Error(
       'Additional collection creates require createCollection support from the Postman client'
     );
   }
+  const adoptableCollectionId = branchMarker
+    ? await postman.findAdoptableSameMarkerCollection?.(workspaceId, file.name, branchMarker)
+    : undefined;
+  const collection = branchMarker
+    ? collectionWithDescriptionMarker(file.collection, branchMarker)
+    : file.collection;
   const persistRoot = (collectionId: string): void => {
     ensureAdditionalCollectionsMap(resourcesState)[file.resourcePath] = collectionId;
     writeResourcesState(resourcesState);
   };
-  const collectionId = await postman.createCollection(workspaceId, file.collection, {
-    onRootCreated: persistRoot
+  const created = await postman.createCollection(workspaceId, collection, {
+    allowExactNameAdoption: !branchMarker,
+    adoptableCollectionId,
+    onRootCreated: persistRoot,
+    returnOperation: true
   });
+  const collectionId = typeof created === 'string' ? created : created.collectionId;
+  const operation = typeof created === 'string' ? 'created' : created.operation;
   persistRoot(collectionId);
   core.info(
-    `Created additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
+    `${operation === 'created' ? 'Created' : 'Updated'} additional collection ${file.name} (${collectionId}) from ${file.displayPath}`
   );
   return {
     collectionId,
     displayPath: file.displayPath,
     name: file.name,
-    operation: 'created',
+    operation,
     resourcePath: file.resourcePath
   };
 }
 
 export async function syncAdditionalCollections(options: {
+  branchMarker?: string;
   collectionFiles: AdditionalCollectionFile[];
   core: AdditionalCollectionsLogger;
   postman: AdditionalCollectionsPostmanClient;
@@ -742,6 +813,7 @@ export async function syncAdditionalCollections(options: {
   workspaceId: string;
 }): Promise<AdditionalCollectionSyncResult[]> {
   const {
+    branchMarker,
     collectionFiles,
     core,
     postman,
@@ -758,8 +830,11 @@ export async function syncAdditionalCollections(options: {
           'Additional collection updates require updateCollection support from the Postman client'
         );
       }
+      const collection = branchMarker
+        ? collectionWithDescriptionMarker(file.collection, branchMarker)
+        : file.collection;
       try {
-        await postman.updateCollection(file.existingCollectionId, file.collection);
+        await postman.updateCollection(file.existingCollectionId, collection);
       } catch (error) {
         if (!isNotFoundError(error)) {
           throw error;
@@ -768,6 +843,7 @@ export async function syncAdditionalCollections(options: {
           `Existing additional collection ${file.existingCollectionId} was not found; creating ${file.name} in the current workspace`
         );
         results.push(await createAdditionalCollection({
+          branchMarker,
           core,
           file,
           postman,
@@ -793,6 +869,7 @@ export async function syncAdditionalCollections(options: {
     }
 
     results.push(await createAdditionalCollection({
+      branchMarker,
       core,
       file,
       postman,
@@ -800,6 +877,43 @@ export async function syncAdditionalCollections(options: {
       writeResourcesState: writeState,
       workspaceId
     }));
+  }
+
+  const createdResults = branchMarker && postman.reconcileDuplicateFinalCollections
+    ? results.filter((result) => result.operation === 'created')
+    : [];
+  if (branchMarker && postman.reconcileDuplicateFinalCollections && createdResults.length > 0) {
+    const winners = await postman.reconcileDuplicateFinalCollections(
+      workspaceId,
+      createdResults.map((result) => ({
+        finalName: result.name,
+        desiredDescription: branchMarker,
+        ownedCollectionId: result.collectionId
+      })),
+      { settleForVisibility: true }
+    );
+    const filesByResourcePath = new Map(collectionFiles.map((file) => [file.resourcePath, file]));
+
+    for (const result of createdResults) {
+      const electedCollectionId = winners[result.name];
+      if (!electedCollectionId || electedCollectionId === result.collectionId) {
+        continue;
+      }
+      if (!postman.updateCollection) {
+        throw new Error(
+          'Additional collection branch reconciliation requires updateCollection support from the Postman client'
+        );
+      }
+      const file = filesByResourcePath.get(result.resourcePath)!;
+      await postman.updateCollection(
+        electedCollectionId,
+        collectionWithDescriptionMarker(file.collection, branchMarker)
+      );
+      result.collectionId = electedCollectionId;
+      result.operation = 'updated';
+      ensureAdditionalCollectionsMap(resourcesState)[result.resourcePath] = electedCollectionId;
+      writeState(resourcesState);
+    }
   }
 
   return results;

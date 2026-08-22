@@ -423,7 +423,8 @@ describe('branch-aware bootstrap runs', () => {
         expect.arrayContaining([
           expect.objectContaining({
             finalName: expect.stringMatching(/@feature-payments/),
-            desiredDescription: expect.stringContaining('"role":"preview"')
+            desiredDescription: expect.stringContaining('"role":"preview"'),
+            ownedCollectionId: expect.any(String)
           })
         ])
       );
@@ -494,6 +495,39 @@ describe('branch-aware bootstrap runs', () => {
           expect.objectContaining({ collectionId: 'peer-contract' })
         ])
       );
+    });
+  });
+
+  it('does not relabel an already-adopted import peer as run-owned', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'branch-preview-adopted-peer-'));
+    writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
+    for (const [key, value] of Object.entries(githubPreviewEnv(workspace))) {
+      vi.stubEnv(key, value);
+    }
+
+    await withCwd(workspace, async () => {
+      const postman = createPostman();
+      postman.importV2Collection.mockImplementation(
+        async (_workspaceId: string, _collection: unknown, finalName: string) => ({
+          collectionId: finalName.includes('[Contract]')
+            ? 'peer-contract'
+            : finalName.includes('[Smoke]')
+              ? 'peer-smoke'
+              : 'peer-baseline',
+          journaledRootIds: []
+        })
+      );
+
+      await runBootstrap(
+        createInputs({ branchStrategy: 'preview', workspaceId: 'ws-existing' }),
+        runDeps(postman)
+      );
+
+      const candidates = postman.reconcileDuplicateFinalCollections.mock.calls[0]?.[1] as
+        | Array<{ ownedCollectionId?: string }>
+        | undefined;
+      expect(candidates).toHaveLength(3);
+      expect(candidates?.every((candidate) => candidate.ownedCollectionId === undefined)).toBe(true);
     });
   });
 

@@ -5315,6 +5315,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const low = '100-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
       const high = '300-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
       const stranger = '400-dddddddd-dddd-dddd-dddd-dddddddddddd';
+      const prototypeNameId = '500-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
       const marker =
         'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
       const otherMarker = marker.replace('feature/x', 'feature/y').replace('feature-x', 'feature-y');
@@ -5322,6 +5323,7 @@ describe('PostmanGatewayAssetsClient', () => {
         { id: high, name: 'Payments @feature-x', description: marker },
         { id: low, name: 'Payments @feature-x', description: marker },
         { id: stranger, name: 'Payments @feature-x', description: otherMarker },
+        { id: prototypeNameId, name: '__proto__', description: marker },
         { id: '200-cccccccc-cccc-cccc-cccc-cccccccccccc', name: 'Other' }
       ];
       const deleted: string[] = [];
@@ -5352,13 +5354,17 @@ describe('PostmanGatewayAssetsClient', () => {
 
       const winners = await client.reconcileDuplicateFinalCollections('ws-1', [
         { finalName: 'Payments @feature-x', desiredDescription: marker },
+        { finalName: '__proto__', desiredDescription: marker },
         { finalName: 'Missing', desiredDescription: marker }
       ]);
-      expect(winners).toEqual({ 'Payments @feature-x': low });
+      expect(winners['Payments @feature-x']).toBe(low);
+      expect(winners.__proto__).toBe(prototypeNameId);
+      expect(Object.hasOwn(winners, '__proto__')).toBe(true);
       expect(deleted).toEqual([`/v3/collections/${high.slice(4)}`]);
       expect(entries.map((e) => e.id).sort()).toEqual([
         '200-cccccccc-cccc-cccc-cccc-cccccccccccc',
         low,
+        prototypeNameId,
         stranger
       ].sort());
     });

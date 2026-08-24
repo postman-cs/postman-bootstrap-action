@@ -476,8 +476,24 @@ function findAssetMarker(
   if (jsonStart === -1) return undefined;
   // Balance braces to find the JSON object end (descriptions may carry trailing prose).
   let depth = 0;
+  let escaped = false;
+  let inString = false;
   for (let i = jsonStart; i < description.length; i += 1) {
     const ch = description[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
     if (ch === '{') depth += 1;
     else if (ch === '}') {
       depth -= 1;

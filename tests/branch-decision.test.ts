@@ -17,6 +17,7 @@ import {
   resolveBranchIdentity,
   resolveEffectiveBranchDecision,
   serializeBranchDecision,
+  stripAssetMarkers,
   PREVIEW_SLUG_MAX,
   type AssetMarker,
   type BranchIdentity
@@ -486,5 +487,19 @@ describe('durable collection marker', () => {
       identity: identity({ headBranch: 'main', defaultBranch: 'main', refKind: 'default-branch' })
     });
     expect(renderCollectionBranchMarker(canonical, 'https://github.com/org/repo')).toBeUndefined();
+  });
+
+  it('parses and strips markers whose JSON strings contain unmatched braces', () => {
+    const marker = renderAssetMarker({
+      repo: 'https://github.com/org/repo',
+      rawBranch: 'feature/{payments',
+      sanitizedBranch: 'feature-payments',
+      role: 'preview',
+      createdAt: '2026-07-15T00:00:00.000Z',
+      lastSyncedAt: '2026-07-15T00:00:00.000Z'
+    });
+
+    expect(parseAssetMarker(marker)).toMatchObject({ rawBranch: 'feature/{payments' });
+    expect(stripAssetMarkers(`Authored docs ${marker}`)).toBe('Authored docs ');
   });
 });

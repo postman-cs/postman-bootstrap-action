@@ -210,8 +210,6 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `postman-region` | Postman data residency region for access-token minting and gateway calls. | no | `us` |
 <!-- inputs-table:end -->
 
-`onboarding-scope: spec-with-additional-collections` uploads or updates the OpenAPI workspace/spec and syncs authored collections from `additional-collections-dir` without creating generated baseline, smoke, or contract collections. The synced authored collection IDs are emitted in `additional-collections-json` so a downstream pipeline can select the intended collection, such as an authored baseline, for mock or environment setup.
-
 ## Outputs
 
 <!-- outputs-table:start -->

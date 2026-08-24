@@ -823,6 +823,19 @@ export async function syncAdditionalCollections(options: {
   } = options;
   const results: AdditionalCollectionSyncResult[] = [];
 
+  if (branchMarker) {
+    const firstResourcePathByName = new Map<string, string>();
+    for (const file of collectionFiles) {
+      const priorResourcePath = firstResourcePathByName.get(file.name);
+      if (priorResourcePath) {
+        throw new Error(
+          `ADDITIONAL_COLLECTION_NAME_CONFLICT: branch-scoped additional collections require unique names; ${file.name} is declared by ${priorResourcePath} and ${file.resourcePath}`
+        );
+      }
+      firstResourcePathByName.set(file.name, file.resourcePath);
+    }
+  }
+
   for (const file of collectionFiles) {
     if (file.existingCollectionId) {
       if (!postman.updateCollection) {

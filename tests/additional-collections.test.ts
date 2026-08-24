@@ -478,6 +478,52 @@ describe('additional local collection provisioning', () => {
     });
   });
 
+  it('rejects duplicate branch collection names before any Postman write', async () => {
+    const marker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+    const collectionFiles: AdditionalCollectionFile[] = [
+      {
+        collection: collection('Payments curated'),
+        displayPath: 'postman/curated/payments.json',
+        existingCollectionId: 'col-payments-existing',
+        name: 'Payments curated',
+        resourcePath: '../postman/curated/payments.json'
+      },
+      {
+        collection: collection('Payments curated'),
+        displayPath: 'postman/curated/payments-copy.json',
+        name: 'Payments curated',
+        resourcePath: '../postman/curated/payments-copy.json'
+      }
+    ];
+    const postman = {
+      createCollection: vi.fn(),
+      findAdoptableSameMarkerCollection: vi.fn(),
+      reconcileDuplicateFinalCollections: vi.fn(),
+      updateCollection: vi.fn()
+    };
+    const resourcesState: PostmanResourcesState = {};
+    const writeResourcesState = vi.fn();
+
+    await expect(syncAdditionalCollections({
+      branchMarker: marker,
+      collectionFiles,
+      core: { info: vi.fn(), warning: vi.fn() },
+      postman,
+      resourcesState,
+      writeResourcesState,
+      workspaceId: 'ws-preview'
+    })).rejects.toThrow(
+      'ADDITIONAL_COLLECTION_NAME_CONFLICT: branch-scoped additional collections require unique names; Payments curated is declared by ../postman/curated/payments.json and ../postman/curated/payments-copy.json'
+    );
+    expect(postman.createCollection).not.toHaveBeenCalled();
+    expect(postman.findAdoptableSameMarkerCollection).not.toHaveBeenCalled();
+    expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
+    expect(postman.updateCollection).not.toHaveBeenCalled();
+    expect(writeResourcesState).not.toHaveBeenCalled();
+    expect(resourcesState).toEqual({});
+  });
+
   it('marks branch-created collections and reconciles to a concurrent same-marker winner', async () => {
     const workspace = makeTempWorkspace();
     tempDirs.push(workspace);

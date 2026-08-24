@@ -16,6 +16,7 @@ import {
   loadAdditionalCollectionFiles,
   syncAdditionalCollections,
   type AdditionalCollectionFile,
+  type AdditionalCollectionsPostmanClient,
   type PostmanResourcesState
 } from '../src/lib/postman/additional-collections.js';
 
@@ -739,6 +740,48 @@ describe('additional local collection provisioning', () => {
         allowExactNameAdoption: false,
         returnOperation: true
       })
+    );
+  });
+
+  it('replaces stale inline and quoted ownership markers before appending the current marker', async () => {
+    const staleMarker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/old","sanitizedBranch":"feature-old","role":"preview","createdAt":"2026-07-22T00:00:00Z","lastSyncedAt":"2026-07-22T00:00:00Z"}';
+    const marker =
+      'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
+    const authoredCollection = collection('Payments curated');
+    (authoredCollection.info as Record<string, unknown>).description =
+      `Authored payment docs ${staleMarker}\n> ${staleMarker}`;
+    const postman: AdditionalCollectionsPostmanClient = {
+      createCollection: vi.fn().mockResolvedValue({
+        collectionId: 'col-created',
+        operation: 'created'
+      }),
+      findAdoptableSameMarkerCollection: vi.fn().mockResolvedValue(undefined)
+    };
+
+    await syncAdditionalCollections({
+      branchMarker: marker,
+      collectionFiles: [{
+        collection: authoredCollection,
+        displayPath: 'postman/curated/payments.json',
+        name: 'Payments curated',
+        resourcePath: '../postman/curated/payments.json'
+      }],
+      core: { info: vi.fn(), warning: vi.fn() },
+      postman,
+      resourcesState: {},
+      workspaceId: 'ws-preview',
+      writeResourcesState: vi.fn()
+    });
+
+    expect(postman.createCollection).toHaveBeenCalledWith(
+      'ws-preview',
+      expect.objectContaining({
+        info: expect.objectContaining({
+          description: `Authored payment docs\n\n${marker}`
+        })
+      }),
+      expect.any(Object)
     );
   });
 

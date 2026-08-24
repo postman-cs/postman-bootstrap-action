@@ -15,7 +15,7 @@ import {
   assertSupportedLocalViewContract,
   normalizeLocalViewScriptType
 } from './local-view-contract.js';
-import { MARKER_KEY } from '../repo/branch-decision.js';
+import { stripAssetMarkers } from '../repo/branch-decision.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -159,9 +159,9 @@ function structuredCloneSafe<T>(value: T): T {
 
 function descriptionWithMarker(existingDescription: unknown, marker: string): unknown {
   if (typeof existingDescription === 'string') {
-    const prose = existingDescription
+    const prose = stripAssetMarkers(existingDescription)
       .split(/\r?\n/)
-      .filter((line) => !line.trimStart().startsWith(`${MARKER_KEY}:`))
+      .filter((line) => !/^\s*(?:>\s*)+$/.test(line))
       .join('\n')
       .trim();
     return prose ? `${prose}\n\n${marker}` : marker;

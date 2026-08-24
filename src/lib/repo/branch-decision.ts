@@ -327,6 +327,13 @@ export function resolveBranchDecision(options: ResolveDecisionOptions): BranchDe
     };
   }
 
+  if (identity.isForkPr) {
+    return {
+      tier: 'gated', strategy, identity, canonicalBranch,
+      reason: 'fork PR: branch asset writes require a same-repository source, gated instead'
+    };
+  }
+
   if (identity.headBranch === canonicalBranch) {
     return {
       tier: 'canonical', strategy, identity, canonicalBranch,
@@ -343,12 +350,6 @@ export function resolveBranchDecision(options: ResolveDecisionOptions): BranchDe
   }
 
   if (strategy === 'preview') {
-    if (identity.isForkPr) {
-      return {
-        tier: 'gated', strategy, identity, canonicalBranch,
-        reason: 'fork PR: preview-ineligible (same-repo gate), gated instead'
-      };
-    }
     return {
       tier: 'preview', strategy, identity, canonicalBranch,
       reason: `branch ${identity.headBranch} under branch-strategy preview`
@@ -465,8 +466,9 @@ export function renderAssetMarker(marker: AssetMarker): string {
   return `${MARKER_KEY}: ${JSON.stringify(marker)}`;
 }
 
-/** Extract a marker from an asset description. Absent/malformed -> undefined (stranger). */
-export function parseAssetMarker(description: string | undefined): AssetMarker | undefined {
+function findAssetMarker(
+  description: string | undefined
+): { marker: AssetMarker; start: number; end: number } | undefined {
   if (!description) return undefined;
   const index = description.indexOf(`${MARKER_KEY}:`);
   if (index === -1) return undefined;
@@ -482,7 +484,9 @@ export function parseAssetMarker(description: string | undefined): AssetMarker |
       if (depth === 0) {
         try {
           const parsed = JSON.parse(description.slice(jsonStart, i + 1)) as AssetMarker;
-          if (parsed && typeof parsed === 'object' && parsed.repo && parsed.role) return parsed;
+          if (parsed && typeof parsed === 'object' && parsed.repo && parsed.role) {
+            return { marker: parsed, start: index, end: i + 1 };
+          }
         } catch {
           return undefined;
         }
@@ -491,4 +495,20 @@ export function parseAssetMarker(description: string | undefined): AssetMarker |
     }
   }
   return undefined;
+}
+
+/** Extract a marker from an asset description. Absent/malformed -> undefined (stranger). */
+export function parseAssetMarker(description: string | undefined): AssetMarker | undefined {
+  return findAssetMarker(description)?.marker;
+}
+
+/** Remove every well-formed marker accepted by parseAssetMarker. */
+export function stripAssetMarkers(description: string): string {
+  let stripped = description;
+  let found = findAssetMarker(stripped);
+  while (found) {
+    stripped = `${stripped.slice(0, found.start)}${stripped.slice(found.end)}`;
+    found = findAssetMarker(stripped);
+  }
+  return stripped;
 }

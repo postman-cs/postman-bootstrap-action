@@ -272813,6 +272813,15 @@ function resolveBranchDecision(options) {
       reason: `ref kind ${identity.refKind}: never canonical/preview-eligible; no-op with annotation`
     };
   }
+  if (identity.isForkPr) {
+    return {
+      tier: "gated",
+      strategy,
+      identity,
+      canonicalBranch,
+      reason: "fork PR: branch asset writes require a same-repository source, gated instead"
+    };
+  }
   if (identity.headBranch === canonicalBranch) {
     return {
       tier: "canonical",
@@ -272834,15 +272843,6 @@ function resolveBranchDecision(options) {
     };
   }
   if (strategy === "preview") {
-    if (identity.isForkPr) {
-      return {
-        tier: "gated",
-        strategy,
-        identity,
-        canonicalBranch,
-        reason: "fork PR: preview-ineligible (same-repo gate), gated instead"
-      };
-    }
     return {
       tier: "preview",
       strategy,
@@ -272905,7 +272905,7 @@ var MARKER_KEY = "x-pm-onboarding";
 function renderAssetMarker(marker) {
   return `${MARKER_KEY}: ${JSON.stringify(marker)}`;
 }
-function parseAssetMarker(description) {
+function findAssetMarker(description) {
   if (!description) return void 0;
   const index = description.indexOf(`${MARKER_KEY}:`);
   if (index === -1) return void 0;
@@ -272920,7 +272920,9 @@ function parseAssetMarker(description) {
       if (depth === 0) {
         try {
           const parsed = JSON.parse(description.slice(jsonStart, i + 1));
-          if (parsed && typeof parsed === "object" && parsed.repo && parsed.role) return parsed;
+          if (parsed && typeof parsed === "object" && parsed.repo && parsed.role) {
+            return { marker: parsed, start: index, end: i + 1 };
+          }
         } catch {
           return void 0;
         }
@@ -272929,6 +272931,18 @@ function parseAssetMarker(description) {
     }
   }
   return void 0;
+}
+function parseAssetMarker(description) {
+  return findAssetMarker(description)?.marker;
+}
+function stripAssetMarkers(description) {
+  let stripped = description;
+  let found = findAssetMarker(stripped);
+  while (found) {
+    stripped = `${stripped.slice(0, found.start)}${stripped.slice(found.end)}`;
+    found = findAssetMarker(stripped);
+  }
+  return stripped;
 }
 
 // src/lib/postman/additional-collections.ts
@@ -272981,7 +272995,7 @@ function structuredCloneSafe(value) {
 }
 function descriptionWithMarker(existingDescription, marker) {
   if (typeof existingDescription === "string") {
-    const prose = existingDescription.split(/\r?\n/).filter((line) => !line.trimStart().startsWith(`${MARKER_KEY}:`)).join("\n").trim();
+    const prose = stripAssetMarkers(existingDescription).split(/\r?\n/).filter((line) => !/^\s*(?:>\s*)+$/.test(line)).join("\n").trim();
     return prose ? `${prose}
 
 ${marker}` : marker;

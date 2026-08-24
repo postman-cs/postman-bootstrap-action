@@ -258,6 +258,20 @@ describe('resolveBranchDecision', () => {
     expect(d.channel?.code).toBe('RC');
   });
 
+  it('fork PR matching a channel rule remains gated', () => {
+    const d = resolveBranchDecision({
+      strategy: 'preview',
+      identity: identity({
+        headBranch: 'release/1.4',
+        defaultBranch: 'main',
+        isForkPr: true,
+        isPrContext: true
+      }),
+      channels: parseChannelRules('release/*=RC')
+    });
+    expect(d.tier).toBe('gated');
+  });
+
   it('preview: non-matching branch under preview strategy', () => {
     const d = resolveBranchDecision({
       strategy: 'preview',

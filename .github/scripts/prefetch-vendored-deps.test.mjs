@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-import { prefetchVendoredDeps } from './prefetch-vendored-deps.mjs';
+import { npmCacheInvocation, prefetchVendoredDeps } from './prefetch-vendored-deps.mjs';
 
 const tarball = Buffer.from('exact registry tarball bytes');
 const integrity = `sha512-${createHash('sha512').update(tarball).digest('base64')}`;
@@ -75,4 +75,12 @@ test('fails closed when the required release asset is absent', async () => {
     }),
     /asset not found/,
   );
+});
+
+test('uses the command shell for the Windows npm shim', () => {
+  assert.deepEqual(npmCacheInvocation('C:\\temp\\asset.tgz', 'win32'), {
+    command: 'npm',
+    args: ['cache', 'add', 'C:\\temp\\asset.tgz'],
+    shell: true,
+  });
 });

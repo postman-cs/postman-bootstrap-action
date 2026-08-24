@@ -75,8 +75,8 @@ export async function prefetchVendoredDeps(options = {}) {
   const apiUrl = (options.apiUrl ?? process.env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/$/, '');
   const assets = await releaseAssets({ apiUrl, repo, token, fetchImpl });
   const cacheAdd = options.cacheAdd ?? ((file) => {
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    execFileSync(npm, ['cache', 'add', file], { stdio: 'inherit' });
+    const invocation = npmCacheInvocation(file);
+    execFileSync(invocation.command, invocation.args, { shell: invocation.shell, stdio: 'inherit' });
   });
   const directory = await mkdtemp(join(options.tempRoot ?? tmpdir(), 'postman-vendored-deps-'));
 
@@ -106,6 +106,10 @@ export async function prefetchVendoredDeps(options = {}) {
 
   log(`Vendored dependencies: ${packages.length}/${packages.length} verified and cached`);
   return packages.length;
+}
+
+export function npmCacheInvocation(file, platform = process.platform) {
+  return { command: 'npm', args: ['cache', 'add', file], shell: platform === 'win32' };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

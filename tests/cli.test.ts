@@ -533,7 +533,7 @@ describe('package CLI bin', () => {
       files: Array<{ path: string }>;
       name: string;
     }>;
-    expect(packed.name).toBe('@postman-cse/onboarding-bootstrap');
+    expect(packed.name).toBe('@postman/onboarding-bootstrap');
     const packedPaths = packed.files.map((file) => file.path);
     expect(packedPaths).toEqual(expect.arrayContaining([
       'package.json',

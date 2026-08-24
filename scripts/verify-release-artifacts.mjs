@@ -4,7 +4,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const EXPECTED_PACKAGE_NAME = '@postman-cse/onboarding-bootstrap';
+const EXPECTED_PACKAGE_NAME = '@postman/onboarding-bootstrap';
 const SAFE_BASENAME = /^[A-Za-z0-9._-]+$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const MAX_PACKAGE_JSON_BYTES = 64 * 1024;

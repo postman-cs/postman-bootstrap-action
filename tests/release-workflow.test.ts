@@ -50,8 +50,10 @@ describe('release workflow publishing contract', () => {
   it('uses unprivileged verify permissions, one bundle, exact gate set, and pinned actionlint', () => {
     const verify = job('verify-package');
     expect(verify).toMatch(/permissions:\n {6}contents: read/);
-    expect(verify).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
-    expect((verify.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(1);
+    expect(verify).toContain('node .github/scripts/prefetch-vendored-deps.mjs');
+    expect(verify).toContain('DEPS_REPO: ${{ secrets.DEPS_REPO }}');
+    expect(verify).toContain('DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}');
+    expect(verify).not.toContain('NPM_TOKEN');
     expect(verify).not.toContain('id-token: write');
     expect((verify.match(/npm ci/g) ?? []).length).toBe(1);
     expect((verify.match(/npm run bundle/g) ?? []).length).toBe(1);
@@ -70,7 +72,7 @@ describe('release workflow publishing contract', () => {
     expect(workflow).not.toContain('/main/scripts/download-actionlint.bash');
     expect(verify).not.toContain('actions/setup-go');
     expect(verify).not.toContain('go install github.com/rhysd/actionlint');
-    expect(verify.slice(verify.indexOf('name: Run gates'))).not.toContain('NPM_TOKEN');
+    assertOrder('node .github/scripts/prefetch-vendored-deps.mjs', '- run: npm ci', verify);
   });
 
   it('stages deterministic SEA allowlist, verifies before upload, and names artifacts by run identity', () => {

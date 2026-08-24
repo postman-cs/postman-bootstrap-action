@@ -24,9 +24,12 @@ jobs:
           node-version: '24'
           cache: npm
           registry-url: 'https://registry.npmjs.org'
-      - run: npm ci
+      - name: Prefetch vendored dependencies
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DEPS_REPO: ${{ secrets.DEPS_REPO }}
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
+        run: node .github/scripts/prefetch-vendored-deps.mjs
+      - run: npm ci
       - name: Build self-contained SEA binary
         run: bash scripts/build-sea.sh
       - name: Smoke test SEA binary with an empty environment

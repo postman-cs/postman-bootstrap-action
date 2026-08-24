@@ -70,10 +70,14 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Prefetch vendored dependencies
+        env:
+          DEPS_REPO: ${{ secrets.DEPS_REPO }}
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
+        run: node .github/scripts/prefetch-vendored-deps.mjs
+
       - name: Build action from source
         run: npm ci && npm run build
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Run bootstrap action
         id: bootstrap

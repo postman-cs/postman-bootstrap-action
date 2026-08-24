@@ -129,23 +129,21 @@ describe('CI workflow dist/pack race contract', () => {
     expect(windows).not.toContain('install/win64.ps1');
   });
 
-  it('confines the locked-registry token to npm ci install steps', () => {
-    expect(linux).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
+  it('prefetches locked dependencies without exposing an npm credential', () => {
+    expect(linux).toContain('node .github/scripts/prefetch-vendored-deps.mjs');
+    expect(linux).toMatch(/DEPS_REPO: \$\{\{ secrets\.DEPS_REPO \}\}/);
+    expect(linux).toMatch(/DEPS_TOKEN: \$\{\{ secrets\.DEPS_TOKEN \}\}/);
     expect(windows).toMatch(
-      /if: steps\.windows-node-modules\.outputs\.cache-hit != 'true'\n {8}run: npm ci --prefer-offline --no-audit --no-fund\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/,
+      /name: Prefetch vendored dependencies\n {8}if: steps\.windows-node-modules\.outputs\.cache-hit != 'true'[\s\S]*?node \.github\/scripts\/prefetch-vendored-deps\.mjs[\s\S]*?run: npm ci --prefer-offline --no-audit --no-fund/,
     );
-    expect(seaWorkflow).toMatch(/- run: npm ci\n {8}env:\n {10}NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
-    expect((ciWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(4);
-    expect((seaWorkflow.match(/secrets\.NPM_TOKEN/g) ?? [])).toHaveLength(1);
-    expect(namedStep(linux, 'Run gates')).not.toContain('NPM_TOKEN');
-    expect(namedStep(windows, 'Run gates')).not.toContain('NPM_TOKEN');
-    expect(namedStep(windows, 'Install Postman CLI')).not.toContain('NPM_TOKEN');
-    expect(namedStep(seaWorkflow, 'Upload SEA binary artifact')).not.toContain('NPM_TOKEN');
+    expect(seaWorkflow).toContain('node .github/scripts/prefetch-vendored-deps.mjs');
+    expect((ciWorkflow.match(/node \.github\/scripts\/prefetch-vendored-deps\.mjs/g) ?? [])).toHaveLength(4);
+    expect((seaWorkflow.match(/node \.github\/scripts\/prefetch-vendored-deps\.mjs/g) ?? [])).toHaveLength(1);
+    expect(ciWorkflow).not.toContain('NPM_TOKEN');
+    expect(seaWorkflow).not.toContain('NPM_TOKEN');
   });
 
-  it('keeps locked @postman runtime deps restricted so NPM_TOKEN remains justified', () => {
-    // Step-local NPM_TOKEN on npm ci is an exception for private @postman packages.
-    // If these stop being restricted (or leave the lock), remove workflow tokens.
+  it('keeps locked @postman runtime deps restricted so vendoring remains required', () => {
     const lock = JSON.parse(readFileSync(join(process.cwd(), 'package-lock.json'), 'utf8')) as {
       packages: Record<string, { name?: string; resolved?: string; dependencies?: Record<string, string> }>;
     };

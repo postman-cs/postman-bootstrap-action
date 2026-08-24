@@ -28,7 +28,7 @@
     "docs:tables": "node scripts/render-action-tables.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "vitest run --exclude tests/windows-gates.test.ts && vitest run tests/windows-gates.test.ts && node --test .github/scripts/dispatch-e2e-monitor.test.mjs .github/scripts/verify-e2e-release.test.mjs",
+    "test": "vitest run --exclude tests/windows-gates.test.ts && vitest run tests/windows-gates.test.ts && node --test .github/scripts/dispatch-e2e-monitor.test.mjs .github/scripts/verify-e2e-release.test.mjs .github/scripts/prefetch-vendored-deps.test.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:integration": "node integration/verify.mjs",
     "record:live": "node --experimental-strip-types scripts/record-live.ts",

@@ -1,0 +1,50 @@
+name: Backfill npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: Ordered space-separated immutable tags, oldest first
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish immutable GitHub Release assets to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; fi
+          PKG_NAME='@postman/onboarding-bootstrap'
+          for TAG in ${{ inputs.tags }}; do
+            TAG_DIR="$(mktemp -d)"
+            trap 'rm -rf "$TAG_DIR"' EXIT
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern 'release.tgz' --dir "$TAG_DIR"
+            TARBALL="$TAG_DIR/release.tgz"
+            PACKAGE_JSON="$(tar -xOf "$TARBALL" package/package.json)"
+            PACKAGE_NAME="$(node -e "const pkg=JSON.parse(process.argv[1]); process.stdout.write(pkg.name)" "$PACKAGE_JSON")"
+            PACKAGE_VERSION="$(node -e "const pkg=JSON.parse(process.argv[1]); process.stdout.write(pkg.version)" "$PACKAGE_JSON")"
+            test "$PACKAGE_NAME" = "$PKG_NAME" || { echo "::error::refusing old-scope or wrong package asset for $TAG: $PACKAGE_NAME"; exit 1; }
+            test "$PACKAGE_VERSION" = "${TAG#v}" || { echo "::error::release asset version $PACKAGE_VERSION does not match $TAG"; exit 1; }
+            if npm view "$PKG_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+              echo "::notice::$PKG_NAME@$PACKAGE_VERSION already exists; skipping"
+            else
+              npm publish "$TARBALL" --provenance --access public --tag backfill
+            fi
+            rm -rf "$TAG_DIR"
+            trap - EXIT
+          done
+          HIGHEST="$(npm view "$PKG_NAME" versions --json | node -e "let data='';process.stdin.on('data', chunk => data += chunk).on('end', () => { const versions=JSON.parse(data); const list=Array.isArray(versions)?versions:[versions]; list.filter(version => /^\\d+\\.\\d+\\.\\d+$/.test(version)).sort((a,b) => a.split('.').map(Number).reduce((result, part, index) => result || part - b.split('.').map(Number)[index], 0)); if (!list.length) process.exit(1); process.stdout.write(list.at(-1)); })")"
+          npm dist-tag add "$PKG_NAME@$HIGHEST" latest

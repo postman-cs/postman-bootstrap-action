@@ -305078,7 +305078,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "7f21bf8d084b6ccdb8a2aebf8f59e1092d9f6189",
+  bootstrapCommit: "b744084f85b6ed35c0ad31077d3f75547f2e0854",
   legs: [
     {
       mode: "nonorg",
@@ -342443,7 +342443,7 @@ function resolvePackageVersion() {
   for (const packageJsonPath of candidates) {
     try {
       const packageJson = JSON.parse((0, import_node_fs8.readFileSync)(packageJsonPath, "utf8"));
-      if (packageJson.name === "@postman-cse/onboarding-bootstrap" && packageJson.version) {
+      if (packageJson.name === "@postman/onboarding-bootstrap" && packageJson.version) {
         return String(packageJson.version).trim();
       }
     } catch {

@@ -39,10 +39,14 @@ jobs:
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node .github/scripts/rebind-multifile-receipt.mjs --write
-      - name: Rebuild and validate normalized receipt
+      - name: Prefetch vendored dependencies
         if: steps.rebind.outputs.updated == 'true'
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DEPS_REPO: ${{ secrets.DEPS_REPO }}
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
+        run: node .github/scripts/prefetch-vendored-deps.mjs
+      - name: Rebuild and validate normalized receipt
+        if: steps.rebind.outputs.updated == 'true'
         run: |
           npm ci
           npm run bundle
@@ -85,9 +89,12 @@ jobs:
           node-version: '24'
           cache: npm
           registry-url: 'https://registry.npmjs.org'
-      - run: npm ci
+      - name: Prefetch vendored dependencies
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DEPS_REPO: ${{ secrets.DEPS_REPO }}
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
+        run: node .github/scripts/prefetch-vendored-deps.mjs
+      - run: npm ci
       - name: Install Postman CLI
         run: curl -o- "https://dl-cli.pstmn.io/install/unix.sh" | sh
       - run: postman --version
@@ -211,9 +218,12 @@ jobs:
           node-version: '24'
           cache: npm
           registry-url: 'https://registry.npmjs.org'
-      - run: npm ci
+      - name: Prefetch vendored dependencies
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DEPS_REPO: ${{ secrets.DEPS_REPO }}
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
+        run: node .github/scripts/prefetch-vendored-deps.mjs
+      - run: npm ci
       - run: npm run bundle
       - run: npm run verify:dist:parity
       - name: Upload expected dist on mismatch
@@ -244,11 +254,15 @@ jobs:
         with:
           path: node_modules
           key: node-modules-Windows-Node-24-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ hashFiles('package-lock.json') }}
+      - name: Prefetch vendored dependencies
+        if: steps.windows-node-modules.outputs.cache-hit != 'true'
+        env:
+          DEPS_REPO: ${{ secrets.DEPS_REPO }}
+          DEPS_TOKEN: ${{ secrets.DEPS_TOKEN }}
+        run: node .github/scripts/prefetch-vendored-deps.mjs
       - name: Install dependencies
         if: steps.windows-node-modules.outputs.cache-hit != 'true'
         run: npm ci --prefer-offline --no-audit --no-fund
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Resolve Postman CLI version
         id: postman-cli-version
         shell: pwsh

@@ -572,6 +572,18 @@ describe('bootstrap action', () => {
     expect(() => readActionInputs(both.core)).toThrow(/not both/);
   });
 
+  it('rejects missing authored collection input before registering credentials', () => {
+    const { core, secrets } = createCoreStub({
+      'project-name': 'core-payments',
+      'spec-url': 'https://example.test/openapi.yaml',
+      'postman-api-key': 'pmak-test',
+      'onboarding-scope': 'spec-with-additional-collections'
+    });
+
+    expect(() => readActionInputs(core)).toThrow(/ADDITIONAL_COLLECTIONS_DIR_REQUIRED/);
+    expect(secrets).toEqual([]);
+  });
+
   it('runs the bootstrap flow end to end and emits outputs', async () => {
     const { core, outputs } = createCoreStub();
     const execStub = createExecStub();

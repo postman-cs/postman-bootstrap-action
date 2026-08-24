@@ -700,7 +700,7 @@ export function resolveInputs(
   const postmanStack = parsePostmanStack(getInput('postman-stack', env));
   const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion, env);
 
-  return {
+  const inputs: ResolvedInputs = {
     projectName: getInput('project-name', env)
       ?? env.GITHUB_REPOSITORY?.split('/').pop()
       ?? env.CI_PROJECT_NAME
@@ -794,6 +794,8 @@ export function resolveInputs(
     canonicalBranch: getInput('canonical-branch', env),
     channels: getInput('channels', env)
   };
+  assertAdditionalCollectionsScopeConfigured(inputs);
+  return inputs;
 }
 
 /**
@@ -1052,11 +1054,6 @@ export function readActionInputs(
   const githubToken = optionalInput(actionCore, 'github-token') || process.env.GITHUB_TOKEN;
   const ghFallbackToken = optionalInput(actionCore, 'gh-fallback-token') || process.env.GH_FALLBACK_TOKEN;
 
-  if (postmanApiKey) actionCore.setSecret(postmanApiKey);
-  if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
-  if (githubToken) actionCore.setSecret(githubToken);
-  if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
-
   const inputs = resolveInputs({
     ...process.env,
     INPUT_PROJECT_NAME: projectName,
@@ -1153,6 +1150,11 @@ export function readActionInputs(
     INPUT_CANONICAL_BRANCH: optionalInput(actionCore, 'canonical-branch'),
     INPUT_CHANNELS: optionalInput(actionCore, 'channels')
   });
+
+  if (postmanApiKey) actionCore.setSecret(postmanApiKey);
+  if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
+  if (githubToken) actionCore.setSecret(githubToken);
+  if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
 
   return inputs;
 }

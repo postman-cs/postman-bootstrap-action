@@ -502,4 +502,21 @@ describe('durable collection marker', () => {
     expect(parseAssetMarker(marker)).toMatchObject({ rawBranch: 'feature/{payments' });
     expect(stripAssetMarkers(`Authored docs ${marker}`)).toBe('Authored docs ');
   });
+
+  it('finds valid ownership after malformed authored marker text', () => {
+    const marker = renderAssetMarker({
+      repo: 'https://github.com/org/repo',
+      rawBranch: 'feature/payments',
+      sanitizedBranch: 'feature-payments',
+      role: 'preview',
+      createdAt: '2026-07-15T00:00:00.000Z',
+      lastSyncedAt: '2026-07-15T00:00:00.000Z'
+    });
+    const malformed = 'x-pm-onboarding: {not-json}';
+
+    expect(parseAssetMarker(`${malformed}\n${marker}`)).toMatchObject({
+      rawBranch: 'feature/payments'
+    });
+    expect(stripAssetMarkers(`${malformed}\n${marker}`)).toBe(`${malformed}\n`);
+  });
 });

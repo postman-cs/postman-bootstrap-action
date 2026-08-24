@@ -274066,44 +274066,53 @@ function renderAssetMarker(marker) {
 }
 function findAssetMarker(description) {
   if (!description) return void 0;
-  const index = description.indexOf(`${MARKER_KEY}:`);
-  if (index === -1) return void 0;
-  const jsonStart = description.indexOf("{", index);
-  if (jsonStart === -1) return void 0;
-  let depth = 0;
-  let escaped = false;
-  let inString = false;
-  for (let i = jsonStart; i < description.length; i += 1) {
-    const ch = description[i];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === "\\") {
-        escaped = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
+  const markerPrefix = `${MARKER_KEY}:`;
+  let searchFrom = 0;
+  while (searchFrom < description.length) {
+    const index = description.indexOf(markerPrefix, searchFrom);
+    if (index === -1) return void 0;
+    const nextIndex = description.indexOf(markerPrefix, index + markerPrefix.length);
+    const jsonStart = description.indexOf("{", index + markerPrefix.length);
+    if (jsonStart === -1) return void 0;
+    if (nextIndex !== -1 && nextIndex < jsonStart) {
+      searchFrom = nextIndex;
       continue;
     }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") depth += 1;
-    else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        try {
-          const parsed = JSON.parse(description.slice(jsonStart, i + 1));
-          if (parsed && typeof parsed === "object" && parsed.repo && parsed.role) {
-            return { marker: parsed, start: index, end: i + 1 };
-          }
-        } catch {
-          return void 0;
+    let depth = 0;
+    let escaped = false;
+    let inString = false;
+    for (let i = jsonStart; i < description.length; i += 1) {
+      const ch = description[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch === "\\") {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
         }
-        return void 0;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            const parsed = JSON.parse(description.slice(jsonStart, i + 1));
+            if (parsed && typeof parsed === "object" && parsed.repo && parsed.role) {
+              return { marker: parsed, start: index, end: i + 1 };
+            }
+          } catch {
+          }
+          break;
+        }
       }
     }
+    searchFrom = index + markerPrefix.length;
   }
   return void 0;
 }
@@ -341183,7 +341192,7 @@ function resolveInputs(env = process.env) {
   const postmanRegion = parsePostmanRegion(getInput2("postman-region", env));
   const postmanStack = parsePostmanStack(getInput2("postman-stack", env));
   const endpointProfile = resolvePostmanEndpointProfile(postmanStack, postmanRegion, env);
-  return {
+  const inputs = {
     projectName: getInput2("project-name", env) ?? env.GITHUB_REPOSITORY?.split("/").pop() ?? env.CI_PROJECT_NAME ?? "",
     workspaceId: getInput2("workspace-id", env),
     specId: getInput2("spec-id", env),
@@ -341268,6 +341277,8 @@ function resolveInputs(env = process.env) {
     canonicalBranch: getInput2("canonical-branch", env),
     channels: getInput2("channels", env)
   };
+  assertAdditionalCollectionsScopeConfigured(inputs);
+  return inputs;
 }
 function decideBranchTier(inputs, env = process.env) {
   return resolveEffectiveBranchDecision(
@@ -341431,10 +341442,6 @@ function readActionInputs(actionCore) {
   const postmanAccessToken = optionalInput(actionCore, "postman-access-token") || process.env.POSTMAN_ACCESS_TOKEN;
   const githubToken = optionalInput(actionCore, "github-token") || process.env.GITHUB_TOKEN;
   const ghFallbackToken = optionalInput(actionCore, "gh-fallback-token") || process.env.GH_FALLBACK_TOKEN;
-  if (postmanApiKey) actionCore.setSecret(postmanApiKey);
-  if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
-  if (githubToken) actionCore.setSecret(githubToken);
-  if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
   const inputs = resolveInputs({
     ...process.env,
     INPUT_PROJECT_NAME: projectName,
@@ -341493,6 +341500,10 @@ function readActionInputs(actionCore) {
     INPUT_CANONICAL_BRANCH: optionalInput(actionCore, "canonical-branch"),
     INPUT_CHANNELS: optionalInput(actionCore, "channels")
   });
+  if (postmanApiKey) actionCore.setSecret(postmanApiKey);
+  if (postmanAccessToken) actionCore.setSecret(postmanAccessToken);
+  if (githubToken) actionCore.setSecret(githubToken);
+  if (ghFallbackToken) actionCore.setSecret(ghFallbackToken);
   return inputs;
 }
 function createWorkspaceName(inputs) {

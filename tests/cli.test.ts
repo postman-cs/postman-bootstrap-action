@@ -657,6 +657,27 @@ describe('runCli credential preflight seam', () => {
     return fetchMock;
   }
 
+  it('rejects missing authored collection input before credential network calls', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const executeBootstrap = vi.fn();
+
+    await expect(
+      runCli(
+        [
+          '--project-name', 'additional-input-gate',
+          '--spec-url', 'https://example.test/openapi.yaml',
+          '--postman-api-key', 'pmak-test',
+          '--onboarding-scope', 'spec-with-additional-collections'
+        ],
+        { env: {}, executeBootstrap }
+      )
+    ).rejects.toThrow(/ADDITIONAL_COLLECTIONS_DIR_REQUIRED/);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(executeBootstrap).not.toHaveBeenCalled();
+  });
+
   it('fails closed before bootstrap when enforce sees an invalid access-token session', async () => {
     const fetchMock = stubSessionFetch(222, 401);
     const executeBootstrap = vi.fn();

@@ -305078,7 +305078,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "7f21bf8d084b6ccdb8a2aebf8f59e1092d9f6189",
+  bootstrapCommit: "566cfed2022851d684704d88ee9e2bf5c2e1dd3b",
   legs: [
     {
       mode: "nonorg",
@@ -309046,7 +309046,7 @@ ${error.responseBody ?? ""}`
       if (!finalName || !parseAssetMarker(desiredDescription)) continue;
       uniqueCandidates.set(finalName, desiredDescription);
     }
-    const winners = {};
+    const winners = /* @__PURE__ */ Object.create(null);
     if (uniqueCandidates.size === 0) return winners;
     const inventory = await this.listWorkspaceCollections(workspaceId, "safe");
     for (const [finalName, desiredDescription] of uniqueCandidates) {

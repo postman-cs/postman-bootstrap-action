@@ -3694,7 +3694,7 @@ export class PostmanGatewayAssetsClient {
       if (!finalName || !parseAssetMarker(desiredDescription)) continue;
       uniqueCandidates.set(finalName, desiredDescription);
     }
-    const winners: Record<string, string> = {};
+    const winners: Record<string, string> = Object.create(null);
     if (uniqueCandidates.size === 0) return winners;
     const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
     for (const [finalName, desiredDescription] of uniqueCandidates) {

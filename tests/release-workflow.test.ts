@@ -122,21 +122,30 @@ describe('release workflow publishing contract', () => {
     expect(publish).toContain('SEA sidecar digest does not match executable and manifest');
     expect(publish).toContain('tarball package identity mismatch');
     assertOrder('name: Verify staged release artifacts', 'NODE_AUTH_TOKEN', publish);
-    assertOrder('name: Verify staged release artifacts', 'npm publish ./release.tgz', publish);
-    assertOrder('npm publish ./release.tgz --provenance --access public', 'softprops/action-gh-release', publish);
-    expect(publish).toContain('release.tgz\n            release-manifest.json\n            postman-bootstrap-*-linux-x64\n            postman-bootstrap-*-linux-x64.sha256');
+    assertOrder('name: Verify staged release artifacts', 'softprops/action-gh-release', publish);
+    assertOrder('softprops/action-gh-release', 'id: npm-publish', publish);
+    assertOrder('id: npm-publish', 'name: Verify npm registry identity', publish);
+    assertOrder('name: Verify npm registry identity', 'name: Report npm publish skipped', publish);
+    expect(publish).toMatch(/files: \|\n\s+release\.tgz\n\s+release-manifest\.json\n\s+postman-bootstrap-\*-linux-x64\n\s+postman-bootstrap-\*-linux-x64\.sha256/);
     expect(publish).not.toContain('release-artifacts/*');
-    expect(publish.slice(0, publish.indexOf('name: Publish npm package or verify existing identity'))).not.toContain('NPM_TOKEN');
+    expect(publish.slice(0, publish.indexOf('id: npm-publish'))).not.toContain('NPM_TOKEN');
+    expect(publish).toContain('outputs:\n      published: ${{ steps.npm-publish.outputs.published }}');
+    expect(publish).toContain('continue-on-error: true');
+    expect(publish).toContain('if [ -z "${NODE_AUTH_TOKEN:-}" ]; then sed -i');
+    expect(publish).toContain('echo "published=false" >> "$GITHUB_OUTPUT"');
+    expect(publish).toContain('echo "published=true" >> "$GITHUB_OUTPUT"');
+    expect(publish).toContain("if: steps.npm-publish.outputs.published == 'true'");
+    expect(publish).toContain("if: steps.npm-publish.outputs.published != 'true'");
   });
 
-  it('fail-closes npm lookup on non-E404, computes SRI before GitHub, and keeps non-cancelling concurrency', () => {
+  it('soft-fails the npm attempt while hard-failing registry identity verification and keeps non-cancelling concurrency', () => {
     const publish = job('publish');
     expect(publish).toContain('npm view "$PKG_NAME@$PKG_VERSION" dist.integrity');
     expect(publish).toContain("createHash('sha512').update(readFileSync('release.tgz')).digest('base64')");
     expect(publish).toContain("grep -qE '^npm (error|ERR!) code E404'");
     expect(publish).toContain('npm view failed with a non-E404 error; refusing to publish or mutate GitHub');
     expect(publish).toContain('published npm integrity differs from staged tarball');
-    assertOrder("createHash('sha512')", 'softprops/action-gh-release', publish);
+    assertOrder('softprops/action-gh-release', "createHash('sha512')", publish);
     expect(workflow).toContain('group: release-${{ github.repository }}');
     expect(workflow).toContain('cancel-in-progress: false');
   });

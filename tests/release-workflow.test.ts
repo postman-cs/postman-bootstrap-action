@@ -40,10 +40,10 @@ describe('release workflow publishing contract', () => {
       "if: ${{ needs.classify.outputs.release_kind == 'immutable' && needs.verify-package.result == 'success' }}"
     );
     expect(job('verify-release-e2e')).toContain(
-      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.outputs.published == 'true' }}"
+      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}"
     );
     expect(job('advance-major-alias')).toContain(
-      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.outputs.published == 'true' && needs.verify-release-e2e.result == 'success' }}"
+      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' }}"
     );
   });
 
@@ -201,7 +201,7 @@ describe('release workflow publishing contract', () => {
       'needs: [classify, verify-package, publish, verify-release-e2e, advance-major-alias]'
     );
     expect(notify).toContain(
-      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.outputs.published == 'true' && needs.advance-major-alias.result == 'success' }}"
+      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.advance-major-alias.result == 'success' }}"
     );
     expect(notify).toMatch(/permissions:\s*\{\}/);
     expect(notify).toContain('actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0');

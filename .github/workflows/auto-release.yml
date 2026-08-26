@@ -46,7 +46,6 @@ jobs:
         id: reconcile
         env:
           GH_TOKEN: ${{ github.token }}
-          ROLLING_ALIASES: major
         run: |
           set -euo pipefail
           LATEST=""
@@ -68,26 +67,12 @@ jobs:
           TAG=""
           if [ -n "$LATEST" ] && ! gh release view "$LATEST" >/dev/null 2>&1; then
             TAG="$LATEST"
-          elif [ -n "$LATEST" ]; then
-            VERSION="${LATEST#v}"
-            IFS='.' read -r MAJOR MINOR _ <<< "$VERSION"
-            if [ "$MAJOR" != 0 ]; then
-              TARGET="$(git rev-parse "${LATEST}^{commit}")"
-              read -r -a ALIAS_KINDS <<< "$ROLLING_ALIASES"
-              for KIND in "${ALIAS_KINDS[@]}"; do
-                case "$KIND" in
-                  major) ALIAS="v$MAJOR" ;;
-                  minor) ALIAS="v$MAJOR.$MINOR" ;;
-                  *) echo "::error::Unsupported rolling alias kind: $KIND"; exit 1 ;;
-                esac
-                if ! ALIAS_COMMIT="$(git rev-parse --verify "${ALIAS}^{commit}" 2>/dev/null)" ||
-                  [ "$ALIAS_COMMIT" != "$TARGET" ]; then
-                  TAG="$LATEST"
-                  break
-                fi
-              done
-            fi
           fi
+
+          # A published immutable tag is complete even when its rolling alias
+          # never advanced. Retrying that burnt tag can never change its bytes
+          # and deadlocks every later fix. Let the planner cut the next version;
+          # its successful release advances the rolling alias safely.
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if [ -z "$TAG" ]; then

@@ -13,7 +13,7 @@ import { parseWsdl } from '../src/lib/protocols/soap/parser.js';
 import { buildSoapCollection } from '../src/lib/protocols/soap/builder.js';
 import { instrumentSoapCollection } from '../src/lib/protocols/soap/instrumenter.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
-import type { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import type { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 
 type JsonRecord = Record<string, unknown>;
 

@@ -15,7 +15,7 @@
  *   POSTMAN_API_KEY="$POSTMAN_E2E_API_KEY_NON_ORG_MODE" npx tsx scripts/probe-additional-collections-nested.ts
  */
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
 
 const API = POSTMAN_ENDPOINT_PROFILES.prod.apiBaseUrl;

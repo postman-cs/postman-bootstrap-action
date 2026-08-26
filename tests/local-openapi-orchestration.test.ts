@@ -16,6 +16,12 @@ import {
   type ResolvedInputs
 } from '../src/index.js';
 import * as localCollectionArtifacts from '../src/lib/repo/local-collection-artifacts.js';
+import { buildContractIndex } from '../src/lib/spec/contract-index.js';
+import {
+  generateLocalOpenApiRolePayloads,
+  type CollectionRole
+} from '../src/lib/spec/local-openapi-collection-generation.js';
+import { parseOpenApiDocument } from '../src/lib/spec/openapi-loader.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -117,6 +123,7 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
     onboardingScope: 'full',
     syncExamples: true,
     collectionSyncMode: 'refresh',
+    collectionUpdateStrategy: 'whole',
     specSyncMode: 'update',
     releaseLabel: undefined,
     domain: 'core-banking',
@@ -221,6 +228,14 @@ describe('local OpenAPI orchestration', () => {
       deleteSpec: vi.fn().mockResolvedValue(undefined),
       deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
       deepUpdateV2Collection,
+      applyCollectionDelta: undefined as unknown as (
+        collectionUid: string,
+        plan: unknown,
+        desiredCollection: unknown,
+        expectedPayloadDigest: string,
+        rollback?: { collection: unknown; payloadDigest: string }
+      ) => Promise<unknown>,
+      collectionWriteMetrics: undefined as unknown,
       exportV2Collection: vi.fn(async (collectionUid: string) => {
         events.push(`export:${collectionUid}`);
         return { info: { _postman_id: collectionUid, name: `snapshot-${collectionUid}` }, item: [] };
@@ -287,6 +302,27 @@ describe('local OpenAPI orchestration', () => {
         }
       ),
       syncCollection: vi.fn().mockRejectedValue(new Error('syncCollection must be unreachable for OpenAPI'))
+    };
+  }
+
+  async function generateRoleCollections(): Promise<Record<CollectionRole, JsonRecord>> {
+    const generated = await generateLocalOpenApiRolePayloads(VALID_SPEC_31, {
+      openApiVersion: '3.1',
+      requestNameSource: 'Fallback',
+      folderStrategy: 'Paths',
+      nestedFolderHierarchy: false,
+      secretsResolverProvider: 'none',
+      names: {
+        baseline: 'orchestration-api',
+        smoke: '[Smoke] orchestration-api',
+        contract: '[Contract] orchestration-api'
+      },
+      contractIndex: buildContractIndex(parseOpenApiDocument(VALID_SPEC_31))
+    });
+    return {
+      baseline: generated.roles.baseline.collection,
+      smoke: generated.roles.smoke.collection,
+      contract: generated.roles.contract.collection
     };
   }
 
@@ -1011,6 +1047,359 @@ describe('local OpenAPI orchestration', () => {
       expect(ledger.counts.deepUpdate).toBe(3);
       expect(ledger.counts.wholeCollectionImport).toBe(0);
       expect(ledger.counts.localConversion).toBe(1);
+    });
+  });
+
+  it('uses bounded deltas only for auto refreshes and emits the complete sanitized convergence receipt', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const postman = buildPostman(events);
+      const alterFirstRequest = (collection: JsonRecord): JsonRecord => {
+        const altered = structuredClone(collection);
+        const visit = (items: unknown[]): boolean => {
+          for (const item of items) {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+            const record = item as JsonRecord;
+            if (record.request && typeof record.request === 'object') {
+              record.description = 'previous request description';
+              return true;
+            }
+            if (Array.isArray(record.item) && visit(record.item)) return true;
+          }
+          return false;
+        };
+        expect(visit(altered.item as unknown[])).toBe(true);
+        return altered;
+      };
+      const firstRequestId = (collection: JsonRecord): string => {
+        const visit = (items: unknown[]): string | undefined => {
+          for (const item of items) {
+            if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+            const record = item as JsonRecord;
+            if (record.request && typeof record.request === 'object') {
+              return typeof record.id === 'string' ? record.id : undefined;
+            }
+            if (Array.isArray(record.item)) {
+              const found = visit(record.item);
+              if (found) return found;
+            }
+          }
+          return undefined;
+        };
+        const value = visit(collection.item as unknown[]);
+        if (!value) throw new Error('independent snapshot request id missing');
+        return value;
+      };
+      // This is deliberately independent of runBootstrap's conversion. The
+      // converter rekeys structural ids on every invocation.
+      const exported = await generateRoleCollections();
+      const baselineSnapshot = alterFirstRequest(exported.baseline);
+      const baselineSnapshotRequestId = firstRequestId(baselineSnapshot);
+      postman.exportV2Collection = vi.fn(async (collectionUid: string) => {
+        if (collectionUid === 'col-baseline-existing') return baselineSnapshot;
+        if (collectionUid === 'col-smoke-existing') return exported.smoke;
+        return exported.contract;
+      }) as unknown as typeof postman.exportV2Collection;
+      postman.applyCollectionDelta = vi.fn(async (_uid: string, rawPlan: unknown) => {
+        const plan = rawPlan as {
+          decision: string;
+          operations: Array<{ kind: string; sourceId?: string; item: JsonRecord }>;
+        };
+        if (plan.decision !== 'apply') throw new Error(JSON.stringify(plan));
+        expect(plan.operations).toHaveLength(1);
+        expect(plan.operations[0]).toMatchObject({
+          kind: 'patch',
+          sourceId: baselineSnapshotRequestId,
+          item: { id: baselineSnapshotRequestId }
+        });
+        return { strategy: 'delta' as const };
+      });
+      postman.collectionWriteMetrics = {
+        ambiguousWrites: 1,
+        convergedWithoutResend: 1,
+        resendCount: 0,
+        verifyPolls: 2,
+        recoveryMs: 3,
+        inventoryReads: 4,
+        inventorySleepMs: 5,
+        rootResolveMs: 6,
+        renameMs: 7,
+        electionMs: 8,
+        deltaOpsByKind: { create: 0, patch: 1, move: 0, delete: 0 },
+        changedBytes: 9,
+        deltaMs: 10,
+        fallbackReasons: []
+      };
+
+      const outputs = await runBootstrap(
+        createInputs({
+          specId: 'spec-existing',
+          baselineCollectionId: 'col-baseline-existing',
+          smokeCollectionId: 'col-smoke-existing',
+          contractCollectionId: 'col-contract-existing',
+          collectionUpdateStrategy: 'auto'
+        }),
+        {
+          core: createCoreStub(),
+          exec: createExecStub(),
+          io: { which: async () => 'tool' },
+          internalIntegration: buildIntegration(events),
+          postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+          resourcesState: { read: () => null, write: () => undefined },
+          specFetcher: vi.fn()
+        }
+      );
+
+      expect(postman.applyCollectionDelta).toHaveBeenCalledTimes(1);
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+      const ledger = JSON.parse(outputs['openapi-operation-ledger-json'] || '{}') as {
+        skippedRoles: CollectionRole[];
+        convergence: Record<string, unknown> & { roles: Array<Record<string, unknown>> };
+      };
+      expect(ledger.skippedRoles).toEqual(['smoke', 'contract']);
+      expect(ledger.convergence).toMatchObject({
+        strategy: 'auto',
+        skippedRoles: 2,
+        ambiguousWrites: 1,
+        convergedWithoutResend: 1,
+        resendCount: 0,
+        verifyPolls: 2,
+        recoveryMs: 3,
+        inventoryReads: 4,
+        inventorySleepMs: 5,
+        rootResolveMs: 6,
+        renameMs: 7,
+        electionMs: 8,
+        deltaOpsByKind: { create: 0, patch: 1, move: 0, delete: 0 },
+        deltaMs: 10,
+        fallbackReasons: []
+      });
+      expect(ledger.convergence.roles).toHaveLength(3);
+      for (const role of ledger.convergence.roles) {
+        expect(role).toMatchObject({
+          changedBytes: expect.any(Number),
+          networkMs: expect.any(Number),
+          wallMs: expect.any(Number),
+          reconciliationMs: 0,
+          fallbackReason: null
+        });
+        expect(role.desiredSemanticDigest).toMatch(/^[a-f0-9]{64}$/);
+        expect(role.observedSemanticDigest).toBe(role.desiredSemanticDigest);
+        expect(role.payloadBytes).toEqual(expect.any(Number));
+        expect(role.snapshotMs).toEqual(expect.any(Number));
+        expect(role.writeMs).toEqual(expect.any(Number));
+      }
+      expect(ledger.convergence.roles).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'baseline', outcome: 'delta', operationCount: 1 }),
+        expect.objectContaining({ role: 'smoke', outcome: 'unchanged', operationCount: 0 }),
+        expect.objectContaining({ role: 'contract', outcome: 'unchanged', operationCount: 0 })
+      ]));
+    });
+  });
+
+  it('uses hardened whole-tree fallback for unsupported auto deltas while whole never invokes the delta seam', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const postman = buildPostman(events);
+      postman.applyCollectionDelta = vi.fn(async (_uid: string, rawPlan: unknown) => {
+        const plan = rawPlan as { decision: string };
+        expect(plan.decision).toBe('fallback');
+        return { strategy: 'whole-fallback' as const, fallbackReason: 'unsupported-root-attribute' };
+      });
+
+      const outputs = await runBootstrap(
+        createInputs({
+          specId: 'spec-existing',
+          baselineCollectionId: 'col-baseline-existing',
+          smokeCollectionId: 'col-smoke-existing',
+          contractCollectionId: 'col-contract-existing',
+          collectionUpdateStrategy: 'auto'
+        }),
+        {
+          core: createCoreStub(),
+          exec: createExecStub(),
+          io: { which: async () => 'tool' },
+          internalIntegration: buildIntegration(events),
+          postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+          resourcesState: { read: () => null, write: () => undefined },
+          specFetcher: vi.fn()
+        }
+      );
+
+      expect(postman.applyCollectionDelta).toHaveBeenCalledTimes(3);
+      const autoLedger = JSON.parse(outputs['openapi-operation-ledger-json'] || '{}') as {
+        convergence: { roles: Array<{ outcome: string; fallbackReason: string | null }>; fallbackReasons: string[] };
+      };
+      expect(autoLedger.convergence.roles).toEqual(expect.arrayContaining([
+        expect.objectContaining({ outcome: 'deep-update', fallbackReason: 'unsupported-root-attribute' })
+      ]));
+      expect(autoLedger.convergence.fallbackReasons).toEqual(['unsupported-root-attribute']);
+
+      const wholePostman = buildPostman(events);
+      wholePostman.applyCollectionDelta = vi.fn();
+      await runBootstrap(
+        createInputs({
+          specId: 'spec-existing',
+          baselineCollectionId: 'col-baseline-existing',
+          smokeCollectionId: 'col-smoke-existing',
+          contractCollectionId: 'col-contract-existing',
+          collectionUpdateStrategy: 'whole'
+        }),
+        {
+          core: createCoreStub(),
+          exec: createExecStub(),
+          io: { which: async () => 'tool' },
+          internalIntegration: buildIntegration(events),
+          postman: wholePostman as unknown as BootstrapExecutionDependencies['postman'],
+          resourcesState: { read: () => null, write: () => undefined },
+          specFetcher: vi.fn()
+        }
+      );
+      expect(wholePostman.applyCollectionDelta).not.toHaveBeenCalled();
+      expect(wholePostman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  it('skips unchanged refresh roles without issuing collection writes', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const snapshots = await generateRoleCollections();
+      postman.exportV2Collection = vi.fn(async (collectionUid: string) => {
+        if (collectionUid === 'col-baseline-existing') return snapshots.baseline;
+        if (collectionUid === 'col-smoke-existing') return snapshots.smoke;
+        return snapshots.contract;
+      }) as typeof postman.exportV2Collection;
+      const outputs = await runBootstrap(
+        createInputs({
+          workspaceId: 'ws-1',
+          specId: 'spec-existing',
+          baselineCollectionId: 'col-baseline-existing',
+          smokeCollectionId: 'col-smoke-existing',
+          contractCollectionId: 'col-contract-existing'
+        }),
+        {
+          core,
+          exec: createExecStub(),
+          io: { which: async () => 'tool' },
+          internalIntegration: buildIntegration(events),
+          postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+          resourcesState: { read: () => null, write: () => undefined },
+          specFetcher: vi.fn()
+        }
+      );
+
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(0);
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(0);
+      expect(outputs['baseline-collection-id']).toBe('col-baseline-existing');
+      expect(outputs['smoke-collection-id']).toBe('col-smoke-existing');
+      expect(outputs['contract-collection-id']).toBe('col-contract-existing');
+      const ledger = JSON.parse(outputs['openapi-operation-ledger-json'] || '{}') as {
+        skippedRoles: CollectionRole[];
+        counts: Record<string, number>;
+        timings: {
+          snapshotMsByRole: Record<CollectionRole, number>;
+          writeMsByRole: Record<CollectionRole, number>;
+        };
+      };
+      expect(ledger.skippedRoles).toEqual(['baseline', 'smoke', 'contract']);
+      expect(ledger.counts.deepUpdate).toBe(0);
+      expect(ledger.timings.snapshotMsByRole).toEqual({
+        baseline: expect.any(Number),
+        smoke: expect.any(Number),
+        contract: expect.any(Number)
+      });
+      expect(ledger.timings.writeMsByRole).toEqual({
+        baseline: expect.any(Number),
+        smoke: expect.any(Number),
+        contract: expect.any(Number)
+      });
+    });
+  });
+
+  it('writes changed roles while skipping equal snapshot digests in the same refresh', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const postman = buildPostman(events);
+      const snapshots = await generateRoleCollections();
+      postman.exportV2Collection = vi.fn(async (collectionUid: string) => {
+        if (collectionUid === 'col-baseline-existing') return snapshots.baseline;
+        if (collectionUid === 'col-contract-existing') return snapshots.contract;
+        return { info: { _postman_id: collectionUid, name: `stale-${collectionUid}` }, item: [] };
+      }) as typeof postman.exportV2Collection;
+      const outputs = await runBootstrap(
+        createInputs({
+          workspaceId: 'ws-1',
+          specId: 'spec-existing',
+          baselineCollectionId: 'col-baseline-existing',
+          smokeCollectionId: 'col-smoke-existing',
+          contractCollectionId: 'col-contract-existing'
+        }),
+        {
+          core: createCoreStub(),
+          exec: createExecStub(),
+          io: { which: async () => 'tool' },
+          internalIntegration: buildIntegration(events),
+          postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+          resourcesState: { read: () => null, write: () => undefined },
+          specFetcher: vi.fn()
+        }
+      );
+
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(1);
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledWith(
+        'col-smoke-existing',
+        expect.anything(),
+        expect.any(String)
+      );
+      const ledger = JSON.parse(outputs['openapi-operation-ledger-json'] || '{}') as {
+        skippedRoles: CollectionRole[];
+        counts: Record<string, number>;
+      };
+      expect(ledger.skippedRoles).toEqual(['baseline', 'contract']);
+      expect(ledger.counts.deepUpdate).toBe(1);
+    });
+  });
+
+  it('exports reusable-root snapshots through two bounded concurrent lanes', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const postman = buildPostman(events);
+      let snapshotRequests = 0;
+      let inFlightSnapshots = 0;
+      let maxInFlightSnapshots = 0;
+      postman.exportV2Collection = vi.fn(async (collectionUid: string) => {
+        snapshotRequests += 1;
+        inFlightSnapshots += 1;
+        maxInFlightSnapshots = Math.max(maxInFlightSnapshots, inFlightSnapshots);
+        await Promise.resolve();
+        inFlightSnapshots -= 1;
+        return { info: { _postman_id: collectionUid, name: `stale-${collectionUid}` }, item: [] };
+      });
+
+      await runBootstrap(
+        createInputs({
+          workspaceId: 'ws-1',
+          specId: 'spec-existing',
+          baselineCollectionId: 'col-baseline-existing',
+          smokeCollectionId: 'col-smoke-existing',
+          contractCollectionId: 'col-contract-existing'
+        }),
+        {
+          core: createCoreStub(),
+          exec: createExecStub(),
+          io: { which: async () => 'tool' },
+          internalIntegration: buildIntegration(events),
+          postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+          resourcesState: { read: () => null, write: () => undefined },
+          specFetcher: vi.fn()
+        }
+      );
+
+      expect(snapshotRequests).toBe(3);
+      expect(maxInFlightSnapshots).toBe(2);
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
     });
   });
 

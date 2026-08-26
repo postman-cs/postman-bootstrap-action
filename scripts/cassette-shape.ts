@@ -1,4 +1,4 @@
-import type { Cassette, CassetteInteraction } from '@postman-cse/automation-core/cassette';
+import type { Cassette, CassetteInteraction } from '@postman-cs/automation-core/cassette';
 
 /**
  * WS9 drift detection: structural "shape" comparison between a freshly

@@ -5,7 +5,7 @@ import {
   createSecretsResolverItem,
   isSecretsResolverEnabled,
   type SecretsResolverProvider
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 
 export { createSecretsResolverItem } from './smoke-tests.js';
 

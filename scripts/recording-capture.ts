@@ -3,7 +3,7 @@ import {
   createRecordingFetch,
   type Cassette,
   type CassetteInteraction
-} from '@postman-cse/automation-core/cassette';
+} from '@postman-cs/automation-core/cassette';
 
 /**
  * Extra material retained only in gitignored raw recordings so the sanitizer

@@ -11,7 +11,7 @@ import {
   createEmptyCassette,
   createRecordingFetch,
   createReplayFetch
-} from '@postman-cse/automation-core/cassette';
+} from '@postman-cs/automation-core/cassette';
 
 import { createSecretMasker } from '../../src/lib/secrets.js';
 import { createPlatformFake } from './platform-fake.js';

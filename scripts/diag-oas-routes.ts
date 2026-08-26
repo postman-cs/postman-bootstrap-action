@@ -1,7 +1,7 @@
 /** Feasibility probe: can injectTests + tagCollection run on the GATEWAY (no PMAK)?
  * Creates spec+generated collection, then probes the routes the OAS path needs. */
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { AccessTokenGatewayClient, HttpError } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient, HttpError } from '@postman-cs/automation-core';
 import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
 
 const API = POSTMAN_ENDPOINT_PROFILES.prod.apiBaseUrl;

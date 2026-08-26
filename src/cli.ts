@@ -165,6 +165,7 @@ const cliInputNames = [
   'onboarding-scope',
   'sync-examples',
   'collection-sync-mode',
+  'collection-update-strategy',
   'spec-sync-mode',
   'release-label',
   'domain',

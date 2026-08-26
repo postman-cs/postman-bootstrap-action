@@ -1,4 +1,4 @@
-import type { Cassette } from '@postman-cse/automation-core/cassette';
+import type { Cassette } from '@postman-cs/automation-core/cassette';
 import { describe, expect, it } from 'vitest';
 
 import { cassetteShape, diffCassetteShapes } from '../scripts/cassette-shape.js';

@@ -78,7 +78,7 @@ import {
   type GatewayRetryEvent,
   type Logger,
   type TelemetryContext
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 import { resolveActionVersion } from './action-version.js';
 import { buildContractIndex, type ContractIndex } from './lib/spec/contract-index.js';
 import { acquireDefinitionBundle } from './lib/spec/acquire-definition-bundle.js';
@@ -96,13 +96,15 @@ import {
   type CollectionRole,
   type LocalOpenApiRolePayloads
 } from './lib/spec/local-openapi-collection-generation.js';
+import { planCollectionDelta } from './lib/spec/collection-delta.js';
+import type { CollectionWriteMetrics } from './lib/postman/postman-gateway-assets-client.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
 import { detectSpecType, type SpecType } from './lib/spec/detect-spec-type.js';
 import {
   DEFAULT_SECRETS_RESOLVER_PROVIDER,
   parseSecretsResolverProvider,
   type SecretsResolverProvider
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 import {
   BRANCH_DECISION_ENV,
   channelAssetName,
@@ -129,6 +131,8 @@ export interface ResolvedInputs {
   onboardingScope: 'full' | 'spec-only';
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
+  /** Optional for embedders that construct legacy input objects; runtime defaults to whole. */
+  collectionUpdateStrategy?: 'auto' | 'whole';
   specSyncMode: 'update' | 'version';
   releaseLabel?: string;
   domain?: string;
@@ -359,6 +363,14 @@ export interface BootstrapExecutionDependencies {
       collection: unknown,
       expectedPayloadDigest: string
     ): Promise<string>;
+    applyCollectionDelta?(
+      collectionUid: string,
+      plan: Parameters<PostmanGatewayAssetsClient['applyCollectionDelta']>[1],
+      desiredCollection: unknown,
+      expectedPayloadDigest: string,
+      rollback?: { collection: unknown; payloadDigest: string }
+    ): ReturnType<PostmanGatewayAssetsClient['applyCollectionDelta']>;
+    readonly collectionWriteMetrics?: CollectionWriteMetrics;
     exportV2Collection?(collectionUid: string): Promise<Record<string, unknown>>;
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
@@ -705,6 +717,11 @@ export function resolveInputs(
     ),
     syncExamples: parseBooleanInput('sync-examples', getInput('sync-examples', env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput('collection-sync-mode', env)),
+    collectionUpdateStrategy: parseEnumInput<'auto' | 'whole'>(
+      'collection-update-strategy',
+      getInput('collection-update-strategy', env),
+      'whole'
+    ),
     specSyncMode: parseSpecSyncMode(getInput('spec-sync-mode', env)),
     releaseLabel: getInput('release-label', env),
     domain: getInput('domain', env),
@@ -1059,6 +1076,9 @@ export function readActionInputs(
     INPUT_COLLECTION_SYNC_MODE:
       optionalInput(actionCore, 'collection-sync-mode') ??
       bootstrapActionContract.inputs['collection-sync-mode'].default,
+    INPUT_COLLECTION_UPDATE_STRATEGY:
+      optionalInput(actionCore, 'collection-update-strategy') ??
+      bootstrapActionContract.inputs['collection-update-strategy'].default,
     INPUT_SPEC_SYNC_MODE:
       optionalInput(actionCore, 'spec-sync-mode') ??
       bootstrapActionContract.inputs['spec-sync-mode'].default,
@@ -3214,7 +3234,47 @@ async function runBootstrapInner(
         phase: 'fresh' | 'changed-deep-update' | 'mixed-import-deep-update';
         roleCount: number;
         counts: Record<string, number>;
-        timings: { conversionMs: number; importMs: number; totalMs: number };
+        skippedRoles: CollectionRole[];
+        convergence: {
+          strategy: 'auto' | 'whole';
+          skippedRoles: number;
+          roles: Array<{
+            role: CollectionRole;
+            outcome: 'import' | 'deep-update' | 'delta' | 'unchanged';
+            desiredSemanticDigest: string;
+            observedSemanticDigest: string;
+            snapshotMs: number;
+            writeMs: number;
+            payloadBytes: number;
+            changedBytes: number;
+            operationCount: number;
+            networkMs: number;
+            wallMs: number;
+            reconciliationMs: number;
+            fallbackReason: string | null;
+          }>;
+          ambiguousWrites: number;
+          convergedWithoutResend: number;
+          resendCount: number;
+          verifyPolls: number;
+          recoveryMs: number;
+          inventoryReads: number;
+          inventorySleepMs: number;
+          rootResolveMs: number;
+          renameMs: number;
+          electionMs: number;
+          deltaOpsByKind: { create: number; patch: number; move: number; delete: number };
+          changedBytes: number;
+          deltaMs: number;
+          fallbackReasons: string[];
+        };
+        timings: {
+          conversionMs: number;
+          importMs: number;
+          snapshotMsByRole: Record<CollectionRole, number>;
+          totalMs: number;
+          writeMsByRole: Record<CollectionRole, number>;
+        };
         linkRelationStates?: Record<string, string>;
       }
     | undefined;
@@ -3257,6 +3317,7 @@ async function runBootstrapInner(
       'Generate Collections from Spec',
       async () => {
         const assetProjectName = collectionAssetProjectName;
+        const collectionUpdateStrategy = inputs.collectionUpdateStrategy ?? 'whole';
         const orchestrationStarted = Date.now();
         type CollectionOutputKey =
           | 'baseline-collection-id'
@@ -3348,6 +3409,17 @@ async function runBootstrapInner(
         let conversionMs: number;
         let importCount = 0;
         let updateCount = 0;
+        const snapshotMsByRole: Record<CollectionRole, number> = {
+          baseline: 0,
+          smoke: 0,
+          contract: 0
+        };
+        const writeMsByRole: Record<CollectionRole, number> = {
+          baseline: 0,
+          smoke: 0,
+          contract: 0
+        };
+        const skippedRoles: CollectionRole[] = [];
 
         let payloads: LocalOpenApiRolePayloads;
         const conversionStarted = Date.now();
@@ -3405,16 +3477,43 @@ async function runBootstrapInner(
               ));
             }
           }
-          const reuseIds = collectionRoles
-            .map((role) => role.existingId || discoveredIds.get(role.role))
-            .filter((id): id is string => Boolean(id) && inputs.collectionSyncMode === 'refresh');
+          const reuseIdsByRole = new Map<CollectionRole, string>();
+          for (const role of collectionRoles) {
+            const reuseId = role.existingId || discoveredIds.get(role.role);
+            if (reuseId && inputs.collectionSyncMode === 'refresh') {
+              reuseIdsByRole.set(role.role, reuseId);
+            }
+          }
+          const reuseIds = [...new Set(reuseIdsByRole.values())];
           if (reuseIds.length > 0) {
             if (!dependencies.postman.exportV2Collection) {
               throw new Error('LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support');
             }
-            for (const collectionId of new Set(reuseIds)) {
-              const collection = await dependencies.postman.exportV2Collection(collectionId);
-              deepUpdateSnapshots.set(collectionId, { collection, payloadDigest: computePayloadDigest(collection) });
+            const snapshotMsByCollectionId = new Map<string, number>();
+            let nextSnapshotIndex = 0;
+            let snapshotFailure: unknown;
+            const snapshotWorker = async (): Promise<void> => {
+              while (snapshotFailure === undefined) {
+                const collectionId = reuseIds[nextSnapshotIndex];
+                nextSnapshotIndex += 1;
+                if (!collectionId) return;
+                const snapshotStarted = Date.now();
+                try {
+                  const collection = await dependencies.postman.exportV2Collection!(collectionId);
+                  deepUpdateSnapshots.set(collectionId, {
+                    collection,
+                    payloadDigest: computePayloadDigest(collection)
+                  });
+                  snapshotMsByCollectionId.set(collectionId, Math.max(0, Date.now() - snapshotStarted));
+                } catch (error) {
+                  snapshotFailure = error;
+                }
+              }
+            };
+            await Promise.all([snapshotWorker(), snapshotWorker()]);
+            if (snapshotFailure !== undefined) throw snapshotFailure;
+            for (const [role, collectionId] of reuseIdsByRole) {
+              snapshotMsByRole[role] = snapshotMsByCollectionId.get(collectionId) ?? 0;
             }
           }
         } catch (error) {
@@ -3429,15 +3528,53 @@ async function runBootstrapInner(
               kind: 'import';
               collectionId: string;
               journaledRootIds: string[];
+              writeMs: number;
+              payloadBytes: number;
+              changedBytes: number;
+              operationCount: number;
+              networkMs: number;
+              fallbackReason: string | null;
+            }
+          | {
+            role: CollectionRole;
+            outputKey: CollectionOutputKey;
+            kind: 'deep-update';
+              collectionId: string;
+              writeMs: number;
+              payloadBytes: number;
+              changedBytes: number;
+              operationCount: number;
+              networkMs: number;
+              fallbackReason: string | null;
             }
           | {
               role: CollectionRole;
               outputKey: CollectionOutputKey;
-              kind: 'deep-update';
+              kind: 'delta';
               collectionId: string;
+              writeMs: number;
+              payloadBytes: number;
+              changedBytes: number;
+              operationCount: number;
+              networkMs: number;
+              fallbackReason: string | null;
+            }
+          | {
+              role: CollectionRole;
+              outputKey: CollectionOutputKey;
+              kind: 'unchanged';
+              collectionId: string;
+              writeMs: number;
+              payloadBytes: number;
+              changedBytes: 0;
+              operationCount: 0;
+              networkMs: 0;
+              fallbackReason: null;
             };
         const writeRole = async (role: (typeof collectionRoles)[number]): Promise<RoleWriteResult> => {
+          const writeStarted = Date.now();
           const payload = payloads.roles[role.role];
+          const payloadBytes = Buffer.byteLength(JSON.stringify(payload.collection), 'utf8');
           const finalName = roleNames[role.role];
           const reuseId = role.existingId || discoveredIds.get(role.role);
           const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === 'refresh';
@@ -3445,19 +3582,73 @@ async function runBootstrapInner(
             if (!deepUpdateSnapshots.has(reuseId!)) {
               throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing rollback snapshot for ${reuseId}`);
             }
+            if (deepUpdateSnapshots.get(reuseId!)!.payloadDigest === payload.payloadDigest) {
+              return {
+                role: role.role,
+                outputKey: role.outputKey,
+                kind: 'unchanged',
+                collectionId: reuseId!,
+                writeMs: Math.max(0, Date.now() - writeStarted),
+                payloadBytes,
+                changedBytes: 0,
+                operationCount: 0,
+                networkMs: 0,
+                fallbackReason: null
+              };
+            }
             // Register before invocation because a rejected transport can still
             // have committed the deep update remotely.
             attemptedDeepUpdates.add(reuseId!);
+            if (collectionUpdateStrategy === 'auto') {
+              if (!observedLocalOpenApiPostman.applyCollectionDelta) {
+                throw new Error(
+                  'LOCAL_OPENAPI_ORCHESTRATION_FAILED: applyCollectionDelta requires access-token gateway support'
+                );
+              }
+              const snapshot = deepUpdateSnapshots.get(reuseId!)!;
+              const plan = planCollectionDelta({
+                snapshot: snapshot.collection,
+                desired: payload.collection
+              });
+              const deltaResult = await observedLocalOpenApiPostman.applyCollectionDelta(
+                reuseId!,
+                plan,
+                payload.collection,
+                payload.payloadDigest,
+                snapshot
+              );
+              const writeMs = Math.max(0, Date.now() - writeStarted);
+              const usedDelta = deltaResult.strategy === 'delta';
+              return {
+                role: role.role,
+                outputKey: role.outputKey,
+                kind: usedDelta ? 'delta' : 'deep-update',
+                collectionId: reuseId!,
+                writeMs,
+                payloadBytes,
+                changedBytes: usedDelta ? plan.changedBytes : payloadBytes,
+                operationCount: usedDelta ? plan.operations.length : 1,
+                networkMs: writeMs,
+                fallbackReason: deltaResult.fallbackReason ?? null
+              };
+            }
             const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection!(
               reuseId!,
               payload.collection,
               payload.payloadDigest
             );
+            const writeMs = Math.max(0, Date.now() - writeStarted);
             return {
               role: role.role,
               outputKey: role.outputKey,
               kind: 'deep-update',
-              collectionId: preservedId
+              collectionId: preservedId,
+              writeMs,
+              payloadBytes,
+              changedBytes: payloadBytes,
+              operationCount: 1,
+              networkMs: writeMs,
+              fallbackReason: null
             };
           }
           const imported = await observedLocalOpenApiPostman.importV2Collection!(
@@ -3491,12 +3682,19 @@ async function runBootstrapInner(
               throw error;
             }
           }
+          const writeMs = Math.max(0, Date.now() - writeStarted);
           return {
             role: role.role,
             outputKey: role.outputKey,
             kind: 'import',
             collectionId: imported.collectionId,
-            journaledRootIds: [...imported.journaledRootIds]
+            journaledRootIds: [...imported.journaledRootIds],
+            writeMs,
+            payloadBytes,
+            changedBytes: payloadBytes,
+            operationCount: 1,
+            networkMs: writeMs,
+            fallbackReason: null
           };
         };
         // Two lanes cut fresh-import latency while keeping mutation pressure
@@ -3540,6 +3738,7 @@ async function runBootstrapInner(
           const result = fulfilledByRole.get(role.role);
           if (!result) continue;
           outputs[result.outputKey] = result.collectionId;
+          writeMsByRole[result.role] = result.writeMs;
           if (result.kind === 'import') {
             for (const id of result.journaledRootIds) {
               if (!ownedLedger.includes(id)) ownedLedger.push(id);
@@ -3548,10 +3747,19 @@ async function runBootstrapInner(
             dependencies.core.info(
               `Imported ${result.role} collection ${result.collectionId} from local OpenAPI payload`
             );
-          } else {
+          } else if (result.kind === 'deep-update') {
             updateCount += 1;
             dependencies.core.info(
               `Deep-updated existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
+            );
+          } else if (result.kind === 'delta') {
+            dependencies.core.info(
+              `Delta-updated existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
+            );
+          } else {
+            skippedRoles.push(result.role);
+            dependencies.core.info(
+              `Skipped unchanged existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
             );
           }
         }
@@ -3646,16 +3854,79 @@ async function runBootstrapInner(
             : updateCount > 0
               ? 'changed-deep-update'
               : 'fresh';
+        const emptyWriteMetrics: CollectionWriteMetrics = {
+          ambiguousWrites: 0,
+          convergedWithoutResend: 0,
+          resendCount: 0,
+          verifyPolls: 0,
+          recoveryMs: 0,
+          inventoryReads: 0,
+          inventorySleepMs: 0,
+          rootResolveMs: 0,
+          renameMs: 0,
+          electionMs: 0,
+          deltaOpsByKind: { create: 0, patch: 0, move: 0, delete: 0 },
+          changedBytes: 0,
+          deltaMs: 0,
+          fallbackReasons: []
+        };
+        const writeMetrics = observedLocalOpenApiPostman.collectionWriteMetrics ?? emptyWriteMetrics;
+        const convergenceRoles = collectionRoles.map((role) => {
+          const result = fulfilledByRole.get(role.role);
+          if (!result) {
+            throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing role result for ${role.role}`);
+          }
+          return {
+            role: role.role,
+            outcome: result.kind,
+            desiredSemanticDigest: payloads.roles[role.role].payloadDigest,
+            observedSemanticDigest: payloads.roles[role.role].payloadDigest,
+            snapshotMs: snapshotMsByRole[role.role],
+            writeMs: result.writeMs,
+            payloadBytes: result.payloadBytes,
+            changedBytes: result.changedBytes,
+            operationCount: result.operationCount,
+            networkMs: result.networkMs,
+            wallMs: snapshotMsByRole[role.role] + result.writeMs,
+            reconciliationMs: 0,
+            fallbackReason: result.fallbackReason
+          };
+        });
         const ledger = {
           schemaVersion: 1 as const,
           mode: 'local' as const,
           phase,
           roleCount: 3,
+          skippedRoles,
           counts,
+          convergence: {
+            strategy: collectionUpdateStrategy,
+            skippedRoles: skippedRoles.length,
+            roles: convergenceRoles,
+            ambiguousWrites: writeMetrics.ambiguousWrites,
+            convergedWithoutResend: writeMetrics.convergedWithoutResend,
+            resendCount: writeMetrics.resendCount,
+            verifyPolls: writeMetrics.verifyPolls,
+            recoveryMs: writeMetrics.recoveryMs,
+            inventoryReads: writeMetrics.inventoryReads,
+            inventorySleepMs: writeMetrics.inventorySleepMs,
+            rootResolveMs: writeMetrics.rootResolveMs,
+            renameMs: writeMetrics.renameMs,
+            electionMs: writeMetrics.electionMs,
+            deltaOpsByKind: writeMetrics.deltaOpsByKind,
+            changedBytes: convergenceRoles.reduce((total, role) => total + role.changedBytes, 0),
+            deltaMs: writeMetrics.deltaMs,
+            fallbackReasons: [...new Set([
+              ...writeMetrics.fallbackReasons,
+              ...convergenceRoles.flatMap((role) => role.fallbackReason ? [role.fallbackReason] : [])
+            ])]
+          },
           timings: {
             conversionMs,
             importMs,
-            totalMs: Math.max(0, Date.now() - orchestrationStarted)
+            snapshotMsByRole,
+            totalMs: Math.max(0, Date.now() - orchestrationStarted),
+            writeMsByRole
           }
         };
         openApiOperationLedger = ledger;

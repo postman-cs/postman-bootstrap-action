@@ -1,4 +1,4 @@
-import { retry, type GatewayRetryEvent as RetryEvent } from '@postman-cse/automation-core';
+import { retry, type GatewayRetryEvent as RetryEvent } from '@postman-cs/automation-core';
 import { POSTMAN_ENDPOINT_PROFILES } from './base-urls.js';
 import { formatRejectedMint, inspectPmakIdentity, maskPmakDiagnostic, type PmakDiagnosticResult } from './pmak-diagnostics.js';
 

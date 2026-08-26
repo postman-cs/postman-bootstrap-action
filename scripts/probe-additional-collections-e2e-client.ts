@@ -11,7 +11,7 @@ import {
   type PostmanResourcesState
 } from '../src/lib/postman/additional-collections.js';
 import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
-import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 

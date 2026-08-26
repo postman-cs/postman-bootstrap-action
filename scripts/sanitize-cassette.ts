@@ -7,7 +7,7 @@ import {
   cassetteRequest,
   type Cassette,
   type CassetteInteraction
-} from '@postman-cse/automation-core/cassette';
+} from '@postman-cs/automation-core/cassette';
 import {
   isBareCollectionUuid,
   isFullPublicCollectionUid,

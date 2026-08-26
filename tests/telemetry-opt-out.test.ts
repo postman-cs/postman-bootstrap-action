@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createTelemetryContext } from '@postman-cse/automation-core';
+import { createTelemetryContext } from '@postman-cs/automation-core';
 
 describe('telemetry opt-out', () => {
   it.each([

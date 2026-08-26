@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import { createExtensibleContractCollection, runBootstrap } from '../src/index.js';
-import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
 import { PostmanExtensibleCollectionClient } from '../src/lib/postman/postman-ec-client.js';

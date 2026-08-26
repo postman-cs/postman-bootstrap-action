@@ -3,7 +3,7 @@ import {
   isSecretsResolverEnabled,
   isSecretsResolverItemName,
   type SecretsResolverProvider
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 
 export {
   createSecretsResolverExec,
@@ -16,7 +16,7 @@ export {
   SECRETS_RESOLVER_PROVIDERS,
   secretsResolverEnvironmentKeys,
   type SecretsResolverProvider
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 
 type JsonRecord = Record<string, unknown>;
 

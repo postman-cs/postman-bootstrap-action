@@ -39,6 +39,10 @@ inputs:
     description: Collection lifecycle policy (refresh or version)
     required: false
     default: refresh
+  collection-update-strategy:
+    description: Collection refresh write strategy (whole or auto). whole preserves the rollback path; auto uses bounded deltas when eligible before whole-tree fallback.
+    required: false
+    default: whole
   spec-sync-mode:
     description: Spec lifecycle policy (update or version)
     required: false

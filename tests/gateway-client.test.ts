@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import { createMutableSecretMasker } from '../src/lib/secrets.js';
 

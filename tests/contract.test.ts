@@ -132,6 +132,22 @@ describe('bootstrap action contract', () => {
 
   });
 
+  it('defaults collection-update-strategy to whole and accepts only the rollback strategies', () => {
+    expect(bootstrapActionContract.inputs['collection-update-strategy']).toMatchObject({
+      required: false,
+      default: 'whole',
+      allowedValues: ['auto', 'whole']
+    });
+    expect(actionManifest.inputs['collection-update-strategy']).toMatchObject({
+      required: false,
+      default: 'whole'
+    });
+    expect(resolveInputs({}).collectionUpdateStrategy).toBe('whole');
+    expect(resolveInputs({ INPUT_COLLECTION_UPDATE_STRATEGY: 'auto' }).collectionUpdateStrategy).toBe('auto');
+    expect(() => resolveInputs({ INPUT_COLLECTION_UPDATE_STRATEGY: 'unsupported' }))
+      .toThrow(/Unsupported collection-update-strategy/);
+  });
+
   it('resolves token-mint and access-token credentials with INPUT_ taking precedence', () => {
     // Plain-env fallback supports Jenkins `withCredentials` without the INPUT_ prefix.
     const fromPlain = resolveInputs({

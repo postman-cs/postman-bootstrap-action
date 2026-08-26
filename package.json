@@ -50,7 +50,7 @@
     "@actions/io": "^3.0.2",
     "@apidevtools/json-schema-ref-parser": "15.5.0",
     "@exodus/schemasafe": "1.3.0",
-    "@postman-cse/automation-core": "^1.6.0",
+    "@postman-cs/automation-core": "^1.8.1",
     "@readme/openapi-parser": "^6.1.2",
     "fast-xml-parser": "^5.7.0",
     "graphql": "^17.0.1",

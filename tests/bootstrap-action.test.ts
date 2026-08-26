@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HttpError } from '@postman-cse/automation-core';
+import { HttpError } from '@postman-cs/automation-core';
 import {
   readResourcesState,
   writeResourcesState

@@ -359,7 +359,7 @@ jobs:
         run: |
           PKG_NAME=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('release-manifest.json','utf8')).package_name)")
           PKG_VERSION=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('release-manifest.json','utf8')).package_version)")
-          WARNING="npm publish for $PKG_NAME@$PKG_VERSION did not complete (OIDC trusted publisher or registry error); GitHub Release remains authoritative; recover via backfill-npm.yml if needed"
+          WARNING="npm publish for $PKG_NAME@$PKG_VERSION did not complete (OIDC trusted publisher or registry error); GitHub Release remains authoritative; rerun this release after trusted publishing is restored"
           echo "::warning::$WARNING"
           echo "$WARNING" >> "$GITHUB_STEP_SUMMARY"
 

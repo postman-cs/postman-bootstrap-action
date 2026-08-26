@@ -243,11 +243,12 @@ describe('auto-release workflow', () => {
     );
   });
 
-  it('recovers alias failures and resumes after a successful release', () => {
+  it('skips burnt released tags instead of deadlocking on a stale rolling alias', () => {
     expect(autoReleaseWorkflow).toContain('workflow_run:');
     expect(autoReleaseWorkflow).toContain('workflows: [Release]');
     expect(autoReleaseWorkflow).toContain("github.event.workflow_run.conclusion == 'success'");
-    expect(autoReleaseWorkflow).toContain('git rev-parse --verify "${ALIAS}^{commit}"');
+    expect(autoReleaseWorkflow).not.toContain('git rev-parse --verify "${ALIAS}^{commit}"');
+    expect(autoReleaseWorkflow).toContain('A published immutable tag is complete');
   });
 
   it('retries the receipt backport from the immutable tag', () => {

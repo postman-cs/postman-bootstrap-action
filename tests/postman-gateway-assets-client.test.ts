@@ -5500,6 +5500,65 @@ describe('PostmanGatewayAssetsClient', () => {
       ).rejects.toThrow(/ambiguous-deep-update-digest-mismatch|LOCAL_OPENAPI_DEEP_UPDATE_FAILED/);
     });
 
+    it('projects authoritative v3 item scripts into v2 events during export', async () => {
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({
+            data: {
+              collection: {
+                $kind: 'collection',
+                id: 'root-1',
+                name: 'Scripted',
+                items: [{
+                  $kind: 'http-request',
+                  id: 'request-1',
+                  name: 'Request',
+                  method: 'GET',
+                  url: 'https://example.test',
+                  scripts: [{
+                    type: 'afterResponse',
+                    code: 'pm.test("one", () => {});\npm.test("two", () => {});',
+                    language: 'text/javascript'
+                  }]
+                }]
+              }
+            }
+          });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      });
+
+      const exported = await client.exportV2Collection('12345678-root-1');
+      const item = (exported.item as Array<Record<string, unknown>>)[0]!;
+      expect(item.event).toEqual([{
+        listen: 'test',
+        script: {
+          type: 'text/javascript',
+          exec: ['pm.test("one", () => {});\npm.test("two", () => {});']
+        }
+      }]);
+    });
+
+    it('retries a successful export envelope until its collection model is complete', async () => {
+      let exports = 0;
+      const sleeps: number[] = [];
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          exports += 1;
+          return exports === 1
+            ? jsonResponse({ data: { collection: {} } })
+            : jsonResponse({ data: { collection: v21Collection } });
+        }
+        return jsonResponse({ error: 'unexpected' }, { status: 500 });
+      }, { sleep: async (delayMs) => { sleeps.push(delayMs); } });
+
+      await expect(client.exportV2Collection('12345678-root-1')).resolves.toMatchObject({
+        info: { name: 'Payments' }
+      });
+      expect(exports).toBe(2);
+      expect(sleeps).toEqual([100]);
+    });
+
     it('deleteVerifiedRunOwnedCollections only deletes supplied ids', async () => {
       const deleted: string[] = [];
       const { client } = makeClient((env) => {

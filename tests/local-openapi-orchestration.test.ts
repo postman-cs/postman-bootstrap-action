@@ -1161,7 +1161,7 @@ describe('local OpenAPI orchestration', () => {
         if (collectionUid === 'col-smoke-existing') return exported.smoke;
         return exported.contract;
       }) as unknown as typeof postman.exportV2Collection;
-      postman.applyCollectionDelta = vi.fn(async (_uid: string, rawPlan: unknown, desiredCollection: unknown) => {
+      postman.applyCollectionDelta = vi.fn(async (_uid: string, rawPlan: unknown, desiredCollection: unknown, digest: string) => {
         const plan = rawPlan as {
           decision: string;
           operations: Array<{ kind: string; sourceId?: string; item: JsonRecord }>;
@@ -1174,7 +1174,7 @@ describe('local OpenAPI orchestration', () => {
           item: { id: baselineSnapshotRequestId }
         });
         convergedBaseline = structuredClone(desiredCollection as JsonRecord);
-        return { strategy: 'delta' as const };
+        return { strategy: 'delta' as const, observedPayloadDigest: digest };
       });
       postman.collectionWriteMetrics = {
         ambiguousWrites: 1,
@@ -1255,8 +1255,8 @@ describe('local OpenAPI orchestration', () => {
       }
       expect(ledger.convergence.roles).toEqual(expect.arrayContaining([
         expect.objectContaining({ role: 'baseline', outcome: 'delta', operationCount: 1 }),
-        expect.objectContaining({ role: 'smoke', outcome: 'unchanged', operationCount: 0 }),
-        expect.objectContaining({ role: 'contract', outcome: 'unchanged', operationCount: 0 })
+        expect.objectContaining({ role: 'smoke', outcome: 'unchanged', operationCount: 0, writeMs: 0 }),
+        expect.objectContaining({ role: 'contract', outcome: 'unchanged', operationCount: 0, writeMs: 0 })
       ]));
     });
   });
@@ -1361,6 +1361,7 @@ describe('local OpenAPI orchestration', () => {
 
       expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(0);
       expect(postman.importV2Collection).toHaveBeenCalledTimes(0);
+      expect(postman.exportV2Collection).toHaveBeenCalledTimes(3);
       expect(outputs['baseline-collection-id']).toBe('col-baseline-existing');
       expect(outputs['smoke-collection-id']).toBe('col-smoke-existing');
       expect(outputs['contract-collection-id']).toBe('col-contract-existing');

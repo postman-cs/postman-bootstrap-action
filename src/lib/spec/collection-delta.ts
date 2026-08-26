@@ -7,6 +7,15 @@ export const COLLECTION_DELTA_MAX_CHANGED_BYTES = 64 * 1024;
 
 export type CollectionDeltaEntityType = 'collection' | 'http-request';
 export type CollectionDeltaOperationKind = 'create' | 'patch' | 'move' | 'delete';
+export type CollectionDeltaPatchField =
+  | 'name'
+  | 'description'
+  | 'method'
+  | 'url'
+  | 'headers'
+  | 'queryParams'
+  | 'pathVariables'
+  | 'body';
 
 export interface CollectionDeltaOperation {
   kind: CollectionDeltaOperationKind;
@@ -16,8 +25,12 @@ export interface CollectionDeltaOperation {
   sourceId?: string;
   /** Stable parent key, omitted only for a root-level entity. */
   parentKey?: string;
+  /** Stable desired-order anchors; transport resolves these to exact public UIDs. */
+  previousSiblingKey?: string;
+  nextSiblingKey?: string;
   index: number;
   item: JsonRecord;
+  patchFields?: CollectionDeltaPatchField[];
 }
 
 export type CollectionDeltaPlan =
@@ -50,9 +63,12 @@ interface IndexedEntity {
   sourceId?: string;
   entityType: CollectionDeltaEntityType;
   parentKey?: string;
+  previousSiblingKey?: string;
+  nextSiblingKey?: string;
   index: number;
   depth: number;
   item: JsonRecord;
+  patchFields?: CollectionDeltaPatchField[];
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -232,8 +248,11 @@ function indexCollection(
   let ambiguous = false;
 
   const visit = (items: unknown[], parentKey: string | undefined, parentPath: string, depth: number): void => {
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
+    const folders = items.filter((item) => isRecord(item) && Array.isArray(item.item));
+    const requests = items.filter((item) => !(isRecord(item) && Array.isArray(item.item)));
+    const canonicalItems = [...folders, ...requests];
+    for (let index = 0; index < canonicalItems.length; index += 1) {
+      const item = canonicalItems[index];
       if (!isRecord(item)) {
         invalid = true;
         continue;
@@ -260,11 +279,30 @@ function indexCollection(
   };
 
   if (Array.isArray(collection.item)) visit(collection.item, undefined, '', 0);
+  const siblingsByParentAndType = new Map<string, IndexedEntity[]>();
+  for (const entry of entries) {
+    const bucket = `${entry.parentKey ?? ''}\u0000${entry.entityType}`;
+    siblingsByParentAndType.set(bucket, [...(siblingsByParentAndType.get(bucket) ?? []), entry]);
+  }
+  for (const siblings of siblingsByParentAndType.values()) {
+    siblings.sort((left, right) => left.index - right.index);
+    for (let index = 0; index < siblings.length; index += 1) {
+      const entry = siblings[index]!;
+      const previous = siblings[index - 1];
+      const next = siblings[index + 1];
+      if (previous) entry.previousSiblingKey = previous.key;
+      if (next) entry.nextSiblingKey = next.key;
+    }
+  }
   return { entries, invalid, ambiguous };
 }
 
 function changedUnsupportedField(snapshot: JsonRecord, desired: JsonRecord, field: string): boolean {
-  return stable(snapshot[field]) !== stable(desired[field]);
+  const digestField = (source: JsonRecord): string => computePayloadDigest({
+    info: { name: 'Delta field comparison' },
+    item: [{ name: 'Delta entity', item: [], ...(field in source ? { [field]: source[field] } : {}) }]
+  });
+  return digestField(snapshot) !== digestField(desired);
 }
 
 function unsupportedTransform(snapshot: JsonRecord, desired: JsonRecord): CollectionDeltaFallbackReason | null {
@@ -284,16 +322,117 @@ function unsupportedTransform(snapshot: JsonRecord, desired: JsonRecord): Collec
   return null;
 }
 
+function unsupportedCreateTransform(item: JsonRecord): CollectionDeltaFallbackReason | null {
+  if ('workflow' in item || 'workflows' in item) return 'unsupported-workflow-shape';
+  const allowed = new Set([
+    'id', 'name', 'description', 'request', 'item', 'event', 'response', 'auth', 'example',
+    'protocolProfileBehavior'
+  ]);
+  for (const key of Object.keys(item)) {
+    if (!allowed.has(key)) return 'unsupported-entity-transform';
+  }
+  return null;
+}
+
 function operation(kind: CollectionDeltaOperationKind, entry: IndexedEntity): CollectionDeltaOperation {
+  const item = cloneRecord(entry.item);
+  if (kind === 'create' && entry.entityType === 'collection') item.item = [];
   return {
     kind,
     key: entry.key,
     entityType: entry.entityType,
     ...(entry.sourceId ? { sourceId: entry.sourceId } : {}),
     ...(entry.parentKey ? { parentKey: entry.parentKey } : {}),
+    ...(entry.previousSiblingKey ? { previousSiblingKey: entry.previousSiblingKey } : {}),
+    ...(entry.nextSiblingKey ? { nextSiblingKey: entry.nextSiblingKey } : {}),
     index: entry.index,
-    item: cloneRecord(entry.item)
+    item,
+    ...(entry.patchFields ? { patchFields: [...entry.patchFields] } : {})
   };
+}
+
+function entityContentDigest(item: JsonRecord): string {
+  return computePayloadDigest({
+    info: { name: 'Delta entity comparison' },
+    item: [item]
+  });
+}
+
+function semanticRequestFieldDigest(request: JsonRecord, field: string): string {
+  const projected: JsonRecord = { method: 'GET', url: 'https://example.invalid' };
+  if (field in request) projected[field] = request[field];
+  return entityContentDigest({ name: 'Request field', request: projected });
+}
+
+function plannedPatchFields(
+  snapshot: JsonRecord,
+  desired: JsonRecord
+): CollectionDeltaPatchField[] | CollectionDeltaFallbackReason {
+  const fields: CollectionDeltaPatchField[] = [];
+  if (stable(snapshot.name) !== stable(desired.name)) fields.push('name');
+  if (changedUnsupportedField(snapshot, desired, 'description')) fields.push('description');
+
+  const beforeRequest = isRecord(snapshot.request) ? snapshot.request : null;
+  const afterRequest = isRecord(desired.request) ? desired.request : null;
+  if (Boolean(beforeRequest) !== Boolean(afterRequest)) return 'unsupported-entity-transform';
+  if (!beforeRequest || !afterRequest) return fields;
+  if (semanticRequestFieldDigest(beforeRequest, 'auth') !== semanticRequestFieldDigest(afterRequest, 'auth')) {
+    return 'unsupported-auth-transform';
+  }
+  const mappings: Array<{ source: string; target: CollectionDeltaPatchField[] }> = [
+    { source: 'method', target: ['method'] },
+    { source: 'url', target: ['url', 'queryParams', 'pathVariables'] },
+    { source: 'header', target: ['headers'] },
+    { source: 'body', target: ['body'] }
+  ];
+  for (const mapping of mappings) {
+    if (semanticRequestFieldDigest(beforeRequest, mapping.source) === semanticRequestFieldDigest(afterRequest, mapping.source)) {
+      continue;
+    }
+    if (afterRequest[mapping.source] === undefined) return 'unsupported-entity-transform';
+    fields.push(...mapping.target);
+  }
+  const supportedRequestFields = new Set(['id', 'method', 'url', 'header', 'body', 'auth', 'description']);
+  for (const key of new Set([...Object.keys(beforeRequest), ...Object.keys(afterRequest)])) {
+    if (
+      !supportedRequestFields.has(key) &&
+      semanticRequestFieldDigest(beforeRequest, key) !== semanticRequestFieldDigest(afterRequest, key)
+    ) {
+      return 'unsupported-entity-transform';
+    }
+  }
+  if (
+    semanticRequestFieldDigest(beforeRequest, 'description') !==
+    semanticRequestFieldDigest(afterRequest, 'description')
+  ) {
+    fields.push('description');
+  }
+  return [...new Set(fields)];
+}
+
+function operationChangedBytes(operation: CollectionDeltaOperation): number {
+  if (operation.kind === 'patch') {
+    const projection = operation.entityType === 'collection'
+      ? { name: operation.item.name, description: operation.item.description }
+      : {
+          name: operation.item.name,
+          description: operation.item.description,
+          request: operation.item.request
+        };
+    return Buffer.byteLength(stable({ kind: operation.kind, item: projection }), 'utf8');
+  }
+  if (operation.kind === 'move') {
+    return Buffer.byteLength(stable({
+      kind: operation.kind,
+      parentKey: operation.parentKey,
+      previousSiblingKey: operation.previousSiblingKey,
+      nextSiblingKey: operation.nextSiblingKey
+    }), 'utf8');
+  }
+  if (operation.kind === 'delete') {
+    return Buffer.byteLength(stable({ kind: operation.kind, key: operation.key }), 'utf8');
+  }
+  return Buffer.byteLength(stable(operation), 'utf8');
 }
 
 /**
@@ -314,30 +453,15 @@ export function planCollectionDelta(input: PlanCollectionDeltaInput): Collection
     return { decision: 'unchanged', changedBytes: 0, operations: [] };
   }
 
-  const snapshotInfo = isRecord(input.snapshot.info) ? cloneRecord(input.snapshot.info) : {};
-  const desiredInfo = isRecord(desired.info) ? cloneRecord(desired.info) : {};
-  delete snapshotInfo._postman_id;
-  delete desiredInfo._postman_id;
-  if (stable(snapshotInfo) !== stable(desiredInfo)) {
-    return { decision: 'fallback', reason: 'unsupported-root-attribute', changedBytes: 0, operations: [] };
-  }
   if ('workflow' in input.snapshot || 'workflows' in input.snapshot || 'workflow' in desired || 'workflows' in desired) {
     return { decision: 'fallback', reason: 'unsupported-workflow-shape', changedBytes: 0, operations: [] };
   }
-
-  // Root attributes outside info/item - auth, variable, event, and anything else
-  // the planner does not model granularly - have no delta operation. Without this
-  // check a root-only change reports an eligible apply carrying zero operations,
-  // which would silently skip the write and leave the remote collection stale.
-  const rootAttributesOutsideItems = (collection: JsonRecord): string => {
-    const rest: JsonRecord = {};
-    for (const key of Object.keys(collection)) {
-      if (key === 'info' || key === 'item') continue;
-      rest[key] = collection[key];
-    }
-    return stable(rest);
+  const rootSemanticDigest = (collection: JsonRecord): string => {
+    const root = cloneRecord(collection);
+    root.item = [];
+    return computePayloadDigest(root);
   };
-  if (rootAttributesOutsideItems(input.snapshot) !== rootAttributesOutsideItems(desired)) {
+  if (rootSemanticDigest(input.snapshot) !== rootSemanticDigest(desired)) {
     return { decision: 'fallback', reason: 'unsupported-root-attribute', changedBytes: 0, operations: [] };
   }
   const before = indexCollection(input.snapshot);
@@ -359,7 +483,7 @@ export function planCollectionDelta(input: PlanCollectionDeltaInput): Collection
   for (const entry of after.entries) {
     const previous = beforeByKey.get(entry.key);
     if (!previous) {
-      const unsupported = unsupportedTransform({}, entry.item);
+      const unsupported = unsupportedCreateTransform(entry.item);
       if (unsupported) return { decision: 'fallback', reason: unsupported, changedBytes: 0, operations: [] };
       creates.push(entry);
       continue;
@@ -375,14 +499,30 @@ export function planCollectionDelta(input: PlanCollectionDeltaInput): Collection
     delete newContent.id;
     delete oldContent.item;
     delete newContent.item;
-    if (stable(oldContent) !== stable(newContent)) patches.push(entry);
+    if (entityContentDigest(oldContent) !== entityContentDigest(newContent)) {
+      const patchFields = plannedPatchFields(previous.item, entry.item);
+      if (typeof patchFields === 'string') {
+        return { decision: 'fallback', reason: patchFields, changedBytes: 0, operations: [] };
+      }
+      if (patchFields.length === 0) {
+        return { decision: 'fallback', reason: 'unsupported-entity-transform', changedBytes: 0, operations: [] };
+      }
+      patches.push({ ...entry, patchFields });
+    }
     if (previous.parentKey !== entry.parentKey || previous.index !== entry.index) moves.push(entry);
   }
   for (const entry of before.entries) {
     if (!afterByKey.has(entry.key)) deletes.push(entry);
   }
 
-  creates.sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key));
+  // Create later siblings first so each non-tail create can be positioned before
+  // an already-existing desired sibling through the hierarchy move API.
+  creates.sort((a, b) =>
+    a.depth - b.depth ||
+    String(a.parentKey ?? '').localeCompare(String(b.parentKey ?? '')) ||
+    b.index - a.index ||
+    a.key.localeCompare(b.key)
+  );
   patches.sort((a, b) => a.key.localeCompare(b.key));
   // Moving an item later shifts its following siblings earlier without moving
   // those siblings themselves. Emit that single explicit move when available;
@@ -396,12 +536,12 @@ export function planCollectionDelta(input: PlanCollectionDeltaInput): Collection
     .sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key));
   deletes.sort((a, b) => b.depth - a.depth || a.key.localeCompare(b.key));
   const operations = [
+    ...deletes.map((entry) => operation('delete', entry)),
     ...creates.map((entry) => operation('create', entry)),
     ...patches.map((entry) => operation('patch', entry)),
-    ...orderedMoves.map((entry) => operation('move', entry)),
-    ...deletes.map((entry) => operation('delete', entry))
+    ...orderedMoves.map((entry) => operation('move', entry))
   ];
-  const changedBytes = Buffer.byteLength(stable(operations), 'utf8');
+  const changedBytes = operations.reduce((total, entry) => total + operationChangedBytes(entry), 0);
   const maxOperations = input.maxOperations ?? COLLECTION_DELTA_MAX_OPERATIONS;
   const maxChangedBytes = input.maxChangedBytes ?? COLLECTION_DELTA_MAX_CHANGED_BYTES;
   if (operations.length > maxOperations) {

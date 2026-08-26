@@ -1,4 +1,6 @@
+import { Script } from 'node:vm';
 import { normalizePath, type ContractBodyFieldRules, type ContractHeader, type ContractIndex, type ContractMedia, type ContractOperation } from './contract-index.js';
+import { buildConsolidatedContractScript } from './contract-root-script.js';
 import { FORBIDDEN_TRAILER_FIELDS, HTTP_CONTENT_CODINGS, PROXY_STATUS_ERROR_TYPES, REFERRER_POLICY_VALUES } from './iana-registries.js';
 import { compileSchemaValidator, compileSchemaValidatorCode } from './schema-validator-code.js';
 import {
@@ -226,7 +228,42 @@ function buildValidatorAssignments(operation: ContractOperation, warnings: strin
   return lines;
 }
 
-export function createContractScript(operation: ContractOperation, warnings: string[] = []): string[] {
+/** Per-operation guards selecting which shared-runtime segments apply. */
+export type ContractRuntimeGuard = 'skipped' | 'security' | 'parameters' | 'requestBodySchemas';
+
+/**
+ * One span of the operation-independent contract runtime. A guarded span is
+ * emitted for an operation only when its entry satisfies the guard, so the
+ * per-request composition and the consolidated root script reach exactly the
+ * same assertions for a given operation.
+ */
+export interface ContractRuntimeSegment {
+  guard?: ContractRuntimeGuard;
+  lines: string[];
+}
+
+/** The per-operation half of a contract script: data lines plus segment guards. */
+export interface ContractOperationEntry {
+  prologue: string[];
+  skipped: string[];
+  hasSecurity: boolean;
+  hasParameters: boolean;
+  hasRequestBodySchemas: boolean;
+}
+
+/** Vendored IANA registry snapshot line; byte-identical for every operation. */
+export function contractRegistriesLine(): string {
+  const registries = { proxyStatusErrors: PROXY_STATUS_ERROR_TYPES, referrerPolicies: REFERRER_POLICY_VALUES, forbiddenTrailers: FORBIDDEN_TRAILER_FIELDS, contentCodings: HTTP_CONTENT_CODINGS };
+  return `var rfcRegistries = JSON.parse(${JSON.stringify(JSON.stringify(registries))});`;
+}
+
+/** Per-operation documentation line for schemas schemasafe could not compile. */
+export function skippedValidatorsDataLine(skipped: string[]): string {
+  return `var contractSkippedValidators = JSON.parse(${JSON.stringify(JSON.stringify(skipped))});`;
+}
+
+/** Per-operation contract payload, compiled validators, and segment guards. */
+export function buildOperationContractEntry(operation: ContractOperation, warnings: string[] = []): ContractOperationEntry {
   const multipartRule = operation.requestBody?.fieldRules?.['multipart/form-data'];
   const multipartFields = multipartRule
     ? {
@@ -250,11 +287,30 @@ export function createContractScript(operation: ContractOperation, warnings: str
   };
   const skipped: string[] = [];
   const validatorLines = buildValidatorAssignments(operation, warnings, skipped);
-  const registries = { proxyStatusErrors: PROXY_STATUS_ERROR_TYPES, referrerPolicies: REFERRER_POLICY_VALUES, forbiddenTrailers: FORBIDDEN_TRAILER_FIELDS, contentCodings: HTTP_CONTENT_CODINGS };
+  return {
+    prologue: [
+  `var contract = JSON.parse(${JSON.stringify(JSON.stringify(contract))});`,
+      contractRegistriesLine(),
+      ...validatorLines
+    ],
+    skipped,
+    hasSecurity: Boolean(operation.security),
+    hasParameters: Boolean(operation.parameterChecks && operation.parameterChecks.length > 0),
+    hasRequestBodySchemas: Boolean(
+      operation.requestBody?.jsonSchemas && Object.keys(operation.requestBody.jsonSchemas).length > 0
+    )
+  };
+}
+
+/**
+ * The operation-independent contract runtime: helpers, RFC checks, and every
+ * assertion block, as ordered segments. Identical across all operations, which
+ * is why one copy can live in a collection-root event instead of one copy per
+ * generated request.
+ */
+export function buildSharedContractRuntime(): ContractRuntimeSegment[] {
   return [
-    `var contract = JSON.parse(${JSON.stringify(JSON.stringify(contract))});`,
-    `var rfcRegistries = JSON.parse(${JSON.stringify(JSON.stringify(registries))});`,
-    ...validatorLines,
+    { lines: [
     'function selectedResponseContract() {',
     '  var status = String(pm.response.code);',
     '  if (contract.responses[status]) return { key: status, value: contract.responses[status] };',
@@ -310,17 +366,18 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '}',
     'var selected = selectedResponseContract();',
     'var bodyExpectation = selectedBodyExpectation();',
-    ...(skipped.length > 0 ? [
+    ] },
+    { guard: 'skipped', lines: [
       // A schema schemasafe could not compile is NOT silently ignored: it is
       // surfaced here (and as a CONTRACT_SCHEMA_NOT_COMPILED warning at generation
       // time). This test passes - the RESPONSE is legitimate; only the local
       // validator could not be built - but it documents the un-validated schemas
       // in the run report so the skip is never invisible.
-      `var contractSkippedValidators = JSON.parse(${JSON.stringify(JSON.stringify(skipped))});`,
       "pm.test('OpenAPI schemas without a compilable runtime validator are documented', function () {",
       '  pm.expect(contractSkippedValidators, "these OpenAPI schemas were not runtime-validated (schemasafe could not compile): " + contractSkippedValidators.join("; ")).to.be.an("array");',
       '});'
-    ] : []),
+    ] },
+    { lines: [
     "pm.test('OpenAPI operation mapping exists', function () { pm.expect(contract.path).to.be.a('string').and.not.empty; });",
     "pm.test('Status code is defined by OpenAPI', function () { pm.expect(selected, 'No OpenAPI response defined for ' + contract.method + ' ' + contract.path + ' status ' + pm.response.code).to.exist; });",
     "pm.test('Response headers match OpenAPI', function () {",
@@ -1243,7 +1300,8 @@ export function createContractScript(operation: ContractOperation, warnings: str
     '  var matched = contract.servers.some(function (pattern) { try { var serverPattern = new RegExp(pattern, "i"); return serverPattern.test(requestUrl) || serverPattern.test(pathOnly); } catch (ignored) { return true; } });',
     '  if (!matched) rfcAdvise("Request URL does not match any OpenAPI servers entry: " + requestUrl);',
     '});',
-    ...(operation.security ? [
+    ] },
+    { guard: 'security', lines: [
       "pm.test('Request carries credentials required by OpenAPI security', function () {",
       '  function satisfied(check) {',
       '    if (!check.checkable) return true;',
@@ -1257,8 +1315,8 @@ export function createContractScript(operation: ContractOperation, warnings: str
       '  var ok = alternatives.some(function (alternative) { return alternative.every(function (check) { return satisfied(check); }); });',
       '  if (!ok) pm.expect.fail("Request did not carry credentials for any OpenAPI security requirement of " + contract.method + " " + contract.path + ": " + alternatives.map(function (alternative) { return alternative.map(function (check) { return check.scheme + " (" + check.kind + ")"; }).join(" + "); }).join(" | "));',
       '});'
-    ] : []),
-    ...(operation.parameterChecks && operation.parameterChecks.length > 0 ? [
+    ] },
+    { guard: 'parameters', lines: [
       "pm.test('Request parameters match OpenAPI schemas', function () {",
       '  function queryValue(name) { var value; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) value = param.value === null || param.value === undefined ? "" : String(param.value); }); return value; }',
       '  function queryValues(name) { var values = []; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) values.push(param.value === null || param.value === undefined ? "" : String(param.value)); }); return values; }',
@@ -1329,8 +1387,8 @@ export function createContractScript(operation: ContractOperation, warnings: str
       '    if (!validate(value)) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
       '  });',
       '});'
-    ] : []),
-    ...(operation.parameterChecks && operation.parameterChecks.length > 0 ? [
+    ] },
+    { guard: 'parameters', lines: [
       "pm.test('Request parameters use the OpenAPI-declared wire serialization', function () {",
       '  function isPh(v) { var t = String(v).trim(); return /^<[^<>]*>$/.test(t) || t.indexOf("{{") !== -1; }',
       '  var allMembers = []; pm.request.url.query.each(function (p) { if (!p || p.disabled === true) return; allMembers.push({ key: String(p.key), value: p.value === null || p.value === undefined ? "" : String(p.value) }); });',
@@ -1375,8 +1433,8 @@ export function createContractScript(operation: ContractOperation, warnings: str
       '    }',
       '  });',
       '});'
-    ] : []),
-    ...(operation.requestBody?.jsonSchemas && Object.keys(operation.requestBody.jsonSchemas).length > 0 ? [
+    ] },
+    { guard: 'requestBodySchemas', lines: [
       "pm.test('Request body matches OpenAPI request schema', function () {",
       '  var body = pm.request.body;',
       '  var raw = body && body.mode === "raw" && typeof body.raw === "string" ? body.raw : "";',
@@ -1391,7 +1449,8 @@ export function createContractScript(operation: ContractOperation, warnings: str
       '  try { parsed = JSON.parse(raw); } catch (error) { if (/<[A-Za-z][A-Za-z0-9_ -]*>/.test(raw)) return; pm.expect.fail("Request body for " + contract.method + " " + contract.path + " is not valid JSON: " + error); return; }',
       '  if (!validate(parsed)) pm.expect.fail("Request body failed OpenAPI request schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
       '});'
-    ] : []),
+    ] },
+    { lines: [
     "pm.test('Content-Length is consistent with OpenAPI body expectations', function () {",
     '  var raw = pm.response.headers.get("Content-Length");',
     '  if (raw === null || raw === undefined) return;',
@@ -1408,7 +1467,32 @@ export function createContractScript(operation: ContractOperation, warnings: str
     'pm.test(\'RFC SHOULD-level advisories are documented\', function () {',
     '  pm.expect(rfcAdvisories, "SHOULD-level findings (advisory, non-failing): " + rfcAdvisories.join("; ")).to.be.an("array");',
     '});'
+    ] }
   ];
+}
+
+/** True when a shared-runtime segment applies to this operation entry. */
+export function contractSegmentApplies(segment: ContractRuntimeSegment, entry: ContractOperationEntry): boolean {
+  if (!segment.guard) return true;
+  if (segment.guard === 'skipped') return entry.skipped.length > 0;
+  if (segment.guard === 'security') return entry.hasSecurity;
+  if (segment.guard === 'parameters') return entry.hasParameters;
+  return entry.hasRequestBodySchemas;
+}
+
+/**
+ * Compose the per-operation entry and the shared runtime into the exact
+ * per-request script this generator has always emitted.
+ */
+export function createContractScript(operation: ContractOperation, warnings: string[] = []): string[] {
+  const entry = buildOperationContractEntry(operation, warnings);
+  const lines = [...entry.prologue];
+  for (const segment of buildSharedContractRuntime()) {
+    if (!contractSegmentApplies(segment, entry)) continue;
+    if (segment.guard === 'skipped') lines.push(skippedValidatorsDataLine(entry.skipped));
+    lines.push(...segment.lines);
+  }
+  return lines;
 }
 
 export function createMappingFailureScript(message: string): string[] {
@@ -1689,6 +1773,21 @@ function collectStaticBodyWarnings(operation: ContractOperation, request: JsonRe
   return warnings;
 }
 
+/**
+ * Compile-only parse gate for a consolidated root script. A syntax error at the
+ * collection root silences every contract assertion for every request, so this
+ * runs before persist in addition to the forbidden-construct scan.
+ */
+function assertParsableContractScript(script: string[]): void {
+  try {
+    new Script(script.join('\n'));
+  } catch (error) {
+    throw new Error(
+      `CONTRACT_ROOT_SCRIPT_UNPARSABLE: consolidated contract root script failed to parse (${error instanceof Error ? error.message : String(error)})`,
+      { cause: error }
+    );
+  }
+}
 function validateScript(script: string[]): string | undefined {
   const source = script.join('\n');
   // Match executable call contexts only (`eval(` / `new Function(`), consistent
@@ -1754,7 +1853,7 @@ export function instrumentContractCollection(
     if (item.request) {
       const request = asRecord(item.request) ?? {};
       const result = matchOperation(index, request);
-      let script: string[];
+      let script: string[] | null = null;
       if (result.operation) {
         const previous = covered.get(result.operation.id);
         if (previous) throw new Error(`CONTRACT_DUPLICATE_OPERATION_REQUEST: ${result.operation.id} matched more than one generated request (${previous}, ${String(item.name || '<unnamed>')})`);
@@ -1763,14 +1862,22 @@ export function instrumentContractCollection(
           warnings.push(`CONTRACT_UNDOCUMENTED_QUERY_PARAM: ${result.operation.id} generated request sends query parameter ${name} that the OpenAPI operation does not declare`);
         }
         covered.set(result.operation.id, String(item.name || '<unnamed>'));
-        script = createContractScript(result.operation, warnings);
+        // Mapped operations are asserted by the consolidated collection-root
+        // test event(s) built below, so no per-request test script is emitted.
       } else if (result.ambiguous && result.ambiguous.length > 0) {
         script = createMappingFailureScript(`Ambiguous OpenAPI operation match for request ${result.method} ${result.path}: ${result.ambiguous.map((entry) => entry.id).join(', ')}`);
       } else {
         script = createMappingFailureScript(`No OpenAPI operation matched request ${result.method} ${result.path}`);
       }
+      // Mapping failures stay adjacent to the offending request.
       const events = asArray(item.event).filter((entry) => asRecord(entry)?.listen !== 'test');
-      item.event = [...events, { listen: 'test', script: { type: 'text/javascript', exec: script } }];
+      if (script) {
+        item.event = [...events, { listen: 'test', script: { type: 'text/javascript', exec: script } }];
+      } else if (events.length > 0) {
+        item.event = events;
+      } else {
+        delete item.event;
+      }
     }
     for (const child of asArray(item.item)) {
       const childRecord = asRecord(child);
@@ -1785,6 +1892,25 @@ export function instrumentContractCollection(
   const missing = index.operations.filter((operation) => !covered.has(operation.id));
   if (missing.length > 0) {
     throw new Error(`CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation) => `${operation.id} (${operation.pointer})`).join(', ')}`);
+  }
+  // Consolidated shared validator: one collection-root `test` event (or
+  // deterministic shards) replaces the runtime copy that used to ride in every
+  // request. `scanExecutableScripts` below runs the forbidden-construct and
+  // size gates over these exactly as it did over per-request scripts.
+  if (index.operations.length > 0) {
+    const consolidated = buildConsolidatedContractScript(index, warnings);
+    for (const shard of consolidated.shards) {
+      assertParsableContractScript(shard.exec);
+    }
+    if (consolidated.shards.length > 1) {
+      warnings.push(`CONTRACT_ROOT_SCRIPT_SHARDED: consolidated contract runtime split across ${consolidated.shards.length} collection-root test events`);
+    }
+    const rootEvents = consolidated.shards.map((shard) => ({
+      listen: 'test',
+      script: { type: 'text/javascript', exec: shard.exec }
+    }));
+    const existingRootEvents = asArray(collection.event).filter((entry) => asRecord(entry)?.listen !== 'test');
+    collection.event = [...existingRootEvents, ...rootEvents];
   }
   const resolverProvider: SecretsResolverProvider = limits.secretsResolverProvider ?? 'none';
   if (isSecretsResolverEnabled(resolverProvider)) {
@@ -1807,6 +1933,9 @@ export interface ContractItemScript {
 }
 
 export interface ContractItemScriptPlan {
+  /** Consolidated collection-root `test` script(s) covering every mapped operation. */
+  rootScripts: string[][];
+  /** Per-item scripts, mapping failures only — mapped operations assert at root. */
   scripts: ContractItemScript[];
   warnings: string[];
 }
@@ -1878,7 +2007,7 @@ export function planContractItemScripts(
     const name = String(item.name ?? item.title ?? '<unnamed>');
     const request = v3ItemToContractRequest(item);
     const result = matchOperation(index, request);
-    let script: string[];
+    let script: string[] | null = null;
     if (result.operation) {
       const previous = covered.get(result.operation.id);
       if (previous) {
@@ -1905,7 +2034,7 @@ export function planContractItemScripts(
         );
       }
       covered.set(result.operation.id, name);
-      script = createContractScript(result.operation, warnings);
+      // Mapped operations assert through the consolidated root script(s).
     } else if (result.ambiguous && result.ambiguous.length > 0) {
       script = createMappingFailureScript(
         `Ambiguous OpenAPI operation match for request ${result.method} ${result.path}: ${result.ambiguous.map((entry) => entry.id).join(', ')}`
@@ -1913,9 +2042,11 @@ export function planContractItemScripts(
     } else {
       script = createMappingFailureScript(`No OpenAPI operation matched request ${result.method} ${result.path}`);
     }
-    const sizeWarning = validateScript(script);
-    if (sizeWarning) warnings.push(sizeWarning);
-    scripts.push({ itemId, exec: script });
+    if (script) {
+      const sizeWarning = validateScript(script);
+      if (sizeWarning) warnings.push(sizeWarning);
+      scripts.push({ itemId, exec: script });
+    }
   }
 
   const missing = index.operations.filter((operation) => !covered.has(operation.id));
@@ -1925,7 +2056,21 @@ export function planContractItemScripts(
     );
   }
 
-  return { scripts, warnings };
+  const rootScripts: string[][] = [];
+  if (index.operations.length > 0) {
+    const consolidated = buildConsolidatedContractScript(index, warnings);
+    for (const shard of consolidated.shards) {
+      assertParsableContractScript(shard.exec);
+      const sizeWarning = validateScript(shard.exec);
+      if (sizeWarning) warnings.push(sizeWarning);
+      rootScripts.push(shard.exec);
+    }
+    if (consolidated.shards.length > 1) {
+      warnings.push(`CONTRACT_ROOT_SCRIPT_SHARDED: consolidated contract runtime split across ${consolidated.shards.length} collection-root test events`);
+    }
+  }
+
+  return { rootScripts, scripts, warnings };
 }
 
 export function contractMediaUsesSchema(media: ContractMedia): boolean {

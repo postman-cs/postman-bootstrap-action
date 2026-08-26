@@ -78,6 +78,6 @@ describe('route manifest ratchet', () => {
     expect(result.errors).toEqual([]);
     expect(result.ok).toBe(true);
     expect(extraction.unattributed).toEqual([]);
-    expect(extraction.routes).toHaveLength(58);
+    expect(extraction.routes).toHaveLength(59);
   });
 });

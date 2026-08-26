@@ -3422,6 +3422,7 @@ async function runBootstrapInner(
           contract: 0
         };
         const skippedRoles: CollectionRole[] = [];
+        const verifiedDigestByRole = new Map<CollectionRole, string>();
 
         let payloads: LocalOpenApiRolePayloads;
         const conversionStarted = Date.now();
@@ -3584,13 +3585,15 @@ async function runBootstrapInner(
             if (!deepUpdateSnapshots.has(reuseId!)) {
               throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing rollback snapshot for ${reuseId}`);
             }
-            if (deepUpdateSnapshots.get(reuseId!)!.payloadDigest === payload.payloadDigest) {
+            const snapshot = deepUpdateSnapshots.get(reuseId!)!;
+            if (snapshot.payloadDigest === payload.payloadDigest) {
+              verifiedDigestByRole.set(role.role, snapshot.payloadDigest);
               return {
                 role: role.role,
                 outputKey: role.outputKey,
                 kind: 'unchanged',
                 collectionId: reuseId!,
-                writeMs: Math.max(0, Date.now() - writeStarted),
+                writeMs: 0,
                 payloadBytes,
                 changedBytes: 0,
                 operationCount: 0,
@@ -3607,7 +3610,6 @@ async function runBootstrapInner(
                   'LOCAL_OPENAPI_ORCHESTRATION_FAILED: applyCollectionDelta requires access-token gateway support'
                 );
               }
-              const snapshot = deepUpdateSnapshots.get(reuseId!)!;
               const plan = planCollectionDelta({
                 snapshot: snapshot.collection,
                 desired: payload.collection
@@ -3621,6 +3623,9 @@ async function runBootstrapInner(
               );
               const writeMs = Math.max(0, Date.now() - writeStarted);
               const usedDelta = deltaResult.strategy === 'delta';
+              if (usedDelta && deltaResult.observedPayloadDigest === payload.payloadDigest) {
+                verifiedDigestByRole.set(role.role, deltaResult.observedPayloadDigest);
+              }
               return {
                 role: role.role,
                 outputKey: role.outputKey,
@@ -3882,6 +3887,11 @@ async function runBootstrapInner(
             }
             const started = Date.now();
             try {
+              const preverifiedDigest = verifiedDigestByRole.get(role.role);
+              if (preverifiedDigest) {
+                observedDigestByRole.set(role.role, preverifiedDigest);
+                continue;
+              }
               const exported = await dependencies.postman.exportV2Collection!(result.collectionId);
               const observedDigest = computePayloadDigest(exported);
               reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
@@ -4628,6 +4638,11 @@ export function createRoutingPostmanClient(options: {
       gateway.importV2Collection(workspaceId, collection, finalName),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) =>
       gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
+    applyCollectionDelta: (collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback) =>
+      gateway.applyCollectionDelta(collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback),
+    get collectionWriteMetrics() {
+      return gateway.collectionWriteMetrics;
+    },
     exportV2Collection: (collectionUid) =>
       (gateway as PostmanGatewayAssetsClient & { exportV2Collection(collectionUid: string): Promise<Record<string, unknown>> })
         .exportV2Collection(collectionUid),

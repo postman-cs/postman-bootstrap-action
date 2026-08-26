@@ -5,6 +5,7 @@ import converterSchemaFaker from 'openapi-to-postmanv2/assets/json-schema-faker.
 export type SchemaCandidateGenerator = (schema: unknown, attempt?: number) => unknown;
 
 let fakerAccess = Promise.resolve();
+const CONVERTER_RANDOM_SEED = 'postman-local-openapi-schema-faker-v1';
 
 function deterministicRandom(source: string): () => number {
   let state = createHash('sha256').update(source).digest().readUInt32LE(0);
@@ -47,7 +48,7 @@ function stableStringify(value: unknown): string {
  * synchronous throws, callback failures, and async work.
  */
 export async function withDeterministicSchemaFaker<T>(
-  source: string,
+  _source: string,
   work: (candidate: SchemaCandidateGenerator) => Promise<T> | T
 ): Promise<T> {
   const previousAccess = fakerAccess;
@@ -58,13 +59,13 @@ export async function withDeterministicSchemaFaker<T>(
   await previousAccess;
 
   const previousRandom = converterSchemaFaker.option('random');
-  converterSchemaFaker.option({ random: deterministicRandom(source) });
+  converterSchemaFaker.option({ random: deterministicRandom(CONVERTER_RANDOM_SEED) });
   try {
     return await work((schema, attempt = 0) => {
       const converted = schemaForPinnedFaker(schema);
       const outerRandom = converterSchemaFaker.option('random');
       converterSchemaFaker.option({
-        random: deterministicRandom(`${source}\n${attempt}\n${stableStringify(converted)}`)
+        random: deterministicRandom(`${CONVERTER_RANDOM_SEED}\n${attempt}\n${stableStringify(converted)}`)
       });
       try {
         return converterSchemaFaker(converted);

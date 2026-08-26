@@ -7,6 +7,54 @@ import {
 } from '../src/lib/spec/collection-delta.js';
 import { computePayloadDigest } from '../src/lib/spec/local-openapi-collection-generation.js';
 
+describe('planCollectionDelta contract root-script pinning', () => {
+  const rootScript = (code: string) => ({
+    listen: 'test',
+    script: { type: 'text/javascript', exec: [code] }
+  });
+
+  it('takes whole-update fallback when the consolidated root script changes', () => {
+    // The shared validator rides a collection-root event, and no granular root
+    // script transport exists, so a runtime change must fall back rather than
+    // silently skip re-persisting the validator.
+    const snapshot = { ...collection([structuralRequest('item-1', 'pay')]), event: [rootScript('var __contractRoutes = 1;')] };
+    const desired = { ...collection([structuralRequest('item-1', 'pay')]), event: [rootScript('var __contractRoutes = 2;')] };
+    expect(planCollectionDelta({ snapshot, desired })).toEqual({
+      decision: 'fallback',
+      reason: 'unsupported-root-attribute',
+      changedBytes: 0,
+      operations: []
+    });
+  });
+
+  it('takes script-transform fallback when a folder or request event changes', () => {
+    const withEvent = (code: string) => ({
+      id: 'folder-1',
+      name: 'pay',
+      item: [structuralRequest('item-1', 'pay')],
+      event: [rootScript(code)]
+    });
+    const plan = planCollectionDelta({
+      snapshot: collection([withEvent('var a = 1;')]),
+      desired: collection([withEvent('var a = 2;')])
+    });
+    expect(plan.decision).toBe('fallback');
+    if (plan.decision !== 'fallback') return;
+    expect(plan.reason).toBe('unsupported-script-transform');
+  });
+
+  it('still applies a description-only change beside a stable root script', () => {
+    const event = [rootScript('var __contractRoutes = 1;')];
+    const snapshot = { ...collection([structuralRequest('item-1', 'pay', 'before')]), event };
+    const desired = { ...collection([structuralRequest('item-1', 'pay', 'after')]), event };
+    const plan = planCollectionDelta({ snapshot, desired });
+    expect(plan.decision).toBe('apply');
+    if (plan.decision !== 'apply') return;
+    expect(plan.operations).toHaveLength(1);
+    expect(plan.operations[0]!.kind).toBe('patch');
+    expect(plan.operations[0]!.patchFields).toEqual(['description']);
+  });
+});
 const schema = 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json';
 
 function collection(items: unknown[] = []) {
@@ -64,7 +112,123 @@ describe('planCollectionDelta', () => {
     expect(result).toEqual({ decision: 'unchanged', changedBytes: 0, operations: [] });
   });
 
-  it('plans deterministic patch, create, move, and child-before-parent delete operations', () => {
+  it('uses Sync-canonical root semantics when planning an item patch', () => {
+    const snapshot = {
+      ...collection([request('one', 'one')]),
+      auth: { type: 'bearer', bearer: [{ key: 'token', value: '{{token}}' }] }
+    };
+    const desired = {
+      ...collection([request('one', 'one', 'https://example.test/changed')]),
+      auth: { type: 'bearer', bearer: [{ key: 'token', value: '{{token}}', type: 'string' }] }
+    };
+
+    expect(planCollectionDelta({ snapshot, desired })).toMatchObject({
+      decision: 'apply',
+      operations: [expect.objectContaining({ kind: 'patch', key: 'id:one' })]
+    });
+    desired.auth.bearer[0]!.value = '{{different}}';
+    expect(planCollectionDelta({ snapshot, desired })).toMatchObject({
+      decision: 'fallback',
+      reason: 'unsupported-root-attribute'
+    });
+  });
+
+  it('uses Sync-canonical guarded fields when planning an item patch', () => {
+    const snapshotItem = {
+      ...request('one', 'one'),
+      event: [{ listen: 'test', script: { exec: ['line one', 'line two'] } }],
+      response: [{
+        id: 'response-a',
+        name: 'ok',
+        originalRequest: { id: 'request-a', method: 'GET', url: 'https://example.test/one' }
+      }]
+    };
+    const desiredItem = {
+      ...request('one', 'one', 'https://example.test/changed'),
+      event: [{ listen: 'test', script: { exec: ['line one\nline two'] } }],
+      response: [{
+        id: 'response-b',
+        name: 'ok',
+        originalRequest: { id: 'request-b', method: 'GET', url: 'https://example.test/one' }
+      }]
+    };
+
+    expect(planCollectionDelta({
+      snapshot: collection([snapshotItem]),
+      desired: collection([desiredItem])
+    })).toMatchObject({
+      decision: 'apply',
+      operations: [expect.objectContaining({ kind: 'patch', key: 'id:one' })]
+    });
+    desiredItem.event[0]!.script.exec = ['changed'];
+    expect(planCollectionDelta({
+      snapshot: collection([snapshotItem]),
+      desired: collection([desiredItem])
+    })).toMatchObject({ decision: 'fallback', reason: 'unsupported-script-transform' });
+  });
+
+  it('does not emit patches for Sync-equivalent request representations', () => {
+    const snapshot = collection([
+      request('one', 'one'),
+      { id: 'two', name: 'two', request: { method: 'GET', header: [], url: 'https://example.test/two' } }
+    ]);
+    const desired = collection([
+      { ...request('one', 'one'), description: 'changed' },
+      {
+        id: 'two',
+        name: 'two',
+        request: {
+          method: 'GET',
+          url: { raw: 'https://example.test/two', protocol: 'https', host: ['example', 'test'] }
+        }
+      }
+    ]);
+
+    const result = planCollectionDelta({ snapshot, desired });
+    expect(result).toMatchObject({ decision: 'apply' });
+    if (result.decision !== 'apply') return;
+    expect(result.operations).toEqual([
+      expect.objectContaining({ kind: 'patch', key: 'id:one' })
+    ]);
+  });
+
+  it('does not emit moves for Sync-equivalent folder and request partitions', () => {
+    const folderOne = { id: 'folder-one', name: 'Folder one', item: [request('one', 'one')] };
+    const folderTwo = { id: 'folder-two', name: 'Folder two', item: [request('two', 'two')] };
+    const helper = request('helper', '00 - Resolve Secrets');
+    const snapshot = collection([folderOne, folderTwo, helper]);
+    const desired = collection([
+      helper,
+      folderOne,
+      { ...folderTwo, description: 'changed' }
+    ]);
+
+    const result = planCollectionDelta({ snapshot, desired });
+    expect(result).toMatchObject({ decision: 'apply' });
+    if (result.decision !== 'apply') return;
+    expect(result.operations).toEqual([
+      expect.objectContaining({ kind: 'patch', key: 'id:folder-two' })
+    ]);
+  });
+
+  it('counts only transported patch fields against the changed-byte ceiling', () => {
+    const largeUnchangedScript = [{
+      listen: 'test',
+      script: { exec: ['x'.repeat(COLLECTION_DELTA_MAX_CHANGED_BYTES)] }
+    }];
+    const snapshotItem = { ...request('one', 'one'), event: largeUnchangedScript };
+    const desiredItem = { ...snapshotItem, description: 'changed' };
+    const result = planCollectionDelta({
+      snapshot: collection([snapshotItem]),
+      desired: collection([desiredItem])
+    });
+
+    expect(result).toMatchObject({ decision: 'apply' });
+    if (result.decision !== 'apply') return;
+    expect(result.changedBytes).toBeLessThan(COLLECTION_DELTA_MAX_CHANGED_BYTES);
+  });
+
+  it('plans deterministic child-before-parent deletes before create and patch operations', () => {
     const snapshot = collection([
       { id: 'folder', name: 'Old folder', item: [request('old-child', 'old-child')] },
       request('one', 'one', 'https://example.test/stale'),
@@ -79,12 +243,42 @@ describe('planCollectionDelta', () => {
     expect(result.decision).toBe('apply');
     if (result.decision !== 'apply') return;
     expect(result.operations.map((operation) => operation.kind)).toEqual([
-      'create', 'patch', 'move', 'delete', 'delete'
+      'delete', 'delete', 'create', 'patch'
     ]);
     expect(result.operations.map((operation) => operation.key)).toEqual([
-      'id:new-child', 'id:folder', 'id:folder', 'id:old-child', 'id:gone'
+      'id:old-child', 'id:gone', 'id:new-child', 'id:folder'
     ]);
     expect(result.changedBytes).toBeGreaterThan(0);
+  });
+
+  it('allows complete scripts and saved responses on a newly created request', () => {
+    const created = {
+      ...request('new', 'new'),
+      event: [{ listen: 'test', script: { exec: ['pm.test("ok", function () {});'] } }],
+      response: [{ name: 'ok', code: 200, body: '{}' }],
+      protocolProfileBehavior: { disableBodyPruning: true }
+    };
+    const result = planCollectionDelta({ snapshot: collection(), desired: collection([created]) });
+    expect(result).toMatchObject({
+      decision: 'apply',
+      operations: [expect.objectContaining({ kind: 'create', key: 'id:new' })]
+    });
+  });
+
+  it('creates a new folder shell before its independently planned child', () => {
+    const result = planCollectionDelta({
+      snapshot: collection(),
+      desired: collection([{ id: 'folder', name: 'folder', item: [request('child', 'child')] }])
+    });
+    expect(result).toMatchObject({ decision: 'apply' });
+    if (result.decision !== 'apply') return;
+    expect(result.operations).toHaveLength(2);
+    expect(result.operations[0]).toMatchObject({
+      kind: 'create', entityType: 'collection', item: { item: [] }
+    });
+    expect(result.operations[1]).toMatchObject({
+      kind: 'create', entityType: 'http-request', parentKey: 'id:folder'
+    });
   });
 
   it('falls back when the frozen five-operation ceiling is exceeded', () => {

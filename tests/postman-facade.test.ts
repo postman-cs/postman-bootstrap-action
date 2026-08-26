@@ -19,6 +19,8 @@ function makeGateway(overrides: Partial<Record<keyof PostmanGatewayAssetsClient,
     tagCollection: vi.fn(async () => undefined),
     deleteCollection: vi.fn(async () => undefined),
     injectContractTests: vi.fn(async () => []),
+    applyCollectionDelta: vi.fn(async () => ({ strategy: 'delta' as const })),
+    collectionWriteMetrics: { deltaMs: 7 },
     getTeams: vi.fn(async () => [{ id: 132319, name: 'CSE v12', handle: 'cse-v12', organizationId: 13347347 }]),
     configureTeamContext: vi.fn(),
     ...overrides
@@ -111,5 +113,24 @@ describe('createRoutingPostmanClient', () => {
     const facade = createRoutingPostmanClient({ gateway });
     facade.configureTeamContext?.('team-9', true);
     expect(gateway.configureTeamContext).toHaveBeenCalledWith('team-9', true);
+  });
+
+  it('forwards collection deltas and exposes current write metrics', async () => {
+    const gateway = makeGateway();
+    const facade = createRoutingPostmanClient({ gateway });
+    const plan = { decision: 'delta', operations: [], changedBytes: 0 } as never;
+    const desired = { info: { name: 'desired' }, item: [] };
+    const rollback = { collection: { info: { name: 'prior' }, item: [] }, payloadDigest: 'b'.repeat(64) };
+
+    await expect(facade.applyCollectionDelta?.('1-collection', plan, desired, 'a'.repeat(64), rollback))
+      .resolves.toEqual({ strategy: 'delta' });
+    expect(gateway.applyCollectionDelta).toHaveBeenCalledWith(
+      '1-collection',
+      plan,
+      desired,
+      'a'.repeat(64),
+      rollback
+    );
+    expect(facade.collectionWriteMetrics).toEqual({ deltaMs: 7 });
   });
 });

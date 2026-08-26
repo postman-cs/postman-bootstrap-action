@@ -1,6 +1,3 @@
-import * as V2 from '@postman/runtime.models/v2';
-import * as V3 from '@postman/runtime.models/v3';
-import { transform, FormatVersion } from '@postman/runtime.models/transforms';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -23,6 +20,11 @@ import {
   normalizeCollectionModelIdentity
 } from './collection-model-identity.js';
 import {
+  assertV2CollectionModel,
+  convertV2CollectionToV3Model,
+  convertV3CollectionToV2Model
+} from './collection-model-conversion.js';
+import {
   createSecretsResolverExec,
   createSecretsResolverV3Body,
   isSecretsResolverEnabled,
@@ -36,7 +38,10 @@ import {
 import { planContractItemScripts } from '../spec/collection-contracts.js';
 import type { ContractIndex } from '../spec/contract-index.js';
 import type { DefinitionBundle, DefinitionFormat } from '../spec/definition-bundle.js';
-import { computePayloadDigest } from '../spec/local-openapi-collection-generation.js';
+import {
+  computePayloadDigest,
+  describePayloadDigestDifference
+} from '../spec/local-openapi-collection-generation.js';
 import type {
   CollectionDeltaOperation,
   CollectionDeltaPlan
@@ -556,6 +561,8 @@ export class PostmanGatewayAssetsClient {
   private static readonly DELETE_ABSENCE_SETTLE_DELAYS_MS = [
     250, 500, 750, 1000, 1500, 2000, 3000
   ] as const;
+  /** Successful export envelopes can briefly precede a complete collection model. */
+  private static readonly EXPORT_MODEL_SETTLE_DELAYS_MS = [100, 250, 500] as const;
 
   private readonly gateway: AccessTokenGatewayClient;
   private readonly sleep: (delayMs: number) => Promise<void>;
@@ -2483,15 +2490,16 @@ export class PostmanGatewayAssetsClient {
   private async awaitExportedDigest(
     uid: string,
     digest: string
-  ): Promise<{ converged: boolean; polls: number }> {
+  ): Promise<{ converged: boolean; polls: number; observed?: unknown }> {
     const delays = PostmanGatewayAssetsClient.AMBIGUOUS_WRITE_VERIFY_DELAYS_MS;
     let polls = 0;
+    let observed: unknown;
     for (let observation = 0; observation <= delays.length; observation += 1) {
       polls += 1;
       try {
-        const exported = await this.exportV2Collection(uid);
-        if (computePayloadDigest(exported) === digest) {
-          return { converged: true, polls };
+        observed = await this.exportV2Collection(uid);
+        if (computePayloadDigest(asRecord(observed) ?? {}) === digest) {
+          return { converged: true, polls, observed };
         }
       } catch {
         // Export unreadable on this observation; spend the remaining budget.
@@ -2500,7 +2508,7 @@ export class PostmanGatewayAssetsClient {
         await this.sleep(delays[observation]!);
       }
     }
-    return { converged: false, polls };
+    return { converged: false, polls, observed };
   }
 
   /**
@@ -2790,10 +2798,11 @@ export class PostmanGatewayAssetsClient {
    *   2. `GET /v3/collections/:cid/items/:itemId` (`X-Entity-Type: http-request`)
    *      — the full v3 IR record (method/url/headers/body) the matcher needs.
    *   3. `planContractItemScripts` matches each request to its OpenAPI operation
-   *      and builds the `afterResponse` test exec (the same assertions the retired
-   *      v2 `item.event` path produced), enforcing coverage + duplicate checks.
-   *   4. `PATCH /v3/collections/:cid/items/:itemId` `/scripts` with the afterResponse
-   *      script, then prepend the idempotent `00 - Resolve Secrets` item.
+   *      and builds the consolidated collection-root `test` script(s) plus any
+   *      request-level mapping-failure scripts, enforcing coverage + duplicates.
+   *   4. `PATCH /v3/collections/:cid/items/:itemId` `/scripts` for mapping
+   *      failures, `PATCH /v3/collections/:cid` `/scripts` for the shared
+   *      validator, then prepend the idempotent `00 - Resolve Secrets` item.
    * Returns the non-fatal instrumentation warnings for the caller to surface.
    */
   async injectContractTests(
@@ -2851,7 +2860,27 @@ export class PostmanGatewayAssetsClient {
         throw error;
       }
     }
-
+    // Consolidated shared validator rides the collection root. `add /scripts`
+    // overwrites wholesale, so a rerun converges instead of accumulating.
+    if (plan.rootScripts.length > 0) {
+      const rootScripts = plan.rootScripts.map((exec) => ({
+        type: 'afterResponse',
+        code: exec.join('\n'),
+        language: 'text/javascript'
+      }));
+      try {
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${this.collectionRootId(collectionUid)}`,
+          retry: 'safe',
+          body: [{ op: 'add', path: '/scripts', value: this.toRootScripts(rootScripts) }]
+        });
+      } catch (error) {
+        // Idempotent rerun: the root already carries these exact scripts.
+        if (!isRejectedPatchError(error)) throw error;
+      }
+    }
     // Opt-in: no provider selected means no resolver helper is created at all.
     // Idempotent: skip if a prior run already created the secrets resolver.
     if (
@@ -2988,9 +3017,7 @@ export class PostmanGatewayAssetsClient {
 
   /** v2.1 collection JSON -> canonical v3 IR, via the official runtime.models transform. */
   private convertV2CollectionToV3(v2Collection: unknown): JsonRecord {
-    const model = (V2 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
-    const parsed = model.parse(v2Collection ?? {});
-    const v3 = transform(model as never, FormatVersion.V3, parsed as never) as unknown as JsonRecord;
+    const v3 = convertV2CollectionToV3Model(v2Collection);
     for (const item of asItemArray(v3.items)) {
       this.normalizeGraphqlRequests(item);
     }
@@ -3025,12 +3052,16 @@ export class PostmanGatewayAssetsClient {
   }
 
   /** v3 IR item node -> the POST .../items/ create body, scoped to the fields live-proven above. */
-  private buildItemCreateBody(item: JsonRecord, parentId: string): JsonRecord {
+  private buildItemCreateBody(
+    item: JsonRecord,
+    parentId: string,
+    parentKind: CollectionDeltaOperation['entityType'] = 'collection'
+  ): JsonRecord {
     const kind = String(item.$kind ?? 'http-request');
     const body: JsonRecord = {
       $kind: kind,
       name: String(item.name ?? 'Untitled'),
-      position: { parent: { id: parentId, $kind: 'collection' } }
+      position: { parent: { id: parentId, $kind: parentKind } }
     };
     if (typeof item.description === 'string' && item.description) {
       body.description = item.description;
@@ -3041,6 +3072,11 @@ export class PostmanGatewayAssetsClient {
     if (kind === 'graphql-request') {
       if (typeof item.query === 'string') body.query = item.query;
       if (typeof item.variables === 'string') body.variables = item.variables;
+      return body;
+    }
+    if (kind === 'http-example') {
+      if (item.request && typeof item.request === 'object') body.request = item.request;
+      if (item.response && typeof item.response === 'object') body.response = item.response;
       return body;
     }
     if (typeof item.method === 'string') body.method = item.method;
@@ -3771,7 +3807,11 @@ export class PostmanGatewayAssetsClient {
     desiredCollection: unknown,
     expectedPayloadDigest: string,
     rollback?: { collection: unknown; payloadDigest: string }
-  ): Promise<{ strategy: 'unchanged' | 'delta' | 'whole-fallback'; fallbackReason?: string }> {
+  ): Promise<{
+    strategy: 'unchanged' | 'delta' | 'whole-fallback';
+    fallbackReason?: string;
+    observedPayloadDigest?: string;
+  }> {
     const uid = String(collectionUid ?? '').trim();
     const digest = String(expectedPayloadDigest ?? '').trim();
     if (!isFullPublicCollectionUid(uid)) {
@@ -3780,7 +3820,9 @@ export class PostmanGatewayAssetsClient {
     if (!/^[a-f0-9]{64}$/.test(digest)) {
       throw new Error('COLLECTION_DELTA_DIGEST_REQUIRED: expectedPayloadDigest must be lowercase 64-hex');
     }
-    if (plan.decision === 'unchanged') return { strategy: 'unchanged' };
+    if (plan.decision === 'unchanged') {
+      return { strategy: 'unchanged', observedPayloadDigest: digest };
+    }
     if (plan.decision === 'fallback') {
       this.recordDeltaFallback(plan.reason, plan.changedBytes);
       await this.deepUpdateV2Collection(uid, desiredCollection, digest);
@@ -3822,18 +3864,27 @@ export class PostmanGatewayAssetsClient {
           return { strategy: 'whole-fallback', fallbackReason: 'ambiguous-delta-mutation' };
         }
       }
-      const exported = await this.exportV2Collection(uid);
-      if (computePayloadDigest(exported) !== digest) {
+      const verification = await this.awaitExportedDigest(uid, digest);
+      this.writeMetrics.verifyPolls += verification.polls;
+      if (!verification.converged) {
+        const difference = describePayloadDigestDifference(
+          asRecord(desiredCollection) ?? {},
+          asRecord(verification.observed) ?? {}
+        );
         await this.rollbackCollectionDelta(uid, rollback);
-        throw new Error('LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch');
+        throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch (${difference})`);
       }
       this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
-      return { strategy: 'delta' };
+      return { strategy: 'delta', observedPayloadDigest: digest };
     } catch (error) {
-      if (error instanceof Error && error.message === 'LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch') {
+      if (error instanceof Error && error.message.startsWith('LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch')) {
         throw error;
       }
-      this.recordDeltaFallback('delta-mutation-failed', 0);
+      if (error instanceof HttpError && error.status >= 400 && error.status < 500) {
+        throw error;
+      }
+      const failureReason = this.deltaMutationFailureReason(error);
+      this.recordDeltaFallback(failureReason, 0);
       try {
         await this.deepUpdateV2Collection(uid, desiredCollection, digest);
       } catch (fallbackError) {
@@ -3842,8 +3893,19 @@ export class PostmanGatewayAssetsClient {
       } finally {
         this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
       }
-      return { strategy: 'whole-fallback', fallbackReason: 'delta-mutation-failed' };
+      return { strategy: 'whole-fallback', fallbackReason: failureReason };
     }
+  }
+
+  private deltaMutationFailureReason(error: unknown): string {
+    if (error instanceof HttpError) return `delta-mutation-failed:http-${error.status}`;
+    if (error instanceof Error) {
+      const internal = /^LOCAL_OPENAPI_DELTA_FAILED: ([a-z0-9-]+)/i.exec(error.message)?.[1];
+      if (internal) return `delta-mutation-failed:${internal.toLowerCase()}`;
+      const name = error.name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+      if (name) return `delta-mutation-failed:${name}`;
+    }
+    return 'delta-mutation-failed:unknown';
   }
 
   private recordDeltaFallback(reason: string, changedBytes: number): void {
@@ -3883,6 +3945,69 @@ export class PostmanGatewayAssetsClient {
     throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: exact item identity unavailable for ${operation.key}`);
   }
 
+  private resolveDeltaParentId(
+    parentKey: string | undefined,
+    itemIds: ReadonlyMap<string, string>,
+    rootId: string
+  ): string | undefined {
+    if (!parentKey) return rootId;
+    const direct = itemIds.get(parentKey);
+    if (direct) return direct;
+    if (parentKey.startsWith('id:')) {
+      return itemIds.get(`id:${normalizeCollectionModelIdentity(parentKey.slice(3))}`);
+    }
+    return undefined;
+  }
+
+  private resolveDeltaSiblingId(
+    siblingKey: string | undefined,
+    itemIds: ReadonlyMap<string, string>
+  ): string | undefined {
+    if (!siblingKey) return undefined;
+    const direct = itemIds.get(siblingKey);
+    if (direct) return direct;
+    if (siblingKey.startsWith('id:')) {
+      return itemIds.get(`id:${normalizeCollectionModelIdentity(siblingKey.slice(3))}`);
+    }
+    return undefined;
+  }
+
+  private async moveDeltaItem(input: {
+    collectionId: string;
+    itemId: string;
+    entityType: CollectionDeltaOperation['entityType'];
+    parentId: string;
+    previousSiblingId?: string;
+    nextSiblingId?: string;
+  }): Promise<void> {
+    this.writeMetrics.deltaRoutes.push('POST /v3/items/move');
+    const response = await this.gateway.requestJson<JsonRecord>({
+      service: 'collection',
+      method: 'post',
+      path: '/v3/items/move',
+      retry: 'none',
+      body: {
+        items: [{ id: input.itemId, $kind: input.entityType }],
+        toPosition: {
+          collectionId: input.collectionId,
+          parent: { id: input.parentId, $kind: 'collection' },
+          ...(input.previousSiblingId
+            ? { previousSibling: { id: input.previousSiblingId, $kind: input.entityType } }
+            : {}),
+          ...(input.nextSiblingId
+            ? { nextSibling: { id: input.nextSiblingId, $kind: input.entityType } }
+            : {})
+        }
+      }
+    });
+    const result = asRecord(response?.data);
+    const moved = Array.isArray(result?.moved) ? result.moved.map(String) : [];
+    const failed = Array.isArray(result?.failed) ? result.failed.map(String) : [];
+    if (failed.length > 0 || !moved.includes(input.itemId)) {
+      throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move rejected for ${input.itemId}`);
+    }
+  }
+
   private async applyPlannedCollectionDeltaOperation(
     uid: string,
     operation: CollectionDeltaOperation,
@@ -3892,11 +4017,12 @@ export class PostmanGatewayAssetsClient {
     const cid = this.collectionItemsId(uid);
     const request = async (): Promise<void> => {
       if (operation.kind === 'create') {
-        const parentId = operation.parentKey ? itemIds.get(operation.parentKey) : cid;
+        const parentId = this.resolveDeltaParentId(operation.parentKey, itemIds, cid);
         if (!parentId) {
           throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create parent unavailable for ${operation.key}`);
         }
-        const body = this.buildItemCreateBody(this.deltaV3Item(operation.item), parentId);
+        const convertedItem = this.deltaV3Item(operation.item);
+        const body = this.buildItemCreateBody(convertedItem, parentId);
         this.writeMetrics.deltaRoutes.push('POST /v3/collections/{param}/items');
         const created = await this.gateway.requestJson<JsonRecord>({
           service: 'collection',
@@ -3907,8 +4033,46 @@ export class PostmanGatewayAssetsClient {
           body
         });
         const id = String(asRecord(created?.data)?.id ?? '').trim();
-        if (!id) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create returned no id for ${operation.key}`);
+        if (!id) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create returned no id for ${operation.key}`);
+        }
         itemIds.set(operation.key, id);
+        const nextSiblingId = this.resolveDeltaSiblingId(operation.nextSiblingKey, itemIds);
+        if (operation.nextSiblingKey && !nextSiblingId) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create sibling unavailable for ${operation.key}`);
+        }
+        if (nextSiblingId) {
+          await this.moveDeltaItem({
+            collectionId: cid,
+            itemId: id,
+            entityType: operation.entityType,
+            parentId,
+            nextSiblingId
+          });
+        }
+        if (Array.isArray(convertedItem.scripts) && convertedItem.scripts.length > 0) {
+          this.writeMetrics.deltaRoutes.push('PATCH /v3/collections/{param}/items/{param}');
+          await this.patchNewItemScripts(
+            cid,
+            id,
+            convertedItem.scripts as JsonRecord[],
+            operation.entityType
+          );
+        }
+        for (const example of asItemArray(convertedItem.examples)) {
+          this.writeMetrics.deltaRoutes.push('POST /v3/collections/{param}/items');
+          const createdExample = await this.gateway.requestJson<JsonRecord>({
+            service: 'collection',
+            method: 'post',
+            path: `/v3/collections/${cid}/items/`,
+            retry: 'none',
+            headers: { 'X-Entity-Type': 'http-example' },
+            body: this.buildItemCreateBody(example, id, 'http-request')
+          });
+          if (!String(asRecord(createdExample?.data)?.id ?? '').trim()) {
+            throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: example create returned no id for ${operation.key}`);
+          }
+        }
         return;
       }
       const itemId = this.resolveDeltaItemId(operation, itemIds);
@@ -3921,20 +4085,39 @@ export class PostmanGatewayAssetsClient {
         return;
       }
       if (operation.kind === 'move') {
-        const parentId = operation.parentKey ? itemIds.get(operation.parentKey) : cid;
+        const parentId = this.resolveDeltaParentId(operation.parentKey, itemIds, cid);
         if (!parentId) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move parent unavailable for ${operation.key}`);
-        this.writeMetrics.deltaRoutes.push('PATCH /v3/collections/{param}/items/{param}');
-        await this.gateway.requestJson<JsonRecord>({
-          service: 'collection', method: 'patch', path: `/v3/collections/${cid}/items/${itemId}`,
-          retry: 'none', headers: { 'X-Entity-Type': operation.entityType },
-          body: [{ op: 'replace', path: '/position', value: { parent: { id: parentId, $kind: 'collection' }, index: operation.index } }]
+        const previousSiblingId = this.resolveDeltaSiblingId(operation.previousSiblingKey, itemIds);
+        const nextSiblingId = this.resolveDeltaSiblingId(operation.nextSiblingKey, itemIds);
+        if (operation.previousSiblingKey && !previousSiblingId) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move previous sibling unavailable for ${operation.key}`);
+        }
+        if (!previousSiblingId && operation.nextSiblingKey && !nextSiblingId) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move next sibling unavailable for ${operation.key}`);
+        }
+        await this.moveDeltaItem({
+          collectionId: cid,
+          itemId,
+          entityType: operation.entityType,
+          parentId,
+          ...(previousSiblingId ? { previousSiblingId } : {}),
+          ...(!previousSiblingId && nextSiblingId ? { nextSiblingId } : {})
         });
         return;
       }
-      const target = this.deltaV3Item(operation.item);
-      const fields = operation.entityType === 'collection'
-        ? ['name', 'description']
-        : ['name', 'description', 'method', 'url', 'headers', 'queryParams', 'pathVariables', 'body', 'settings'];
+      const patchItem: JsonRecord = operation.entityType === 'collection'
+        ? {
+            name: operation.item.name,
+            item: [],
+            ...(operation.item.description !== undefined ? { description: operation.item.description } : {})
+          }
+        : {
+            name: operation.item.name,
+            request: operation.item.request,
+            ...(operation.item.description !== undefined ? { description: operation.item.description } : {})
+          };
+      const target = this.deltaV3Item(patchItem);
+      const fields = operation.patchFields ?? [];
       const body = fields
         .filter((field) => target[field] !== undefined)
         .map((field) => ({ op: 'add', path: `/${field}`, value: target[field] }));
@@ -3963,7 +4146,7 @@ export class PostmanGatewayAssetsClient {
     }
   }
 
-  /** At most two independent siblings mutate concurrently. */
+  /** Serialize all mutations: create placement depends on earlier sibling writes. */
   private async applyPlannedCollectionDeltaGroup(
     uid: string,
     operations: readonly CollectionDeltaOperation[],
@@ -3989,7 +4172,8 @@ export class PostmanGatewayAssetsClient {
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(2, operations.length) }, () => worker()));
+    const concurrency = 1;
+    await Promise.all(Array.from({ length: Math.min(concurrency, operations.length) }, () => worker()));
     return converged ? 'converged' : fallback ? 'fallback' : 'applied';
   }
 
@@ -4097,8 +4281,7 @@ export class PostmanGatewayAssetsClient {
 
   private assertV21Collection(collection: JsonRecord): void {
     try {
-      const model = (V2 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
-      model.parse(collection);
+      assertV2CollectionModel(collection);
     } catch (error) {
       throw new Error(
         `LOCAL_OPENAPI_IMPORT_FAILED: collection failed v2.1 schema validation (${
@@ -4373,25 +4556,32 @@ export class PostmanGatewayAssetsClient {
     // the bare model id (2026-08-03 live A/B: bare=200). Keep the live-proven
     // bare vocabulary rather than rewriting a working route on speculation.
     const bareId = this.bareModelId(collectionUid);
-    const exported = await this.gateway.requestJson<JsonRecord>({
-      service: 'collection',
-      method: 'get',
-      path: `/v3/collections/${bareId}/export`,
-      retry: 'safe'
-    });
-    const data = asRecord(exported?.data) ?? exported;
-    const collection =
-      asRecord(asRecord(data)?.collection) ??
-      asRecord(data) ??
-      {};
-    if (asRecord(collection)?.$kind === 'collection' || Array.isArray(asRecord(collection)?.items)) {
-      const model = (V3 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
-      const parsed = model.parse(collection);
-      const v2 = transform(model as never, FormatVersion.V2, parsed as never) as unknown as JsonRecord;
-      return asRecord(v2) ?? {};
+    const delays = PostmanGatewayAssetsClient.EXPORT_MODEL_SETTLE_DELAYS_MS;
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+      const exported = await this.gateway.requestJson<JsonRecord>({
+        service: 'collection',
+        method: 'get',
+        path: `/v3/collections/${bareId}/export`,
+        retry: 'safe'
+      });
+      const data = asRecord(exported?.data) ?? exported;
+      const collection =
+        asRecord(asRecord(data)?.collection) ??
+        asRecord(data) ??
+        {};
+      try {
+        if (asRecord(collection)?.$kind === 'collection' || Array.isArray(asRecord(collection)?.items)) {
+          return asRecord(convertV3CollectionToV2Model(collection)) ?? {};
+        }
+        this.assertV21Collection(collection);
+        return collection;
+      } catch (error) {
+        lastError = error;
+        if (attempt < delays.length) await this.sleep(delays[attempt]!);
+      }
     }
-    this.assertV21Collection(collection);
-    return collection;
+    throw lastError;
   }
 
   private cloneJson<T>(value: T): T {

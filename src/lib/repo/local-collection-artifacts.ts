@@ -4,11 +4,10 @@ import * as fs from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import * as path from 'node:path';
 
-import * as V2 from '@postman/runtime.models/v2';
-import { transform, FormatVersion } from '@postman/runtime.models/transforms';
 import { splitCollection } from '@postman/v3.export';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
+import { convertV2CollectionToV3Model } from '../postman/collection-model-conversion.js';
 import type { CollectionRole, JsonRecord } from '../spec/local-openapi-collection-generation.js';
 
 export const LOCAL_COLLECTION_ARTIFACTS_FAILED = 'LOCAL_COLLECTION_ARTIFACTS_FAILED' as const;
@@ -519,12 +518,10 @@ export async function computeArtifactDigestFromTree(absDir: string): Promise<str
 }
 
 function convertV2CollectionToV3(v2Collection: JsonRecord): JsonRecord {
-  const model = (V2 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
   // The runtime model parser normalizes nested scripts in place. Artifact
   // splitting must never mutate the digest-bound payload that is subsequently
   // imported or compared with a cloud export.
-  const parsed = model.parse(structuredClone(v2Collection ?? {}));
-  return transform(model as never, FormatVersion.V3, parsed as never) as unknown as JsonRecord;
+  return convertV2CollectionToV3Model(structuredClone(v2Collection ?? {}));
 }
 
 async function defaultSplitCollection(v2Collection: JsonRecord): Promise<SplitCollectionFile[]> {

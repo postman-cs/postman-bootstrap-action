@@ -15,7 +15,7 @@ interface RepoConfig {
   census: string[];
 }
 
-const CONFIG: RepoConfig = {"pkgName":"@postman/onboarding-bootstrap","binName":"postman-bootstrap","pkgMain":"dist/index.cjs","actionMain":"dist/action.cjs","census":["action.cjs","cli.cjs","index.cjs"]};
+const CONFIG: RepoConfig = {"pkgName":"@postman-cs/onboarding-bootstrap","binName":"postman-bootstrap","pkgMain":"dist/index.cjs","actionMain":"dist/action.cjs","census":["action.cjs","cli.cjs","index.cjs"]};
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

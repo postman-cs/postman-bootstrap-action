@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; fi
-          PKG_NAME='@postman/onboarding-bootstrap'
+          PKG_NAME='@postman-cs/onboarding-bootstrap'
           for TAG in ${{ inputs.tags }}; do
             TAG_DIR="$(mktemp -d)"
             trap 'rm -rf "$TAG_DIR"' EXIT

@@ -1,6 +1,6 @@
 # Postman Onboarding: Workspace Bootstrap
 
-[![CI](https://github.com/postman-cs/postman-bootstrap-action/actions/workflows/ci.yml/badge.svg)](https://github.com/postman-cs/postman-bootstrap-action/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/postman-cs/postman-bootstrap-action?sort=semver)](https://github.com/postman-cs/postman-bootstrap-action/releases) [![npm](https://img.shields.io/npm/v/%40postman%2Fonboarding-bootstrap)](https://www.npmjs.com/package/@postman/onboarding-bootstrap) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/postman-cs/postman-bootstrap-action/actions/workflows/ci.yml/badge.svg)](https://github.com/postman-cs/postman-bootstrap-action/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/postman-cs/postman-bootstrap-action?sort=semver)](https://github.com/postman-cs/postman-bootstrap-action/releases) [![npm](https://img.shields.io/npm/v/%40postman-cs%2Fonboarding-bootstrap)](https://www.npmjs.com/package/@postman-cs/onboarding-bootstrap) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Provisions a [Postman workspace](https://learning.postman.com/docs/collaborating-in-postman/using-workspaces/overview/) from an OpenAPI spec, generating baseline, smoke, and contract collections in one step.
 
@@ -243,7 +243,7 @@ Regenerate both tables from `action.yml` with `npm run docs:tables`.
 The same bootstrap is available as a CLI for GitLab CI, Bitbucket Pipelines, Azure DevOps, and other CI systems. GitHub Actions users should continue using the `action.yml` interface.
 
 ```bash
-npm install -g @postman/onboarding-bootstrap
+npm install -g @postman-cs/onboarding-bootstrap
 
 postman-bootstrap \
   --project-name core-payments \
@@ -262,7 +262,7 @@ Example GitLab CI job:
 bootstrap:
   image: node:24
   script:
-    - npm install -g @postman/onboarding-bootstrap
+    - npm install -g @postman-cs/onboarding-bootstrap
     - postman-bootstrap --project-name core-payments --spec-url "https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml" --postman-api-key "$POSTMAN_API_KEY" --postman-access-token "$POSTMAN_ACCESS_TOKEN" --result-json bootstrap-result.json --dotenv-path bootstrap.env
   artifacts:
     paths:
@@ -342,7 +342,7 @@ The complete catalog of all 142 codes, grouped by layer with per-code remediatio
 
 ## Resources
 
-- npm package: [@postman/onboarding-bootstrap](https://www.npmjs.com/package/@postman/onboarding-bootstrap)
+- npm package: [@postman-cs/onboarding-bootstrap](https://www.npmjs.com/package/@postman-cs/onboarding-bootstrap)
 - Docs in this repo: [credentials](docs/credentials.md), [self-contained binary](docs/self-contained-binary.md), [spec handling](docs/spec-handling.md), [lifecycle modes](docs/lifecycle-and-operations.md), [team identity](docs/team-identity.md), [generated assertions](docs/generated-assertions.md), [contract error codes](docs/contract-error-codes.md)
 - Marketplace docs: [Support](SUPPORT.md), [Security Policy](SECURITY.md), [Release Policy](RELEASE_POLICY.md)
 - Postman references: [Postman API](https://learning.postman.com/docs/reference/postman-api/intro-api/), [API authentication](https://learning.postman.com/docs/reference/postman-api/authentication/), [service accounts](https://learning.postman.com/docs/administration/service-accounts/), [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), [Postman CLI governance](https://learning.postman.com/docs/postman-cli/postman-cli-governance/)

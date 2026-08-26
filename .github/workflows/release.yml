@@ -207,7 +207,7 @@ jobs:
           import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
           import { basename, join } from 'node:path';
 
-          const EXPECTED_PACKAGE_NAME = '@postman/onboarding-bootstrap';
+          const EXPECTED_PACKAGE_NAME = '@postman-cs/onboarding-bootstrap';
           const SAFE = /^[A-Za-z0-9._-]+$/;
           const HEX = /^[a-f0-9]{64}$/;
           const TAR_TIMEOUT_MS = 10_000;

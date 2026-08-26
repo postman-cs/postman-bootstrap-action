@@ -85,7 +85,7 @@ function resolvePackageVersion(): string {
         name?: string;
         version?: string;
       };
-      if (packageJson.name === '@postman/onboarding-bootstrap' && packageJson.version) {
+      if (packageJson.name === '@postman-cs/onboarding-bootstrap' && packageJson.version) {
         return String(packageJson.version).trim();
       }
     } catch {

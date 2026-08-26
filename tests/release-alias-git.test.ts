@@ -38,7 +38,7 @@ function createTempRepo(): string {
 }
 
 function commitPackage(cwd: string, version: string, message: string): string {
-  writeFileSync(join(cwd, 'package.json'), `${JSON.stringify({ name: '@postman/onboarding-bootstrap', version }, null, 2)}\n`);
+  writeFileSync(join(cwd, 'package.json'), `${JSON.stringify({ name: '@postman-cs/onboarding-bootstrap', version }, null, 2)}\n`);
   git(cwd, ['add', 'package.json']);
   git(cwd, ['commit', '-m', message]);
   return git(cwd, ['rev-parse', 'HEAD']);

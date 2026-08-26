@@ -23,7 +23,7 @@ import {
   // @ts-expect-error The release verifier is intentionally dependency-free ESM.
 } from '../scripts/verify-release-artifacts.mjs';
 
-const PACKAGE_NAME = '@postman/onboarding-bootstrap';
+const PACKAGE_NAME = '@postman-cs/onboarding-bootstrap';
 const REPOSITORY = 'postman-cs/postman-bootstrap-action';
 const COMMIT_SHA = 'abc123def456';
 const VERSION = '2.10.7';

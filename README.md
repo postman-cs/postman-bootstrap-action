@@ -163,6 +163,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 <!-- inputs-table:start -->
 | Name | Description | Required | Default |
 | --- | --- | --- | --- |
+| `working-directory` | Repository-root-relative directory used for all local inputs and generated artifacts. | no |  |
 | `workspace-id` | Existing Postman workspace ID | no |  |
 | `spec-id` | Existing Postman spec ID | no |  |
 | `baseline-collection-id` | Existing baseline collection ID | no |  |

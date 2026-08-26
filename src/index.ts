@@ -116,6 +116,7 @@ import {
   type BranchStrategy
 } from './lib/repo/branch-decision.js';
 import { buildProtocolCollection, type ProtocolCollectionResult } from './lib/protocols/dispatch.js';
+import { activateWorkingDirectory } from './lib/working-directory.js';
 
 export interface ResolvedInputs {
   projectName: string;
@@ -1041,6 +1042,7 @@ export function readActionInputs(
 
   const inputs = resolveInputs({
     ...process.env,
+    INPUT_WORKING_DIRECTORY: optionalInput(actionCore, 'working-directory'),
     INPUT_PROJECT_NAME: projectName,
     INPUT_WORKSPACE_ID: optionalInput(actionCore, 'workspace-id'),
     INPUT_SPEC_ID: optionalInput(actionCore, 'spec-id'),
@@ -4038,6 +4040,10 @@ export async function runAction(
   actionExec: ExecLike = exec,
   actionIo: IOLike = io
 ): Promise<PlannedOutputs> {
+  activateWorkingDirectory(
+    actionCore.getInput('working-directory'),
+    process.env.GITHUB_WORKSPACE ?? process.cwd()
+  );
   const inputs = readActionInputs(actionCore);
 
   // Decide step (branch-aware sync): resolve the immutable BranchDecision from

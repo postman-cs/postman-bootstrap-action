@@ -22,7 +22,11 @@ export const bootstrapActionContract: ActionContract = {
   name: 'postman-bootstrap-action',
   description: 'Contract for bootstrapping Postman assets from an OpenAPI spec.',
   inputs: {
-
+    'working-directory': {
+      description: 'Repository-root-relative directory used for all local inputs and generated artifacts.',
+      required: false,
+      default: ''
+    },
     'workspace-id': {
       description: 'Existing Postman workspace ID.',
       required: false

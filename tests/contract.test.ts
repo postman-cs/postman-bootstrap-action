@@ -50,6 +50,17 @@ describe('bootstrap action contract', () => {
     expect(Object.keys(actionManifest.outputs)).toEqual(contractOutputNames);
   });
 
+  it('declares working-directory as an optional default-off input', () => {
+    expect(bootstrapActionContract.inputs['working-directory']).toMatchObject({
+      required: false,
+      default: ''
+    });
+    expect(actionManifest.inputs['working-directory']).toMatchObject({
+      required: false,
+      default: ''
+    });
+  });
+
   it('accepts PMAK only as an optional access-token mint credential', () => {
     expect(contractInputNames).toContain('postman-access-token');
     expect(actionManifest.inputs['postman-access-token']).toMatchObject({ required: false });

@@ -10,6 +10,7 @@ import { buildContractIndex } from '../src/lib/spec/contract-index.js';
 import {
   LOCAL_OPENAPI_CONVERSION_FAILED,
   LocalOpenApiConversionError,
+  applyCollectionIdentity,
   buildLocalOpenApiConversionOptions,
   computePayloadDigest,
   generateLocalOpenApiRolePayloads,
@@ -315,9 +316,14 @@ describe('local OpenAPI role payload generation', () => {
     expect(smokeScripts.some((entry) => entry.source.includes('Status code is not an error'))).toBe(true);
     expect(contractScripts.some((entry) => entry.source.includes('pm.test'))).toBe(true);
     const contractBytes = Buffer.byteLength(JSON.stringify(result.roles.contract.collection), 'utf8');
-    // Local whole-import opts out of the unrelated 4 MiB update guard; large
-    // valid contract payloads must succeed without an invented whole-import cap.
-    expect(contractBytes).toBeGreaterThan(4_000_000);
+    // Local whole-import opts out of the unrelated 4 MiB update guard, proven by
+    // the `maxCollectionUpdateBytes: false` sentinel below rather than by payload
+    // girth: the shared validator now rides one root event, so 101 operations
+    // that used to embed ~10.3 MB of duplicated runtime fit in well under 1 MB.
+    expect(contractBytes).toBeLessThan(1_000_000);
+    const contractRootScripts = (result.roles.contract.collection.event as Array<{ script?: { exec?: string[] } }> | undefined) ?? [];
+    expect(contractRootScripts.length).toBeGreaterThan(0);
+    expect(contractRootScripts.some((entry) => (entry.script?.exec ?? []).join('\n').includes('pm.test'))).toBe(true);
   });
 
   it('assigns disjoint structural Sync IDs across role clones from one conversion (Q12)', async () => {
@@ -357,6 +363,26 @@ describe('local OpenAPI role payload generation', () => {
     const rekeyedAgain = rekeyStructuralCollectionIds(result.roles.baseline.collection);
     expect(computePayloadDigest(rekeyedAgain)).toBe(result.roles.baseline.payloadDigest);
     expect(collectStructuralSyncIds(rekeyedAgain)).not.toEqual(baselineIds);
+  });
+
+  it('keeps generated semantic digests stable across faker-irrelevant source changes', async () => {
+    const options = {
+      openApiVersion: '3.0' as const,
+      requestNameSource: 'Fallback' as const,
+      folderStrategy: 'Paths' as const,
+      names,
+      contractIndex: indexFor(oas30)
+    };
+    const first = await generateLocalOpenApiRolePayloads(oas30, options);
+    const sourceWithExtension = JSON.stringify({
+      ...(JSON.parse(oas30) as Record<string, unknown>),
+      'x-source-only-change': true
+    });
+    const changed = await generateLocalOpenApiRolePayloads(sourceWithExtension, options);
+
+    for (const role of ['baseline', 'smoke', 'contract'] as const) {
+      expect(changed.roles[role].payloadDigest).toBe(first.roles[role].payloadDigest);
+    }
   });
 
   it('ignores only structural IDs while preserving semantic id properties in the digest', () => {
@@ -402,6 +428,317 @@ describe('local OpenAPI role payload generation', () => {
     const scripted = structuredClone(empty);
     scripted.event = [{ listen: 'prerequest', script: { exec: ['pm.variables.set("x", "1");'] } }];
     expect(computePayloadDigest(scripted)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('treats omitted and empty descriptions as equivalent without ignoring content', () => {
+    const omitted: JsonRecord = {
+      info: { name: 'Descriptions' },
+      item: [{ name: 'folder', item: [] }]
+    };
+    const empty: JsonRecord = {
+      info: { name: 'Descriptions', description: '' },
+      item: [{ name: 'folder', description: '', item: [] }]
+    };
+    expect(computePayloadDigest(empty)).toBe(computePayloadDigest(omitted));
+    record(array(empty.item)[0]).description = 'Durable';
+    expect(computePayloadDigest(empty)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('treats an omitted and empty request description as equivalent', () => {
+    const omitted: JsonRecord = {
+      info: { name: 'Request description' },
+      item: [{ name: 'request', request: { method: 'GET', url: 'https://example.test' } }]
+    };
+    const empty = structuredClone(omitted);
+    record(record(array(empty.item)[0]).request).description = '';
+    expect(computePayloadDigest(empty)).toBe(computePayloadDigest(omitted));
+    record(record(array(empty.item)[0]).request).description = 'Durable';
+    expect(computePayloadDigest(empty)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('uses the persisted raw URL when Sync drops structured URL parameter annotations', () => {
+    const described: JsonRecord = {
+      info: { name: 'URL descriptions' },
+      item: [{
+        name: 'request',
+        request: {
+          method: 'GET',
+          url: {
+            raw: 'https://example.test/items?limit=1',
+            query: [{ key: 'limit', value: '1', description: '' }],
+            variable: [{ key: 'itemId', value: '1', description: '' }]
+          }
+        }
+      }]
+    };
+    const omitted = structuredClone(described);
+    const omittedUrl = record(record(array(omitted.item)[0]).request).url;
+    delete record(array(record(omittedUrl).query)[0]).description;
+    delete record(array(record(omittedUrl).variable)[0]).description;
+
+    expect(computePayloadDigest(described)).toBe(computePayloadDigest(omitted));
+    const describedUrl = record(record(array(described.item)[0]).request).url;
+    record(array(record(describedUrl).query)[0]).description = 'Page size';
+    expect(computePayloadDigest(described)).toBe(computePayloadDigest(omitted));
+    delete record(describedUrl).raw;
+    expect(computePayloadDigest(described)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('uses raw URL bytes when the object contains only parser-derived fields', () => {
+    const objectUrl: JsonRecord = {
+      info: { name: 'URL' },
+      item: [{
+        name: 'request',
+        request: { method: 'GET', url: { raw: 'https://example.test/things?q=1', protocol: 'https' } }
+      }]
+    };
+    const stringUrl: JsonRecord = {
+      info: { name: 'URL' },
+      item: [{ name: 'request', request: { method: 'GET', url: 'https://example.test/things?q=1' } }]
+    };
+    expect(computePayloadDigest(objectUrl)).toBe(computePayloadDigest(stringUrl));
+  });
+
+  it('treats omitted and empty body parameter descriptions as equivalent', () => {
+    const described: JsonRecord = {
+      info: { name: 'Body descriptions' },
+      item: [{
+        name: 'request',
+        request: {
+          method: 'POST',
+          url: 'https://example.test/items',
+          body: { mode: 'urlencoded', urlencoded: [{ key: 'name', value: 'value', description: '' }] }
+        }
+      }]
+    };
+    const omitted = structuredClone(described);
+    const omittedBody = record(record(record(array(omitted.item)[0]).request).body);
+    delete record(array(omittedBody.urlencoded)[0]).description;
+    expect(computePayloadDigest(described)).toBe(computePayloadDigest(omitted));
+    const describedBody = record(record(record(array(described.item)[0]).request).body);
+    record(array(describedBody.urlencoded)[0]).description = 'Name';
+    expect(computePayloadDigest(described)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('treats disabled false as the omitted Sync default without ignoring true', () => {
+    const explicit: JsonRecord = {
+      info: { name: 'Disabled default' },
+      item: [{
+        name: 'request',
+        request: {
+          method: 'POST',
+          url: 'https://example.test/items',
+          body: { mode: 'urlencoded', urlencoded: [{ key: 'name', value: 'value', disabled: false }] }
+        }
+      }]
+    };
+    const omitted = structuredClone(explicit);
+    const omittedBody = record(record(record(array(omitted.item)[0]).request).body);
+    delete record(array(omittedBody.urlencoded)[0]).disabled;
+    expect(computePayloadDigest(explicit)).toBe(computePayloadDigest(omitted));
+    const explicitBody = record(record(record(array(explicit.item)[0]).request).body);
+    record(array(explicitBody.urlencoded)[0]).disabled = true;
+    expect(computePayloadDigest(explicit)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('uses the persisted raw URL when Sync drops structured disabled state', () => {
+    const explicit: JsonRecord = {
+      info: { name: 'URL disabled default' },
+      item: [{
+        name: 'request',
+        request: {
+          method: 'GET',
+          url: {
+            raw: 'https://example.test/items?limit=1',
+            query: [{ key: 'limit', value: '1', disabled: false }]
+          }
+        }
+      }]
+    };
+    const omitted = structuredClone(explicit);
+    const omittedUrl = record(record(array(omitted.item)[0]).request).url;
+    delete record(array(record(omittedUrl).query)[0]).disabled;
+    expect(computePayloadDigest(explicit)).toBe(computePayloadDigest(omitted));
+
+    const explicitUrl = record(record(array(explicit.item)[0]).request).url;
+    record(array(record(explicitUrl).query)[0]).disabled = true;
+    expect(computePayloadDigest(explicit)).toBe(computePayloadDigest(omitted));
+    delete record(explicitUrl).raw;
+    expect(computePayloadDigest(explicit)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('treats empty structured URL parameter lists as omitted', () => {
+    const explicit: JsonRecord = {
+      info: { name: 'URL parameters' },
+      item: [{ name: 'request', request: { method: 'GET', url: { host: ['example.test'], query: [], variable: [] } } }]
+    };
+    const omitted: JsonRecord = {
+      info: { name: 'URL parameters' },
+      item: [{ name: 'request', request: { method: 'GET', url: { host: ['example.test'] } } }]
+    };
+    expect(computePayloadDigest(explicit)).toBe(computePayloadDigest(omitted));
+    record(record(record(array(explicit.item)[0]).request).url).variable = [{ key: 'id', value: '1' }];
+    expect(computePayloadDigest(explicit)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('treats an empty saved-response list as omitted', () => {
+    const explicit: JsonRecord = {
+      info: { name: 'Responses' },
+      item: [{ name: 'request', request: { method: 'GET', url: 'https://example.test' }, response: [] }]
+    };
+    const omitted: JsonRecord = {
+      info: { name: 'Responses' },
+      item: [{ name: 'request', request: { method: 'GET', url: 'https://example.test' } }]
+    };
+    expect(computePayloadDigest(explicit)).toBe(computePayloadDigest(omitted));
+    record(array(explicit.item)[0]).response = [{ name: 'ok', code: 200 }];
+    expect(computePayloadDigest(explicit)).not.toBe(computePayloadDigest(omitted));
+  });
+
+  it('ignores saved-response original-request structural ids but preserves body ids', () => {
+    const first: JsonRecord = {
+      info: { name: 'Saved response ids' },
+      item: [{
+        name: 'request',
+        request: { method: 'GET', url: 'https://example.test' },
+        response: [{
+          id: 'response-a',
+          name: 'ok',
+          originalRequest: { id: 'original-a', method: 'POST', url: 'https://example.test', body: { raw: '{"id":"business-a"}' } }
+        }]
+      }]
+    };
+    const second = structuredClone(first);
+    const response = record(array(record(array(second.item)[0]).response)[0]);
+    response.id = 'response-b';
+    record(response.originalRequest).id = 'original-b';
+    expect(computePayloadDigest(second)).toBe(computePayloadDigest(first));
+    record(record(response.originalRequest).body).raw = '{"id":"business-b"}';
+    expect(computePayloadDigest(second)).not.toBe(computePayloadDigest(first));
+  });
+
+  it('canonicalizes equivalent script exec line grouping without ignoring script text', () => {
+    const split: JsonRecord = {
+      info: { name: 'Scripts' },
+      item: [{
+        name: 'request',
+        request: { method: 'GET', url: 'https://example.test' },
+        event: [{ listen: 'test', script: { type: 'text/javascript', exec: ['line one', 'line two'] } }]
+      }]
+    };
+    const joined = structuredClone(split);
+    delete record(record(array(record(array(joined.item)[0]).event)[0]).script).type;
+    record(record(array(record(array(joined.item)[0]).event)[0]).script).exec = ['line one\nline two'];
+    expect(computePayloadDigest(joined)).toBe(computePayloadDigest(split));
+    record(record(array(record(array(joined.item)[0]).event)[0]).script).exec = ['line one\nchanged'];
+    expect(computePayloadDigest(joined)).not.toBe(computePayloadDigest(split));
+  });
+
+  it('matches the stable server folder-before-request partition while preserving same-kind order', () => {
+    const requested: JsonRecord = {
+      info: { name: 'Ordering' },
+      item: [
+        { name: 'request-a', request: { method: 'GET', url: 'https://example.test/a' } },
+        { name: 'folder-a', item: [] },
+        { name: 'folder-b', item: [] },
+        { name: 'request-b', request: { method: 'GET', url: 'https://example.test/b' } }
+      ]
+    };
+    const exportedItems: JsonRecord[] = [
+      { name: 'folder-a', item: [] },
+      { name: 'folder-b', item: [] },
+      { name: 'request-a', request: { method: 'GET', url: 'https://example.test/a' } },
+      { name: 'request-b', request: { method: 'GET', url: 'https://example.test/b' } }
+    ];
+    const exported: JsonRecord = {
+      ...structuredClone(requested),
+      item: exportedItems
+    };
+    expect(computePayloadDigest(exported)).toBe(computePayloadDigest(requested));
+    [exportedItems[0], exportedItems[1]] = [exportedItems[1], exportedItems[0]];
+    expect(computePayloadDigest(exported)).not.toBe(computePayloadDigest(requested));
+  });
+
+  it('ignores only the legacy body-pruning field that Collection v3 cannot represent', () => {
+    const requested: JsonRecord = {
+      info: { name: 'Protocol behavior' },
+      item: [{
+        name: 'request',
+        request: { method: 'GET', url: 'https://example.test' },
+        protocolProfileBehavior: { disableBodyPruning: true }
+      }]
+    };
+    const exported: JsonRecord = {
+      info: { name: 'Protocol behavior' },
+      item: [{ name: 'request', request: { method: 'GET', url: 'https://example.test' } }]
+    };
+    expect(computePayloadDigest(exported)).toBe(computePayloadDigest(requested));
+    record(array(exported.item)[0]).protocolProfileBehavior = {};
+    expect(computePayloadDigest(exported)).toBe(computePayloadDigest(requested));
+    record(array(requested.item)[0]).protocolProfileBehavior = { followRedirects: false };
+    expect(computePayloadDigest(exported)).not.toBe(computePayloadDigest(requested));
+  });
+
+  it('treats an explicit null request auth as inherited auth after Sync export', () => {
+    const explicit: JsonRecord = {
+      info: { name: 'Auth' },
+      item: [{ name: 'request', request: { method: 'GET', url: 'https://example.test', auth: null } }]
+    };
+    const inherited: JsonRecord = {
+      info: { name: 'Auth' },
+      item: [{ name: 'request', request: { method: 'GET', url: 'https://example.test' } }]
+    };
+    expect(computePayloadDigest(explicit)).toBe(computePayloadDigest(inherited));
+    record(record(array(explicit.item)[0]).request).auth = { type: 'noauth' };
+    expect(computePayloadDigest(explicit)).not.toBe(computePayloadDigest(inherited));
+  });
+
+  it('treats Sync-omitted bearer token UI types as equivalent without ignoring auth', () => {
+    const bearer = () => ({
+      type: 'bearer',
+      bearer: [{ key: 'token', value: '{{bearerToken}}', type: 'string' }]
+    });
+    const generated: JsonRecord = {
+      info: { name: 'Bearer auth' },
+      auth: bearer(),
+      item: [{
+        name: 'request',
+        request: { method: 'GET', url: 'https://example.test', auth: bearer() },
+        response: [{
+          name: 'saved',
+          originalRequest: { method: 'GET', url: 'https://example.test', auth: bearer() }
+        }]
+      }]
+    };
+    const exported = structuredClone(generated);
+    delete record(array(record(exported.auth).bearer)[0]).type;
+    const request = record(record(array(exported.item)[0]).request);
+    delete record(array(record(request.auth).bearer)[0]).type;
+    const response = record(array(record(array(exported.item)[0]).response)[0]);
+    delete record(array(record(record(response.originalRequest).auth).bearer)[0]).type;
+
+    expect(computePayloadDigest(exported)).toBe(computePayloadDigest(generated));
+    record(array(record(exported.auth).bearer)[0]).value = '{{differentToken}}';
+    expect(computePayloadDigest(exported)).not.toBe(computePayloadDigest(generated));
+  });
+
+  it('canonicalizes converter description objects to the Sync wire string before digesting', () => {
+    const source: JsonRecord = {
+      info: {
+        name: 'Converted',
+        description: { content: 'Durable description', type: 'text/markdown' }
+      },
+      item: []
+    };
+    const canonical = applyCollectionIdentity(source, 'Canonical');
+    expect(record(canonical.info).description).toBe('Durable description');
+    expect(record(source.info).description).toEqual({
+      content: 'Durable description',
+      type: 'text/markdown'
+    });
+    expect(computePayloadDigest(canonical)).toBe(
+      computePayloadDigest({ info: { name: 'Canonical', description: 'Durable description' }, item: [] })
+    );
   });
 
   it('uses nested Tags folders and includes OAS 3.1 webhooks', async () => {

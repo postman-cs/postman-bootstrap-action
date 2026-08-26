@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { CONTRACT_SIZE_LIMITS, createContractScript, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
+import { buildOperationContractEntry, buildSharedContractRuntime, contractSegmentApplies, CONTRACT_SIZE_LIMITS, createContractScript, instrumentContractCollection, matchOperation } from '../src/lib/spec/collection-contracts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
 import { createOas30TypeNullCompatibilityDocument, loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, parseOpenApiDocument, detectOpenApiVersion, normalizeSpecTypeFromContent } from '../src/lib/spec/openapi-loader.js';
 import { packSchema } from '../src/lib/spec/schema-pack.js';
@@ -774,7 +774,7 @@ paths:
                 type: object
                 properties: { id: { type: integer } }
 `));
-    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[0]!.event![0]!.script.exec).join('\n');
+    const script = ((result.collection.event as Array<{ script: { exec: string[] } }>)[0]!.script.exec).join('\n');
     expect(script).toContain('(function()');
     expect(script).not.toContain('pm.response.to.have.jsonSchema');
     expect(script).not.toMatch(/\beval\s*\(/);
@@ -803,7 +803,7 @@ paths:
         '204':
           description: No content
 `));
-    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[0]!.event![0]!.script.exec).join('\n');
+    const script = ((result.collection.event as Array<{ script: { exec: string[] } }>)[0]!.script.exec).join('\n');
     expect(script).toContain("var range = String(Math.floor(pm.response.code / 100)) + 'XX';");
     expect(script).toContain("pm.test('Status code is defined by OpenAPI'");
     expect(script).toContain("pm.test('Response body matches OpenAPI body contract'");
@@ -837,7 +837,7 @@ paths:
                   - type: string
                   - type: integer
 `));
-    const script = ((result.collection.item as Array<{ event?: Array<{ script: { exec: string[] } }> }>)[0]!.event![0]!.script.exec).join('\n');
+    const script = ((result.collection.event as Array<{ script: { exec: string[] } }>)[0]!.script.exec).join('\n');
     expect(script).toContain('OpenAPI schema unsupported');
     expect(script).toContain('Tuple array items are unsupported in OpenAPI 3.0');
     expect(script).not.toContain('pm.response.to.have.jsonSchema');
@@ -901,7 +901,7 @@ paths:
         }
       }
     });
-    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, index)).toThrow(`CONTRACT_SCRIPT_SIZE_EXCEEDED: Generated contract test script exceeded ${CONTRACT_SIZE_LIMITS.maxTestScriptBytes} bytes`);
+    expect(() => instrumentContractCollection({ item: [{ request: { method: 'GET', url: { path: ['pets'] } } }] }, index)).toThrow(`CONTRACT_ROOT_SCRIPT_SIZE_EXCEEDED: GET /pets contract runtime needs 1618218 bytes, over the ${CONTRACT_SIZE_LIMITS.maxTestScriptBytes} byte limit`);
 
     expect(() => instrumentContractCollection({
       item: [{ request: { method: 'GET', url: { path: ['pets'] } }, description: 'x'.repeat(CONTRACT_SIZE_LIMITS.maxCollectionUpdateBytes) }]
@@ -1148,16 +1148,26 @@ components:
 
     const collection = { item: ['pets', 'open', 'optional', 'mtls'].map((path) => ({ name: path, request: { method: 'GET', url: { path: [path] } } })) };
     const { collection: instrumented } = instrumentContractCollection(collection, index);
-    const scriptFor = (name: string) => {
-      const item = (instrumented.item as Array<Record<string, unknown>>).find((entry) => entry.name === name)!;
-      const event = (item.event as Array<{ script: { exec: string[] } }>)[0]!;
-      return event.script.exec.join('\n');
+    const rootScript = ((instrumented.event as Array<{ script: { exec: string[] } }>)[0]!.script.exec).join('\n');
+    const runtimeSegments = buildSharedContractRuntime();
+    const reachableFor = (id: string) => {
+      const entry = buildOperationContractEntry(byId(id), []);
+      return [
+        ...entry.prologue,
+        ...runtimeSegments.filter((segment) => contractSegmentApplies(segment, entry)).flatMap((segment) => segment.lines)
+      ].join('\n');
     };
-    expect(scriptFor('pets')).toContain('Request carries credentials required by OpenAPI security');
-    expect(scriptFor('mtls')).not.toContain('Request carries credentials required by OpenAPI security');
-    expect(scriptFor('open')).not.toContain('Request carries credentials required by OpenAPI security');
-    expect(scriptFor('optional')).not.toContain('Request carries credentials required by OpenAPI security');
-    expect(scriptFor('pets')).toContain('Content-Length is consistent with OpenAPI body expectations');
+    // No generated per-request test events remain for mapped operations.
+    for (const name of ['pets', 'open', 'optional', 'mtls']) {
+      const item = (instrumented.item as Array<Record<string, unknown>>).find((entry) => entry.name === name)!;
+      expect(item.event, name).toBeUndefined();
+    }
+    expect(rootScript).toContain('Request carries credentials required by OpenAPI security');
+    expect(reachableFor('GET /pets')).toContain('Request carries credentials required by OpenAPI security');
+    expect(reachableFor('GET /mtls')).not.toContain('Request carries credentials required by OpenAPI security');
+    expect(reachableFor('GET /open')).not.toContain('Request carries credentials required by OpenAPI security');
+    expect(reachableFor('GET /optional')).not.toContain('Request carries credentials required by OpenAPI security');
+    expect(reachableFor('GET /pets')).toContain('Content-Length is consistent with OpenAPI body expectations');
   });
 
   it('indexes required cookie parameters with warnings, marks deprecated operations, and keeps static checks passing', () => {

@@ -43,11 +43,14 @@ describe('assertion generation hardening (panel defects)', () => {
     expect(() => {
       result = instrumentContractCollection(collection, index);
     }).not.toThrow();
-    // instrumentContractCollection unshifts a "00 - Resolve Secrets" item at index 0,
-    // so select the actual request item (not the injected resolver).
-    const items = result!.collection.item as Array<{ name?: string; event?: Array<{ listen: string; script: { exec: string[] } }> }>;
-    const target = items.find((it) => it.name !== '00 - Resolve Secrets')!;
-    const script = target.event!.find((e) => e.listen === 'test')!.script.exec.join('\n');
+    // Mapped operations now assert through the consolidated collection-root
+    // `test` event(s); no per-request script is emitted for them, so the
+    // eval-as-data proof reads the root script instead.
+    const rootEvents = result!.collection.event as Array<{ listen: string; script: { exec: string[] } }>;
+    const script = rootEvents
+      .filter((event) => event.listen === 'test')
+      .flatMap((event) => event.script.exec)
+      .join('\n');
     expect(script).toContain('/eval');
     expect(/\beval\s*\(/.test(script)).toBe(false);
   });

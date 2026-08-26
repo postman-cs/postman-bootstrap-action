@@ -1,5 +1,4 @@
-import * as V2 from '@postman/runtime.models/v2';
-import { transform, FormatVersion } from '@postman/runtime.models/transforms';
+import { convertV2CollectionToExtensibleModel } from '../postman/collection-model-conversion.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -18,10 +17,5 @@ type JsonRecord = Record<string, unknown>;
  * representation, so its builder emits EC nodes natively.
  */
 export function convertV2CollectionToEc(v2Collection: JsonRecord): JsonRecord {
-  // `V2.Collection` is the runtime Model<T> descriptor the transform dispatches on.
-  return transform(
-    (V2 as unknown as { Collection: unknown }).Collection as never,
-    FormatVersion.Extensible,
-    v2Collection as never
-  ) as unknown as JsonRecord;
+  return convertV2CollectionToExtensibleModel(v2Collection);
 }

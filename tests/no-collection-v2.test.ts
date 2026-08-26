@@ -11,16 +11,14 @@ const SRC_ROOT = join(ACTION_ROOT, 'src');
  * files only. PMAK collection CRUD and postman-collection imports are never allowlisted.
  */
 const V2_TO_V3_ALLOWLIST: Record<string, string[]> = {
-  'src/lib/protocols/v2-to-ec.ts': ['runtime-models-v2-import'],
   'src/lib/protocols/graphql/builder.ts': ['v2.1-schema-url', 'v2-version-literal'],
   'src/lib/protocols/soap/builder.ts': ['v2.1-schema-url', 'v2-version-literal'],
   'src/lib/protocols/dispatch.ts': ['v2-version-literal'],
+  'src/lib/postman/collection-model-conversion.ts': ['runtime-models-v2-import'],
   'src/lib/postman/postman-gateway-assets-client.ts': [
-    'runtime-models-v2-import',
     'v2.1-schema-url',
     'v2-version-literal'
   ],
-  'src/lib/repo/local-collection-artifacts.ts': ['runtime-models-v2-import'],
   'src/lib/postman/additional-collections.ts': ['v2.1-schema-url']
 };
 

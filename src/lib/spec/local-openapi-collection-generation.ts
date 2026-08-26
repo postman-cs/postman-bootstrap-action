@@ -7,6 +7,7 @@ import {
   type Options
 } from 'openapi-to-postmanv2';
 
+import { canonicalizeV2CollectionForSync } from '../postman/collection-model-conversion.js';
 import { instrumentContractCollection } from './collection-contracts.js';
 import type { ContractIndex } from './contract-index.js';
 import { withDeterministicSchemaFaker } from './deterministic-schema-faker.js';
@@ -185,8 +186,14 @@ function withoutStructuralIds(collection: JsonRecord): JsonRecord {
   // those non-serializable properties makes an import/export round trip appear
   // different even when the transmitted collection is exact.
   const clone = JSON.parse(JSON.stringify(collection)) as JsonRecord;
-  if (isRecord(clone.info)) delete clone.info._postman_id;
+  stripSyncDefaults(clone);
+  if (isRecord(clone.info)) {
+    delete clone.info._postman_id;
+    if (clone.info.description === '') delete clone.info.description;
+  }
+  normalizeSyncAuth(clone.auth);
   if (Array.isArray(clone.event) && clone.event.length === 0) delete clone.event;
+  else normalizeEventScriptExec(clone.event);
   stripStructuralItemIds(clone.item);
   return clone;
 }
@@ -196,13 +203,95 @@ function stripStructuralItemIds(items: unknown): void {
   for (const raw of items) {
     if (!isRecord(raw)) continue;
     delete raw.id;
+    if (raw.description === '') delete raw.description;
     if (Array.isArray(raw.event) && raw.event.length === 0) delete raw.event;
-    if (isRecord(raw.request)) delete raw.request.id;
+    else normalizeEventScriptExec(raw.event);
+    normalizeProtocolProfileBehavior(raw);
+    if (isRecord(raw.request)) {
+      delete raw.request.id;
+      if (raw.request.auth === null) delete raw.request.auth;
+      else normalizeSyncAuth(raw.request.auth);
+      normalizeSyncRequest(raw.request);
+    }
     stripStructuralItemIds(raw.item);
     if (Array.isArray(raw.response)) {
       for (const response of raw.response) {
-        if (isRecord(response)) delete response.id;
+        if (isRecord(response)) {
+          delete response.id;
+          if (isRecord(response.originalRequest)) {
+            delete response.originalRequest.id;
+            normalizeSyncAuth(response.originalRequest.auth);
+            normalizeSyncRequest(response.originalRequest);
+          }
+        }
       }
+      if (raw.response.length === 0) delete raw.response;
+    }
+  }
+  const folders = items.filter((item) => isRecord(item) && Array.isArray(item.item));
+  const requests = items.filter((item) => !(isRecord(item) && Array.isArray(item.item)));
+  items.splice(0, items.length, ...folders, ...requests);
+}
+
+function normalizeSyncRequest(request: JsonRecord): void {
+  if (Array.isArray(request.header) && request.header.length === 0) delete request.header;
+  const url = isRecord(request.url) ? request.url : null;
+  if (!url) return;
+  for (const field of ['query', 'variable'] as const) {
+    if (!Array.isArray(url[field])) continue;
+    for (const parameter of url[field]) {
+      if (!isRecord(parameter)) continue;
+      if (parameter.description === '') delete parameter.description;
+      if (parameter.disabled === false) delete parameter.disabled;
+    }
+    if (url[field].length === 0) delete url[field];
+  }
+  if (typeof url.raw === 'string') request.url = url.raw;
+}
+
+function stripSyncDefaults(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) stripSyncDefaults(entry);
+    return;
+  }
+  if (!isRecord(value)) return;
+  if (value.description === '') delete value.description;
+  if (value.disabled === false) delete value.disabled;
+  for (const entry of Object.values(value)) stripSyncDefaults(entry);
+}
+
+function normalizeSyncAuth(auth: unknown): void {
+  if (!isRecord(auth) || auth.type !== 'bearer' || !Array.isArray(auth.bearer)) return;
+  for (const credential of auth.bearer) {
+    if (
+      isRecord(credential) &&
+      credential.key === 'token' &&
+      credential.type === 'string'
+    ) {
+      // Sync preserves the bearer token itself but omits this converter-only UI hint.
+      delete credential.type;
+    }
+  }
+}
+
+function normalizeProtocolProfileBehavior(item: JsonRecord): void {
+  const behavior = isRecord(item.protocolProfileBehavior) ? item.protocolProfileBehavior : null;
+  if (!behavior) return;
+  if (typeof behavior.disableBodyPruning === 'boolean') {
+    // Collection v3 has no representation for this legacy v2 converter field,
+    // so Sync import drops it before the authoritative export is produced.
+    delete behavior.disableBodyPruning;
+  }
+  if (Object.keys(behavior).length === 0) delete item.protocolProfileBehavior;
+}
+
+function normalizeEventScriptExec(events: unknown): void {
+  if (!Array.isArray(events)) return;
+  for (const event of events) {
+    if (!isRecord(event) || !isRecord(event.script) || !Array.isArray(event.script.exec)) continue;
+    if (event.script.type === 'text/javascript') delete event.script.type;
+    if (event.script.exec.every((line) => typeof line === 'string')) {
+      event.script.exec = [event.script.exec.join('\n')];
     }
   }
 }
@@ -264,6 +353,10 @@ export function applyCollectionIdentity(
   const nextInfo: JsonRecord = { ...info, name };
   if (description !== undefined) {
     nextInfo.description = description;
+  } else if (isRecord(nextInfo.description) && typeof nextInfo.description.content === 'string') {
+    // Sync import persists the SDK Description object's content as a string.
+    // Canonicalize before digesting so generated and exported wire bytes agree.
+    nextInfo.description = nextInfo.description.content;
   }
   clone.info = nextInfo;
   return clone;
@@ -414,15 +507,15 @@ export async function generateLocalOpenApiRolePayloads(
     throw new LocalOpenApiConversionError('instrument-contract', 'failed to instrument contract collection', error);
   }
 
-  // After names/instrumentation/secrets-resolver insertion — before digests —
-  // give each role disjoint structural Sync identities. Role clones otherwise
-  // reuse converter nested request/response IDs and concurrent imports collide.
+  // Sync persists the Collection v3 model, not every legacy converter v2 field.
+  // Canonicalize fully instrumented roles through that model before assigning
+  // final structural identities and computing semantic digests.
   try {
-    baseline = rekeyStructuralCollectionIds(baseline);
-    smoke = rekeyStructuralCollectionIds(smoke);
-    contract = rekeyStructuralCollectionIds(contract);
+    baseline = rekeyStructuralCollectionIds(canonicalizeV2CollectionForSync(baseline));
+    smoke = rekeyStructuralCollectionIds(canonicalizeV2CollectionForSync(smoke));
+    contract = rekeyStructuralCollectionIds(canonicalizeV2CollectionForSync(contract));
   } catch (error) {
-    throw new LocalOpenApiConversionError('materialize-roles', 'failed to rekey structural collection ids', error);
+    throw new LocalOpenApiConversionError('materialize-roles', 'failed to canonicalize role collections for Sync', error);
   }
 
   const roles: Record<CollectionRole, LocalRolePayload> = {

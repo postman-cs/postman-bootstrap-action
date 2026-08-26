@@ -5602,11 +5602,11 @@ var require_util2 = __commonJS({
     async function readAllBytes(reader, successSteps, failureSteps) {
       try {
         const bytes = [];
-        let byteLength = 0;
+        let byteLength2 = 0;
         do {
           const { done, value: chunk } = await reader.read();
           if (done) {
-            successSteps(Buffer.concat(bytes, byteLength));
+            successSteps(Buffer.concat(bytes, byteLength2));
             return;
           }
           if (!isUint8Array(chunk)) {
@@ -5614,7 +5614,7 @@ var require_util2 = __commonJS({
             return;
           }
           bytes.push(chunk);
-          byteLength += chunk.length;
+          byteLength2 += chunk.length;
         } while (true);
       } catch (e) {
         failureSteps(e);
@@ -28064,7 +28064,7 @@ var require_Collection = __commonJS({
       });
     }
     var isEmptyPath = (path12) => path12 == null || typeof path12 === "object" && !!path12[Symbol.iterator]().next().done;
-    var Collection5 = class extends Node.NodeBase {
+    var Collection3 = class extends Node.NodeBase {
       constructor(type2, schema3) {
         super(type2);
         Object.defineProperty(this, "schema", {
@@ -28171,7 +28171,7 @@ var require_Collection = __commonJS({
         }
       }
     };
-    exports2.Collection = Collection5;
+    exports2.Collection = Collection3;
     exports2.collectionFromPath = collectionFromPath;
     exports2.isEmptyPath = isEmptyPath;
   }
@@ -29213,7 +29213,7 @@ var require_YAMLMap = __commonJS({
     "use strict";
     var stringifyCollection = require_stringifyCollection();
     var addPairToJSMap = require_addPairToJSMap();
-    var Collection5 = require_Collection();
+    var Collection3 = require_Collection();
     var identity = require_identity();
     var Pair = require_Pair();
     var Scalar = require_Scalar();
@@ -29229,7 +29229,7 @@ var require_YAMLMap = __commonJS({
       }
       return void 0;
     }
-    var YAMLMap = class extends Collection5.Collection {
+    var YAMLMap = class extends Collection3.Collection {
       static get tagName() {
         return "tag:yaml.org,2002:map";
       }
@@ -29379,11 +29379,11 @@ var require_YAMLSeq = __commonJS({
     "use strict";
     var createNode = require_createNode();
     var stringifyCollection = require_stringifyCollection();
-    var Collection5 = require_Collection();
+    var Collection3 = require_Collection();
     var identity = require_identity();
     var Scalar = require_Scalar();
     var toJS = require_toJS();
-    var YAMLSeq = class extends Collection5.Collection {
+    var YAMLSeq = class extends Collection3.Collection {
       static get tagName() {
         return "tag:yaml.org,2002:seq";
       }
@@ -30599,7 +30599,7 @@ var require_Document = __commonJS({
   "node_modules/yaml/dist/doc/Document.js"(exports2) {
     "use strict";
     var Alias = require_Alias();
-    var Collection5 = require_Collection();
+    var Collection3 = require_Collection();
     var identity = require_identity();
     var Pair = require_Pair();
     var toJS = require_toJS();
@@ -30750,7 +30750,7 @@ var require_Document = __commonJS({
        * @returns `true` if the item was found and removed.
        */
       deleteIn(path12) {
-        if (Collection5.isEmptyPath(path12)) {
+        if (Collection3.isEmptyPath(path12)) {
           if (this.contents == null)
             return false;
           this.contents = null;
@@ -30772,7 +30772,7 @@ var require_Document = __commonJS({
        * `true` (collections are always returned intact).
        */
       getIn(path12, keepScalar) {
-        if (Collection5.isEmptyPath(path12))
+        if (Collection3.isEmptyPath(path12))
           return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
         return identity.isCollection(this.contents) ? this.contents.getIn(path12, keepScalar) : void 0;
       }
@@ -30786,7 +30786,7 @@ var require_Document = __commonJS({
        * Checks if the document includes a value at `path`.
        */
       hasIn(path12) {
-        if (Collection5.isEmptyPath(path12))
+        if (Collection3.isEmptyPath(path12))
           return this.contents !== void 0;
         return identity.isCollection(this.contents) ? this.contents.hasIn(path12) : false;
       }
@@ -30796,7 +30796,7 @@ var require_Document = __commonJS({
        */
       set(key, value) {
         if (this.contents == null) {
-          this.contents = Collection5.collectionFromPath(this.schema, [key], value);
+          this.contents = Collection3.collectionFromPath(this.schema, [key], value);
         } else if (assertCollection(this.contents)) {
           this.contents.set(key, value);
         }
@@ -30806,10 +30806,10 @@ var require_Document = __commonJS({
        * boolean to add/remove the item from the set.
        */
       setIn(path12, value) {
-        if (Collection5.isEmptyPath(path12)) {
+        if (Collection3.isEmptyPath(path12)) {
           this.contents = value;
         } else if (this.contents == null) {
-          this.contents = Collection5.collectionFromPath(this.schema, Array.from(path12), value);
+          this.contents = Collection3.collectionFromPath(this.schema, Array.from(path12), value);
         } else if (assertCollection(this.contents)) {
           this.contents.setIn(path12, value);
         }
@@ -56581,7 +56581,7 @@ var require_schemas3 = __commonJS({
     exports2.nativeEnum = nativeEnum;
     exports2.literal = literal;
     exports2.file = file;
-    exports2.transform = transform4;
+    exports2.transform = transform2;
     exports2.optional = optional;
     exports2.exactOptional = exactOptional;
     exports2.nullable = nullable;
@@ -57242,7 +57242,7 @@ var require_schemas3 = __commonJS({
       exports2.ZodMiniType.init(inst, def);
     });
     // @__NO_SIDE_EFFECTS__
-    function transform4(fn) {
+    function transform2(fn) {
       return new exports2.ZodMiniTransform({
         type: "transform",
         transform: fn
@@ -68165,9 +68165,9 @@ var require_transform_registry = __commonJS({
     exports2.registry = exports2.TransformRegistry = void 0;
     var TransformRegistry = class {
       registry = {};
-      registerTransform(sourceModelId, targetVersion, transform4) {
+      registerTransform(sourceModelId, targetVersion, transform2) {
         this.registry[sourceModelId] ??= {};
-        this.registry[sourceModelId][targetVersion] = transform4;
+        this.registry[sourceModelId][targetVersion] = transform2;
       }
       getTransform(sourceModelId, targetVersion) {
         return this.registry[sourceModelId]?.[targetVersion];
@@ -68220,10 +68220,10 @@ var require_transform = __commonJS({
       };
     })();
     Object.defineProperty(exports2, "__esModule", { value: true });
-    exports2.transform = transform4;
+    exports2.transform = transform2;
     var Extensible = __importStar10(require_extensible());
     var transform_registry_1 = require_transform_registry();
-    function transform4(inputModel, targetVersion, input, options) {
+    function transform2(inputModel, targetVersion, input, options) {
       const entry = Extensible.metadata.get(inputModel.Schema);
       if (!entry) {
         throw new Error("No model registration found for the given input model ");
@@ -69562,9 +69562,9 @@ var require_lodash = __commonJS({
         });
         return result;
       }
-      function overArg(func, transform4) {
+      function overArg(func, transform2) {
         return function(arg) {
-          return func(transform4(arg));
+          return func(transform2(arg));
         };
       }
       function replaceHolders(array, placeholder) {
@@ -71970,7 +71970,7 @@ var require_lodash = __commonJS({
         function objectToString(value) {
           return nativeObjectToString.call(value);
         }
-        function overRest(func, start, transform5) {
+        function overRest(func, start, transform3) {
           start = nativeMax(start === undefined2 ? func.length - 1 : start, 0);
           return function() {
             var args = arguments, index = -1, length = nativeMax(args.length - start, 0), array = Array2(length);
@@ -71982,7 +71982,7 @@ var require_lodash = __commonJS({
             while (++index < start) {
               otherArgs[index] = args[index];
             }
-            otherArgs[start] = transform5(array);
+            otherArgs[start] = transform3(array);
             return apply(func, this, otherArgs);
           };
         }
@@ -73397,7 +73397,7 @@ var require_lodash = __commonJS({
         }
         var toPairs = createToPairs(keys);
         var toPairsIn = createToPairs(keysIn);
-        function transform4(object, iteratee2, accumulator) {
+        function transform2(object, iteratee2, accumulator) {
           var isArr = isArray(object), isArrLike = isArr || isBuffer(object) || isTypedArray(object);
           iteratee2 = getIteratee(iteratee2, 4);
           if (accumulator == null) {
@@ -74078,7 +74078,7 @@ var require_lodash = __commonJS({
         lodash.toPairsIn = toPairsIn;
         lodash.toPath = toPath;
         lodash.toPlainObject = toPlainObject;
-        lodash.transform = transform4;
+        lodash.transform = transform2;
         lodash.unary = unary;
         lodash.union = union;
         lodash.unionBy = unionBy;
@@ -81534,7 +81534,7 @@ var require_script2 = __commonJS({
     var _2 = require_util8().lodash;
     var Property = require_property().Property;
     var Url = require_url2().Url;
-    var Script;
+    var Script2;
     var SCRIPT_NEWLINE_PATTERN = /\r?\n/g;
     _2.inherit(
       /**
@@ -81545,14 +81545,14 @@ var require_script2 = __commonJS({
        *
        * @param {Object} options -
        */
-      Script = function PostmanScript(options) {
-        Script.super_.apply(this, arguments);
+      Script2 = function PostmanScript(options) {
+        Script2.super_.apply(this, arguments);
         options && this.update(options);
       },
       Property
     );
     _2.assign(
-      Script.prototype,
+      Script2.prototype,
       /** @lends Script.prototype */
       {
         /**
@@ -81609,7 +81609,7 @@ var require_script2 = __commonJS({
       }
     );
     _2.assign(
-      Script,
+      Script2,
       /** @lends Script */
       {
         /**
@@ -81627,12 +81627,12 @@ var require_script2 = __commonJS({
          * @returns {Boolean}
          */
         isScript: function(obj) {
-          return Boolean(obj) && (obj instanceof Script || _2.inSuperChain(obj.constructor, "_postman_propertyName", Script._postman_propertyName));
+          return Boolean(obj) && (obj instanceof Script2 || _2.inSuperChain(obj.constructor, "_postman_propertyName", Script2._postman_propertyName));
         }
       }
     );
     module2.exports = {
-      Script
+      Script: Script2
     };
   }
 });
@@ -81642,7 +81642,7 @@ var require_event2 = __commonJS({
   "node_modules/postman-collection/lib/collection/event.js"(exports2, module2) {
     var _2 = require_util8().lodash;
     var Property = require_property().Property;
-    var Script = require_script2().Script;
+    var Script2 = require_script2().Script;
     var Event2;
     _2.inherit(
       /**
@@ -81674,12 +81674,12 @@ var require_event2 = __commonJS({
             return;
           }
           var result, script = definition.script;
-          if (Script.isScript(script)) {
+          if (Script2.isScript(script)) {
             result = script;
           } else if (_2.isArray(script) || _2.isString(script)) {
-            result = new Script({ exec: script });
+            result = new Script2({ exec: script });
           } else if (_2.isObject(script)) {
-            result = new Script(script);
+            result = new Script2(script);
           }
           _2.mergeDefined(
             this,
@@ -90090,7 +90090,7 @@ var require_collection4 = __commonJS({
     var ItemGroup = require_item_group().ItemGroup;
     var VariableList = require_variable_list().VariableList;
     var Version = require_version5().Version;
-    var Collection5;
+    var Collection3;
     var SCHEMA_URL = "https://schema.getpostman.com/json/collection/v2.1.0/collection.json";
     _2.inherit(
       /**
@@ -90144,8 +90144,8 @@ var require_collection4 = __commonJS({
        * // log the collection to console to see its contents
        * fs.writeFileSync('myCollection.postman_collection', JSON.stringify(myCollection, null, 2));
        */
-      Collection5 = function PostmanCollection(definition, environments) {
-        Collection5.super_.call(this, definition);
+      Collection3 = function PostmanCollection(definition, environments) {
+        Collection3.super_.call(this, definition);
         _2.assign(
           this,
           /** @lends Collection.prototype */
@@ -90203,7 +90203,7 @@ var require_collection4 = __commonJS({
       ItemGroup
     );
     _2.assign(
-      Collection5.prototype,
+      Collection3.prototype,
       /** @lends Collection.prototype */
       {
         /**
@@ -90252,7 +90252,7 @@ var require_collection4 = __commonJS({
       }
     );
     _2.assign(
-      Collection5,
+      Collection3,
       /** @lends Collection */
       {
         /**
@@ -90270,12 +90270,12 @@ var require_collection4 = __commonJS({
          * @returns {Boolean}
          */
         isCollection: function(obj) {
-          return Boolean(obj) && (obj instanceof Collection5 || _2.inSuperChain(obj.constructor, "_postman_propertyName", Collection5._postman_propertyName));
+          return Boolean(obj) && (obj instanceof Collection3 || _2.inSuperChain(obj.constructor, "_postman_propertyName", Collection3._postman_propertyName));
         }
       }
     );
     module2.exports = {
-      Collection: Collection5
+      Collection: Collection3
     };
   }
 });
@@ -113854,7 +113854,7 @@ var require_async = __commonJS({
       function timesSeries(n, iteratee, callback) {
         return timesLimit(n, 1, iteratee, callback);
       }
-      function transform4(coll, accumulator, iteratee, callback) {
+      function transform2(coll, accumulator, iteratee, callback) {
         if (arguments.length <= 3 && typeof accumulator === "function") {
           callback = iteratee;
           iteratee = accumulator;
@@ -114003,7 +114003,7 @@ var require_async = __commonJS({
         times,
         timesLimit,
         timesSeries,
-        transform: transform4,
+        transform: transform2,
         tryEach: tryEach$1,
         unmemoize,
         until,
@@ -114135,7 +114135,7 @@ var require_async = __commonJS({
       exports3.times = times;
       exports3.timesLimit = timesLimit;
       exports3.timesSeries = timesSeries;
-      exports3.transform = transform4;
+      exports3.transform = transform2;
       exports3.tryEach = tryEach$1;
       exports3.unmemoize = unmemoize;
       exports3.until = until;
@@ -130552,7 +130552,7 @@ var require_json_schema_faker = __commonJS({
             };
           }, { "js-yaml": 36, "ono": 67 }], 21: [function(_dereq_2, module5, exports5) {
             "use strict";
-            exports5.byteLength = byteLength;
+            exports5.byteLength = byteLength2;
             exports5.toByteArray = toByteArray;
             exports5.fromByteArray = fromByteArray;
             var lookup = [];
@@ -130572,7 +130572,7 @@ var require_json_schema_faker = __commonJS({
               }
               return b64[len2 - 2] === "=" ? 2 : b64[len2 - 1] === "=" ? 1 : 0;
             }
-            function byteLength(b64) {
+            function byteLength2(b64) {
               return b64.length * 3 / 4 - placeHoldersCount(b64);
             }
             function toByteArray(b64) {
@@ -130744,7 +130744,7 @@ var require_json_schema_faker = __commonJS({
               if (!Buffer2.isEncoding(encoding)) {
                 throw new TypeError('"encoding" must be a valid string encoding');
               }
-              var length = byteLength(string, encoding) | 0;
+              var length = byteLength2(string, encoding) | 0;
               var buf = createBuffer(length);
               var actual = buf.write(string, encoding);
               if (actual !== length) {
@@ -130878,7 +130878,7 @@ var require_json_schema_faker = __commonJS({
               }
               return buffer;
             };
-            function byteLength(string, encoding) {
+            function byteLength2(string, encoding) {
               if (Buffer2.isBuffer(string)) {
                 return string.length;
               }
@@ -130917,7 +130917,7 @@ var require_json_schema_faker = __commonJS({
                 }
               }
             }
-            Buffer2.byteLength = byteLength;
+            Buffer2.byteLength = byteLength2;
             function slowToString(encoding, start, end2) {
               var loweredCase = false;
               if (start === void 0 || start < 0) {
@@ -131417,28 +131417,28 @@ var require_json_schema_faker = __commonJS({
               if (offset % 1 !== 0 || offset < 0) throw new RangeError("offset is not uint");
               if (offset + ext > length) throw new RangeError("Trying to access beyond buffer length");
             }
-            Buffer2.prototype.readUIntLE = function readUIntLE(offset, byteLength2, noAssert) {
+            Buffer2.prototype.readUIntLE = function readUIntLE(offset, byteLength3, noAssert) {
               offset = offset >>> 0;
-              byteLength2 = byteLength2 >>> 0;
-              if (!noAssert) checkOffset(offset, byteLength2, this.length);
+              byteLength3 = byteLength3 >>> 0;
+              if (!noAssert) checkOffset(offset, byteLength3, this.length);
               var val = this[offset];
               var mul = 1;
               var i = 0;
-              while (++i < byteLength2 && (mul *= 256)) {
+              while (++i < byteLength3 && (mul *= 256)) {
                 val += this[offset + i] * mul;
               }
               return val;
             };
-            Buffer2.prototype.readUIntBE = function readUIntBE(offset, byteLength2, noAssert) {
+            Buffer2.prototype.readUIntBE = function readUIntBE(offset, byteLength3, noAssert) {
               offset = offset >>> 0;
-              byteLength2 = byteLength2 >>> 0;
+              byteLength3 = byteLength3 >>> 0;
               if (!noAssert) {
-                checkOffset(offset, byteLength2, this.length);
+                checkOffset(offset, byteLength3, this.length);
               }
-              var val = this[offset + --byteLength2];
+              var val = this[offset + --byteLength3];
               var mul = 1;
-              while (byteLength2 > 0 && (mul *= 256)) {
-                val += this[offset + --byteLength2] * mul;
+              while (byteLength3 > 0 && (mul *= 256)) {
+                val += this[offset + --byteLength3] * mul;
               }
               return val;
             };
@@ -131467,32 +131467,32 @@ var require_json_schema_faker = __commonJS({
               if (!noAssert) checkOffset(offset, 4, this.length);
               return this[offset] * 16777216 + (this[offset + 1] << 16 | this[offset + 2] << 8 | this[offset + 3]);
             };
-            Buffer2.prototype.readIntLE = function readIntLE(offset, byteLength2, noAssert) {
+            Buffer2.prototype.readIntLE = function readIntLE(offset, byteLength3, noAssert) {
               offset = offset >>> 0;
-              byteLength2 = byteLength2 >>> 0;
-              if (!noAssert) checkOffset(offset, byteLength2, this.length);
+              byteLength3 = byteLength3 >>> 0;
+              if (!noAssert) checkOffset(offset, byteLength3, this.length);
               var val = this[offset];
               var mul = 1;
               var i = 0;
-              while (++i < byteLength2 && (mul *= 256)) {
+              while (++i < byteLength3 && (mul *= 256)) {
                 val += this[offset + i] * mul;
               }
               mul *= 128;
-              if (val >= mul) val -= Math.pow(2, 8 * byteLength2);
+              if (val >= mul) val -= Math.pow(2, 8 * byteLength3);
               return val;
             };
-            Buffer2.prototype.readIntBE = function readIntBE(offset, byteLength2, noAssert) {
+            Buffer2.prototype.readIntBE = function readIntBE(offset, byteLength3, noAssert) {
               offset = offset >>> 0;
-              byteLength2 = byteLength2 >>> 0;
-              if (!noAssert) checkOffset(offset, byteLength2, this.length);
-              var i = byteLength2;
+              byteLength3 = byteLength3 >>> 0;
+              if (!noAssert) checkOffset(offset, byteLength3, this.length);
+              var i = byteLength3;
               var mul = 1;
               var val = this[offset + --i];
               while (i > 0 && (mul *= 256)) {
                 val += this[offset + --i] * mul;
               }
               mul *= 128;
-              if (val >= mul) val -= Math.pow(2, 8 * byteLength2);
+              if (val >= mul) val -= Math.pow(2, 8 * byteLength3);
               return val;
             };
             Buffer2.prototype.readInt8 = function readInt8(offset, noAssert) {
@@ -131548,37 +131548,37 @@ var require_json_schema_faker = __commonJS({
               if (value > max || value < min) throw new RangeError('"value" argument is out of bounds');
               if (offset + ext > buf.length) throw new RangeError("Index out of range");
             }
-            Buffer2.prototype.writeUIntLE = function writeUIntLE(value, offset, byteLength2, noAssert) {
+            Buffer2.prototype.writeUIntLE = function writeUIntLE(value, offset, byteLength3, noAssert) {
               value = +value;
               offset = offset >>> 0;
-              byteLength2 = byteLength2 >>> 0;
+              byteLength3 = byteLength3 >>> 0;
               if (!noAssert) {
-                var maxBytes = Math.pow(2, 8 * byteLength2) - 1;
-                checkInt(this, value, offset, byteLength2, maxBytes, 0);
+                var maxBytes = Math.pow(2, 8 * byteLength3) - 1;
+                checkInt(this, value, offset, byteLength3, maxBytes, 0);
               }
               var mul = 1;
               var i = 0;
               this[offset] = value & 255;
-              while (++i < byteLength2 && (mul *= 256)) {
+              while (++i < byteLength3 && (mul *= 256)) {
                 this[offset + i] = value / mul & 255;
               }
-              return offset + byteLength2;
+              return offset + byteLength3;
             };
-            Buffer2.prototype.writeUIntBE = function writeUIntBE(value, offset, byteLength2, noAssert) {
+            Buffer2.prototype.writeUIntBE = function writeUIntBE(value, offset, byteLength3, noAssert) {
               value = +value;
               offset = offset >>> 0;
-              byteLength2 = byteLength2 >>> 0;
+              byteLength3 = byteLength3 >>> 0;
               if (!noAssert) {
-                var maxBytes = Math.pow(2, 8 * byteLength2) - 1;
-                checkInt(this, value, offset, byteLength2, maxBytes, 0);
+                var maxBytes = Math.pow(2, 8 * byteLength3) - 1;
+                checkInt(this, value, offset, byteLength3, maxBytes, 0);
               }
-              var i = byteLength2 - 1;
+              var i = byteLength3 - 1;
               var mul = 1;
               this[offset + i] = value & 255;
               while (--i >= 0 && (mul *= 256)) {
                 this[offset + i] = value / mul & 255;
               }
-              return offset + byteLength2;
+              return offset + byteLength3;
             };
             Buffer2.prototype.writeUInt8 = function writeUInt8(value, offset, noAssert) {
               value = +value;
@@ -131623,33 +131623,33 @@ var require_json_schema_faker = __commonJS({
               this[offset + 3] = value & 255;
               return offset + 4;
             };
-            Buffer2.prototype.writeIntLE = function writeIntLE(value, offset, byteLength2, noAssert) {
+            Buffer2.prototype.writeIntLE = function writeIntLE(value, offset, byteLength3, noAssert) {
               value = +value;
               offset = offset >>> 0;
               if (!noAssert) {
-                var limit = Math.pow(2, 8 * byteLength2 - 1);
-                checkInt(this, value, offset, byteLength2, limit - 1, -limit);
+                var limit = Math.pow(2, 8 * byteLength3 - 1);
+                checkInt(this, value, offset, byteLength3, limit - 1, -limit);
               }
               var i = 0;
               var mul = 1;
               var sub = 0;
               this[offset] = value & 255;
-              while (++i < byteLength2 && (mul *= 256)) {
+              while (++i < byteLength3 && (mul *= 256)) {
                 if (value < 0 && sub === 0 && this[offset + i - 1] !== 0) {
                   sub = 1;
                 }
                 this[offset + i] = (value / mul >> 0) - sub & 255;
               }
-              return offset + byteLength2;
+              return offset + byteLength3;
             };
-            Buffer2.prototype.writeIntBE = function writeIntBE(value, offset, byteLength2, noAssert) {
+            Buffer2.prototype.writeIntBE = function writeIntBE(value, offset, byteLength3, noAssert) {
               value = +value;
               offset = offset >>> 0;
               if (!noAssert) {
-                var limit = Math.pow(2, 8 * byteLength2 - 1);
-                checkInt(this, value, offset, byteLength2, limit - 1, -limit);
+                var limit = Math.pow(2, 8 * byteLength3 - 1);
+                checkInt(this, value, offset, byteLength3, limit - 1, -limit);
               }
-              var i = byteLength2 - 1;
+              var i = byteLength3 - 1;
               var mul = 1;
               var sub = 0;
               this[offset + i] = value & 255;
@@ -131659,7 +131659,7 @@ var require_json_schema_faker = __commonJS({
                 }
                 this[offset + i] = (value / mul >> 0) - sub & 255;
               }
-              return offset + byteLength2;
+              return offset + byteLength3;
             };
             Buffer2.prototype.writeInt8 = function writeInt8(value, offset, noAssert) {
               value = +value;
@@ -141297,9 +141297,9 @@ var require_isPrototype = __commonJS({
 // node_modules/lodash/_overArg.js
 var require_overArg = __commonJS({
   "node_modules/lodash/_overArg.js"(exports2, module2) {
-    function overArg(func, transform4) {
+    function overArg(func, transform2) {
       return function(arg) {
-        return func(transform4(arg));
+        return func(transform2(arg));
       };
     }
     module2.exports = overArg;
@@ -143171,7 +143171,7 @@ var require_overRest = __commonJS({
   "node_modules/lodash/_overRest.js"(exports2, module2) {
     var apply = require_apply();
     var nativeMax = Math.max;
-    function overRest(func, start, transform4) {
+    function overRest(func, start, transform2) {
       start = nativeMax(start === void 0 ? func.length - 1 : start, 0);
       return function() {
         var args = arguments, index = -1, length = nativeMax(args.length - start, 0), array = Array(length);
@@ -143183,7 +143183,7 @@ var require_overRest = __commonJS({
         while (++index < start) {
           otherArgs[index] = args[index];
         }
-        otherArgs[start] = transform4(array);
+        otherArgs[start] = transform2(array);
         return apply(func, this, otherArgs);
       };
     }
@@ -152246,7 +152246,7 @@ var require_transform2 = __commonJS({
     var isFunction = require_isFunction();
     var isObject = require_isObject();
     var isTypedArray = require_isTypedArray();
-    function transform4(object, iteratee, accumulator) {
+    function transform2(object, iteratee, accumulator) {
       var isArr = isArray(object), isArrLike = isArr || isBuffer(object) || isTypedArray(object);
       iteratee = baseIteratee(iteratee, 4);
       if (accumulator == null) {
@@ -152264,7 +152264,7 @@ var require_transform2 = __commonJS({
       });
       return accumulator;
     }
-    module2.exports = transform4;
+    module2.exports = transform2;
   }
 });
 
@@ -159334,7 +159334,7 @@ var require_SpecificationCollectionSyncing = __commonJS({
 var require_libV2 = __commonJS({
   "node_modules/openapi-to-postmanv2/libV2/index.js"(exports2, module2) {
     var _2 = require_lodash();
-    var { Collection: Collection5 } = require_collection4();
+    var { Collection: Collection3 } = require_collection4();
     var GraphLib = require_graphlib();
     var generateSkeletonTreeFromOpenAPI = require_generateSkeletionTreeFromOpenAPI();
     var generateCollectionFromOpenAPI = require_generateCollectionFromOpenAPI();
@@ -159358,7 +159358,7 @@ var require_libV2 = __commonJS({
           switch (node.type) {
             case "collection": {
               const { data, variables } = generateCollectionFromOpenAPI(context, node);
-              collection = new Collection5(data);
+              collection = new Collection3(data);
               collection = collection.toJSON();
               collection.variable.push(...variables);
               collectionTree.setNode(
@@ -159575,8 +159575,8 @@ var require_libV2 = __commonJS({
             return cb(new OpenApiErr("Failed to generate collection from specification"));
           }
           try {
-            const latestCollectionState = new Collection5(result.output[0].data);
-            const currentCollectionState = new Collection5(currentCollection);
+            const latestCollectionState = new Collection3(result.output[0].data);
+            const currentCollectionState = new Collection3(currentCollection);
             const syncedCollection = syncCollectionState(latestCollectionState, currentCollectionState, syncOptions);
             return cb(null, {
               result: true,
@@ -163273,7 +163273,7 @@ var require_schemapack = __commonJS({
     var Ajv2 = require_ajv();
     var addFormats = require_dist2();
     var async = require_async();
-    var { Collection: Collection5 } = require_collection4();
+    var { Collection: Collection3 } = require_collection4();
     var { Url } = require_url2();
     var OasResolverOptions = {
       resolve: true,
@@ -163523,7 +163523,7 @@ var require_schemapack = __commonJS({
             openapi2.baseUrl = _2.get(openapi2, "servers.0.url", "{{baseURL}}");
             openapi2.baseUrlVariables = _2.get(openapi2, "servers.0.variables");
             openapi2.baseUrl = schemaUtils.fixPathVariablesInUrl(openapi2.baseUrl);
-            generatedStore.collection = new Collection5({
+            generatedStore.collection = new Collection3({
               info: {
                 name: utils.getCollectionName(_2.get(openapi2, "info.title"))
               }
@@ -170733,9 +170733,9 @@ var require_utils10 = __commonJS({
       ] : Object.keys(obj);
       for (const key of orderedKeys) {
         let val = obj[key];
-        const transform4 = spec?.transforms?.[key];
-        if (transform4 && val !== void 0) {
-          val = transform4(val);
+        const transform2 = spec?.transforms?.[key];
+        if (transform2 && val !== void 0) {
+          val = transform2(val);
         }
         if (val === void 0)
           continue;
@@ -170754,9 +170754,9 @@ var require_utils10 = __commonJS({
         const key = String(pair.key.value);
         if (newKeys.has(key)) {
           let val = newValue[key];
-          const transform4 = spec?.transforms?.[key];
-          if (transform4 && val !== void 0) {
-            val = transform4(val);
+          const transform2 = spec?.transforms?.[key];
+          if (transform2 && val !== void 0) {
+            val = transform2(val);
           }
           if (val === void 0) {
             toRemove.push(i);
@@ -170786,9 +170786,9 @@ var require_utils10 = __commonJS({
       }
       for (const key of newKeys) {
         let val = newValue[key];
-        const transform4 = spec?.transforms?.[key];
-        if (transform4 && val !== void 0) {
-          val = transform4(val);
+        const transform2 = spec?.transforms?.[key];
+        if (transform2 && val !== void 0) {
+          val = transform2(val);
         }
         if (val === void 0)
           continue;
@@ -170967,8 +170967,8 @@ var require_builder = __commonJS({
       });
       for (const key of rawSpec.keyOrder) {
         const raw = data[key];
-        const transform4 = rawSpec.transforms?.[key];
-        const value = transform4 && raw !== void 0 ? transform4(raw) : raw;
+        const transform2 = rawSpec.transforms?.[key];
+        const value = transform2 && raw !== void 0 ? transform2(raw) : raw;
         builder.set(key, value);
       }
       return builder.toString(options?.omitIfOnlyPresent);
@@ -172929,7 +172929,7 @@ var require_truncate = __commonJS({
     function isLowSurrogate(codePoint) {
       return codePoint >= 56320 && codePoint <= 57343;
     }
-    module2.exports = function truncate3(getLength, string, byteLength) {
+    module2.exports = function truncate3(getLength, string, byteLength2) {
       if (typeof string !== "string") {
         throw new Error("Input must be string");
       }
@@ -172945,9 +172945,9 @@ var require_truncate = __commonJS({
           segment += string[i];
         }
         curByteLength += getLength(segment);
-        if (curByteLength === byteLength) {
+        if (curByteLength === byteLength2) {
           return string.slice(0, i + 1);
-        } else if (curByteLength > byteLength) {
+        } else if (curByteLength > byteLength2) {
           return string.slice(0, i - segment.length + 1);
         }
       }
@@ -176071,14 +176071,14 @@ var require_utils12 = __commonJS({
       }
       return arrayTo;
     }
-    var transform4 = {};
-    transform4["string"] = {
+    var transform2 = {};
+    transform2["string"] = {
       "string": identity,
       "array": function(input) {
         return stringToArrayLike(input, new Array(input.length));
       },
       "arraybuffer": function(input) {
-        return transform4["string"]["uint8array"](input).buffer;
+        return transform2["string"]["uint8array"](input).buffer;
       },
       "uint8array": function(input) {
         return stringToArrayLike(input, new Uint8Array(input.length));
@@ -176087,7 +176087,7 @@ var require_utils12 = __commonJS({
         return stringToArrayLike(input, nodejsUtils.allocBuffer(input.length));
       }
     };
-    transform4["array"] = {
+    transform2["array"] = {
       "string": arrayLikeToString,
       "array": identity,
       "arraybuffer": function(input) {
@@ -176100,7 +176100,7 @@ var require_utils12 = __commonJS({
         return nodejsUtils.newBufferFrom(input);
       }
     };
-    transform4["arraybuffer"] = {
+    transform2["arraybuffer"] = {
       "string": function(input) {
         return arrayLikeToString(new Uint8Array(input));
       },
@@ -176115,7 +176115,7 @@ var require_utils12 = __commonJS({
         return nodejsUtils.newBufferFrom(new Uint8Array(input));
       }
     };
-    transform4["uint8array"] = {
+    transform2["uint8array"] = {
       "string": arrayLikeToString,
       "array": function(input) {
         return arrayLikeToArrayLike(input, new Array(input.length));
@@ -176128,13 +176128,13 @@ var require_utils12 = __commonJS({
         return nodejsUtils.newBufferFrom(input);
       }
     };
-    transform4["nodebuffer"] = {
+    transform2["nodebuffer"] = {
       "string": arrayLikeToString,
       "array": function(input) {
         return arrayLikeToArrayLike(input, new Array(input.length));
       },
       "arraybuffer": function(input) {
-        return transform4["nodebuffer"]["uint8array"](input).buffer;
+        return transform2["nodebuffer"]["uint8array"](input).buffer;
       },
       "uint8array": function(input) {
         return arrayLikeToArrayLike(input, new Uint8Array(input.length));
@@ -176150,7 +176150,7 @@ var require_utils12 = __commonJS({
       }
       exports2.checkSupport(outputType);
       var inputType = exports2.getTypeOf(input);
-      var result = transform4[inputType][outputType](input);
+      var result = transform2[inputType][outputType](input);
       return result;
     };
     exports2.resolve = function(path12) {
@@ -229465,7 +229465,7 @@ var require_collection8 = __commonJS({
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.Collection = void 0;
     var utils_1 = require_utils18();
-    var Collection5 = class extends Array {
+    var Collection3 = class extends Array {
       constructor(collections, _meta = {}) {
         super(...Array.isArray(collections) ? collections : collections ? [collections] : []);
         this.collections = collections;
@@ -229500,7 +229500,7 @@ var require_collection8 = __commonJS({
         return this.jsonPointer(field).split("/").slice(1).map(utils_1.untilde);
       }
     };
-    exports2.Collection = Collection5;
+    exports2.Collection = Collection3;
   }
 });
 
@@ -276482,10 +276482,49 @@ var PostmanExtensibleCollectionClient = class {
 };
 
 // src/lib/postman/postman-gateway-assets-client.ts
+var import_node_crypto7 = require("node:crypto");
+
+// src/lib/postman/collection-model-conversion.ts
 var V2 = __toESM(require_v2(), 1);
 var V3 = __toESM(require_v32(), 1);
 var import_transforms = __toESM(require_transforms(), 1);
-var import_node_crypto7 = require("node:crypto");
+var V2_COLLECTION = V2.Collection;
+var V3_COLLECTION = V3.Collection;
+function assertV2CollectionModel(value) {
+  V2_COLLECTION.parse(value ?? {});
+}
+function convertV2CollectionToV3Model(value) {
+  const parsed = V2_COLLECTION.parse(value ?? {});
+  return (0, import_transforms.transform)(
+    V2_COLLECTION,
+    import_transforms.FormatVersion.V3,
+    parsed
+  );
+}
+function convertV3CollectionToV2Model(value) {
+  const parsed = V3_COLLECTION.parse(value ?? {});
+  return (0, import_transforms.transform)(
+    V3_COLLECTION,
+    import_transforms.FormatVersion.V2,
+    parsed
+  );
+}
+function canonicalizeV2CollectionForSync(value) {
+  const wireClone = JSON.parse(JSON.stringify(value ?? {}));
+  return JSON.parse(
+    JSON.stringify(convertV3CollectionToV2Model(convertV2CollectionToV3Model(wireClone)))
+  );
+}
+function convertV2CollectionToExtensibleModel(value) {
+  return (0, import_transforms.transform)(
+    V2_COLLECTION,
+    import_transforms.FormatVersion.Extensible,
+    value
+  );
+}
+
+// src/lib/spec/collection-contracts.ts
+var import_node_vm = require("node:vm");
 
 // src/lib/spec/iana-registries.ts
 var PROXY_STATUS_ERROR_TYPES = [
@@ -279110,6 +279149,274 @@ function buildContractIndex(root) {
   };
 }
 
+// src/lib/spec/contract-dispatch.ts
+var CONTRACT_RESOLVER_ITEM_NAME = "00 - Resolve Secrets";
+function contractOperationKey(operation2) {
+  return operation2.id;
+}
+function buildDispatchRoutes(operations) {
+  const routes = [];
+  for (const operation2 of operations) {
+    const ownPath = normalizePath(operation2.path);
+    for (const candidate of operation2.candidates) {
+      routes.push([operation2.method, candidate, contractOperationKey(operation2), candidate !== ownPath]);
+    }
+  }
+  return routes;
+}
+var DISPATCHER_RUNTIME = [
+  "function __contractSafeDecodeSegment(segment) {",
+  '  var preserved = String(segment).replace(/%2f/gi, "__encoded_slash__");',
+  '  try { return decodeURIComponent(preserved).replace(/__encoded_slash__/g, "%2F"); } catch (ignored) { return segment; }',
+  "}",
+  "function __contractNormalizePath(path) {",
+  '  var raw = String(path || "").split(/[?#]/)[0] || "/";',
+  '  var withSlash = raw.charAt(0) === "/" ? raw : "/" + raw;',
+  '  var normalized = withSlash.replace(/\\/+/g, "/");',
+  '  var trimmed = normalized.length > 1 ? normalized.replace(/\\/+$/g, "") : normalized;',
+  '  var parts = trimmed.split("/");',
+  "  var out = [];",
+  '  for (var i = 0; i < parts.length; i += 1) out.push(i === 0 ? "" : __contractSafeDecodeSegment(parts[i]));',
+  '  return out.join("/") || "/";',
+  "}",
+  "function __contractSegments(path) {",
+  '  var parts = __contractNormalizePath(path).split("/");',
+  "  var out = [];",
+  "  for (var i = 0; i < parts.length; i += 1) { if (parts[i]) out.push(parts[i]); }",
+  "  return out;",
+  "}",
+  "function __contractIsTemplateSegment(segment) {",
+  "  return /^\\{[^}]+\\}$/.test(segment) || /^:[^/]+$/.test(segment) || /^\\{\\{[^}]+\\}\\}$/.test(segment) || /^<[^>]+>$/.test(segment);",
+  "}",
+  "function __contractCompoundMatches(candidateSegment, requestSegment) {",
+  "  var raw = candidateSegment.split(/(\\{[^}]+\\})/);",
+  "  var parts = [];",
+  "  for (var p = 0; p < raw.length; p += 1) { if (raw[p].length > 0) parts.push(raw[p]); }",
+  "  var pos = 0;",
+  "  for (var i = 0; i < parts.length; i += 1) {",
+  "    var part = parts[i];",
+  "    if (/^\\{[^}]+\\}$/.test(part)) {",
+  "      var next = parts[i + 1];",
+  '      if (next === undefined) return pos < requestSegment.length && requestSegment.slice(pos).indexOf("/") === -1;',
+  "      if (/^\\{[^}]+\\}$/.test(next)) return false;",
+  "      var idx = requestSegment.indexOf(next, pos + 1);",
+  "      if (idx === -1) return false;",
+  "      pos = idx;",
+  "    } else if (requestSegment.indexOf(part, pos) === pos) {",
+  "      pos += part.length;",
+  "    } else {",
+  "      return false;",
+  "    }",
+  "  }",
+  "  return pos === requestSegment.length;",
+  "}",
+  "function __contractMatchCandidate(candidate, request) {",
+  "  var candidateSegments = __contractSegments(candidate);",
+  "  var requestSegments = __contractSegments(request);",
+  "  if (candidateSegments.length !== requestSegments.length) return { matched: false, staticCount: 0, templateCount: 0 };",
+  "  var staticCount = 0;",
+  "  var templateCount = 0;",
+  "  for (var index = 0; index < candidateSegments.length; index += 1) {",
+  '    var candidateSegment = candidateSegments[index] === undefined ? "" : candidateSegments[index];',
+  '    var requestSegment = requestSegments[index] === undefined ? "" : requestSegments[index];',
+  '    if (__contractIsTemplateSegment(candidateSegment) || candidateSegment === "{serverVariable}") { templateCount += 1; continue; }',
+  '    if (candidateSegment.indexOf("{") !== -1 && __contractCompoundMatches(candidateSegment, requestSegment)) { templateCount += 1; continue; }',
+  "    if (candidateSegment !== requestSegment) return { matched: false, staticCount: 0, templateCount: 0 };",
+  "    staticCount += 1;",
+  "  }",
+  "  return { matched: true, staticCount: staticCount, templateCount: templateCount };",
+  "}",
+  "function __contractRequestPath() {",
+  '  var raw = "";',
+  '  try { raw = typeof pm.request.url.getPath === "function" ? String(pm.request.url.getPath() || "") : ""; } catch (ignored) { raw = ""; }',
+  "  if (!raw) {",
+  "    var path = pm.request.url.path;",
+  '    raw = Object.prototype.toString.call(path) === "[object Array]" ? "/" + path.join("/") : String(path || "");',
+  "  }",
+  '  return raw.replace(/^\\{\\{[^}]+\\}\\}/, "");',
+  "}",
+  "function __contractRequestName() {",
+  '  try { return String(pm.info && pm.info.requestName ? pm.info.requestName : ""); } catch (ignored) { return ""; }',
+  "}",
+  "function __contractDispatch(routes) {",
+  `  if (__contractRequestName() === ${JSON.stringify(CONTRACT_RESOLVER_ITEM_NAME)}) return { skip: true };`,
+  '  var method = String(pm.request.method || "").toUpperCase();',
+  "  var path = __contractNormalizePath(__contractRequestPath());",
+  "  var matches = [];",
+  "  for (var i = 0; i < routes.length; i += 1) {",
+  "    var route = routes[i];",
+  "    if (route[0] !== method) continue;",
+  "    var score = __contractMatchCandidate(route[1], path);",
+  "    if (!score.matched) continue;",
+  "    matches.push({ opKey: route[2], score: [score.staticCount, route[3] ? 2 : 1, -score.templateCount] });",
+  "  }",
+  "  matches.sort(function (a, b) {",
+  "    for (var k = 0; k < a.score.length; k += 1) { var delta = b.score[k] - a.score[k]; if (delta !== 0) return delta; }",
+  "    return a.opKey.localeCompare(b.opKey);",
+  "  });",
+  "  var best = matches[0];",
+  '  if (!best) return { method: method, path: path, error: "No OpenAPI operation matched request " + method + " " + path };',
+  "  var tied = [];",
+  "  for (var t = 0; t < matches.length; t += 1) {",
+  "    var entry = matches[t];",
+  "    var same = true;",
+  "    for (var s = 0; s < entry.score.length; s += 1) { if (entry.score[s] !== best.score[s]) { same = false; break; } }",
+  "    if (same && tied.indexOf(entry.opKey) === -1) tied.push(entry.opKey);",
+  "  }",
+  "  if (tied.length > 1) {",
+  '    return { method: method, path: path, error: "Ambiguous OpenAPI operation match for request " + method + " " + path + ": " + tied.join(", ") };',
+  "  }",
+  "  return { method: method, path: path, opKey: best.opKey };",
+  "}"
+];
+function buildDispatcherRuntime() {
+  return [...DISPATCHER_RUNTIME];
+}
+
+// src/lib/spec/contract-root-script.ts
+var BINDING_NAMES = [
+  "contract",
+  "rfcRegistries",
+  "validators",
+  "linkTargetValidators",
+  "requestBodyValidators",
+  "paramValidators",
+  "contractSkippedValidators"
+];
+var BINDING_SEEDS = {
+  contract: "null",
+  rfcRegistries: "{}",
+  validators: "{}",
+  linkTargetValidators: "{}",
+  requestBodyValidators: "{}",
+  paramValidators: "{}",
+  contractSkippedValidators: "[]"
+};
+function jsonParseLine(name, value) {
+  return `var ${name} = JSON.parse(${JSON.stringify(JSON.stringify(value))});`;
+}
+function sharedRuntimeFunctionLines(segments2) {
+  const out = ["function __contractRunShared(__contractBindings) {"];
+  for (const name of BINDING_NAMES) {
+    out.push(`var ${name} = __contractBindings.${name};`);
+  }
+  for (const segment of segments2) {
+    if (!segment.guard) {
+      out.push(...segment.lines);
+      continue;
+    }
+    out.push(`if (__contractBindings.guards.${segment.guard}) {`);
+    out.push(...segment.lines);
+    out.push("}");
+  }
+  out.push("}");
+  return out;
+}
+function entryFactoryLines(key, entry) {
+  const prologue = entry.prologue.join("\n");
+  if (!/\bvar contract\b/.test(prologue)) {
+    throw new Error(`CONTRACT_ROOT_SCRIPT_PROLOGUE_INVALID: ${key} prologue does not declare its contract binding`);
+  }
+  const lines = [`__contractEntries[${JSON.stringify(key)}] = function () {`];
+  for (const name of BINDING_NAMES) {
+    lines.push(`var ${name} = ${BINDING_SEEDS[name]};`);
+  }
+  lines.push(...entry.prologue);
+  if (entry.skipped.length > 0 && !prologue.includes("contractSkippedValidators")) {
+    lines.push(skippedValidatorsDataLine(entry.skipped));
+  }
+  lines.push("return {");
+  for (const name of BINDING_NAMES) {
+    lines.push(`${name}: ${name},`);
+  }
+  lines.push(
+    `guards: { skipped: ${entry.skipped.length > 0}, security: ${entry.hasSecurity}, parameters: ${entry.hasParameters}, requestBodySchemas: ${entry.hasRequestBodySchemas} }`
+  );
+  lines.push("};");
+  lines.push("};");
+  return lines;
+}
+function trailerLines() {
+  return [
+    "var __contractResult = __contractDispatch(__contractRoutes);",
+    "if (!__contractResult.skip) {",
+    "  if (__contractResult.error) {",
+    "    if (__contractPrimaryShard) {",
+    "      var contractMappingError = __contractResult.error;",
+    "      pm.test('OpenAPI operation mapping exists', function () {",
+    "        pm.expect.fail(contractMappingError);",
+    "      });",
+    "    }",
+    "  } else if (Object.prototype.hasOwnProperty.call(__contractEntries, __contractResult.opKey)) {",
+    "    __contractRunShared(__contractEntries[__contractResult.opKey]());",
+    "  }",
+    "}"
+  ];
+}
+function byteLength(lines) {
+  return Buffer.byteLength(lines.join("\n"), "utf8");
+}
+function buildConsolidatedContractScript(index, warnings = []) {
+  const HARD_LIMIT_BYTES = CONTRACT_SIZE_LIMITS.maxTestScriptBytes;
+  const WARN_LIMIT_BYTES = CONTRACT_SIZE_LIMITS.warnTestScriptBytes;
+  const segments2 = buildSharedContractRuntime();
+  const routes = buildDispatchRoutes(index.operations);
+  const header = (primary) => [
+    ...buildDispatcherRuntime(),
+    jsonParseLine("__contractRoutes", routes),
+    `var __contractPrimaryShard = ${primary};`,
+    "var __contractEntries = {};",
+    ...sharedRuntimeFunctionLines(segments2)
+  ];
+  const trailer = trailerLines();
+  const sharedRuntimeBytes = byteLength(segments2.flatMap((segment) => segment.lines));
+  let legacyBytes = 0;
+  const payloads = [];
+  for (const operation2 of index.operations) {
+    const entry = buildOperationContractEntry(operation2, warnings);
+    const key = contractOperationKey(operation2);
+    legacyBytes += byteLength(entry.prologue) + 1 + sharedRuntimeBytes;
+    payloads.push({ key, lines: entryFactoryLines(key, entry) });
+  }
+  const fixedBytes = byteLength(header(true)) + byteLength(trailer) + 2;
+  const shards = [];
+  let current = [];
+  let currentBytes = fixedBytes;
+  const flush = () => {
+    if (current.length === 0) return;
+    const primary = shards.length === 0;
+    const exec3 = [...header(primary), ...current.flatMap((entry) => entry.lines), ...trailer];
+    shards.push({ exec: exec3, operationKeys: current.map((entry) => entry.key), bytes: byteLength(exec3) });
+    current = [];
+    currentBytes = fixedBytes;
+  };
+  for (const payload of payloads) {
+    const payloadBytes = byteLength(payload.lines) + 1;
+    if (fixedBytes + payloadBytes > HARD_LIMIT_BYTES) {
+      throw new Error(
+        `CONTRACT_ROOT_SCRIPT_SIZE_EXCEEDED: ${payload.key} contract runtime needs ${fixedBytes + payloadBytes} bytes, over the ${HARD_LIMIT_BYTES} byte limit`
+      );
+    }
+    if (currentBytes + payloadBytes > HARD_LIMIT_BYTES) flush();
+    current.push(payload);
+    currentBytes += payloadBytes;
+  }
+  flush();
+  if (shards.length === 0) {
+    const exec3 = [...header(true), ...trailer];
+    shards.push({ exec: exec3, operationKeys: [], bytes: byteLength(exec3) });
+  }
+  const consolidatedBytes = shards.reduce((total, shard) => total + shard.bytes, 0);
+  for (const shard of shards) {
+    if (shard.bytes > WARN_LIMIT_BYTES) {
+      warnings.push(
+        `CONTRACT_ROOT_SCRIPT_LARGE: consolidated contract root script is ${shard.bytes} bytes, over the ${WARN_LIMIT_BYTES} byte advisory threshold`
+      );
+    }
+  }
+  return { shards, warnings, legacyBytes, consolidatedBytes };
+}
+
 // src/lib/spec/smoke-tests.ts
 function asRecord8(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -279338,7 +279645,14 @@ function buildValidatorAssignments(operation2, warnings, skipped) {
   }
   return lines;
 }
-function createContractScript(operation2, warnings = []) {
+function contractRegistriesLine() {
+  const registries = { proxyStatusErrors: PROXY_STATUS_ERROR_TYPES, referrerPolicies: REFERRER_POLICY_VALUES, forbiddenTrailers: FORBIDDEN_TRAILER_FIELDS, contentCodings: HTTP_CONTENT_CODINGS };
+  return `var rfcRegistries = JSON.parse(${JSON.stringify(JSON.stringify(registries))});`;
+}
+function skippedValidatorsDataLine(skipped) {
+  return `var contractSkippedValidators = JSON.parse(${JSON.stringify(JSON.stringify(skipped))});`;
+}
+function buildOperationContractEntry(operation2, warnings = []) {
   const multipartRule = operation2.requestBody?.fieldRules?.["multipart/form-data"];
   const multipartFields = multipartRule ? {
     required: multipartRule.required,
@@ -279360,1000 +279674,1014 @@ function createContractScript(operation2, warnings = []) {
   };
   const skipped = [];
   const validatorLines = buildValidatorAssignments(operation2, warnings, skipped);
-  const registries = { proxyStatusErrors: PROXY_STATUS_ERROR_TYPES, referrerPolicies: REFERRER_POLICY_VALUES, forbiddenTrailers: FORBIDDEN_TRAILER_FIELDS, contentCodings: HTTP_CONTENT_CODINGS };
+  return {
+    prologue: [
+      `var contract = JSON.parse(${JSON.stringify(JSON.stringify(contract))});`,
+      contractRegistriesLine(),
+      ...validatorLines
+    ],
+    skipped,
+    hasSecurity: Boolean(operation2.security),
+    hasParameters: Boolean(operation2.parameterChecks && operation2.parameterChecks.length > 0),
+    hasRequestBodySchemas: Boolean(
+      operation2.requestBody?.jsonSchemas && Object.keys(operation2.requestBody.jsonSchemas).length > 0
+    )
+  };
+}
+function buildSharedContractRuntime() {
   return [
-    `var contract = JSON.parse(${JSON.stringify(JSON.stringify(contract))});`,
-    `var rfcRegistries = JSON.parse(${JSON.stringify(JSON.stringify(registries))});`,
-    ...validatorLines,
-    "function selectedResponseContract() {",
-    "  var status = String(pm.response.code);",
-    "  if (contract.responses[status]) return { key: status, value: contract.responses[status] };",
-    "  var range = String(Math.floor(pm.response.code / 100)) + 'XX';",
-    "  if (contract.responses[range]) return { key: range, value: contract.responses[range] };",
-    "  if (contract.responses.default) return { key: 'default', value: contract.responses.default };",
-    "  return null;",
-    "}",
-    'function responseText() { return pm.response.text() || ""; }',
-    'function isBodyless() { return pm.response.code < 200 || pm.response.code === 204 || pm.response.code === 205 || pm.response.code === 304 || contract.method === "HEAD"; }',
-    "function selectedBodyExpectation() {",
-    '  if (isBodyless()) return "forbidden";',
-    '  if (!selected) return "unknown";',
-    '  return selected.value.bodyExpectation || "unknown";',
-    "}",
-    'function mediaBase(value) { return String(value || "").toLowerCase().split(";")[0].trim(); }',
-    'function mediaParts(value) { var base = mediaBase(value); var parts = base.split("/"); return { raw: base, type: parts[0] || "", subtype: parts[1] || "" }; }',
-    'function isJsonSubtype(subtype) { return subtype === "json" || /\\+json$/.test(subtype); }',
-    "function coerceBySchema(value, schema) {",
-    "  var type = schema && schema.type;",
-    "  var types = Array.isArray(type) ? type : [type];",
-    '  if ((types.indexOf("integer") !== -1 || types.indexOf("number") !== -1) && /^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/.test(String(value).trim())) return Number(value);',
-    '  if (types.indexOf("boolean") !== -1 && (value === "true" || value === "false")) return value === "true";',
-    "  return value;",
-    "}",
-    "function decodeComponent(value) { try { return decodeURIComponent(value); } catch (ignored) { return value; } }",
-    'function isPlaceholderValue(value) { var text = String(value).trim(); return /^<[^<>]*>$/.test(text) || text.indexOf("{{") !== -1; }',
-    'function requestHeader(name) { var value = ""; pm.request.headers.each(function (header) { if (header && header.disabled !== true && String(header.key).toLowerCase() === String(name).toLowerCase()) value = String(header.value); }); return value; }',
-    'function visibleRequestHeader(name) { var value = requestHeader(name); if (!value) return ""; value = String(value); return value.indexOf("{{") === -1 && value.trim() ? value : ""; }',
-    "function hasQueryParam(name) { var found = false; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === String(name).toLowerCase()) found = true; }); return found; }",
-    'function requestQueryValues(name) { var values = []; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === String(name).toLowerCase()) values.push(param.value === null || param.value === undefined ? "" : String(param.value)); }); return values; }',
-    "function requestQueryValue(name) { var values = requestQueryValues(name); return values.length > 0 ? values[values.length - 1] : undefined; }",
-    'function requestPathSegments() { var raw = ""; try { raw = typeof pm.request.url.getPath === "function" ? String(pm.request.url.getPath() || "") : ""; } catch (ignored) {} if (!raw) { var path = pm.request.url.path; raw = Array.isArray(path) ? "/" + path.join("/") : String(path || ""); } return raw.split("?")[0].split("#")[0].split("/").filter(function (segment) { return segment.length > 0; }); }',
-    'function pathRawSegment(name) { var template = String(contract.path).split("/").filter(function (segment) { return segment.length > 0; }); var actual = requestPathSegments(); var offset = actual.length - template.length; if (offset < 0) return undefined; var token = "{" + name + "}"; for (var i = 0; i < template.length; i += 1) { if (template[i] === token) return actual[offset + i]; } return undefined; }',
-    'function requestPathParamValue(name) { var template = String(contract.path).split("/").filter(function (segment) { return segment.length > 0; }); var actual = requestPathSegments(); var offset = actual.length - template.length; if (offset < 0) return undefined; var token = "{" + name + "}"; for (var i = 0; i < template.length; i += 1) { var seg = template[i]; var actualSeg = actual[offset + i]; if (actualSeg === undefined) continue; if (seg === token) return decodeComponent(actualSeg); if (seg.indexOf(token) === -1) continue; var chunks = [], j = 0, bad = false; while (j < seg.length) { if (seg.charAt(j) === "{") { var close = seg.indexOf("}", j); if (close === -1) { bad = true; break; } chunks.push({ p: seg.slice(j + 1, close) }); j = close + 1; } else { var nb = seg.indexOf("{", j); var lit = nb === -1 ? seg.slice(j) : seg.slice(j, nb); chunks.push({ l: lit }); j = nb === -1 ? seg.length : nb; } } if (bad) return undefined; var pos = 0, found, ok = true; for (var c = 0; c < chunks.length; c += 1) { var ch = chunks[c]; if (ch.l !== undefined) { if (actualSeg.indexOf(ch.l, pos) === pos) pos += ch.l.length; else { ok = false; break; } } else { var nextLit = (chunks[c + 1] && chunks[c + 1].l !== undefined) ? chunks[c + 1].l : undefined; var isLast = c === chunks.length - 1; var end; if (isLast) { end = actualSeg.length; } else if (nextLit === undefined) { ok = false; break; } else { var idx = actualSeg.indexOf(nextLit, pos + 1); if (idx === -1) { ok = false; break; } end = idx; } if (end <= pos) { ok = false; break; } if (ch.p === name) found = actualSeg.slice(pos, end); pos = end; } } if (ok && pos === actualSeg.length && found !== undefined) return decodeComponent(found); } return undefined; }',
-    "function mediaScore(expected, actual) {",
-    "  var e = mediaParts(expected); var a = mediaParts(actual);",
-    "  if (!e.raw || !a.raw) return 0;",
-    "  if (e.raw === a.raw) return 4;",
-    '  if (e.type === a.type && e.subtype === "json" && isJsonSubtype(a.subtype)) return 3;',
-    '  if (e.type === a.type && e.subtype === "*+json" && /\\+json$/.test(a.subtype)) return 3;',
-    '  if (e.type === a.type && e.subtype === "*") return 2;',
-    '  if (e.type === "*" && e.subtype === "*") return 1;',
-    "  return 0;",
-    "}",
-    "function selectMedia(responseContract) {",
-    '  var actual = pm.response.headers.get("Content-Type") || "";',
-    "  var content = responseContract.content || {};",
-    "  var matches = Object.keys(content).map(function (expected) { return { expected: expected, score: mediaScore(expected, actual), media: content[expected] }; }).filter(function (entry) { return entry.score > 0; }).sort(function (a, b) { return b.score - a.score; });",
-    '  if (matches.length === 0) return { error: "Content-Type " + actual + " does not match OpenAPI content for " + contract.method + " " + contract.path + " status " + pm.response.code + "; expected " + Object.keys(content).join(", ") };',
-    '  if (matches.length > 1 && matches[0].score === matches[1].score) return { error: "Content-Type " + actual + " ambiguously matches OpenAPI content for " + contract.method + " " + contract.path + " status " + pm.response.code + "; expected " + Object.keys(content).join(", ") };',
-    "  return matches[0];",
-    "}",
-    "var selected = selectedResponseContract();",
-    "var bodyExpectation = selectedBodyExpectation();",
-    ...skipped.length > 0 ? [
+    { lines: [
+      "function selectedResponseContract() {",
+      "  var status = String(pm.response.code);",
+      "  if (contract.responses[status]) return { key: status, value: contract.responses[status] };",
+      "  var range = String(Math.floor(pm.response.code / 100)) + 'XX';",
+      "  if (contract.responses[range]) return { key: range, value: contract.responses[range] };",
+      "  if (contract.responses.default) return { key: 'default', value: contract.responses.default };",
+      "  return null;",
+      "}",
+      'function responseText() { return pm.response.text() || ""; }',
+      'function isBodyless() { return pm.response.code < 200 || pm.response.code === 204 || pm.response.code === 205 || pm.response.code === 304 || contract.method === "HEAD"; }',
+      "function selectedBodyExpectation() {",
+      '  if (isBodyless()) return "forbidden";',
+      '  if (!selected) return "unknown";',
+      '  return selected.value.bodyExpectation || "unknown";',
+      "}",
+      'function mediaBase(value) { return String(value || "").toLowerCase().split(";")[0].trim(); }',
+      'function mediaParts(value) { var base = mediaBase(value); var parts = base.split("/"); return { raw: base, type: parts[0] || "", subtype: parts[1] || "" }; }',
+      'function isJsonSubtype(subtype) { return subtype === "json" || /\\+json$/.test(subtype); }',
+      "function coerceBySchema(value, schema) {",
+      "  var type = schema && schema.type;",
+      "  var types = Array.isArray(type) ? type : [type];",
+      '  if ((types.indexOf("integer") !== -1 || types.indexOf("number") !== -1) && /^-?[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/.test(String(value).trim())) return Number(value);',
+      '  if (types.indexOf("boolean") !== -1 && (value === "true" || value === "false")) return value === "true";',
+      "  return value;",
+      "}",
+      "function decodeComponent(value) { try { return decodeURIComponent(value); } catch (ignored) { return value; } }",
+      'function isPlaceholderValue(value) { var text = String(value).trim(); return /^<[^<>]*>$/.test(text) || text.indexOf("{{") !== -1; }',
+      'function requestHeader(name) { var value = ""; pm.request.headers.each(function (header) { if (header && header.disabled !== true && String(header.key).toLowerCase() === String(name).toLowerCase()) value = String(header.value); }); return value; }',
+      'function visibleRequestHeader(name) { var value = requestHeader(name); if (!value) return ""; value = String(value); return value.indexOf("{{") === -1 && value.trim() ? value : ""; }',
+      "function hasQueryParam(name) { var found = false; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === String(name).toLowerCase()) found = true; }); return found; }",
+      'function requestQueryValues(name) { var values = []; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === String(name).toLowerCase()) values.push(param.value === null || param.value === undefined ? "" : String(param.value)); }); return values; }',
+      "function requestQueryValue(name) { var values = requestQueryValues(name); return values.length > 0 ? values[values.length - 1] : undefined; }",
+      'function requestPathSegments() { var raw = ""; try { raw = typeof pm.request.url.getPath === "function" ? String(pm.request.url.getPath() || "") : ""; } catch (ignored) {} if (!raw) { var path = pm.request.url.path; raw = Array.isArray(path) ? "/" + path.join("/") : String(path || ""); } return raw.split("?")[0].split("#")[0].split("/").filter(function (segment) { return segment.length > 0; }); }',
+      'function pathRawSegment(name) { var template = String(contract.path).split("/").filter(function (segment) { return segment.length > 0; }); var actual = requestPathSegments(); var offset = actual.length - template.length; if (offset < 0) return undefined; var token = "{" + name + "}"; for (var i = 0; i < template.length; i += 1) { if (template[i] === token) return actual[offset + i]; } return undefined; }',
+      'function requestPathParamValue(name) { var template = String(contract.path).split("/").filter(function (segment) { return segment.length > 0; }); var actual = requestPathSegments(); var offset = actual.length - template.length; if (offset < 0) return undefined; var token = "{" + name + "}"; for (var i = 0; i < template.length; i += 1) { var seg = template[i]; var actualSeg = actual[offset + i]; if (actualSeg === undefined) continue; if (seg === token) return decodeComponent(actualSeg); if (seg.indexOf(token) === -1) continue; var chunks = [], j = 0, bad = false; while (j < seg.length) { if (seg.charAt(j) === "{") { var close = seg.indexOf("}", j); if (close === -1) { bad = true; break; } chunks.push({ p: seg.slice(j + 1, close) }); j = close + 1; } else { var nb = seg.indexOf("{", j); var lit = nb === -1 ? seg.slice(j) : seg.slice(j, nb); chunks.push({ l: lit }); j = nb === -1 ? seg.length : nb; } } if (bad) return undefined; var pos = 0, found, ok = true; for (var c = 0; c < chunks.length; c += 1) { var ch = chunks[c]; if (ch.l !== undefined) { if (actualSeg.indexOf(ch.l, pos) === pos) pos += ch.l.length; else { ok = false; break; } } else { var nextLit = (chunks[c + 1] && chunks[c + 1].l !== undefined) ? chunks[c + 1].l : undefined; var isLast = c === chunks.length - 1; var end; if (isLast) { end = actualSeg.length; } else if (nextLit === undefined) { ok = false; break; } else { var idx = actualSeg.indexOf(nextLit, pos + 1); if (idx === -1) { ok = false; break; } end = idx; } if (end <= pos) { ok = false; break; } if (ch.p === name) found = actualSeg.slice(pos, end); pos = end; } } if (ok && pos === actualSeg.length && found !== undefined) return decodeComponent(found); } return undefined; }',
+      "function mediaScore(expected, actual) {",
+      "  var e = mediaParts(expected); var a = mediaParts(actual);",
+      "  if (!e.raw || !a.raw) return 0;",
+      "  if (e.raw === a.raw) return 4;",
+      '  if (e.type === a.type && e.subtype === "json" && isJsonSubtype(a.subtype)) return 3;',
+      '  if (e.type === a.type && e.subtype === "*+json" && /\\+json$/.test(a.subtype)) return 3;',
+      '  if (e.type === a.type && e.subtype === "*") return 2;',
+      '  if (e.type === "*" && e.subtype === "*") return 1;',
+      "  return 0;",
+      "}",
+      "function selectMedia(responseContract) {",
+      '  var actual = pm.response.headers.get("Content-Type") || "";',
+      "  var content = responseContract.content || {};",
+      "  var matches = Object.keys(content).map(function (expected) { return { expected: expected, score: mediaScore(expected, actual), media: content[expected] }; }).filter(function (entry) { return entry.score > 0; }).sort(function (a, b) { return b.score - a.score; });",
+      '  if (matches.length === 0) return { error: "Content-Type " + actual + " does not match OpenAPI content for " + contract.method + " " + contract.path + " status " + pm.response.code + "; expected " + Object.keys(content).join(", ") };',
+      '  if (matches.length > 1 && matches[0].score === matches[1].score) return { error: "Content-Type " + actual + " ambiguously matches OpenAPI content for " + contract.method + " " + contract.path + " status " + pm.response.code + "; expected " + Object.keys(content).join(", ") };',
+      "  return matches[0];",
+      "}",
+      "var selected = selectedResponseContract();",
+      "var bodyExpectation = selectedBodyExpectation();"
+    ] },
+    { guard: "skipped", lines: [
       // A schema schemasafe could not compile is NOT silently ignored: it is
       // surfaced here (and as a CONTRACT_SCHEMA_NOT_COMPILED warning at generation
       // time). This test passes - the RESPONSE is legitimate; only the local
       // validator could not be built - but it documents the un-validated schemas
       // in the run report so the skip is never invisible.
-      `var contractSkippedValidators = JSON.parse(${JSON.stringify(JSON.stringify(skipped))});`,
       "pm.test('OpenAPI schemas without a compilable runtime validator are documented', function () {",
       '  pm.expect(contractSkippedValidators, "these OpenAPI schemas were not runtime-validated (schemasafe could not compile): " + contractSkippedValidators.join("; ")).to.be.an("array");',
       "});"
-    ] : [],
-    "pm.test('OpenAPI operation mapping exists', function () { pm.expect(contract.path).to.be.a('string').and.not.empty; });",
-    "pm.test('Status code is defined by OpenAPI', function () { pm.expect(selected, 'No OpenAPI response defined for ' + contract.method + ' ' + contract.path + ' status ' + pm.response.code).to.exist; });",
-    "pm.test('Response headers match OpenAPI', function () {",
-    "  if (!selected) return;",
-    "  var headers = selected.value.headers || [];",
-    "  headers.forEach(function (header) {",
-    "    var actual = pm.response.headers.get(header.name);",
-    '    if (!actual && header.required) pm.expect.fail("OpenAPI response header missing for " + contract.method + " " + contract.path + ": " + header.name);',
-    "    if (!actual) return;",
-    '    if (header.unsupported) pm.expect.fail("OpenAPI response header unsupported for " + contract.method + " " + contract.path + ": " + header.unsupported);',
-    "    var headerValidator = validators[selected.key] && validators[selected.key].__headers && validators[selected.key].__headers[String(header.name).toLowerCase()];",
-    "    if (!headerValidator || headerValidator.skip) return;",
-    "    var expected;",
-    '    if (header.items) { var joined = String(actual).trim(); expected = joined === "" ? [] : joined.split(",").map(function (entry) { return coerceBySchema(entry.trim(), header.items); }); }',
-    "    else expected = coerceBySchema(actual, header.schema);",
-    '    if (!headerValidator(expected)) pm.expect.fail("OpenAPI response header validation failed for " + header.name + ": " + JSON.stringify(headerValidator.errors || []));',
-    "  });",
-    "});",
-    "pm.test('Response body matches OpenAPI body contract', function () {",
-    "  if (!selected) return;",
-    '  if (bodyExpectation === "forbidden") { pm.expect(responseText().length, "HTTP semantics forbid a response body for " + contract.method + " " + contract.path + " status " + pm.response.code).to.equal(0); return; }',
-    '  if (bodyExpectation === "declared") { pm.expect(responseText().length, "OpenAPI response declares content but response body was empty").to.be.above(0); }',
-    "});",
-    "pm.test('Content-Type matches OpenAPI response content', function () {",
-    "  if (!selected || isBodyless()) return;",
-    "  var content = selected.value.content || {};",
-    "  if (Object.keys(content).length === 0) return;",
-    '  var actual = pm.response.headers.get("Content-Type");',
-    '  if (!actual) pm.expect.fail("Content-Type <missing> does not match OpenAPI content for " + contract.method + " " + contract.path + " status " + pm.response.code + "; expected " + Object.keys(content).join(", "));',
-    "  var media = selectMedia(selected.value);",
-    "  if (media.error) pm.expect.fail(media.error);",
-    "});",
-    "pm.test('Response body matches OpenAPI schema', function () {",
-    "  if (!selected || isBodyless()) return;",
-    "  var content = selected.value.content || {};",
-    "  if (Object.keys(content).length === 0) return;",
-    "  var media = selectMedia(selected.value);",
-    "  if (media.error) return;",
-    '  if (media.media.unsupported) pm.expect.fail("OpenAPI schema unsupported for " + contract.method + " " + contract.path + " status " + pm.response.code + ": " + media.media.unsupported);',
-    "  if (!media.media.schema) { return; }",
-    "  var validate = validators[selected.key] && validators[selected.key][media.expected];",
-    "  if (validate && validate.skip) return;",
-    '  if (!validate) pm.expect.fail("OpenAPI schema validator was not generated for " + media.expected);',
-    '  var actual = mediaParts(pm.response.headers.get("Content-Type") || "");',
-    "  var value = isJsonSubtype(actual.subtype) ? pm.response.json() : responseText();",
-    // Non-JSON object-schema bodies skip schema validation instead of
-    // failing; the index emits CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED so the
-    // skip is visible at instrumentation time.
-    '  if (!isJsonSubtype(actual.subtype) && media.media.schema && media.media.schema.type !== "string") { return; }',
-    '  if (!validate(value)) pm.expect.fail("OpenAPI schema validation failed for " + contract.method + " " + contract.path + " status " + pm.response.code + ": " + JSON.stringify(validate.errors || []));',
-    "});",
-    "pm.test('Response satisfies RFC 9110 status-code requirements', function () {",
-    "  var code = pm.response.code;",
-    '  function respHeader(name) { return pm.response.headers.get(name) || ""; }',
-    '  var visibleIfMatch = visibleRequestHeader("If-Match");',
-    '  var visibleIfNoneMatch = visibleRequestHeader("If-None-Match");',
-    '  var visibleIfModifiedSince = visibleRequestHeader("If-Modified-Since");',
-    '  var visibleIfUnmodifiedSince = visibleRequestHeader("If-Unmodified-Since");',
-    "  if (code === 401) {",
-    '    var challenge = respHeader("WWW-Authenticate");',
-    '    if (!challenge) pm.expect.fail("RFC 9110 requires WWW-Authenticate on 401 responses");',
-    "    var expectedSchemes = [];",
-    "    (contract.security || []).forEach(function (alternative) { alternative.forEach(function (check) { if (check.prefix) { var scheme = String(check.prefix).trim().split(/\\s+/)[0]; if (scheme && expectedSchemes.indexOf(scheme) === -1) expectedSchemes.push(scheme); } }); });",
-    '    expectedSchemes.forEach(function (scheme) { if (challenge && !new RegExp("(^|,)\\\\s*" + scheme + "\\\\b", "i").test(challenge)) pm.expect.fail("RFC 9110 15.5.2 and OAS 4.8.27 require a WWW-Authenticate " + scheme + " challenge for the declared security scheme; got: " + challenge); });',
-    '    if (challenge && /\\bbasic\\b/i.test(challenge) && !/realm\\s*=/i.test(challenge)) pm.expect.fail("RFC 7617 requires a realm parameter on Basic challenges: " + challenge);',
-    '    if (challenge && /\\bdigest\\b/i.test(challenge) && (!/realm\\s*=/i.test(challenge) || !/nonce\\s*=/i.test(challenge))) pm.expect.fail("RFC 7616 requires realm and nonce on Digest challenges: " + challenge);',
-    "  }",
-    "  if (code === 401 || code === 403) {",
-    '    var authChallenge = respHeader("WWW-Authenticate");',
-    '    var bearerError = authChallenge && /\\bbearer\\b/i.test(authChallenge) ? authChallenge.match(/\\berror\\s*=\\s*"?([A-Za-z0-9_]+)"?/i) : null;',
-    '    if (bearerError && ["invalid_request", "invalid_token", "insufficient_scope"].indexOf(bearerError[1]) === -1) pm.expect.fail("RFC 6750 Bearer error code must be invalid_request, invalid_token, or insufficient_scope; got " + bearerError[1]);',
-    "  }",
-    "  if (code === 405) {",
-    '    var allow = respHeader("Allow");',
-    '    if (!allow) pm.expect.fail("RFC 9110 requires Allow on 405 responses");',
-    '    var allowed = allow.split(",").map(function (entry) { return entry.trim().toUpperCase(); });',
-    '    (contract.pathMethods || []).forEach(function (method) { if (allowed.indexOf(method) === -1) pm.expect.fail("Allow on 405 must list every method the OpenAPI path declares (RFC 9110); missing " + method + " in: " + allow); });',
-    "  }",
-    '  if (code === 304 && responseText().trim().length > 0) pm.expect.fail("RFC 9110 forbids content in a 304 response");',
-    "  if (code === 304) {",
-    '    if (contract.method !== "GET" && contract.method !== "HEAD") pm.expect.fail("RFC 9110 permits 304 only on conditional GET or HEAD requests");',
-    '    if (!visibleIfNoneMatch && !visibleIfModifiedSince) pm.expect.fail("RFC 9110 permits 304 only when a visible If-None-Match or If-Modified-Since precondition is present");',
-    "  }",
-    '  if (code === 412 && !visibleIfMatch && !visibleIfNoneMatch && !visibleIfUnmodifiedSince) pm.expect.fail("RFC 9110 permits 412 only when a visible If-Match, If-None-Match, or If-Unmodified-Since precondition is present");',
-    "  if (visibleIfNoneMatch && !visibleIfMatch && !visibleIfUnmodifiedSince) {",
-    '    if ((contract.method === "GET" || contract.method === "HEAD") && code === 412) pm.expect.fail("RFC 9110 13.1.2 uses 304 rather than 412 when a GET or HEAD If-None-Match precondition fails");',
-    '    if (contract.method !== "GET" && contract.method !== "HEAD" && code === 304) pm.expect.fail("RFC 9110 13.1.2 uses 412 rather than 304 when a non-GET/HEAD If-None-Match precondition fails");',
-    "  }",
-    // RFC 9110 15.4.5: a 304 MUST carry these fields when they would have
-    // been sent on the 200; enforce for fields the spec declares on the 200.
-    '  if (code === 304 && contract.responses["200"] && contract.responses["304"]) {',
-    '    var okDeclared = (contract.responses["200"] && contract.responses["200"].headers) || [];',
-    '    ["Cache-Control", "Content-Location", "Date", "ETag", "Expires", "Vary"].forEach(function (name) {',
-    "      var declared = okDeclared.some(function (header) { return String(header.name).toLowerCase() === name.toLowerCase(); });",
-    '      if (declared && !respHeader(name)) pm.expect.fail("RFC 9110 15.4.5: a 304 must include " + name + " because the OpenAPI 200 response declares it");',
-    "    });",
-    "  }",
-    '  var retryAfter = respHeader("Retry-After");',
-    "  if (retryAfter && (code === 429 || code === 503 || (code >= 300 && code < 400))) {",
-    "    // RFC 9110 10.2.3 defines Retry-After as HTTP-date / delay-seconds, and",
-    "    // delay-seconds is 1*DIGIT. Date.parse coerces a bare integer into a year",
-    '    // (Date.parse("120") is year 0120, Date.parse("600") is year 0600), so',
-    "    // comparing a delay-seconds value against Date made every ordinary",
-    "    // rate-limit/maintenance response fail. Only the HTTP-date form is ordered",
-    "    // against Date; delay-seconds is a relative offset and has no such ordering.",
-    "    var retryAfterIsDelaySeconds = /^[0-9]+$/.test(retryAfter.trim());",
-    '    if (!retryAfterIsDelaySeconds && isNaN(Date.parse(retryAfter))) pm.expect.fail("Retry-After must be delay-seconds or an HTTP-date (RFC 9110 10.2.3): " + retryAfter);',
-    "    if (!retryAfterIsDelaySeconds) {",
-    '      var retryDate = Date.parse(retryAfter); var responseDate = Date.parse(respHeader("Date"));',
-    '      if (!isNaN(retryDate) && !isNaN(responseDate) && retryDate < responseDate) pm.expect.fail("Retry-After HTTP-date must not be earlier than Date (RFC 9110 10.2.3 and 6.6.1): " + retryAfter + " < " + respHeader("Date"));',
-    "    }",
-    "  }",
-    '  var location = respHeader("Location");',
-    "  if (location && (code === 201 || (code >= 300 && code < 400))) {",
-    '    if (/\\s/.test(location.trim()) || location.trim().length === 0) pm.expect.fail("Location must be a valid URI-reference (RFC 9110 / RFC 3986): " + location);',
-    "  }",
-    "});",
-    "pm.test('Error and encoding conventions match RFC 9457 / RFC 8259 / RFC 8288', function () {",
-    '  var contentTypeRaw = pm.response.headers.get("Content-Type") || "";',
-    "  var ct = mediaParts(contentTypeRaw);",
-    '  if (ct.type === "application" && ct.subtype === "problem+json") {',
-    "    var problem;",
-    '    try { problem = pm.response.json(); } catch (error) { pm.expect.fail("application/problem+json body is not valid JSON (RFC 9457): " + error); }',
-    '    if (!problem || typeof problem !== "object" || Array.isArray(problem)) pm.expect.fail("problem details must be a JSON object (RFC 9457)");',
-    '    ["type", "title", "detail", "instance"].forEach(function (member) { if (problem[member] !== undefined && typeof problem[member] !== "string") pm.expect.fail("RFC 9457 " + member + " member must be a string; got " + typeof problem[member]); });',
-    '    ["type", "instance"].forEach(function (member) {',
-    '      if (typeof problem[member] !== "string") return;',
-    "      var uriRef = problem[member];",
-    '      if (/[\\s\\x00-\\x1f\\x7f]/.test(uriRef)) pm.expect.fail("RFC 9457 3.1.1/3.1.5 " + member + " member must be a URI-reference without whitespace/control characters (RFC 3986): " + uriRef);',
-    '      if (!/^(?:[A-Za-z][A-Za-z0-9+.-]*:[^\\s<>"]*|\\/[^\\s<>"]*|\\.\\.?\\/[^\\s<>"]*|#[^\\s<>"]*|[^\\s<>"]*)$/.test(uriRef)) pm.expect.fail("RFC 9457 3.1.1/3.1.5 " + member + " member must be a parseable URI-reference (RFC 3986): " + uriRef);',
-    "    });",
-    "    if (problem.status !== undefined) {",
-    '      if (typeof problem.status !== "number") pm.expect.fail("RFC 9457 status member must be a number; got " + typeof problem.status);',
-    '      else if (problem.status !== pm.response.code) pm.expect.fail("RFC 9457 status member (" + problem.status + ") must match the HTTP status code (" + pm.response.code + ")");',
-    "    }",
-    "  }",
-    "  if (isJsonSubtype(ct.subtype)) {",
-    '    var charsetMatch = contentTypeRaw.match(/charset\\s*=\\s*"?([^";\\s]+)"?/i);',
-    '    if (charsetMatch && charsetMatch[1].toLowerCase() !== "utf-8") pm.expect.fail("JSON interchange must be UTF-8 (RFC 8259); got charset=" + charsetMatch[1]);',
-    "  }",
-    '  var link = pm.response.headers.get("Link");',
-    "  if (link) {",
-    "    link.split(/,(?=\\s*<)/).forEach(function (value) {",
-    '      if (!/^\\s*<[^>]*>/.test(value)) pm.expect.fail("RFC 8288 link-value must start with a <URI-Reference>: " + value);',
-    '      if (!/;\\s*rel\\s*=/i.test(value)) pm.expect.fail("RFC 8288 link-value must carry a rel parameter: " + value);',
-    "    });",
-    "  }",
-    "});",
-    "var rfcAdvisories = [];",
-    "function rfcAdvise(message) { if (rfcAdvisories.indexOf(message) === -1) rfcAdvisories.push(message); }",
-    'function rfcRespHeader(name) { return pm.response.headers.get(name) || ""; }',
-    "function rfcHeaderAll(name) { var out = []; pm.response.headers.each(function (header) { if (header && String(header.key).toLowerCase() === String(name).toLowerCase()) out.push(String(header.value)); }); return out; }",
-    "function rfcIsHttpDate(value) { return /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-3][0-9] (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-2][0-9]:[0-5][0-9]:[0-5][0-9] GMT$/.test(String(value).trim()) && !isNaN(Date.parse(value)); }",
-    "function rfcIsToken(value) { return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(String(value)); }",
-    "function rfcResponseDeclaresHeader(name) { if (!selected) return false; return ((selected.value && selected.value.headers) || []).some(function (header) { return String(header.name).toLowerCase() === String(name).toLowerCase(); }); }",
-    'function rfcIsEntityTag(value) { return /^(W\\/)?"[\\x21\\x23-\\x7e\\x80-\\xff]*"$/.test(String(value).trim()); }',
-    "function rfcIsFieldContent(value) { return /^[\\t \\x21-\\x7e\\x80-\\xff]*$/.test(String(value)); }",
-    'function rfcTokenList(value) { var parts = String(value).split(","); for (var i = 0; i < parts.length; i += 1) { if (!rfcIsToken(parts[i].trim())) return false; } return true; }',
-    `function rfcSplitList(value) { var out = []; var current = ""; var inQuote = false; for (var i = 0; i < value.length; i += 1) { var ch = value.charAt(i); if (ch === "\\\\" && inQuote) { current += ch + (value.charAt(i + 1) || ""); i += 1; continue; } if (ch === '"') inQuote = !inQuote; if (ch === "," && !inQuote) { out.push(current); current = ""; continue; } current += ch; } out.push(current); return out; }`,
-    'function rfcBase64Decode(value) { var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; var clean = String(value).replace(/=+$/, ""); if (clean.length === 0 || /[^A-Za-z0-9+\\/]/.test(clean)) return null; var bits = 0, buffer = 0, out = ""; for (var i = 0; i < clean.length; i += 1) { buffer = (buffer << 6) | alphabet.indexOf(clean.charAt(i)); bits += 6; if (bits >= 8) { bits -= 8; out += String.fromCharCode((buffer >> bits) & 255); } } return out; }',
-    // RFC 9651 structured-field parser (superset of RFC 8941: adds Date and
-    // Display String bare items plus the 9651 numeric digit limits). Returns
-    // null on a parse failure, otherwise a truthy AST: { item } / { list } /
-    // { dict, keys }. Members are { v: { t, v }, p: { key: { t, v } } } and
-    // inner lists are { t: "innerlist", v: [members], p: params }.
-    "function rfcSfParse(input, kind) {",
-    "  var s = String(input), i = 0;",
-    '  function ws() { while (i < s.length && (s.charAt(i) === " " || s.charAt(i) === "\\t")) i += 1; }',
-    "  function key() { if (!/[a-z*]/.test(s.charAt(i))) return null; var start = i; i += 1; while (i < s.length && /[a-z0-9_.*-]/.test(s.charAt(i))) i += 1; return s.slice(start, i); }",
-    "  function bareItem() {",
-    "    var ch = s.charAt(i);",
-    `    if (ch === '"') { i += 1; var str = ""; while (i < s.length) { var c = s.charAt(i); if (c === "\\\\") { var esc = s.charAt(i + 1); if (esc !== '"' && esc !== "\\\\") return null; str += esc; i += 2; continue; } if (c === '"') { i += 1; return { t: "str", v: str }; } if (c < " " || c > "~") return null; str += c; i += 1; } return null; }`,
-    `    if (ch === "%" && s.charAt(i + 1) === '"') { i += 2; var disp = ""; while (i < s.length) { var dc = s.charAt(i); if (dc === '"') { i += 1; return { t: "dispstr", v: disp }; } if (dc === "\\\\" || dc < " " || dc > "~") return null; if (dc === "%") { if (!/^[0-9a-f]{2}$/.test(s.slice(i + 1, i + 3))) return null; disp += s.slice(i, i + 3); i += 3; continue; } disp += dc; i += 1; } return null; }`,
-    '    if (ch === ":") { i += 1; var bstart = i; while (i < s.length && s.charAt(i) !== ":") i += 1; if (s.charAt(i) !== ":") return null; var body = s.slice(bstart, i); i += 1; return /^[A-Za-z0-9+\\/=]*$/.test(body) ? { t: "bytes", v: body } : null; }',
-    '    if (ch === "?") { i += 1; var flag = s.charAt(i); if (flag !== "0" && flag !== "1") return null; i += 1; return { t: "bool", v: flag === "1" }; }',
-    '    if (ch === "@") { i += 1; var dneg = s.charAt(i) === "-"; if (dneg) i += 1; var dstart = i; if (!/[0-9]/.test(s.charAt(i))) return null; while (i < s.length && /[0-9]/.test(s.charAt(i))) i += 1; if (i - dstart > 15) return null; return { t: "date", v: (dneg ? -1 : 1) * Number(s.slice(dstart, i)) }; }',
-    '    if (/[-0-9]/.test(ch)) { var nstart = i; if (ch === "-") i += 1; var istart = i; if (!/[0-9]/.test(s.charAt(i))) return null; while (i < s.length && /[0-9]/.test(s.charAt(i))) i += 1; var intDigits = i - istart; if (s.charAt(i) === ".") { if (intDigits > 12) return null; i += 1; var fstart = i; if (!/[0-9]/.test(s.charAt(i))) return null; while (i < s.length && /[0-9]/.test(s.charAt(i))) i += 1; if (i - fstart > 3) return null; return { t: "dec", v: Number(s.slice(nstart, i)) }; } if (intDigits > 15) return null; return { t: "int", v: Number(s.slice(nstart, i)) }; }',
-    '    if (/[A-Za-z*]/.test(ch)) { var tstart = i; i += 1; while (i < s.length && /[!#$%&\'*+.^_`|~:\\/0-9A-Za-z-]/.test(s.charAt(i))) i += 1; return { t: "tok", v: s.slice(tstart, i) }; }',
-    "    return null;",
-    "  }",
-    '  function params() { var out = {}; while (s.charAt(i) === ";") { i += 1; ws(); var pk = key(); if (pk === null) return null; if (s.charAt(i) === "=") { i += 1; var pv = bareItem(); if (pv === null) return null; out[pk] = pv; } else out[pk] = { t: "bool", v: true }; } return out; }',
-    "  function item() {",
-    '    if (s.charAt(i) === "(") { i += 1; ws(); var inner = []; while (s.charAt(i) !== ")") { if (i >= s.length) return null; var entry = bareItem(); if (entry === null) return null; var entryParams = params(); if (entryParams === null) return null; inner.push({ v: entry, p: entryParams }); if (s.charAt(i) !== ")" && s.charAt(i) !== " ") return null; ws(); } i += 1; var listParams = params(); if (listParams === null) return null; return { t: "innerlist", v: inner, p: listParams }; }',
-    "    var bare = bareItem(); if (bare === null) return null; var itemParams = params(); if (itemParams === null) return null; return { v: bare, p: itemParams };",
-    "  }",
-    "  ws();",
-    '  if (kind === "item") { var single = item(); if (single === null) return null; ws(); return i === s.length ? { item: single } : null; }',
-    '  if (kind === "dict") {',
-    "    var dict = {}; var keys = [];",
-    "    if (i === s.length) return { dict: dict, keys: keys };",
-    "    while (i < s.length) {",
-    "      var dk = key(); if (dk === null) return null;",
-    "      var member;",
-    '      if (s.charAt(i) === "=") { i += 1; member = item(); if (member === null) return null; }',
-    '      else { var bareParams = params(); if (bareParams === null) return null; member = { v: { t: "bool", v: true }, p: bareParams }; }',
-    "      if (dict[dk] === undefined) keys.push(dk);",
-    "      dict[dk] = member;",
-    "      ws();",
-    "      if (i === s.length) return { dict: dict, keys: keys };",
-    '      if (s.charAt(i) !== ",") return null;',
-    "      i += 1; ws();",
-    "      if (i === s.length) return null;",
-    "    }",
-    "    return { dict: dict, keys: keys };",
-    "  }",
-    "  var list = [];",
-    "  if (i === s.length) return { list: list };",
-    "  while (i < s.length) {",
-    "    var listMember = item(); if (listMember === null) return null;",
-    "    list.push(listMember);",
-    "    ws();",
-    "    if (i === s.length) return { list: list };",
-    '    if (s.charAt(i) !== ",") return null;',
-    "    i += 1; ws();",
-    "    if (i === s.length) return null;",
-    "  }",
-    "  return { list: list };",
-    "}",
-    "pm.test('Response header fields satisfy RFC 9110 field syntax', function () {",
-    "  pm.response.headers.each(function (header) {",
-    "    if (!header) return;",
-    '    if (!rfcIsToken(String(header.key))) pm.expect.fail("Response header name is not a valid RFC 9110 token: " + header.key);',
-    '    if (!rfcIsFieldContent(String(header.value))) pm.expect.fail("Response header value contains characters forbidden by RFC 9110 field-content: " + header.key);',
-    "  });",
-    '  ["content-type", "content-length", "etag", "location", "date", "age", "expires", "last-modified", "retry-after"].forEach(function (name) {',
-    "    var values = rfcHeaderAll(name);",
-    '    for (var i = 1; i < values.length; i += 1) { if (values[i] !== values[0]) pm.expect.fail("Singleton response header " + name + " appears " + values.length + " times with differing values (RFC 9110)"); }',
-    "  });",
-    "});",
-    "pm.test('Response header values satisfy their RFC grammars', function () {",
-    '  var date = rfcRespHeader("Date");',
-    '  if (date && !rfcIsHttpDate(date)) pm.expect.fail("Date must be an IMF-fixdate (RFC 9110): " + date);',
-    '  if (!date) rfcAdvise("RFC 9110: origin servers SHOULD send a Date header");',
-    '  var etag = rfcRespHeader("ETag");',
-    '  if (etag && !rfcIsEntityTag(etag)) pm.expect.fail("ETag is not a valid entity-tag (RFC 9110): " + etag);',
-    '  var lastModified = rfcRespHeader("Last-Modified");',
-    "  if (lastModified) {",
-    '    if (!rfcIsHttpDate(lastModified)) pm.expect.fail("Last-Modified must be a valid HTTP-date (RFC 9110): " + lastModified);',
-    '    else if (date && rfcIsHttpDate(date) && Date.parse(lastModified) > Date.parse(date)) pm.expect.fail("Last-Modified must not be later than Date (RFC 9110): " + lastModified + " > " + date);',
-    "  }",
-    '  var vary = rfcRespHeader("Vary");',
-    "  if (vary) {",
-    '    var varyMembers = vary.split(",").map(function (entry) { return entry.trim(); });',
-    '    if (varyMembers.indexOf("*") !== -1 && varyMembers.length > 1) pm.expect.fail("Vary: * must not be combined with other members (RFC 9110): " + vary);',
-    '    varyMembers.forEach(function (member) { if (member !== "*" && !rfcIsToken(member)) pm.expect.fail("Vary member is not a field-name token (RFC 9110): " + member); });',
-    '    if (varyMembers.indexOf("*") !== -1 && /\\b(max-age|s-maxage|public)\\b/i.test(rfcRespHeader("Cache-Control"))) rfcAdvise("RFC 9110 12.5.5: Vary: * conflicts with cacheable response directives");',
-    "  }",
-    '  var contentLocation = rfcRespHeader("Content-Location");',
-    '  if (contentLocation && (/\\s/.test(contentLocation.trim()) || contentLocation.trim().length === 0)) pm.expect.fail("Content-Location must be a valid URI-reference (RFC 9110): " + contentLocation);',
-    '  var acceptRanges = rfcRespHeader("Accept-Ranges");',
-    '  if (acceptRanges && !rfcTokenList(acceptRanges)) pm.expect.fail("Accept-Ranges must be a list of range-unit tokens (RFC 9110): " + acceptRanges);',
-    '  var contentLanguage = rfcRespHeader("Content-Language");',
-    '  if (contentLanguage) contentLanguage.split(",").forEach(function (tag) { if (!/^[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8})*$/.test(tag.trim())) pm.expect.fail("Content-Language carries a malformed BCP 47 language-tag (RFC 5646): " + tag.trim()); });',
-    '  var allow = rfcRespHeader("Allow");',
-    '  if (allow && allow.trim() && !rfcTokenList(allow)) pm.expect.fail("Allow must be a comma-separated list of method tokens (RFC 9110): " + allow);',
-    '  if (allow && contract.method === "OPTIONS" && pm.response.code >= 200 && pm.response.code < 300) {',
-    '    var optionsAllowed = allow.split(",").map(function (entry) { return entry.trim().toUpperCase(); });',
-    '    (contract.pathMethods || []).forEach(function (method) { if (optionsAllowed.indexOf(method) === -1) pm.expect.fail("Allow on an OPTIONS response must list every method the OpenAPI path declares (RFC 9110); missing " + method + " in: " + allow); });',
-    "  }",
-    '  var age = rfcRespHeader("Age");',
-    '  if (age && !/^[0-9]+$/.test(age.trim())) pm.expect.fail("Age must be a non-negative integer of delta-seconds (RFC 9111): " + age);',
-    '  var expires = rfcRespHeader("Expires");',
-    '  if (expires && !rfcIsHttpDate(expires)) rfcAdvise("RFC 9111: Expires is not a valid HTTP-date and will be treated as already expired: " + expires);',
-    '  if (expires && rfcIsHttpDate(expires) && date && rfcIsHttpDate(date) && Date.parse(expires) < Date.parse(date) && !/\\b(max-age|s-maxage|no-cache|no-store)\\b/i.test(rfcRespHeader("Cache-Control"))) rfcAdvise("RFC 9111 5.3: Expires is earlier than Date without an explicit staleness directive");',
-    '  if (rfcHeaderAll("warning").length > 0) rfcAdvise("RFC 9111 obsoleted the Warning header; the server still emits it");',
-    '  var cacheControl = rfcRespHeader("Cache-Control");',
-    "  if (cacheControl) {",
-    "    var seenDirectives = {};",
-    "    rfcSplitList(cacheControl).forEach(function (entry) {",
-    "      var directive = entry.trim();",
-    '      if (!directive) { pm.expect.fail("Cache-Control contains an empty directive (RFC 9111): " + cacheControl); return; }',
-    '      var eq = directive.indexOf("=");',
-    "      var name = (eq === -1 ? directive : directive.slice(0, eq)).trim().toLowerCase();",
-    "      var argument = eq === -1 ? undefined : directive.slice(eq + 1).trim();",
-    '      if (!rfcIsToken(name)) pm.expect.fail("Cache-Control directive name is not a token (RFC 9111): " + directive);',
-    '      if (Object.prototype.hasOwnProperty.call(seenDirectives, name)) rfcAdvise("RFC 9111: Cache-Control repeats the " + name + " directive: " + cacheControl);',
-    "      seenDirectives[name] = argument === undefined ? true : argument;",
-    '      if (["max-age", "s-maxage", "stale-while-revalidate", "stale-if-error"].indexOf(name) !== -1 && (argument === undefined || !/^"?[0-9]+"?$/.test(argument))) pm.expect.fail("Cache-Control " + name + " requires a delta-seconds argument (RFC 9111/5861): " + directive);',
-    '      if (["immutable", "no-store", "public", "must-revalidate", "proxy-revalidate", "must-understand", "no-transform", "only-if-cached"].indexOf(name) !== -1 && argument !== undefined) pm.expect.fail("Cache-Control " + name + " takes no argument (RFC 9111/8246): " + directive);',
-    "    });",
-    '    if (seenDirectives["no-store"] && seenDirectives["max-age"] !== undefined) pm.expect.fail("Cache-Control combines no-store with max-age; the directives contradict (RFC 9111): " + cacheControl);',
-    '    if (seenDirectives["s-maxage"] !== undefined && seenDirectives.private !== undefined) rfcAdvise("RFC 9111 5.2.2: Cache-Control combines s-maxage with private directives");',
-    "  }",
-    '  var contentEncoding = rfcRespHeader("Content-Encoding");',
-    '  if (contentEncoding) rfcSplitList(contentEncoding).forEach(function (entry) { var coding = entry.trim().toLowerCase(); if (!coding || rfcRegistries.contentCodings.indexOf(coding) === -1) pm.expect.fail("Content-Encoding member is not in the vendored IANA HTTP content-coding registry snapshot (RFC 9110 8.4): " + entry.trim()); });',
-    '  var contentDisposition = rfcRespHeader("Content-Disposition");',
-    '  if (contentDisposition && rfcResponseDeclaresHeader("Content-Disposition")) {',
-    '    var cdParts = contentDisposition.split(";");',
-    "    var dispositionType = cdParts.shift().trim();",
-    "    var cdParams = {};",
-    '    if (!rfcIsToken(dispositionType)) pm.expect.fail("Content-Disposition disposition-type must be a token (RFC 6266 4.1): " + dispositionType);',
-    "    cdParts.forEach(function (entry) {",
-    "      var param = entry.trim(); if (!param) return;",
-    '      var eq = param.indexOf("=");',
-    '      if (eq <= 0) { pm.expect.fail("Content-Disposition parameters must use name=value syntax (RFC 6266 4.1): " + param); return; }',
-    "      var paramName = param.slice(0, eq).trim().toLowerCase();",
-    "      var paramValue = param.slice(eq + 1).trim();",
-    '      if (!rfcIsToken(paramName)) pm.expect.fail("Content-Disposition parameter name must be a token (RFC 6266 4.1): " + param);',
-    '      if (Object.prototype.hasOwnProperty.call(cdParams, paramName)) pm.expect.fail("Content-Disposition must not repeat parameter " + paramName + " (RFC 6266 4.1): " + contentDisposition);',
-    "      cdParams[paramName] = true;",
-    '      if (!/^"(?:[^"\\\\]|\\\\.)*"$|^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/.test(paramValue)) pm.expect.fail("Content-Disposition parameter value is malformed (RFC 6266 4.1): " + param);',
-    `      if (paramName === "filename*" && !/^[A-Za-z0-9!#$&+.^_\`{}~-]+'[A-Za-z0-9!#$&+.^_\`{}~-]*'[^\\s]*$/.test(paramValue)) pm.expect.fail("Content-Disposition filename* must use RFC 5987 charset''value syntax (RFC 6266 4.1): " + param);`,
-    "    });",
-    "  }",
-    '  var acceptPatch = rfcRespHeader("Accept-Patch");',
-    '  if (acceptPatch) acceptPatch.split(",").forEach(function (entry) { var parts = mediaParts(entry); if (!parts.type || !parts.subtype) pm.expect.fail("Accept-Patch must be a list of media types (RFC 5789): " + entry.trim()); });',
-    '  var deprecation = rfcRespHeader("Deprecation");',
-    '  if (deprecation && !/^@-?[0-9]+$/.test(deprecation.trim())) pm.expect.fail("Deprecation must be an RFC 9745 Date structured field (@unix-timestamp): " + deprecation);',
-    '  var sunset = rfcRespHeader("Sunset");',
-    "  if (sunset) {",
-    '    if (!rfcIsHttpDate(sunset)) pm.expect.fail("Sunset must be a valid HTTP-date (RFC 8594): " + sunset);',
-    '    else if (Date.parse(sunset) < Date.now()) rfcAdvise("RFC 8594: Sunset date is already in the past: " + sunset);',
-    "  }",
-    '  var preferenceApplied = rfcRespHeader("Preference-Applied");',
-    "  if (preferenceApplied) {",
-    '    var requestPrefer = requestHeader("Prefer").toLowerCase();',
-    "    rfcSplitList(preferenceApplied).forEach(function (entry) {",
-    '      var token = entry.split("=")[0].trim().toLowerCase();',
-    '      if (token && requestPrefer.indexOf(token) === -1) pm.expect.fail("Preference-Applied echoes a preference the request never sent (RFC 7240): " + entry.trim());',
-    "    });",
-    "  }",
-    '  var trailerValue = rfcRespHeader("Trailer");',
-    "  if (trailerValue) {",
-    '    trailerValue.split(",").forEach(function (entry) {',
-    "      var trailerField = entry.trim();",
-    "      if (!trailerField) return;",
-    '      if (!rfcIsToken(trailerField)) pm.expect.fail("Trailer members must be field-name tokens (RFC 9110): " + trailerField);',
-    '      else if (rfcRegistries.forbiddenTrailers.indexOf(trailerField.toLowerCase()) !== -1) pm.expect.fail("Trailer must not name " + trailerField + "; RFC 9110 forbids framing, routing, modifier, authentication, and content-processing fields in trailers");',
-    "    });",
-    "  }",
-    '  var altSvc = rfcRespHeader("Alt-Svc");',
-    '  if (altSvc && altSvc.trim() !== "clear") {',
-    "    rfcSplitList(altSvc).forEach(function (entry) {",
-    "      var alt = entry.trim();",
-    '      if (!alt) { pm.expect.fail("Alt-Svc contains an empty alternative (RFC 7838): " + altSvc); return; }',
-    '      var altMatch = alt.match(/^([!#$%&\'*+.^_`|~0-9A-Za-z%-]+)=("(?:[^"\\\\]|\\\\.)*")(\\s*;[\\s\\S]*)?$/);',
-    '      if (!altMatch) { pm.expect.fail("Alt-Svc alternative must be protocol-id=<quoted alt-authority> (RFC 7838): " + alt); return; }',
-    '      (altMatch[3] || "").split(";").forEach(function (paramEntry) {',
-    "        var param = paramEntry.trim();",
-    "        if (!param) return;",
-    '        var paramEq = param.indexOf("=");',
-    '        if (paramEq === -1) { pm.expect.fail("Alt-Svc parameters must be token=value (RFC 7838): " + param); return; }',
-    "        var paramName = param.slice(0, paramEq).trim();",
-    "        var paramValue = param.slice(paramEq + 1).trim();",
-    '        if (!rfcIsToken(paramName)) pm.expect.fail("Alt-Svc parameter name must be a token (RFC 7838): " + param);',
-    '        if (paramName === "ma" && !/^"?[0-9]+"?$/.test(paramValue)) pm.expect.fail("Alt-Svc ma parameter must be delta-seconds (RFC 7838): " + param);',
-    `        if (paramName === "persist" && paramValue !== "1" && paramValue !== '"1"') pm.expect.fail("Alt-Svc persist parameter must be 1 (RFC 7838): " + param);`,
-    "      });",
-    "    });",
-    "  }",
-    "});",
-    "pm.test('Set-Cookie response headers satisfy RFC 6265', function () {",
-    '  rfcHeaderAll("Set-Cookie").forEach(function (setCookie) {',
-    '    if (setCookie.indexOf("{{") !== -1) return;',
-    '    var segments = setCookie.split(";");',
-    "    var pair = segments[0];",
-    '    var pairEq = pair.indexOf("=");',
-    '    if (pairEq <= 0) { pm.expect.fail("Set-Cookie must start with cookie-name=cookie-value (RFC 6265): " + setCookie); return; }',
-    "    var cookieName = pair.slice(0, pairEq).trim();",
-    "    var cookieValue = pair.slice(pairEq + 1).trim();",
-    '    if (!rfcIsToken(cookieName)) pm.expect.fail("Set-Cookie cookie-name must be a token (RFC 6265): " + cookieName);',
-    '    if (!/^"[\\x21\\x23-\\x2b\\x2d-\\x3a\\x3c-\\x5b\\x5d-\\x7e]*"$|^[\\x21\\x23-\\x2b\\x2d-\\x3a\\x3c-\\x5b\\x5d-\\x7e]*$/.test(cookieValue)) pm.expect.fail("Set-Cookie cookie-value contains characters outside cookie-octet (RFC 6265): " + setCookie);',
-    "    var attrs = {};",
-    "    for (var a = 1; a < segments.length; a += 1) {",
-    "      var attr = segments[a].trim();",
-    '      if (!attr) { pm.expect.fail("Set-Cookie contains an empty attribute (RFC 6265): " + setCookie); continue; }',
-    '      var attrEq = attr.indexOf("=");',
-    "      var attrName = (attrEq === -1 ? attr : attr.slice(0, attrEq)).trim().toLowerCase();",
-    "      var attrValue = attrEq === -1 ? undefined : attr.slice(attrEq + 1).trim();",
-    '      if (Object.prototype.hasOwnProperty.call(attrs, attrName)) pm.expect.fail("Set-Cookie repeats the " + attrName + " attribute (RFC 6265): " + setCookie);',
-    "      attrs[attrName] = attrValue === undefined ? true : attrValue;",
-    '      if (attrName === "max-age" && !/^-?[0-9]+$/.test(String(attrValue || ""))) pm.expect.fail("Set-Cookie Max-Age must be an integer (RFC 6265): " + attr);',
-    '      if (attrName === "expires") {',
-    '        if (!attrValue || isNaN(Date.parse(attrValue))) pm.expect.fail("Set-Cookie Expires is not a parseable cookie-date (RFC 6265): " + attr);',
-    '        else if (!rfcIsHttpDate(attrValue)) rfcAdvise("RFC 6265: Set-Cookie Expires is not the preferred IMF-fixdate form: " + attrValue);',
-    "      }",
-    '      if ((attrName === "secure" || attrName === "httponly") && attrValue !== undefined) pm.expect.fail("Set-Cookie " + attrName + " attribute takes no value (RFC 6265): " + attr);',
-    '      if (attrName === "samesite" && ["strict", "lax", "none"].indexOf(String(attrValue || "").toLowerCase()) === -1) pm.expect.fail("Set-Cookie SameSite must be Strict, Lax, or None (RFC 6265bis): " + attr);',
-    "    }",
-    '    if (String(attrs.samesite || "").toLowerCase() === "none" && attrs.secure === undefined) pm.expect.fail("Set-Cookie SameSite=None requires Secure (RFC 6265bis): " + setCookie);',
-    '    if (cookieName.indexOf("__Host-") === 0 && (attrs.secure === undefined || attrs.domain !== undefined || attrs.path !== "/")) pm.expect.fail("Set-Cookie __Host- prefix requires Secure, no Domain, and Path=/ (RFC 6265bis): " + setCookie);',
-    '    if (cookieName.indexOf("__Secure-") === 0 && attrs.secure === undefined) pm.expect.fail("Set-Cookie __Secure- prefix requires Secure (RFC 6265bis): " + setCookie);',
-    '    if (attrs.secure === undefined && attrs.httponly === undefined && attrs.samesite === undefined) rfcAdvise("Set-Cookie " + cookieName + " carries none of Secure, HttpOnly, or SameSite");',
-    "  });",
-    "});",
-    "pm.test('Security response headers satisfy their specifications', function () {",
-    '  var hsts = rfcRespHeader("Strict-Transport-Security");',
-    "  if (hsts) {",
-    "    var hstsSeen = {};",
-    '    hsts.split(";").forEach(function (entry) {',
-    "      var directive = entry.trim();",
-    '      if (!directive) { pm.expect.fail("Strict-Transport-Security contains an empty directive (RFC 6797): " + hsts); return; }',
-    '      var directiveEq = directive.indexOf("=");',
-    "      var directiveName = (directiveEq === -1 ? directive : directive.slice(0, directiveEq)).trim().toLowerCase();",
-    "      var directiveValue = directiveEq === -1 ? undefined : directive.slice(directiveEq + 1).trim();",
-    '      if (!rfcIsToken(directiveName)) pm.expect.fail("Strict-Transport-Security directive name must be a token (RFC 6797): " + directive);',
-    '      if (Object.prototype.hasOwnProperty.call(hstsSeen, directiveName)) pm.expect.fail("Strict-Transport-Security must not repeat the " + directiveName + " directive (RFC 6797): " + hsts);',
-    "      hstsSeen[directiveName] = true;",
-    '      if (directiveName === "max-age" && !/^"?[0-9]+"?$/.test(String(directiveValue || ""))) pm.expect.fail("Strict-Transport-Security max-age requires a delta-seconds value (RFC 6797): " + directive);',
-    '      if ((directiveName === "includesubdomains" || directiveName === "preload") && directiveValue !== undefined) pm.expect.fail("Strict-Transport-Security " + directiveName + " is valueless (RFC 6797): " + directive);',
-    "    });",
-    '    if (hstsSeen["max-age"] === undefined) pm.expect.fail("Strict-Transport-Security requires a max-age directive (RFC 6797): " + hsts);',
-    "  }",
-    '  var xcto = rfcRespHeader("X-Content-Type-Options");',
-    '  if (xcto && xcto.split(",")[0].trim().toLowerCase() !== "nosniff") pm.expect.fail("X-Content-Type-Options must be nosniff (WHATWG Fetch): " + xcto);',
-    '  var referrerPolicy = rfcRespHeader("Referrer-Policy");',
-    '  if (referrerPolicy) referrerPolicy.split(",").forEach(function (entry) { var member = entry.trim().toLowerCase(); if (rfcRegistries.referrerPolicies.indexOf(member) === -1) pm.expect.fail("Referrer-Policy member is not a registered policy (W3C Referrer Policy): " + entry.trim()); });',
-    '  var permissionsPolicy = rfcRespHeader("Permissions-Policy");',
-    '  if (permissionsPolicy && !rfcSfParse(permissionsPolicy, "dict")) pm.expect.fail("Permissions-Policy must be a Structured Field Dictionary (W3C Permissions Policy): " + permissionsPolicy);',
-    "});",
-    "pm.test('CORS response headers satisfy the WHATWG Fetch standard', function () {",
-    '  var acaoValues = rfcHeaderAll("Access-Control-Allow-Origin");',
-    '  var acao = acaoValues.length > 0 ? acaoValues[0].trim() : "";',
-    '  if (acaoValues.length > 1) pm.expect.fail("Access-Control-Allow-Origin must appear at most once (WHATWG Fetch): " + acaoValues.join(" / "));',
-    '  if (acao && acao !== "*" && acao !== "null" && !/^[A-Za-z][A-Za-z0-9+.-]*:\\/\\/[^\\/\\s?#]+$/.test(acao)) pm.expect.fail("Access-Control-Allow-Origin must be *, null, or a single serialized origin (WHATWG Fetch): " + acao);',
-    '  var corsCredentials = rfcRespHeader("Access-Control-Allow-Credentials");',
-    "  if (corsCredentials) {",
-    '    if (corsCredentials.trim() !== "true") pm.expect.fail("Access-Control-Allow-Credentials must be exactly true (WHATWG Fetch): " + corsCredentials);',
-    '    if (acao === "*") pm.expect.fail("Access-Control-Allow-Origin * is illegal alongside Access-Control-Allow-Credentials: true (WHATWG Fetch)");',
-    "  }",
-    '  ["Access-Control-Expose-Headers", "Access-Control-Allow-Headers", "Access-Control-Allow-Methods"].forEach(function (name) {',
-    "    var value = rfcRespHeader(name);",
-    "    if (!value) return;",
-    '    value.split(",").forEach(function (entry) {',
-    "      var member = entry.trim();",
-    '      if (!member) { pm.expect.fail(name + " contains an empty member (WHATWG Fetch): " + value); return; }',
-    '      if (member !== "*" && !rfcIsToken(member)) pm.expect.fail(name + " members must be tokens (WHATWG Fetch): " + member);',
-    '      if (member === "*" && corsCredentials && corsCredentials.trim() === "true") rfcAdvise("WHATWG Fetch: the * wildcard in " + name + " is treated as a literal name when credentials are allowed");',
-    "    });",
-    "  });",
-    '  var corsMaxAge = rfcRespHeader("Access-Control-Max-Age");',
-    '  if (corsMaxAge && !/^-?[0-9]+$/.test(corsMaxAge.trim())) pm.expect.fail("Access-Control-Max-Age must be an integer (WHATWG Fetch): " + corsMaxAge);',
-    '  if (acao && acao !== "*" && acao !== "null") {',
-    '    var varyForCors = rfcRespHeader("Vary").toLowerCase().split(",").map(function (entry) { return entry.trim(); });',
-    '    if (varyForCors.indexOf("origin") === -1 && varyForCors.indexOf("*") === -1) rfcAdvise("CORS: Access-Control-Allow-Origin varies by origin but the response lacks Vary: Origin");',
-    "  }",
-    "});",
-    "pm.test('Response satisfies RFC 9110 message framing requirements', function () {",
-    "  var code = pm.response.code;",
-    '  if ((code === 204 || code < 200) && rfcRespHeader("Content-Length")) pm.expect.fail("RFC 9110 forbids Content-Length on 1xx and 204 responses");',
-    '  if ([301, 302, 303, 307, 308].indexOf(code) !== -1 && !rfcRespHeader("Location")) pm.expect.fail("RFC 9110 expects Location on a " + code + " redirect response");',
-    "  if (code === 416) {",
-    '    var unsatisfiedRange = rfcRespHeader("Content-Range");',
-    '    if (!unsatisfiedRange) pm.expect.fail("RFC 9110 requires Content-Range (unsatisfied-range form) on 416 responses");',
-    '    else if (!/^bytes \\*\\/[0-9]+$/.test(unsatisfiedRange.trim())) pm.expect.fail("Content-Range on 416 must use the unsatisfied-range form bytes */<complete-length> (RFC 9110 15.5.17): " + unsatisfiedRange);',
-    "  }",
-    "  if (code === 206) {",
-    '    var contentRange = rfcRespHeader("Content-Range");',
-    '    var responseMedia = mediaParts(rfcRespHeader("Content-Type"));',
-    '    var isByteranges = responseMedia.type === "multipart" && responseMedia.subtype === "byteranges";',
-    '    if (!contentRange && !isByteranges) pm.expect.fail("RFC 9110 requires Content-Range on a single-part 206 response (or multipart/byteranges for multi-range)");',
-    '    if (contentRange && isByteranges) pm.expect.fail("RFC 9110 forbids Content-Range on a multipart/byteranges 206 response");',
-    '    if (rfcRespHeader("Accept-Ranges").trim().toLowerCase() === "none") pm.expect.fail("206 responses must not carry Accept-Ranges: none (RFC 9110 14.3)");',
-    "    if (contentRange) {",
-    "      var rangeParts = contentRange.trim().match(/^(\\S+) (?:([0-9]+)-([0-9]+)|\\*)\\/([0-9]+|\\*)$/);",
-    '      if (!rangeParts) pm.expect.fail("Content-Range is not a valid RFC 9110 range: " + contentRange);',
-    "      else {",
-    '        if (rangeParts[1] !== "bytes") rfcAdvise("RFC 9110: 206 Content-Range uses a non-bytes range unit: " + rangeParts[1]);',
-    "        if (rangeParts[2] !== undefined) {",
-    '          if (Number(rangeParts[2]) > Number(rangeParts[3])) pm.expect.fail("Content-Range first-byte-pos must be <= last-byte-pos (RFC 9110): " + contentRange);',
-    '          if (rangeParts[4] !== "*" && Number(rangeParts[3]) >= Number(rangeParts[4])) pm.expect.fail("Content-Range last-byte-pos must be < complete-length (RFC 9110): " + contentRange);',
-    "          var rangeLength = Number(rangeParts[3]) - Number(rangeParts[2]) + 1;",
-    '          var contentLength = rfcRespHeader("Content-Length");',
-    '          if (contentLength && /^[0-9]+$/.test(contentLength.trim()) && Number(contentLength.trim()) !== rangeLength) pm.expect.fail("Content-Length must equal the selected byte-range length (RFC 9110 14.4): " + contentLength + " !== " + rangeLength);',
-    "        }",
-    "      }",
-    "    }",
-    "  }",
-    '  if (code === 407 && !rfcRespHeader("Proxy-Authenticate")) pm.expect.fail("RFC 9110 requires Proxy-Authenticate on 407 responses");',
-    '  if (code === 415 && contract.method === "PATCH" && !rfcRespHeader("Accept-Patch")) rfcAdvise("RFC 5789: a 415 response to PATCH SHOULD carry Accept-Patch");',
-    "});",
-    "pm.test('Response satisfies RFC 9110 range, negotiation, and cache conventions', function () {",
-    "  var code = pm.response.code;",
-    "  var method = contract.method;",
-    '  var visibleRange = visibleRequestHeader("Range");',
-    "  var reqRange = visibleRange.trim();",
-    "  if (code === 206 || code === 416) {",
-    '    if (method !== "GET") pm.expect.fail("RFC 9110 14.2: range responses (" + code + ") answer GET range requests");',
-    '    if (!reqRange) rfcAdvise("RFC 9110 14: a " + code + " range response without a visible Range request header may be proxy-injected");',
-    "  }",
-    '  if (rfcRespHeader("Content-Range") && code !== 206 && code !== 416) pm.expect.fail("RFC 9110 14.4: Content-Range is meaningful only on 206 and 416 responses; unexpected on " + code);',
-    "  if (code === 206 && reqRange) {",
-    '    var crUnit = (rfcRespHeader("Content-Range").trim().split(" ")[0] || "").toLowerCase();',
-    '    var reqUnit = (reqRange.split("=")[0] || "").toLowerCase();',
-    '    if (crUnit && reqUnit && crUnit !== reqUnit) pm.expect.fail("RFC 9110 14.4: 206 Content-Range unit (" + crUnit + ") must match the request Range unit (" + reqUnit + ")");',
-    '    var rangeSpec = reqRange.split("=")[1] || "";',
-    '    var rangeCount = rangeSpec.split(",").filter(function (x) { return x.trim(); }).length;',
-    '    var rmedia = mediaParts(rfcRespHeader("Content-Type"));',
-    '    if (rangeCount === 1 && rmedia.type === "multipart" && rmedia.subtype === "byteranges") pm.expect.fail("RFC 9110 15.3.7: a single requested byte range must not be answered with multipart/byteranges");',
-    '    if (reqRange.toLowerCase().indexOf("bytes=") === 0) {',
-    '      var crb = rfcRespHeader("Content-Range").trim().match(/^bytes ([0-9]+)-([0-9]+)\\/([0-9]+|\\*)$/);',
-    '      var singles = rangeSpec.split(",");',
-    "      if (crb && singles.length === 1) {",
-    "        var mm = singles[0].trim().match(/^([0-9]*)-([0-9]*)$/);",
-    "        if (mm) {",
-    "          var respStart = Number(crb[1]); var respEnd = Number(crb[2]);",
-    '          if (mm[1] !== "" && respStart < Number(mm[1])) pm.expect.fail("RFC 9110 14.4: 206 first-byte-pos " + respStart + " is before the requested range start " + mm[1]);',
-    '          if (mm[2] !== "" && respEnd > Number(mm[2])) pm.expect.fail("RFC 9110 14.4: 206 last-byte-pos " + respEnd + " is beyond the requested range end " + mm[2]);',
-    "        }",
-    "      }",
-    "    }",
-    "  }",
-    "  if (code === 206) {",
-    '    var crlen = rfcRespHeader("Content-Range").trim().match(/^bytes ([0-9]+)-([0-9]+)\\/([0-9]+|\\*)$/);',
-    '    if (crlen && !rfcRespHeader("Content-Length")) { var expectLen = Number(crlen[2]) - Number(crlen[1]) + 1; var bodyLen = responseText().length; if (bodyLen > 0 && bodyLen !== expectLen) rfcAdvise("RFC 9110 14.4: 206 body length (" + bodyLen + ") does not match the Content-Range interval (" + expectLen + ")"); }',
-    '    if (contract.responses["200"] && contract.responses["206"]) {',
-    '      var ok200 = (contract.responses["200"].headers) || [];',
-    '      ["ETag", "Content-Location", "Date", "Vary", "Cache-Control", "Expires"].forEach(function (name) {',
-    "        var decl = ok200.some(function (h) { return String(h.name).toLowerCase() === name.toLowerCase(); });",
-    '        if (decl && !rfcRespHeader(name)) pm.expect.fail("RFC 9110 15.3.7: a 206 must include " + name + " because the OpenAPI 200 response declares it");',
-    "      });",
-    "    }",
-    "  }",
-    '  if (code === 426 && !rfcRespHeader("Upgrade")) pm.expect.fail("RFC 9110 15.5.22 requires an Upgrade header on 426 responses");',
-    '  var respAcceptEnc = rfcRespHeader("Accept-Encoding");',
-    '  if (respAcceptEnc) rfcSplitList(respAcceptEnc).forEach(function (entry) { var e = entry.trim(); var coding = e.split(";")[0].trim().toLowerCase(); if (coding && coding !== "*" && coding !== "identity" && rfcRegistries.contentCodings.indexOf(coding) === -1) pm.expect.fail("Accept-Encoding lists a coding absent from the IANA content-coding registry (RFC 9110 12.5.3): " + e); var qm = e.match(/;\\s*q=([0-9.]+)/i); if (qm && Number(qm[1]) > 1) pm.expect.fail("Accept-Encoding qvalue must be <= 1 (RFC 9110): " + e); });',
-    '  if (code === 415 && respAcceptEnc && !visibleRequestHeader("Content-Encoding")) rfcAdvise("RFC 9110: a 415 carrying Accept-Encoding implies an unsupported request Content-Encoding, but none is visible");',
-    '  var ce = rfcRespHeader("Content-Encoding");',
-    '  if (ce && rfcSplitList(ce).some(function (x) { return x.trim().toLowerCase() === "identity"; })) pm.expect.fail("RFC 9110 8.4.1: identity must not appear in Content-Encoding");',
-    '  var reqAcceptEnc = visibleRequestHeader("Accept-Encoding");',
-    '  if (ce && reqAcceptEnc) { var usedCodings = ce.split(",").map(function (x) { return x.trim().toLowerCase(); }); rfcSplitList(reqAcceptEnc).forEach(function (entry) { if (/;\\s*q=0(\\.0+)?\\s*$/i.test(entry.trim())) { var nm = entry.trim().split(";")[0].trim().toLowerCase(); if (usedCodings.indexOf(nm) !== -1) pm.expect.fail("Response Content-Encoding uses " + nm + " which the request Accept-Encoding set to q=0 (RFC 9110 12.5.3)"); } }); }',
-    '  var vary = rfcRespHeader("Vary");',
-    '  if (ce && vary && vary.indexOf("*") === -1 && !/\\baccept-encoding\\b/i.test(vary)) rfcAdvise("RFC 9110 12.5.5: a response with Content-Encoding SHOULD list Accept-Encoding in Vary");',
-    '  if (rfcRespHeader("Content-Language") && vary && vary.indexOf("*") === -1 && !/\\baccept-language\\b/i.test(vary)) rfcAdvise("RFC 9110 12.5.5: a response with Content-Language SHOULD list Accept-Language in Vary");',
-    '  if (code === 300 && responseText().trim().length === 0) rfcAdvise("RFC 9110 15.4.1: a 300 Multiple Choices response SHOULD include a body listing the alternatives");',
-    '  if (code === 451) { var l451 = rfcRespHeader("Link"); if (!l451 || !/rel\\s*=\\s*"?blocked-by"?/i.test(l451)) rfcAdvise("RFC 7725 3: a 451 response SHOULD include a Link header with rel=blocked-by"); }',
-    '  var sunsetH = rfcRespHeader("Sunset"); var deprH = rfcRespHeader("Deprecation");',
-    '  if (sunsetH && deprH) { var depM = deprH.trim().match(/^@(-?[0-9]+)$/); var sunMs = Date.parse(sunsetH); if (depM && !isNaN(sunMs) && sunMs < Number(depM[1]) * 1000) pm.expect.fail("RFC 9745: Sunset date must not be earlier than the Deprecation date"); }',
-    '  var cc = rfcRespHeader("Cache-Control");',
-    '  if (cc) { rfcSplitList(cc).forEach(function (d) { var t = d.trim(); var dm = t.match(/^(max-age|s-maxage)\\s*=\\s*(.*)$/i); if (dm && /^".*"$/.test(dm[2].trim())) pm.expect.fail("RFC 9111 5.2.2: " + dm[1].toLowerCase() + " must be an unquoted delta-seconds: " + t); var fm = t.match(/^(no-cache|private)\\s*=\\s*(.*)$/i); if (fm) { var arg = fm[2].trim(); if (!/^".*"$/.test(arg)) pm.expect.fail("RFC 9111 5.2.2: " + fm[1].toLowerCase() + " argument must be a quoted field-name list: " + t); else if (arg.slice(1, -1).split(",").some(function (f) { return f.trim() && !/^[!#$%&*+.^_|~0-9A-Za-z-]+$/.test(f.trim()); })) pm.expect.fail("RFC 9111 5.2.2: " + fm[1].toLowerCase() + " field list must contain valid field-names: " + t); } }); if (/\\bmust-understand\\b/i.test(cc) && !/\\bno-store\\b/i.test(cc)) rfcAdvise("RFC 8246: must-understand SHOULD be accompanied by no-store"); }',
-    '  if ([428, 429, 431, 511].indexOf(code) !== -1 && cc && /\\b(public|max-age|s-maxage)\\b/i.test(cc) && !/\\bno-store\\b/i.test(cc)) rfcAdvise("RFC 6585/9111: a " + code + " response should not be stored by a shared cache; avoid public/max-age without no-store");',
-    '  if (method === "PATCH" && code >= 200 && code < 300 && rfcRespHeader("Content-Location")) rfcAdvise("RFC 5789 3.1: a PATCH Content-Location equal to the request target marks the response as the new representation; verify it matches the target URI");',
-    '  if (method === "OPTIONS" && code >= 200 && code < 300 && (contract.pathMethods || []).indexOf("PATCH") !== -1 && !rfcRespHeader("Accept-Patch")) rfcAdvise("RFC 5789 3.1: an OPTIONS response for a resource that supports PATCH SHOULD list Accept-Patch");',
-    '  var linkH = rfcRespHeader("Link");',
-    '  if (linkH) { linkH.split(/,(?=\\s*<)/).forEach(function (lv) { var lm = lv.trim().match(/^<([^>]*)>(.*)$/); if (!lm) { pm.expect.fail("RFC 8288: link-value must be a <URI-Reference> followed by parameters: " + lv.trim()); return; } var params = lm[2]; var re = /;\\s*([A-Za-z0-9!#$%&*+.^_|~-]+)(\\s*=\\s*("(([^"\\\\]|\\\\.)*)"|[^;,\\s]+))?/g; var consumed = 0; var pm2; var sawRel = false; while ((pm2 = re.exec(params)) !== null) { consumed = re.lastIndex; if (pm2[1].toLowerCase() === "rel") sawRel = true; } if (params.replace(/\\s+$/, "").length > consumed) pm.expect.fail("RFC 8288: unparseable Link parameters: " + lv.trim()); if (!sawRel) pm.expect.fail("RFC 8288: link-value must include a rel parameter: " + lv.trim()); }); }',
-    "});",
-    "pm.test('Response media type is acceptable under the request Accept header', function () {",
-    "  if (pm.response.code < 200 || pm.response.code >= 300 || isBodyless()) return;",
-    '  var accept = requestHeader("Accept");',
-    '  if (!accept || accept.indexOf("{{") !== -1) return;',
-    '  var actual = mediaParts(rfcRespHeader("Content-Type"));',
-    "  if (!actual.type) return;",
-    "  var acceptable = false;",
-    "  var jsonSoftened = false;",
-    "  rfcSplitList(accept).forEach(function (entry) {",
-    "    var range = mediaParts(entry);",
-    '    var qMatch = entry.match(/;\\s*q\\s*=\\s*"?([0-9.]+)"?/i);',
-    "    if (qMatch && Number(qMatch[1]) <= 0) return;",
-    '    if ((range.type === "*" && range.subtype === "*") || (range.type === actual.type && (range.subtype === "*" || range.subtype === actual.subtype))) acceptable = true;',
-    '    if (range.type === actual.type && range.subtype === "json" && isJsonSubtype(actual.subtype)) jsonSoftened = true;',
-    "  });",
-    '  if (!acceptable && jsonSoftened) { rfcAdvise("Content negotiation: response " + actual.raw + " is a +json type while the request only accepted application/json"); return; }',
-    '  if (!acceptable) pm.expect.fail("Response Content-Type " + actual.raw + " is not acceptable under the request Accept header (RFC 9110): " + accept);',
-    "});",
-    "pm.test('Response body satisfies its media type RFC conventions', function () {",
-    '  var contentTypeValue = rfcRespHeader("Content-Type");',
-    "  var media = mediaParts(contentTypeValue);",
-    "  var text = responseText();",
-    '  if (pm.response.code === 406 && !text.trim()) rfcAdvise("RFC 9110: a 406 response SHOULD include a list of available representations");',
-    "  if (!text) return;",
-    "  if (isJsonSubtype(media.subtype)) {",
-    '    if (text.charCodeAt(0) === 65279) pm.expect.fail("RFC 8259 forbids a byte order mark at the start of JSON text");',
-    '    var charsetParam = contentTypeValue.match(/charset\\s*=\\s*"?([^";\\s]+)"?/i);',
-    '    if (charsetParam) rfcAdvise("RFC 8259 defines no charset parameter for JSON media types; got charset=" + charsetParam[1]);',
-    "  }",
-    '  if (media.raw === "application/x-ndjson" || media.raw === "application/jsonl" || media.raw === "application/x-jsonlines") {',
-    '    text.split(/\\r?\\n/).forEach(function (line, lineNumber) { if (!line.trim()) return; try { JSON.parse(line); } catch (error) { pm.expect.fail("NDJSON line " + (lineNumber + 1) + " is not valid JSON: " + error); } });',
-    "  }",
-    '  if (media.raw === "text/event-stream") {',
-    "    var sseText = text.charCodeAt(0) === 65279 ? text.slice(1) : text;",
-    "    var sseHasField = false;",
-    '    sseText.split(/\\r?\\n/).forEach(function (line) { if (!line || line.charAt(0) === ":") return; var field = line.split(":")[0]; if (["data", "event", "id", "retry"].indexOf(field) === -1) pm.expect.fail("SSE line does not start with a known field or comment: " + line); else sseHasField = true; if (field === "retry" && !/^retry:\\s*[0-9]+\\s*$/.test(line)) pm.expect.fail("SSE retry field must be an integer: " + line); if (field === "id" && line.indexOf("\\u0000") !== -1) pm.expect.fail("SSE id field must not contain NUL (WHATWG HTML): " + line); });',
-    '    if (sseHasField && !/\\r?\\n\\r?\\n$/.test(sseText)) rfcAdvise("SSE: the final event is not terminated by a blank line and would be discarded (WHATWG HTML)");',
-    "  }",
-    '  if (media.type === "multipart") {',
-    '    var boundary = contentTypeValue.match(/;\\s*boundary=(?:"([^"]*)"|([^;]*))/i);',
-    '    var boundaryValue = boundary ? (boundary[1] !== undefined ? boundary[1] : boundary[2].trim()) : "";',
-    '    if (!boundaryValue) pm.expect.fail("multipart responses must carry a boundary parameter (RFC 2046): " + contentTypeValue);',
-    "    else {",
-    '      if (boundaryValue.length > 70) pm.expect.fail("multipart boundary must be 1-70 characters (RFC 2046): " + boundaryValue);',
-    `      if (!/^[0-9A-Za-z'()+_,\\-.\\/:=? ]*[0-9A-Za-z'()+_,\\-.\\/:=?]$/.test(boundaryValue)) pm.expect.fail("multipart boundary contains characters outside RFC 2046 bchars or ends with a space: " + boundaryValue);`,
-    "    }",
-    "  }",
-    '  if (media.raw === "application/hal+json") {',
-    "    var hal; try { hal = JSON.parse(text); } catch (error) { hal = null; }",
-    '    if (hal && typeof hal === "object" && !Array.isArray(hal)) {',
-    "      var halLinks = hal._links;",
-    '      if (halLinks !== undefined && (typeof halLinks !== "object" || Array.isArray(halLinks) || halLinks === null)) pm.expect.fail("HAL _links must be an object of link relations");',
-    '      if (halLinks) Object.keys(halLinks).forEach(function (rel) { var linkValue = halLinks[rel]; (Array.isArray(linkValue) ? linkValue : [linkValue]).forEach(function (linkObject) { if (!linkObject || typeof linkObject !== "object" || typeof linkObject.href !== "string") pm.expect.fail("HAL link relation " + rel + " must be a Link Object (or array of them) with a string href"); }); });',
-    "      var halEmbedded = hal._embedded;",
-    '      if (halEmbedded !== undefined && (typeof halEmbedded !== "object" || Array.isArray(halEmbedded) || halEmbedded === null)) pm.expect.fail("HAL _embedded must be an object of resource names");',
-    "    }",
-    "  }",
-    '  if (media.raw === "application/vnd.api+json") {',
-    "    var jsonApi; try { jsonApi = JSON.parse(text); } catch (error) { jsonApi = null; }",
-    '    if (jsonApi && typeof jsonApi === "object" && !Array.isArray(jsonApi)) {',
-    '      if (jsonApi.data === undefined && jsonApi.errors === undefined && jsonApi.meta === undefined) pm.expect.fail("JSON:API documents must contain at least one of data, errors, meta");',
-    '      if (jsonApi.data !== undefined && jsonApi.errors !== undefined) pm.expect.fail("JSON:API forbids data and errors in the same document");',
-    "    }",
-    "  }",
-    '  if (media.subtype === "problem+xml") {',
-    '    if (text.indexOf("urn:ietf:rfc:7807") === -1) rfcAdvise("application/problem+xml body does not reference the urn:ietf:rfc:7807 namespace");',
-    "    var xmlStatus = text.match(/<status[^>]*>\\s*([0-9]+)\\s*<\\/status>/);",
-    '    if (xmlStatus && Number(xmlStatus[1]) !== pm.response.code) pm.expect.fail("RFC 9457 status member (" + xmlStatus[1] + ") must match the HTTP status code (" + pm.response.code + ")");',
-    "  }",
-    "});",
-    // RateLimit / RateLimit-Policy are still an Internet-Draft, so their
-    // checks live in the advisory block below rather than this hard-fail list.
-    "pm.test('Structured field response headers parse per RFC 9651', function () {",
-    '  [["Cache-Status", "list"], ["Proxy-Status", "list"], ["Priority", "dict"], ["Signature", "dict"], ["Signature-Input", "dict"]].forEach(function (pair) {',
-    '    var value = rfcHeaderAll(pair[0]).join(", ");',
-    "    if (!value) return;",
-    '    if (!rfcSfParse(value, pair[1])) pm.expect.fail(pair[0] + " is not a valid RFC 9651 structured field (" + pair[1] + "): " + value);',
-    "  });",
-    "});",
-    "pm.test('Proxy-Status members are typed per RFC 9209', function () {",
-    '  var value = rfcHeaderAll("Proxy-Status").join(", ");',
-    "  if (!value) return;",
-    '  var parsed = rfcSfParse(value, "list");',
-    "  if (!parsed) return;",
-    "  parsed.list.forEach(function (member) {",
-    '    if (member.t === "innerlist") { pm.expect.fail("Proxy-Status members must be Items, not Inner Lists (RFC 9209): " + value); return; }',
-    '    if (member.v.t !== "tok" && member.v.t !== "str") pm.expect.fail("Proxy-Status member names must be Tokens or Strings (RFC 9209): " + value);',
-    "    var p = member.p;",
-    "    if (p.error !== undefined) {",
-    '      if (p.error.t !== "tok") pm.expect.fail("Proxy-Status error parameter must be a Token (RFC 9209): " + value);',
-    '      else if (rfcRegistries.proxyStatusErrors.indexOf(p.error.v) === -1) rfcAdvise("RFC 9209: Proxy-Status error type is not in the IANA registry snapshot: " + p.error.v);',
-    "    }",
-    '    if (p["next-hop"] !== undefined && p["next-hop"].t !== "tok" && p["next-hop"].t !== "str") pm.expect.fail("Proxy-Status next-hop parameter must be a Token or String (RFC 9209): " + value);',
-    '    if (p["received-status"] !== undefined && p["received-status"].t !== "int") pm.expect.fail("Proxy-Status received-status parameter must be an Integer (RFC 9209): " + value);',
-    '    if (p.details !== undefined && p.details.t !== "str") pm.expect.fail("Proxy-Status details parameter must be a String (RFC 9209): " + value);',
-    "  });",
-    "});",
-    "pm.test('HTTP message signatures are structurally valid (RFC 9421)', function () {",
-    '  var sigInputRaw = rfcHeaderAll("Signature-Input").join(", ");',
-    '  var sigRaw = rfcHeaderAll("Signature").join(", ");',
-    "  if (!sigInputRaw && !sigRaw) return;",
-    '  var sigInput = sigInputRaw ? rfcSfParse(sigInputRaw, "dict") : { dict: {}, keys: [] };',
-    '  var sig = sigRaw ? rfcSfParse(sigRaw, "dict") : { dict: {}, keys: [] };',
-    "  if (!sigInput || !sig) return;",
-    '  if (sigRaw && !sigInputRaw) pm.expect.fail("Signature without a Signature-Input field cannot be verified (RFC 9421)");',
-    '  sig.keys.forEach(function (label) { if (sigInput.dict[label] === undefined) pm.expect.fail("Signature label " + label + " has no matching Signature-Input member (RFC 9421)"); });',
-    '  if (sigRaw) sigInput.keys.forEach(function (label) { if (sig.dict[label] === undefined) pm.expect.fail("Signature-Input label " + label + " has no matching Signature member (RFC 9421)"); });',
-    '  sig.keys.forEach(function (label) { var member = sig.dict[label]; if (member.t === "innerlist" || member.v.t !== "bytes") pm.expect.fail("Signature " + label + " must be a Byte Sequence (RFC 9421)"); });',
-    '  var derivedComponents = ["@method", "@target-uri", "@authority", "@scheme", "@request-target", "@path", "@query", "@query-param", "@status"];',
-    "  sigInput.keys.forEach(function (label) {",
-    "    var member = sigInput.dict[label];",
-    '    if (member.t !== "innerlist") { pm.expect.fail("Signature-Input " + label + " must be an Inner List of covered components (RFC 9421)"); return; }',
-    "    member.v.forEach(function (component) {",
-    '      if (component.v.t !== "str") { pm.expect.fail("Signature-Input " + label + " covered components must be Strings (RFC 9421)"); return; }',
-    "      var componentName = component.v.v;",
-    '      if (componentName.charAt(0) === "@") { if (derivedComponents.indexOf(componentName) === -1) pm.expect.fail("Signature-Input " + label + " uses an unknown derived component (RFC 9421): " + componentName); }',
-    '      else if (!/^[a-z0-9!#$%&\'*+.^_`|~-]+$/.test(componentName)) pm.expect.fail("Signature-Input " + label + " component names must be lowercase field names (RFC 9421): " + componentName);',
-    "    });",
-    "    var p = member.p;",
-    '    if (p.created !== undefined && p.created.t !== "int") pm.expect.fail("Signature-Input " + label + " created parameter must be an Integer (RFC 9421)");',
-    '    if (p.expires !== undefined && p.expires.t !== "int") pm.expect.fail("Signature-Input " + label + " expires parameter must be an Integer (RFC 9421)");',
-    '    if (p.created !== undefined && p.created.t === "int" && p.expires !== undefined && p.expires.t === "int" && p.created.v > p.expires.v) pm.expect.fail("Signature-Input " + label + " created must not be later than expires (RFC 9421)");',
-    '    ["keyid", "alg", "nonce", "tag"].forEach(function (paramName) { if (p[paramName] !== undefined && p[paramName].t !== "str") pm.expect.fail("Signature-Input " + label + " " + paramName + " parameter must be a String (RFC 9421)"); });',
-    "  });",
-    "});",
-    // draft-ietf-httpapi-ratelimit-headers is not yet an RFC, so every finding
-    // here is advisory via rfcAdvise; this test never fails on its own.
-    "pm.test('RateLimit headers follow the IETF ratelimit-headers draft (advisory)', function () {",
-    '  var rl = rfcHeaderAll("RateLimit").join(", ");',
-    '  var rlp = rfcHeaderAll("RateLimit-Policy").join(", ");',
-    '  var legacyLimit = rfcRespHeader("X-RateLimit-Limit").trim();',
-    '  var legacyRemaining = rfcRespHeader("X-RateLimit-Remaining").trim();',
-    '  var legacyReset = rfcRespHeader("X-RateLimit-Reset").trim();',
-    "  var policyQuotas = {};",
-    "  if (rlp) {",
-    '    var policyList = rfcSfParse(rlp, "list");',
-    '    if (!policyList) rfcAdvise("RateLimit-Policy does not parse as a Structured Field List (draft-ietf-httpapi-ratelimit-headers): " + rlp);',
-    "    else policyList.list.forEach(function (member) {",
-    '      if (member.t === "innerlist" || member.v.t !== "str") { rfcAdvise("RateLimit-Policy members should be String policy names (draft-ietf-httpapi-ratelimit-headers): " + rlp); return; }',
-    '      ["q", "w"].forEach(function (paramName) { if (member.p[paramName] !== undefined && member.p[paramName].t !== "int") rfcAdvise("RateLimit-Policy " + paramName + " parameter should be an Integer (draft-ietf-httpapi-ratelimit-headers): " + rlp); });',
-    '      if (member.p.q !== undefined && member.p.q.t === "int") policyQuotas[member.v.v] = member.p.q.v;',
-    "    });",
-    "  }",
-    "  if (rl) {",
-    '    var limitList = rfcSfParse(rl, "list");',
-    '    if (!limitList) rfcAdvise("RateLimit does not parse as a Structured Field List (draft-ietf-httpapi-ratelimit-headers): " + rl);',
-    "    else limitList.list.forEach(function (member) {",
-    '      if (member.t === "innerlist" || member.v.t !== "str") { rfcAdvise("RateLimit members should be String policy names (draft-ietf-httpapi-ratelimit-headers): " + rl); return; }',
-    '      ["r", "t"].forEach(function (paramName) { if (member.p[paramName] !== undefined && member.p[paramName].t !== "int") rfcAdvise("RateLimit " + paramName + " parameter should be an Integer (draft-ietf-httpapi-ratelimit-headers): " + rl); });',
-    '      var remaining = member.p.r !== undefined && member.p.r.t === "int" ? member.p.r.v : undefined;',
-    '      if (remaining !== undefined && remaining < 0) rfcAdvise("RateLimit r (remaining) should not be negative (draft-ietf-httpapi-ratelimit-headers): " + rl);',
-    "      var quota = policyQuotas[member.v.v];",
-    '      if (remaining !== undefined && quota !== undefined && remaining > quota) rfcAdvise("RateLimit remaining (" + remaining + ") exceeds the RateLimit-Policy quota (" + quota + ") for policy " + member.v.v);',
-    '      if (remaining !== undefined && /^[0-9]+$/.test(legacyRemaining) && Number(legacyRemaining) !== remaining) rfcAdvise("RateLimit and legacy X-RateLimit-Remaining disagree: " + remaining + " vs " + legacyRemaining);',
-    "    });",
-    "  }",
-    '  if (/^[0-9]+$/.test(legacyLimit) && /^[0-9]+$/.test(legacyRemaining) && Number(legacyRemaining) > Number(legacyLimit)) rfcAdvise("X-RateLimit-Remaining exceeds X-RateLimit-Limit: " + legacyRemaining + " > " + legacyLimit);',
-    '  if ((legacyLimit || legacyRemaining || legacyReset) && !(legacyLimit && legacyRemaining && legacyReset)) rfcAdvise("Legacy X-RateLimit-* headers are partial; Limit/Remaining/Reset should travel together");',
-    "});",
-    "pm.test('Content-Digest and Repr-Digest match the response body (RFC 9530)', function () {",
-    "  var cryptoLib = null;",
-    '  try { cryptoLib = require("crypto-js"); } catch (error) { cryptoLib = null; }',
-    '  ["Content-Digest", "Repr-Digest"].forEach(function (name) {',
-    "    var value = rfcRespHeader(name);",
-    "    if (!value) return;",
-    '    if (!rfcSfParse(value, "dict")) { pm.expect.fail(name + " is not a valid RFC 8941 dictionary (RFC 9530): " + value); return; }',
-    '    if (!cryptoLib || rfcRespHeader("Content-Encoding")) return;',
-    '    var media = mediaParts(rfcRespHeader("Content-Type"));',
-    '    if (media.type !== "text" && !isJsonSubtype(media.subtype) && !/xml$/.test(media.subtype)) return;',
-    "    rfcSplitList(value).forEach(function (entry) {",
-    "      var match = entry.trim().match(/^(sha-256|sha-512)=:([A-Za-z0-9+\\/=]+):$/);",
-    "      if (!match) return;",
-    '      var computed = match[1] === "sha-256" ? cryptoLib.SHA256(responseText()) : cryptoLib.SHA512(responseText());',
-    "      var encoded = cryptoLib.enc.Base64.stringify(computed);",
-    '      if (encoded !== match[2]) pm.expect.fail(name + " " + match[1] + " does not match the response body (RFC 9530): computed " + encoded + " but header carries " + match[2]);',
-    "    });",
-    "  });",
-    "});",
-    "pm.test('Request credentials are well-formed per their authentication scheme RFCs', function () {",
-    '  var authorization = requestHeader("Authorization");',
-    '  if (authorization && authorization.indexOf("{{") === -1) {',
-    "    var schemeMatch = authorization.match(/^(\\S+)(?:\\s+([\\s\\S]*))?$/);",
-    '    var authScheme = schemeMatch ? schemeMatch[1].toLowerCase() : "";',
-    '    var authParams = schemeMatch && schemeMatch[2] !== undefined ? schemeMatch[2].trim() : "";',
-    '    if (authScheme === "basic") {',
-    "      var decoded = rfcBase64Decode(authParams);",
-    '      if (decoded === null) pm.expect.fail("Basic credentials must be base64 (RFC 7617)");',
-    '      else if (decoded.indexOf(":") === -1) pm.expect.fail("Basic credentials must decode to user-id:password (RFC 7617)");',
-    "    }",
-    '    if (authScheme === "bearer" && !/^[A-Za-z0-9\\-._~+\\/]+=*$/.test(authParams)) pm.expect.fail("Bearer token does not match the b64token grammar (RFC 6750)");',
-    '    if (authScheme === "digest") {',
-    '      rfcSplitList(authParams).forEach(function (entry) { var param = entry.trim(); if (param && !/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+\\s*=\\s*("([^"\\\\]|\\\\.)*"|[!#$%&\'*+.^_`|~0-9A-Za-z-]+)$/.test(param)) pm.expect.fail("Digest auth-param is malformed (RFC 7616): " + param); });',
-    '      var digestResponse = authParams.match(/\\bresponse\\s*=\\s*"?([^",\\s]+)"?/i);',
-    '      if (digestResponse && !/^[0-9a-fA-F]+$/.test(digestResponse[1])) pm.expect.fail("Digest response parameter must be hex (RFC 7616): " + digestResponse[1]);',
-    "    }",
-    "  }",
-    '  var wantsJwt = (contract.security || []).some(function (alternative) { return alternative.some(function (check) { return check.prefix === "Bearer " && String(check.bearerFormat || "").toUpperCase() === "JWT"; }); });',
-    '  if (wantsJwt && authorization && authorization.indexOf("{{") === -1 && authorization.toLowerCase().indexOf("bearer ") === 0) {',
-    "    var jwtToken = authorization.slice(7).trim();",
-    '    var jwtSegments = jwtToken.split(".");',
-    '    if (jwtSegments.length !== 3) pm.expect.fail("bearerFormat JWT tokens must have three base64url segments (RFC 7519); got " + jwtSegments.length);',
-    '    else if (!jwtSegments.every(function (segment) { return /^[A-Za-z0-9_-]+$/.test(segment); })) pm.expect.fail("JWT segments must be base64url (RFC 7515)");',
-    "    else {",
-    '      var jwtDecode = function (segment) { var padded = segment.replace(/-/g, "+").replace(/_/g, "/"); while (padded.length % 4 !== 0) padded += "="; return rfcBase64Decode(padded); };',
-    "      var jwtHeader = null; var jwtPayload = null;",
-    '      try { jwtHeader = JSON.parse(jwtDecode(jwtSegments[0])); } catch (error) { pm.expect.fail("JWT header segment does not decode to JSON (RFC 7515)"); }',
-    '      try { jwtPayload = JSON.parse(jwtDecode(jwtSegments[1])); } catch (error) { pm.expect.fail("JWT payload segment does not decode to JSON (RFC 7519)"); }',
-    '      if (jwtHeader && typeof jwtHeader.alg !== "string") pm.expect.fail("JWT header must carry a string alg member (RFC 7515)");',
-    "      if (jwtPayload) {",
-    '        ["exp", "nbf", "iat"].forEach(function (claim) { if (jwtPayload[claim] !== undefined && typeof jwtPayload[claim] !== "number") pm.expect.fail("JWT " + claim + " claim must be numeric (RFC 7519)"); });',
-    '        if (typeof jwtPayload.exp === "number" && jwtPayload.exp * 1000 < Date.now()) rfcAdvise("RFC 7519: the outgoing JWT exp claim is already in the past");',
-    "      }",
-    "    }",
-    "  }",
-    '  if (hasQueryParam("access_token")) rfcAdvise("RFC 6750: bearer tokens SHOULD NOT travel in the query string");',
-    "  (contract.security || []).forEach(function (alternative) {",
-    "    alternative.forEach(function (check) {",
-    "      if (!check.checkable || !check.name) return;",
-    '      if (check.in === "query") { if (hasQueryParam(check.name)) rfcAdvise("Security scheme " + check.scheme + " sends credentials in the query string"); return; }',
-    '      if (check.in !== "header" || String(check.name).toLowerCase() === "authorization") return;',
-    "      var apiKeyValue = requestHeader(check.name);",
-    '      if (!apiKeyValue || apiKeyValue.indexOf("{{") !== -1) return;',
-    '      if (apiKeyValue !== apiKeyValue.trim()) pm.expect.fail("API key header " + check.name + " carries leading or trailing whitespace");',
-    '      if (!rfcIsFieldContent(apiKeyValue)) pm.expect.fail("API key header " + check.name + " contains characters forbidden by RFC 9110 field-content");',
-    "    });",
-    "  });",
-    "});",
-    "pm.test('Request preconditions, preferences, and patch bodies follow their RFCs', function () {",
-    '  ["If-Match", "If-None-Match"].forEach(function (name) {',
-    "    var value = requestHeader(name);",
-    '    if (!value || value.indexOf("{{") !== -1 || value.trim() === "*") return;',
-    '    rfcSplitList(value).forEach(function (entry) { if (entry.trim() && !rfcIsEntityTag(entry.trim())) pm.expect.fail(name + " must be * or a list of entity-tags (RFC 9110): " + entry.trim()); });',
-    "  });",
-    '  var ifModifiedSince = visibleRequestHeader("If-Modified-Since");',
-    "  if (ifModifiedSince) {",
-    '    if (!rfcIsHttpDate(ifModifiedSince)) pm.expect.fail("If-Modified-Since must be an IMF-fixdate (RFC 9110): " + ifModifiedSince);',
-    '    if (contract.method !== "GET" && contract.method !== "HEAD") pm.expect.fail("RFC 9110 requires recipients to ignore If-Modified-Since on non-GET/HEAD requests");',
-    "  }",
-    '  var ifUnmodifiedSince = visibleRequestHeader("If-Unmodified-Since");',
-    '  if (ifUnmodifiedSince && !rfcIsHttpDate(ifUnmodifiedSince)) pm.expect.fail("If-Unmodified-Since must be an IMF-fixdate (RFC 9110): " + ifUnmodifiedSince);',
-    '  var prefer = requestHeader("Prefer");',
-    '  if (prefer && prefer.indexOf("{{") === -1) {',
-    '    rfcSplitList(prefer).forEach(function (entry) { var token = entry.split("=")[0].split(";")[0].trim(); if (token && !rfcIsToken(token)) pm.expect.fail("Prefer preference name must be a token (RFC 7240): " + entry.trim()); });',
-    "  }",
-    '  var requestContentType = mediaBase(requestHeader("Content-Type"));',
-    "  var body = pm.request.body;",
-    '  var raw = body && body.mode === "raw" && typeof body.raw === "string" ? body.raw : "";',
-    '  if (!raw.trim() || raw.indexOf("{{") !== -1 || /"<[^"<>]*>"/.test(raw)) return;',
-    '  if (requestContentType === "application/json-patch+json") {',
-    '    var patch; try { patch = JSON.parse(raw); } catch (error) { if (/<[A-Za-z][A-Za-z0-9_ -]*>/.test(raw)) return; pm.expect.fail("application/json-patch+json request body is not valid JSON (RFC 6902): " + error); return; }',
-    '    if (!Array.isArray(patch)) { pm.expect.fail("A JSON Patch document must be an array of operations (RFC 6902)"); return; }',
-    "    patch.forEach(function (operation, operationIndex) {",
-    '      if (!operation || typeof operation !== "object" || Array.isArray(operation)) { pm.expect.fail("JSON Patch operation " + operationIndex + " must be an object (RFC 6902)"); return; }',
-    '      if (["add", "remove", "replace", "move", "copy", "test"].indexOf(operation.op) === -1) pm.expect.fail("JSON Patch operation " + operationIndex + " has an invalid op (RFC 6902): " + operation.op);',
-    "      var pointerPattern = /^(\\/([^\\/~]|~[01])*)*$/;",
-    '      if (typeof operation.path !== "string" || !pointerPattern.test(operation.path)) pm.expect.fail("JSON Patch operation " + operationIndex + " path must be an RFC 6901 JSON Pointer");',
-    '      if (["add", "replace", "test"].indexOf(operation.op) !== -1 && operation.value === undefined) pm.expect.fail("JSON Patch " + operation.op + " operation " + operationIndex + " requires a value member (RFC 6902)");',
-    '      if (["move", "copy"].indexOf(operation.op) !== -1 && (typeof operation.from !== "string" || !pointerPattern.test(operation.from))) pm.expect.fail("JSON Patch " + operation.op + " operation " + operationIndex + " requires an RFC 6901 from pointer (RFC 6902)");',
-    "    });",
-    "  }",
-    '  if (requestContentType === "application/merge-patch+json") {',
-    '    try { JSON.parse(raw); } catch (error) { if (/<[A-Za-z][A-Za-z0-9_ -]*>/.test(raw)) return; pm.expect.fail("application/merge-patch+json request body must be valid JSON (RFC 7386): " + error); }',
-    "  }",
-    "});",
-    "pm.test('Request multipart bodies and Idempotency-Key follow their specifications', function () {",
-    '  var idempotencyKey = requestHeader("Idempotency-Key");',
-    '  if (idempotencyKey && idempotencyKey.indexOf("{{") === -1) {',
-    '    var idemParsed = rfcSfParse(idempotencyKey, "item");',
-    '    if (!idemParsed || idemParsed.item.v.t !== "str") pm.expect.fail("Idempotency-Key must be a Structured Field String (draft-ietf-httpapi-idempotency-key-header): " + idempotencyKey);',
-    '    else if (!idemParsed.item.v.v) pm.expect.fail("Idempotency-Key must not be empty (draft-ietf-httpapi-idempotency-key-header)");',
-    "  }",
-    '  var reqContentType = requestHeader("Content-Type");',
-    '  if (mediaBase(reqContentType) !== "multipart/form-data") return;',
-    "  var declaredFields = (contract.multipartFields && contract.multipartFields.declared) || [];",
-    "  var multipartBody = pm.request.body;",
-    '  if (multipartBody && multipartBody.mode === "raw" && typeof multipartBody.raw === "string" && multipartBody.raw.trim()) {',
-    '    if (reqContentType.indexOf("{{") !== -1) return;',
-    '    var reqBoundary = reqContentType.match(/;\\s*boundary=(?:"([^"]*)"|([^;]*))/i);',
-    '    var reqBoundaryValue = reqBoundary ? (reqBoundary[1] !== undefined ? reqBoundary[1] : reqBoundary[2].trim()) : "";',
-    '    if (!reqBoundaryValue) { pm.expect.fail("multipart/form-data requests must carry a boundary parameter (RFC 7578): " + reqContentType); return; }',
-    `    if (reqBoundaryValue.length > 70 || !/^[0-9A-Za-z'()+_,\\-.\\/:=? ]*[0-9A-Za-z'()+_,\\-.\\/:=?]$/.test(reqBoundaryValue)) { pm.expect.fail("multipart boundary is not a valid RFC 2046 boundary: " + reqBoundaryValue); return; }`,
-    '    if (multipartBody.raw.indexOf("{{") !== -1) return;',
-    '    var multipartParts = multipartBody.raw.split("--" + reqBoundaryValue);',
-    "    for (var partIndex = 1; partIndex < multipartParts.length; partIndex += 1) {",
-    "      var part = multipartParts[partIndex];",
-    '      if (part.slice(0, 2) === "--") break;',
-    '      var headerSection = part.split(/\\r?\\n\\r?\\n/)[0] || "";',
-    '      var disposition = "";',
-    "      headerSection.split(/\\r?\\n/).forEach(function (headerLine) { if (/^content-disposition\\s*:/i.test(headerLine.trim())) disposition = headerLine.trim(); });",
-    '      if (!disposition) { pm.expect.fail("Each multipart/form-data part must carry a Content-Disposition header (RFC 7578)"); continue; }',
-    '      if (!/^content-disposition\\s*:\\s*form-data\\b/i.test(disposition)) { pm.expect.fail("multipart/form-data parts must use Content-Disposition: form-data (RFC 7578): " + disposition); continue; }',
-    '      var nameMatch = disposition.match(/;\\s*name=(?:"([^"]*)"|([^";\\s]+))/i);',
-    '      if (!nameMatch) { pm.expect.fail("multipart/form-data Content-Disposition must carry a name parameter (RFC 7578): " + disposition); continue; }',
-    "      var partName = nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2];",
-    '      if (declaredFields.length > 0 && declaredFields.indexOf(partName) === -1) rfcAdvise("RFC 7578: multipart part " + partName + " is not a property the OpenAPI multipart schema declares");',
-    "    }",
-    '  } else if (multipartBody && multipartBody.mode === "formdata" && multipartBody.formdata && typeof multipartBody.formdata.each === "function") {',
-    "    multipartBody.formdata.each(function (entry) {",
-    "      if (!entry || entry.disabled === true) return;",
-    '      var partName = String(entry.key || "");',
-    '      if (partName && declaredFields.length > 0 && declaredFields.indexOf(partName) === -1) rfcAdvise("RFC 7578: multipart part " + partName + " is not a property the OpenAPI multipart schema declares");',
-    "    });",
-    "  }",
-    "});",
-    "pm.test('Deprecated operation signals deprecation in the response', function () {",
-    "  if (!contract.deprecated) return;",
-    '  if (!rfcRespHeader("Deprecation") && !rfcRespHeader("Sunset")) rfcAdvise("RFC 9745: the OpenAPI document deprecates this operation but the response carries neither Deprecation nor Sunset");',
-    "});",
-    "pm.test('OpenAPI link expressions resolve against the response', function () {",
-    "  if (!selected || !selected.value.links || selected.value.links.length === 0) return;",
-    "  var linkBody = null; var linkBodyParsed = false; var requestBody = null; var requestBodyParsed = false;",
-    '  function linkPointer(root, pointer) { var target = root; var tokens = String(pointer).split("/").slice(1).map(function (token) { return token.replace(/~1/g, "/").replace(/~0/g, "~"); }); for (var t = 0; t < tokens.length; t += 1) { if (target !== null && typeof target === "object") target = Array.isArray(target) ? target[Number(tokens[t])] : target[tokens[t]]; else return undefined; } return target; }',
-    '  function assertLinkTarget(expression, value, sourceLabel, coerce) { if (value === undefined) { pm.expect.fail("OpenAPI link " + expression.link + " expression " + sourceLabel + " does not resolve"); return; } if (expression.targetKey && linkTargetValidators[expression.targetKey] && !linkTargetValidators[expression.targetKey].skip) { var schema = (contract.linkTargetSchemas || {})[expression.targetKey] || {}; var candidate = coerce ? coerceBySchema(value, schema) : value; if (!linkTargetValidators[expression.targetKey](candidate)) pm.expect.fail("OpenAPI link " + expression.link + " supplies " + sourceLabel + " to target input " + expression.param + ", but the value does not satisfy the target operation schema (OAS Link Object): " + JSON.stringify(linkTargetValidators[expression.targetKey].errors || [])); } }',
-    "  selected.value.links.forEach(function (expression) {",
-    '    if (expression.kind === "header") {',
-    "      var linkHeaderMatches = 0; var linkHeaderValue = null;",
-    '      if (typeof pm.response.headers.each === "function") pm.response.headers.each(function (headerField) { if (headerField && headerField.key && String(headerField.key).toLowerCase() === String(expression.header).toLowerCase()) { linkHeaderMatches += 1; linkHeaderValue = String(headerField.value); } });',
-    "      else if (pm.response.headers.get(expression.header)) { linkHeaderMatches = 1; linkHeaderValue = pm.response.headers.get(expression.header); }",
-    '      if (linkHeaderMatches === 0) pm.expect.fail("OpenAPI link " + expression.link + " references response header " + expression.header + " which is absent");',
-    '      else if (linkHeaderMatches > 1) pm.expect.fail("OpenAPI link " + expression.link + " expression $response.header." + expression.header + " is ambiguous because the response carries " + linkHeaderMatches + " " + expression.header + " header fields (OAS Runtime Expressions)");',
-    '      if (linkHeaderMatches === 1) assertLinkTarget(expression, linkHeaderValue, "$response.header." + expression.header, true);',
-    "      return;",
-    "    }",
-    '    if (expression.kind === "body") { if (!linkBodyParsed) { linkBodyParsed = true; try { linkBody = JSON.parse(responseText()); } catch (error) { linkBody = null; } } if (linkBody === null) { pm.expect.fail("OpenAPI link " + expression.link + " references the response body but the body is not JSON"); return; } assertLinkTarget(expression, linkPointer(linkBody, expression.pointer), "$response.body#" + expression.pointer, false); return; }',
-    '    if (expression.kind === "requestBody") { if (!requestBodyParsed) { requestBodyParsed = true; try { requestBody = pm.request.body && typeof pm.request.body.raw === "string" ? JSON.parse(pm.request.body.raw) : null; } catch (error) { requestBody = null; } } if (requestBody === null) { pm.expect.fail("OpenAPI link " + expression.link + " references the request body but the body is not JSON"); return; } assertLinkTarget(expression, linkPointer(requestBody, expression.pointer), "$request.body#" + expression.pointer, false); return; }',
-    '    if (expression.kind === "requestHeader") { var requestHeaderMatches = 0; var requestHeaderValue = null; pm.request.headers.each(function (headerField) { if (headerField && headerField.disabled !== true && String(headerField.key).toLowerCase() === String(expression.header).toLowerCase()) { requestHeaderMatches += 1; requestHeaderValue = String(headerField.value); } }); if (requestHeaderMatches === 0) pm.expect.fail("OpenAPI link " + expression.link + " references request header " + expression.header + " which is absent"); else if (requestHeaderMatches > 1) pm.expect.fail("OpenAPI link " + expression.link + " expression $request.header." + expression.header + " is ambiguous because the request carries " + requestHeaderMatches + " " + expression.header + " header fields (OAS Runtime Expressions)"); else assertLinkTarget(expression, requestHeaderValue, "$request.header." + expression.header, true); return; }',
-    '    if (expression.kind === "requestQuery") { var queryMatches = 0; var queryValue = null; pm.request.url.query.each(function (queryParam) { if (queryParam && queryParam.disabled !== true && String(queryParam.key) === String(expression.query)) { queryMatches += 1; queryValue = queryParam.value === null || queryParam.value === undefined ? "" : String(queryParam.value); } }); if (queryMatches === 0) pm.expect.fail("OpenAPI link " + expression.link + " references request query parameter " + expression.query + " which is absent"); else if (queryMatches > 1) pm.expect.fail("OpenAPI link " + expression.link + " expression $request.query." + expression.query + " is ambiguous because the request carries " + queryMatches + " " + expression.query + " query values (OAS Runtime Expressions)"); else assertLinkTarget(expression, decodeComponent(queryValue), "$request.query." + expression.query, true); return; }',
-    '    if (expression.kind === "requestPath") assertLinkTarget(expression, requestPathParamValue(expression.path), "$request.path." + expression.path, true);',
-    "  });",
-    "});",
-    "pm.test('Response body does not leak writeOnly properties', function () {",
-    "  if (!selected || !selected.value || !selected.value.writeOnlyProperties || selected.value.writeOnlyProperties.length === 0) return;",
-    "  var writeOnlyBody = null;",
-    "  try { writeOnlyBody = JSON.parse(responseText()); } catch (error) { return; }",
-    '  if (!writeOnlyBody || typeof writeOnlyBody !== "object" || Array.isArray(writeOnlyBody)) return;',
-    "  selected.value.writeOnlyProperties.forEach(function (property) {",
-    '    if (Object.prototype.hasOwnProperty.call(writeOnlyBody, property)) pm.expect.fail("OpenAPI marks response property " + property + " as writeOnly, but the response body includes it (OAS Schema Object writeOnly)");',
-    "  });",
-    "});",
-    "pm.test('OpenAPI callback targets resolve to concrete URI-references', function () {",
-    "  if (!contract.callbacks || contract.callbacks.length === 0) return;",
-    "  var declared = contract.callbackRequestSources || { path: [], query: [], header: [] };",
-    "  var callbackRequestBodyParsed = false;",
-    "  var callbackRequestBodyInvalid = false;",
-    "  var callbackRequestBody = null;",
-    "  var callbackResponseBodyParsed = false;",
-    "  var callbackResponseBody = null;",
-    '  function resolveJsonPointer(target, pointer) { var value = target; var tokens = String(pointer || "").split("/").slice(1).map(function (token) { return token.replace(/~1/g, "/").replace(/~0/g, "~"); }); for (var i = 0; i < tokens.length; i += 1) { if (value !== null && typeof value === "object") value = Array.isArray(value) ? value[Number(tokens[i])] : value[tokens[i]]; else return undefined; } return value; }',
-    '  function requestBodyJson() { if (!callbackRequestBodyParsed) { callbackRequestBodyParsed = true; var body = pm.request.body; var raw = body && body.mode === "raw" && typeof body.raw === "string" ? body.raw : ""; if (!raw.trim()) { callbackRequestBody = null; callbackRequestBodyInvalid = false; } else { try { callbackRequestBody = JSON.parse(raw); } catch (error) { callbackRequestBody = null; callbackRequestBodyInvalid = true; } } } return callbackRequestBody; }',
-    "  function responseBodyJson() { if (!callbackResponseBodyParsed) { callbackResponseBodyParsed = true; try { callbackResponseBody = JSON.parse(responseText()); } catch (error) { callbackResponseBody = null; } } return callbackResponseBody; }",
-    '  function scalarCallbackValue(value, label) { if (value === undefined || value === null) pm.expect.fail("OpenAPI callback " + label + " did not resolve to a concrete value"); if (typeof value === "object") return JSON.stringify(value); var text = String(value); if (!text || isPlaceholderValue(text) || text.charAt(0) === ":" || text.charAt(0) === "{") pm.expect.fail("OpenAPI callback " + label + " did not resolve to a concrete value"); return text; }',
-    "  function resolveCallbackExpression(expression, label) {",
-    '    if (expression === "$method") return { supported: true, value: contract.method };',
-    '    if (expression === "$statusCode") return { supported: true, value: String(pm.response.code) };',
-    '    if (expression === "$url") { var requestUrl = ""; try { requestUrl = typeof pm.request.url.toString === "function" ? String(pm.request.url.toString() || "") : ""; } catch (ignored) {} if (!requestUrl && typeof pm.request.url.raw === "string") requestUrl = String(pm.request.url.raw); if (!requestUrl) { var path = pm.request.url.path; requestUrl = Array.isArray(path) ? "/" + path.join("/") : String(path || ""); } return { supported: true, value: scalarCallbackValue(requestUrl, label) }; }',
-    "    var requestPath = expression.match(/^\\$request\\.path\\.(.+)$/);",
-    '    if (requestPath) { if (declared.path.indexOf(requestPath[1]) === -1) pm.expect.fail("OpenAPI callback " + label + " references undeclared request path parameter " + requestPath[1]); return { supported: true, value: scalarCallbackValue(requestPathParamValue(requestPath[1]), label) }; }',
-    "    var requestQuery = expression.match(/^\\$request\\.query\\.(.+)$/);",
-    '    if (requestQuery) { var queryName = requestQuery[1].toLowerCase(); if (declared.query.indexOf(queryName) === -1) pm.expect.fail("OpenAPI callback " + label + " references undeclared request query parameter " + requestQuery[1]); return { supported: true, value: scalarCallbackValue(requestQueryValue(queryName), label) }; }',
-    "    var requestHeaderMatch = expression.match(/^\\$request\\.header\\.(.+)$/);",
-    '    if (requestHeaderMatch) { var headerName = requestHeaderMatch[1]; if (declared.header.indexOf(headerName.toLowerCase()) === -1) pm.expect.fail("OpenAPI callback " + label + " references undeclared request header parameter " + headerName); return { supported: true, value: scalarCallbackValue(visibleRequestHeader(headerName), label) }; }',
-    "    var requestBodyMatch = expression.match(/^\\$request\\.body#(\\/.*)$/);",
-    '    if (requestBodyMatch) { var requestBody = requestBodyJson(); if (callbackRequestBodyInvalid || requestBody === null) pm.expect.fail("OpenAPI callback " + label + " references the request body but the request body is not JSON"); return { supported: true, value: scalarCallbackValue(resolveJsonPointer(requestBody, requestBodyMatch[1]), label) }; }',
-    "    var responseHeaderMatch = expression.match(/^\\$response\\.header\\.([!#$%&'*+.^_`|~0-9A-Za-z-]+)$/);",
-    "    if (responseHeaderMatch) return { supported: true, value: scalarCallbackValue(pm.response.headers.get(responseHeaderMatch[1]), label) };",
-    "    var responseBodyMatch = expression.match(/^\\$response\\.body#(\\/.*)$/);",
-    '    if (responseBodyMatch) { var responseBody = responseBodyJson(); if (responseBody === null) pm.expect.fail("OpenAPI callback " + label + " references the response body but the body is not JSON"); return { supported: true, value: scalarCallbackValue(resolveJsonPointer(responseBody, responseBodyMatch[1]), label) }; }',
-    "    return { supported: false };",
-    "  }",
-    '  function expandCallbackTarget(rawExpression, callbackName) { var source = String(rawExpression || ""); if (!source) return { supported: false }; if (source.indexOf("{{") !== -1) return { supported: false }; if (source.charAt(0) === "$") return resolveCallbackExpression(source, callbackName + " (" + source + ")"); var pieces = []; var lastIndex = 0; var supported = false; var match; var placeholders = /\\{([^{}]+)\\}/g; while ((match = placeholders.exec(source))) { pieces.push(source.slice(lastIndex, match.index)); var resolved = resolveCallbackExpression(match[1], callbackName + " (" + source + ")"); if (!resolved.supported) return { supported: false }; pieces.push(resolved.value); supported = true; lastIndex = match.index + match[0].length; } if (!supported && lastIndex === 0) return { supported: true, value: source }; pieces.push(source.slice(lastIndex)); return supported ? { supported: true, value: pieces.join("") } : { supported: false }; }',
-    '  function isUriReference(value) { var text = String(value || ""); if (!text.trim() || /\\s/.test(text) || text.indexOf("{{") !== -1) return false; try { new URL(text, "https://callback.invalid"); return true; } catch (error) { return false; } }',
-    "  contract.callbacks.forEach(function (callbackExpression) {",
-    "    var resolved = expandCallbackTarget(callbackExpression.expression, callbackExpression.callback);",
-    "    if (!resolved.supported) return;",
-    '    if (!isUriReference(resolved.value)) pm.expect.fail("OpenAPI callback " + callbackExpression.callback + " expression " + callbackExpression.expression + " did not resolve to a valid URI-reference: " + resolved.value);',
-    "  });",
-    "});",
-    "pm.test('Request URL conforms to an OpenAPI servers entry', function () {",
-    "  if (!contract.servers || contract.servers.length === 0) return;",
-    '  var requestUrl = "";',
-    '  try { requestUrl = String(pm.request.url.toString()); } catch (ignored) { requestUrl = ""; }',
-    '  if (!requestUrl || requestUrl.indexOf("{{") !== -1) return;',
-    '  var pathOnly = requestUrl.replace(/^[a-z][a-z0-9+.-]*:\\/\\/[^\\/]+/i, "");',
-    '  var matched = contract.servers.some(function (pattern) { try { var serverPattern = new RegExp(pattern, "i"); return serverPattern.test(requestUrl) || serverPattern.test(pathOnly); } catch (ignored) { return true; } });',
-    '  if (!matched) rfcAdvise("Request URL does not match any OpenAPI servers entry: " + requestUrl);',
-    "});",
-    ...operation2.security ? [
+    ] },
+    { lines: [
+      "pm.test('OpenAPI operation mapping exists', function () { pm.expect(contract.path).to.be.a('string').and.not.empty; });",
+      "pm.test('Status code is defined by OpenAPI', function () { pm.expect(selected, 'No OpenAPI response defined for ' + contract.method + ' ' + contract.path + ' status ' + pm.response.code).to.exist; });",
+      "pm.test('Response headers match OpenAPI', function () {",
+      "  if (!selected) return;",
+      "  var headers = selected.value.headers || [];",
+      "  headers.forEach(function (header) {",
+      "    var actual = pm.response.headers.get(header.name);",
+      '    if (!actual && header.required) pm.expect.fail("OpenAPI response header missing for " + contract.method + " " + contract.path + ": " + header.name);',
+      "    if (!actual) return;",
+      '    if (header.unsupported) pm.expect.fail("OpenAPI response header unsupported for " + contract.method + " " + contract.path + ": " + header.unsupported);',
+      "    var headerValidator = validators[selected.key] && validators[selected.key].__headers && validators[selected.key].__headers[String(header.name).toLowerCase()];",
+      "    if (!headerValidator || headerValidator.skip) return;",
+      "    var expected;",
+      '    if (header.items) { var joined = String(actual).trim(); expected = joined === "" ? [] : joined.split(",").map(function (entry) { return coerceBySchema(entry.trim(), header.items); }); }',
+      "    else expected = coerceBySchema(actual, header.schema);",
+      '    if (!headerValidator(expected)) pm.expect.fail("OpenAPI response header validation failed for " + header.name + ": " + JSON.stringify(headerValidator.errors || []));',
+      "  });",
+      "});",
+      "pm.test('Response body matches OpenAPI body contract', function () {",
+      "  if (!selected) return;",
+      '  if (bodyExpectation === "forbidden") { pm.expect(responseText().length, "HTTP semantics forbid a response body for " + contract.method + " " + contract.path + " status " + pm.response.code).to.equal(0); return; }',
+      '  if (bodyExpectation === "declared") { pm.expect(responseText().length, "OpenAPI response declares content but response body was empty").to.be.above(0); }',
+      "});",
+      "pm.test('Content-Type matches OpenAPI response content', function () {",
+      "  if (!selected || isBodyless()) return;",
+      "  var content = selected.value.content || {};",
+      "  if (Object.keys(content).length === 0) return;",
+      '  var actual = pm.response.headers.get("Content-Type");',
+      '  if (!actual) pm.expect.fail("Content-Type <missing> does not match OpenAPI content for " + contract.method + " " + contract.path + " status " + pm.response.code + "; expected " + Object.keys(content).join(", "));',
+      "  var media = selectMedia(selected.value);",
+      "  if (media.error) pm.expect.fail(media.error);",
+      "});",
+      "pm.test('Response body matches OpenAPI schema', function () {",
+      "  if (!selected || isBodyless()) return;",
+      "  var content = selected.value.content || {};",
+      "  if (Object.keys(content).length === 0) return;",
+      "  var media = selectMedia(selected.value);",
+      "  if (media.error) return;",
+      '  if (media.media.unsupported) pm.expect.fail("OpenAPI schema unsupported for " + contract.method + " " + contract.path + " status " + pm.response.code + ": " + media.media.unsupported);',
+      "  if (!media.media.schema) { return; }",
+      "  var validate = validators[selected.key] && validators[selected.key][media.expected];",
+      "  if (validate && validate.skip) return;",
+      '  if (!validate) pm.expect.fail("OpenAPI schema validator was not generated for " + media.expected);',
+      '  var actual = mediaParts(pm.response.headers.get("Content-Type") || "");',
+      "  var value = isJsonSubtype(actual.subtype) ? pm.response.json() : responseText();",
+      // Non-JSON object-schema bodies skip schema validation instead of
+      // failing; the index emits CONTRACT_NONJSON_SCHEMA_NOT_VALIDATED so the
+      // skip is visible at instrumentation time.
+      '  if (!isJsonSubtype(actual.subtype) && media.media.schema && media.media.schema.type !== "string") { return; }',
+      '  if (!validate(value)) pm.expect.fail("OpenAPI schema validation failed for " + contract.method + " " + contract.path + " status " + pm.response.code + ": " + JSON.stringify(validate.errors || []));',
+      "});",
+      "pm.test('Response satisfies RFC 9110 status-code requirements', function () {",
+      "  var code = pm.response.code;",
+      '  function respHeader(name) { return pm.response.headers.get(name) || ""; }',
+      '  var visibleIfMatch = visibleRequestHeader("If-Match");',
+      '  var visibleIfNoneMatch = visibleRequestHeader("If-None-Match");',
+      '  var visibleIfModifiedSince = visibleRequestHeader("If-Modified-Since");',
+      '  var visibleIfUnmodifiedSince = visibleRequestHeader("If-Unmodified-Since");',
+      "  if (code === 401) {",
+      '    var challenge = respHeader("WWW-Authenticate");',
+      '    if (!challenge) pm.expect.fail("RFC 9110 requires WWW-Authenticate on 401 responses");',
+      "    var expectedSchemes = [];",
+      "    (contract.security || []).forEach(function (alternative) { alternative.forEach(function (check) { if (check.prefix) { var scheme = String(check.prefix).trim().split(/\\s+/)[0]; if (scheme && expectedSchemes.indexOf(scheme) === -1) expectedSchemes.push(scheme); } }); });",
+      '    expectedSchemes.forEach(function (scheme) { if (challenge && !new RegExp("(^|,)\\\\s*" + scheme + "\\\\b", "i").test(challenge)) pm.expect.fail("RFC 9110 15.5.2 and OAS 4.8.27 require a WWW-Authenticate " + scheme + " challenge for the declared security scheme; got: " + challenge); });',
+      '    if (challenge && /\\bbasic\\b/i.test(challenge) && !/realm\\s*=/i.test(challenge)) pm.expect.fail("RFC 7617 requires a realm parameter on Basic challenges: " + challenge);',
+      '    if (challenge && /\\bdigest\\b/i.test(challenge) && (!/realm\\s*=/i.test(challenge) || !/nonce\\s*=/i.test(challenge))) pm.expect.fail("RFC 7616 requires realm and nonce on Digest challenges: " + challenge);',
+      "  }",
+      "  if (code === 401 || code === 403) {",
+      '    var authChallenge = respHeader("WWW-Authenticate");',
+      '    var bearerError = authChallenge && /\\bbearer\\b/i.test(authChallenge) ? authChallenge.match(/\\berror\\s*=\\s*"?([A-Za-z0-9_]+)"?/i) : null;',
+      '    if (bearerError && ["invalid_request", "invalid_token", "insufficient_scope"].indexOf(bearerError[1]) === -1) pm.expect.fail("RFC 6750 Bearer error code must be invalid_request, invalid_token, or insufficient_scope; got " + bearerError[1]);',
+      "  }",
+      "  if (code === 405) {",
+      '    var allow = respHeader("Allow");',
+      '    if (!allow) pm.expect.fail("RFC 9110 requires Allow on 405 responses");',
+      '    var allowed = allow.split(",").map(function (entry) { return entry.trim().toUpperCase(); });',
+      '    (contract.pathMethods || []).forEach(function (method) { if (allowed.indexOf(method) === -1) pm.expect.fail("Allow on 405 must list every method the OpenAPI path declares (RFC 9110); missing " + method + " in: " + allow); });',
+      "  }",
+      '  if (code === 304 && responseText().trim().length > 0) pm.expect.fail("RFC 9110 forbids content in a 304 response");',
+      "  if (code === 304) {",
+      '    if (contract.method !== "GET" && contract.method !== "HEAD") pm.expect.fail("RFC 9110 permits 304 only on conditional GET or HEAD requests");',
+      '    if (!visibleIfNoneMatch && !visibleIfModifiedSince) pm.expect.fail("RFC 9110 permits 304 only when a visible If-None-Match or If-Modified-Since precondition is present");',
+      "  }",
+      '  if (code === 412 && !visibleIfMatch && !visibleIfNoneMatch && !visibleIfUnmodifiedSince) pm.expect.fail("RFC 9110 permits 412 only when a visible If-Match, If-None-Match, or If-Unmodified-Since precondition is present");',
+      "  if (visibleIfNoneMatch && !visibleIfMatch && !visibleIfUnmodifiedSince) {",
+      '    if ((contract.method === "GET" || contract.method === "HEAD") && code === 412) pm.expect.fail("RFC 9110 13.1.2 uses 304 rather than 412 when a GET or HEAD If-None-Match precondition fails");',
+      '    if (contract.method !== "GET" && contract.method !== "HEAD" && code === 304) pm.expect.fail("RFC 9110 13.1.2 uses 412 rather than 304 when a non-GET/HEAD If-None-Match precondition fails");',
+      "  }",
+      // RFC 9110 15.4.5: a 304 MUST carry these fields when they would have
+      // been sent on the 200; enforce for fields the spec declares on the 200.
+      '  if (code === 304 && contract.responses["200"] && contract.responses["304"]) {',
+      '    var okDeclared = (contract.responses["200"] && contract.responses["200"].headers) || [];',
+      '    ["Cache-Control", "Content-Location", "Date", "ETag", "Expires", "Vary"].forEach(function (name) {',
+      "      var declared = okDeclared.some(function (header) { return String(header.name).toLowerCase() === name.toLowerCase(); });",
+      '      if (declared && !respHeader(name)) pm.expect.fail("RFC 9110 15.4.5: a 304 must include " + name + " because the OpenAPI 200 response declares it");',
+      "    });",
+      "  }",
+      '  var retryAfter = respHeader("Retry-After");',
+      "  if (retryAfter && (code === 429 || code === 503 || (code >= 300 && code < 400))) {",
+      "    // RFC 9110 10.2.3 defines Retry-After as HTTP-date / delay-seconds, and",
+      "    // delay-seconds is 1*DIGIT. Date.parse coerces a bare integer into a year",
+      '    // (Date.parse("120") is year 0120, Date.parse("600") is year 0600), so',
+      "    // comparing a delay-seconds value against Date made every ordinary",
+      "    // rate-limit/maintenance response fail. Only the HTTP-date form is ordered",
+      "    // against Date; delay-seconds is a relative offset and has no such ordering.",
+      "    var retryAfterIsDelaySeconds = /^[0-9]+$/.test(retryAfter.trim());",
+      '    if (!retryAfterIsDelaySeconds && isNaN(Date.parse(retryAfter))) pm.expect.fail("Retry-After must be delay-seconds or an HTTP-date (RFC 9110 10.2.3): " + retryAfter);',
+      "    if (!retryAfterIsDelaySeconds) {",
+      '      var retryDate = Date.parse(retryAfter); var responseDate = Date.parse(respHeader("Date"));',
+      '      if (!isNaN(retryDate) && !isNaN(responseDate) && retryDate < responseDate) pm.expect.fail("Retry-After HTTP-date must not be earlier than Date (RFC 9110 10.2.3 and 6.6.1): " + retryAfter + " < " + respHeader("Date"));',
+      "    }",
+      "  }",
+      '  var location = respHeader("Location");',
+      "  if (location && (code === 201 || (code >= 300 && code < 400))) {",
+      '    if (/\\s/.test(location.trim()) || location.trim().length === 0) pm.expect.fail("Location must be a valid URI-reference (RFC 9110 / RFC 3986): " + location);',
+      "  }",
+      "});",
+      "pm.test('Error and encoding conventions match RFC 9457 / RFC 8259 / RFC 8288', function () {",
+      '  var contentTypeRaw = pm.response.headers.get("Content-Type") || "";',
+      "  var ct = mediaParts(contentTypeRaw);",
+      '  if (ct.type === "application" && ct.subtype === "problem+json") {',
+      "    var problem;",
+      '    try { problem = pm.response.json(); } catch (error) { pm.expect.fail("application/problem+json body is not valid JSON (RFC 9457): " + error); }',
+      '    if (!problem || typeof problem !== "object" || Array.isArray(problem)) pm.expect.fail("problem details must be a JSON object (RFC 9457)");',
+      '    ["type", "title", "detail", "instance"].forEach(function (member) { if (problem[member] !== undefined && typeof problem[member] !== "string") pm.expect.fail("RFC 9457 " + member + " member must be a string; got " + typeof problem[member]); });',
+      '    ["type", "instance"].forEach(function (member) {',
+      '      if (typeof problem[member] !== "string") return;',
+      "      var uriRef = problem[member];",
+      '      if (/[\\s\\x00-\\x1f\\x7f]/.test(uriRef)) pm.expect.fail("RFC 9457 3.1.1/3.1.5 " + member + " member must be a URI-reference without whitespace/control characters (RFC 3986): " + uriRef);',
+      '      if (!/^(?:[A-Za-z][A-Za-z0-9+.-]*:[^\\s<>"]*|\\/[^\\s<>"]*|\\.\\.?\\/[^\\s<>"]*|#[^\\s<>"]*|[^\\s<>"]*)$/.test(uriRef)) pm.expect.fail("RFC 9457 3.1.1/3.1.5 " + member + " member must be a parseable URI-reference (RFC 3986): " + uriRef);',
+      "    });",
+      "    if (problem.status !== undefined) {",
+      '      if (typeof problem.status !== "number") pm.expect.fail("RFC 9457 status member must be a number; got " + typeof problem.status);',
+      '      else if (problem.status !== pm.response.code) pm.expect.fail("RFC 9457 status member (" + problem.status + ") must match the HTTP status code (" + pm.response.code + ")");',
+      "    }",
+      "  }",
+      "  if (isJsonSubtype(ct.subtype)) {",
+      '    var charsetMatch = contentTypeRaw.match(/charset\\s*=\\s*"?([^";\\s]+)"?/i);',
+      '    if (charsetMatch && charsetMatch[1].toLowerCase() !== "utf-8") pm.expect.fail("JSON interchange must be UTF-8 (RFC 8259); got charset=" + charsetMatch[1]);',
+      "  }",
+      '  var link = pm.response.headers.get("Link");',
+      "  if (link) {",
+      "    link.split(/,(?=\\s*<)/).forEach(function (value) {",
+      '      if (!/^\\s*<[^>]*>/.test(value)) pm.expect.fail("RFC 8288 link-value must start with a <URI-Reference>: " + value);',
+      '      if (!/;\\s*rel\\s*=/i.test(value)) pm.expect.fail("RFC 8288 link-value must carry a rel parameter: " + value);',
+      "    });",
+      "  }",
+      "});",
+      "var rfcAdvisories = [];",
+      "function rfcAdvise(message) { if (rfcAdvisories.indexOf(message) === -1) rfcAdvisories.push(message); }",
+      'function rfcRespHeader(name) { return pm.response.headers.get(name) || ""; }',
+      "function rfcHeaderAll(name) { var out = []; pm.response.headers.each(function (header) { if (header && String(header.key).toLowerCase() === String(name).toLowerCase()) out.push(String(header.value)); }); return out; }",
+      "function rfcIsHttpDate(value) { return /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-3][0-9] (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-2][0-9]:[0-5][0-9]:[0-5][0-9] GMT$/.test(String(value).trim()) && !isNaN(Date.parse(value)); }",
+      "function rfcIsToken(value) { return /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(String(value)); }",
+      "function rfcResponseDeclaresHeader(name) { if (!selected) return false; return ((selected.value && selected.value.headers) || []).some(function (header) { return String(header.name).toLowerCase() === String(name).toLowerCase(); }); }",
+      'function rfcIsEntityTag(value) { return /^(W\\/)?"[\\x21\\x23-\\x7e\\x80-\\xff]*"$/.test(String(value).trim()); }',
+      "function rfcIsFieldContent(value) { return /^[\\t \\x21-\\x7e\\x80-\\xff]*$/.test(String(value)); }",
+      'function rfcTokenList(value) { var parts = String(value).split(","); for (var i = 0; i < parts.length; i += 1) { if (!rfcIsToken(parts[i].trim())) return false; } return true; }',
+      `function rfcSplitList(value) { var out = []; var current = ""; var inQuote = false; for (var i = 0; i < value.length; i += 1) { var ch = value.charAt(i); if (ch === "\\\\" && inQuote) { current += ch + (value.charAt(i + 1) || ""); i += 1; continue; } if (ch === '"') inQuote = !inQuote; if (ch === "," && !inQuote) { out.push(current); current = ""; continue; } current += ch; } out.push(current); return out; }`,
+      'function rfcBase64Decode(value) { var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; var clean = String(value).replace(/=+$/, ""); if (clean.length === 0 || /[^A-Za-z0-9+\\/]/.test(clean)) return null; var bits = 0, buffer = 0, out = ""; for (var i = 0; i < clean.length; i += 1) { buffer = (buffer << 6) | alphabet.indexOf(clean.charAt(i)); bits += 6; if (bits >= 8) { bits -= 8; out += String.fromCharCode((buffer >> bits) & 255); } } return out; }',
+      // RFC 9651 structured-field parser (superset of RFC 8941: adds Date and
+      // Display String bare items plus the 9651 numeric digit limits). Returns
+      // null on a parse failure, otherwise a truthy AST: { item } / { list } /
+      // { dict, keys }. Members are { v: { t, v }, p: { key: { t, v } } } and
+      // inner lists are { t: "innerlist", v: [members], p: params }.
+      "function rfcSfParse(input, kind) {",
+      "  var s = String(input), i = 0;",
+      '  function ws() { while (i < s.length && (s.charAt(i) === " " || s.charAt(i) === "\\t")) i += 1; }',
+      "  function key() { if (!/[a-z*]/.test(s.charAt(i))) return null; var start = i; i += 1; while (i < s.length && /[a-z0-9_.*-]/.test(s.charAt(i))) i += 1; return s.slice(start, i); }",
+      "  function bareItem() {",
+      "    var ch = s.charAt(i);",
+      `    if (ch === '"') { i += 1; var str = ""; while (i < s.length) { var c = s.charAt(i); if (c === "\\\\") { var esc = s.charAt(i + 1); if (esc !== '"' && esc !== "\\\\") return null; str += esc; i += 2; continue; } if (c === '"') { i += 1; return { t: "str", v: str }; } if (c < " " || c > "~") return null; str += c; i += 1; } return null; }`,
+      `    if (ch === "%" && s.charAt(i + 1) === '"') { i += 2; var disp = ""; while (i < s.length) { var dc = s.charAt(i); if (dc === '"') { i += 1; return { t: "dispstr", v: disp }; } if (dc === "\\\\" || dc < " " || dc > "~") return null; if (dc === "%") { if (!/^[0-9a-f]{2}$/.test(s.slice(i + 1, i + 3))) return null; disp += s.slice(i, i + 3); i += 3; continue; } disp += dc; i += 1; } return null; }`,
+      '    if (ch === ":") { i += 1; var bstart = i; while (i < s.length && s.charAt(i) !== ":") i += 1; if (s.charAt(i) !== ":") return null; var body = s.slice(bstart, i); i += 1; return /^[A-Za-z0-9+\\/=]*$/.test(body) ? { t: "bytes", v: body } : null; }',
+      '    if (ch === "?") { i += 1; var flag = s.charAt(i); if (flag !== "0" && flag !== "1") return null; i += 1; return { t: "bool", v: flag === "1" }; }',
+      '    if (ch === "@") { i += 1; var dneg = s.charAt(i) === "-"; if (dneg) i += 1; var dstart = i; if (!/[0-9]/.test(s.charAt(i))) return null; while (i < s.length && /[0-9]/.test(s.charAt(i))) i += 1; if (i - dstart > 15) return null; return { t: "date", v: (dneg ? -1 : 1) * Number(s.slice(dstart, i)) }; }',
+      '    if (/[-0-9]/.test(ch)) { var nstart = i; if (ch === "-") i += 1; var istart = i; if (!/[0-9]/.test(s.charAt(i))) return null; while (i < s.length && /[0-9]/.test(s.charAt(i))) i += 1; var intDigits = i - istart; if (s.charAt(i) === ".") { if (intDigits > 12) return null; i += 1; var fstart = i; if (!/[0-9]/.test(s.charAt(i))) return null; while (i < s.length && /[0-9]/.test(s.charAt(i))) i += 1; if (i - fstart > 3) return null; return { t: "dec", v: Number(s.slice(nstart, i)) }; } if (intDigits > 15) return null; return { t: "int", v: Number(s.slice(nstart, i)) }; }',
+      '    if (/[A-Za-z*]/.test(ch)) { var tstart = i; i += 1; while (i < s.length && /[!#$%&\'*+.^_`|~:\\/0-9A-Za-z-]/.test(s.charAt(i))) i += 1; return { t: "tok", v: s.slice(tstart, i) }; }',
+      "    return null;",
+      "  }",
+      '  function params() { var out = {}; while (s.charAt(i) === ";") { i += 1; ws(); var pk = key(); if (pk === null) return null; if (s.charAt(i) === "=") { i += 1; var pv = bareItem(); if (pv === null) return null; out[pk] = pv; } else out[pk] = { t: "bool", v: true }; } return out; }',
+      "  function item() {",
+      '    if (s.charAt(i) === "(") { i += 1; ws(); var inner = []; while (s.charAt(i) !== ")") { if (i >= s.length) return null; var entry = bareItem(); if (entry === null) return null; var entryParams = params(); if (entryParams === null) return null; inner.push({ v: entry, p: entryParams }); if (s.charAt(i) !== ")" && s.charAt(i) !== " ") return null; ws(); } i += 1; var listParams = params(); if (listParams === null) return null; return { t: "innerlist", v: inner, p: listParams }; }',
+      "    var bare = bareItem(); if (bare === null) return null; var itemParams = params(); if (itemParams === null) return null; return { v: bare, p: itemParams };",
+      "  }",
+      "  ws();",
+      '  if (kind === "item") { var single = item(); if (single === null) return null; ws(); return i === s.length ? { item: single } : null; }',
+      '  if (kind === "dict") {',
+      "    var dict = {}; var keys = [];",
+      "    if (i === s.length) return { dict: dict, keys: keys };",
+      "    while (i < s.length) {",
+      "      var dk = key(); if (dk === null) return null;",
+      "      var member;",
+      '      if (s.charAt(i) === "=") { i += 1; member = item(); if (member === null) return null; }',
+      '      else { var bareParams = params(); if (bareParams === null) return null; member = { v: { t: "bool", v: true }, p: bareParams }; }',
+      "      if (dict[dk] === undefined) keys.push(dk);",
+      "      dict[dk] = member;",
+      "      ws();",
+      "      if (i === s.length) return { dict: dict, keys: keys };",
+      '      if (s.charAt(i) !== ",") return null;',
+      "      i += 1; ws();",
+      "      if (i === s.length) return null;",
+      "    }",
+      "    return { dict: dict, keys: keys };",
+      "  }",
+      "  var list = [];",
+      "  if (i === s.length) return { list: list };",
+      "  while (i < s.length) {",
+      "    var listMember = item(); if (listMember === null) return null;",
+      "    list.push(listMember);",
+      "    ws();",
+      "    if (i === s.length) return { list: list };",
+      '    if (s.charAt(i) !== ",") return null;',
+      "    i += 1; ws();",
+      "    if (i === s.length) return null;",
+      "  }",
+      "  return { list: list };",
+      "}",
+      "pm.test('Response header fields satisfy RFC 9110 field syntax', function () {",
+      "  pm.response.headers.each(function (header) {",
+      "    if (!header) return;",
+      '    if (!rfcIsToken(String(header.key))) pm.expect.fail("Response header name is not a valid RFC 9110 token: " + header.key);',
+      '    if (!rfcIsFieldContent(String(header.value))) pm.expect.fail("Response header value contains characters forbidden by RFC 9110 field-content: " + header.key);',
+      "  });",
+      '  ["content-type", "content-length", "etag", "location", "date", "age", "expires", "last-modified", "retry-after"].forEach(function (name) {',
+      "    var values = rfcHeaderAll(name);",
+      '    for (var i = 1; i < values.length; i += 1) { if (values[i] !== values[0]) pm.expect.fail("Singleton response header " + name + " appears " + values.length + " times with differing values (RFC 9110)"); }',
+      "  });",
+      "});",
+      "pm.test('Response header values satisfy their RFC grammars', function () {",
+      '  var date = rfcRespHeader("Date");',
+      '  if (date && !rfcIsHttpDate(date)) pm.expect.fail("Date must be an IMF-fixdate (RFC 9110): " + date);',
+      '  if (!date) rfcAdvise("RFC 9110: origin servers SHOULD send a Date header");',
+      '  var etag = rfcRespHeader("ETag");',
+      '  if (etag && !rfcIsEntityTag(etag)) pm.expect.fail("ETag is not a valid entity-tag (RFC 9110): " + etag);',
+      '  var lastModified = rfcRespHeader("Last-Modified");',
+      "  if (lastModified) {",
+      '    if (!rfcIsHttpDate(lastModified)) pm.expect.fail("Last-Modified must be a valid HTTP-date (RFC 9110): " + lastModified);',
+      '    else if (date && rfcIsHttpDate(date) && Date.parse(lastModified) > Date.parse(date)) pm.expect.fail("Last-Modified must not be later than Date (RFC 9110): " + lastModified + " > " + date);',
+      "  }",
+      '  var vary = rfcRespHeader("Vary");',
+      "  if (vary) {",
+      '    var varyMembers = vary.split(",").map(function (entry) { return entry.trim(); });',
+      '    if (varyMembers.indexOf("*") !== -1 && varyMembers.length > 1) pm.expect.fail("Vary: * must not be combined with other members (RFC 9110): " + vary);',
+      '    varyMembers.forEach(function (member) { if (member !== "*" && !rfcIsToken(member)) pm.expect.fail("Vary member is not a field-name token (RFC 9110): " + member); });',
+      '    if (varyMembers.indexOf("*") !== -1 && /\\b(max-age|s-maxage|public)\\b/i.test(rfcRespHeader("Cache-Control"))) rfcAdvise("RFC 9110 12.5.5: Vary: * conflicts with cacheable response directives");',
+      "  }",
+      '  var contentLocation = rfcRespHeader("Content-Location");',
+      '  if (contentLocation && (/\\s/.test(contentLocation.trim()) || contentLocation.trim().length === 0)) pm.expect.fail("Content-Location must be a valid URI-reference (RFC 9110): " + contentLocation);',
+      '  var acceptRanges = rfcRespHeader("Accept-Ranges");',
+      '  if (acceptRanges && !rfcTokenList(acceptRanges)) pm.expect.fail("Accept-Ranges must be a list of range-unit tokens (RFC 9110): " + acceptRanges);',
+      '  var contentLanguage = rfcRespHeader("Content-Language");',
+      '  if (contentLanguage) contentLanguage.split(",").forEach(function (tag) { if (!/^[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8})*$/.test(tag.trim())) pm.expect.fail("Content-Language carries a malformed BCP 47 language-tag (RFC 5646): " + tag.trim()); });',
+      '  var allow = rfcRespHeader("Allow");',
+      '  if (allow && allow.trim() && !rfcTokenList(allow)) pm.expect.fail("Allow must be a comma-separated list of method tokens (RFC 9110): " + allow);',
+      '  if (allow && contract.method === "OPTIONS" && pm.response.code >= 200 && pm.response.code < 300) {',
+      '    var optionsAllowed = allow.split(",").map(function (entry) { return entry.trim().toUpperCase(); });',
+      '    (contract.pathMethods || []).forEach(function (method) { if (optionsAllowed.indexOf(method) === -1) pm.expect.fail("Allow on an OPTIONS response must list every method the OpenAPI path declares (RFC 9110); missing " + method + " in: " + allow); });',
+      "  }",
+      '  var age = rfcRespHeader("Age");',
+      '  if (age && !/^[0-9]+$/.test(age.trim())) pm.expect.fail("Age must be a non-negative integer of delta-seconds (RFC 9111): " + age);',
+      '  var expires = rfcRespHeader("Expires");',
+      '  if (expires && !rfcIsHttpDate(expires)) rfcAdvise("RFC 9111: Expires is not a valid HTTP-date and will be treated as already expired: " + expires);',
+      '  if (expires && rfcIsHttpDate(expires) && date && rfcIsHttpDate(date) && Date.parse(expires) < Date.parse(date) && !/\\b(max-age|s-maxage|no-cache|no-store)\\b/i.test(rfcRespHeader("Cache-Control"))) rfcAdvise("RFC 9111 5.3: Expires is earlier than Date without an explicit staleness directive");',
+      '  if (rfcHeaderAll("warning").length > 0) rfcAdvise("RFC 9111 obsoleted the Warning header; the server still emits it");',
+      '  var cacheControl = rfcRespHeader("Cache-Control");',
+      "  if (cacheControl) {",
+      "    var seenDirectives = {};",
+      "    rfcSplitList(cacheControl).forEach(function (entry) {",
+      "      var directive = entry.trim();",
+      '      if (!directive) { pm.expect.fail("Cache-Control contains an empty directive (RFC 9111): " + cacheControl); return; }',
+      '      var eq = directive.indexOf("=");',
+      "      var name = (eq === -1 ? directive : directive.slice(0, eq)).trim().toLowerCase();",
+      "      var argument = eq === -1 ? undefined : directive.slice(eq + 1).trim();",
+      '      if (!rfcIsToken(name)) pm.expect.fail("Cache-Control directive name is not a token (RFC 9111): " + directive);',
+      '      if (Object.prototype.hasOwnProperty.call(seenDirectives, name)) rfcAdvise("RFC 9111: Cache-Control repeats the " + name + " directive: " + cacheControl);',
+      "      seenDirectives[name] = argument === undefined ? true : argument;",
+      '      if (["max-age", "s-maxage", "stale-while-revalidate", "stale-if-error"].indexOf(name) !== -1 && (argument === undefined || !/^"?[0-9]+"?$/.test(argument))) pm.expect.fail("Cache-Control " + name + " requires a delta-seconds argument (RFC 9111/5861): " + directive);',
+      '      if (["immutable", "no-store", "public", "must-revalidate", "proxy-revalidate", "must-understand", "no-transform", "only-if-cached"].indexOf(name) !== -1 && argument !== undefined) pm.expect.fail("Cache-Control " + name + " takes no argument (RFC 9111/8246): " + directive);',
+      "    });",
+      '    if (seenDirectives["no-store"] && seenDirectives["max-age"] !== undefined) pm.expect.fail("Cache-Control combines no-store with max-age; the directives contradict (RFC 9111): " + cacheControl);',
+      '    if (seenDirectives["s-maxage"] !== undefined && seenDirectives.private !== undefined) rfcAdvise("RFC 9111 5.2.2: Cache-Control combines s-maxage with private directives");',
+      "  }",
+      '  var contentEncoding = rfcRespHeader("Content-Encoding");',
+      '  if (contentEncoding) rfcSplitList(contentEncoding).forEach(function (entry) { var coding = entry.trim().toLowerCase(); if (!coding || rfcRegistries.contentCodings.indexOf(coding) === -1) pm.expect.fail("Content-Encoding member is not in the vendored IANA HTTP content-coding registry snapshot (RFC 9110 8.4): " + entry.trim()); });',
+      '  var contentDisposition = rfcRespHeader("Content-Disposition");',
+      '  if (contentDisposition && rfcResponseDeclaresHeader("Content-Disposition")) {',
+      '    var cdParts = contentDisposition.split(";");',
+      "    var dispositionType = cdParts.shift().trim();",
+      "    var cdParams = {};",
+      '    if (!rfcIsToken(dispositionType)) pm.expect.fail("Content-Disposition disposition-type must be a token (RFC 6266 4.1): " + dispositionType);',
+      "    cdParts.forEach(function (entry) {",
+      "      var param = entry.trim(); if (!param) return;",
+      '      var eq = param.indexOf("=");',
+      '      if (eq <= 0) { pm.expect.fail("Content-Disposition parameters must use name=value syntax (RFC 6266 4.1): " + param); return; }',
+      "      var paramName = param.slice(0, eq).trim().toLowerCase();",
+      "      var paramValue = param.slice(eq + 1).trim();",
+      '      if (!rfcIsToken(paramName)) pm.expect.fail("Content-Disposition parameter name must be a token (RFC 6266 4.1): " + param);',
+      '      if (Object.prototype.hasOwnProperty.call(cdParams, paramName)) pm.expect.fail("Content-Disposition must not repeat parameter " + paramName + " (RFC 6266 4.1): " + contentDisposition);',
+      "      cdParams[paramName] = true;",
+      '      if (!/^"(?:[^"\\\\]|\\\\.)*"$|^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/.test(paramValue)) pm.expect.fail("Content-Disposition parameter value is malformed (RFC 6266 4.1): " + param);',
+      `      if (paramName === "filename*" && !/^[A-Za-z0-9!#$&+.^_\`{}~-]+'[A-Za-z0-9!#$&+.^_\`{}~-]*'[^\\s]*$/.test(paramValue)) pm.expect.fail("Content-Disposition filename* must use RFC 5987 charset''value syntax (RFC 6266 4.1): " + param);`,
+      "    });",
+      "  }",
+      '  var acceptPatch = rfcRespHeader("Accept-Patch");',
+      '  if (acceptPatch) acceptPatch.split(",").forEach(function (entry) { var parts = mediaParts(entry); if (!parts.type || !parts.subtype) pm.expect.fail("Accept-Patch must be a list of media types (RFC 5789): " + entry.trim()); });',
+      '  var deprecation = rfcRespHeader("Deprecation");',
+      '  if (deprecation && !/^@-?[0-9]+$/.test(deprecation.trim())) pm.expect.fail("Deprecation must be an RFC 9745 Date structured field (@unix-timestamp): " + deprecation);',
+      '  var sunset = rfcRespHeader("Sunset");',
+      "  if (sunset) {",
+      '    if (!rfcIsHttpDate(sunset)) pm.expect.fail("Sunset must be a valid HTTP-date (RFC 8594): " + sunset);',
+      '    else if (Date.parse(sunset) < Date.now()) rfcAdvise("RFC 8594: Sunset date is already in the past: " + sunset);',
+      "  }",
+      '  var preferenceApplied = rfcRespHeader("Preference-Applied");',
+      "  if (preferenceApplied) {",
+      '    var requestPrefer = requestHeader("Prefer").toLowerCase();',
+      "    rfcSplitList(preferenceApplied).forEach(function (entry) {",
+      '      var token = entry.split("=")[0].trim().toLowerCase();',
+      '      if (token && requestPrefer.indexOf(token) === -1) pm.expect.fail("Preference-Applied echoes a preference the request never sent (RFC 7240): " + entry.trim());',
+      "    });",
+      "  }",
+      '  var trailerValue = rfcRespHeader("Trailer");',
+      "  if (trailerValue) {",
+      '    trailerValue.split(",").forEach(function (entry) {',
+      "      var trailerField = entry.trim();",
+      "      if (!trailerField) return;",
+      '      if (!rfcIsToken(trailerField)) pm.expect.fail("Trailer members must be field-name tokens (RFC 9110): " + trailerField);',
+      '      else if (rfcRegistries.forbiddenTrailers.indexOf(trailerField.toLowerCase()) !== -1) pm.expect.fail("Trailer must not name " + trailerField + "; RFC 9110 forbids framing, routing, modifier, authentication, and content-processing fields in trailers");',
+      "    });",
+      "  }",
+      '  var altSvc = rfcRespHeader("Alt-Svc");',
+      '  if (altSvc && altSvc.trim() !== "clear") {',
+      "    rfcSplitList(altSvc).forEach(function (entry) {",
+      "      var alt = entry.trim();",
+      '      if (!alt) { pm.expect.fail("Alt-Svc contains an empty alternative (RFC 7838): " + altSvc); return; }',
+      '      var altMatch = alt.match(/^([!#$%&\'*+.^_`|~0-9A-Za-z%-]+)=("(?:[^"\\\\]|\\\\.)*")(\\s*;[\\s\\S]*)?$/);',
+      '      if (!altMatch) { pm.expect.fail("Alt-Svc alternative must be protocol-id=<quoted alt-authority> (RFC 7838): " + alt); return; }',
+      '      (altMatch[3] || "").split(";").forEach(function (paramEntry) {',
+      "        var param = paramEntry.trim();",
+      "        if (!param) return;",
+      '        var paramEq = param.indexOf("=");',
+      '        if (paramEq === -1) { pm.expect.fail("Alt-Svc parameters must be token=value (RFC 7838): " + param); return; }',
+      "        var paramName = param.slice(0, paramEq).trim();",
+      "        var paramValue = param.slice(paramEq + 1).trim();",
+      '        if (!rfcIsToken(paramName)) pm.expect.fail("Alt-Svc parameter name must be a token (RFC 7838): " + param);',
+      '        if (paramName === "ma" && !/^"?[0-9]+"?$/.test(paramValue)) pm.expect.fail("Alt-Svc ma parameter must be delta-seconds (RFC 7838): " + param);',
+      `        if (paramName === "persist" && paramValue !== "1" && paramValue !== '"1"') pm.expect.fail("Alt-Svc persist parameter must be 1 (RFC 7838): " + param);`,
+      "      });",
+      "    });",
+      "  }",
+      "});",
+      "pm.test('Set-Cookie response headers satisfy RFC 6265', function () {",
+      '  rfcHeaderAll("Set-Cookie").forEach(function (setCookie) {',
+      '    if (setCookie.indexOf("{{") !== -1) return;',
+      '    var segments = setCookie.split(";");',
+      "    var pair = segments[0];",
+      '    var pairEq = pair.indexOf("=");',
+      '    if (pairEq <= 0) { pm.expect.fail("Set-Cookie must start with cookie-name=cookie-value (RFC 6265): " + setCookie); return; }',
+      "    var cookieName = pair.slice(0, pairEq).trim();",
+      "    var cookieValue = pair.slice(pairEq + 1).trim();",
+      '    if (!rfcIsToken(cookieName)) pm.expect.fail("Set-Cookie cookie-name must be a token (RFC 6265): " + cookieName);',
+      '    if (!/^"[\\x21\\x23-\\x2b\\x2d-\\x3a\\x3c-\\x5b\\x5d-\\x7e]*"$|^[\\x21\\x23-\\x2b\\x2d-\\x3a\\x3c-\\x5b\\x5d-\\x7e]*$/.test(cookieValue)) pm.expect.fail("Set-Cookie cookie-value contains characters outside cookie-octet (RFC 6265): " + setCookie);',
+      "    var attrs = {};",
+      "    for (var a = 1; a < segments.length; a += 1) {",
+      "      var attr = segments[a].trim();",
+      '      if (!attr) { pm.expect.fail("Set-Cookie contains an empty attribute (RFC 6265): " + setCookie); continue; }',
+      '      var attrEq = attr.indexOf("=");',
+      "      var attrName = (attrEq === -1 ? attr : attr.slice(0, attrEq)).trim().toLowerCase();",
+      "      var attrValue = attrEq === -1 ? undefined : attr.slice(attrEq + 1).trim();",
+      '      if (Object.prototype.hasOwnProperty.call(attrs, attrName)) pm.expect.fail("Set-Cookie repeats the " + attrName + " attribute (RFC 6265): " + setCookie);',
+      "      attrs[attrName] = attrValue === undefined ? true : attrValue;",
+      '      if (attrName === "max-age" && !/^-?[0-9]+$/.test(String(attrValue || ""))) pm.expect.fail("Set-Cookie Max-Age must be an integer (RFC 6265): " + attr);',
+      '      if (attrName === "expires") {',
+      '        if (!attrValue || isNaN(Date.parse(attrValue))) pm.expect.fail("Set-Cookie Expires is not a parseable cookie-date (RFC 6265): " + attr);',
+      '        else if (!rfcIsHttpDate(attrValue)) rfcAdvise("RFC 6265: Set-Cookie Expires is not the preferred IMF-fixdate form: " + attrValue);',
+      "      }",
+      '      if ((attrName === "secure" || attrName === "httponly") && attrValue !== undefined) pm.expect.fail("Set-Cookie " + attrName + " attribute takes no value (RFC 6265): " + attr);',
+      '      if (attrName === "samesite" && ["strict", "lax", "none"].indexOf(String(attrValue || "").toLowerCase()) === -1) pm.expect.fail("Set-Cookie SameSite must be Strict, Lax, or None (RFC 6265bis): " + attr);',
+      "    }",
+      '    if (String(attrs.samesite || "").toLowerCase() === "none" && attrs.secure === undefined) pm.expect.fail("Set-Cookie SameSite=None requires Secure (RFC 6265bis): " + setCookie);',
+      '    if (cookieName.indexOf("__Host-") === 0 && (attrs.secure === undefined || attrs.domain !== undefined || attrs.path !== "/")) pm.expect.fail("Set-Cookie __Host- prefix requires Secure, no Domain, and Path=/ (RFC 6265bis): " + setCookie);',
+      '    if (cookieName.indexOf("__Secure-") === 0 && attrs.secure === undefined) pm.expect.fail("Set-Cookie __Secure- prefix requires Secure (RFC 6265bis): " + setCookie);',
+      '    if (attrs.secure === undefined && attrs.httponly === undefined && attrs.samesite === undefined) rfcAdvise("Set-Cookie " + cookieName + " carries none of Secure, HttpOnly, or SameSite");',
+      "  });",
+      "});",
+      "pm.test('Security response headers satisfy their specifications', function () {",
+      '  var hsts = rfcRespHeader("Strict-Transport-Security");',
+      "  if (hsts) {",
+      "    var hstsSeen = {};",
+      '    hsts.split(";").forEach(function (entry) {',
+      "      var directive = entry.trim();",
+      '      if (!directive) { pm.expect.fail("Strict-Transport-Security contains an empty directive (RFC 6797): " + hsts); return; }',
+      '      var directiveEq = directive.indexOf("=");',
+      "      var directiveName = (directiveEq === -1 ? directive : directive.slice(0, directiveEq)).trim().toLowerCase();",
+      "      var directiveValue = directiveEq === -1 ? undefined : directive.slice(directiveEq + 1).trim();",
+      '      if (!rfcIsToken(directiveName)) pm.expect.fail("Strict-Transport-Security directive name must be a token (RFC 6797): " + directive);',
+      '      if (Object.prototype.hasOwnProperty.call(hstsSeen, directiveName)) pm.expect.fail("Strict-Transport-Security must not repeat the " + directiveName + " directive (RFC 6797): " + hsts);',
+      "      hstsSeen[directiveName] = true;",
+      '      if (directiveName === "max-age" && !/^"?[0-9]+"?$/.test(String(directiveValue || ""))) pm.expect.fail("Strict-Transport-Security max-age requires a delta-seconds value (RFC 6797): " + directive);',
+      '      if ((directiveName === "includesubdomains" || directiveName === "preload") && directiveValue !== undefined) pm.expect.fail("Strict-Transport-Security " + directiveName + " is valueless (RFC 6797): " + directive);',
+      "    });",
+      '    if (hstsSeen["max-age"] === undefined) pm.expect.fail("Strict-Transport-Security requires a max-age directive (RFC 6797): " + hsts);',
+      "  }",
+      '  var xcto = rfcRespHeader("X-Content-Type-Options");',
+      '  if (xcto && xcto.split(",")[0].trim().toLowerCase() !== "nosniff") pm.expect.fail("X-Content-Type-Options must be nosniff (WHATWG Fetch): " + xcto);',
+      '  var referrerPolicy = rfcRespHeader("Referrer-Policy");',
+      '  if (referrerPolicy) referrerPolicy.split(",").forEach(function (entry) { var member = entry.trim().toLowerCase(); if (rfcRegistries.referrerPolicies.indexOf(member) === -1) pm.expect.fail("Referrer-Policy member is not a registered policy (W3C Referrer Policy): " + entry.trim()); });',
+      '  var permissionsPolicy = rfcRespHeader("Permissions-Policy");',
+      '  if (permissionsPolicy && !rfcSfParse(permissionsPolicy, "dict")) pm.expect.fail("Permissions-Policy must be a Structured Field Dictionary (W3C Permissions Policy): " + permissionsPolicy);',
+      "});",
+      "pm.test('CORS response headers satisfy the WHATWG Fetch standard', function () {",
+      '  var acaoValues = rfcHeaderAll("Access-Control-Allow-Origin");',
+      '  var acao = acaoValues.length > 0 ? acaoValues[0].trim() : "";',
+      '  if (acaoValues.length > 1) pm.expect.fail("Access-Control-Allow-Origin must appear at most once (WHATWG Fetch): " + acaoValues.join(" / "));',
+      '  if (acao && acao !== "*" && acao !== "null" && !/^[A-Za-z][A-Za-z0-9+.-]*:\\/\\/[^\\/\\s?#]+$/.test(acao)) pm.expect.fail("Access-Control-Allow-Origin must be *, null, or a single serialized origin (WHATWG Fetch): " + acao);',
+      '  var corsCredentials = rfcRespHeader("Access-Control-Allow-Credentials");',
+      "  if (corsCredentials) {",
+      '    if (corsCredentials.trim() !== "true") pm.expect.fail("Access-Control-Allow-Credentials must be exactly true (WHATWG Fetch): " + corsCredentials);',
+      '    if (acao === "*") pm.expect.fail("Access-Control-Allow-Origin * is illegal alongside Access-Control-Allow-Credentials: true (WHATWG Fetch)");',
+      "  }",
+      '  ["Access-Control-Expose-Headers", "Access-Control-Allow-Headers", "Access-Control-Allow-Methods"].forEach(function (name) {',
+      "    var value = rfcRespHeader(name);",
+      "    if (!value) return;",
+      '    value.split(",").forEach(function (entry) {',
+      "      var member = entry.trim();",
+      '      if (!member) { pm.expect.fail(name + " contains an empty member (WHATWG Fetch): " + value); return; }',
+      '      if (member !== "*" && !rfcIsToken(member)) pm.expect.fail(name + " members must be tokens (WHATWG Fetch): " + member);',
+      '      if (member === "*" && corsCredentials && corsCredentials.trim() === "true") rfcAdvise("WHATWG Fetch: the * wildcard in " + name + " is treated as a literal name when credentials are allowed");',
+      "    });",
+      "  });",
+      '  var corsMaxAge = rfcRespHeader("Access-Control-Max-Age");',
+      '  if (corsMaxAge && !/^-?[0-9]+$/.test(corsMaxAge.trim())) pm.expect.fail("Access-Control-Max-Age must be an integer (WHATWG Fetch): " + corsMaxAge);',
+      '  if (acao && acao !== "*" && acao !== "null") {',
+      '    var varyForCors = rfcRespHeader("Vary").toLowerCase().split(",").map(function (entry) { return entry.trim(); });',
+      '    if (varyForCors.indexOf("origin") === -1 && varyForCors.indexOf("*") === -1) rfcAdvise("CORS: Access-Control-Allow-Origin varies by origin but the response lacks Vary: Origin");',
+      "  }",
+      "});",
+      "pm.test('Response satisfies RFC 9110 message framing requirements', function () {",
+      "  var code = pm.response.code;",
+      '  if ((code === 204 || code < 200) && rfcRespHeader("Content-Length")) pm.expect.fail("RFC 9110 forbids Content-Length on 1xx and 204 responses");',
+      '  if ([301, 302, 303, 307, 308].indexOf(code) !== -1 && !rfcRespHeader("Location")) pm.expect.fail("RFC 9110 expects Location on a " + code + " redirect response");',
+      "  if (code === 416) {",
+      '    var unsatisfiedRange = rfcRespHeader("Content-Range");',
+      '    if (!unsatisfiedRange) pm.expect.fail("RFC 9110 requires Content-Range (unsatisfied-range form) on 416 responses");',
+      '    else if (!/^bytes \\*\\/[0-9]+$/.test(unsatisfiedRange.trim())) pm.expect.fail("Content-Range on 416 must use the unsatisfied-range form bytes */<complete-length> (RFC 9110 15.5.17): " + unsatisfiedRange);',
+      "  }",
+      "  if (code === 206) {",
+      '    var contentRange = rfcRespHeader("Content-Range");',
+      '    var responseMedia = mediaParts(rfcRespHeader("Content-Type"));',
+      '    var isByteranges = responseMedia.type === "multipart" && responseMedia.subtype === "byteranges";',
+      '    if (!contentRange && !isByteranges) pm.expect.fail("RFC 9110 requires Content-Range on a single-part 206 response (or multipart/byteranges for multi-range)");',
+      '    if (contentRange && isByteranges) pm.expect.fail("RFC 9110 forbids Content-Range on a multipart/byteranges 206 response");',
+      '    if (rfcRespHeader("Accept-Ranges").trim().toLowerCase() === "none") pm.expect.fail("206 responses must not carry Accept-Ranges: none (RFC 9110 14.3)");',
+      "    if (contentRange) {",
+      "      var rangeParts = contentRange.trim().match(/^(\\S+) (?:([0-9]+)-([0-9]+)|\\*)\\/([0-9]+|\\*)$/);",
+      '      if (!rangeParts) pm.expect.fail("Content-Range is not a valid RFC 9110 range: " + contentRange);',
+      "      else {",
+      '        if (rangeParts[1] !== "bytes") rfcAdvise("RFC 9110: 206 Content-Range uses a non-bytes range unit: " + rangeParts[1]);',
+      "        if (rangeParts[2] !== undefined) {",
+      '          if (Number(rangeParts[2]) > Number(rangeParts[3])) pm.expect.fail("Content-Range first-byte-pos must be <= last-byte-pos (RFC 9110): " + contentRange);',
+      '          if (rangeParts[4] !== "*" && Number(rangeParts[3]) >= Number(rangeParts[4])) pm.expect.fail("Content-Range last-byte-pos must be < complete-length (RFC 9110): " + contentRange);',
+      "          var rangeLength = Number(rangeParts[3]) - Number(rangeParts[2]) + 1;",
+      '          var contentLength = rfcRespHeader("Content-Length");',
+      '          if (contentLength && /^[0-9]+$/.test(contentLength.trim()) && Number(contentLength.trim()) !== rangeLength) pm.expect.fail("Content-Length must equal the selected byte-range length (RFC 9110 14.4): " + contentLength + " !== " + rangeLength);',
+      "        }",
+      "      }",
+      "    }",
+      "  }",
+      '  if (code === 407 && !rfcRespHeader("Proxy-Authenticate")) pm.expect.fail("RFC 9110 requires Proxy-Authenticate on 407 responses");',
+      '  if (code === 415 && contract.method === "PATCH" && !rfcRespHeader("Accept-Patch")) rfcAdvise("RFC 5789: a 415 response to PATCH SHOULD carry Accept-Patch");',
+      "});",
+      "pm.test('Response satisfies RFC 9110 range, negotiation, and cache conventions', function () {",
+      "  var code = pm.response.code;",
+      "  var method = contract.method;",
+      '  var visibleRange = visibleRequestHeader("Range");',
+      "  var reqRange = visibleRange.trim();",
+      "  if (code === 206 || code === 416) {",
+      '    if (method !== "GET") pm.expect.fail("RFC 9110 14.2: range responses (" + code + ") answer GET range requests");',
+      '    if (!reqRange) rfcAdvise("RFC 9110 14: a " + code + " range response without a visible Range request header may be proxy-injected");',
+      "  }",
+      '  if (rfcRespHeader("Content-Range") && code !== 206 && code !== 416) pm.expect.fail("RFC 9110 14.4: Content-Range is meaningful only on 206 and 416 responses; unexpected on " + code);',
+      "  if (code === 206 && reqRange) {",
+      '    var crUnit = (rfcRespHeader("Content-Range").trim().split(" ")[0] || "").toLowerCase();',
+      '    var reqUnit = (reqRange.split("=")[0] || "").toLowerCase();',
+      '    if (crUnit && reqUnit && crUnit !== reqUnit) pm.expect.fail("RFC 9110 14.4: 206 Content-Range unit (" + crUnit + ") must match the request Range unit (" + reqUnit + ")");',
+      '    var rangeSpec = reqRange.split("=")[1] || "";',
+      '    var rangeCount = rangeSpec.split(",").filter(function (x) { return x.trim(); }).length;',
+      '    var rmedia = mediaParts(rfcRespHeader("Content-Type"));',
+      '    if (rangeCount === 1 && rmedia.type === "multipart" && rmedia.subtype === "byteranges") pm.expect.fail("RFC 9110 15.3.7: a single requested byte range must not be answered with multipart/byteranges");',
+      '    if (reqRange.toLowerCase().indexOf("bytes=") === 0) {',
+      '      var crb = rfcRespHeader("Content-Range").trim().match(/^bytes ([0-9]+)-([0-9]+)\\/([0-9]+|\\*)$/);',
+      '      var singles = rangeSpec.split(",");',
+      "      if (crb && singles.length === 1) {",
+      "        var mm = singles[0].trim().match(/^([0-9]*)-([0-9]*)$/);",
+      "        if (mm) {",
+      "          var respStart = Number(crb[1]); var respEnd = Number(crb[2]);",
+      '          if (mm[1] !== "" && respStart < Number(mm[1])) pm.expect.fail("RFC 9110 14.4: 206 first-byte-pos " + respStart + " is before the requested range start " + mm[1]);',
+      '          if (mm[2] !== "" && respEnd > Number(mm[2])) pm.expect.fail("RFC 9110 14.4: 206 last-byte-pos " + respEnd + " is beyond the requested range end " + mm[2]);',
+      "        }",
+      "      }",
+      "    }",
+      "  }",
+      "  if (code === 206) {",
+      '    var crlen = rfcRespHeader("Content-Range").trim().match(/^bytes ([0-9]+)-([0-9]+)\\/([0-9]+|\\*)$/);',
+      '    if (crlen && !rfcRespHeader("Content-Length")) { var expectLen = Number(crlen[2]) - Number(crlen[1]) + 1; var bodyLen = responseText().length; if (bodyLen > 0 && bodyLen !== expectLen) rfcAdvise("RFC 9110 14.4: 206 body length (" + bodyLen + ") does not match the Content-Range interval (" + expectLen + ")"); }',
+      '    if (contract.responses["200"] && contract.responses["206"]) {',
+      '      var ok200 = (contract.responses["200"].headers) || [];',
+      '      ["ETag", "Content-Location", "Date", "Vary", "Cache-Control", "Expires"].forEach(function (name) {',
+      "        var decl = ok200.some(function (h) { return String(h.name).toLowerCase() === name.toLowerCase(); });",
+      '        if (decl && !rfcRespHeader(name)) pm.expect.fail("RFC 9110 15.3.7: a 206 must include " + name + " because the OpenAPI 200 response declares it");',
+      "      });",
+      "    }",
+      "  }",
+      '  if (code === 426 && !rfcRespHeader("Upgrade")) pm.expect.fail("RFC 9110 15.5.22 requires an Upgrade header on 426 responses");',
+      '  var respAcceptEnc = rfcRespHeader("Accept-Encoding");',
+      '  if (respAcceptEnc) rfcSplitList(respAcceptEnc).forEach(function (entry) { var e = entry.trim(); var coding = e.split(";")[0].trim().toLowerCase(); if (coding && coding !== "*" && coding !== "identity" && rfcRegistries.contentCodings.indexOf(coding) === -1) pm.expect.fail("Accept-Encoding lists a coding absent from the IANA content-coding registry (RFC 9110 12.5.3): " + e); var qm = e.match(/;\\s*q=([0-9.]+)/i); if (qm && Number(qm[1]) > 1) pm.expect.fail("Accept-Encoding qvalue must be <= 1 (RFC 9110): " + e); });',
+      '  if (code === 415 && respAcceptEnc && !visibleRequestHeader("Content-Encoding")) rfcAdvise("RFC 9110: a 415 carrying Accept-Encoding implies an unsupported request Content-Encoding, but none is visible");',
+      '  var ce = rfcRespHeader("Content-Encoding");',
+      '  if (ce && rfcSplitList(ce).some(function (x) { return x.trim().toLowerCase() === "identity"; })) pm.expect.fail("RFC 9110 8.4.1: identity must not appear in Content-Encoding");',
+      '  var reqAcceptEnc = visibleRequestHeader("Accept-Encoding");',
+      '  if (ce && reqAcceptEnc) { var usedCodings = ce.split(",").map(function (x) { return x.trim().toLowerCase(); }); rfcSplitList(reqAcceptEnc).forEach(function (entry) { if (/;\\s*q=0(\\.0+)?\\s*$/i.test(entry.trim())) { var nm = entry.trim().split(";")[0].trim().toLowerCase(); if (usedCodings.indexOf(nm) !== -1) pm.expect.fail("Response Content-Encoding uses " + nm + " which the request Accept-Encoding set to q=0 (RFC 9110 12.5.3)"); } }); }',
+      '  var vary = rfcRespHeader("Vary");',
+      '  if (ce && vary && vary.indexOf("*") === -1 && !/\\baccept-encoding\\b/i.test(vary)) rfcAdvise("RFC 9110 12.5.5: a response with Content-Encoding SHOULD list Accept-Encoding in Vary");',
+      '  if (rfcRespHeader("Content-Language") && vary && vary.indexOf("*") === -1 && !/\\baccept-language\\b/i.test(vary)) rfcAdvise("RFC 9110 12.5.5: a response with Content-Language SHOULD list Accept-Language in Vary");',
+      '  if (code === 300 && responseText().trim().length === 0) rfcAdvise("RFC 9110 15.4.1: a 300 Multiple Choices response SHOULD include a body listing the alternatives");',
+      '  if (code === 451) { var l451 = rfcRespHeader("Link"); if (!l451 || !/rel\\s*=\\s*"?blocked-by"?/i.test(l451)) rfcAdvise("RFC 7725 3: a 451 response SHOULD include a Link header with rel=blocked-by"); }',
+      '  var sunsetH = rfcRespHeader("Sunset"); var deprH = rfcRespHeader("Deprecation");',
+      '  if (sunsetH && deprH) { var depM = deprH.trim().match(/^@(-?[0-9]+)$/); var sunMs = Date.parse(sunsetH); if (depM && !isNaN(sunMs) && sunMs < Number(depM[1]) * 1000) pm.expect.fail("RFC 9745: Sunset date must not be earlier than the Deprecation date"); }',
+      '  var cc = rfcRespHeader("Cache-Control");',
+      '  if (cc) { rfcSplitList(cc).forEach(function (d) { var t = d.trim(); var dm = t.match(/^(max-age|s-maxage)\\s*=\\s*(.*)$/i); if (dm && /^".*"$/.test(dm[2].trim())) pm.expect.fail("RFC 9111 5.2.2: " + dm[1].toLowerCase() + " must be an unquoted delta-seconds: " + t); var fm = t.match(/^(no-cache|private)\\s*=\\s*(.*)$/i); if (fm) { var arg = fm[2].trim(); if (!/^".*"$/.test(arg)) pm.expect.fail("RFC 9111 5.2.2: " + fm[1].toLowerCase() + " argument must be a quoted field-name list: " + t); else if (arg.slice(1, -1).split(",").some(function (f) { return f.trim() && !/^[!#$%&*+.^_|~0-9A-Za-z-]+$/.test(f.trim()); })) pm.expect.fail("RFC 9111 5.2.2: " + fm[1].toLowerCase() + " field list must contain valid field-names: " + t); } }); if (/\\bmust-understand\\b/i.test(cc) && !/\\bno-store\\b/i.test(cc)) rfcAdvise("RFC 8246: must-understand SHOULD be accompanied by no-store"); }',
+      '  if ([428, 429, 431, 511].indexOf(code) !== -1 && cc && /\\b(public|max-age|s-maxage)\\b/i.test(cc) && !/\\bno-store\\b/i.test(cc)) rfcAdvise("RFC 6585/9111: a " + code + " response should not be stored by a shared cache; avoid public/max-age without no-store");',
+      '  if (method === "PATCH" && code >= 200 && code < 300 && rfcRespHeader("Content-Location")) rfcAdvise("RFC 5789 3.1: a PATCH Content-Location equal to the request target marks the response as the new representation; verify it matches the target URI");',
+      '  if (method === "OPTIONS" && code >= 200 && code < 300 && (contract.pathMethods || []).indexOf("PATCH") !== -1 && !rfcRespHeader("Accept-Patch")) rfcAdvise("RFC 5789 3.1: an OPTIONS response for a resource that supports PATCH SHOULD list Accept-Patch");',
+      '  var linkH = rfcRespHeader("Link");',
+      '  if (linkH) { linkH.split(/,(?=\\s*<)/).forEach(function (lv) { var lm = lv.trim().match(/^<([^>]*)>(.*)$/); if (!lm) { pm.expect.fail("RFC 8288: link-value must be a <URI-Reference> followed by parameters: " + lv.trim()); return; } var params = lm[2]; var re = /;\\s*([A-Za-z0-9!#$%&*+.^_|~-]+)(\\s*=\\s*("(([^"\\\\]|\\\\.)*)"|[^;,\\s]+))?/g; var consumed = 0; var pm2; var sawRel = false; while ((pm2 = re.exec(params)) !== null) { consumed = re.lastIndex; if (pm2[1].toLowerCase() === "rel") sawRel = true; } if (params.replace(/\\s+$/, "").length > consumed) pm.expect.fail("RFC 8288: unparseable Link parameters: " + lv.trim()); if (!sawRel) pm.expect.fail("RFC 8288: link-value must include a rel parameter: " + lv.trim()); }); }',
+      "});",
+      "pm.test('Response media type is acceptable under the request Accept header', function () {",
+      "  if (pm.response.code < 200 || pm.response.code >= 300 || isBodyless()) return;",
+      '  var accept = requestHeader("Accept");',
+      '  if (!accept || accept.indexOf("{{") !== -1) return;',
+      '  var actual = mediaParts(rfcRespHeader("Content-Type"));',
+      "  if (!actual.type) return;",
+      "  var acceptable = false;",
+      "  var jsonSoftened = false;",
+      "  rfcSplitList(accept).forEach(function (entry) {",
+      "    var range = mediaParts(entry);",
+      '    var qMatch = entry.match(/;\\s*q\\s*=\\s*"?([0-9.]+)"?/i);',
+      "    if (qMatch && Number(qMatch[1]) <= 0) return;",
+      '    if ((range.type === "*" && range.subtype === "*") || (range.type === actual.type && (range.subtype === "*" || range.subtype === actual.subtype))) acceptable = true;',
+      '    if (range.type === actual.type && range.subtype === "json" && isJsonSubtype(actual.subtype)) jsonSoftened = true;',
+      "  });",
+      '  if (!acceptable && jsonSoftened) { rfcAdvise("Content negotiation: response " + actual.raw + " is a +json type while the request only accepted application/json"); return; }',
+      '  if (!acceptable) pm.expect.fail("Response Content-Type " + actual.raw + " is not acceptable under the request Accept header (RFC 9110): " + accept);',
+      "});",
+      "pm.test('Response body satisfies its media type RFC conventions', function () {",
+      '  var contentTypeValue = rfcRespHeader("Content-Type");',
+      "  var media = mediaParts(contentTypeValue);",
+      "  var text = responseText();",
+      '  if (pm.response.code === 406 && !text.trim()) rfcAdvise("RFC 9110: a 406 response SHOULD include a list of available representations");',
+      "  if (!text) return;",
+      "  if (isJsonSubtype(media.subtype)) {",
+      '    if (text.charCodeAt(0) === 65279) pm.expect.fail("RFC 8259 forbids a byte order mark at the start of JSON text");',
+      '    var charsetParam = contentTypeValue.match(/charset\\s*=\\s*"?([^";\\s]+)"?/i);',
+      '    if (charsetParam) rfcAdvise("RFC 8259 defines no charset parameter for JSON media types; got charset=" + charsetParam[1]);',
+      "  }",
+      '  if (media.raw === "application/x-ndjson" || media.raw === "application/jsonl" || media.raw === "application/x-jsonlines") {',
+      '    text.split(/\\r?\\n/).forEach(function (line, lineNumber) { if (!line.trim()) return; try { JSON.parse(line); } catch (error) { pm.expect.fail("NDJSON line " + (lineNumber + 1) + " is not valid JSON: " + error); } });',
+      "  }",
+      '  if (media.raw === "text/event-stream") {',
+      "    var sseText = text.charCodeAt(0) === 65279 ? text.slice(1) : text;",
+      "    var sseHasField = false;",
+      '    sseText.split(/\\r?\\n/).forEach(function (line) { if (!line || line.charAt(0) === ":") return; var field = line.split(":")[0]; if (["data", "event", "id", "retry"].indexOf(field) === -1) pm.expect.fail("SSE line does not start with a known field or comment: " + line); else sseHasField = true; if (field === "retry" && !/^retry:\\s*[0-9]+\\s*$/.test(line)) pm.expect.fail("SSE retry field must be an integer: " + line); if (field === "id" && line.indexOf("\\u0000") !== -1) pm.expect.fail("SSE id field must not contain NUL (WHATWG HTML): " + line); });',
+      '    if (sseHasField && !/\\r?\\n\\r?\\n$/.test(sseText)) rfcAdvise("SSE: the final event is not terminated by a blank line and would be discarded (WHATWG HTML)");',
+      "  }",
+      '  if (media.type === "multipart") {',
+      '    var boundary = contentTypeValue.match(/;\\s*boundary=(?:"([^"]*)"|([^;]*))/i);',
+      '    var boundaryValue = boundary ? (boundary[1] !== undefined ? boundary[1] : boundary[2].trim()) : "";',
+      '    if (!boundaryValue) pm.expect.fail("multipart responses must carry a boundary parameter (RFC 2046): " + contentTypeValue);',
+      "    else {",
+      '      if (boundaryValue.length > 70) pm.expect.fail("multipart boundary must be 1-70 characters (RFC 2046): " + boundaryValue);',
+      `      if (!/^[0-9A-Za-z'()+_,\\-.\\/:=? ]*[0-9A-Za-z'()+_,\\-.\\/:=?]$/.test(boundaryValue)) pm.expect.fail("multipart boundary contains characters outside RFC 2046 bchars or ends with a space: " + boundaryValue);`,
+      "    }",
+      "  }",
+      '  if (media.raw === "application/hal+json") {',
+      "    var hal; try { hal = JSON.parse(text); } catch (error) { hal = null; }",
+      '    if (hal && typeof hal === "object" && !Array.isArray(hal)) {',
+      "      var halLinks = hal._links;",
+      '      if (halLinks !== undefined && (typeof halLinks !== "object" || Array.isArray(halLinks) || halLinks === null)) pm.expect.fail("HAL _links must be an object of link relations");',
+      '      if (halLinks) Object.keys(halLinks).forEach(function (rel) { var linkValue = halLinks[rel]; (Array.isArray(linkValue) ? linkValue : [linkValue]).forEach(function (linkObject) { if (!linkObject || typeof linkObject !== "object" || typeof linkObject.href !== "string") pm.expect.fail("HAL link relation " + rel + " must be a Link Object (or array of them) with a string href"); }); });',
+      "      var halEmbedded = hal._embedded;",
+      '      if (halEmbedded !== undefined && (typeof halEmbedded !== "object" || Array.isArray(halEmbedded) || halEmbedded === null)) pm.expect.fail("HAL _embedded must be an object of resource names");',
+      "    }",
+      "  }",
+      '  if (media.raw === "application/vnd.api+json") {',
+      "    var jsonApi; try { jsonApi = JSON.parse(text); } catch (error) { jsonApi = null; }",
+      '    if (jsonApi && typeof jsonApi === "object" && !Array.isArray(jsonApi)) {',
+      '      if (jsonApi.data === undefined && jsonApi.errors === undefined && jsonApi.meta === undefined) pm.expect.fail("JSON:API documents must contain at least one of data, errors, meta");',
+      '      if (jsonApi.data !== undefined && jsonApi.errors !== undefined) pm.expect.fail("JSON:API forbids data and errors in the same document");',
+      "    }",
+      "  }",
+      '  if (media.subtype === "problem+xml") {',
+      '    if (text.indexOf("urn:ietf:rfc:7807") === -1) rfcAdvise("application/problem+xml body does not reference the urn:ietf:rfc:7807 namespace");',
+      "    var xmlStatus = text.match(/<status[^>]*>\\s*([0-9]+)\\s*<\\/status>/);",
+      '    if (xmlStatus && Number(xmlStatus[1]) !== pm.response.code) pm.expect.fail("RFC 9457 status member (" + xmlStatus[1] + ") must match the HTTP status code (" + pm.response.code + ")");',
+      "  }",
+      "});",
+      // RateLimit / RateLimit-Policy are still an Internet-Draft, so their
+      // checks live in the advisory block below rather than this hard-fail list.
+      "pm.test('Structured field response headers parse per RFC 9651', function () {",
+      '  [["Cache-Status", "list"], ["Proxy-Status", "list"], ["Priority", "dict"], ["Signature", "dict"], ["Signature-Input", "dict"]].forEach(function (pair) {',
+      '    var value = rfcHeaderAll(pair[0]).join(", ");',
+      "    if (!value) return;",
+      '    if (!rfcSfParse(value, pair[1])) pm.expect.fail(pair[0] + " is not a valid RFC 9651 structured field (" + pair[1] + "): " + value);',
+      "  });",
+      "});",
+      "pm.test('Proxy-Status members are typed per RFC 9209', function () {",
+      '  var value = rfcHeaderAll("Proxy-Status").join(", ");',
+      "  if (!value) return;",
+      '  var parsed = rfcSfParse(value, "list");',
+      "  if (!parsed) return;",
+      "  parsed.list.forEach(function (member) {",
+      '    if (member.t === "innerlist") { pm.expect.fail("Proxy-Status members must be Items, not Inner Lists (RFC 9209): " + value); return; }',
+      '    if (member.v.t !== "tok" && member.v.t !== "str") pm.expect.fail("Proxy-Status member names must be Tokens or Strings (RFC 9209): " + value);',
+      "    var p = member.p;",
+      "    if (p.error !== undefined) {",
+      '      if (p.error.t !== "tok") pm.expect.fail("Proxy-Status error parameter must be a Token (RFC 9209): " + value);',
+      '      else if (rfcRegistries.proxyStatusErrors.indexOf(p.error.v) === -1) rfcAdvise("RFC 9209: Proxy-Status error type is not in the IANA registry snapshot: " + p.error.v);',
+      "    }",
+      '    if (p["next-hop"] !== undefined && p["next-hop"].t !== "tok" && p["next-hop"].t !== "str") pm.expect.fail("Proxy-Status next-hop parameter must be a Token or String (RFC 9209): " + value);',
+      '    if (p["received-status"] !== undefined && p["received-status"].t !== "int") pm.expect.fail("Proxy-Status received-status parameter must be an Integer (RFC 9209): " + value);',
+      '    if (p.details !== undefined && p.details.t !== "str") pm.expect.fail("Proxy-Status details parameter must be a String (RFC 9209): " + value);',
+      "  });",
+      "});",
+      "pm.test('HTTP message signatures are structurally valid (RFC 9421)', function () {",
+      '  var sigInputRaw = rfcHeaderAll("Signature-Input").join(", ");',
+      '  var sigRaw = rfcHeaderAll("Signature").join(", ");',
+      "  if (!sigInputRaw && !sigRaw) return;",
+      '  var sigInput = sigInputRaw ? rfcSfParse(sigInputRaw, "dict") : { dict: {}, keys: [] };',
+      '  var sig = sigRaw ? rfcSfParse(sigRaw, "dict") : { dict: {}, keys: [] };',
+      "  if (!sigInput || !sig) return;",
+      '  if (sigRaw && !sigInputRaw) pm.expect.fail("Signature without a Signature-Input field cannot be verified (RFC 9421)");',
+      '  sig.keys.forEach(function (label) { if (sigInput.dict[label] === undefined) pm.expect.fail("Signature label " + label + " has no matching Signature-Input member (RFC 9421)"); });',
+      '  if (sigRaw) sigInput.keys.forEach(function (label) { if (sig.dict[label] === undefined) pm.expect.fail("Signature-Input label " + label + " has no matching Signature member (RFC 9421)"); });',
+      '  sig.keys.forEach(function (label) { var member = sig.dict[label]; if (member.t === "innerlist" || member.v.t !== "bytes") pm.expect.fail("Signature " + label + " must be a Byte Sequence (RFC 9421)"); });',
+      '  var derivedComponents = ["@method", "@target-uri", "@authority", "@scheme", "@request-target", "@path", "@query", "@query-param", "@status"];',
+      "  sigInput.keys.forEach(function (label) {",
+      "    var member = sigInput.dict[label];",
+      '    if (member.t !== "innerlist") { pm.expect.fail("Signature-Input " + label + " must be an Inner List of covered components (RFC 9421)"); return; }',
+      "    member.v.forEach(function (component) {",
+      '      if (component.v.t !== "str") { pm.expect.fail("Signature-Input " + label + " covered components must be Strings (RFC 9421)"); return; }',
+      "      var componentName = component.v.v;",
+      '      if (componentName.charAt(0) === "@") { if (derivedComponents.indexOf(componentName) === -1) pm.expect.fail("Signature-Input " + label + " uses an unknown derived component (RFC 9421): " + componentName); }',
+      '      else if (!/^[a-z0-9!#$%&\'*+.^_`|~-]+$/.test(componentName)) pm.expect.fail("Signature-Input " + label + " component names must be lowercase field names (RFC 9421): " + componentName);',
+      "    });",
+      "    var p = member.p;",
+      '    if (p.created !== undefined && p.created.t !== "int") pm.expect.fail("Signature-Input " + label + " created parameter must be an Integer (RFC 9421)");',
+      '    if (p.expires !== undefined && p.expires.t !== "int") pm.expect.fail("Signature-Input " + label + " expires parameter must be an Integer (RFC 9421)");',
+      '    if (p.created !== undefined && p.created.t === "int" && p.expires !== undefined && p.expires.t === "int" && p.created.v > p.expires.v) pm.expect.fail("Signature-Input " + label + " created must not be later than expires (RFC 9421)");',
+      '    ["keyid", "alg", "nonce", "tag"].forEach(function (paramName) { if (p[paramName] !== undefined && p[paramName].t !== "str") pm.expect.fail("Signature-Input " + label + " " + paramName + " parameter must be a String (RFC 9421)"); });',
+      "  });",
+      "});",
+      // draft-ietf-httpapi-ratelimit-headers is not yet an RFC, so every finding
+      // here is advisory via rfcAdvise; this test never fails on its own.
+      "pm.test('RateLimit headers follow the IETF ratelimit-headers draft (advisory)', function () {",
+      '  var rl = rfcHeaderAll("RateLimit").join(", ");',
+      '  var rlp = rfcHeaderAll("RateLimit-Policy").join(", ");',
+      '  var legacyLimit = rfcRespHeader("X-RateLimit-Limit").trim();',
+      '  var legacyRemaining = rfcRespHeader("X-RateLimit-Remaining").trim();',
+      '  var legacyReset = rfcRespHeader("X-RateLimit-Reset").trim();',
+      "  var policyQuotas = {};",
+      "  if (rlp) {",
+      '    var policyList = rfcSfParse(rlp, "list");',
+      '    if (!policyList) rfcAdvise("RateLimit-Policy does not parse as a Structured Field List (draft-ietf-httpapi-ratelimit-headers): " + rlp);',
+      "    else policyList.list.forEach(function (member) {",
+      '      if (member.t === "innerlist" || member.v.t !== "str") { rfcAdvise("RateLimit-Policy members should be String policy names (draft-ietf-httpapi-ratelimit-headers): " + rlp); return; }',
+      '      ["q", "w"].forEach(function (paramName) { if (member.p[paramName] !== undefined && member.p[paramName].t !== "int") rfcAdvise("RateLimit-Policy " + paramName + " parameter should be an Integer (draft-ietf-httpapi-ratelimit-headers): " + rlp); });',
+      '      if (member.p.q !== undefined && member.p.q.t === "int") policyQuotas[member.v.v] = member.p.q.v;',
+      "    });",
+      "  }",
+      "  if (rl) {",
+      '    var limitList = rfcSfParse(rl, "list");',
+      '    if (!limitList) rfcAdvise("RateLimit does not parse as a Structured Field List (draft-ietf-httpapi-ratelimit-headers): " + rl);',
+      "    else limitList.list.forEach(function (member) {",
+      '      if (member.t === "innerlist" || member.v.t !== "str") { rfcAdvise("RateLimit members should be String policy names (draft-ietf-httpapi-ratelimit-headers): " + rl); return; }',
+      '      ["r", "t"].forEach(function (paramName) { if (member.p[paramName] !== undefined && member.p[paramName].t !== "int") rfcAdvise("RateLimit " + paramName + " parameter should be an Integer (draft-ietf-httpapi-ratelimit-headers): " + rl); });',
+      '      var remaining = member.p.r !== undefined && member.p.r.t === "int" ? member.p.r.v : undefined;',
+      '      if (remaining !== undefined && remaining < 0) rfcAdvise("RateLimit r (remaining) should not be negative (draft-ietf-httpapi-ratelimit-headers): " + rl);',
+      "      var quota = policyQuotas[member.v.v];",
+      '      if (remaining !== undefined && quota !== undefined && remaining > quota) rfcAdvise("RateLimit remaining (" + remaining + ") exceeds the RateLimit-Policy quota (" + quota + ") for policy " + member.v.v);',
+      '      if (remaining !== undefined && /^[0-9]+$/.test(legacyRemaining) && Number(legacyRemaining) !== remaining) rfcAdvise("RateLimit and legacy X-RateLimit-Remaining disagree: " + remaining + " vs " + legacyRemaining);',
+      "    });",
+      "  }",
+      '  if (/^[0-9]+$/.test(legacyLimit) && /^[0-9]+$/.test(legacyRemaining) && Number(legacyRemaining) > Number(legacyLimit)) rfcAdvise("X-RateLimit-Remaining exceeds X-RateLimit-Limit: " + legacyRemaining + " > " + legacyLimit);',
+      '  if ((legacyLimit || legacyRemaining || legacyReset) && !(legacyLimit && legacyRemaining && legacyReset)) rfcAdvise("Legacy X-RateLimit-* headers are partial; Limit/Remaining/Reset should travel together");',
+      "});",
+      "pm.test('Content-Digest and Repr-Digest match the response body (RFC 9530)', function () {",
+      "  var cryptoLib = null;",
+      '  try { cryptoLib = require("crypto-js"); } catch (error) { cryptoLib = null; }',
+      '  ["Content-Digest", "Repr-Digest"].forEach(function (name) {',
+      "    var value = rfcRespHeader(name);",
+      "    if (!value) return;",
+      '    if (!rfcSfParse(value, "dict")) { pm.expect.fail(name + " is not a valid RFC 8941 dictionary (RFC 9530): " + value); return; }',
+      '    if (!cryptoLib || rfcRespHeader("Content-Encoding")) return;',
+      '    var media = mediaParts(rfcRespHeader("Content-Type"));',
+      '    if (media.type !== "text" && !isJsonSubtype(media.subtype) && !/xml$/.test(media.subtype)) return;',
+      "    rfcSplitList(value).forEach(function (entry) {",
+      "      var match = entry.trim().match(/^(sha-256|sha-512)=:([A-Za-z0-9+\\/=]+):$/);",
+      "      if (!match) return;",
+      '      var computed = match[1] === "sha-256" ? cryptoLib.SHA256(responseText()) : cryptoLib.SHA512(responseText());',
+      "      var encoded = cryptoLib.enc.Base64.stringify(computed);",
+      '      if (encoded !== match[2]) pm.expect.fail(name + " " + match[1] + " does not match the response body (RFC 9530): computed " + encoded + " but header carries " + match[2]);',
+      "    });",
+      "  });",
+      "});",
+      "pm.test('Request credentials are well-formed per their authentication scheme RFCs', function () {",
+      '  var authorization = requestHeader("Authorization");',
+      '  if (authorization && authorization.indexOf("{{") === -1) {',
+      "    var schemeMatch = authorization.match(/^(\\S+)(?:\\s+([\\s\\S]*))?$/);",
+      '    var authScheme = schemeMatch ? schemeMatch[1].toLowerCase() : "";',
+      '    var authParams = schemeMatch && schemeMatch[2] !== undefined ? schemeMatch[2].trim() : "";',
+      '    if (authScheme === "basic") {',
+      "      var decoded = rfcBase64Decode(authParams);",
+      '      if (decoded === null) pm.expect.fail("Basic credentials must be base64 (RFC 7617)");',
+      '      else if (decoded.indexOf(":") === -1) pm.expect.fail("Basic credentials must decode to user-id:password (RFC 7617)");',
+      "    }",
+      '    if (authScheme === "bearer" && !/^[A-Za-z0-9\\-._~+\\/]+=*$/.test(authParams)) pm.expect.fail("Bearer token does not match the b64token grammar (RFC 6750)");',
+      '    if (authScheme === "digest") {',
+      '      rfcSplitList(authParams).forEach(function (entry) { var param = entry.trim(); if (param && !/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+\\s*=\\s*("([^"\\\\]|\\\\.)*"|[!#$%&\'*+.^_`|~0-9A-Za-z-]+)$/.test(param)) pm.expect.fail("Digest auth-param is malformed (RFC 7616): " + param); });',
+      '      var digestResponse = authParams.match(/\\bresponse\\s*=\\s*"?([^",\\s]+)"?/i);',
+      '      if (digestResponse && !/^[0-9a-fA-F]+$/.test(digestResponse[1])) pm.expect.fail("Digest response parameter must be hex (RFC 7616): " + digestResponse[1]);',
+      "    }",
+      "  }",
+      '  var wantsJwt = (contract.security || []).some(function (alternative) { return alternative.some(function (check) { return check.prefix === "Bearer " && String(check.bearerFormat || "").toUpperCase() === "JWT"; }); });',
+      '  if (wantsJwt && authorization && authorization.indexOf("{{") === -1 && authorization.toLowerCase().indexOf("bearer ") === 0) {',
+      "    var jwtToken = authorization.slice(7).trim();",
+      '    var jwtSegments = jwtToken.split(".");',
+      '    if (jwtSegments.length !== 3) pm.expect.fail("bearerFormat JWT tokens must have three base64url segments (RFC 7519); got " + jwtSegments.length);',
+      '    else if (!jwtSegments.every(function (segment) { return /^[A-Za-z0-9_-]+$/.test(segment); })) pm.expect.fail("JWT segments must be base64url (RFC 7515)");',
+      "    else {",
+      '      var jwtDecode = function (segment) { var padded = segment.replace(/-/g, "+").replace(/_/g, "/"); while (padded.length % 4 !== 0) padded += "="; return rfcBase64Decode(padded); };',
+      "      var jwtHeader = null; var jwtPayload = null;",
+      '      try { jwtHeader = JSON.parse(jwtDecode(jwtSegments[0])); } catch (error) { pm.expect.fail("JWT header segment does not decode to JSON (RFC 7515)"); }',
+      '      try { jwtPayload = JSON.parse(jwtDecode(jwtSegments[1])); } catch (error) { pm.expect.fail("JWT payload segment does not decode to JSON (RFC 7519)"); }',
+      '      if (jwtHeader && typeof jwtHeader.alg !== "string") pm.expect.fail("JWT header must carry a string alg member (RFC 7515)");',
+      "      if (jwtPayload) {",
+      '        ["exp", "nbf", "iat"].forEach(function (claim) { if (jwtPayload[claim] !== undefined && typeof jwtPayload[claim] !== "number") pm.expect.fail("JWT " + claim + " claim must be numeric (RFC 7519)"); });',
+      '        if (typeof jwtPayload.exp === "number" && jwtPayload.exp * 1000 < Date.now()) rfcAdvise("RFC 7519: the outgoing JWT exp claim is already in the past");',
+      "      }",
+      "    }",
+      "  }",
+      '  if (hasQueryParam("access_token")) rfcAdvise("RFC 6750: bearer tokens SHOULD NOT travel in the query string");',
+      "  (contract.security || []).forEach(function (alternative) {",
+      "    alternative.forEach(function (check) {",
+      "      if (!check.checkable || !check.name) return;",
+      '      if (check.in === "query") { if (hasQueryParam(check.name)) rfcAdvise("Security scheme " + check.scheme + " sends credentials in the query string"); return; }',
+      '      if (check.in !== "header" || String(check.name).toLowerCase() === "authorization") return;',
+      "      var apiKeyValue = requestHeader(check.name);",
+      '      if (!apiKeyValue || apiKeyValue.indexOf("{{") !== -1) return;',
+      '      if (apiKeyValue !== apiKeyValue.trim()) pm.expect.fail("API key header " + check.name + " carries leading or trailing whitespace");',
+      '      if (!rfcIsFieldContent(apiKeyValue)) pm.expect.fail("API key header " + check.name + " contains characters forbidden by RFC 9110 field-content");',
+      "    });",
+      "  });",
+      "});",
+      "pm.test('Request preconditions, preferences, and patch bodies follow their RFCs', function () {",
+      '  ["If-Match", "If-None-Match"].forEach(function (name) {',
+      "    var value = requestHeader(name);",
+      '    if (!value || value.indexOf("{{") !== -1 || value.trim() === "*") return;',
+      '    rfcSplitList(value).forEach(function (entry) { if (entry.trim() && !rfcIsEntityTag(entry.trim())) pm.expect.fail(name + " must be * or a list of entity-tags (RFC 9110): " + entry.trim()); });',
+      "  });",
+      '  var ifModifiedSince = visibleRequestHeader("If-Modified-Since");',
+      "  if (ifModifiedSince) {",
+      '    if (!rfcIsHttpDate(ifModifiedSince)) pm.expect.fail("If-Modified-Since must be an IMF-fixdate (RFC 9110): " + ifModifiedSince);',
+      '    if (contract.method !== "GET" && contract.method !== "HEAD") pm.expect.fail("RFC 9110 requires recipients to ignore If-Modified-Since on non-GET/HEAD requests");',
+      "  }",
+      '  var ifUnmodifiedSince = visibleRequestHeader("If-Unmodified-Since");',
+      '  if (ifUnmodifiedSince && !rfcIsHttpDate(ifUnmodifiedSince)) pm.expect.fail("If-Unmodified-Since must be an IMF-fixdate (RFC 9110): " + ifUnmodifiedSince);',
+      '  var prefer = requestHeader("Prefer");',
+      '  if (prefer && prefer.indexOf("{{") === -1) {',
+      '    rfcSplitList(prefer).forEach(function (entry) { var token = entry.split("=")[0].split(";")[0].trim(); if (token && !rfcIsToken(token)) pm.expect.fail("Prefer preference name must be a token (RFC 7240): " + entry.trim()); });',
+      "  }",
+      '  var requestContentType = mediaBase(requestHeader("Content-Type"));',
+      "  var body = pm.request.body;",
+      '  var raw = body && body.mode === "raw" && typeof body.raw === "string" ? body.raw : "";',
+      '  if (!raw.trim() || raw.indexOf("{{") !== -1 || /"<[^"<>]*>"/.test(raw)) return;',
+      '  if (requestContentType === "application/json-patch+json") {',
+      '    var patch; try { patch = JSON.parse(raw); } catch (error) { if (/<[A-Za-z][A-Za-z0-9_ -]*>/.test(raw)) return; pm.expect.fail("application/json-patch+json request body is not valid JSON (RFC 6902): " + error); return; }',
+      '    if (!Array.isArray(patch)) { pm.expect.fail("A JSON Patch document must be an array of operations (RFC 6902)"); return; }',
+      "    patch.forEach(function (operation, operationIndex) {",
+      '      if (!operation || typeof operation !== "object" || Array.isArray(operation)) { pm.expect.fail("JSON Patch operation " + operationIndex + " must be an object (RFC 6902)"); return; }',
+      '      if (["add", "remove", "replace", "move", "copy", "test"].indexOf(operation.op) === -1) pm.expect.fail("JSON Patch operation " + operationIndex + " has an invalid op (RFC 6902): " + operation.op);',
+      "      var pointerPattern = /^(\\/([^\\/~]|~[01])*)*$/;",
+      '      if (typeof operation.path !== "string" || !pointerPattern.test(operation.path)) pm.expect.fail("JSON Patch operation " + operationIndex + " path must be an RFC 6901 JSON Pointer");',
+      '      if (["add", "replace", "test"].indexOf(operation.op) !== -1 && operation.value === undefined) pm.expect.fail("JSON Patch " + operation.op + " operation " + operationIndex + " requires a value member (RFC 6902)");',
+      '      if (["move", "copy"].indexOf(operation.op) !== -1 && (typeof operation.from !== "string" || !pointerPattern.test(operation.from))) pm.expect.fail("JSON Patch " + operation.op + " operation " + operationIndex + " requires an RFC 6901 from pointer (RFC 6902)");',
+      "    });",
+      "  }",
+      '  if (requestContentType === "application/merge-patch+json") {',
+      '    try { JSON.parse(raw); } catch (error) { if (/<[A-Za-z][A-Za-z0-9_ -]*>/.test(raw)) return; pm.expect.fail("application/merge-patch+json request body must be valid JSON (RFC 7386): " + error); }',
+      "  }",
+      "});",
+      "pm.test('Request multipart bodies and Idempotency-Key follow their specifications', function () {",
+      '  var idempotencyKey = requestHeader("Idempotency-Key");',
+      '  if (idempotencyKey && idempotencyKey.indexOf("{{") === -1) {',
+      '    var idemParsed = rfcSfParse(idempotencyKey, "item");',
+      '    if (!idemParsed || idemParsed.item.v.t !== "str") pm.expect.fail("Idempotency-Key must be a Structured Field String (draft-ietf-httpapi-idempotency-key-header): " + idempotencyKey);',
+      '    else if (!idemParsed.item.v.v) pm.expect.fail("Idempotency-Key must not be empty (draft-ietf-httpapi-idempotency-key-header)");',
+      "  }",
+      '  var reqContentType = requestHeader("Content-Type");',
+      '  if (mediaBase(reqContentType) !== "multipart/form-data") return;',
+      "  var declaredFields = (contract.multipartFields && contract.multipartFields.declared) || [];",
+      "  var multipartBody = pm.request.body;",
+      '  if (multipartBody && multipartBody.mode === "raw" && typeof multipartBody.raw === "string" && multipartBody.raw.trim()) {',
+      '    if (reqContentType.indexOf("{{") !== -1) return;',
+      '    var reqBoundary = reqContentType.match(/;\\s*boundary=(?:"([^"]*)"|([^;]*))/i);',
+      '    var reqBoundaryValue = reqBoundary ? (reqBoundary[1] !== undefined ? reqBoundary[1] : reqBoundary[2].trim()) : "";',
+      '    if (!reqBoundaryValue) { pm.expect.fail("multipart/form-data requests must carry a boundary parameter (RFC 7578): " + reqContentType); return; }',
+      `    if (reqBoundaryValue.length > 70 || !/^[0-9A-Za-z'()+_,\\-.\\/:=? ]*[0-9A-Za-z'()+_,\\-.\\/:=?]$/.test(reqBoundaryValue)) { pm.expect.fail("multipart boundary is not a valid RFC 2046 boundary: " + reqBoundaryValue); return; }`,
+      '    if (multipartBody.raw.indexOf("{{") !== -1) return;',
+      '    var multipartParts = multipartBody.raw.split("--" + reqBoundaryValue);',
+      "    for (var partIndex = 1; partIndex < multipartParts.length; partIndex += 1) {",
+      "      var part = multipartParts[partIndex];",
+      '      if (part.slice(0, 2) === "--") break;',
+      '      var headerSection = part.split(/\\r?\\n\\r?\\n/)[0] || "";',
+      '      var disposition = "";',
+      "      headerSection.split(/\\r?\\n/).forEach(function (headerLine) { if (/^content-disposition\\s*:/i.test(headerLine.trim())) disposition = headerLine.trim(); });",
+      '      if (!disposition) { pm.expect.fail("Each multipart/form-data part must carry a Content-Disposition header (RFC 7578)"); continue; }',
+      '      if (!/^content-disposition\\s*:\\s*form-data\\b/i.test(disposition)) { pm.expect.fail("multipart/form-data parts must use Content-Disposition: form-data (RFC 7578): " + disposition); continue; }',
+      '      var nameMatch = disposition.match(/;\\s*name=(?:"([^"]*)"|([^";\\s]+))/i);',
+      '      if (!nameMatch) { pm.expect.fail("multipart/form-data Content-Disposition must carry a name parameter (RFC 7578): " + disposition); continue; }',
+      "      var partName = nameMatch[1] !== undefined ? nameMatch[1] : nameMatch[2];",
+      '      if (declaredFields.length > 0 && declaredFields.indexOf(partName) === -1) rfcAdvise("RFC 7578: multipart part " + partName + " is not a property the OpenAPI multipart schema declares");',
+      "    }",
+      '  } else if (multipartBody && multipartBody.mode === "formdata" && multipartBody.formdata && typeof multipartBody.formdata.each === "function") {',
+      "    multipartBody.formdata.each(function (entry) {",
+      "      if (!entry || entry.disabled === true) return;",
+      '      var partName = String(entry.key || "");',
+      '      if (partName && declaredFields.length > 0 && declaredFields.indexOf(partName) === -1) rfcAdvise("RFC 7578: multipart part " + partName + " is not a property the OpenAPI multipart schema declares");',
+      "    });",
+      "  }",
+      "});",
+      "pm.test('Deprecated operation signals deprecation in the response', function () {",
+      "  if (!contract.deprecated) return;",
+      '  if (!rfcRespHeader("Deprecation") && !rfcRespHeader("Sunset")) rfcAdvise("RFC 9745: the OpenAPI document deprecates this operation but the response carries neither Deprecation nor Sunset");',
+      "});",
+      "pm.test('OpenAPI link expressions resolve against the response', function () {",
+      "  if (!selected || !selected.value.links || selected.value.links.length === 0) return;",
+      "  var linkBody = null; var linkBodyParsed = false; var requestBody = null; var requestBodyParsed = false;",
+      '  function linkPointer(root, pointer) { var target = root; var tokens = String(pointer).split("/").slice(1).map(function (token) { return token.replace(/~1/g, "/").replace(/~0/g, "~"); }); for (var t = 0; t < tokens.length; t += 1) { if (target !== null && typeof target === "object") target = Array.isArray(target) ? target[Number(tokens[t])] : target[tokens[t]]; else return undefined; } return target; }',
+      '  function assertLinkTarget(expression, value, sourceLabel, coerce) { if (value === undefined) { pm.expect.fail("OpenAPI link " + expression.link + " expression " + sourceLabel + " does not resolve"); return; } if (expression.targetKey && linkTargetValidators[expression.targetKey] && !linkTargetValidators[expression.targetKey].skip) { var schema = (contract.linkTargetSchemas || {})[expression.targetKey] || {}; var candidate = coerce ? coerceBySchema(value, schema) : value; if (!linkTargetValidators[expression.targetKey](candidate)) pm.expect.fail("OpenAPI link " + expression.link + " supplies " + sourceLabel + " to target input " + expression.param + ", but the value does not satisfy the target operation schema (OAS Link Object): " + JSON.stringify(linkTargetValidators[expression.targetKey].errors || [])); } }',
+      "  selected.value.links.forEach(function (expression) {",
+      '    if (expression.kind === "header") {',
+      "      var linkHeaderMatches = 0; var linkHeaderValue = null;",
+      '      if (typeof pm.response.headers.each === "function") pm.response.headers.each(function (headerField) { if (headerField && headerField.key && String(headerField.key).toLowerCase() === String(expression.header).toLowerCase()) { linkHeaderMatches += 1; linkHeaderValue = String(headerField.value); } });',
+      "      else if (pm.response.headers.get(expression.header)) { linkHeaderMatches = 1; linkHeaderValue = pm.response.headers.get(expression.header); }",
+      '      if (linkHeaderMatches === 0) pm.expect.fail("OpenAPI link " + expression.link + " references response header " + expression.header + " which is absent");',
+      '      else if (linkHeaderMatches > 1) pm.expect.fail("OpenAPI link " + expression.link + " expression $response.header." + expression.header + " is ambiguous because the response carries " + linkHeaderMatches + " " + expression.header + " header fields (OAS Runtime Expressions)");',
+      '      if (linkHeaderMatches === 1) assertLinkTarget(expression, linkHeaderValue, "$response.header." + expression.header, true);',
+      "      return;",
+      "    }",
+      '    if (expression.kind === "body") { if (!linkBodyParsed) { linkBodyParsed = true; try { linkBody = JSON.parse(responseText()); } catch (error) { linkBody = null; } } if (linkBody === null) { pm.expect.fail("OpenAPI link " + expression.link + " references the response body but the body is not JSON"); return; } assertLinkTarget(expression, linkPointer(linkBody, expression.pointer), "$response.body#" + expression.pointer, false); return; }',
+      '    if (expression.kind === "requestBody") { if (!requestBodyParsed) { requestBodyParsed = true; try { requestBody = pm.request.body && typeof pm.request.body.raw === "string" ? JSON.parse(pm.request.body.raw) : null; } catch (error) { requestBody = null; } } if (requestBody === null) { pm.expect.fail("OpenAPI link " + expression.link + " references the request body but the body is not JSON"); return; } assertLinkTarget(expression, linkPointer(requestBody, expression.pointer), "$request.body#" + expression.pointer, false); return; }',
+      '    if (expression.kind === "requestHeader") { var requestHeaderMatches = 0; var requestHeaderValue = null; pm.request.headers.each(function (headerField) { if (headerField && headerField.disabled !== true && String(headerField.key).toLowerCase() === String(expression.header).toLowerCase()) { requestHeaderMatches += 1; requestHeaderValue = String(headerField.value); } }); if (requestHeaderMatches === 0) pm.expect.fail("OpenAPI link " + expression.link + " references request header " + expression.header + " which is absent"); else if (requestHeaderMatches > 1) pm.expect.fail("OpenAPI link " + expression.link + " expression $request.header." + expression.header + " is ambiguous because the request carries " + requestHeaderMatches + " " + expression.header + " header fields (OAS Runtime Expressions)"); else assertLinkTarget(expression, requestHeaderValue, "$request.header." + expression.header, true); return; }',
+      '    if (expression.kind === "requestQuery") { var queryMatches = 0; var queryValue = null; pm.request.url.query.each(function (queryParam) { if (queryParam && queryParam.disabled !== true && String(queryParam.key) === String(expression.query)) { queryMatches += 1; queryValue = queryParam.value === null || queryParam.value === undefined ? "" : String(queryParam.value); } }); if (queryMatches === 0) pm.expect.fail("OpenAPI link " + expression.link + " references request query parameter " + expression.query + " which is absent"); else if (queryMatches > 1) pm.expect.fail("OpenAPI link " + expression.link + " expression $request.query." + expression.query + " is ambiguous because the request carries " + queryMatches + " " + expression.query + " query values (OAS Runtime Expressions)"); else assertLinkTarget(expression, decodeComponent(queryValue), "$request.query." + expression.query, true); return; }',
+      '    if (expression.kind === "requestPath") assertLinkTarget(expression, requestPathParamValue(expression.path), "$request.path." + expression.path, true);',
+      "  });",
+      "});",
+      "pm.test('Response body does not leak writeOnly properties', function () {",
+      "  if (!selected || !selected.value || !selected.value.writeOnlyProperties || selected.value.writeOnlyProperties.length === 0) return;",
+      "  var writeOnlyBody = null;",
+      "  try { writeOnlyBody = JSON.parse(responseText()); } catch (error) { return; }",
+      '  if (!writeOnlyBody || typeof writeOnlyBody !== "object" || Array.isArray(writeOnlyBody)) return;',
+      "  selected.value.writeOnlyProperties.forEach(function (property) {",
+      '    if (Object.prototype.hasOwnProperty.call(writeOnlyBody, property)) pm.expect.fail("OpenAPI marks response property " + property + " as writeOnly, but the response body includes it (OAS Schema Object writeOnly)");',
+      "  });",
+      "});",
+      "pm.test('OpenAPI callback targets resolve to concrete URI-references', function () {",
+      "  if (!contract.callbacks || contract.callbacks.length === 0) return;",
+      "  var declared = contract.callbackRequestSources || { path: [], query: [], header: [] };",
+      "  var callbackRequestBodyParsed = false;",
+      "  var callbackRequestBodyInvalid = false;",
+      "  var callbackRequestBody = null;",
+      "  var callbackResponseBodyParsed = false;",
+      "  var callbackResponseBody = null;",
+      '  function resolveJsonPointer(target, pointer) { var value = target; var tokens = String(pointer || "").split("/").slice(1).map(function (token) { return token.replace(/~1/g, "/").replace(/~0/g, "~"); }); for (var i = 0; i < tokens.length; i += 1) { if (value !== null && typeof value === "object") value = Array.isArray(value) ? value[Number(tokens[i])] : value[tokens[i]]; else return undefined; } return value; }',
+      '  function requestBodyJson() { if (!callbackRequestBodyParsed) { callbackRequestBodyParsed = true; var body = pm.request.body; var raw = body && body.mode === "raw" && typeof body.raw === "string" ? body.raw : ""; if (!raw.trim()) { callbackRequestBody = null; callbackRequestBodyInvalid = false; } else { try { callbackRequestBody = JSON.parse(raw); } catch (error) { callbackRequestBody = null; callbackRequestBodyInvalid = true; } } } return callbackRequestBody; }',
+      "  function responseBodyJson() { if (!callbackResponseBodyParsed) { callbackResponseBodyParsed = true; try { callbackResponseBody = JSON.parse(responseText()); } catch (error) { callbackResponseBody = null; } } return callbackResponseBody; }",
+      '  function scalarCallbackValue(value, label) { if (value === undefined || value === null) pm.expect.fail("OpenAPI callback " + label + " did not resolve to a concrete value"); if (typeof value === "object") return JSON.stringify(value); var text = String(value); if (!text || isPlaceholderValue(text) || text.charAt(0) === ":" || text.charAt(0) === "{") pm.expect.fail("OpenAPI callback " + label + " did not resolve to a concrete value"); return text; }',
+      "  function resolveCallbackExpression(expression, label) {",
+      '    if (expression === "$method") return { supported: true, value: contract.method };',
+      '    if (expression === "$statusCode") return { supported: true, value: String(pm.response.code) };',
+      '    if (expression === "$url") { var requestUrl = ""; try { requestUrl = typeof pm.request.url.toString === "function" ? String(pm.request.url.toString() || "") : ""; } catch (ignored) {} if (!requestUrl && typeof pm.request.url.raw === "string") requestUrl = String(pm.request.url.raw); if (!requestUrl) { var path = pm.request.url.path; requestUrl = Array.isArray(path) ? "/" + path.join("/") : String(path || ""); } return { supported: true, value: scalarCallbackValue(requestUrl, label) }; }',
+      "    var requestPath = expression.match(/^\\$request\\.path\\.(.+)$/);",
+      '    if (requestPath) { if (declared.path.indexOf(requestPath[1]) === -1) pm.expect.fail("OpenAPI callback " + label + " references undeclared request path parameter " + requestPath[1]); return { supported: true, value: scalarCallbackValue(requestPathParamValue(requestPath[1]), label) }; }',
+      "    var requestQuery = expression.match(/^\\$request\\.query\\.(.+)$/);",
+      '    if (requestQuery) { var queryName = requestQuery[1].toLowerCase(); if (declared.query.indexOf(queryName) === -1) pm.expect.fail("OpenAPI callback " + label + " references undeclared request query parameter " + requestQuery[1]); return { supported: true, value: scalarCallbackValue(requestQueryValue(queryName), label) }; }',
+      "    var requestHeaderMatch = expression.match(/^\\$request\\.header\\.(.+)$/);",
+      '    if (requestHeaderMatch) { var headerName = requestHeaderMatch[1]; if (declared.header.indexOf(headerName.toLowerCase()) === -1) pm.expect.fail("OpenAPI callback " + label + " references undeclared request header parameter " + headerName); return { supported: true, value: scalarCallbackValue(visibleRequestHeader(headerName), label) }; }',
+      "    var requestBodyMatch = expression.match(/^\\$request\\.body#(\\/.*)$/);",
+      '    if (requestBodyMatch) { var requestBody = requestBodyJson(); if (callbackRequestBodyInvalid || requestBody === null) pm.expect.fail("OpenAPI callback " + label + " references the request body but the request body is not JSON"); return { supported: true, value: scalarCallbackValue(resolveJsonPointer(requestBody, requestBodyMatch[1]), label) }; }',
+      "    var responseHeaderMatch = expression.match(/^\\$response\\.header\\.([!#$%&'*+.^_`|~0-9A-Za-z-]+)$/);",
+      "    if (responseHeaderMatch) return { supported: true, value: scalarCallbackValue(pm.response.headers.get(responseHeaderMatch[1]), label) };",
+      "    var responseBodyMatch = expression.match(/^\\$response\\.body#(\\/.*)$/);",
+      '    if (responseBodyMatch) { var responseBody = responseBodyJson(); if (responseBody === null) pm.expect.fail("OpenAPI callback " + label + " references the response body but the body is not JSON"); return { supported: true, value: scalarCallbackValue(resolveJsonPointer(responseBody, responseBodyMatch[1]), label) }; }',
+      "    return { supported: false };",
+      "  }",
+      '  function expandCallbackTarget(rawExpression, callbackName) { var source = String(rawExpression || ""); if (!source) return { supported: false }; if (source.indexOf("{{") !== -1) return { supported: false }; if (source.charAt(0) === "$") return resolveCallbackExpression(source, callbackName + " (" + source + ")"); var pieces = []; var lastIndex = 0; var supported = false; var match; var placeholders = /\\{([^{}]+)\\}/g; while ((match = placeholders.exec(source))) { pieces.push(source.slice(lastIndex, match.index)); var resolved = resolveCallbackExpression(match[1], callbackName + " (" + source + ")"); if (!resolved.supported) return { supported: false }; pieces.push(resolved.value); supported = true; lastIndex = match.index + match[0].length; } if (!supported && lastIndex === 0) return { supported: true, value: source }; pieces.push(source.slice(lastIndex)); return supported ? { supported: true, value: pieces.join("") } : { supported: false }; }',
+      '  function isUriReference(value) { var text = String(value || ""); if (!text.trim() || /\\s/.test(text) || text.indexOf("{{") !== -1) return false; try { new URL(text, "https://callback.invalid"); return true; } catch (error) { return false; } }',
+      "  contract.callbacks.forEach(function (callbackExpression) {",
+      "    var resolved = expandCallbackTarget(callbackExpression.expression, callbackExpression.callback);",
+      "    if (!resolved.supported) return;",
+      '    if (!isUriReference(resolved.value)) pm.expect.fail("OpenAPI callback " + callbackExpression.callback + " expression " + callbackExpression.expression + " did not resolve to a valid URI-reference: " + resolved.value);',
+      "  });",
+      "});",
+      "pm.test('Request URL conforms to an OpenAPI servers entry', function () {",
+      "  if (!contract.servers || contract.servers.length === 0) return;",
+      '  var requestUrl = "";',
+      '  try { requestUrl = String(pm.request.url.toString()); } catch (ignored) { requestUrl = ""; }',
+      '  if (!requestUrl || requestUrl.indexOf("{{") !== -1) return;',
+      '  var pathOnly = requestUrl.replace(/^[a-z][a-z0-9+.-]*:\\/\\/[^\\/]+/i, "");',
+      '  var matched = contract.servers.some(function (pattern) { try { var serverPattern = new RegExp(pattern, "i"); return serverPattern.test(requestUrl) || serverPattern.test(pathOnly); } catch (ignored) { return true; } });',
+      '  if (!matched) rfcAdvise("Request URL does not match any OpenAPI servers entry: " + requestUrl);',
+      "});"
+    ] },
+    { guard: "security", lines: [
       "pm.test('Request carries credentials required by OpenAPI security', function () {",
       "  function satisfied(check) {",
       "    if (!check.checkable) return true;",
@@ -280367,8 +280695,8 @@ function createContractScript(operation2, warnings = []) {
       "  var ok = alternatives.some(function (alternative) { return alternative.every(function (check) { return satisfied(check); }); });",
       '  if (!ok) pm.expect.fail("Request did not carry credentials for any OpenAPI security requirement of " + contract.method + " " + contract.path + ": " + alternatives.map(function (alternative) { return alternative.map(function (check) { return check.scheme + " (" + check.kind + ")"; }).join(" + "); }).join(" | "));',
       "});"
-    ] : [],
-    ...operation2.parameterChecks && operation2.parameterChecks.length > 0 ? [
+    ] },
+    { guard: "parameters", lines: [
       "pm.test('Request parameters match OpenAPI schemas', function () {",
       '  function queryValue(name) { var value; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) value = param.value === null || param.value === undefined ? "" : String(param.value); }); return value; }',
       '  function queryValues(name) { var values = []; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) values.push(param.value === null || param.value === undefined ? "" : String(param.value)); }); return values; }',
@@ -280439,8 +280767,8 @@ function createContractScript(operation2, warnings = []) {
       '    if (!validate(value)) pm.expect.fail("Parameter " + param.in + ":" + param.name + " failed OpenAPI schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
       "  });",
       "});"
-    ] : [],
-    ...operation2.parameterChecks && operation2.parameterChecks.length > 0 ? [
+    ] },
+    { guard: "parameters", lines: [
       "pm.test('Request parameters use the OpenAPI-declared wire serialization', function () {",
       '  function isPh(v) { var t = String(v).trim(); return /^<[^<>]*>$/.test(t) || t.indexOf("{{") !== -1; }',
       '  var allMembers = []; pm.request.url.query.each(function (p) { if (!p || p.disabled === true) return; allMembers.push({ key: String(p.key), value: p.value === null || p.value === undefined ? "" : String(p.value) }); });',
@@ -280485,8 +280813,8 @@ function createContractScript(operation2, warnings = []) {
       "    }",
       "  });",
       "});"
-    ] : [],
-    ...operation2.requestBody?.jsonSchemas && Object.keys(operation2.requestBody.jsonSchemas).length > 0 ? [
+    ] },
+    { guard: "requestBodySchemas", lines: [
       "pm.test('Request body matches OpenAPI request schema', function () {",
       "  var body = pm.request.body;",
       '  var raw = body && body.mode === "raw" && typeof body.raw === "string" ? body.raw : "";',
@@ -280501,23 +280829,25 @@ function createContractScript(operation2, warnings = []) {
       '  try { parsed = JSON.parse(raw); } catch (error) { if (/<[A-Za-z][A-Za-z0-9_ -]*>/.test(raw)) return; pm.expect.fail("Request body for " + contract.method + " " + contract.path + " is not valid JSON: " + error); return; }',
       '  if (!validate(parsed)) pm.expect.fail("Request body failed OpenAPI request schema validation for " + contract.method + " " + contract.path + ": " + JSON.stringify(validate.errors || []));',
       "});"
-    ] : [],
-    "pm.test('Content-Length is consistent with OpenAPI body expectations', function () {",
-    '  var raw = pm.response.headers.get("Content-Length");',
-    "  if (raw === null || raw === undefined) return;",
-    // Combined duplicate Content-Length values ("5, 5") fail the integer
-    // syntax check on purpose: RFC 9110 tolerates identical repeats, but a
-    // contract test surfacing them is strict by design.
-    '  if (!/^[0-9]+$/.test(String(raw).trim())) pm.expect.fail("Content-Length header is not a non-negative integer: " + raw);',
-    '  if (pm.response.headers.get("Content-Encoding") || pm.response.headers.get("Transfer-Encoding")) return;',
-    '  if (contract.method === "HEAD" || pm.response.code === 304) return;',
-    "  var actualBytes = unescape(encodeURIComponent(responseText())).length;",
-    '  if (Number(String(raw).trim()) !== actualBytes) pm.expect.fail("Content-Length must equal the response body byte length when Content-Encoding and Transfer-Encoding are absent (RFC 9110 8.6): " + raw + " !== " + actualBytes);',
-    '  if (bodyExpectation === "forbidden" && Number(String(raw).trim()) !== 0) pm.expect.fail("HTTP semantics forbid a carried response body for " + contract.method + " " + contract.path + " status " + pm.response.code + " but Content-Length was " + raw);',
-    "});",
-    "pm.test('RFC SHOULD-level advisories are documented', function () {",
-    '  pm.expect(rfcAdvisories, "SHOULD-level findings (advisory, non-failing): " + rfcAdvisories.join("; ")).to.be.an("array");',
-    "});"
+    ] },
+    { lines: [
+      "pm.test('Content-Length is consistent with OpenAPI body expectations', function () {",
+      '  var raw = pm.response.headers.get("Content-Length");',
+      "  if (raw === null || raw === undefined) return;",
+      // Combined duplicate Content-Length values ("5, 5") fail the integer
+      // syntax check on purpose: RFC 9110 tolerates identical repeats, but a
+      // contract test surfacing them is strict by design.
+      '  if (!/^[0-9]+$/.test(String(raw).trim())) pm.expect.fail("Content-Length header is not a non-negative integer: " + raw);',
+      '  if (pm.response.headers.get("Content-Encoding") || pm.response.headers.get("Transfer-Encoding")) return;',
+      '  if (contract.method === "HEAD" || pm.response.code === 304) return;',
+      "  var actualBytes = unescape(encodeURIComponent(responseText())).length;",
+      '  if (Number(String(raw).trim()) !== actualBytes) pm.expect.fail("Content-Length must equal the response body byte length when Content-Encoding and Transfer-Encoding are absent (RFC 9110 8.6): " + raw + " !== " + actualBytes);',
+      '  if (bodyExpectation === "forbidden" && Number(String(raw).trim()) !== 0) pm.expect.fail("HTTP semantics forbid a carried response body for " + contract.method + " " + contract.path + " status " + pm.response.code + " but Content-Length was " + raw);',
+      "});",
+      "pm.test('RFC SHOULD-level advisories are documented', function () {",
+      '  pm.expect(rfcAdvisories, "SHOULD-level findings (advisory, non-failing): " + rfcAdvisories.join("; ")).to.be.an("array");',
+      "});"
+    ] }
   ];
 }
 function createMappingFailureScript(message) {
@@ -280743,6 +281073,16 @@ function collectStaticBodyWarnings(operation2, request, contentType2) {
   }
   return warnings;
 }
+function assertParsableContractScript(script) {
+  try {
+    new import_node_vm.Script(script.join("\n"));
+  } catch (error) {
+    throw new Error(
+      `CONTRACT_ROOT_SCRIPT_UNPARSABLE: consolidated contract root script failed to parse (${error instanceof Error ? error.message : String(error)})`,
+      { cause: error }
+    );
+  }
+}
 function validateScript(script) {
   const source = script.join("\n");
   if (source.includes("pm.response.to.have.jsonSchema") || /\beval\s*\(/.test(source) || /\bnew\s+Function\s*\(/.test(source)) {
@@ -280790,7 +281130,7 @@ function instrumentContractCollection(collection, index, limits = {}) {
     if (item.request) {
       const request = asRecord9(item.request) ?? {};
       const result = matchOperation(index, request);
-      let script;
+      let script = null;
       if (result.operation) {
         const previous = covered.get(result.operation.id);
         if (previous) throw new Error(`CONTRACT_DUPLICATE_OPERATION_REQUEST: ${result.operation.id} matched more than one generated request (${previous}, ${String(item.name || "<unnamed>")})`);
@@ -280799,14 +281139,19 @@ function instrumentContractCollection(collection, index, limits = {}) {
           warnings.push(`CONTRACT_UNDOCUMENTED_QUERY_PARAM: ${result.operation.id} generated request sends query parameter ${name} that the OpenAPI operation does not declare`);
         }
         covered.set(result.operation.id, String(item.name || "<unnamed>"));
-        script = createContractScript(result.operation, warnings);
       } else if (result.ambiguous && result.ambiguous.length > 0) {
         script = createMappingFailureScript(`Ambiguous OpenAPI operation match for request ${result.method} ${result.path}: ${result.ambiguous.map((entry) => entry.id).join(", ")}`);
       } else {
         script = createMappingFailureScript(`No OpenAPI operation matched request ${result.method} ${result.path}`);
       }
       const events2 = asArray5(item.event).filter((entry) => asRecord9(entry)?.listen !== "test");
-      item.event = [...events2, { listen: "test", script: { type: "text/javascript", exec: script } }];
+      if (script) {
+        item.event = [...events2, { listen: "test", script: { type: "text/javascript", exec: script } }];
+      } else if (events2.length > 0) {
+        item.event = events2;
+      } else {
+        delete item.event;
+      }
     }
     for (const child4 of asArray5(item.item)) {
       const childRecord = asRecord9(child4);
@@ -280819,6 +281164,21 @@ function instrumentContractCollection(collection, index, limits = {}) {
   const missing = index.operations.filter((operation2) => !covered.has(operation2.id));
   if (missing.length > 0) {
     throw new Error(`CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation2) => `${operation2.id} (${operation2.pointer})`).join(", ")}`);
+  }
+  if (index.operations.length > 0) {
+    const consolidated = buildConsolidatedContractScript(index, warnings);
+    for (const shard of consolidated.shards) {
+      assertParsableContractScript(shard.exec);
+    }
+    if (consolidated.shards.length > 1) {
+      warnings.push(`CONTRACT_ROOT_SCRIPT_SHARDED: consolidated contract runtime split across ${consolidated.shards.length} collection-root test events`);
+    }
+    const rootEvents = consolidated.shards.map((shard) => ({
+      listen: "test",
+      script: { type: "text/javascript", exec: shard.exec }
+    }));
+    const existingRootEvents = asArray5(collection.event).filter((entry) => asRecord9(entry)?.listen !== "test");
+    collection.event = [...existingRootEvents, ...rootEvents];
   }
   const resolverProvider = limits.secretsResolverProvider ?? "none";
   if (isSecretsResolverEnabled(resolverProvider)) {
@@ -280871,7 +281231,7 @@ function planContractItemScripts(items, index) {
     const name = String(item.name ?? item.title ?? "<unnamed>");
     const request = v3ItemToContractRequest(item);
     const result = matchOperation(index, request);
-    let script;
+    let script = null;
     if (result.operation) {
       const previous = covered.get(result.operation.id);
       if (previous) {
@@ -280894,7 +281254,6 @@ function planContractItemScripts(items, index) {
         );
       }
       covered.set(result.operation.id, name);
-      script = createContractScript(result.operation, warnings);
     } else if (result.ambiguous && result.ambiguous.length > 0) {
       script = createMappingFailureScript(
         `Ambiguous OpenAPI operation match for request ${result.method} ${result.path}: ${result.ambiguous.map((entry) => entry.id).join(", ")}`
@@ -280902,9 +281261,11 @@ function planContractItemScripts(items, index) {
     } else {
       script = createMappingFailureScript(`No OpenAPI operation matched request ${result.method} ${result.path}`);
     }
-    const sizeWarning = validateScript(script);
-    if (sizeWarning) warnings.push(sizeWarning);
-    scripts.push({ itemId, exec: script });
+    if (script) {
+      const sizeWarning = validateScript(script);
+      if (sizeWarning) warnings.push(sizeWarning);
+      scripts.push({ itemId, exec: script });
+    }
   }
   const missing = index.operations.filter((operation2) => !covered.has(operation2.id));
   if (missing.length > 0) {
@@ -280912,7 +281273,20 @@ function planContractItemScripts(items, index) {
       `CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation2) => `${operation2.id} (${operation2.pointer})`).join(", ")}`
     );
   }
-  return { scripts, warnings };
+  const rootScripts = [];
+  if (index.operations.length > 0) {
+    const consolidated = buildConsolidatedContractScript(index, warnings);
+    for (const shard of consolidated.shards) {
+      assertParsableContractScript(shard.exec);
+      const sizeWarning = validateScript(shard.exec);
+      if (sizeWarning) warnings.push(sizeWarning);
+      rootScripts.push(shard.exec);
+    }
+    if (consolidated.shards.length > 1) {
+      warnings.push(`CONTRACT_ROOT_SCRIPT_SHARDED: consolidated contract runtime split across ${consolidated.shards.length} collection-root test events`);
+    }
+  }
+  return { rootScripts, scripts, warnings };
 }
 
 // src/lib/spec/local-openapi-collection-generation.ts
@@ -280923,6 +281297,7 @@ var import_openapi_to_postmanv2 = __toESM(require_dist4(), 1);
 var import_node_crypto3 = require("node:crypto");
 var import_json_schema_faker = __toESM(require_json_schema_faker(), 1);
 var fakerAccess = Promise.resolve();
+var CONVERTER_RANDOM_SEED = "postman-local-openapi-schema-faker-v1";
 function deterministicRandom(source) {
   let state = (0, import_node_crypto3.createHash)("sha256").update(source).digest().readUInt32LE(0);
   return () => {
@@ -280951,7 +281326,7 @@ function stableStringify(value) {
   const record = value;
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
 }
-async function withDeterministicSchemaFaker(source, work) {
+async function withDeterministicSchemaFaker(_source, work) {
   const previousAccess = fakerAccess;
   let release;
   fakerAccess = new Promise((resolve7) => {
@@ -280959,13 +281334,13 @@ async function withDeterministicSchemaFaker(source, work) {
   });
   await previousAccess;
   const previousRandom = import_json_schema_faker.default.option("random");
-  import_json_schema_faker.default.option({ random: deterministicRandom(source) });
+  import_json_schema_faker.default.option({ random: deterministicRandom(CONVERTER_RANDOM_SEED) });
   try {
     return await work((schema3, attempt = 0) => {
       const converted = schemaForPinnedFaker(schema3);
       const outerRandom = import_json_schema_faker.default.option("random");
       import_json_schema_faker.default.option({
-        random: deterministicRandom(`${source}
+        random: deterministicRandom(`${CONVERTER_RANDOM_SEED}
 ${attempt}
 ${stableStringify(converted)}`)
       });
@@ -302591,8 +302966,8 @@ function asReadonlyMap(map2) {
 }
 function createDefinitionFile(input) {
   const pathKey = assertValidBundleRelativePath(input.path);
-  const byteLength = input.bytes.byteLength;
-  if (byteLength > DEFINITION_BUNDLE_LIMITS.maxBytesPerResource) {
+  const byteLength2 = input.bytes.byteLength;
+  if (byteLength2 > DEFINITION_BUNDLE_LIMITS.maxBytesPerResource) {
     fail2(
       "CONTRACT_REF_SIZE_EXCEEDED",
       `Definition resource exceeded ${DEFINITION_BUNDLE_LIMITS.maxBytesPerResource} bytes`
@@ -302605,7 +302980,7 @@ function createDefinitionFile(input) {
     path: pathKey,
     role: input.role,
     content,
-    byteLength,
+    byteLength: byteLength2,
     sha256: digest,
     get bytes() {
       return Uint8Array.from(storedBytes);
@@ -304600,8 +304975,14 @@ function buildLocalOpenApiConversionOptions(options) {
 }
 function withoutStructuralIds(collection) {
   const clone2 = JSON.parse(JSON.stringify(collection));
-  if (isRecord3(clone2.info)) delete clone2.info._postman_id;
+  stripSyncDefaults(clone2);
+  if (isRecord3(clone2.info)) {
+    delete clone2.info._postman_id;
+    if (clone2.info.description === "") delete clone2.info.description;
+  }
+  normalizeSyncAuth(clone2.auth);
   if (Array.isArray(clone2.event) && clone2.event.length === 0) delete clone2.event;
+  else normalizeEventScriptExec(clone2.event);
   stripStructuralItemIds(clone2.item);
   return clone2;
 }
@@ -304610,13 +304991,83 @@ function stripStructuralItemIds(items) {
   for (const raw of items) {
     if (!isRecord3(raw)) continue;
     delete raw.id;
+    if (raw.description === "") delete raw.description;
     if (Array.isArray(raw.event) && raw.event.length === 0) delete raw.event;
-    if (isRecord3(raw.request)) delete raw.request.id;
+    else normalizeEventScriptExec(raw.event);
+    normalizeProtocolProfileBehavior(raw);
+    if (isRecord3(raw.request)) {
+      delete raw.request.id;
+      if (raw.request.auth === null) delete raw.request.auth;
+      else normalizeSyncAuth(raw.request.auth);
+      normalizeSyncRequest(raw.request);
+    }
     stripStructuralItemIds(raw.item);
     if (Array.isArray(raw.response)) {
       for (const response of raw.response) {
-        if (isRecord3(response)) delete response.id;
+        if (isRecord3(response)) {
+          delete response.id;
+          if (isRecord3(response.originalRequest)) {
+            delete response.originalRequest.id;
+            normalizeSyncAuth(response.originalRequest.auth);
+            normalizeSyncRequest(response.originalRequest);
+          }
+        }
       }
+      if (raw.response.length === 0) delete raw.response;
+    }
+  }
+  const folders = items.filter((item) => isRecord3(item) && Array.isArray(item.item));
+  const requests = items.filter((item) => !(isRecord3(item) && Array.isArray(item.item)));
+  items.splice(0, items.length, ...folders, ...requests);
+}
+function normalizeSyncRequest(request) {
+  if (Array.isArray(request.header) && request.header.length === 0) delete request.header;
+  const url = isRecord3(request.url) ? request.url : null;
+  if (!url) return;
+  for (const field of ["query", "variable"]) {
+    if (!Array.isArray(url[field])) continue;
+    for (const parameter of url[field]) {
+      if (!isRecord3(parameter)) continue;
+      if (parameter.description === "") delete parameter.description;
+      if (parameter.disabled === false) delete parameter.disabled;
+    }
+    if (url[field].length === 0) delete url[field];
+  }
+  if (typeof url.raw === "string") request.url = url.raw;
+}
+function stripSyncDefaults(value) {
+  if (Array.isArray(value)) {
+    for (const entry of value) stripSyncDefaults(entry);
+    return;
+  }
+  if (!isRecord3(value)) return;
+  if (value.description === "") delete value.description;
+  if (value.disabled === false) delete value.disabled;
+  for (const entry of Object.values(value)) stripSyncDefaults(entry);
+}
+function normalizeSyncAuth(auth) {
+  if (!isRecord3(auth) || auth.type !== "bearer" || !Array.isArray(auth.bearer)) return;
+  for (const credential of auth.bearer) {
+    if (isRecord3(credential) && credential.key === "token" && credential.type === "string") {
+      delete credential.type;
+    }
+  }
+}
+function normalizeProtocolProfileBehavior(item) {
+  const behavior = isRecord3(item.protocolProfileBehavior) ? item.protocolProfileBehavior : null;
+  if (!behavior) return;
+  if (typeof behavior.disableBodyPruning === "boolean") {
+    delete behavior.disableBodyPruning;
+  }
+  if (Object.keys(behavior).length === 0) delete item.protocolProfileBehavior;
+}
+function normalizeEventScriptExec(events2) {
+  if (!Array.isArray(events2)) return;
+  for (const event2 of events2) {
+    if (!isRecord3(event2) || !isRecord3(event2.script) || !Array.isArray(event2.script.exec)) continue;
+    if (event2.script.type === "text/javascript") delete event2.script.type;
+    if (event2.script.exec.every((line) => typeof line === "string")) {
+      event2.script.exec = [event2.script.exec.join("\n")];
     }
   }
 }
@@ -304665,6 +305116,8 @@ function applyCollectionIdentity(source, name, description) {
   const nextInfo = { ...info, name };
   if (description !== void 0) {
     nextInfo.description = description;
+  } else if (isRecord3(nextInfo.description) && typeof nextInfo.description.content === "string") {
+    nextInfo.description = nextInfo.description.content;
   }
   clone2.info = nextInfo;
   return clone2;
@@ -304780,11 +305233,11 @@ async function generateLocalOpenApiRolePayloads(bundledOpenApi, options, depende
     throw new LocalOpenApiConversionError("instrument-contract", "failed to instrument contract collection", error);
   }
   try {
-    baseline = rekeyStructuralCollectionIds(baseline);
-    smoke = rekeyStructuralCollectionIds(smoke);
-    contract = rekeyStructuralCollectionIds(contract);
+    baseline = rekeyStructuralCollectionIds(canonicalizeV2CollectionForSync(baseline));
+    smoke = rekeyStructuralCollectionIds(canonicalizeV2CollectionForSync(smoke));
+    contract = rekeyStructuralCollectionIds(canonicalizeV2CollectionForSync(contract));
   } catch (error) {
-    throw new LocalOpenApiConversionError("materialize-roles", "failed to rekey structural collection ids", error);
+    throw new LocalOpenApiConversionError("materialize-roles", "failed to canonicalize role collections for Sync", error);
   }
   const roles = {
     baseline: {
@@ -306510,6 +306963,8 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
     2e3,
     3e3
   ];
+  /** Successful export envelopes can briefly precede a complete collection model. */
+  static EXPORT_MODEL_SETTLE_DELAYS_MS = [100, 250, 500];
   gateway;
   sleep;
   random;
@@ -308096,12 +308551,13 @@ ${error.responseBody ?? ""}`
   async awaitExportedDigest(uid, digest) {
     const delays = _PostmanGatewayAssetsClient.AMBIGUOUS_WRITE_VERIFY_DELAYS_MS;
     let polls = 0;
+    let observed;
     for (let observation = 0; observation <= delays.length; observation += 1) {
       polls += 1;
       try {
-        const exported = await this.exportV2Collection(uid);
-        if (computePayloadDigest(exported) === digest) {
-          return { converged: true, polls };
+        observed = await this.exportV2Collection(uid);
+        if (computePayloadDigest(asRecord13(observed) ?? {}) === digest) {
+          return { converged: true, polls, observed };
         }
       } catch {
       }
@@ -308109,7 +308565,7 @@ ${error.responseBody ?? ""}`
         await this.sleep(delays[observation]);
       }
     }
-    return { converged: false, polls };
+    return { converged: false, polls, observed };
   }
   /**
    * Collection id for ITEMS routes. Prefer the full public uid; fall back to the
@@ -308350,10 +308806,11 @@ ${error.responseBody ?? ""}`
    *   2. `GET /v3/collections/:cid/items/:itemId` (`X-Entity-Type: http-request`)
    *      — the full v3 IR record (method/url/headers/body) the matcher needs.
    *   3. `planContractItemScripts` matches each request to its OpenAPI operation
-   *      and builds the `afterResponse` test exec (the same assertions the retired
-   *      v2 `item.event` path produced), enforcing coverage + duplicate checks.
-   *   4. `PATCH /v3/collections/:cid/items/:itemId` `/scripts` with the afterResponse
-   *      script, then prepend the idempotent `00 - Resolve Secrets` item.
+   *      and builds the consolidated collection-root `test` script(s) plus any
+   *      request-level mapping-failure scripts, enforcing coverage + duplicates.
+   *   4. `PATCH /v3/collections/:cid/items/:itemId` `/scripts` for mapping
+   *      failures, `PATCH /v3/collections/:cid` `/scripts` for the shared
+   *      validator, then prepend the idempotent `00 - Resolve Secrets` item.
    * Returns the non-fatal instrumentation warnings for the caller to surface.
    */
   async injectContractTests(collectionUid, index, resolverProvider = "none") {
@@ -308395,6 +308852,24 @@ ${error.responseBody ?? ""}`
       } catch (error) {
         if (isRejectedPatchError(error)) continue;
         throw error;
+      }
+    }
+    if (plan.rootScripts.length > 0) {
+      const rootScripts = plan.rootScripts.map((exec3) => ({
+        type: "afterResponse",
+        code: exec3.join("\n"),
+        language: "text/javascript"
+      }));
+      try {
+        await this.gateway.requestJson({
+          service: "collection",
+          method: "patch",
+          path: `/v3/collections/${this.collectionRootId(collectionUid)}`,
+          retry: "safe",
+          body: [{ op: "add", path: "/scripts", value: this.toRootScripts(rootScripts) }]
+        });
+      } catch (error) {
+        if (!isRejectedPatchError(error)) throw error;
       }
     }
     if (isSecretsResolverEnabled(resolverProvider) && !items.some((i) => isSecretsResolverItemName(i.name))) {
@@ -308515,9 +308990,7 @@ ${error.responseBody ?? ""}`
   }
   /** v2.1 collection JSON -> canonical v3 IR, via the official runtime.models transform. */
   convertV2CollectionToV3(v2Collection) {
-    const model = V2.Collection;
-    const parsed = model.parse(v2Collection ?? {});
-    const v3 = (0, import_transforms.transform)(model, import_transforms.FormatVersion.V3, parsed);
+    const v3 = convertV2CollectionToV3Model(v2Collection);
     for (const item of asItemArray(v3.items)) {
       this.normalizeGraphqlRequests(item);
     }
@@ -308548,12 +309021,12 @@ ${error.responseBody ?? ""}`
     return v3;
   }
   /** v3 IR item node -> the POST .../items/ create body, scoped to the fields live-proven above. */
-  buildItemCreateBody(item, parentId) {
+  buildItemCreateBody(item, parentId, parentKind = "collection") {
     const kind = String(item.$kind ?? "http-request");
     const body2 = {
       $kind: kind,
       name: String(item.name ?? "Untitled"),
-      position: { parent: { id: parentId, $kind: "collection" } }
+      position: { parent: { id: parentId, $kind: parentKind } }
     };
     if (typeof item.description === "string" && item.description) {
       body2.description = item.description;
@@ -308564,6 +309037,11 @@ ${error.responseBody ?? ""}`
     if (kind === "graphql-request") {
       if (typeof item.query === "string") body2.query = item.query;
       if (typeof item.variables === "string") body2.variables = item.variables;
+      return body2;
+    }
+    if (kind === "http-example") {
+      if (item.request && typeof item.request === "object") body2.request = item.request;
+      if (item.response && typeof item.response === "object") body2.response = item.response;
       return body2;
     }
     if (typeof item.method === "string") body2.method = item.method;
@@ -309166,7 +309644,9 @@ ${error.responseBody ?? ""}`
     if (!/^[a-f0-9]{64}$/.test(digest)) {
       throw new Error("COLLECTION_DELTA_DIGEST_REQUIRED: expectedPayloadDigest must be lowercase 64-hex");
     }
-    if (plan.decision === "unchanged") return { strategy: "unchanged" };
+    if (plan.decision === "unchanged") {
+      return { strategy: "unchanged", observedPayloadDigest: digest };
+    }
     if (plan.decision === "fallback") {
       this.recordDeltaFallback(plan.reason, plan.changedBytes);
       await this.deepUpdateV2Collection(uid, desiredCollection, digest);
@@ -309200,18 +309680,27 @@ ${error.responseBody ?? ""}`
           return { strategy: "whole-fallback", fallbackReason: "ambiguous-delta-mutation" };
         }
       }
-      const exported = await this.exportV2Collection(uid);
-      if (computePayloadDigest(exported) !== digest) {
+      const verification = await this.awaitExportedDigest(uid, digest);
+      this.writeMetrics.verifyPolls += verification.polls;
+      if (!verification.converged) {
+        const difference = describePayloadDigestDifference(
+          asRecord13(desiredCollection) ?? {},
+          asRecord13(verification.observed) ?? {}
+        );
         await this.rollbackCollectionDelta(uid, rollback);
-        throw new Error("LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch");
+        throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch (${difference})`);
       }
       this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
-      return { strategy: "delta" };
+      return { strategy: "delta", observedPayloadDigest: digest };
     } catch (error) {
-      if (error instanceof Error && error.message === "LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch") {
+      if (error instanceof Error && error.message.startsWith("LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch")) {
         throw error;
       }
-      this.recordDeltaFallback("delta-mutation-failed", 0);
+      if (error instanceof HttpError && error.status >= 400 && error.status < 500) {
+        throw error;
+      }
+      const failureReason = this.deltaMutationFailureReason(error);
+      this.recordDeltaFallback(failureReason, 0);
       try {
         await this.deepUpdateV2Collection(uid, desiredCollection, digest);
       } catch (fallbackError) {
@@ -309220,8 +309709,18 @@ ${error.responseBody ?? ""}`
       } finally {
         this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
       }
-      return { strategy: "whole-fallback", fallbackReason: "delta-mutation-failed" };
+      return { strategy: "whole-fallback", fallbackReason: failureReason };
     }
+  }
+  deltaMutationFailureReason(error) {
+    if (error instanceof HttpError) return `delta-mutation-failed:http-${error.status}`;
+    if (error instanceof Error) {
+      const internal = /^LOCAL_OPENAPI_DELTA_FAILED: ([a-z0-9-]+)/i.exec(error.message)?.[1];
+      if (internal) return `delta-mutation-failed:${internal.toLowerCase()}`;
+      const name = error.name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+      if (name) return `delta-mutation-failed:${name}`;
+    }
+    return "delta-mutation-failed:unknown";
   }
   recordDeltaFallback(reason, changedBytes) {
     this.writeMetrics.fallbackReasons.push(reason);
@@ -309250,15 +309749,58 @@ ${error.responseBody ?? ""}`
     }
     throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: exact item identity unavailable for ${operation2.key}`);
   }
+  resolveDeltaParentId(parentKey, itemIds, rootId) {
+    if (!parentKey) return rootId;
+    const direct = itemIds.get(parentKey);
+    if (direct) return direct;
+    if (parentKey.startsWith("id:")) {
+      return itemIds.get(`id:${normalizeCollectionModelIdentity(parentKey.slice(3))}`);
+    }
+    return void 0;
+  }
+  resolveDeltaSiblingId(siblingKey, itemIds) {
+    if (!siblingKey) return void 0;
+    const direct = itemIds.get(siblingKey);
+    if (direct) return direct;
+    if (siblingKey.startsWith("id:")) {
+      return itemIds.get(`id:${normalizeCollectionModelIdentity(siblingKey.slice(3))}`);
+    }
+    return void 0;
+  }
+  async moveDeltaItem(input) {
+    this.writeMetrics.deltaRoutes.push("POST /v3/items/move");
+    const response = await this.gateway.requestJson({
+      service: "collection",
+      method: "post",
+      path: "/v3/items/move",
+      retry: "none",
+      body: {
+        items: [{ id: input.itemId, $kind: input.entityType }],
+        toPosition: {
+          collectionId: input.collectionId,
+          parent: { id: input.parentId, $kind: "collection" },
+          ...input.previousSiblingId ? { previousSibling: { id: input.previousSiblingId, $kind: input.entityType } } : {},
+          ...input.nextSiblingId ? { nextSibling: { id: input.nextSiblingId, $kind: input.entityType } } : {}
+        }
+      }
+    });
+    const result = asRecord13(response?.data);
+    const moved = Array.isArray(result?.moved) ? result.moved.map(String) : [];
+    const failed = Array.isArray(result?.failed) ? result.failed.map(String) : [];
+    if (failed.length > 0 || !moved.includes(input.itemId)) {
+      throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move rejected for ${input.itemId}`);
+    }
+  }
   async applyPlannedCollectionDeltaOperation(uid, operation2, itemIds, desiredDigest) {
     const cid = this.collectionItemsId(uid);
     const request = async () => {
       if (operation2.kind === "create") {
-        const parentId = operation2.parentKey ? itemIds.get(operation2.parentKey) : cid;
+        const parentId = this.resolveDeltaParentId(operation2.parentKey, itemIds, cid);
         if (!parentId) {
           throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create parent unavailable for ${operation2.key}`);
         }
-        const body3 = this.buildItemCreateBody(this.deltaV3Item(operation2.item), parentId);
+        const convertedItem = this.deltaV3Item(operation2.item);
+        const body3 = this.buildItemCreateBody(convertedItem, parentId);
         this.writeMetrics.deltaRoutes.push("POST /v3/collections/{param}/items");
         const created = await this.gateway.requestJson({
           service: "collection",
@@ -309269,8 +309811,46 @@ ${error.responseBody ?? ""}`
           body: body3
         });
         const id = String(asRecord13(created?.data)?.id ?? "").trim();
-        if (!id) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create returned no id for ${operation2.key}`);
+        if (!id) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create returned no id for ${operation2.key}`);
+        }
         itemIds.set(operation2.key, id);
+        const nextSiblingId = this.resolveDeltaSiblingId(operation2.nextSiblingKey, itemIds);
+        if (operation2.nextSiblingKey && !nextSiblingId) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create sibling unavailable for ${operation2.key}`);
+        }
+        if (nextSiblingId) {
+          await this.moveDeltaItem({
+            collectionId: cid,
+            itemId: id,
+            entityType: operation2.entityType,
+            parentId,
+            nextSiblingId
+          });
+        }
+        if (Array.isArray(convertedItem.scripts) && convertedItem.scripts.length > 0) {
+          this.writeMetrics.deltaRoutes.push("PATCH /v3/collections/{param}/items/{param}");
+          await this.patchNewItemScripts(
+            cid,
+            id,
+            convertedItem.scripts,
+            operation2.entityType
+          );
+        }
+        for (const example of asItemArray(convertedItem.examples)) {
+          this.writeMetrics.deltaRoutes.push("POST /v3/collections/{param}/items");
+          const createdExample = await this.gateway.requestJson({
+            service: "collection",
+            method: "post",
+            path: `/v3/collections/${cid}/items/`,
+            retry: "none",
+            headers: { "X-Entity-Type": "http-example" },
+            body: this.buildItemCreateBody(example, id, "http-request")
+          });
+          if (!String(asRecord13(createdExample?.data)?.id ?? "").trim()) {
+            throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: example create returned no id for ${operation2.key}`);
+          }
+        }
         return;
       }
       const itemId = this.resolveDeltaItemId(operation2, itemIds);
@@ -309286,21 +309866,37 @@ ${error.responseBody ?? ""}`
         return;
       }
       if (operation2.kind === "move") {
-        const parentId = operation2.parentKey ? itemIds.get(operation2.parentKey) : cid;
+        const parentId = this.resolveDeltaParentId(operation2.parentKey, itemIds, cid);
         if (!parentId) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move parent unavailable for ${operation2.key}`);
-        this.writeMetrics.deltaRoutes.push("PATCH /v3/collections/{param}/items/{param}");
-        await this.gateway.requestJson({
-          service: "collection",
-          method: "patch",
-          path: `/v3/collections/${cid}/items/${itemId}`,
-          retry: "none",
-          headers: { "X-Entity-Type": operation2.entityType },
-          body: [{ op: "replace", path: "/position", value: { parent: { id: parentId, $kind: "collection" }, index: operation2.index } }]
+        const previousSiblingId = this.resolveDeltaSiblingId(operation2.previousSiblingKey, itemIds);
+        const nextSiblingId = this.resolveDeltaSiblingId(operation2.nextSiblingKey, itemIds);
+        if (operation2.previousSiblingKey && !previousSiblingId) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move previous sibling unavailable for ${operation2.key}`);
+        }
+        if (!previousSiblingId && operation2.nextSiblingKey && !nextSiblingId) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move next sibling unavailable for ${operation2.key}`);
+        }
+        await this.moveDeltaItem({
+          collectionId: cid,
+          itemId,
+          entityType: operation2.entityType,
+          parentId,
+          ...previousSiblingId ? { previousSiblingId } : {},
+          ...!previousSiblingId && nextSiblingId ? { nextSiblingId } : {}
         });
         return;
       }
-      const target = this.deltaV3Item(operation2.item);
-      const fields = operation2.entityType === "collection" ? ["name", "description"] : ["name", "description", "method", "url", "headers", "queryParams", "pathVariables", "body", "settings"];
+      const patchItem = operation2.entityType === "collection" ? {
+        name: operation2.item.name,
+        item: [],
+        ...operation2.item.description !== void 0 ? { description: operation2.item.description } : {}
+      } : {
+        name: operation2.item.name,
+        request: operation2.item.request,
+        ...operation2.item.description !== void 0 ? { description: operation2.item.description } : {}
+      };
+      const target = this.deltaV3Item(patchItem);
+      const fields = operation2.patchFields ?? [];
       const body2 = fields.filter((field) => target[field] !== void 0).map((field) => ({ op: "add", path: `/${field}`, value: target[field] }));
       if (body2.length === 0) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: no supported patch fields for ${operation2.key}`);
       this.writeMetrics.deltaRoutes.push("PATCH /v3/collections/{param}/items/{param}");
@@ -309330,7 +309926,7 @@ ${error.responseBody ?? ""}`
       return "fallback";
     }
   }
-  /** At most two independent siblings mutate concurrently. */
+  /** Serialize all mutations: create placement depends on earlier sibling writes. */
   async applyPlannedCollectionDeltaGroup(uid, operations, itemIds, desiredDigest) {
     let next = 0;
     let fallback = false;
@@ -309351,7 +309947,8 @@ ${error.responseBody ?? ""}`
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(2, operations.length) }, () => worker()));
+    const concurrency = 1;
+    await Promise.all(Array.from({ length: Math.min(concurrency, operations.length) }, () => worker()));
     return converged ? "converged" : fallback ? "fallback" : "applied";
   }
   /** Delete and verify absence of only the supplied run-owned collection roots. */
@@ -309437,8 +310034,7 @@ ${error.responseBody ?? ""}`
   }
   assertV21Collection(collection) {
     try {
-      const model = V2.Collection;
-      model.parse(collection);
+      assertV2CollectionModel(collection);
     } catch (error) {
       throw new Error(
         `LOCAL_OPENAPI_IMPORT_FAILED: collection failed v2.1 schema validation (${error instanceof Error ? error.message.slice(0, 160) : "invalid"})`,
@@ -309629,22 +310225,29 @@ ${error.responseBody ?? ""}`
   }
   async exportV2Collection(collectionUid) {
     const bareId = this.bareModelId(collectionUid);
-    const exported = await this.gateway.requestJson({
-      service: "collection",
-      method: "get",
-      path: `/v3/collections/${bareId}/export`,
-      retry: "safe"
-    });
-    const data = asRecord13(exported?.data) ?? exported;
-    const collection = asRecord13(asRecord13(data)?.collection) ?? asRecord13(data) ?? {};
-    if (asRecord13(collection)?.$kind === "collection" || Array.isArray(asRecord13(collection)?.items)) {
-      const model = V3.Collection;
-      const parsed = model.parse(collection);
-      const v2 = (0, import_transforms.transform)(model, import_transforms.FormatVersion.V2, parsed);
-      return asRecord13(v2) ?? {};
+    const delays = _PostmanGatewayAssetsClient.EXPORT_MODEL_SETTLE_DELAYS_MS;
+    let lastError;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+      const exported = await this.gateway.requestJson({
+        service: "collection",
+        method: "get",
+        path: `/v3/collections/${bareId}/export`,
+        retry: "safe"
+      });
+      const data = asRecord13(exported?.data) ?? exported;
+      const collection = asRecord13(asRecord13(data)?.collection) ?? asRecord13(data) ?? {};
+      try {
+        if (asRecord13(collection)?.$kind === "collection" || Array.isArray(asRecord13(collection)?.items)) {
+          return asRecord13(convertV3CollectionToV2Model(collection)) ?? {};
+        }
+        this.assertV21Collection(collection);
+        return collection;
+      } catch (error) {
+        lastError = error;
+        if (attempt < delays.length) await this.sleep(delays[attempt]);
+      }
     }
-    this.assertV21Collection(collection);
-    return collection;
+    throw lastError;
   }
   cloneJson(value) {
     if (typeof structuredClone === "function") return structuredClone(value);
@@ -310021,8 +310624,6 @@ var import_node_crypto8 = require("node:crypto");
 var import_node_fs6 = require("node:fs");
 var fs2 = __toESM(require("node:fs/promises"), 1);
 var path8 = __toESM(require("node:path"), 1);
-var V22 = __toESM(require_v2(), 1);
-var import_transforms2 = __toESM(require_transforms(), 1);
 var import_v3 = __toESM(require_node2(), 1);
 var import_yaml5 = __toESM(require_dist(), 1);
 var LOCAL_COLLECTION_ARTIFACTS_FAILED = "LOCAL_COLLECTION_ARTIFACTS_FAILED";
@@ -310329,9 +310930,7 @@ async function computeArtifactDigestFromTree(absDir) {
   return hash.digest("hex");
 }
 function convertV2CollectionToV3(v2Collection) {
-  const model = V22.Collection;
-  const parsed = model.parse(structuredClone(v2Collection ?? {}));
-  return (0, import_transforms2.transform)(model, import_transforms2.FormatVersion.V3, parsed);
+  return convertV2CollectionToV3Model(structuredClone(v2Collection ?? {}));
 }
 async function defaultSplitCollection(v2Collection) {
   const v3 = convertV2CollectionToV3(v2Collection);
@@ -310891,8 +311490,11 @@ function indexCollection(collection) {
   let invalid = !Array.isArray(collection.item);
   let ambiguous = false;
   const visit4 = (items, parentKey, parentPath, depth) => {
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
+    const folders = items.filter((item) => isRecord5(item) && Array.isArray(item.item));
+    const requests = items.filter((item) => !(isRecord5(item) && Array.isArray(item.item)));
+    const canonicalItems = [...folders, ...requests];
+    for (let index = 0; index < canonicalItems.length; index += 1) {
+      const item = canonicalItems[index];
       if (!isRecord5(item)) {
         invalid = true;
         continue;
@@ -310918,10 +311520,29 @@ function indexCollection(collection) {
     }
   };
   if (Array.isArray(collection.item)) visit4(collection.item, void 0, "", 0);
+  const siblingsByParentAndType = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const bucket = `${entry.parentKey ?? ""}\0${entry.entityType}`;
+    siblingsByParentAndType.set(bucket, [...siblingsByParentAndType.get(bucket) ?? [], entry]);
+  }
+  for (const siblings of siblingsByParentAndType.values()) {
+    siblings.sort((left, right) => left.index - right.index);
+    for (let index = 0; index < siblings.length; index += 1) {
+      const entry = siblings[index];
+      const previous = siblings[index - 1];
+      const next = siblings[index + 1];
+      if (previous) entry.previousSiblingKey = previous.key;
+      if (next) entry.nextSiblingKey = next.key;
+    }
+  }
   return { entries, invalid, ambiguous };
 }
 function changedUnsupportedField(snapshot, desired, field) {
-  return stable(snapshot[field]) !== stable(desired[field]);
+  const digestField = (source) => computePayloadDigest({
+    info: { name: "Delta field comparison" },
+    item: [{ name: "Delta entity", item: [], ...field in source ? { [field]: source[field] } : {} }]
+  });
+  return digestField(snapshot) !== digestField(desired);
 }
 function unsupportedTransform(snapshot, desired) {
   for (const item of [snapshot, desired]) {
@@ -310939,16 +311560,108 @@ function unsupportedTransform(snapshot, desired) {
   }
   return null;
 }
+function unsupportedCreateTransform(item) {
+  if ("workflow" in item || "workflows" in item) return "unsupported-workflow-shape";
+  const allowed = /* @__PURE__ */ new Set([
+    "id",
+    "name",
+    "description",
+    "request",
+    "item",
+    "event",
+    "response",
+    "auth",
+    "example",
+    "protocolProfileBehavior"
+  ]);
+  for (const key of Object.keys(item)) {
+    if (!allowed.has(key)) return "unsupported-entity-transform";
+  }
+  return null;
+}
 function operation(kind, entry) {
+  const item = cloneRecord(entry.item);
+  if (kind === "create" && entry.entityType === "collection") item.item = [];
   return {
     kind,
     key: entry.key,
     entityType: entry.entityType,
     ...entry.sourceId ? { sourceId: entry.sourceId } : {},
     ...entry.parentKey ? { parentKey: entry.parentKey } : {},
+    ...entry.previousSiblingKey ? { previousSiblingKey: entry.previousSiblingKey } : {},
+    ...entry.nextSiblingKey ? { nextSiblingKey: entry.nextSiblingKey } : {},
     index: entry.index,
-    item: cloneRecord(entry.item)
+    item,
+    ...entry.patchFields ? { patchFields: [...entry.patchFields] } : {}
   };
+}
+function entityContentDigest(item) {
+  return computePayloadDigest({
+    info: { name: "Delta entity comparison" },
+    item: [item]
+  });
+}
+function semanticRequestFieldDigest(request, field) {
+  const projected = { method: "GET", url: "https://example.invalid" };
+  if (field in request) projected[field] = request[field];
+  return entityContentDigest({ name: "Request field", request: projected });
+}
+function plannedPatchFields(snapshot, desired) {
+  const fields = [];
+  if (stable(snapshot.name) !== stable(desired.name)) fields.push("name");
+  if (changedUnsupportedField(snapshot, desired, "description")) fields.push("description");
+  const beforeRequest = isRecord5(snapshot.request) ? snapshot.request : null;
+  const afterRequest = isRecord5(desired.request) ? desired.request : null;
+  if (Boolean(beforeRequest) !== Boolean(afterRequest)) return "unsupported-entity-transform";
+  if (!beforeRequest || !afterRequest) return fields;
+  if (semanticRequestFieldDigest(beforeRequest, "auth") !== semanticRequestFieldDigest(afterRequest, "auth")) {
+    return "unsupported-auth-transform";
+  }
+  const mappings = [
+    { source: "method", target: ["method"] },
+    { source: "url", target: ["url", "queryParams", "pathVariables"] },
+    { source: "header", target: ["headers"] },
+    { source: "body", target: ["body"] }
+  ];
+  for (const mapping of mappings) {
+    if (semanticRequestFieldDigest(beforeRequest, mapping.source) === semanticRequestFieldDigest(afterRequest, mapping.source)) {
+      continue;
+    }
+    if (afterRequest[mapping.source] === void 0) return "unsupported-entity-transform";
+    fields.push(...mapping.target);
+  }
+  const supportedRequestFields = /* @__PURE__ */ new Set(["id", "method", "url", "header", "body", "auth", "description"]);
+  for (const key of /* @__PURE__ */ new Set([...Object.keys(beforeRequest), ...Object.keys(afterRequest)])) {
+    if (!supportedRequestFields.has(key) && semanticRequestFieldDigest(beforeRequest, key) !== semanticRequestFieldDigest(afterRequest, key)) {
+      return "unsupported-entity-transform";
+    }
+  }
+  if (semanticRequestFieldDigest(beforeRequest, "description") !== semanticRequestFieldDigest(afterRequest, "description")) {
+    fields.push("description");
+  }
+  return [...new Set(fields)];
+}
+function operationChangedBytes(operation2) {
+  if (operation2.kind === "patch") {
+    const projection = operation2.entityType === "collection" ? { name: operation2.item.name, description: operation2.item.description } : {
+      name: operation2.item.name,
+      description: operation2.item.description,
+      request: operation2.item.request
+    };
+    return Buffer.byteLength(stable({ kind: operation2.kind, item: projection }), "utf8");
+  }
+  if (operation2.kind === "move") {
+    return Buffer.byteLength(stable({
+      kind: operation2.kind,
+      parentKey: operation2.parentKey,
+      previousSiblingKey: operation2.previousSiblingKey,
+      nextSiblingKey: operation2.nextSiblingKey
+    }), "utf8");
+  }
+  if (operation2.kind === "delete") {
+    return Buffer.byteLength(stable({ kind: operation2.kind, key: operation2.key }), "utf8");
+  }
+  return Buffer.byteLength(stable(operation2), "utf8");
 }
 function planCollectionDelta(input) {
   if (!isRecord5(input.snapshot) || !isRecord5(input.desired)) {
@@ -310962,25 +311675,15 @@ function planCollectionDelta(input) {
   if (computePayloadDigest(input.snapshot) === computePayloadDigest(desired)) {
     return { decision: "unchanged", changedBytes: 0, operations: [] };
   }
-  const snapshotInfo = isRecord5(input.snapshot.info) ? cloneRecord(input.snapshot.info) : {};
-  const desiredInfo = isRecord5(desired.info) ? cloneRecord(desired.info) : {};
-  delete snapshotInfo._postman_id;
-  delete desiredInfo._postman_id;
-  if (stable(snapshotInfo) !== stable(desiredInfo)) {
-    return { decision: "fallback", reason: "unsupported-root-attribute", changedBytes: 0, operations: [] };
-  }
   if ("workflow" in input.snapshot || "workflows" in input.snapshot || "workflow" in desired || "workflows" in desired) {
     return { decision: "fallback", reason: "unsupported-workflow-shape", changedBytes: 0, operations: [] };
   }
-  const rootAttributesOutsideItems = (collection) => {
-    const rest = {};
-    for (const key of Object.keys(collection)) {
-      if (key === "info" || key === "item") continue;
-      rest[key] = collection[key];
-    }
-    return stable(rest);
+  const rootSemanticDigest = (collection) => {
+    const root = cloneRecord(collection);
+    root.item = [];
+    return computePayloadDigest(root);
   };
-  if (rootAttributesOutsideItems(input.snapshot) !== rootAttributesOutsideItems(desired)) {
+  if (rootSemanticDigest(input.snapshot) !== rootSemanticDigest(desired)) {
     return { decision: "fallback", reason: "unsupported-root-attribute", changedBytes: 0, operations: [] };
   }
   const before = indexCollection(input.snapshot);
@@ -311000,7 +311703,7 @@ function planCollectionDelta(input) {
   for (const entry of after.entries) {
     const previous = beforeByKey.get(entry.key);
     if (!previous) {
-      const unsupported4 = unsupportedTransform({}, entry.item);
+      const unsupported4 = unsupportedCreateTransform(entry.item);
       if (unsupported4) return { decision: "fallback", reason: unsupported4, changedBytes: 0, operations: [] };
       creates.push(entry);
       continue;
@@ -311016,13 +311719,24 @@ function planCollectionDelta(input) {
     delete newContent.id;
     delete oldContent.item;
     delete newContent.item;
-    if (stable(oldContent) !== stable(newContent)) patches.push(entry);
+    if (entityContentDigest(oldContent) !== entityContentDigest(newContent)) {
+      const patchFields = plannedPatchFields(previous.item, entry.item);
+      if (typeof patchFields === "string") {
+        return { decision: "fallback", reason: patchFields, changedBytes: 0, operations: [] };
+      }
+      if (patchFields.length === 0) {
+        return { decision: "fallback", reason: "unsupported-entity-transform", changedBytes: 0, operations: [] };
+      }
+      patches.push({ ...entry, patchFields });
+    }
     if (previous.parentKey !== entry.parentKey || previous.index !== entry.index) moves.push(entry);
   }
   for (const entry of before.entries) {
     if (!afterByKey.has(entry.key)) deletes.push(entry);
   }
-  creates.sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key));
+  creates.sort(
+    (a, b) => a.depth - b.depth || String(a.parentKey ?? "").localeCompare(String(b.parentKey ?? "")) || b.index - a.index || a.key.localeCompare(b.key)
+  );
   patches.sort((a, b) => a.key.localeCompare(b.key));
   const explicitMoves = moves.filter((entry) => {
     const previous = beforeByKey.get(entry.key);
@@ -311031,12 +311745,12 @@ function planCollectionDelta(input) {
   const orderedMoves = (explicitMoves.length > 0 ? explicitMoves : moves).sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key));
   deletes.sort((a, b) => b.depth - a.depth || a.key.localeCompare(b.key));
   const operations = [
+    ...deletes.map((entry) => operation("delete", entry)),
     ...creates.map((entry) => operation("create", entry)),
     ...patches.map((entry) => operation("patch", entry)),
-    ...orderedMoves.map((entry) => operation("move", entry)),
-    ...deletes.map((entry) => operation("delete", entry))
+    ...orderedMoves.map((entry) => operation("move", entry))
   ];
-  const changedBytes = Buffer.byteLength(stable(operations), "utf8");
+  const changedBytes = operations.reduce((total, entry) => total + operationChangedBytes(entry), 0);
   const maxOperations = input.maxOperations ?? COLLECTION_DELTA_MAX_OPERATIONS;
   const maxChangedBytes = input.maxChangedBytes ?? COLLECTION_DELTA_MAX_CHANGED_BYTES;
   if (operations.length > maxOperations) {
@@ -340287,14 +341001,8 @@ function instrumentMcpCollection(collection, index) {
 }
 
 // src/lib/protocols/v2-to-ec.ts
-var V23 = __toESM(require_v2(), 1);
-var import_transforms3 = __toESM(require_transforms(), 1);
 function convertV2CollectionToEc(v2Collection) {
-  return (0, import_transforms3.transform)(
-    V23.Collection,
-    import_transforms3.FormatVersion.Extensible,
-    v2Collection
-  );
+  return convertV2CollectionToExtensibleModel(v2Collection);
 }
 
 // src/lib/protocols/dispatch.ts
@@ -342511,6 +343219,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             contract: 0
           };
           const skippedRoles = [];
+          const verifiedDigestByRole = /* @__PURE__ */ new Map();
           let payloads;
           const conversionStarted = Date.now();
           try {
@@ -342614,13 +343323,15 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               if (!deepUpdateSnapshots.has(reuseId)) {
                 throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing rollback snapshot for ${reuseId}`);
               }
-              if (deepUpdateSnapshots.get(reuseId).payloadDigest === payload.payloadDigest) {
+              const snapshot = deepUpdateSnapshots.get(reuseId);
+              if (snapshot.payloadDigest === payload.payloadDigest) {
+                verifiedDigestByRole.set(role.role, snapshot.payloadDigest);
                 return {
                   role: role.role,
                   outputKey: role.outputKey,
                   kind: "unchanged",
                   collectionId: reuseId,
-                  writeMs: Math.max(0, Date.now() - writeStarted),
+                  writeMs: 0,
                   payloadBytes,
                   changedBytes: 0,
                   operationCount: 0,
@@ -342635,7 +343346,6 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                     "LOCAL_OPENAPI_ORCHESTRATION_FAILED: applyCollectionDelta requires access-token gateway support"
                   );
                 }
-                const snapshot = deepUpdateSnapshots.get(reuseId);
                 const plan = planCollectionDelta({
                   snapshot: snapshot.collection,
                   desired: payload.collection
@@ -342649,6 +343359,9 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                 );
                 const writeMs3 = Math.max(0, Date.now() - writeStarted);
                 const usedDelta = deltaResult.strategy === "delta";
+                if (usedDelta && deltaResult.observedPayloadDigest === payload.payloadDigest) {
+                  verifiedDigestByRole.set(role.role, deltaResult.observedPayloadDigest);
+                }
                 return {
                   role: role.role,
                   outputKey: role.outputKey,
@@ -342873,6 +343586,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               }
               const started = Date.now();
               try {
+                const preverifiedDigest = verifiedDigestByRole.get(role.role);
+                if (preverifiedDigest) {
+                  observedDigestByRole.set(role.role, preverifiedDigest);
+                  continue;
+                }
                 const exported = await dependencies.postman.exportV2Collection(result.collectionId);
                 const observedDigest = computePayloadDigest(exported);
                 reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
@@ -343389,6 +344107,10 @@ function createRoutingPostmanClient(options) {
     updateCollectionDescription: (collectionUid, description) => gateway.updateCollectionDescription(collectionUid, description),
     importV2Collection: (workspaceId, collection, finalName) => gateway.importV2Collection(workspaceId, collection, finalName),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) => gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
+    applyCollectionDelta: (collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback) => gateway.applyCollectionDelta(collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback),
+    get collectionWriteMetrics() {
+      return gateway.collectionWriteMetrics;
+    },
     exportV2Collection: (collectionUid) => gateway.exportV2Collection(collectionUid),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) => gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
     reconcileDuplicateFinalCollections: (workspaceId, candidates) => gateway.reconcileDuplicateFinalCollections(workspaceId, candidates),

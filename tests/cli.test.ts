@@ -130,6 +130,8 @@ describe('parseCliArgs', () => {
       [
         '--project-name',
         'core-payments',
+        '--working-directory',
+        'services/payments',
         '--spec-url=https://example.test/openapi.yaml',
         '--postman-api-key',
         'pmak-test',
@@ -158,6 +160,7 @@ describe('parseCliArgs', () => {
     );
 
     expect(config.inputEnv.INPUT_PROJECT_NAME).toBe('core-payments');
+    expect(config.inputEnv.INPUT_WORKING_DIRECTORY).toBe('services/payments');
     expect(config.inputEnv.INPUT_SPEC_URL).toBe('https://example.test/openapi.yaml');
     expect(config.inputEnv.INPUT_POSTMAN_API_KEY).toBe('pmak-test');
     expect(config.inputEnv.INPUT_WORKSPACE_ADMIN_USER_IDS).toBe('101,102');

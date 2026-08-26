@@ -15,6 +15,7 @@ import {
   type ExecLike,
   type PlannedOutputs
 } from './index.js';
+import { activateWorkingDirectory } from './lib/working-directory.js';
 import { BRANCH_DECISION_ENV, serializeBranchDecision } from './lib/repo/branch-decision.js';
 import { runCredentialPreflight } from './lib/postman/credential-identity.js';
 import { mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
@@ -142,6 +143,7 @@ function normalizeCliFlag(name: string): string {
 }
 
 const cliInputNames = [
+  'working-directory',
   'project-name',
   'spec-url',
   'spec-path',
@@ -440,6 +442,7 @@ export async function runCli(
 
   const env = runtime.env ?? process.env;
   const config = parseCliArgs(argv, env);
+  activateWorkingDirectory(config.inputEnv.INPUT_WORKING_DIRECTORY, process.cwd());
   const inputs = resolveInputs(config.inputEnv);
   // Decide BEFORE credential validation so gated runs never require a token.
   const branchDecision = decideBranchTier(inputs, config.inputEnv);

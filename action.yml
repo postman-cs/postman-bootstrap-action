@@ -5,7 +5,10 @@ branding:
   icon: box
   color: orange
 inputs:
-
+  working-directory:
+    description: Repository-root-relative directory used for all local inputs and generated artifacts.
+    required: false
+    default: ''
   workspace-id:
     description: Existing Postman workspace ID
     required: false

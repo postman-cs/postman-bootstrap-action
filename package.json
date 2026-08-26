@@ -1,6 +1,6 @@
 {
   "name": "@postman-cs/onboarding-bootstrap",
-  "version": "2.18.3",
+  "version": "2.21.1",
   "description": "Bootstrap Postman workspaces, specs, and collections from OpenAPI.",
   "type": "module",
   "main": "dist/index.cjs",

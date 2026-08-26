@@ -324856,7 +324856,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "f2d88498493afc271bcb5d637e018368162a97d1",
+  bootstrapCommit: "c8e6d402a92ae5516cf3babf7ef4b0d58c1fa040",
   legs: [
     {
       mode: "nonorg",

@@ -186,6 +186,7 @@ function withoutStructuralIds(collection: JsonRecord): JsonRecord {
   // different even when the transmitted collection is exact.
   const clone = JSON.parse(JSON.stringify(collection)) as JsonRecord;
   if (isRecord(clone.info)) delete clone.info._postman_id;
+  if (Array.isArray(clone.event) && clone.event.length === 0) delete clone.event;
   stripStructuralItemIds(clone.item);
   return clone;
 }
@@ -195,6 +196,7 @@ function stripStructuralItemIds(items: unknown): void {
   for (const raw of items) {
     if (!isRecord(raw)) continue;
     delete raw.id;
+    if (Array.isArray(raw.event) && raw.event.length === 0) delete raw.event;
     if (isRecord(raw.request)) delete raw.request.id;
     stripStructuralItemIds(raw.item);
     if (Array.isArray(raw.response)) {

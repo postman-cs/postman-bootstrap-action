@@ -305786,6 +305786,7 @@ function buildLocalOpenApiConversionOptions(options) {
 function withoutStructuralIds(collection) {
   const clone2 = JSON.parse(JSON.stringify(collection));
   if (isRecord3(clone2.info)) delete clone2.info._postman_id;
+  if (Array.isArray(clone2.event) && clone2.event.length === 0) delete clone2.event;
   stripStructuralItemIds(clone2.item);
   return clone2;
 }
@@ -305794,6 +305795,7 @@ function stripStructuralItemIds(items) {
   for (const raw of items) {
     if (!isRecord3(raw)) continue;
     delete raw.id;
+    if (Array.isArray(raw.event) && raw.event.length === 0) delete raw.event;
     if (isRecord3(raw.request)) delete raw.request.id;
     stripStructuralItemIds(raw.item);
     if (Array.isArray(raw.response)) {
@@ -306324,7 +306326,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "c8e6d402a92ae5516cf3babf7ef4b0d58c1fa040",
+  bootstrapCommit: "eac0d27f0aa6f9318259a174ef50a6d65078a33d",
   legs: [
     {
       mode: "nonorg",

@@ -310,11 +310,9 @@ jobs:
       - id: npm-publish
         name: Publish npm package or verify existing identity
         continue-on-error: true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"; fi
+          sed -i '/_authToken/d' "${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}"
           echo "published=false" >> "$GITHUB_OUTPUT"
           PKG_NAME=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('release-manifest.json','utf8')).package_name)")
           PKG_VERSION=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('release-manifest.json','utf8')).package_version)")
@@ -361,7 +359,7 @@ jobs:
         run: |
           PKG_NAME=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('release-manifest.json','utf8')).package_name)")
           PKG_VERSION=$(node -e "console.log(JSON.parse(require('node:fs').readFileSync('release-manifest.json','utf8')).package_version)")
-          WARNING="npm publish for $PKG_NAME@$PKG_VERSION did not complete (missing/invalid NPM_TOKEN or registry error); GitHub Release remains authoritative; recover via backfill-npm.yml once publish access exists"
+          WARNING="npm publish for $PKG_NAME@$PKG_VERSION did not complete (OIDC trusted publisher or registry error); GitHub Release remains authoritative; recover via backfill-npm.yml if needed"
           echo "::warning::$WARNING"
           echo "$WARNING" >> "$GITHUB_STEP_SUMMARY"
 

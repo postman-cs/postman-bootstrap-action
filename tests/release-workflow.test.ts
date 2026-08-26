@@ -123,7 +123,6 @@ describe('release workflow publishing contract', () => {
     expect(publish).toContain('artifact must not be a symlink');
     expect(publish).toContain('SEA sidecar digest does not match executable and manifest');
     expect(publish).toContain('tarball package identity mismatch');
-    assertOrder('name: Verify staged release artifacts', 'NODE_AUTH_TOKEN', publish);
     assertOrder('name: Verify staged release artifacts', 'softprops/action-gh-release', publish);
     assertOrder('softprops/action-gh-release', 'id: npm-publish', publish);
     assertOrder('id: npm-publish', 'name: Verify npm registry identity', publish);
@@ -133,7 +132,8 @@ describe('release workflow publishing contract', () => {
     expect(publish.slice(0, publish.indexOf('id: npm-publish'))).not.toContain('NPM_TOKEN');
     expect(publish).toContain('outputs:\n      published: ${{ steps.npm-publish.outputs.published }}');
     expect(publish).toContain('continue-on-error: true');
-    expect(publish).toContain('if [ -z "${NODE_AUTH_TOKEN:-}" ]; then sed -i');
+    expect(publish).toContain("sed -i '/_authToken/d' \"${NPM_CONFIG_USERCONFIG:-$HOME/.npmrc}\"");
+    expect(publish).not.toContain('NODE_AUTH_TOKEN');
     expect(publish).toContain('echo "published=false" >> "$GITHUB_OUTPUT"');
     expect(publish).toContain('echo "published=true" >> "$GITHUB_OUTPUT"');
     expect(publish).toContain("if: steps.npm-publish.outputs.published == 'true'");

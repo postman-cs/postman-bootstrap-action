@@ -232,7 +232,17 @@ function createCuratedCollection(name: string) {
   };
 }
 
-function createDefaultImportV2Collection() {
+function trackedCollection(collection: unknown, collectionUid: string): Record<string, unknown> {
+  const tracked = structuredClone(collection as Record<string, unknown>);
+  const info = tracked.info && typeof tracked.info === 'object' && !Array.isArray(tracked.info)
+    ? tracked.info as Record<string, unknown>
+    : {};
+  info._postman_id = collectionUid;
+  tracked.info = info;
+  return tracked;
+}
+
+function createDefaultImportV2Collection(collections = new Map<string, Record<string, unknown>>()) {
   return vi.fn().mockImplementation(async (_workspaceId: string, collection: unknown, finalName?: string) => {
     const info = (collection as { info?: { name?: string } } | null)?.info;
     const name = String(finalName || info?.name || '');
@@ -241,6 +251,7 @@ function createDefaultImportV2Collection() {
       : name.includes('[Smoke]')
         ? 'col-smoke-generated'
         : 'col-baseline-generated';
+    collections.set(id, trackedCollection(collection, id));
     return {
       collectionId: id,
       journaledRootIds: [id],
@@ -248,8 +259,8 @@ function createDefaultImportV2Collection() {
     };
   });
 }
-function createDefaultExportV2Collection() {
-  return vi.fn().mockImplementation(async (collectionUid: string) => ({
+function createDefaultExportV2Collection(collections = new Map<string, Record<string, unknown>>()) {
+  return vi.fn().mockImplementation(async (collectionUid: string) => collections.get(collectionUid) ?? ({
     info: {
       _postman_id: collectionUid,
       name: collectionUid,
@@ -281,10 +292,26 @@ function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
       return uniqueId;
     })
     : undefined;
+  const collections = new Map<string, Record<string, unknown>>();
+  const baseImport = (postman.importV2Collection as ((workspaceId: string, collection: unknown, finalName?: string) => Promise<{ collectionId: string }>) | undefined)
+    ?? createDefaultImportV2Collection();
+  const baseDeepUpdate = (postman.deepUpdateV2Collection as ((collectionUid: string, collection: unknown, digest: string) => Promise<string>) | undefined)
+    ?? (async (collectionUid: string) => collectionUid);
+  const statefulImport = vi.fn(async (workspaceId: string, collection: unknown, finalName?: string) => {
+    const result = await baseImport(workspaceId, collection, finalName);
+    collections.set(result.collectionId, trackedCollection(collection, result.collectionId));
+    return result;
+  });
+  const statefulDeepUpdate = vi.fn(async (collectionUid: string, collection: unknown, digest: string) => {
+    const result = await baseDeepUpdate(collectionUid, collection, digest);
+    collections.set(collectionUid, trackedCollection(collection, collectionUid));
+    return result;
+  });
   const defaults = {
     deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
-    deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
-    importV2Collection: createDefaultImportV2Collection()
+    deepUpdateV2Collection: statefulDeepUpdate,
+    importV2Collection: statefulImport,
+    exportV2Collection: createDefaultExportV2Collection(collections)
   };
   return {
     deleteSpec: vi.fn().mockResolvedValue(undefined),
@@ -295,8 +322,9 @@ function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
     ...defaults,
     ...postman,
     ...(generateCollection ? { generateCollection } : {}),
-    importV2Collection: postman.importV2Collection ?? defaults.importV2Collection,
-    deepUpdateV2Collection: postman.deepUpdateV2Collection ?? defaults.deepUpdateV2Collection,
+    importV2Collection: defaults.importV2Collection,
+    deepUpdateV2Collection: defaults.deepUpdateV2Collection,
+    exportV2Collection: postman.exportV2Collection ?? defaults.exportV2Collection,
     deleteVerifiedRunOwnedCollections:
       postman.deleteVerifiedRunOwnedCollections ?? defaults.deleteVerifiedRunOwnedCollections,
     getCollection,
@@ -305,16 +333,21 @@ function withContractHelpers<T extends Record<string, unknown>>(postman: T): T {
 }
 
 function createRollbackPostman(overrides: Record<string, unknown> = {}) {
-  return {
+  const collections = new Map<string, Record<string, unknown>>();
+  const baseImport = (overrides.importV2Collection as ((workspaceId: string, collection: unknown, finalName?: string) => Promise<{ collectionId: string }>) | undefined)
+    ?? createDefaultImportV2Collection();
+  const baseDeepUpdate = (overrides.deepUpdateV2Collection as ((collectionUid: string, collection: unknown, digest: string) => Promise<string>) | undefined)
+    ?? (async (collectionUid: string) => collectionUid);
+  const overrideExport = overrides.exportV2Collection as
+    | ((collectionUid: string) => Promise<Record<string, unknown>>)
+    | undefined;
+  const postman = {
     addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
     createCollection: vi.fn().mockResolvedValue('col-created'),
     createWorkspace: vi.fn(),
     deleteCollection: vi.fn().mockResolvedValue(undefined),
     deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
     deleteSpec: vi.fn().mockResolvedValue(undefined),
-    deepUpdateV2Collection: vi
-      .fn()
-      .mockImplementation(async (collectionUid: string) => collectionUid),
     findWorkspacesByName: vi.fn().mockResolvedValue([]),
     generateCollection: vi
       .fn()
@@ -330,8 +363,6 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-    importV2Collection: createDefaultImportV2Collection(),
-    exportV2Collection: createDefaultExportV2Collection(),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
     inviteRequesterToWorkspace: vi.fn().mockResolvedValue(undefined),
@@ -343,6 +374,20 @@ function createRollbackPostman(overrides: Record<string, unknown> = {}) {
     uploadSpec: vi.fn(),
     uploadSpecBundle: vi.fn(),
     ...overrides
+  };
+  return {
+    ...postman,
+    importV2Collection: vi.fn(async (workspaceId: string, collection: unknown, finalName?: string) => {
+      const result = await baseImport(workspaceId, collection, finalName);
+      collections.set(result.collectionId, trackedCollection(collection, result.collectionId));
+      return result;
+    }),
+    deepUpdateV2Collection: vi.fn(async (collectionUid: string, collection: unknown, digest: string) => {
+      const result = await baseDeepUpdate(collectionUid, collection, digest);
+      collections.set(collectionUid, trackedCollection(collection, collectionUid));
+      return result;
+    }),
+    exportV2Collection: overrideExport ?? createDefaultExportV2Collection(collections)
   };
 }
 
@@ -3362,12 +3407,19 @@ paths:
 
   it('rejects collection ID collisions after import before tagging or linking', async () => {
     const { core } = createCoreStub();
+    const importedPayloads: Record<string, unknown>[] = [];
     const postman = createRollbackPostman({
-      importV2Collection: vi.fn().mockResolvedValue({
-        collectionId: 'col-shared',
-        journaledRootIds: ['col-shared'],
-        deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
-      })
+      importV2Collection: vi.fn(async (_workspaceId: string, collection: unknown) => {
+        importedPayloads.push(trackedCollection(collection, 'col-shared'));
+        return {
+          collectionId: 'col-shared',
+          journaledRootIds: ['col-shared'],
+          deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+        };
+      }),
+      // Preserve exact per-role final proof so the intended downstream identity
+      // collision, not a fixture-induced digest mismatch, remains the failure.
+      exportV2Collection: vi.fn(async () => importedPayloads.shift()!)
     });
     const internalIntegration = createRollbackIntegration();
 

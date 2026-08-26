@@ -180,7 +180,11 @@ export function buildLocalOpenApiConversionOptions(options: LocalOpenApiConversi
 }
 
 function withoutStructuralIds(collection: JsonRecord): JsonRecord {
-  const clone = deepClone(collection);
+  // Digest the JSON wire representation. `structuredClone` preserves object
+  // properties whose value is undefined, but JSON transport omits them; hashing
+  // those non-serializable properties makes an import/export round trip appear
+  // different even when the transmitted collection is exact.
+  const clone = JSON.parse(JSON.stringify(collection)) as JsonRecord;
   if (isRecord(clone.info)) delete clone.info._postman_id;
   stripStructuralItemIds(clone.item);
   return clone;
@@ -212,6 +216,40 @@ function stableStringify(value: unknown): string {
 /** Deterministic semantic digest of a completed role payload (volatile ids ignored). */
 export function computePayloadDigest(collection: JsonRecord): string {
   return createHash('sha256').update(stableStringify(withoutStructuralIds(collection))).digest('hex');
+}
+
+function semanticDifferenceValue(value: unknown): string {
+  const serialized = stableStringify(value);
+  const kind = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  return `${kind}:bytes=${Buffer.byteLength(serialized)}:sha256=${createHash('sha256').update(serialized).digest('hex').slice(0, 12)}`;
+}
+
+/** Content-free first semantic difference for live import/export diagnostics. */
+export function describePayloadDigestDifference(expected: JsonRecord, observed: JsonRecord): string {
+  const visit = (left: unknown, right: unknown, path: string): string | null => {
+    if (stableStringify(left) === stableStringify(right)) return null;
+    if (Array.isArray(left) && Array.isArray(right)) {
+      if (left.length !== right.length) return `${path}.length expected=${left.length} observed=${right.length}`;
+      for (let index = 0; index < left.length; index += 1) {
+        const difference = visit(left[index], right[index], `${path}[${index}]`);
+        if (difference) return difference;
+      }
+    } else if (
+      left !== null && right !== null && typeof left === 'object' && typeof right === 'object'
+    ) {
+      const leftRecord = left as JsonRecord;
+      const rightRecord = right as JsonRecord;
+      const keys = [...new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)])].sort();
+      for (const key of keys) {
+        if (!(key in leftRecord)) return `${path}.${key} expected=missing observed=${semanticDifferenceValue(rightRecord[key])}`;
+        if (!(key in rightRecord)) return `${path}.${key} expected=${semanticDifferenceValue(leftRecord[key])} observed=missing`;
+        const difference = visit(leftRecord[key], rightRecord[key], `${path}.${key}`);
+        if (difference) return difference;
+      }
+    }
+    return `${path} expected=${semanticDifferenceValue(left)} observed=${semanticDifferenceValue(right)}`;
+  };
+  return visit(withoutStructuralIds(expected), withoutStructuralIds(observed), '$') ?? 'none';
 }
 
 export function applyCollectionIdentity(

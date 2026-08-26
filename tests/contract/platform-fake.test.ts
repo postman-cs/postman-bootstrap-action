@@ -176,4 +176,37 @@ describe('contract: platform fake routing', () => {
     expect(inventory.data.map((entry) => entry.id)).toContain('999-foreign');
     expect(fake.state.collectionDeleteLedger).toEqual([]);
   });
+
+  it('keeps imported export content exact while root name and description patches update metadata', async () => {
+    const fake = createPlatformFake({ userId: 123 });
+    const importedBody = {
+      info: { name: 'Payments [bootstrap:run]', description: 'initial', schema: 'v2.1' },
+      item: [{ name: 'GET /payments', request: { method: 'GET' } }],
+      event: [{ listen: 'test', script: { exec: ['pm.test("ok", () => true);'] } }]
+    };
+    const imported = (await (await proxy(fake, {
+      service: 'sync', method: 'post', path: '/collection/import',
+      query: { workspace: 'ws-contract', format: '2.1.0' }, body: importedBody
+    })).json()) as { model_id: string };
+    const canonicalId = imported.model_id;
+
+    await proxy(fake, {
+      service: 'collection', method: 'patch', path: `/v3/collections/${canonicalId}`,
+      body: [
+        { op: 'replace', path: '/name', value: 'Payments' },
+        { op: 'add', path: '/description', value: 'final description' }
+      ]
+    });
+    const exported = (await (await proxy(fake, {
+      service: 'collection', method: 'get', path: `/v3/collections/${canonicalId}/export`
+    })).json()) as { data: { collection: Record<string, unknown> } };
+
+    expect(exported.data.collection).toEqual({
+      ...importedBody,
+      info: { ...importedBody.info, name: 'Payments', description: 'final description' }
+    });
+    expect(fake.state.collections).toContainEqual(expect.objectContaining({
+      id: canonicalId, name: 'Payments', description: 'final description'
+    }));
+  });
 });

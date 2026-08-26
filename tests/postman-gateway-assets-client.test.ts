@@ -4155,14 +4155,14 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(peakMutations).toBe(2);
     });
 
-    it('imports with one sync POST /collection/import using format 2.1.0 and run-unique temp name', async () => {
+    it('imports with one sync POST /collection/import using format 2.1.0, run-unique temp name, and preserved supplied root identity', async () => {
       const inventory: Array<{ id: string; name: string }> = [];
       const { client, gateway, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
           const body = env.body as { info?: { name?: string; _postman_id?: string } };
           expect(body.info?.name).toContain('[bootstrap:test-run]');
           expect(body.info?._postman_id).toBeTruthy();
-          expect(body.info?._postman_id).not.toBe('11111111-1111-1111-1111-111111111111');
+          expect(body.info?._postman_id).toBe('11111111-1111-1111-1111-111111111111');
           inventory.push({ id: 'col-imported', name: String(body.info?.name) });
           return jsonResponse({ data: { id: 'col-imported', uid: 'col-imported' } });
         }
@@ -5184,21 +5184,18 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.some((call) => call.path === '/collection/import')).toBe(true);
     });
 
-    it('retries a rate-limited import without treating it as an ambiguous commit', async () => {
+    it('reconciles a committed rate-limited import by exact temp identity without resending POST', async () => {
       const inventory: Array<{ id: string; name: string }> = [];
       let importAttempts = 0;
       const { client, gateway, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.path === '/collection/import') {
           importAttempts += 1;
-          if (importAttempts === 1) {
-            return jsonResponse(
-              { error: { message: 'rate limited' } },
-              { status: 429, headers: { 'Retry-After': '0' } }
-            );
-          }
           const body = env.body as { info?: { name?: string } };
           inventory.push({ id: 'owned-import', name: String(body.info?.name || '') });
-          return jsonResponse({ data: { id: 'owned-import', uid: 'owned-import' } });
+          return jsonResponse(
+            { error: { message: 'rate limited after commit' } },
+            { status: 429, headers: { 'Retry-After': '0' } }
+          );
         }
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: inventory });
@@ -5214,11 +5211,39 @@ describe('PostmanGatewayAssetsClient', () => {
       await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
         collectionId: 'owned-import'
       });
-      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(2);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       const importCalls = requestJson.mock.calls
         .map(([options]) => options)
         .filter((options) => options.path === '/collection/import');
-      expect(importCalls.every((options) => options.retry === 'rate-limit')).toBe(true);
+      expect(importCalls).toHaveLength(1);
+      expect(importCalls[0]?.retry).toBe('none');
+      expect(importAttempts).toBe(1);
+    });
+
+    it('fails an unreconciled rate-limited import after one unsafe POST', async () => {
+      const { client, gateway, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.path === '/collection/import') {
+          return jsonResponse(
+            { error: { message: 'rate limited without commit' } },
+            { status: 429, headers: { 'Retry-After': '0' } }
+          );
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [] });
+        }
+        return jsonResponse({ data: { ok: true } });
+      });
+      const requestJson = vi.spyOn(gateway, 'requestJson');
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+        /import-ambiguous-unreconciled/
+      );
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      const importCalls = requestJson.mock.calls
+        .map(([options]) => options)
+        .filter((options) => options.path === '/collection/import');
+      expect(importCalls).toHaveLength(1);
+      expect(importCalls[0]?.retry).toBe('none');
     });
 
     it('retries a transient post-import inventory 500 without resending the import', async () => {

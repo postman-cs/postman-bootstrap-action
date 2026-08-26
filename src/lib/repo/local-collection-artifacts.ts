@@ -520,7 +520,10 @@ export async function computeArtifactDigestFromTree(absDir: string): Promise<str
 
 function convertV2CollectionToV3(v2Collection: JsonRecord): JsonRecord {
   const model = (V2 as unknown as { Collection: { parse: (v: unknown) => unknown } }).Collection;
-  const parsed = model.parse(v2Collection ?? {});
+  // The runtime model parser normalizes nested scripts in place. Artifact
+  // splitting must never mutate the digest-bound payload that is subsequently
+  // imported or compared with a cloud export.
+  const parsed = model.parse(structuredClone(v2Collection ?? {}));
   return transform(model as never, FormatVersion.V3, parsed as never) as unknown as JsonRecord;
 }
 

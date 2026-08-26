@@ -219,7 +219,7 @@ function isNumericPlaceholder(value: number, category: EntityCategory): boolean 
 function isEntityPlaceholder(value: unknown, category: EntityCategory): boolean {
   if (typeof value === 'number') return isNumericPlaceholder(value, category);
   if (typeof value !== 'string') return false;
-  if (category === 'uid' && /^00000000-0000-4000-8000-\d{12}$/.test(value)) return true;
+  if (/^00000000-0000-4000-8000-\d{12}$/.test(value)) return true;
   if (/^-?\d+$/.test(value) && isNumericPlaceholder(Number(value), category)) return true;
   return placeholderPattern(category).test(value);
 }
@@ -577,7 +577,9 @@ function sanitizeRequestBody(body: string, plan: ReplacementPlan): string {
   // Request bytes are part of the replay key. Replace values without reserializing
   // JSON, and only substitute values proven by the replacement plan. Generic
   // redaction would alter request-only generated IDs that the replay emits again.
-  return applyPlanReplacements(body, plan);
+  return applyPlanReplacements(body, plan)
+    .replace(ISO_TIMESTAMP_PATTERN, FIXED_ISO_TIMESTAMP)
+    .replace(HTTP_TIMESTAMP_PATTERN, FIXED_HTTP_TIMESTAMP);
 }
 
 function recomputeRequest(

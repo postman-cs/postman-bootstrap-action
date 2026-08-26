@@ -305784,7 +305784,7 @@ function buildLocalOpenApiConversionOptions(options) {
   };
 }
 function withoutStructuralIds(collection) {
-  const clone2 = deepClone2(collection);
+  const clone2 = JSON.parse(JSON.stringify(collection));
   if (isRecord3(clone2.info)) delete clone2.info._postman_id;
   stripStructuralItemIds(clone2.item);
   return clone2;
@@ -305812,6 +305812,35 @@ function stableStringify2(value) {
 }
 function computePayloadDigest(collection) {
   return (0, import_node_crypto5.createHash)("sha256").update(stableStringify2(withoutStructuralIds(collection))).digest("hex");
+}
+function semanticDifferenceValue(value) {
+  const serialized = stableStringify2(value);
+  const kind = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+  return `${kind}:bytes=${Buffer.byteLength(serialized)}:sha256=${(0, import_node_crypto5.createHash)("sha256").update(serialized).digest("hex").slice(0, 12)}`;
+}
+function describePayloadDigestDifference(expected, observed) {
+  const visit4 = (left, right, path13) => {
+    if (stableStringify2(left) === stableStringify2(right)) return null;
+    if (Array.isArray(left) && Array.isArray(right)) {
+      if (left.length !== right.length) return `${path13}.length expected=${left.length} observed=${right.length}`;
+      for (let index = 0; index < left.length; index += 1) {
+        const difference = visit4(left[index], right[index], `${path13}[${index}]`);
+        if (difference) return difference;
+      }
+    } else if (left !== null && right !== null && typeof left === "object" && typeof right === "object") {
+      const leftRecord = left;
+      const rightRecord = right;
+      const keys = [.../* @__PURE__ */ new Set([...Object.keys(leftRecord), ...Object.keys(rightRecord)])].sort();
+      for (const key of keys) {
+        if (!(key in leftRecord)) return `${path13}.${key} expected=missing observed=${semanticDifferenceValue(rightRecord[key])}`;
+        if (!(key in rightRecord)) return `${path13}.${key} expected=${semanticDifferenceValue(leftRecord[key])} observed=missing`;
+        const difference = visit4(leftRecord[key], rightRecord[key], `${path13}.${key}`);
+        if (difference) return difference;
+      }
+    }
+    return `${path13} expected=${semanticDifferenceValue(left)} observed=${semanticDifferenceValue(right)}`;
+  };
+  return visit4(withoutStructuralIds(expected), withoutStructuralIds(observed), "$") ?? "none";
 }
 function applyCollectionIdentity(source, name, description) {
   const clone2 = deepClone2(source);
@@ -309227,6 +309256,7 @@ ${error2.responseBody ?? ""}`
     renameMs: 0,
     electionMs: 0,
     deltaOpsByKind: { create: 0, patch: 0, move: 0, delete: 0 },
+    deltaRoutes: [],
     changedBytes: 0,
     deltaMs: 0,
     fallbackReasons: []
@@ -309236,6 +309266,7 @@ ${error2.responseBody ?? ""}`
     return {
       ...this.writeMetrics,
       deltaOpsByKind: { ...this.writeMetrics.deltaOpsByKind },
+      deltaRoutes: [...this.writeMetrics.deltaRoutes],
       fallbackReasons: [...this.writeMetrics.fallbackReasons]
     };
   }
@@ -309813,14 +309844,23 @@ ${error2.responseBody ?? ""}`
     if (!Array.isArray(listed?.data)) {
       throw new Error("Collection item listing did not return an array");
     }
-    return listed.data.map((entry, index) => {
-      const item = asRecord13(entry);
-      const itemId = String(item?.id ?? "").trim();
-      if (!item || !itemId) {
-        throw new Error(`Existing collection item listing entry ${index} did not return an id`);
-      }
-      return item;
-    });
+    const flattened = [];
+    const visit4 = (entries, path13) => {
+      entries.forEach((entry, index) => {
+        const item = asRecord13(entry);
+        const itemId = String(item?.id ?? "").trim();
+        if (!item || !itemId) {
+          throw new Error(`Existing collection item listing entry ${path13}${index} did not return an id`);
+        }
+        flattened.push(item);
+        if (item.items !== void 0 && !Array.isArray(item.items)) {
+          throw new Error(`Existing collection item listing entry ${path13}${index}.items was not an array`);
+        }
+        if (Array.isArray(item.items)) visit4(item.items, `${path13}${index}.items.`);
+      });
+    };
+    visit4(listed.data, "");
+    return flattened;
   }
   /**
    * Collection-level name/description/auth/variables/scripts via JSON-Patch.
@@ -310148,7 +310188,9 @@ ${error2.responseBody ?? ""}`
     const importPayload = this.cloneJson(prepared);
     const info2 = asRecord13(importPayload.info) ?? {};
     info2.name = tempName;
-    info2._postman_id = (0, import_node_crypto7.randomUUID)();
+    if (typeof info2._postman_id !== "string" || !info2._postman_id.trim()) {
+      info2._postman_id = (0, import_node_crypto7.randomUUID)();
+    }
     importPayload.info = info2;
     this.assertV21Collection(importPayload);
     const journaledRootIds = [];
@@ -310168,7 +310210,7 @@ ${error2.responseBody ?? ""}`
         method: "post",
         path: "/collection/import",
         query: { workspace: workspaceId, format: "2.1.0" },
-        retry: "rate-limit",
+        retry: "none",
         body: importPayload
       }));
     } catch (error2) {
@@ -310333,6 +310375,7 @@ ${error2.responseBody ?? ""}`
           offset += 1;
         }
         const outcome = await this.applyPlannedCollectionDeltaGroup(uid, group2, itemIds, digest);
+        if (outcome === "converged") break;
         if (outcome === "fallback") {
           this.recordDeltaFallback("ambiguous-delta-mutation", 0);
           await this.deepUpdateV2Collection(uid, desiredCollection, digest);
@@ -310398,13 +310441,15 @@ ${error2.responseBody ?? ""}`
         if (!parentId) {
           throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create parent unavailable for ${operation2.key}`);
         }
+        const body3 = this.buildItemCreateBody(this.deltaV3Item(operation2.item), parentId);
+        this.writeMetrics.deltaRoutes.push("POST /v3/collections/{param}/items");
         const created = await this.gateway.requestJson({
           service: "collection",
           method: "post",
           path: `/v3/collections/${cid}/items/`,
           retry: "none",
           headers: { "X-Entity-Type": operation2.entityType },
-          body: this.buildItemCreateBody(this.deltaV3Item(operation2.item), parentId)
+          body: body3
         });
         const id = String(asRecord13(created?.data)?.id ?? "").trim();
         if (!id) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create returned no id for ${operation2.key}`);
@@ -310413,6 +310458,7 @@ ${error2.responseBody ?? ""}`
       }
       const itemId = this.resolveDeltaItemId(operation2, itemIds);
       if (operation2.kind === "delete") {
+        this.writeMetrics.deltaRoutes.push("DELETE /v3/collections/{param}/items/{param}");
         await this.gateway.requestJson({
           service: "collection",
           method: "delete",
@@ -310425,6 +310471,7 @@ ${error2.responseBody ?? ""}`
       if (operation2.kind === "move") {
         const parentId = operation2.parentKey ? itemIds.get(operation2.parentKey) : cid;
         if (!parentId) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move parent unavailable for ${operation2.key}`);
+        this.writeMetrics.deltaRoutes.push("PATCH /v3/collections/{param}/items/{param}");
         await this.gateway.requestJson({
           service: "collection",
           method: "patch",
@@ -310439,6 +310486,7 @@ ${error2.responseBody ?? ""}`
       const fields = operation2.entityType === "collection" ? ["name", "description"] : ["name", "description", "method", "url", "headers", "queryParams", "pathVariables", "body", "settings"];
       const body2 = fields.filter((field) => target[field] !== void 0).map((field) => ({ op: "add", path: `/${field}`, value: target[field] }));
       if (body2.length === 0) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: no supported patch fields for ${operation2.key}`);
+      this.writeMetrics.deltaRoutes.push("PATCH /v3/collections/{param}/items/{param}");
       await this.gateway.requestJson({
         service: "collection",
         method: "patch",
@@ -310460,7 +310508,7 @@ ${error2.responseBody ?? ""}`
       this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
       if (observed.converged) {
         this.writeMetrics.convergedWithoutResend += 1;
-        return "applied";
+        return "converged";
       }
       return "fallback";
     }
@@ -310469,19 +310517,25 @@ ${error2.responseBody ?? ""}`
   async applyPlannedCollectionDeltaGroup(uid, operations, itemIds, desiredDigest) {
     let next = 0;
     let fallback = false;
+    let converged = false;
     const worker = async () => {
-      while (!fallback) {
+      while (!fallback && !converged) {
         const operation2 = operations[next];
         next += 1;
         if (!operation2) return;
-        if (await this.applyPlannedCollectionDeltaOperation(uid, operation2, itemIds, desiredDigest) === "fallback") {
+        const outcome = await this.applyPlannedCollectionDeltaOperation(uid, operation2, itemIds, desiredDigest);
+        if (outcome === "converged") {
+          converged = true;
+          return;
+        }
+        if (outcome === "fallback") {
           fallback = true;
           return;
         }
       }
     };
     await Promise.all(Array.from({ length: Math.min(2, operations.length) }, () => worker()));
-    return fallback ? "fallback" : "applied";
+    return converged ? "converged" : fallback ? "fallback" : "applied";
   }
   /** Delete and verify absence of only the supplied run-owned collection roots. */
   async deleteVerifiedRunOwnedCollections(workspaceId, collectionIds) {
@@ -311459,7 +311513,7 @@ async function computeArtifactDigestFromTree(absDir) {
 }
 function convertV2CollectionToV3(v2Collection) {
   const model = V22.Collection;
-  const parsed = model.parse(v2Collection ?? {});
+  const parsed = model.parse(structuredClone(v2Collection ?? {}));
   return (0, import_transforms2.transform)(model, import_transforms2.FormatVersion.V3, parsed);
 }
 async function defaultSplitCollection(v2Collection) {
@@ -343983,23 +344037,33 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             };
           };
           const settledWrites = new Array(collectionRoles.length);
-          let nextRoleIndex = 0;
-          let writeFailed = false;
-          const writeWorker = async () => {
-            while (!writeFailed) {
-              const roleIndex = nextRoleIndex;
-              nextRoleIndex += 1;
-              const role = collectionRoles[roleIndex];
-              if (!role) return;
-              try {
-                settledWrites[roleIndex] = { status: "fulfilled", value: await writeRole(role) };
-              } catch (reason) {
-                settledWrites[roleIndex] = { status: "rejected", reason };
-                writeFailed = true;
-              }
+          const allFresh = collectionRoles.every(
+            (role) => !(role.existingId || discoveredIds.get(role.role)) || inputs.collectionSyncMode !== "refresh"
+          );
+          if (allFresh) {
+            const freshSettled = await Promise.allSettled(collectionRoles.map(writeRole));
+            for (let index = 0; index < freshSettled.length; index += 1) {
+              settledWrites[index] = freshSettled[index];
             }
-          };
-          await Promise.all([writeWorker(), writeWorker()]);
+          } else {
+            let nextRoleIndex = 0;
+            let writeFailed = false;
+            const writeWorker = async () => {
+              while (!writeFailed) {
+                const roleIndex = nextRoleIndex;
+                nextRoleIndex += 1;
+                const role = collectionRoles[roleIndex];
+                if (!role) return;
+                try {
+                  settledWrites[roleIndex] = { status: "fulfilled", value: await writeRole(role) };
+                } catch (reason) {
+                  settledWrites[roleIndex] = { status: "rejected", reason };
+                  writeFailed = true;
+                }
+              }
+            };
+            await Promise.all([writeWorker(), writeWorker()]);
+          }
           const importMs = Math.max(0, Date.now() - importStarted);
           const roleOrder = collectionRoles.map((role) => role.role);
           const fulfilledByRole = /* @__PURE__ */ new Map();
@@ -344095,6 +344159,52 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               await failOwned("cloud-collection-write", error2);
             }
           }
+          if (!dependencies.postman.exportV2Collection) {
+            await failOwned(
+              "collection-final-verification",
+              new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support")
+            );
+          }
+          const observedDigestByRole = /* @__PURE__ */ new Map();
+          const reconciliationMsByRole = {
+            baseline: 0,
+            smoke: 0,
+            contract: 0
+          };
+          let nextVerificationIndex = 0;
+          let verificationFailure;
+          const verificationWorker = async () => {
+            while (verificationFailure === void 0) {
+              const role = collectionRoles[nextVerificationIndex];
+              nextVerificationIndex += 1;
+              if (!role) return;
+              const result = fulfilledByRole.get(role.role);
+              if (!result) {
+                verificationFailure = new Error(`missing role result for ${role.role}`);
+                return;
+              }
+              const started = Date.now();
+              try {
+                const exported = await dependencies.postman.exportV2Collection(result.collectionId);
+                const observedDigest = computePayloadDigest(exported);
+                reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
+                observedDigestByRole.set(role.role, observedDigest);
+                const desiredDigest = payloads.roles[role.role].payloadDigest;
+                if (observedDigest !== desiredDigest) {
+                  verificationFailure = new Error(
+                    `final export digest mismatch for ${role.role}: expected ${desiredDigest}, got ${observedDigest}; ${describePayloadDigestDifference(payloads.roles[role.role].collection, exported)}`
+                  );
+                }
+              } catch (error2) {
+                reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
+                verificationFailure = error2;
+              }
+            }
+          };
+          await Promise.all([verificationWorker(), verificationWorker()]);
+          if (verificationFailure !== void 0) {
+            await failOwned("collection-final-verification", verificationFailure);
+          }
           const finalized = finalizeLocalOpenApiArtifactManifest(materialized.manifest, {
             baseline: outputs["baseline-collection-id"],
             smoke: outputs["smoke-collection-id"],
@@ -344115,6 +344225,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             renameMs: 0,
             electionMs: 0,
             deltaOpsByKind: { create: 0, patch: 0, move: 0, delete: 0 },
+            deltaRoutes: [],
             changedBytes: 0,
             deltaMs: 0,
             fallbackReasons: []
@@ -344129,15 +344240,15 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               role: role.role,
               outcome: result.kind,
               desiredSemanticDigest: payloads.roles[role.role].payloadDigest,
-              observedSemanticDigest: payloads.roles[role.role].payloadDigest,
+              observedSemanticDigest: observedDigestByRole.get(role.role),
               snapshotMs: snapshotMsByRole[role.role],
               writeMs: result.writeMs,
               payloadBytes: result.payloadBytes,
               changedBytes: result.changedBytes,
               operationCount: result.operationCount,
               networkMs: result.networkMs,
-              wallMs: snapshotMsByRole[role.role] + result.writeMs,
-              reconciliationMs: 0,
+              wallMs: snapshotMsByRole[role.role] + result.writeMs + reconciliationMsByRole[role.role],
+              reconciliationMs: reconciliationMsByRole[role.role],
               fallbackReason: result.fallbackReason
             };
           });
@@ -344163,6 +344274,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               renameMs: writeMetrics.renameMs,
               electionMs: writeMetrics.electionMs,
               deltaOpsByKind: writeMetrics.deltaOpsByKind,
+              deltaRoutes: writeMetrics.deltaRoutes,
               changedBytes: convergenceRoles.reduce((total, role) => total + role.changedBytes, 0),
               deltaMs: writeMetrics.deltaMs,
               fallbackReasons: [.../* @__PURE__ */ new Set([

@@ -900,7 +900,25 @@ describe('Wave 2 create reconciliation', () => {
     });
 
     function createLocalOpenApiPostman(overrides: Record<string, unknown> = {}) {
-      return {
+      const collections = new Map<string, Record<string, unknown>>();
+      const track = (collection: unknown, id: string): void => {
+        const tracked = structuredClone(collection as Record<string, unknown>);
+        const info = tracked.info as Record<string, unknown>;
+        info._postman_id = id;
+        collections.set(id, tracked);
+      };
+      const baseImport = (overrides.importV2Collection as ((workspaceId: string, collection: unknown, finalName?: string) => Promise<{ collectionId: string }>) | undefined);
+      const overrideExport = overrides.exportV2Collection as
+        | ((collectionUid: string) => Promise<Record<string, unknown>>)
+        | undefined;
+      const baseDeepUpdate = overrides.deepUpdateV2Collection as
+        | ((collectionUid: string, collection: unknown, digest: string) => Promise<string>)
+        | undefined;
+      const otherOverrides = { ...overrides };
+      delete otherOverrides.importV2Collection;
+      delete otherOverrides.deepUpdateV2Collection;
+      delete otherOverrides.exportV2Collection;
+      const postman = {
         addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
         createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-created' }),
         findWorkspacesByName: vi.fn().mockResolvedValue([]),
@@ -921,6 +939,11 @@ describe('Wave 2 create reconciliation', () => {
         getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
         importV2Collection: vi.fn().mockImplementation(
           async (_ws: string, collection: unknown, finalName?: string) => {
+            if (baseImport) {
+              const result = await baseImport(_ws, collection, finalName);
+              track(collection, result.collectionId);
+              return result;
+            }
             const info = (collection as { info?: { name?: string } } | null)?.info;
             const name = String(finalName || info?.name || '');
             const id = name.includes('[Contract]')
@@ -928,6 +951,7 @@ describe('Wave 2 create reconciliation', () => {
               : name.includes('[Smoke]')
                 ? 'col-smoke'
                 : 'col-baseline';
+            track(collection, id);
             return {
               collectionId: id,
               journaledRootIds: [id],
@@ -935,7 +959,18 @@ describe('Wave 2 create reconciliation', () => {
             };
           }
         ),
-        deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
+        deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string, collection: unknown, digest: string) => {
+          if (baseDeepUpdate) {
+            const result = await baseDeepUpdate(collectionUid, collection, digest);
+            track(collection, collectionUid);
+            return result;
+          }
+          track(collection, collectionUid);
+          return collectionUid;
+        }),
+        exportV2Collection: vi.fn(async (id: string) => collections.get(id) ?? {
+          info: { _postman_id: id, name: `snapshot-${id}` }, item: []
+        }),
         deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
         injectContractTests: vi.fn().mockResolvedValue([]),
         injectTests: vi.fn().mockResolvedValue(undefined),
@@ -943,7 +978,13 @@ describe('Wave 2 create reconciliation', () => {
         tagCollection: vi.fn().mockResolvedValue(undefined),
         updateSpec: vi.fn().mockResolvedValue(undefined),
         uploadSpec: vi.fn().mockResolvedValue('spec-created'),
-        ...overrides
+        ...otherOverrides
+      };
+      return {
+        ...postman,
+        importV2Collection: postman.importV2Collection,
+        deepUpdateV2Collection: postman.deepUpdateV2Collection,
+        exportV2Collection: overrideExport ?? postman.exportV2Collection
       };
     }
 

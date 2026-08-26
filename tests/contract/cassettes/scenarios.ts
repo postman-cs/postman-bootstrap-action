@@ -122,6 +122,7 @@ const TOKEN_INPUTS = { 'postman-access-token': ACCESS_TOKEN } as const;
 
 const IMPORT_KEY = 'proxy:sync POST /collection/import';
 const DEEP_UPDATE_KEY = 'proxy:sync PUT /collection/deepupdate/';
+const COLLECTION_EXPORT_KEY = 'proxy:collection GET /v3/collections/';
 const WORKSPACE_CREATE_KEY = 'proxy:workspaces POST /workspaces';
 const SQUADS_KEY = 'proxy:ums GET /api/teams/';
 const SPEC_CREATE_KEY = 'proxy:specification POST /specifications';
@@ -286,6 +287,7 @@ export const CASSETTE_SCENARIOS: readonly CassetteScenario[] = [
     expectWire: (keys) => {
       expect(countKeys(keys, MINT_KEY)).toBe(1);
       expect(countKeys(keys, IMPORT_KEY)).toBe(3);
+      expect(keys.filter((key) => key.startsWith(COLLECTION_EXPORT_KEY) && key.includes('/export')).length).toBe(3);
       expect(countKeys(keys, DEEP_UPDATE_KEY)).toBe(0);
       expect(countKeys(keys, WORKSPACE_CREATE_KEY)).toBe(1);
       expect(countKeys(keys, SPEC_CREATE_KEY)).toBeGreaterThanOrEqual(1);
@@ -318,6 +320,7 @@ export const CASSETTE_SCENARIOS: readonly CassetteScenario[] = [
     },
     expectWire: (keys) => {
       expect(countKeys(keys, DEEP_UPDATE_KEY)).toBe(3);
+      expect(keys.filter((key) => key.startsWith(COLLECTION_EXPORT_KEY) && key.includes('/export')).length).toBe(6);
       expect(countKeys(keys, IMPORT_KEY)).toBe(0);
       // A supplied workspace id must not create a second workspace.
       expect(countKeys(keys, WORKSPACE_CREATE_KEY)).toBe(0);

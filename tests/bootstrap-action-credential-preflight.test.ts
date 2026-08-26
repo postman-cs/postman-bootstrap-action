@@ -121,6 +121,7 @@ describe('runAction credential preflight', () => {
     // Local OpenAPI import resolves uid from sync /collection/import, then
     // rename/elect via collection list. Track imported roots for election + link readback.
     const importedCollections: Array<{ id: string; name: string }> = [];
+    const collectionExports = new Map<string, Record<string, unknown>>();
     const linkedRelations: Array<{
       collection: string;
       state: string;
@@ -203,6 +204,7 @@ describe('runAction credential preflight', () => {
           service?: string;
           method?: string;
           path?: string;
+          body?: unknown;
         };
         const svc = String(payload.service ?? '');
         const pmethod = String(payload.method ?? 'get').toLowerCase();
@@ -236,9 +238,14 @@ describe('runAction credential preflight', () => {
                 : 'baseline';
             const id = `col-${slot}`;
             importedCollections.push({ id, name });
+            collectionExports.set(id, structuredClone(body as Record<string, unknown>));
             return json({ data: { id, uid: id } });
           }
           if (pmethod === 'put' && /\/collection\/deepupdate\//.test(ppath)) {
+            const id = ppath.split('/').pop() || '';
+            if (payload.body && typeof payload.body === 'object') {
+              collectionExports.set(id, structuredClone(payload.body as Record<string, unknown>));
+            }
             return json({ data: { ok: true } });
           }
         }
@@ -324,13 +331,26 @@ describe('runAction credential preflight', () => {
             const bare = ppath.split('/').pop() || '';
             const ops = (payload as { body?: Array<{ path?: string; value?: string }> }).body;
             const nameOp = Array.isArray(ops) ? ops.find((op) => op.path === '/name') : undefined;
+            const descriptionOp = Array.isArray(ops) ? ops.find((op) => op.path === '/description') : undefined;
+            const hit = importedCollections.find((entry) => entry.id === bare || entry.id.endsWith(bare));
             if (nameOp?.value) {
-              const hit = importedCollections.find((entry) => entry.id === bare || entry.id.endsWith(bare));
               if (hit) hit.name = String(nameOp.value);
+              const exported = collectionExports.get(hit?.id ?? bare);
+              const info = exported?.info as Record<string, unknown> | undefined;
+              if (info) info.name = String(nameOp.value);
+            }
+            if (descriptionOp) {
+              const exported = collectionExports.get(hit?.id ?? bare);
+              const info = exported?.info as Record<string, unknown> | undefined;
+              if (info) info.description = String(descriptionOp.value ?? '');
             }
             return json({ data: { id: bare || 'patched' } });
           }
-          if (pmethod === 'get' && /\/export$/.test(ppath)) return json({ data: { collection: {} } });
+          if (pmethod === 'get' && /\/export$/.test(ppath)) {
+            const requested = ppath.split('/').at(-2) || '';
+            const id = importedCollections.find((entry) => entry.id === requested || entry.id.endsWith(requested))?.id ?? requested;
+            return json({ data: { collection: collectionExports.get(id) ?? {} } });
+          }
           if (pmethod === 'get' && /\/v3\/collections\/[^/]+$/.test(ppath)) {
             return json({ data: { id: 'col-baseline', name: 'core-payments' } });
           }

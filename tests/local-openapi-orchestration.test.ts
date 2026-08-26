@@ -197,6 +197,7 @@ describe('local OpenAPI orchestration', () => {
   }
 
   function buildPostman(events: string[]) {
+    const storedCollections = new Map<string, JsonRecord>();
     const importV2Collection = vi.fn(
       async (_workspaceId: string, collection: unknown, finalName: string) => {
         events.push(`import:${finalName}`);
@@ -208,6 +209,7 @@ describe('local OpenAPI orchestration', () => {
               : 'col-baseline';
         const payload = collection as { event?: unknown[]; item?: unknown[] };
         expect(Array.isArray(payload.item)).toBe(true);
+        storedCollections.set(id, structuredClone(collection as JsonRecord));
         return {
           collectionId: id,
           journaledRootIds: [id],
@@ -216,9 +218,9 @@ describe('local OpenAPI orchestration', () => {
       }
     );
     const deepUpdateV2Collection = vi.fn(async (collectionUid: string, collection: unknown, expectedPayloadDigest: string) => {
-      void collection;
       void expectedPayloadDigest;
       events.push(`deepUpdate:${collectionUid}`);
+      storedCollections.set(collectionUid, structuredClone(collection as JsonRecord));
       return collectionUid;
     });
     return {
@@ -238,7 +240,7 @@ describe('local OpenAPI orchestration', () => {
       collectionWriteMetrics: undefined as unknown,
       exportV2Collection: vi.fn(async (collectionUid: string) => {
         events.push(`export:${collectionUid}`);
-        return { info: { _postman_id: collectionUid, name: `snapshot-${collectionUid}` }, item: [] };
+        return storedCollections.get(collectionUid) ?? { info: { _postman_id: collectionUid, name: `snapshot-${collectionUid}` }, item: [] };
       }),
       findWorkspacesByName: vi.fn().mockResolvedValue([{ id: 'ws-1', name: 'orchestration-api' }]),
       generateCollection: vi.fn().mockRejectedValue(new Error('generateCollection must be unreachable')),
@@ -418,6 +420,64 @@ describe('local OpenAPI orchestration', () => {
         'col-contract',
         'col-smoke'
       ]);
+    });
+  });
+
+  it('admits all three fresh import finalizers before any one completes', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const postman = buildPostman(events);
+      const pending = new Map<string, () => void>();
+      const stored = new Map<string, JsonRecord>();
+      let allPendingResolve!: () => void;
+      const allPending = new Promise<void>((resolve) => { allPendingResolve = resolve; });
+      postman.importV2Collection = vi.fn(async (_workspaceId: string, collection: unknown, finalName: string) => {
+        const id = finalName.includes('[Contract]') ? 'col-contract' : finalName.includes('[Smoke]') ? 'col-smoke' : 'col-baseline';
+        stored.set(id, structuredClone(collection as JsonRecord));
+        await new Promise<void>((resolve) => {
+          pending.set(id, resolve);
+          if (pending.size === 3) allPendingResolve();
+        });
+        return {
+          collectionId: id,
+          journaledRootIds: [id],
+          deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
+        };
+      });
+      postman.exportV2Collection = vi.fn(async (id: string) => stored.get(id)!);
+
+      const run = runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+        core: createCoreStub(), exec: createExecStub(), io: { which: async () => 'tool' },
+        internalIntegration: buildIntegration(events),
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState: { read: () => null, write: () => undefined }, specFetcher: vi.fn()
+      });
+      await allPending;
+      expect(pending.size).toBe(3);
+      for (const resolve of pending.values()) resolve();
+      await run;
+    });
+  });
+
+  it('fails through owned rollback when an exact final export digest mismatches', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const postman = buildPostman(events);
+      postman.exportV2Collection = vi.fn(async (id: string) => ({
+        info: { _postman_id: id, name: 'mismatched-final' }, item: []
+      }));
+      const integration = buildIntegration(events);
+      await expect(runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+        core: createCoreStub(), exec: createExecStub(), io: { which: async () => 'tool' },
+        internalIntegration: integration,
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState: { read: () => null, write: () => undefined }, specFetcher: vi.fn()
+      })).rejects.toThrow(/stage=collection-final-verification.*final export digest mismatch/);
+      expect(postman.deleteVerifiedRunOwnedCollections).toHaveBeenCalledWith('ws-1', [
+        'col-baseline', 'col-smoke', 'col-contract'
+      ]);
+      expect(integration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+      expect(postman.tagCollection).not.toHaveBeenCalled();
     });
   });
 
@@ -1095,12 +1155,13 @@ describe('local OpenAPI orchestration', () => {
       const exported = await generateRoleCollections();
       const baselineSnapshot = alterFirstRequest(exported.baseline);
       const baselineSnapshotRequestId = firstRequestId(baselineSnapshot);
+      let convergedBaseline: JsonRecord | undefined;
       postman.exportV2Collection = vi.fn(async (collectionUid: string) => {
-        if (collectionUid === 'col-baseline-existing') return baselineSnapshot;
+        if (collectionUid === 'col-baseline-existing') return convergedBaseline ?? baselineSnapshot;
         if (collectionUid === 'col-smoke-existing') return exported.smoke;
         return exported.contract;
       }) as unknown as typeof postman.exportV2Collection;
-      postman.applyCollectionDelta = vi.fn(async (_uid: string, rawPlan: unknown) => {
+      postman.applyCollectionDelta = vi.fn(async (_uid: string, rawPlan: unknown, desiredCollection: unknown) => {
         const plan = rawPlan as {
           decision: string;
           operations: Array<{ kind: string; sourceId?: string; item: JsonRecord }>;
@@ -1112,6 +1173,7 @@ describe('local OpenAPI orchestration', () => {
           sourceId: baselineSnapshotRequestId,
           item: { id: baselineSnapshotRequestId }
         });
+        convergedBaseline = structuredClone(desiredCollection as JsonRecord);
         return { strategy: 'delta' as const };
       });
       postman.collectionWriteMetrics = {
@@ -1126,6 +1188,7 @@ describe('local OpenAPI orchestration', () => {
         renameMs: 7,
         electionMs: 8,
         deltaOpsByKind: { create: 0, patch: 1, move: 0, delete: 0 },
+        deltaRoutes: ['PATCH /v3/collections/{param}/items/{param}'],
         changedBytes: 9,
         deltaMs: 10,
         fallbackReasons: []
@@ -1171,6 +1234,7 @@ describe('local OpenAPI orchestration', () => {
         renameMs: 7,
         electionMs: 8,
         deltaOpsByKind: { create: 0, patch: 1, move: 0, delete: 0 },
+        deltaRoutes: ['PATCH /v3/collections/{param}/items/{param}'],
         deltaMs: 10,
         fallbackReasons: []
       });
@@ -1180,7 +1244,7 @@ describe('local OpenAPI orchestration', () => {
           changedBytes: expect.any(Number),
           networkMs: expect.any(Number),
           wallMs: expect.any(Number),
-          reconciliationMs: 0,
+          reconciliationMs: expect.any(Number),
           fallbackReason: null
         });
         expect(role.desiredSemanticDigest).toMatch(/^[a-f0-9]{64}$/);
@@ -1201,9 +1265,14 @@ describe('local OpenAPI orchestration', () => {
     await withRepo(async () => {
       const events: string[] = [];
       const postman = buildPostman(events);
-      postman.applyCollectionDelta = vi.fn(async (_uid: string, rawPlan: unknown) => {
+      const converged = new Map<string, JsonRecord>();
+      postman.exportV2Collection = vi.fn(async (uid: string) =>
+        converged.get(uid) ?? { info: { _postman_id: uid, name: `stale-${uid}` }, item: [] }
+      );
+      postman.applyCollectionDelta = vi.fn(async (uid: string, rawPlan: unknown, desiredCollection: unknown) => {
         const plan = rawPlan as { decision: string };
         expect(plan.decision).toBe('fallback');
+        converged.set(uid, structuredClone(desiredCollection as JsonRecord));
         return { strategy: 'whole-fallback' as const, fallbackReason: 'unsupported-root-attribute' };
       });
 
@@ -1323,10 +1392,14 @@ describe('local OpenAPI orchestration', () => {
       const events: string[] = [];
       const postman = buildPostman(events);
       const snapshots = await generateRoleCollections();
+      let smokeReads = 0;
       postman.exportV2Collection = vi.fn(async (collectionUid: string) => {
         if (collectionUid === 'col-baseline-existing') return snapshots.baseline;
         if (collectionUid === 'col-contract-existing') return snapshots.contract;
-        return { info: { _postman_id: collectionUid, name: `stale-${collectionUid}` }, item: [] };
+        smokeReads += 1;
+        return smokeReads === 1
+          ? { info: { _postman_id: collectionUid, name: `stale-${collectionUid}` }, item: [] }
+          : snapshots.smoke;
       }) as typeof postman.exportV2Collection;
       const outputs = await runBootstrap(
         createInputs({
@@ -1362,20 +1435,27 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
-  it('exports reusable-root snapshots through two bounded concurrent lanes', async () => {
+  it('exports reusable-root snapshots and final proofs through two bounded concurrent lanes', async () => {
     await withRepo(async () => {
       const events: string[] = [];
       const postman = buildPostman(events);
       let snapshotRequests = 0;
       let inFlightSnapshots = 0;
       let maxInFlightSnapshots = 0;
+      const converged = new Map<string, JsonRecord>();
+      const originalDeepUpdate = postman.deepUpdateV2Collection;
+      postman.deepUpdateV2Collection = vi.fn(async (uid: string, collection: unknown, digest: string) => {
+        const result = await originalDeepUpdate(uid, collection, digest);
+        converged.set(uid, structuredClone(collection as JsonRecord));
+        return result;
+      }) as typeof postman.deepUpdateV2Collection;
       postman.exportV2Collection = vi.fn(async (collectionUid: string) => {
         snapshotRequests += 1;
         inFlightSnapshots += 1;
         maxInFlightSnapshots = Math.max(maxInFlightSnapshots, inFlightSnapshots);
         await Promise.resolve();
         inFlightSnapshots -= 1;
-        return { info: { _postman_id: collectionUid, name: `stale-${collectionUid}` }, item: [] };
+        return converged.get(collectionUid) ?? { info: { _postman_id: collectionUid, name: `stale-${collectionUid}` }, item: [] };
       });
 
       await runBootstrap(
@@ -1397,7 +1477,7 @@ describe('local OpenAPI orchestration', () => {
         }
       );
 
-      expect(snapshotRequests).toBe(3);
+      expect(snapshotRequests).toBe(6);
       expect(maxInFlightSnapshots).toBe(2);
       expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
     });
@@ -1461,7 +1541,8 @@ describe('local OpenAPI orchestration', () => {
         specFetcher: vi.fn()
       });
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
-      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+      expect(postman.applyCollectionDelta).toBeUndefined();
     });
   });
 
@@ -1563,6 +1644,7 @@ describe('local OpenAPI orchestration', () => {
       const core = createCoreStub();
       const postman = buildPostman(events);
       const imported: JsonRecord[] = [];
+      const finalExports = new Map<string, JsonRecord>();
       postman.importV2Collection = vi.fn(
         async (_workspaceId: string, collection: unknown, finalName: string) => {
           events.push(`import:${finalName}`);
@@ -1573,6 +1655,7 @@ describe('local OpenAPI orchestration', () => {
               ? 'contract'
               : 'baseline';
           const id = `12345678-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeee${slot === 'baseline' ? '01' : slot === 'smoke' ? '02' : '03'}`;
+          finalExports.set(id, structuredClone(collection as JsonRecord));
           return {
             collectionId: id,
             journaledRootIds: [id],
@@ -1580,6 +1663,7 @@ describe('local OpenAPI orchestration', () => {
           };
         }
       );
+      postman.exportV2Collection = vi.fn(async (id: string) => finalExports.get(id)!);
       const internalIntegration = buildIntegration(events);
 
       await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
@@ -1705,26 +1789,28 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
-  it('bounds role cloud writes to two concurrent lanes within one workspace (Q7)', async () => {
+  it('admits all three fresh import finalizers simultaneously within one workspace (Q7)', async () => {
     await withRepo(async () => {
       const events: string[] = [];
       const core = createCoreStub();
       const postman = buildPostman(events);
-      let inFlight = 0;
-      let maxInFlight = 0;
+      const pending = new Map<string, () => void>();
+      const finalExports = new Map<string, JsonRecord>();
+      let allPendingResolve!: () => void;
+      const allPending = new Promise<void>((resolve) => { allPendingResolve = resolve; });
       postman.importV2Collection = vi.fn(
         async (_workspaceId: string, collection: unknown, finalName: string) => {
-          inFlight += 1;
-          maxInFlight = Math.max(maxInFlight, inFlight);
-          await Promise.resolve();
-          inFlight -= 1;
-          events.push(`import:${finalName}`);
           const id = finalName.includes('[Contract]')
             ? 'col-contract'
             : finalName.includes('[Smoke]')
               ? 'col-smoke'
               : 'col-baseline';
-          void collection;
+          finalExports.set(id, structuredClone(collection as JsonRecord));
+          await new Promise<void>((resolve) => {
+            pending.set(id, resolve);
+            if (pending.size === 3) allPendingResolve();
+          });
+          events.push(`import:${finalName}`);
           return {
             collectionId: id,
             journaledRootIds: [id],
@@ -1732,8 +1818,9 @@ describe('local OpenAPI orchestration', () => {
           };
         }
       );
+      postman.exportV2Collection = vi.fn(async (id: string) => finalExports.get(id)!);
       const internalIntegration = buildIntegration(events);
-      await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+      const run = runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
         core,
         exec: createExecStub(),
         io: { which: async () => 'tool' },
@@ -1742,7 +1829,10 @@ describe('local OpenAPI orchestration', () => {
         resourcesState: { read: () => null, write: () => undefined },
         specFetcher: vi.fn()
       });
-      expect(maxInFlight).toBe(2);
+      await allPending;
+      expect(pending.size).toBe(3);
+      for (const resolve of pending.values()) resolve();
+      await run;
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
     });
   });

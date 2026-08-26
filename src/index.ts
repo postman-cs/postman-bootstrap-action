@@ -92,6 +92,7 @@ import {
 import {
   buildLocalOpenApiConversionOptions,
   computePayloadDigest,
+  describePayloadDigestDifference,
   generateLocalOpenApiRolePayloads,
   type CollectionRole,
   type LocalOpenApiRolePayloads
@@ -3264,6 +3265,7 @@ async function runBootstrapInner(
           renameMs: number;
           electionMs: number;
           deltaOpsByKind: { create: number; patch: number; move: number; delete: number };
+          deltaRoutes: string[];
           changedBytes: number;
           deltaMs: number;
           fallbackReasons: string[];
@@ -3697,28 +3699,40 @@ async function runBootstrapInner(
             fallbackReason: null
           };
         };
-        // Two lanes cut fresh-import latency while keeping mutation pressure
-        // bounded. Preflight snapshots and the shared ownership ledger let any
-        // completed or ambiguous write roll back as one transaction.
+        // Fresh imports must all enter the client so each run-unique import can
+        // reach its inventory/election finalizer. The client separately limits
+        // only the unsafe import POST mutations to two. Reuse/mixed writes keep
+        // the outer two-lane bound because their whole/delta mutations do not
+        // have that split mutation/finalizer lifecycle.
         const settledWrites: Array<PromiseSettledResult<RoleWriteResult> | undefined> =
           new Array(collectionRoles.length);
-        let nextRoleIndex = 0;
-        let writeFailed = false;
-        const writeWorker = async (): Promise<void> => {
-          while (!writeFailed) {
-            const roleIndex = nextRoleIndex;
-            nextRoleIndex += 1;
-            const role = collectionRoles[roleIndex];
-            if (!role) return;
-            try {
-              settledWrites[roleIndex] = { status: 'fulfilled', value: await writeRole(role) };
-            } catch (reason) {
-              settledWrites[roleIndex] = { status: 'rejected', reason };
-              writeFailed = true;
-            }
+        const allFresh = collectionRoles.every(
+          (role) => !(role.existingId || discoveredIds.get(role.role)) || inputs.collectionSyncMode !== 'refresh'
+        );
+        if (allFresh) {
+          const freshSettled = await Promise.allSettled(collectionRoles.map(writeRole));
+          for (let index = 0; index < freshSettled.length; index += 1) {
+            settledWrites[index] = freshSettled[index];
           }
-        };
-        await Promise.all([writeWorker(), writeWorker()]);
+        } else {
+          let nextRoleIndex = 0;
+          let writeFailed = false;
+          const writeWorker = async (): Promise<void> => {
+            while (!writeFailed) {
+              const roleIndex = nextRoleIndex;
+              nextRoleIndex += 1;
+              const role = collectionRoles[roleIndex];
+              if (!role) return;
+              try {
+                settledWrites[roleIndex] = { status: 'fulfilled', value: await writeRole(role) };
+              } catch (reason) {
+                settledWrites[roleIndex] = { status: 'rejected', reason };
+                writeFailed = true;
+              }
+            }
+          };
+          await Promise.all([writeWorker(), writeWorker()]);
+        }
         const importMs = Math.max(0, Date.now() - importStarted);
 
         const roleOrder = collectionRoles.map((role) => role.role);
@@ -3839,6 +3853,56 @@ async function runBootstrapInner(
           }
         }
 
+        // Success requires an exact semantic export of every final collection,
+        // including imports, deltas, whole writes, unchanged roles, and any
+        // duplicate-election winner. Two read lanes bound gateway pressure.
+        if (!dependencies.postman.exportV2Collection) {
+          await failOwned(
+            'collection-final-verification',
+            new Error('LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support')
+          );
+        }
+        const observedDigestByRole = new Map<CollectionRole, string>();
+        const reconciliationMsByRole: Record<CollectionRole, number> = {
+          baseline: 0,
+          smoke: 0,
+          contract: 0
+        };
+        let nextVerificationIndex = 0;
+        let verificationFailure: unknown;
+        const verificationWorker = async (): Promise<void> => {
+          while (verificationFailure === undefined) {
+            const role = collectionRoles[nextVerificationIndex];
+            nextVerificationIndex += 1;
+            if (!role) return;
+            const result = fulfilledByRole.get(role.role);
+            if (!result) {
+              verificationFailure = new Error(`missing role result for ${role.role}`);
+              return;
+            }
+            const started = Date.now();
+            try {
+              const exported = await dependencies.postman.exportV2Collection!(result.collectionId);
+              const observedDigest = computePayloadDigest(exported);
+              reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
+              observedDigestByRole.set(role.role, observedDigest);
+              const desiredDigest = payloads.roles[role.role].payloadDigest;
+              if (observedDigest !== desiredDigest) {
+                verificationFailure = new Error(
+                  `final export digest mismatch for ${role.role}: expected ${desiredDigest}, got ${observedDigest}; ${describePayloadDigestDifference(payloads.roles[role.role].collection, exported)}`
+                );
+              }
+            } catch (error) {
+              reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
+              verificationFailure = error;
+            }
+          }
+        };
+        await Promise.all([verificationWorker(), verificationWorker()]);
+        if (verificationFailure !== undefined) {
+          await failOwned('collection-final-verification', verificationFailure);
+        }
+
         const finalized = finalizeLocalOpenApiArtifactManifest(materialized.manifest, {
           baseline: outputs['baseline-collection-id'],
           smoke: outputs['smoke-collection-id'],
@@ -3866,6 +3930,7 @@ async function runBootstrapInner(
           renameMs: 0,
           electionMs: 0,
           deltaOpsByKind: { create: 0, patch: 0, move: 0, delete: 0 },
+          deltaRoutes: [],
           changedBytes: 0,
           deltaMs: 0,
           fallbackReasons: []
@@ -3880,15 +3945,15 @@ async function runBootstrapInner(
             role: role.role,
             outcome: result.kind,
             desiredSemanticDigest: payloads.roles[role.role].payloadDigest,
-            observedSemanticDigest: payloads.roles[role.role].payloadDigest,
+            observedSemanticDigest: observedDigestByRole.get(role.role)!,
             snapshotMs: snapshotMsByRole[role.role],
             writeMs: result.writeMs,
             payloadBytes: result.payloadBytes,
             changedBytes: result.changedBytes,
             operationCount: result.operationCount,
             networkMs: result.networkMs,
-            wallMs: snapshotMsByRole[role.role] + result.writeMs,
-            reconciliationMs: 0,
+            wallMs: snapshotMsByRole[role.role] + result.writeMs + reconciliationMsByRole[role.role],
+            reconciliationMs: reconciliationMsByRole[role.role],
             fallbackReason: result.fallbackReason
           };
         });
@@ -3914,6 +3979,7 @@ async function runBootstrapInner(
             renameMs: writeMetrics.renameMs,
             electionMs: writeMetrics.electionMs,
             deltaOpsByKind: writeMetrics.deltaOpsByKind,
+            deltaRoutes: writeMetrics.deltaRoutes,
             changedBytes: convergenceRoles.reduce((total, role) => total + role.changedBytes, 0),
             deltaMs: writeMetrics.deltaMs,
             fallbackReasons: [...new Set([

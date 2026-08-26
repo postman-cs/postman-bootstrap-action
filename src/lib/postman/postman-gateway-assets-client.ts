@@ -71,8 +71,8 @@ function asItemArray(value: unknown): JsonRecord[] {
 }
 
 /**
- * Sanitized convergence counters for collection writes. Counts and durations
- * only: collection content, names, and ids never enter this record.
+ * Sanitized convergence evidence for collection writes. Counts, durations, and
+ * normalized route templates only: content, names, and ids never enter it.
  */
 export interface CollectionWriteMetrics {
   ambiguousWrites: number;
@@ -86,6 +86,7 @@ export interface CollectionWriteMetrics {
   renameMs: number;
   electionMs: number;
   deltaOpsByKind: { create: number; patch: number; move: number; delete: number };
+  deltaRoutes: string[];
   changedBytes: number;
   deltaMs: number;
   fallbackReasons: string[];
@@ -2457,6 +2458,7 @@ export class PostmanGatewayAssetsClient {
     renameMs: 0,
     electionMs: 0,
     deltaOpsByKind: { create: 0, patch: 0, move: 0, delete: 0 },
+    deltaRoutes: [],
     changedBytes: 0,
     deltaMs: 0,
     fallbackReasons: []
@@ -2467,6 +2469,7 @@ export class PostmanGatewayAssetsClient {
     return {
       ...this.writeMetrics,
       deltaOpsByKind: { ...this.writeMetrics.deltaOpsByKind },
+      deltaRoutes: [...this.writeMetrics.deltaRoutes],
       fallbackReasons: [...this.writeMetrics.fallbackReasons]
     };
   }
@@ -3151,14 +3154,23 @@ export class PostmanGatewayAssetsClient {
     if (!Array.isArray(listed?.data)) {
       throw new Error('Collection item listing did not return an array');
     }
-    return listed.data.map((entry, index) => {
-      const item = asRecord(entry);
-      const itemId = String(item?.id ?? '').trim();
-      if (!item || !itemId) {
-        throw new Error(`Existing collection item listing entry ${index} did not return an id`);
-      }
-      return item;
-    });
+    const flattened: JsonRecord[] = [];
+    const visit = (entries: unknown[], path: string): void => {
+      entries.forEach((entry, index) => {
+        const item = asRecord(entry);
+        const itemId = String(item?.id ?? '').trim();
+        if (!item || !itemId) {
+          throw new Error(`Existing collection item listing entry ${path}${index} did not return an id`);
+        }
+        flattened.push(item);
+        if (item.items !== undefined && !Array.isArray(item.items)) {
+          throw new Error(`Existing collection item listing entry ${path}${index}.items was not an array`);
+        }
+        if (Array.isArray(item.items)) visit(item.items, `${path}${index}.items.`);
+      });
+    };
+    visit(listed.data, '');
+    return flattened;
   }
 
   /**
@@ -3562,7 +3574,12 @@ export class PostmanGatewayAssetsClient {
     const importPayload = this.cloneJson(prepared);
     const info = asRecord(importPayload.info) ?? {};
     info.name = tempName;
-    info._postman_id = randomUUID();
+    // Role generation already assigns pairwise-disjoint root identities before
+    // digesting. Preserve that stable identity across concurrent imports; only
+    // synthesize one for legacy callers that did not supply a root id.
+    if (typeof info._postman_id !== 'string' || !info._postman_id.trim()) {
+      info._postman_id = randomUUID();
+    }
     importPayload.info = info;
     // Enforce v2.1 schema before the unsafe create.
     this.assertV21Collection(importPayload);
@@ -3590,7 +3607,7 @@ export class PostmanGatewayAssetsClient {
           method: 'post',
           path: '/collection/import',
           query: { workspace: workspaceId, format: '2.1.0' },
-          retry: 'rate-limit',
+          retry: 'none',
           body: importPayload
         }));
     } catch (error) {
@@ -3797,6 +3814,7 @@ export class PostmanGatewayAssetsClient {
           offset += 1;
         }
         const outcome = await this.applyPlannedCollectionDeltaGroup(uid, group, itemIds, digest);
+        if (outcome === 'converged') break;
         if (outcome === 'fallback') {
           this.recordDeltaFallback('ambiguous-delta-mutation', 0);
           await this.deepUpdateV2Collection(uid, desiredCollection, digest);
@@ -3870,7 +3888,7 @@ export class PostmanGatewayAssetsClient {
     operation: CollectionDeltaOperation,
     itemIds: Map<string, string>,
     desiredDigest: string
-  ): Promise<'applied' | 'fallback'> {
+  ): Promise<'applied' | 'converged' | 'fallback'> {
     const cid = this.collectionItemsId(uid);
     const request = async (): Promise<void> => {
       if (operation.kind === 'create') {
@@ -3878,13 +3896,15 @@ export class PostmanGatewayAssetsClient {
         if (!parentId) {
           throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create parent unavailable for ${operation.key}`);
         }
+        const body = this.buildItemCreateBody(this.deltaV3Item(operation.item), parentId);
+        this.writeMetrics.deltaRoutes.push('POST /v3/collections/{param}/items');
         const created = await this.gateway.requestJson<JsonRecord>({
           service: 'collection',
           method: 'post',
           path: `/v3/collections/${cid}/items/`,
           retry: 'none',
           headers: { 'X-Entity-Type': operation.entityType },
-          body: this.buildItemCreateBody(this.deltaV3Item(operation.item), parentId)
+          body
         });
         const id = String(asRecord(created?.data)?.id ?? '').trim();
         if (!id) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create returned no id for ${operation.key}`);
@@ -3893,6 +3913,7 @@ export class PostmanGatewayAssetsClient {
       }
       const itemId = this.resolveDeltaItemId(operation, itemIds);
       if (operation.kind === 'delete') {
+        this.writeMetrics.deltaRoutes.push('DELETE /v3/collections/{param}/items/{param}');
         await this.gateway.requestJson<JsonRecord>({
           service: 'collection', method: 'delete', path: `/v3/collections/${cid}/items/${itemId}`,
           retry: 'none', headers: { 'X-Entity-Type': operation.entityType }
@@ -3902,6 +3923,7 @@ export class PostmanGatewayAssetsClient {
       if (operation.kind === 'move') {
         const parentId = operation.parentKey ? itemIds.get(operation.parentKey) : cid;
         if (!parentId) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move parent unavailable for ${operation.key}`);
+        this.writeMetrics.deltaRoutes.push('PATCH /v3/collections/{param}/items/{param}');
         await this.gateway.requestJson<JsonRecord>({
           service: 'collection', method: 'patch', path: `/v3/collections/${cid}/items/${itemId}`,
           retry: 'none', headers: { 'X-Entity-Type': operation.entityType },
@@ -3917,6 +3939,7 @@ export class PostmanGatewayAssetsClient {
         .filter((field) => target[field] !== undefined)
         .map((field) => ({ op: 'add', path: `/${field}`, value: target[field] }));
       if (body.length === 0) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: no supported patch fields for ${operation.key}`);
+      this.writeMetrics.deltaRoutes.push('PATCH /v3/collections/{param}/items/{param}');
       await this.gateway.requestJson<JsonRecord>({
         service: 'collection', method: 'patch', path: `/v3/collections/${cid}/items/${itemId}`,
         retry: 'none', headers: { 'X-Entity-Type': operation.entityType }, body
@@ -3934,7 +3957,7 @@ export class PostmanGatewayAssetsClient {
       this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
       if (observed.converged) {
         this.writeMetrics.convergedWithoutResend += 1;
-        return 'applied';
+        return 'converged';
       }
       return 'fallback';
     }
@@ -3946,22 +3969,28 @@ export class PostmanGatewayAssetsClient {
     operations: readonly CollectionDeltaOperation[],
     itemIds: Map<string, string>,
     desiredDigest: string
-  ): Promise<'applied' | 'fallback'> {
+  ): Promise<'applied' | 'converged' | 'fallback'> {
     let next = 0;
     let fallback = false;
+    let converged = false;
     const worker = async (): Promise<void> => {
-      while (!fallback) {
+      while (!fallback && !converged) {
         const operation = operations[next];
         next += 1;
         if (!operation) return;
-        if (await this.applyPlannedCollectionDeltaOperation(uid, operation, itemIds, desiredDigest) === 'fallback') {
+        const outcome = await this.applyPlannedCollectionDeltaOperation(uid, operation, itemIds, desiredDigest);
+        if (outcome === 'converged') {
+          converged = true;
+          return;
+        }
+        if (outcome === 'fallback') {
           fallback = true;
           return;
         }
       }
     };
     await Promise.all(Array.from({ length: Math.min(2, operations.length) }, () => worker()));
-    return fallback ? 'fallback' : 'applied';
+    return converged ? 'converged' : fallback ? 'fallback' : 'applied';
   }
 
   /** Delete and verify absence of only the supplied run-owned collection roots. */

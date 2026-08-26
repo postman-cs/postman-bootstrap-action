@@ -104,7 +104,17 @@ function createInputs(overrides: Partial<ResolvedInputs> = {}): ResolvedInputs {
   };
 }
 
-function createDefaultImportV2Collection() {
+function trackedCollection(collection: unknown, collectionUid: string): Record<string, unknown> {
+  const tracked = structuredClone(collection as Record<string, unknown>);
+  const info = tracked.info && typeof tracked.info === 'object' && !Array.isArray(tracked.info)
+    ? tracked.info as Record<string, unknown>
+    : {};
+  info._postman_id = collectionUid;
+  tracked.info = info;
+  return tracked;
+}
+
+function createDefaultImportV2Collection(collections: Map<string, Record<string, unknown>>) {
   return vi.fn().mockImplementation(async (_workspaceId: string, collection: unknown, finalName?: string) => {
     const info = (collection as { info?: { name?: string } } | null)?.info;
     const name = String(finalName || info?.name || '');
@@ -113,6 +123,7 @@ function createDefaultImportV2Collection() {
       : name.includes('[Smoke]')
         ? 'col-smoke'
         : 'col-baseline';
+    collections.set(id, trackedCollection(collection, id));
     return {
       collectionId: id,
       journaledRootIds: [id],
@@ -122,6 +133,7 @@ function createDefaultImportV2Collection() {
 }
 
 function createPostman() {
+  const collections = new Map<string, Record<string, unknown>>();
   return {
     addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
     createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-created' }),
@@ -141,12 +153,16 @@ function createPostman() {
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-    importV2Collection: createDefaultImportV2Collection(),
-    deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
-    exportV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => ({
-      info: { _postman_id: collectionUid, name: `snapshot-${collectionUid}` },
-      item: []
-    })),
+    importV2Collection: createDefaultImportV2Collection(collections),
+    deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string, collection: unknown) => {
+      collections.set(collectionUid, trackedCollection(collection, collectionUid));
+      return collectionUid;
+    }),
+    exportV2Collection: vi.fn().mockImplementation(async (collectionUid: string) =>
+      collections.get(collectionUid) ?? {
+        info: { _postman_id: collectionUid, name: `snapshot-${collectionUid}` }, item: []
+      }
+    ),
     deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
@@ -530,9 +546,10 @@ describe('branch-aware bootstrap runs', () => {
         )
       ).rejects.toThrow(/marker patch failed/);
 
-      expect(cleanup).toHaveBeenCalledTimes(2);
+      expect(cleanup).toHaveBeenCalledTimes(3);
       expect(cleanup).toHaveBeenCalledWith(['owned-baseline']);
       expect(cleanup).toHaveBeenCalledWith(['owned-smoke']);
+      expect(cleanup).toHaveBeenCalledWith(['owned-contract']);
       expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
     });
   });

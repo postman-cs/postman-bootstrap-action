@@ -125,7 +125,17 @@ function createGeneratedContractCollection() {
   };
 }
 
-function createDefaultImportV2Collection() {
+function trackedCollection(collection: unknown, collectionUid: string): Record<string, unknown> {
+  const tracked = structuredClone(collection as Record<string, unknown>);
+  const info = tracked.info && typeof tracked.info === 'object' && !Array.isArray(tracked.info)
+    ? tracked.info as Record<string, unknown>
+    : {};
+  info._postman_id = collectionUid;
+  tracked.info = info;
+  return tracked;
+}
+
+function createDefaultImportV2Collection(collections: Map<string, Record<string, unknown>>) {
   return vi.fn().mockImplementation(async (_workspaceId: string, collection: unknown, finalName?: string) => {
     const info = (collection as { info?: { name?: string } } | null)?.info;
     const name = String(finalName || info?.name || '');
@@ -134,6 +144,7 @@ function createDefaultImportV2Collection() {
       : name.includes('[Smoke]')
         ? 'col-smoke'
         : 'col-baseline';
+    collections.set(id, trackedCollection(collection, id));
     return {
       collectionId: id,
       journaledRootIds: [id],
@@ -143,7 +154,15 @@ function createDefaultImportV2Collection() {
 }
 
 function createPostman(overrides: Record<string, unknown> = {}) {
-  return {
+  const collections = new Map<string, Record<string, unknown>>();
+  const baseImport = (overrides.importV2Collection as ((workspaceId: string, collection: unknown, finalName?: string) => Promise<{ collectionId: string }>) | undefined)
+    ?? createDefaultImportV2Collection(collections);
+  const baseDeepUpdate = (overrides.deepUpdateV2Collection as ((collectionUid: string, collection: unknown, digest: string) => Promise<string>) | undefined)
+    ?? (async (collectionUid: string) => collectionUid);
+  const overrideExport = overrides.exportV2Collection as
+    | ((collectionUid: string) => Promise<Record<string, unknown>>)
+    | undefined;
+  const postman = {
     addAdminsToWorkspace: vi.fn().mockResolvedValue(undefined),
     createWorkspace: vi.fn().mockResolvedValue({ id: 'ws-created' }),
     findWorkspacesByName: vi.fn().mockResolvedValue([]),
@@ -154,16 +173,6 @@ function createPostman(overrides: Record<string, unknown> = {}) {
     getTeams: vi.fn().mockResolvedValue([]),
     getWorkspaceGitRepoUrl: vi.fn().mockResolvedValue(null),
     getWorkspaceVisibility: vi.fn().mockResolvedValue('team'),
-    importV2Collection: createDefaultImportV2Collection(),
-    deepUpdateV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => collectionUid),
-    exportV2Collection: vi.fn().mockImplementation(async (collectionUid: string) => ({
-      info: {
-        _postman_id: collectionUid,
-        name: `snapshot-${collectionUid}`,
-        schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
-      },
-      item: []
-    })),
     deleteVerifiedRunOwnedCollections: vi.fn().mockResolvedValue(undefined),
     injectContractTests: vi.fn().mockResolvedValue([]),
     injectTests: vi.fn().mockResolvedValue(undefined),
@@ -172,6 +181,24 @@ function createPostman(overrides: Record<string, unknown> = {}) {
     updateSpec: vi.fn().mockResolvedValue(undefined),
     uploadSpec: vi.fn().mockResolvedValue('spec-created'),
     ...overrides
+  };
+  return {
+    ...postman,
+    importV2Collection: vi.fn(async (workspaceId: string, collection: unknown, finalName?: string) => {
+      const result = await baseImport(workspaceId, collection, finalName);
+      collections.set(result.collectionId, trackedCollection(collection, result.collectionId));
+      return result;
+    }),
+    deepUpdateV2Collection: vi.fn(async (collectionUid: string, collection: unknown, digest: string) => {
+      const result = await baseDeepUpdate(collectionUid, collection, digest);
+      collections.set(collectionUid, trackedCollection(collection, collectionUid));
+      return result;
+    }),
+    exportV2Collection: overrideExport ?? vi.fn(async (collectionUid: string) =>
+      collections.get(collectionUid) ?? {
+        info: { _postman_id: collectionUid, name: `snapshot-${collectionUid}` }, item: []
+      }
+    )
   };
 }
 

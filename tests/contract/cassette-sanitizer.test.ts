@@ -493,6 +493,67 @@ describe('contract: cassette sanitizer', () => {
     ).resolves.toEqual({ data: { imported: true } });
   });
 
+  it('keeps sequenced fixture collection IDs stable when a later export returns them', () => {
+    const generatedCollectionId = '00000000-0000-4000-8000-000000000007';
+    const importBody = proxyBody('/collection/import', 'post', {
+      info: { _postman_id: generatedCollectionId, name: 'Payments' }
+    });
+    const raw = {
+      version: 2 as const,
+      interactions: [
+        {
+          ...cassetteRequest(BIFROST_URL, 'POST', importBody),
+          rawRequestBody: importBody,
+          status: 201,
+          body: JSON.stringify({ data: { imported: true } }),
+          responseHeaders: {}
+        },
+        {
+          ...cassetteRequest(BIFROST_URL, 'POST', proxyBody('/v3/collections/generated/export')),
+          status: 200,
+          body: JSON.stringify({
+            data: { info: { _postman_id: generatedCollectionId, name: 'Payments' } }
+          }),
+          responseHeaders: {}
+        }
+      ]
+    };
+
+    const sanitized = sanitizeCassette(raw);
+
+    expect(sanitized.interactions[0]?.key).toBe(raw.interactions[0]?.key);
+    expect(sanitized.interactions[1]?.body).toContain(generatedCollectionId);
+  });
+
+  it('normalizes the same timestamp in request keys and replayed response bodies', () => {
+    const liveTimestamp = '2026-07-31T19:45:00.000Z';
+    const fixedTimestamp = '2000-01-01T00:00:00.000Z';
+    const importBody = proxyBody('/collection/import', 'post', {
+      description: JSON.stringify({ createdAt: liveTimestamp, lastSyncedAt: liveTimestamp })
+    });
+    const fixedImportBody = proxyBody('/collection/import', 'post', {
+      description: JSON.stringify({ createdAt: fixedTimestamp, lastSyncedAt: fixedTimestamp })
+    });
+    const raw = {
+      version: 2 as const,
+      interactions: [{
+        ...cassetteRequest(BIFROST_URL, 'POST', importBody),
+        rawRequestBody: importBody,
+        status: 200,
+        body: JSON.stringify({ data: { description: JSON.stringify({ createdAt: liveTimestamp }) } }),
+        responseHeaders: {}
+      }]
+    };
+
+    const sanitized = sanitizeCassette(raw);
+
+    expect(sanitized.interactions[0]?.key).toBe(
+      cassetteRequest(BIFROST_URL, 'POST', fixedImportBody).key
+    );
+    expect(sanitized.interactions[0]?.body).toContain(fixedTimestamp);
+    expect(JSON.stringify(sanitized)).not.toContain(liveTimestamp);
+  });
+
   it('redacts named request credentials before recomputing a digest-bearing proxy key', async () => {
     const liveApiKey = 'PMAK-live-request-api-key';
     const liveAccessToken = 'PMAT-live-request-access-token';

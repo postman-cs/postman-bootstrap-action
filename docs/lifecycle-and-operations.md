@@ -7,6 +7,12 @@ Default bootstrap behavior keeps one current workspace, spec, and generated coll
 - `collection-sync-mode: refresh` regenerates baseline, smoke, and contract collections from the resolved spec and makes them the current collection pointers.
 - `spec-sync-mode: update` updates the current Spec Hub spec from `spec-url` or `spec-path`.
 - Legacy `collection-sync-mode: reuse` is accepted as an alias for `refresh`.
+- `collection-update-strategy` defaults to `whole`, which deep-updates each changed reusable collection as one complete tree. `auto` first exports the current tree, skips a semantic no-op, applies only a bounded eligible delta, and falls back to the hardened whole-tree update for unsupported or failed granular changes.
+- Invalid strategy values fail during input validation, before any workspace, spec, or collection mutation.
+
+Every successful fresh import, whole update, bounded delta, and semantic no-op is followed by an exact final collection export and digest comparison. Final exports use at most two concurrent reads. A missing, unreadable, or mismatched final export aborts the run: attempted reusable roots are restored from their preflight snapshots and run-owned fresh roots are deleted and absence-verified. Ambiguous delta readback that already proves the desired whole digest stops later ordered mutations; the independent final export is still required.
+
+The local operation ledger is sanitized metadata only. It records per-role desired and observed semantic digests, actual snapshot/write/reconciliation durations, bounded-operation counts, fallback reasons, and aggregate convergence counters. It does not include collection content, names, credentials, or request data; settled relation states may be keyed by the opaque cloud collection ID needed to correlate the linked asset.
 
 Use this mode for main-branch automation where the Postman workspace should track the latest service contract.
 

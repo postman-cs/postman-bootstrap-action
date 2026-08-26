@@ -1118,18 +1118,33 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
             return json({ error: 'forbidden collection root' }, 403);
           }
           const ops = Array.isArray(proxy.body) ? proxy.body : [];
-          const nameOp = ops.find((op) => asRecord(op)?.path === '/name');
-          const nextName = nameOp ? String(asRecord(nameOp)?.value ?? '') : '';
           const id = resolveCollectionId(bare);
           const entry = id ? collectionsById.get(id) : undefined;
           if (id && entry) {
-            if (nextName) {
-              const previousName = entry.name;
-              entry.name = nextName;
-              const exported = collectionExports.get(id);
-              const exportedInfo = asRecord(exported?.info);
-              if (exportedInfo) exportedInfo.name = nextName;
-              state.collectionTransitions.push(`renamed:${id}:${previousName}->${nextName}`);
+            const exported = collectionExports.get(id);
+            const exportedInfo = asRecord(exported?.info);
+            for (const rawOp of ops) {
+              const op = asRecord(rawOp);
+              const patchPath = String(op?.path ?? '');
+              const remove = String(op?.op ?? '').toLowerCase() === 'remove';
+              if (patchPath === '/name' && !remove) {
+                const nextName = String(op?.value ?? '');
+                if (nextName) {
+                  const previousName = entry.name;
+                  entry.name = nextName;
+                  if (exportedInfo) exportedInfo.name = nextName;
+                  state.collectionTransitions.push(`renamed:${id}:${previousName}->${nextName}`);
+                }
+              }
+              if (patchPath === '/description') {
+                const nextDescription = remove ? '' : String(op?.value ?? '');
+                if (nextDescription) entry.description = nextDescription;
+                else delete entry.description;
+                if (exportedInfo) {
+                  if (nextDescription) exportedInfo.description = nextDescription;
+                  else delete exportedInfo.description;
+                }
+              }
             }
             collectionsById.set(id, entry);
             refreshCollectionState();

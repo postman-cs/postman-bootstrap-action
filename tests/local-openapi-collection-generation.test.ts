@@ -387,6 +387,23 @@ describe('local OpenAPI role payload generation', () => {
     expect(computePayloadDigest(semanticChange)).not.toBe(computePayloadDigest(original));
   });
 
+  it('treats omitted and empty event lists as equivalent without ignoring scripts', () => {
+    const omitted: JsonRecord = {
+      info: { name: 'Events' },
+      item: [{ name: 'request', request: { method: 'GET', url: 'https://example.test' } }]
+    };
+    const empty: JsonRecord = {
+      ...structuredClone(omitted),
+      event: [],
+      item: [{ ...record(array(omitted.item)[0]), event: [] }]
+    };
+    expect(computePayloadDigest(empty)).toBe(computePayloadDigest(omitted));
+
+    const scripted = structuredClone(empty);
+    scripted.event = [{ listen: 'prerequest', script: { exec: ['pm.variables.set("x", "1");'] } }];
+    expect(computePayloadDigest(scripted)).not.toBe(computePayloadDigest(omitted));
+  });
+
   it('uses nested Tags folders and includes OAS 3.1 webhooks', async () => {
     const tagged = await generateLocalOpenApiRolePayloads(oas30, {
       openApiVersion: '3.0',

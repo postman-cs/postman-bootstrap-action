@@ -240,13 +240,21 @@ describe('OpenAPI Local-Only Architecture Contract', () => {
         new Error('createRunOwnedCollection must be unreachable for local OpenAPI roles')
       );
 
+      const collectionExports = new Map<string, Record<string, unknown>>();
+      const track = (collection: unknown, id: string): void => {
+        const tracked = structuredClone(collection as Record<string, unknown>);
+        const info = tracked.info as Record<string, unknown>;
+        info._postman_id = id;
+        collectionExports.set(id, tracked);
+      };
       const importV2CollectionSpy = vi.fn(
-        async (_wsId: string, _col: unknown, name: string) => {
+        async (_wsId: string, col: unknown, name: string) => {
           const colId = name.includes('[Contract]')
             ? 'col-contract-id'
             : name.includes('[Smoke]')
               ? 'col-smoke-id'
               : 'col-baseline-id';
+          track(col, colId);
           return {
             collectionId: colId,
             journaledRootIds: [colId]
@@ -255,7 +263,10 @@ describe('OpenAPI Local-Only Architecture Contract', () => {
       );
 
       const deepUpdateV2CollectionSpy = vi.fn(
-        async (colUid: string) => colUid
+        async (colUid: string, col: unknown) => {
+          track(col, colUid);
+          return colUid;
+        }
       );
 
       const uploadSpecSpy = vi.fn().mockResolvedValue('spec-uid-123');
@@ -292,6 +303,7 @@ describe('OpenAPI Local-Only Architecture Contract', () => {
           updateSpec: vi.fn().mockResolvedValue(undefined),
           importV2Collection: importV2CollectionSpy,
           deepUpdateV2Collection: deepUpdateV2CollectionSpy,
+          exportV2Collection: vi.fn(async (id: string) => collectionExports.get(id)!),
           generateCollection: generateCollectionSpy,
           patchCollectionScripts: patchCollectionScriptsSpy,
           patchItemScripts: patchItemScriptsSpy,

@@ -155,7 +155,9 @@ export async function runWithFakeTimers<T>(
 
   try {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-31T00:00:00.000Z'));
+    // Match the committed cassette sanitizer's fixed epoch so timestamp-bearing
+    // request keys and replayed response payloads remain semantically identical.
+    vi.setSystemTime(new Date('2000-01-01T00:00:00.000Z'));
 
     try {
       pending = Promise.resolve(fn());

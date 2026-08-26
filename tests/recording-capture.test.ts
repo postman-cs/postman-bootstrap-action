@@ -1,10 +1,10 @@
-import { cassetteRequest, createEmptyCassette, createRecordingFetch } from '@postman-cse/automation-core/cassette';
+import { cassetteRequest, createEmptyCassette, createRecordingFetch } from '@postman-cs/automation-core/cassette';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createSanitizableRecordingFetch, type RawCapturedCassetteInteraction } from '../scripts/recording-capture.js';
 
-vi.mock('@postman-cse/automation-core/cassette', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@postman-cse/automation-core/cassette')>();
+vi.mock('@postman-cs/automation-core/cassette', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@postman-cs/automation-core/cassette')>();
   return { ...actual, createRecordingFetch: vi.fn(actual.createRecordingFetch) };
 });
 

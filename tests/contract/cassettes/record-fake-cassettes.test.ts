@@ -16,7 +16,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { createEmptyCassette } from '@postman-cse/automation-core/cassette';
+import { createEmptyCassette } from '@postman-cs/automation-core/cassette';
 
 import { createSecretMasker } from '../../../src/lib/secrets.js';
 import { assertFreshOnboardParity } from '../../../scripts/fresh-onboard-parity.js';

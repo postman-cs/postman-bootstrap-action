@@ -12,15 +12,16 @@ const SRC_ROOT = join(ACTION_ROOT, 'src');
  */
 const V2_TO_V3_ALLOWLIST: Record<string, string[]> = {
   'src/lib/protocols/v2-to-ec.ts': ['runtime-models-v2-import'],
-  'src/lib/protocols/graphql/builder.ts': ['v2-schema-url', 'v2-version-literal'],
-  'src/lib/protocols/soap/builder.ts': ['v2-schema-url', 'v2-version-literal'],
+  'src/lib/protocols/graphql/builder.ts': ['v2.1-schema-url', 'v2-version-literal'],
+  'src/lib/protocols/soap/builder.ts': ['v2.1-schema-url', 'v2-version-literal'],
   'src/lib/protocols/dispatch.ts': ['v2-version-literal'],
   'src/lib/postman/postman-gateway-assets-client.ts': [
     'runtime-models-v2-import',
+    'v2.1-schema-url',
     'v2-version-literal'
   ],
   'src/lib/repo/local-collection-artifacts.ts': ['runtime-models-v2-import'],
-  'src/lib/postman/additional-collections.ts': ['v2-schema-url']
+  'src/lib/postman/additional-collections.ts': ['v2.1-schema-url']
 };
 
 type Violation = {
@@ -117,8 +118,9 @@ function hasPmakCollectionCrud(relPath: string, line: string): boolean {
 function matchPatterns(relPath: string, line: string): string[] {
   const hits: string[] = [];
 
-  if (/collection\/v2\.(?:0|1)\.0/.test(line)) {
-    hits.push('v2-schema-url');
+  const schemaVersion = /collection\/(?:\$\{['"])?v2\.(0|1)\.0(?:['"]\})?\/collection\.json/.exec(line);
+  if (schemaVersion) {
+    hits.push(`v2.${schemaVersion[1]}-schema-url`);
   }
   if (hasPmakCollectionCrud(relPath, line)) {
     hits.push('pmak-collection-crud');
@@ -172,6 +174,31 @@ function applyAllowlist(violations: Violation[]): Violation[] {
 }
 
 describe('no collection v2.x in production src/', () => {
+  it('permits the gateway v2.1 schema URL without permitting v2.0', () => {
+    const v21Schema = "schema: `https://schema.getpostman.com/json/collection/${'v2.1.0'}/collection.json`";
+    const v20Schema = "schema: 'https://schema.getpostman.com/json/collection/v2.0.0/collection.json'";
+
+    expect(matchPatterns('src/lib/postman/postman-gateway-assets-client.ts', v21Schema))
+      .toContain('v2.1-schema-url');
+    expect(applyAllowlist([{
+      file: 'src/lib/postman/postman-gateway-assets-client.ts',
+      line: 1,
+      pattern: 'v2.1-schema-url',
+      text: v21Schema
+    }])).toEqual([]);
+    expect(applyAllowlist([{
+      file: 'src/lib/postman/postman-gateway-assets-client.ts',
+      line: 1,
+      pattern: 'v2.0-schema-url',
+      text: v20Schema
+    }])).toEqual([{
+      file: 'src/lib/postman/postman-gateway-assets-client.ts',
+      line: 1,
+      pattern: 'v2.0-schema-url',
+      text: v20Schema
+    }]);
+  });
+
   it('has no forbidden collection v2.x patterns outside the v2->v3 ingest allowlist', () => {
     const files = walkTypeScriptFiles(SRC_ROOT);
     expect(files.length).toBeGreaterThan(0);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { PostmanGatewayAssetsClient } from '../../src/lib/postman/postman-gateway-assets-client.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from '../../src/lib/postman/error-advice.js';
 import { AccessTokenProvider } from '../../src/lib/postman/token-provider.js';
@@ -288,10 +288,10 @@ describe('contract: import election state machine', () => {
     expect(result.collectionId).toBe(OWN_UID);
     expect(result.journaledRootIds).toEqual([OWN_UID]);
     expect(fake.state.collectionTransitions).toContain(`visible:${OWN_UID}:observation=7`);
-    // Bounded: the canonical-uid resolution that precedes the finalize PATCH reads
-    // the same inventory the election later re-reads, so late visibility costs one
-    // extra bounded pass rather than an unbounded poll.
-    expect(fake.state.collectionObservationCount).toBe(14);
+    // Plan §4 carries one per-identity cursor from root resolution into election:
+    // one pre-import snapshot plus seven resolution observations; election replays
+    // that cursor instead of duplicating its inventory poll timeline.
+    expect(fake.state.collectionObservationCount).toBe(8);
     expect(fake.state.collectionDeleteLedger).toEqual([]);
     expect(importRequests(fake)).toHaveLength(1);
     expect(collectionRequests(fake, 'delete')).toEqual([]);

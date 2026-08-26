@@ -17,7 +17,7 @@ src/
     github/github-api-client.ts   # Repo var read/write
     repo/context.ts               # Auto-detect repo URL/provider/branch
     secrets.ts                  # Package-specific secret handling
-  @postman-cse/automation-core  # Published shared gateway/retry/HttpError foundations
+  @postman-cs/automation-core  # Published shared gateway/retry/HttpError foundations
 tests/
 ```
 

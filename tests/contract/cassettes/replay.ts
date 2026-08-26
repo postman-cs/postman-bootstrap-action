@@ -6,7 +6,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import type { Cassette } from '@postman-cse/automation-core/cassette';
+import type { Cassette } from '@postman-cs/automation-core/cassette';
 
 const CASSETTE_DIR = resolve(import.meta.dirname);
 

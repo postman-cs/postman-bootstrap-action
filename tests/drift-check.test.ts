@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import type { Cassette } from '@postman-cse/automation-core/cassette';
+import type { Cassette } from '@postman-cs/automation-core/cassette';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {

@@ -19,7 +19,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createReplayFetch } from '@postman-cse/automation-core/cassette';
+import { createReplayFetch } from '@postman-cs/automation-core/cassette';
 
 import { runContractAction, runWithFakeTimers } from './harness.js';
 import { createPlatformFake } from './platform-fake.js';

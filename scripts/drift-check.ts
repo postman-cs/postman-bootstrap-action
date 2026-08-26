@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { Cassette } from '@postman-cse/automation-core/cassette';
+import type { Cassette } from '@postman-cs/automation-core/cassette';
 
 import {
   cassetteShape,

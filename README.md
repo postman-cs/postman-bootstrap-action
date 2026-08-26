@@ -173,6 +173,7 @@ See [Team Identity](docs/team-identity.md) for sub-team discovery and team-ID de
 | `onboarding-scope` | Onboarding scope. Use full for the complete pipeline or spec-only for OpenAPI workspace and specification onboarding without generated assets. | no | `full` |
 | `sync-examples` | Whether linked spec/collection relations should enable example syncing | no | `true` |
 | `collection-sync-mode` | Collection lifecycle policy (refresh or version) | no | `refresh` |
+| `collection-update-strategy` | Collection refresh write strategy (whole or auto). whole preserves the rollback path; auto uses bounded deltas when eligible before whole-tree fallback. | no | `whole` |
 | `spec-sync-mode` | Spec lifecycle policy (update or version) | no | `update` |
 | `release-label` | Optional release label used for versioned specs and collections | no |  |
 | `project-name` | Service project name | yes |  |

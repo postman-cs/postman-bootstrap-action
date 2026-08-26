@@ -25,7 +25,7 @@ import { parseMcpServerSpec } from '../src/lib/protocols/mcp/mcp-parser.js';
 import { buildMcpCollection } from '../src/lib/protocols/mcp/mcp-collection-builder.js';
 import { instrumentMcpCollection } from '../src/lib/protocols/mcp/mcp-instrumenter.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
-import type { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import type { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { HAS_PROTOBUF, PROTOBUF, readFixture } from './protocols/grpc/helpers.js';
 
 // Syntactic-validity ground truth for the assertion generators the executing

@@ -1,4 +1,4 @@
-import type { HttpError } from '@postman-cse/automation-core';
+import type { HttpError } from '@postman-cs/automation-core';
 import type { SecretMasker } from '../secrets.js';
 
 export interface ErrorAdviceContext {

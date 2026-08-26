@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createLogger, type LogSink } from '@postman-cse/automation-core';
+import { createLogger, type LogSink } from '@postman-cs/automation-core';
 
 import { readActionInputs, runBootstrap, withPhaseGroups, type CoreLike } from '../src/index.js';
 

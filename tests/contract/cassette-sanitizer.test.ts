@@ -8,7 +8,7 @@ import {
   createEmptyCassette,
   createReplayFetch,
   type Cassette
-} from '@postman-cse/automation-core/cassette';
+} from '@postman-cs/automation-core/cassette';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createSecretMasker } from '../../src/lib/secrets.js';

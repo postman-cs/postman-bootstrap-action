@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AccessTokenGatewayClient, HttpError } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient, HttpError } from '@postman-cs/automation-core';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import {
   PostmanGatewayAssetsClient,
@@ -43,7 +43,7 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
  * parsed proxy envelope and returns a Response. Records every envelope sent.
  */
 function makeClient(
-  handler: (env: Envelope, callIndex: number) => Response,
+  handler: (env: Envelope, callIndex: number) => Response | Promise<Response>,
   clientOptions?: {
     generationPollAttempts?: number;
     generationPollDelayMs?: number;
@@ -3958,6 +3958,203 @@ describe('PostmanGatewayAssetsClient', () => {
       ]
     };
 
+    it('memoizes concurrent post-import inventory reads and returns one cursor per identity', async () => {
+      const bareId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const canonicalId = `12345678-${bareId}`;
+      let inventoryReads = 0;
+      let releaseInventory!: () => void;
+      let inventoryStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        inventoryStarted = resolve;
+      });
+      const inventory = new Promise<Response>((resolve) => {
+        releaseInventory = () => resolve(jsonResponse({ data: [{ id: canonicalId, name: 'Payments' }] }));
+      });
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          inventoryReads += 1;
+          inventoryStarted();
+          return inventory;
+        }
+        return jsonResponse({ data: { ok: true } });
+      });
+      const privateClient = client as unknown as {
+        resolveCollectionRootUid: (
+          workspaceId: string,
+          collectionId: string,
+          delays: readonly number[]
+        ) => Promise<{ rootUid?: string; cursor: { identity: string; observations: unknown[] } }>;
+      };
+
+      const first = privateClient.resolveCollectionRootUid('ws-shared', bareId, []);
+      const second = privateClient.resolveCollectionRootUid('ws-shared', bareId, []);
+      await started;
+      await Promise.resolve();
+      expect(inventoryReads).toBe(1);
+      releaseInventory();
+
+      const [firstResolved, secondResolved] = await Promise.all([first, second]);
+      expect(firstResolved.rootUid).toBe(canonicalId);
+      expect(secondResolved.rootUid).toBe(canonicalId);
+      expect(firstResolved.cursor).not.toBe(secondResolved.cursor);
+      expect(firstResolved.cursor.identity).toBe(bareId);
+      expect(secondResolved.cursor.identity).toBe(bareId);
+      expect(firstResolved.cursor.observations).toHaveLength(1);
+      expect(secondResolved.cursor.observations).toHaveLength(1);
+      expect(client.collectionWriteMetrics.inventoryReads).toBe(1);
+    });
+
+    it('carries a resolve cursor into election, preserving delayed-peer observation and a later identity budget', async () => {
+      const firstBare = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const secondBare = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+      const firstUid = `300-${firstBare}`;
+      const secondUid = `400-${secondBare}`;
+      const delayedPeer = '500-11111111-1111-1111-1111-111111111111';
+      const sleeps: number[] = [];
+      let reads = 0;
+      const { client } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          reads += 1;
+          return jsonResponse({
+            data: [
+              { id: firstUid, name: 'Payments' },
+              { id: secondUid, name: 'Invoices' },
+              ...(reads >= 3 ? [{ id: delayedPeer, name: 'Payments' }] : [])
+            ]
+          });
+        }
+        return jsonResponse({ data: { ok: true } });
+      }, { sleep: async (delayMs) => { sleeps.push(delayMs); } });
+      const privateClient = client as unknown as {
+        resolveCollectionRootUid: (
+          workspaceId: string,
+          collectionId: string,
+          delays: readonly number[],
+          retryPolicy?: 'safe' | 'rate-limit' | 'none',
+          peerDelayCount?: number
+        ) => Promise<{ rootUid?: string; cursor: unknown }>;
+        electImportedCollectionIdentity: (
+          workspaceId: string,
+          finalName: string,
+          preferredId: string,
+          staleFinalIdentities: ReadonlySet<string>,
+          desiredDescription: string,
+          cursor: unknown
+        ) => Promise<string>;
+      };
+
+      const first = await privateClient.resolveCollectionRootUid(
+        'ws-cursor',
+        firstBare,
+        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+        'safe',
+        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+      );
+      await expect(
+        privateClient.electImportedCollectionIdentity(
+          'ws-cursor', 'Payments', firstBare, new Set(), '', first.cursor
+        )
+      ).resolves.toBe(firstUid);
+      expect(sleeps).toEqual([...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS]);
+      expect(reads).toBe(STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+
+      const second = await privateClient.resolveCollectionRootUid(
+        'ws-cursor',
+        secondBare,
+        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+        'safe',
+        STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+      );
+      await expect(
+        privateClient.electImportedCollectionIdentity(
+          'ws-cursor', 'Invoices', secondBare, new Set(), '', second.cursor
+        )
+      ).resolves.toBe(secondUid);
+      expect(sleeps).toEqual([
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+      ]);
+      expect(reads).toBe((STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1) * 2);
+    });
+
+    it('caps import and rename mutations at two while three finalizers share an inventory read', async () => {
+      const identities = [
+        'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        'bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
+        'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa'
+      ];
+      const inventory: Array<{ id: string; name: string }> = [];
+      let created = 0;
+      let activeMutations = 0;
+      let peakMutations = 0;
+      let inventoryReads = 0;
+      let inventoryReleased = false;
+      let releasePosts!: () => void;
+      let releaseInventory!: () => void;
+      let postsStarted!: () => void;
+      let inventoryStarted!: () => void;
+      const twoPosts = new Promise<void>((resolve) => { postsStarted = resolve; });
+      const inventoryRead = new Promise<void>((resolve) => { inventoryStarted = resolve; });
+      const postGate = new Promise<void>((resolve) => { releasePosts = resolve; });
+      const inventoryGate = new Promise<Response>((resolve) => {
+        releaseInventory = () => {
+          inventoryReleased = true;
+          resolve(jsonResponse({ data: inventory }));
+        };
+      });
+      const { client } = makeClient(async (env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          inventoryReads += 1;
+          // All pre-import snapshots occur before the first admitted mutation.
+          if (created === 0) return jsonResponse({ data: [] });
+          if (inventoryReleased) return jsonResponse({ data: inventory });
+          inventoryStarted();
+          return inventoryGate;
+        }
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          activeMutations += 1;
+          peakMutations = Math.max(peakMutations, activeMutations);
+          created += 1;
+          const slot = created;
+          if (slot === 2) postsStarted();
+          await postGate;
+          activeMutations -= 1;
+          const bare = identities[slot - 1]!;
+          const name = String((env.body as { info?: { name?: string } }).info?.name ?? '');
+          inventory.push({ id: `100-${bare}`, name });
+          return jsonResponse({ model_id: bare });
+        }
+        if (env.service === 'collection' && env.method === 'patch') {
+          activeMutations += 1;
+          peakMutations = Math.max(peakMutations, activeMutations);
+          const op = (env.body as Array<{ value?: string }>)[0];
+          const id = String(env.path).split('/').pop() ?? '';
+          const row = inventory.find((entry) => entry.id === id);
+          if (row) row.name = String(op?.value ?? '');
+          activeMutations -= 1;
+          return jsonResponse({ data: { ok: true } });
+        }
+        return jsonResponse({ data: { ok: true } });
+      }, { createIdentity: () => `run-${created + 1}` });
+
+      const imports = [
+        client.importV2Collection('ws-mutations', v21Collection, 'Payments'),
+        client.importV2Collection('ws-mutations', v21Collection, 'Invoices'),
+        client.importV2Collection('ws-mutations', v21Collection, 'Contracts')
+      ];
+      await twoPosts;
+      expect(peakMutations).toBe(2);
+      releasePosts();
+      await inventoryRead;
+      await Promise.resolve();
+      expect(created).toBe(3);
+      expect(inventoryReads).toBe(4);
+      releaseInventory();
+
+      await expect(Promise.all(imports)).resolves.toHaveLength(3);
+      expect(peakMutations).toBe(2);
+    });
+
     it('imports with one sync POST /collection/import using format 2.1.0 and run-unique temp name', async () => {
       const inventory: Array<{ id: string; name: string }> = [];
       const { client, gateway, calls } = makeClient((env) => {
@@ -4285,9 +4482,10 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(inventoryCalls.length).toBeGreaterThan(1);
       expect(inventoryCalls[0]?.retry).toBe('none');
       expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
-      // Rename settle sleeps [250,500], then election observes the standard settle window.
+      // Rename spends the first two cursor gaps; election consumes only the
+      // unspent [750,1000,1250] gaps instead of restarting observation zero.
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-        250, 500, ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+        250, 500, 750, 1000, 1250
       ]);
     });
 
@@ -4770,8 +4968,9 @@ describe('PostmanGatewayAssetsClient', () => {
         `/v3/collections/${ownBare}`
       ]);
       expect(ownRootReads).toBe(2);
-      // One resolve read for the finalize PATCH uid + the full election window.
-      expect(electionObs).toBe(1 + PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+      // The successful rename is retained in the cursor; election consumes only
+      // its remaining delayed timeline instead of restarting observation zero.
+      expect(electionObs).toBe(PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
       expect(cleanupInventoryReads).toBe(1);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
@@ -4847,7 +5046,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(result.collectionId).toBe(ownId);
       expect(result.journaledRootIds).toEqual([ownId]);
       expect(deleted).toEqual([]);
-      expect(electionObs).toBe(1 + STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
+      expect(electionObs).toBe(STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
@@ -5115,10 +5314,9 @@ describe('PostmanGatewayAssetsClient', () => {
         journaledRootIds: [canonicalId]
       });
       // Resolve polls past the historic window (6 gaps) and finds the row on the
-      // 7th read; election then observes its own full standard window.
+      // 7th read. Those observations exhaust the same cursor election consumes.
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-        ...ROOT_UID_RESOLVE_DELAYS_MS.slice(0, 6),
-        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS
+        ...ROOT_UID_RESOLVE_DELAYS_MS.slice(0, 6)
       ]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       // No ROOT GET/PATCH may ever carry the bare Sync id.
@@ -5163,19 +5361,10 @@ describe('PostmanGatewayAssetsClient', () => {
       );
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(calls.filter((call) => call.path === '/v3/collections/?workspace=ws-1')).toHaveLength(
-          ROOT_UID_RESOLVE_MAX_READS +
-            STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length +
-            PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
-              STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
-            ).length + 1 +
-            2
+          ROOT_UID_RESOLVE_MAX_READS + 2
       );
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-        ...ROOT_UID_RESOLVE_DELAYS_MS,
-        ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
-        ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
-          STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
-        )
+        ...ROOT_UID_RESOLVE_DELAYS_MS
       ]);
       // Resolution exhausted without a ROOT-addressable uid: the finalize PATCH
       // is never attempted with the bare id, and the run fails closed on

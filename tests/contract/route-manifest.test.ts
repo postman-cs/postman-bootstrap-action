@@ -7,7 +7,7 @@ import {
   extractRoutesFromSource,
   validateRouteManifest,
   type RouteManifest
-} from '@postman-cse/automation-core/route-manifest';
+} from '@postman-cs/automation-core/route-manifest';
 
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const manifestPath = path.join(import.meta.dirname, 'route-manifest.json');

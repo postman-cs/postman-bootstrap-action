@@ -15,7 +15,7 @@ import { instrumentSmokeCollection } from './smoke-tests.js';
 import {
   SECRETS_RESOLVER_PROVIDERS,
   type SecretsResolverProvider
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 
 export type JsonRecord = Record<string, unknown>;
 export type CollectionRole = 'baseline' | 'smoke' | 'contract';

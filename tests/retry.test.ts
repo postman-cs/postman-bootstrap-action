@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { fullJitterDelayMs, parseRetryAfterMs, retry } from '@postman-cse/automation-core';
+import { fullJitterDelayMs, parseRetryAfterMs, retry } from '@postman-cs/automation-core';
 
 describe('retry', () => {
   afterEach(() => {

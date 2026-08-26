@@ -23149,7 +23149,7 @@ var require_cache3 = __commonJS({
         const operations = [];
         let index = 0;
         for (const response of responses) {
-          const operation = {
+          const operation2 = {
             type: "put",
             // 7.3.2
             request: requestList[index],
@@ -23157,7 +23157,7 @@ var require_cache3 = __commonJS({
             response
             // 7.3.4
           };
-          operations.push(operation);
+          operations.push(operation2);
           index++;
         }
         const cacheJobPromise = Promise.withResolvers();
@@ -23228,7 +23228,7 @@ var require_cache3 = __commonJS({
           bodyReadPromise.resolve(void 0);
         }
         const operations = [];
-        const operation = {
+        const operation2 = {
           type: "put",
           // 14.
           request: innerRequest,
@@ -23236,7 +23236,7 @@ var require_cache3 = __commonJS({
           response: clonedResponse
           // 16.
         };
-        operations.push(operation);
+        operations.push(operation2);
         const bytes = await bodyReadPromise.promise;
         if (clonedResponse.body != null) {
           clonedResponse.body.source = bytes;
@@ -23274,12 +23274,12 @@ var require_cache3 = __commonJS({
           r = getRequestState(new Request2(request));
         }
         const operations = [];
-        const operation = {
+        const operation2 = {
           type: "delete",
           request: r,
           options
         };
-        operations.push(operation);
+        operations.push(operation2);
         const cacheJobPromise = Promise.withResolvers();
         let errorData = null;
         let requestResponses;
@@ -23357,25 +23357,25 @@ var require_cache3 = __commonJS({
         const addedItems = [];
         const resultList = [];
         try {
-          for (const operation of operations) {
-            if (operation.type !== "delete" && operation.type !== "put") {
+          for (const operation2 of operations) {
+            if (operation2.type !== "delete" && operation2.type !== "put") {
               throw webidl.errors.exception({
                 header: "Cache.#batchCacheOperations",
                 message: 'operation type does not match "delete" or "put"'
               });
             }
-            if (operation.type === "delete" && operation.response != null) {
+            if (operation2.type === "delete" && operation2.response != null) {
               throw webidl.errors.exception({
                 header: "Cache.#batchCacheOperations",
                 message: "delete operation should not have an associated response"
               });
             }
-            if (this.#queryCache(operation.request, operation.options, addedItems).length) {
+            if (this.#queryCache(operation2.request, operation2.options, addedItems).length) {
               throw new DOMException("???", "InvalidStateError");
             }
             let requestResponses;
-            if (operation.type === "delete") {
-              requestResponses = this.#queryCache(operation.request, operation.options);
+            if (operation2.type === "delete") {
+              requestResponses = this.#queryCache(operation2.request, operation2.options);
               if (requestResponses.length === 0) {
                 return [];
               }
@@ -23384,14 +23384,14 @@ var require_cache3 = __commonJS({
                 assert(idx !== -1);
                 cache.splice(idx, 1);
               }
-            } else if (operation.type === "put") {
-              if (operation.response == null) {
+            } else if (operation2.type === "put") {
+              if (operation2.response == null) {
                 throw webidl.errors.exception({
                   header: "Cache.#batchCacheOperations",
                   message: "put operation should have an associated response"
                 });
               }
-              const r = operation.request;
+              const r = operation2.request;
               if (!urlIsHttpHttpsScheme(r.url)) {
                 throw webidl.errors.exception({
                   header: "Cache.#batchCacheOperations",
@@ -23404,22 +23404,22 @@ var require_cache3 = __commonJS({
                   message: "not get method"
                 });
               }
-              if (operation.options != null) {
+              if (operation2.options != null) {
                 throw webidl.errors.exception({
                   header: "Cache.#batchCacheOperations",
                   message: "options must not be defined"
                 });
               }
-              requestResponses = this.#queryCache(operation.request);
+              requestResponses = this.#queryCache(operation2.request);
               for (const requestResponse of requestResponses) {
                 const idx = cache.indexOf(requestResponse);
                 assert(idx !== -1);
                 cache.splice(idx, 1);
               }
-              cache.push([operation.request, operation.response]);
-              addedItems.push([operation.request, operation.response]);
+              cache.push([operation2.request, operation2.response]);
+              addedItems.push([operation2.request, operation2.response]);
             }
-            resultList.push([operation.request, operation.response]);
+            resultList.push([operation2.request, operation2.response]);
           }
           return resultList;
         } catch (e) {
@@ -90296,8 +90296,8 @@ var require_mutation_tracker = __commonJS({
       if (!isPrimitiveMutation(mutation)) {
         return;
       }
-      var operation = mutation.length > 1 ? PRIMITIVE_MUTATIONS.SET : PRIMITIVE_MUTATIONS.UNSET;
-      target.applyMutation(operation, ...mutation);
+      var operation2 = mutation.length > 1 ? PRIMITIVE_MUTATIONS.SET : PRIMITIVE_MUTATIONS.UNSET;
+      target.applyMutation(operation2, ...mutation);
     };
     var MutationTracker;
     _2.inherit(
@@ -147858,9 +147858,9 @@ var require_schemaUtils = __commonJS({
         return null;
       }
     }
-    function shouldAddDeprecatedOperation(operation, options) {
-      if (typeof operation === "object") {
-        return !operation.deprecated || operation.deprecated === true && options.includeDeprecated === true;
+    function shouldAddDeprecatedOperation(operation2, options) {
+      if (typeof operation2 === "object") {
+        return !operation2.deprecated || operation2.deprecated === true && options.includeDeprecated === true;
       }
       return false;
     }
@@ -149645,7 +149645,7 @@ var require_schemaUtils = __commonJS({
       * @no-unit-test
       */
       convertRequestToItem: function(openapi2, operationItem, components, options, schemaCache, variableStore, fromWebhooks = false) {
-        var reqName, pathVariables = openapi2.baseUrlVariables, operation = operationItem.properties, reqBody = operationItem.properties.requestBody, itemParams = operationItem.properties.parameters, reqParams = this.getParametersForPathItem(itemParams, options), baseUrl = fromWebhooks ? `{{${this.cleanWebhookName(operationItem.path)}}}` : "{{baseUrl}}", pathVarArray = [], authHelper, item, serverObj, displayUrl, reqUrl = fromWebhooks ? "" : "/" + operationItem.path, pmBody, authMeta, swagResponse, localServers = fromWebhooks ? "" : _2.get(operationItem, "properties.servers"), exampleRequestBody, sanitizeResult, globalServers = fromWebhooks ? "" : _2.get(operationItem, "servers"), responseMediaTypes, acceptHeader;
+        var reqName, pathVariables = openapi2.baseUrlVariables, operation2 = operationItem.properties, reqBody = operationItem.properties.requestBody, itemParams = operationItem.properties.parameters, reqParams = this.getParametersForPathItem(itemParams, options), baseUrl = fromWebhooks ? `{{${this.cleanWebhookName(operationItem.path)}}}` : "{{baseUrl}}", pathVarArray = [], authHelper, item, serverObj, displayUrl, reqUrl = fromWebhooks ? "" : "/" + operationItem.path, pmBody, authMeta, swagResponse, localServers = fromWebhooks ? "" : _2.get(operationItem, "properties.servers"), exampleRequestBody, sanitizeResult, globalServers = fromWebhooks ? "" : _2.get(operationItem, "servers"), responseMediaTypes, acceptHeader;
         reqUrl = this.fixPathVariablesInUrl(reqUrl);
         sanitizeResult = this.sanitizeUrlPathParams(reqUrl, reqParams.path);
         reqUrl = sanitizeResult.url;
@@ -149725,9 +149725,9 @@ var require_schemaUtils = __commonJS({
         switch (options.requestNameSource) {
           case "fallback": {
             if (fromWebhooks) {
-              reqName = operation.summary || utils.insertSpacesInName(operation.operationId) || operation.description || `${this.cleanWebhookName(operationItem.path)} - ${operationItem.method}`;
+              reqName = operation2.summary || utils.insertSpacesInName(operation2.operationId) || operation2.description || `${this.cleanWebhookName(operationItem.path)} - ${operationItem.method}`;
             } else {
-              reqName = operation.summary || utils.insertSpacesInName(operation.operationId) || operation.description || reqUrl;
+              reqName = operation2.summary || utils.insertSpacesInName(operation2.operationId) || operation2.description || reqUrl;
             }
             break;
           }
@@ -149736,7 +149736,7 @@ var require_schemaUtils = __commonJS({
             break;
           }
           default: {
-            reqName = operation[options.requestNameSource];
+            reqName = operation2[options.requestNameSource];
             break;
           }
         }
@@ -149744,18 +149744,18 @@ var require_schemaUtils = __commonJS({
           throw new openApiErr(`requestNameSource (${options.requestNameSource}) in options is invalid or property does not exist in ${operationItem.path}`);
         }
         if (!options.alwaysInheritAuthentication) {
-          authHelper = this.getAuthHelper(openapi2, operation.security);
+          authHelper = this.getAuthHelper(openapi2, operation2.security);
         }
         item = new Item({
           name: reqName,
           request: {
-            description: operation.description,
+            description: operation2.description,
             url: displayUrl || baseUrl,
             name: reqName,
             method: operationItem.method.toUpperCase()
           }
         });
-        authMeta = operation["x-postman-meta"];
+        authMeta = operation2["x-postman-meta"];
         if (authMeta && authMeta.currentHelper && authMap[authMeta.currentHelper]) {
           let thisAuthObject = {
             type: authMap[authMeta.currentHelper]
@@ -149823,7 +149823,7 @@ var require_schemaUtils = __commonJS({
             item.request.addHeader(element);
           });
         }
-        if (operation.responses) {
+        if (operation2.responses) {
           let thisOriginalRequest = {}, responseAuthHelper, authQueryParams, convertedResponse;
           if (options.includeAuthInfoInExample) {
             responseAuthHelper = this.getResponseAuthHelper(authHelper);
@@ -149834,7 +149834,7 @@ var require_schemaUtils = __commonJS({
               return queryParam.key + "=" + queryParam.value;
             });
           }
-          _2.forOwn(operation.responses, (response, code) => {
+          _2.forOwn(operation2.responses, (response, code) => {
             let originalRequestHeaders = [], originalRequestQueryParams = this.convertToPmQueryArray(
               reqParams,
               REQUEST_TYPE.EXAMPLE,
@@ -156485,9 +156485,9 @@ var require_validationUtils = __commonJS({
         specComponents: { components: components.components }
       };
     }
-    function shouldAddDeprecatedOperation(operation, options) {
-      if (typeof operation === "object") {
-        return !operation.deprecated || operation.deprecated === true && options.includeDeprecated === true;
+    function shouldAddDeprecatedOperation(operation2, options) {
+      if (typeof operation2 === "object") {
+        return !operation2.deprecated || operation2.deprecated === true && options.includeDeprecated === true;
       }
       return false;
     }
@@ -257860,13 +257860,13 @@ var require_operations = __commonJS({
     var collection_1 = require_collection8();
     var Operations = class extends collection_1.Collection {
       get(id) {
-        return this.collections.find((operation) => operation.id() === id);
+        return this.collections.find((operation2) => operation2.id() === id);
       }
       filterBySend() {
-        return this.filterBy((operation) => operation.isSend());
+        return this.filterBy((operation2) => operation2.isSend());
       }
       filterByReceive() {
-        return this.filterBy((operation) => operation.isReceive());
+        return this.filterBy((operation2) => operation2.isReceive());
       }
     };
     exports2.Operations = Operations;
@@ -258132,8 +258132,8 @@ var require_message14 = __commonJS({
       channels() {
         const channels = [];
         const channelsData = [];
-        this.operations().all().forEach((operation) => {
-          operation.channels().forEach((channel) => {
+        this.operations().all().forEach((operation2) => {
+          operation2.channels().forEach((channel) => {
             if (!channelsData.includes(channel.json())) {
               channelsData.push(channel.json());
               channels.push(channel);
@@ -258147,9 +258147,9 @@ var require_message14 = __commonJS({
         const operations = [];
         Object.entries(((_a = this._meta.asyncapi) === null || _a === void 0 ? void 0 : _a.parsed.channels) || {}).forEach(([channelAddress, channel]) => {
           ["subscribe", "publish"].forEach((operationAction) => {
-            const operation = channel[operationAction];
-            if (operation && (operation.message === this._json || (operation.message.oneOf || []).includes(this._json))) {
-              operations.push(this.createModel(operation_1.Operation, operation, { id: "", pointer: `/channels/${(0, utils_1.tilde)(channelAddress)}/${operationAction}`, action: operationAction }));
+            const operation2 = channel[operationAction];
+            if (operation2 && (operation2.message === this._json || (operation2.message.oneOf || []).includes(this._json))) {
+              operations.push(this.createModel(operation_1.Operation, operation2, { id: "", pointer: `/channels/${(0, utils_1.tilde)(channelAddress)}/${operationAction}`, action: operationAction }));
             }
           });
         });
@@ -258639,7 +258639,7 @@ var require_server = __commonJS({
       }
       messages() {
         const messages = [];
-        this.operations().forEach((operation) => messages.push(...operation.messages().all()));
+        this.operations().forEach((operation2) => messages.push(...operation2.messages().all()));
         return new messages_1.Messages(messages);
       }
       variables() {
@@ -258718,17 +258718,17 @@ var require_channel = __commonJS({
       operations() {
         const operations = [];
         ["publish", "subscribe"].forEach((operationAction) => {
-          const operation = this._json[operationAction];
-          const id = operation && operation.operationId || operationAction;
-          if (operation) {
-            operations.push(this.createModel(operation_1.Operation, operation, { id, action: operationAction, pointer: `${this._meta.pointer}/${operationAction}` }));
+          const operation2 = this._json[operationAction];
+          const id = operation2 && operation2.operationId || operationAction;
+          if (operation2) {
+            operations.push(this.createModel(operation_1.Operation, operation2, { id, action: operationAction, pointer: `${this._meta.pointer}/${operationAction}` }));
           }
         });
         return new operations_1.Operations(operations);
       }
       messages() {
         const messages = [];
-        this.operations().forEach((operation) => messages.push(...operation.messages().all()));
+        this.operations().forEach((operation2) => messages.push(...operation2.messages().all()));
         return new messages_1.Messages(messages);
       }
       parameters() {
@@ -258950,7 +258950,7 @@ var require_asyncapi = __commonJS({
       }
       messages() {
         const messages = [];
-        this.operations().forEach((operation) => operation.messages().forEach((message) => !messages.some((m) => m.json() === message.json()) && messages.push(message)));
+        this.operations().forEach((operation2) => operation2.messages().forEach((message) => !messages.some((m) => m.json() === message.json()) && messages.push(message)));
         return new messages_1.Messages(messages);
       }
       schemas() {
@@ -258980,7 +258980,7 @@ var require_asyncapi = __commonJS({
       }
       allMessages() {
         const messages = [];
-        this.allOperations().forEach((operation) => operation.messages().forEach((message) => !messages.some((m) => m.json() === message.json()) && messages.push(message)));
+        this.allOperations().forEach((operation2) => operation2.messages().forEach((message) => !messages.some((m) => m.json() === message.json()) && messages.push(message)));
         this.components().messages().forEach((message) => !messages.some((m) => m.json() === message.json()) && messages.push(message));
         return new messages_1.Messages(messages);
       }
@@ -260012,13 +260012,13 @@ var require_operations2 = __commonJS({
     var collection_1 = require_collection8();
     var Operations = class extends collection_1.Collection {
       get(id) {
-        return this.collections.find((operation) => operation.id() === id);
+        return this.collections.find((operation2) => operation2.id() === id);
       }
       filterBySend() {
-        return this.filterBy((operation) => operation.isSend());
+        return this.filterBy((operation2) => operation2.isSend());
       }
       filterByReceive() {
-        return this.filterBy((operation) => operation.isReceive());
+        return this.filterBy((operation2) => operation2.isReceive());
       }
     };
     exports2.Operations = Operations;
@@ -260655,8 +260655,8 @@ var require_message15 = __commonJS({
         const thisMessageId = this._json[constants_1.xParserObjectUniqueId];
         const channels = [];
         const channelsData = [];
-        this.operations().forEach((operation) => {
-          operation.channels().forEach((channel) => {
+        this.operations().forEach((operation2) => {
+          operation2.channels().forEach((channel) => {
             const channelData = channel.json();
             if (!channelsData.includes(channelData)) {
               channelsData.push(channelData);
@@ -260680,8 +260680,8 @@ var require_message15 = __commonJS({
         var _a, _b;
         const thisMessageId = this._json[constants_1.xParserObjectUniqueId];
         const operations = [];
-        Object.entries(((_b = (_a = this._meta.asyncapi) === null || _a === void 0 ? void 0 : _a.parsed) === null || _b === void 0 ? void 0 : _b.operations) || {}).forEach(([operationId, operation]) => {
-          const operationModel = this.createModel(operation_1.Operation, operation, { id: operationId, pointer: `/operations/${(0, utils_1.tilde)(operationId)}` });
+        Object.entries(((_b = (_a = this._meta.asyncapi) === null || _a === void 0 ? void 0 : _a.parsed) === null || _b === void 0 ? void 0 : _b.operations) || {}).forEach(([operationId, operation2]) => {
+          const operationModel = this.createModel(operation_1.Operation, operation2, { id: operationId, pointer: `/operations/${(0, utils_1.tilde)(operationId)}` });
           const operationHasMessage = operationModel.messages().some((m) => {
             const messageId = m[constants_1.xParserObjectUniqueId];
             return messageId === thisMessageId;
@@ -260740,11 +260740,11 @@ var require_channel2 = __commonJS({
       operations() {
         var _a, _b, _c;
         const operations = [];
-        Object.entries((_c = (_b = (_a = this._meta.asyncapi) === null || _a === void 0 ? void 0 : _a.parsed) === null || _b === void 0 ? void 0 : _b.operations) !== null && _c !== void 0 ? _c : {}).forEach(([operationId, operation]) => {
-          const operationChannelId = operation.channel[constants_1.xParserObjectUniqueId];
+        Object.entries((_c = (_b = (_a = this._meta.asyncapi) === null || _a === void 0 ? void 0 : _a.parsed) === null || _b === void 0 ? void 0 : _b.operations) !== null && _c !== void 0 ? _c : {}).forEach(([operationId, operation2]) => {
+          const operationChannelId = operation2.channel[constants_1.xParserObjectUniqueId];
           const channelId = this._json[constants_1.xParserObjectUniqueId];
           if (operationChannelId === channelId) {
-            operations.push(this.createModel(operation_1.Operation, operation, { id: operationId, pointer: `/operations/${(0, utils_1.tilde)(operationId)}` }));
+            operations.push(this.createModel(operation_1.Operation, operation2, { id: operationId, pointer: `/operations/${(0, utils_1.tilde)(operationId)}` }));
           }
         });
         return new operations_1.Operations(operations);
@@ -260891,10 +260891,10 @@ var require_server2 = __commonJS({
         const operations = [];
         const operationsData = [];
         this.channels().forEach((channel) => {
-          channel.operations().forEach((operation) => {
-            const operationData = operation.json();
+          channel.operations().forEach((operation2) => {
+            const operationData = operation2.json();
             if (!operationsData.includes(operationData)) {
-              operations.push(operation);
+              operations.push(operation2);
               operationsData.push(operationData);
             }
           });
@@ -261199,7 +261199,7 @@ var require_asyncapi2 = __commonJS({
         return new channels_1.Channels(Object.entries(this._json.channels || {}).map(([channelId, channel]) => this.createModel(channel_1.Channel, channel, { id: channelId, pointer: `/channels/${(0, utils_1.tilde)(channelId)}` })), { pointer: "/channels" });
       }
       operations() {
-        return new operations_1.Operations(Object.entries(this._json.operations || {}).map(([operationId, operation]) => this.createModel(operation_1.Operation, operation, { id: operationId, pointer: `/operations/${(0, utils_1.tilde)(operationId)}` })), { pointer: "/operations" });
+        return new operations_1.Operations(Object.entries(this._json.operations || {}).map(([operationId, operation2]) => this.createModel(operation_1.Operation, operation2, { id: operationId, pointer: `/operations/${(0, utils_1.tilde)(operationId)}` })), { pointer: "/operations" });
       }
       messages() {
         const messages = [];
@@ -261237,7 +261237,7 @@ var require_asyncapi2 = __commonJS({
       }
       allOperations() {
         const operations = this.operations().all();
-        this.components().operations().forEach((operation) => !operations.some((o) => o.json() === operation.json()) && operations.push(operation));
+        this.components().operations().forEach((operation2) => !operations.some((o) => o.json() === operation2.json()) && operations.push(operation2));
         return new operations_1.Operations(operations);
       }
       allMessages() {
@@ -266128,11 +266128,11 @@ var require_getAllMessages = __commonJS({
     var utils_1 = require_utils18();
     var getAllOperations_1 = require_getAllOperations();
     function* getAllMessages(asyncapi) {
-      for (const { path: path12, operation } of (0, getAllOperations_1.getAllOperations)(asyncapi)) {
-        if (!(0, utils_1.isObject)(operation)) {
+      for (const { path: path12, operation: operation2 } of (0, getAllOperations_1.getAllOperations)(asyncapi)) {
+        if (!(0, utils_1.isObject)(operation2)) {
           continue;
         }
-        const maybeMessage = operation.message;
+        const maybeMessage = operation2.message;
         if (!(0, utils_1.isObject)(maybeMessage)) {
           continue;
         }
@@ -266293,10 +266293,10 @@ var require_operationIdUniqueness = __commonJS({
     var spectral_core_1 = require_dist17();
     var utils_1 = require_utils21();
     var utils_2 = require_utils18();
-    function retrieveOperationId(operation) {
-      if (Array.isArray(operation.traits)) {
-        for (let i = operation.traits.length - 1; i >= 0; i--) {
-          const trait = operation.traits[i];
+    function retrieveOperationId(operation2) {
+      if (Array.isArray(operation2.traits)) {
+        for (let i = operation2.traits.length - 1; i >= 0; i--) {
+          const trait = operation2.traits[i];
           if ((0, utils_2.isObject)(trait) && typeof trait.operationId === "string") {
             return {
               operationId: trait.operationId,
@@ -266305,9 +266305,9 @@ var require_operationIdUniqueness = __commonJS({
           }
         }
       }
-      if (typeof operation.operationId === "string") {
+      if (typeof operation2.operationId === "string") {
         return {
-          operationId: operation.operationId,
+          operationId: operation2.operationId,
           path: ["operationId"]
         };
       }
@@ -266335,8 +266335,8 @@ var require_operationIdUniqueness = __commonJS({
       const results = [];
       const operations = (0, utils_1.getAllOperations)(targetVal);
       const seenIds = [];
-      for (const { path: path12, operation } of operations) {
-        const maybeOperationId = retrieveOperationId(operation);
+      for (const { path: path12, operation: operation2 } of operations) {
+        const maybeOperationId = retrieveOperationId(operation2);
         if (maybeOperationId === void 0) {
           continue;
         }
@@ -266568,9 +266568,9 @@ var require_unusedSecuritySchemes = __commonJS({
         });
       }
       const operations = (0, utils_1.getAllOperations)(targetVal);
-      for (const { operation } of operations) {
-        if (Array.isArray(operation.security)) {
-          operation.security.forEach((requirements) => {
+      for (const { operation: operation2 } of operations) {
+        if (Array.isArray(operation2.security)) {
+          operation2.security.forEach((requirements) => {
             usedSecuritySchemes.push(...Object.keys(requirements));
           });
         }
@@ -271301,6 +271301,12 @@ var bootstrapActionContract = {
       default: "refresh",
       allowedValues: ["refresh", "version"]
     },
+    "collection-update-strategy": {
+      description: "Collection refresh write strategy. whole preserves the whole-tree rollback path; auto uses bounded deltas when eligible before whole-tree fallback.",
+      required: false,
+      default: "whole",
+      allowedValues: ["auto", "whole"]
+    },
     "spec-sync-mode": {
       description: "Spec lifecycle policy: update the canonical spec or create/reuse a versioned spec for the resolved release label.",
       required: false,
@@ -273568,6 +273574,24 @@ var AmbiguousCreateMatchError = class extends Error {
     this.matchCount = matchCount;
   }
 };
+function isAbortLikeError(error) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const name = error.name;
+  if (name === "AbortError" || name === "TimeoutError") {
+    return true;
+  }
+  if (typeof DOMException === "function" && error instanceof DOMException && error.name === "AbortError") {
+    return true;
+  }
+  const code = error.code;
+  if (code === "ABORT_ERR" || code === 20) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error.message ?? "");
+  return /\b(?:This|The) operation was aborted\b/i.test(message);
+}
 function isAmbiguousTransportError(error) {
   if (!error) {
     return false;
@@ -273577,6 +273601,9 @@ function isAmbiguousTransportError(error) {
   }
   if (typeof error !== "object") {
     return false;
+  }
+  if (isAbortLikeError(error)) {
+    return true;
   }
   const status = error.status;
   if (typeof status === "number") {
@@ -273653,7 +273680,7 @@ function adviseFromHttpError(err, ctx) {
   return new Error(withUnderlyingCause(advice, err.message, ctx.mask), { cause: err });
 }
 
-// node_modules/@postman-cse/automation-core/dist/ci-context.js
+// node_modules/@postman-cs/automation-core/dist/ci-context.js
 function norm(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length > 0 ? trimmed : void 0;
@@ -273804,7 +273831,7 @@ function detectCiProviderContext(env = process.env) {
   return { ciProvider: "unknown", runnerKind: "unknown" };
 }
 
-// node_modules/@postman-cse/automation-core/dist/repo-context.js
+// node_modules/@postman-cs/automation-core/dist/repo-context.js
 function normalize(value) {
   const trimmed = (value ?? "").trim();
   return trimmed.length > 0 ? trimmed : void 0;
@@ -273893,7 +273920,7 @@ function detectRepoContext(input, env = process.env) {
   };
 }
 
-// node_modules/@postman-cse/automation-core/dist/telemetry.js
+// node_modules/@postman-cs/automation-core/dist/telemetry.js
 var import_node_crypto2 = require("node:crypto");
 var import_undici2 = __toESM(require_undici(), 1);
 var SCHEMA_VERSION = 3;
@@ -274033,7 +274060,7 @@ function createTelemetryContext(options) {
   };
 }
 
-// node_modules/@postman-cse/automation-core/dist/logger.js
+// node_modules/@postman-cs/automation-core/dist/logger.js
 var LEVEL_ORDER = {
   debug: 10,
   info: 20,
@@ -274213,7 +274240,7 @@ function createLogger(options) {
   return root;
 }
 
-// node_modules/@postman-cse/automation-core/dist/secrets-resolver.js
+// node_modules/@postman-cs/automation-core/dist/secrets-resolver.js
 var SECRETS_RESOLVER_PROVIDERS = ["none", "aws", "azure", "gcp"];
 var SECRETS_RESOLVER_ITEM_NAME = "00 - Resolve Secrets";
 var DEFAULT_SECRETS_RESOLVER_PROVIDER = "none";
@@ -274422,7 +274449,7 @@ function isSecretsResolverItemName(name) {
   return String(name ?? "").trim() === SECRETS_RESOLVER_ITEM_NAME;
 }
 
-// node_modules/@postman-cse/automation-core/dist/http/http-error.js
+// node_modules/@postman-cs/automation-core/dist/http/http-error.js
 var REDACTED2 = "[REDACTED]";
 var SENSITIVE_HEADER_NAMES = /* @__PURE__ */ new Set([
   "authorization",
@@ -274581,7 +274608,7 @@ var HttpError = class _HttpError extends Error {
   }
 };
 
-// node_modules/@postman-cse/automation-core/dist/http/retry.js
+// node_modules/@postman-cs/automation-core/dist/http/retry.js
 function sleep(delayMs) {
   return new Promise((resolve7) => {
     setTimeout(resolve7, delayMs);
@@ -274598,12 +274625,12 @@ function normalizeRetryOptions(options) {
     sleep: options.sleep ?? sleep
   };
 }
-async function retry(operation, options = {}) {
+async function retry(operation2, options = {}) {
   const normalized = normalizeRetryOptions(options);
   let nextDelayMs = normalized.delayMs;
   for (let attempt = 1; attempt <= normalized.maxAttempts; attempt += 1) {
     try {
-      return await operation();
+      return await operation2();
     } catch (error) {
       const shouldRetry = attempt < normalized.maxAttempts && normalized.shouldRetry(error, {
         attempt,
@@ -274645,7 +274672,7 @@ function isRetryableGatewayFailure(status, body2 = "") {
   return isTransientHttpStatus(status) || RETRYABLE_GATEWAY_BODY.test(body2);
 }
 
-// node_modules/@postman-cse/automation-core/dist/http/gateway-client.js
+// node_modules/@postman-cs/automation-core/dist/http/gateway-client.js
 var DEFAULT_POSTMAN_BIFROST_BASE_URL = "https://bifrost-premium-https-v4.gw.postman.com";
 function isExpiredAuthError(status, body2) {
   return status === 401 || body2.includes("UNAUTHENTICATED") || body2.includes("authenticationError");
@@ -275168,10 +275195,10 @@ var BifrostInternalIntegrationAdapter = class _BifrostInternalIntegrationAdapter
   currentToken() {
     return this.tokenProvider ? this.tokenProvider.current() : this.accessToken;
   }
-  adviceContext(operation) {
+  adviceContext(operation2) {
     const session = getMemoizedSessionIdentity();
     return {
-      operation,
+      operation: operation2,
       hasAccessToken: Boolean(this.currentToken()),
       sessionTeamId: session?.teamId,
       sessionRoles: session?.roles,
@@ -276116,24 +276143,24 @@ var PostmanExtensibleCollectionClient = class {
       })
     });
   }
-  async proxyJson(method, path12, body2, operation) {
+  async proxyJson(method, path12, body2, operation2) {
     if (method !== "GET") {
-      return this.proxyJsonOnce(method, path12, body2, operation);
+      return this.proxyJsonOnce(method, path12, body2, operation2);
     }
-    return retry(() => this.proxyJsonOnce(method, path12, body2, operation), {
+    return retry(() => this.proxyJsonOnce(method, path12, body2, operation2), {
       maxAttempts: EC_WRITE_MAX_ATTEMPTS,
       delayMs: 2e3,
       shouldRetry: (error) => isRetryableEcError(error)
     });
   }
-  async proxyJsonOnce(method, path12, body2, operation) {
+  async proxyJsonOnce(method, path12, body2, operation2) {
     const response = await this.proxyRequest(method, path12, body2);
     if (!response.ok) {
       throw await HttpError.fromResponse(response, {
         method,
         requestHeaders: this.requestHeaders(),
         secretValues: [this.currentToken()],
-        url: `${this.bifrostBaseUrl}/ws/proxy (${operation}: ${method} ${path12})`
+        url: `${this.bifrostBaseUrl}/ws/proxy (${operation2}: ${method} ${path12})`
       });
     }
     let parsed;
@@ -276142,7 +276169,7 @@ var PostmanExtensibleCollectionClient = class {
     } catch {
       return null;
     }
-    this.assertNoInnerError(parsed, method, path12, operation);
+    this.assertNoInnerError(parsed, method, path12, operation2);
     return parsed;
   }
   /**
@@ -276153,7 +276180,7 @@ var PostmanExtensibleCollectionClient = class {
    * write is not silently reported as success and the retry policy can still see
    * a retryable inner 5xx.
    */
-  assertNoInnerError(envelope, method, path12, operation) {
+  assertNoInnerError(envelope, method, path12, operation2) {
     if (!envelope) return;
     const innerStatus = this.innerStatus(envelope);
     const error = envelope.error;
@@ -276163,7 +276190,7 @@ var PostmanExtensibleCollectionClient = class {
     const status = typeof innerStatus === "number" && innerStatus >= 400 ? innerStatus : 502;
     throw new HttpError({
       method,
-      url: `${this.bifrostBaseUrl}/ws/proxy (${operation}: ${method} ${path12}) [inner]`,
+      url: `${this.bifrostBaseUrl}/ws/proxy (${operation2}: ${method} ${path12}) [inner]`,
       status,
       statusText: "Inner Error",
       requestHeaders: this.requestHeaders(),
@@ -276649,7 +276676,7 @@ var CACHE_HEADERS_206 = ["date", "etag", "content-location", "cache-control", "e
 var REDIRECT_STATUSES = ["301", "302", "303", "307", "308"];
 var NONCACHEABLE_STATUSES = ["428", "429", "431", "511"];
 var STRUCTURED_HEADERS = ["retry-after", "content-range", "www-authenticate", "proxy-authenticate", "allow", "accept-ranges", "upgrade"];
-function mergedParams(root, pathItem, operation) {
+function mergedParams(root, pathItem, operation2) {
   const seen = /* @__PURE__ */ new Map();
   const collect = (arr) => {
     for (const raw of asArray2(arr)) {
@@ -276660,19 +276687,19 @@ function mergedParams(root, pathItem, operation) {
     }
   };
   collect(pathItem.parameters);
-  collect(operation.parameters);
+  collect(operation2.parameters);
   return [...seen.values()];
 }
-function isSecured(root, operation) {
-  if (operation.security !== void 0) return asArray2(operation.security).length > 0;
+function isSecured(root, operation2) {
+  if (operation2.security !== void 0) return asArray2(operation2.security).length > 0;
   return asArray2(root.security).length > 0;
 }
-function effectiveSecurity(root, operation) {
-  return operation.security !== void 0 ? asArray2(operation.security) : asArray2(root.security);
+function effectiveSecurity(root, operation2) {
+  return operation2.security !== void 0 ? asArray2(operation2.security) : asArray2(root.security);
 }
-function usesBearerScheme(root, operation) {
+function usesBearerScheme(root, operation2) {
   const schemes = asRecord6(asRecord6(root.components)?.securitySchemes) ?? {};
-  return effectiveSecurity(root, operation).some((req) => {
+  return effectiveSecurity(root, operation2).some((req) => {
     const names = Object.keys(asRecord6(req) ?? {});
     return names.some((name) => {
       const s = resolveInternalRef(root, schemes[name]) ?? asRecord6(schemes[name]);
@@ -276690,10 +276717,10 @@ function substituteServerUrl(root, server) {
   }
   return url;
 }
-function collectHttpSemanticStaticLints(root, method, path12, pathItem, operation, responses) {
+function collectHttpSemanticStaticLints(root, method, path12, pathItem, operation2, responses) {
   const out = [];
   const where = method.toUpperCase() + " " + path12;
-  const params = mergedParams(root, pathItem, operation);
+  const params = mergedParams(root, pathItem, operation2);
   const reqHeaders = new Set(params.filter((p) => String(p.in ?? "").toLowerCase() === "header").map((p) => String(p.name ?? "").toLowerCase()));
   const queryParams = params.filter((p) => String(p.in ?? "").toLowerCase() === "query").map((p) => String(p.name ?? ""));
   const byStatus = /* @__PURE__ */ new Map();
@@ -276793,9 +276820,9 @@ function collectHttpSemanticStaticLints(root, method, path12, pathItem, operatio
     const r = info(code);
     if (r && (r.requiredHeaders.has("cache-control") || r.requiredHeaders.has("expires") || r.headers.has("expires"))) out.push("CONTRACT_NONCACHEABLE_STATUS_CACHE_HEADER: " + where + " status " + code + " declares cache-storage headers, but this status must not be stored by a shared cache (RFC 6585)");
   }
-  const secured = isSecured(root, operation);
+  const secured = isSecured(root, operation2);
   if (secured && declared("401") && !info("401")?.headers.has("www-authenticate")) out.push("CONTRACT_401_WWW_AUTHENTICATE: " + where + " is secured and declares a 401 response without a WWW-Authenticate header (RFC 9110 section 11.6.1)");
-  if (usesBearerScheme(root, operation) && declared("401")) out.push("CONTRACT_BEARER_CHALLENGE_NOT_VALIDATED: " + where + " uses Bearer authentication; the 401 WWW-Authenticate Bearer error and scope parameters (RFC 6750 section 3) are not statically literal-validated");
+  if (usesBearerScheme(root, operation2) && declared("401")) out.push("CONTRACT_BEARER_CHALLENGE_NOT_VALIDATED: " + where + " uses Bearer authentication; the 401 WWW-Authenticate Bearer error and scope parameters (RFC 6750 section 3) are not statically literal-validated");
   if (declared("407") && !info("407")?.headers.has("proxy-authenticate")) out.push("CONTRACT_407_PROXY_AUTHENTICATE: " + where + " status 407 omits the Proxy-Authenticate header (RFC 9110 section 11.7.1)");
   if (declared("405") && !info("405")?.headers.has("allow")) out.push("CONTRACT_405_ALLOW: " + where + " status 405 omits the Allow header (RFC 9110 section 15.5.6)");
   if (declared("426") && !info("426")?.headers.has("upgrade")) out.push("CONTRACT_426_UPGRADE: " + where + " status 426 omits the Upgrade header (RFC 9110 section 15.5.22)");
@@ -276832,7 +276859,7 @@ function collectHttpSemanticStaticLints(root, method, path12, pathItem, operatio
   for (const [status, r] of byStatus) {
     if (r.headers.has("link")) out.push("CONTRACT_LINK_HEADER_NOT_VALIDATED: " + where + " status " + status + " declares a Link response header; its RFC 8288 field grammar is not statically literal-validated");
   }
-  const servers = [...asArray2(root.servers), ...asArray2(pathItem.servers), ...asArray2(operation.servers)];
+  const servers = [...asArray2(root.servers), ...asArray2(pathItem.servers), ...asArray2(operation2.servers)];
   const seenServer = /* @__PURE__ */ new Set();
   for (const rawServer of servers) {
     const s = asRecord6(rawServer);
@@ -276903,7 +276930,7 @@ function mediaExampleCandidates(root, media) {
   }
   return out;
 }
-function mergedParams2(root, pathItem, operation) {
+function mergedParams2(root, pathItem, operation2) {
   const seen = /* @__PURE__ */ new Map();
   const collect = (arr) => {
     for (const raw of asArray2(arr)) {
@@ -276913,7 +276940,7 @@ function mergedParams2(root, pathItem, operation) {
     }
   };
   collect(pathItem.parameters);
-  collect(operation.parameters);
+  collect(operation2.parameters);
   return [...seen.values()];
 }
 function collectSchemaObjectLints(root, record, version, context) {
@@ -276958,10 +276985,10 @@ function collectSchemaObjectLints(root, record, version, context) {
   }
   return out;
 }
-function collectMediaParamLints(root, version, pathItem, operation, operationId) {
+function collectMediaParamLints(root, version, pathItem, operation2, operationId) {
   const out = [];
   const arrayObjectStyles = { spaceDelimited: ["array", "object"], pipeDelimited: ["array", "object"], deepObject: ["object"] };
-  for (const p of mergedParams2(root, pathItem, operation)) {
+  for (const p of mergedParams2(root, pathItem, operation2)) {
     const loc = String(p.in ?? "").toLowerCase();
     const name = String(p.name ?? "");
     const style = typeof p.style === "string" ? p.style : "";
@@ -276990,12 +277017,12 @@ function collectMediaParamLints(root, version, pathItem, operation, operationId)
     }
   }
   const mediaEntries = [];
-  const rb = resolveInternalRef(root, operation.requestBody);
+  const rb = resolveInternalRef(root, operation2.requestBody);
   for (const [ct, m] of Object.entries(asRecord6(rb?.content) ?? {})) {
     const mm = asRecord6(m);
     if (mm) mediaEntries.push({ ctx: operationId + " request body", ct, media: mm, request: true });
   }
-  for (const [status, rr] of Object.entries(asRecord6(operation.responses) ?? {})) {
+  for (const [status, rr] of Object.entries(asRecord6(operation2.responses) ?? {})) {
     const resp = resolveInternalRef(root, rr) ?? asRecord6(rr);
     for (const [ct, m] of Object.entries(asRecord6(resp?.content) ?? {})) {
       const mm = asRecord6(m);
@@ -277616,8 +277643,8 @@ function normalizePath(path12) {
 function pathItemServers(pathItem) {
   return asArray2(pathItem.servers).map((entry) => asRecord6(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
 }
-function operationServers(root, pathItem, operation) {
-  const rawServers = asArray2(operation.servers).length > 0 ? asArray2(operation.servers) : pathItemServers(pathItem).length > 0 ? asArray2(pathItem.servers) : asArray2(root.servers);
+function operationServers(root, pathItem, operation2) {
+  const rawServers = asArray2(operation2.servers).length > 0 ? asArray2(operation2.servers) : pathItemServers(pathItem).length > 0 ? asArray2(pathItem.servers) : asArray2(root.servers);
   const values = rawServers.map((entry) => asRecord6(entry)).map((entry) => typeof entry?.url === "string" ? entry.url : "").filter(Boolean);
   return values.length > 0 ? values : [""];
 }
@@ -277645,9 +277672,9 @@ function responseBodyExpectation(method, status, content) {
   }
   return Object.keys(content).length > 0 ? "declared" : "unknown";
 }
-function collectSecurityApiKeys(root, operation) {
+function collectSecurityApiKeys(root, operation2) {
   const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
-  const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
+  const requirements = operation2.security === void 0 ? asArray2(root.security) : asArray2(operation2.security);
   const names = /* @__PURE__ */ new Set();
   for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
@@ -277666,9 +277693,9 @@ function securitySchemeKind(scheme) {
   if (type2 === "http") return `http:${String(scheme.scheme || "unknown").toLowerCase()}`;
   return type2;
 }
-function collectSecuritySchemeWarnings(root, operation) {
+function collectSecuritySchemeWarnings(root, operation2) {
   const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
-  const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
+  const requirements = operation2.security === void 0 ? asArray2(root.security) : asArray2(operation2.security);
   const warnings = /* @__PURE__ */ new Set();
   for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     for (const schemeName of Object.keys(requirement)) {
@@ -277701,9 +277728,9 @@ function securityCheckFor(schemeName, scheme) {
   }
   return { scheme: schemeName, kind, checkable: false };
 }
-function collectSecurityRuntimeChecks(root, operation) {
+function collectSecurityRuntimeChecks(root, operation2) {
   const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
-  const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
+  const requirements = operation2.security === void 0 ? asArray2(root.security) : asArray2(operation2.security);
   const alternatives = [];
   for (const requirement of requirements.map((entry) => asRecord6(entry)).filter(Boolean)) {
     const schemeNames = Object.keys(requirement);
@@ -277713,8 +277740,8 @@ function collectSecurityRuntimeChecks(root, operation) {
   if (alternatives.some((alternative) => alternative.length > 0 && alternative.every((check) => !check.checkable))) return void 0;
   return alternatives.length > 0 ? alternatives : void 0;
 }
-function resolvedParameters(root, pathItem, operation) {
-  return [...asArray2(pathItem.parameters), ...asArray2(operation.parameters)].map((rawParam) => {
+function resolvedParameters(root, pathItem, operation2) {
+  return [...asArray2(pathItem.parameters), ...asArray2(operation2.parameters)].map((rawParam) => {
     try {
       return resolveInternalRef(root, rawParam);
     } catch {
@@ -277738,9 +277765,9 @@ function jsonContentParameterMedia(param) {
   const schema3 = asRecord6(mediaObject)?.schema;
   return schema3 === void 0 ? void 0 : schema3;
 }
-function collectSerializationWarnings(root, pathItem, operation, decodedKeys) {
+function collectSerializationWarnings(root, pathItem, operation2, decodedKeys) {
   const warnings = [];
-  for (const param of resolvedParameters(root, pathItem, operation)) {
+  for (const param of resolvedParameters(root, pathItem, operation2)) {
     const location2 = String(param.in || "").toLowerCase();
     const name = String(param.name || "");
     const defaultStyle = DEFAULT_PARAM_STYLES[location2];
@@ -277795,11 +277822,11 @@ var QUERY_ARRAY_DECODES = {
   "spaceDelimited:false": "ssv",
   "pipeDelimited:false": "pipes"
 };
-function collectParameterChecks(root, pathItem, operation, version, operationId, pathTemplate, warnings) {
-  const securityKeys = collectSecurityApiKeys(root, operation);
+function collectParameterChecks(root, pathItem, operation2, version, operationId, pathTemplate, warnings) {
+  const securityKeys = collectSecurityApiKeys(root, operation2);
   const checks = [];
   const seen = /* @__PURE__ */ new Set();
-  const orderedParams = [...asArray2(operation.parameters), ...asArray2(pathItem.parameters)].map((rawParam) => {
+  const orderedParams = [...asArray2(operation2.parameters), ...asArray2(pathItem.parameters)].map((rawParam) => {
     try {
       return resolveInternalRef(root, rawParam);
     } catch {
@@ -277901,22 +277928,22 @@ function packNoteWarnings(packed, context) {
     (note) => note === "discriminator" ? `CONTRACT_DISCRIMINATOR_NOT_VALIDATED: discriminator on ${context} has no sibling oneOf/anyOf of internal $ref members and is not validated` : `CONTRACT_SCHEMA_NOT_COMPILED: ${note} on ${context} is not validated`
   );
 }
-function collectDeclaredQueryParameters(root, pathItem, operation) {
+function collectDeclaredQueryParameters(root, pathItem, operation2) {
   const names = /* @__PURE__ */ new Set();
-  for (const param of resolvedParameters(root, pathItem, operation)) {
+  for (const param of resolvedParameters(root, pathItem, operation2)) {
     if (String(param.in || "").toLowerCase() !== "query") continue;
     const name = String(param.name || "");
     if (name) names.add(name.toLowerCase());
   }
-  for (const key of collectSecurityApiKeys(root, operation)) {
+  for (const key of collectSecurityApiKeys(root, operation2)) {
     if (key.startsWith("query:")) names.add(key.slice("query:".length));
   }
   return [...names];
 }
-function collectParameters(root, pathItem, operation) {
-  const securityKeys = collectSecurityApiKeys(root, operation);
+function collectParameters(root, pathItem, operation2) {
+  const securityKeys = collectSecurityApiKeys(root, operation2);
   const requirements = [];
-  const params = [...asArray2(pathItem.parameters), ...asArray2(operation.parameters)];
+  const params = [...asArray2(pathItem.parameters), ...asArray2(operation2.parameters)];
   const seen = /* @__PURE__ */ new Set();
   for (const rawParam of params) {
     const param = resolveInternalRef(root, rawParam);
@@ -278081,8 +278108,8 @@ function requestBodyJsonSchemas(root, content, version, operationId, warnings) {
   warnings.push(...exampleWarnings);
   return Object.keys(schemas).length > 0 ? schemas : void 0;
 }
-function collectRequestBody(root, operation, version, operationId, warnings) {
-  const body2 = resolveInternalRef(root, operation.requestBody);
+function collectRequestBody(root, operation2, version, operationId, warnings) {
+  const body2 = resolveInternalRef(root, operation2.requestBody);
   if (!body2) return void 0;
   const content = asRecord6(body2.content);
   for (const [contentType2, mediaObject] of Object.entries(content ?? {})) {
@@ -278231,9 +278258,9 @@ function httpsUrlLint(value, label, schemeName) {
   }
   return void 0;
 }
-function collectSecurityStaticLints(root, operation) {
+function collectSecurityStaticLints(root, operation2) {
   const securitySchemes = asRecord6(asRecord6(root.components)?.securitySchemes);
-  const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
+  const requirements = operation2.security === void 0 ? asArray2(root.security) : asArray2(operation2.security);
   const warnings = /* @__PURE__ */ new Set();
   for (const requirement of requirements.map((entry) => asRecord6(entry)).filter((entry) => Boolean(entry))) {
     for (const [schemeName, requiredScopes] of Object.entries(requirement)) {
@@ -278290,9 +278317,9 @@ function collectSecurityStaticLints(root, operation) {
   }
   return [...warnings];
 }
-function collectSecurityResponseLints(root, operation, responses, operationId) {
+function collectSecurityResponseLints(root, operation2, responses, operationId) {
   const warnings = [];
-  const requirements = operation.security === void 0 ? asArray2(root.security) : asArray2(operation.security);
+  const requirements = operation2.security === void 0 ? asArray2(root.security) : asArray2(operation2.security);
   const requirementRecords = requirements.map((entry) => asRecord6(entry)).filter((entry) => Boolean(entry));
   const secured = requirementRecords.length > 0 && requirementRecords.every((entry) => Object.keys(entry).length > 0);
   const statusKeys = new Set(Object.keys(responses));
@@ -278313,10 +278340,10 @@ function collectSecurityResponseLints(root, operation, responses, operationId) {
 }
 function resolveLinkTargetOperation(root, link) {
   if (typeof link.operationRef === "string" && link.operationRef.startsWith("#/")) {
-    const operation = asRecord6(resolvePointer(root, link.operationRef));
-    if (!operation) return null;
+    const operation2 = asRecord6(resolvePointer(root, link.operationRef));
+    if (!operation2) return null;
     const pathItem = asRecord6(resolvePointer(root, link.operationRef.replace(/\/[^/]+$/, ""))) ?? {};
-    return { operation, pathItem };
+    return { operation: operation2, pathItem };
   }
   if (typeof link.operationId === "string") {
     const paths = asRecord6(root.paths);
@@ -278326,8 +278353,8 @@ function resolveLinkTargetOperation(root, link) {
       if (!pathItem) continue;
       for (const [method, rawOp] of Object.entries(pathItem)) {
         if (!HTTP_METHODS.has(method.toLowerCase())) continue;
-        const operation = resolveInternalRef(root, rawOp);
-        if (operation && operation.operationId === link.operationId) return { operation, pathItem };
+        const operation2 = resolveInternalRef(root, rawOp);
+        if (operation2 && operation2.operationId === link.operationId) return { operation: operation2, pathItem };
       }
     }
   }
@@ -278474,8 +278501,8 @@ function collectResponseWriteOnlyNames(root, response) {
   }
   return [...writeOnly].filter((name) => !plain.has(name));
 }
-function collectCallbackExpressions(root, operation) {
-  const callbacks = asRecord6(operation.callbacks);
+function collectCallbackExpressions(root, operation2) {
+  const callbacks = asRecord6(operation2.callbacks);
   if (!callbacks) return void 0;
   const expressions = [];
   for (const [callbackName, rawCallback] of Object.entries(callbacks)) {
@@ -278493,11 +278520,11 @@ function collectCallbackExpressions(root, operation) {
   }
   return expressions.length > 0 ? expressions : void 0;
 }
-function collectCallbackRequestSources(root, pathItem, operation) {
+function collectCallbackRequestSources(root, pathItem, operation2) {
   const path12 = /* @__PURE__ */ new Set();
   const query = /* @__PURE__ */ new Set();
   const header = /* @__PURE__ */ new Set();
-  for (const param of resolvedParameters(root, pathItem, operation)) {
+  for (const param of resolvedParameters(root, pathItem, operation2)) {
     const location2 = String(param.in || "").toLowerCase();
     const name = String(param.name || "");
     if (!name) continue;
@@ -278514,8 +278541,8 @@ function collectCallbackRequestSources(root, pathItem, operation) {
 function escapeRegExpLiteral(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function serverAdvisoryPatterns(root, pathItem, operation) {
-  const serverLists = [asArray2(operation.servers), asArray2(pathItem.servers), asArray2(root.servers)];
+function serverAdvisoryPatterns(root, pathItem, operation2) {
+  const serverLists = [asArray2(operation2.servers), asArray2(pathItem.servers), asArray2(root.servers)];
   const servers = serverLists.find((list) => list.length > 0) ?? [];
   const patterns = [];
   for (const rawServer of servers) {
@@ -278772,20 +278799,20 @@ function collectDocumentStaticLints(root, version) {
     checkServers(pathItem.servers, `path ${path12}`);
     for (const [method, rawOperation] of Object.entries(pathItem)) {
       if (!HTTP_METHODS.has(method)) continue;
-      const operation = resolveInternalRef(root, rawOperation);
-      if (!operation) continue;
-      checkServers(operation.servers, `${method.toUpperCase()} ${path12}`);
-      const operationId = typeof operation.operationId === "string" ? operation.operationId : "";
+      const operation2 = resolveInternalRef(root, rawOperation);
+      if (!operation2) continue;
+      checkServers(operation2.servers, `${method.toUpperCase()} ${path12}`);
+      const operationId = typeof operation2.operationId === "string" ? operation2.operationId : "";
       if (operationId) {
         const previousOperation = operationIds.get(operationId);
         if (previousOperation) warnings.add(`CONTRACT_OPERATION_ID_DUPLICATE: operationId ${operationId} is used by both ${previousOperation} and ${method.toUpperCase()} ${path12}`);
         operationIds.set(operationId, `${method.toUpperCase()} ${path12}`);
       }
-      for (const tag of asArray2(operation.tags).map(String)) {
+      for (const tag of asArray2(operation2.tags).map(String)) {
         usedTags.add(tag);
         if (tags.size > 0 && !tags.has(tag)) warnings.add(`CONTRACT_TAG_UNDECLARED: ${method.toUpperCase()} ${path12} uses undeclared top-level tag ${tag}`);
       }
-      for (const rawResponse of Object.values(asRecord6(operation.responses) ?? {})) {
+      for (const rawResponse of Object.values(asRecord6(operation2.responses) ?? {})) {
         const response = resolveInternalRef(root, rawResponse);
         for (const [linkName, rawLink] of Object.entries(asRecord6(response?.links) ?? {})) {
           const link = resolveInternalRef(root, rawLink);
@@ -278801,9 +278828,9 @@ function collectDocumentStaticLints(root, version) {
   for (const [name, schema3] of Object.entries(asRecord6(asRecord6(root.components)?.schemas) ?? {})) collectSchemaStaticLints(root, schema3, version, `components.schemas.${name}`, warnings);
   return [...warnings];
 }
-function collectOperationStaticLints(root, version, path12, pathItem, operation, responses, operationId) {
+function collectOperationStaticLints(root, version, path12, pathItem, operation2, responses, operationId) {
   const warnings = /* @__PURE__ */ new Set();
-  const parameters = resolvedParameters(root, pathItem, operation);
+  const parameters = resolvedParameters(root, pathItem, operation2);
   const seenParameters = /* @__PURE__ */ new Set();
   const templateVars = new Set([...path12.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]));
   const pathParams = /* @__PURE__ */ new Set();
@@ -278872,7 +278899,7 @@ function collectOperationStaticLints(root, version, path12, pathItem, operation,
       if (typeof link.operationRef === "string" && link.operationRef.startsWith("#/") && resolvePointer(root, link.operationRef) === void 0) warnings.add(`CONTRACT_LINK_TARGET_INVALID: ${operationId} link operationRef ${link.operationRef} does not resolve`);
     }
   }
-  const requestContent = asRecord6(asRecord6(resolveInternalRef(root, operation.requestBody))?.content) ?? {};
+  const requestContent = asRecord6(asRecord6(resolveInternalRef(root, operation2.requestBody))?.content) ?? {};
   for (const [contentType2, mediaObject] of Object.entries(requestContent)) {
     const media = asRecord6(mediaObject);
     const schema3 = asRecord6(media?.schema);
@@ -278886,7 +278913,7 @@ function collectOperationStaticLints(root, version, path12, pathItem, operation,
       if (asRecord6(rawEncoding)?.headers && Object.keys(asRecord6(rawEncoding)?.headers ?? {}).some((name) => name.toLowerCase() === "content-type")) warnings.add(`CONTRACT_ENCODING_HEADER_INVALID: ${operationId} encoding ${field} headers must not include Content-Type`);
     }
   }
-  for (const [name, rawCallback] of Object.entries(asRecord6(operation.callbacks) ?? {})) {
+  for (const [name, rawCallback] of Object.entries(asRecord6(operation2.callbacks) ?? {})) {
     if (!/^(\$url|\$method|\$statusCode|\$request\.|\$response\.)/.test(name) && !/^https?:\/\//.test(name)) warnings.add(`CONTRACT_CALLBACK_EXPRESSION_INVALID: ${operationId} callback key ${name} is not a valid runtime expression`);
     const bodyMatch = name.match(/^\$request\.body#(\/.*)$/);
     if (bodyMatch) {
@@ -278895,7 +278922,7 @@ function collectOperationStaticLints(root, version, path12, pathItem, operation,
     }
     void rawCallback;
   }
-  if (operation.deprecated === true && !responseHeaders2.has("deprecation") && !responseHeaders2.has("sunset")) warnings.add(`CONTRACT_DEPRECATED_HEADERS_ADVISORY: ${operationId} is deprecated but declares neither Deprecation nor Sunset response headers`);
+  if (operation2.deprecated === true && !responseHeaders2.has("deprecation") && !responseHeaders2.has("sunset")) warnings.add(`CONTRACT_DEPRECATED_HEADERS_ADVISORY: ${operationId} is deprecated but declares neither Deprecation nor Sunset response headers`);
   return [...warnings];
 }
 function buildContractIndex(root) {
@@ -278915,8 +278942,8 @@ function buildContractIndex(root) {
       for (const [method, rawOperation] of Object.entries(webhookItem)) {
         const lowerMethod = method.toLowerCase();
         if (!HTTP_METHODS.has(lowerMethod)) continue;
-        const operation = resolveInternalRef(root, rawOperation);
-        if (!operation) continue;
+        const operation2 = resolveInternalRef(root, rawOperation);
+        if (!operation2) continue;
         const webhookId = `${lowerMethod.toUpperCase()} webhook:${name}`;
         const webhookWarnings = [];
         webhookOperations.push({
@@ -278928,8 +278955,8 @@ function buildContractIndex(root) {
           responses: {},
           requiredParameters: [],
           declaredQueryParameters: [],
-          parameterChecks: collectParameterChecks(root, webhookItem, operation, version, webhookId, `/${name}`, webhookWarnings),
-          requestBody: collectRequestBody(root, operation, version, webhookId, webhookWarnings),
+          parameterChecks: collectParameterChecks(root, webhookItem, operation2, version, webhookId, `/${name}`, webhookWarnings),
+          requestBody: collectRequestBody(root, operation2, version, webhookId, webhookWarnings),
           warnings: [...new Set(webhookWarnings)].sort()
         });
       }
@@ -278948,13 +278975,13 @@ function buildContractIndex(root) {
       for (const [method, rawOperation] of Object.entries(pathItem)) {
         const lowerMethod = method.toLowerCase();
         if (!HTTP_METHODS.has(lowerMethod)) continue;
-        const operation = resolveInternalRef(root, rawOperation);
-        if (!operation) continue;
-        if (operation.callbacks) warnings.push(`CONTRACT_CALLBACKS_NOT_VALIDATED: callbacks are not validated for ${lowerMethod.toUpperCase()} ${path12}`);
-        if (operation.requestBody !== void 0 && ["get", "head", "delete"].includes(lowerMethod)) {
+        const operation2 = resolveInternalRef(root, rawOperation);
+        if (!operation2) continue;
+        if (operation2.callbacks) warnings.push(`CONTRACT_CALLBACKS_NOT_VALIDATED: callbacks are not validated for ${lowerMethod.toUpperCase()} ${path12}`);
+        if (operation2.requestBody !== void 0 && ["get", "head", "delete"].includes(lowerMethod)) {
           warnings.push(`CONTRACT_METHOD_BODY_SEMANTICS: ${lowerMethod.toUpperCase()} ${path12} declares a request body; RFC 9110 defines no request-body semantics for ${lowerMethod.toUpperCase()}`);
         }
-        const responses = asRecord6(operation.responses);
+        const responses = asRecord6(operation2.responses);
         if (!responses || Object.keys(responses).length === 0) {
           throw new Error(`CONTRACT_OPERATION_NO_RESPONSES: ${lowerMethod.toUpperCase()} ${path12} must define at least one response`);
         }
@@ -279005,26 +279032,26 @@ function buildContractIndex(root) {
         }
         const candidates = [...new Set([
           path12,
-          ...operationServers(root, pathItem, operation).map((server) => joinPaths(serverPathPrefix(server), path12))
+          ...operationServers(root, pathItem, operation2).map((server) => joinPaths(serverPathPrefix(server), path12))
         ].map(normalizePath))];
-        const callbackExpressions = collectCallbackExpressions(root, operation);
+        const callbackExpressions = collectCallbackExpressions(root, operation2);
         const operationId = `${lowerMethod.toUpperCase()} ${path12}`;
         const opWarnings = [];
         opWarnings.push(...responseWarnings);
-        opWarnings.push(...collectSecuritySchemeWarnings(root, operation));
-        const parameterChecks = collectParameterChecks(root, pathItem, operation, version, operationId, path12, opWarnings);
+        opWarnings.push(...collectSecuritySchemeWarnings(root, operation2));
+        const parameterChecks = collectParameterChecks(root, pathItem, operation2, version, operationId, path12, opWarnings);
         const checkedKeys = new Set((parameterChecks ?? []).map((check) => `${check.in}:${check.name.toLowerCase()}`));
         const decodedKeys = new Set((parameterChecks ?? []).filter((check) => check.decode || check.pathStyle).map((check) => `${check.in}:${check.name.toLowerCase()}`));
-        opWarnings.push(...collectSerializationWarnings(root, pathItem, operation, decodedKeys));
-        if (operation.deprecated === true) {
+        opWarnings.push(...collectSerializationWarnings(root, pathItem, operation2, decodedKeys));
+        if (operation2.deprecated === true) {
           opWarnings.push(`CONTRACT_OPERATION_DEPRECATED: ${lowerMethod.toUpperCase()} ${path12} is marked deprecated in the OpenAPI document`);
         }
-        opWarnings.push(...collectSecurityStaticLints(root, operation));
-        opWarnings.push(...collectSecurityResponseLints(root, operation, responses, operationId));
-        opWarnings.push(...collectOperationStaticLints(root, version, path12, pathItem, operation, responses, operationId));
-        opWarnings.push(...collectHttpSemanticStaticLints(root, lowerMethod, path12, pathItem, operation, responses));
-        opWarnings.push(...collectMediaParamLints(root, version, pathItem, operation, operationId));
-        const requiredParameters = collectParameters(root, pathItem, operation);
+        opWarnings.push(...collectSecurityStaticLints(root, operation2));
+        opWarnings.push(...collectSecurityResponseLints(root, operation2, responses, operationId));
+        opWarnings.push(...collectOperationStaticLints(root, version, path12, pathItem, operation2, responses, operationId));
+        opWarnings.push(...collectHttpSemanticStaticLints(root, lowerMethod, path12, pathItem, operation2, responses));
+        opWarnings.push(...collectMediaParamLints(root, version, pathItem, operation2, operationId));
+        const requiredParameters = collectParameters(root, pathItem, operation2);
         for (const parameter of requiredParameters.filter((entry) => entry.securityDerived)) {
           opWarnings.push(`CONTRACT_SECURITY_NOT_VALIDATED: security parameter ${parameter.in}:${parameter.name} is not statically required in generated requests`);
         }
@@ -279032,7 +279059,7 @@ function buildContractIndex(root) {
           opWarnings.push(checkedKeys.has(`cookie:${parameter.name.toLowerCase()}`) ? `CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not included in generated requests; the runtime test fails until the cookie is supplied at send time` : `CONTRACT_COOKIE_PARAM_NOT_VALIDATED: required cookie parameter ${parameter.name} is not included in generated requests and its value is not runtime-validated`);
         }
         const pathParamWarnings = /* @__PURE__ */ new Set();
-        for (const param of resolvedParameters(root, pathItem, operation)) {
+        for (const param of resolvedParameters(root, pathItem, operation2)) {
           if (String(param.in || "").toLowerCase() !== "path") continue;
           const name = String(param.name || "");
           if (name && !checkedKeys.has(`path:${name.toLowerCase()}`)) {
@@ -279048,15 +279075,15 @@ function buildContractIndex(root) {
           candidates,
           responses: contractResponses,
           requiredParameters,
-          declaredQueryParameters: collectDeclaredQueryParameters(root, pathItem, operation),
+          declaredQueryParameters: collectDeclaredQueryParameters(root, pathItem, operation2),
           parameterChecks,
-          requestBody: collectRequestBody(root, operation, version, operationId, opWarnings),
-          security: collectSecurityRuntimeChecks(root, operation),
+          requestBody: collectRequestBody(root, operation2, version, operationId, opWarnings),
+          security: collectSecurityRuntimeChecks(root, operation2),
           pathMethods: Object.keys(pathItem).filter((key) => HTTP_METHODS.has(key)).map((key) => key.toUpperCase()),
-          deprecated: operation.deprecated === true || void 0,
-          servers: serverAdvisoryPatterns(root, pathItem, operation),
+          deprecated: operation2.deprecated === true || void 0,
+          servers: serverAdvisoryPatterns(root, pathItem, operation2),
           callbacks: callbackExpressions,
-          callbackRequestSources: callbackExpressions ? collectCallbackRequestSources(root, pathItem, operation) : void 0,
+          callbackRequestSources: callbackExpressions ? collectCallbackRequestSources(root, pathItem, operation2) : void 0,
           linkTargetSchemas: Object.keys(linkTargetSchemas).length > 0 ? linkTargetSchemas : void 0,
           warnings: [...new Set(opWarnings)].sort()
         });
@@ -279065,14 +279092,14 @@ function buildContractIndex(root) {
   }
   if (operations.length === 0) throw new Error("CONTRACT_NO_ELIGIBLE_OPERATIONS: Dynamic contract tests require at least one OpenAPI paths operation with responses");
   const seenCandidates = /* @__PURE__ */ new Map();
-  for (const operation of operations) {
-    for (const candidate of operation.candidates) {
-      const key = `${operation.method} ${candidate}`;
+  for (const operation2 of operations) {
+    for (const candidate of operation2.candidates) {
+      const key = `${operation2.method} ${candidate}`;
       const previous = seenCandidates.get(key);
-      if (previous && previous.id !== operation.id) {
-        throw new Error(`CONTRACT_DUPLICATE_OPERATION_MATCH: ${previous.id} and ${operation.id} both map to ${key}`);
+      if (previous && previous.id !== operation2.id) {
+        throw new Error(`CONTRACT_DUPLICATE_OPERATION_MATCH: ${previous.id} and ${operation2.id} both map to ${key}`);
       }
-      seenCandidates.set(key, operation);
+      seenCandidates.set(key, operation2);
     }
   }
   return {
@@ -279249,7 +279276,7 @@ function matchOperation(index, request) {
   const record = asRecord9(request);
   const method = String(record?.method || "").toUpperCase();
   const path12 = requestPath(request);
-  const candidates = index.operations.filter((operation) => operation.method === method).flatMap((operation) => operation.candidates.map((candidate) => ({ operation, score: matchCandidate(candidate, path12), serverFull: candidate !== normalizePath(operation.path) }))).filter((entry) => entry.score.matched).map((entry) => ({ operation: entry.operation, score: [entry.score.staticCount, entry.serverFull ? 2 : 1, -entry.score.templateCount] })).sort((a, b) => {
+  const candidates = index.operations.filter((operation2) => operation2.method === method).flatMap((operation2) => operation2.candidates.map((candidate) => ({ operation: operation2, score: matchCandidate(candidate, path12), serverFull: candidate !== normalizePath(operation2.path) }))).filter((entry) => entry.score.matched).map((entry) => ({ operation: entry.operation, score: [entry.score.staticCount, entry.serverFull ? 2 : 1, -entry.score.templateCount] })).sort((a, b) => {
     for (let index2 = 0; index2 < a.score.length; index2 += 1) {
       const delta = b.score[index2] - a.score[index2];
       if (delta !== 0) return delta;
@@ -279275,64 +279302,64 @@ function tryCompile(target, schema3, lines, warnings, context, skipped) {
     skipped.push(context);
   }
 }
-function buildValidatorAssignments(operation, warnings, skipped) {
+function buildValidatorAssignments(operation2, warnings, skipped) {
   const lines = ["var validators = {};", "var linkTargetValidators = {};"];
-  const parameterChecks = operation.parameterChecks ?? [];
+  const parameterChecks = operation2.parameterChecks ?? [];
   if (parameterChecks.length > 0) {
     lines.push("var paramValidators = {};");
     for (const check of parameterChecks) {
-      tryCompile(`paramValidators[${JSON.stringify(`${check.in}:${check.name.toLowerCase()}`)}]`, check.schema, lines, warnings, `parameter ${check.in}:${check.name} schema on ${operation.id}`, skipped);
+      tryCompile(`paramValidators[${JSON.stringify(`${check.in}:${check.name.toLowerCase()}`)}]`, check.schema, lines, warnings, `parameter ${check.in}:${check.name} schema on ${operation2.id}`, skipped);
     }
   }
-  const bodySchemas = Object.entries(operation.requestBody?.jsonSchemas ?? {});
+  const bodySchemas = Object.entries(operation2.requestBody?.jsonSchemas ?? {});
   if (bodySchemas.length > 0) {
     lines.push("var requestBodyValidators = {};");
     for (const [base, schema3] of bodySchemas) {
-      tryCompile(`requestBodyValidators[${JSON.stringify(base)}]`, schema3, lines, warnings, `request body schema for ${base} on ${operation.id}`, skipped);
+      tryCompile(`requestBodyValidators[${JSON.stringify(base)}]`, schema3, lines, warnings, `request body schema for ${base} on ${operation2.id}`, skipped);
     }
   }
-  for (const [status, response] of Object.entries(operation.responses)) {
+  for (const [status, response] of Object.entries(operation2.responses)) {
     lines.push(`validators[${JSON.stringify(status)}] = validators[${JSON.stringify(status)}] || {};`);
     for (const [mediaType, media] of Object.entries(response.content)) {
       if (media.schema !== void 0 && !media.unsupported) {
-        tryCompile(`validators[${JSON.stringify(status)}][${JSON.stringify(mediaType)}]`, media.schema, lines, warnings, `response schema for ${mediaType} on ${operation.id} status ${status}`, skipped);
+        tryCompile(`validators[${JSON.stringify(status)}][${JSON.stringify(mediaType)}]`, media.schema, lines, warnings, `response schema for ${mediaType} on ${operation2.id} status ${status}`, skipped);
       }
     }
     for (const header of response.headers) {
       if (header.schema !== void 0 && !header.unsupported) {
         lines.push(`validators[${JSON.stringify(status)}].__headers = validators[${JSON.stringify(status)}].__headers || {};`);
-        tryCompile(`validators[${JSON.stringify(status)}].__headers[${JSON.stringify(header.name.toLowerCase())}]`, header.schema, lines, warnings, `response header ${header.name} schema on ${operation.id} status ${status}`, skipped);
+        tryCompile(`validators[${JSON.stringify(status)}].__headers[${JSON.stringify(header.name.toLowerCase())}]`, header.schema, lines, warnings, `response header ${header.name} schema on ${operation2.id} status ${status}`, skipped);
       }
     }
   }
-  const linkTargetSchemas = Object.entries(operation.linkTargetSchemas ?? {});
+  const linkTargetSchemas = Object.entries(operation2.linkTargetSchemas ?? {});
   for (const [key, schema3] of linkTargetSchemas) {
-    tryCompile(`linkTargetValidators[${JSON.stringify(key)}]`, schema3, lines, warnings, `link target schema ${key} on ${operation.id}`, skipped);
+    tryCompile(`linkTargetValidators[${JSON.stringify(key)}]`, schema3, lines, warnings, `link target schema ${key} on ${operation2.id}`, skipped);
   }
   return lines;
 }
-function createContractScript(operation, warnings = []) {
-  const multipartRule = operation.requestBody?.fieldRules?.["multipart/form-data"];
+function createContractScript(operation2, warnings = []) {
+  const multipartRule = operation2.requestBody?.fieldRules?.["multipart/form-data"];
   const multipartFields = multipartRule ? {
     required: multipartRule.required,
     declared: [.../* @__PURE__ */ new Set([...multipartRule.required, ...Object.keys(multipartRule.fieldSchemas ?? {}), ...Object.keys(multipartRule.encodings ?? {})])]
   } : void 0;
   const contract = {
-    method: operation.method,
-    path: operation.path,
-    responses: operation.responses,
-    security: operation.security,
-    parameters: operation.parameterChecks,
-    pathMethods: operation.pathMethods,
-    deprecated: operation.deprecated,
-    servers: operation.servers,
-    callbacks: operation.callbacks,
-    callbackRequestSources: operation.callbackRequestSources,
-    linkTargetSchemas: operation.linkTargetSchemas,
+    method: operation2.method,
+    path: operation2.path,
+    responses: operation2.responses,
+    security: operation2.security,
+    parameters: operation2.parameterChecks,
+    pathMethods: operation2.pathMethods,
+    deprecated: operation2.deprecated,
+    servers: operation2.servers,
+    callbacks: operation2.callbacks,
+    callbackRequestSources: operation2.callbackRequestSources,
+    linkTargetSchemas: operation2.linkTargetSchemas,
     multipartFields
   };
   const skipped = [];
-  const validatorLines = buildValidatorAssignments(operation, warnings, skipped);
+  const validatorLines = buildValidatorAssignments(operation2, warnings, skipped);
   const registries = { proxyStatusErrors: PROXY_STATUS_ERROR_TYPES, referrerPolicies: REFERRER_POLICY_VALUES, forbiddenTrailers: FORBIDDEN_TRAILER_FIELDS, contentCodings: HTTP_CONTENT_CODINGS };
   return [
     `var contract = JSON.parse(${JSON.stringify(JSON.stringify(contract))});`,
@@ -280326,7 +280353,7 @@ function createContractScript(operation, warnings = []) {
     '  var matched = contract.servers.some(function (pattern) { try { var serverPattern = new RegExp(pattern, "i"); return serverPattern.test(requestUrl) || serverPattern.test(pathOnly); } catch (ignored) { return true; } });',
     '  if (!matched) rfcAdvise("Request URL does not match any OpenAPI servers entry: " + requestUrl);',
     "});",
-    ...operation.security ? [
+    ...operation2.security ? [
       "pm.test('Request carries credentials required by OpenAPI security', function () {",
       "  function satisfied(check) {",
       "    if (!check.checkable) return true;",
@@ -280341,7 +280368,7 @@ function createContractScript(operation, warnings = []) {
       '  if (!ok) pm.expect.fail("Request did not carry credentials for any OpenAPI security requirement of " + contract.method + " " + contract.path + ": " + alternatives.map(function (alternative) { return alternative.map(function (check) { return check.scheme + " (" + check.kind + ")"; }).join(" + "); }).join(" | "));',
       "});"
     ] : [],
-    ...operation.parameterChecks && operation.parameterChecks.length > 0 ? [
+    ...operation2.parameterChecks && operation2.parameterChecks.length > 0 ? [
       "pm.test('Request parameters match OpenAPI schemas', function () {",
       '  function queryValue(name) { var value; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) value = param.value === null || param.value === undefined ? "" : String(param.value); }); return value; }',
       '  function queryValues(name) { var values = []; pm.request.url.query.each(function (param) { if (param && param.disabled !== true && String(param.key).toLowerCase() === name) values.push(param.value === null || param.value === undefined ? "" : String(param.value)); }); return values; }',
@@ -280413,7 +280440,7 @@ function createContractScript(operation, warnings = []) {
       "  });",
       "});"
     ] : [],
-    ...operation.parameterChecks && operation.parameterChecks.length > 0 ? [
+    ...operation2.parameterChecks && operation2.parameterChecks.length > 0 ? [
       "pm.test('Request parameters use the OpenAPI-declared wire serialization', function () {",
       '  function isPh(v) { var t = String(v).trim(); return /^<[^<>]*>$/.test(t) || t.indexOf("{{") !== -1; }',
       '  var allMembers = []; pm.request.url.query.each(function (p) { if (!p || p.disabled === true) return; allMembers.push({ key: String(p.key), value: p.value === null || p.value === undefined ? "" : String(p.value) }); });',
@@ -280459,7 +280486,7 @@ function createContractScript(operation, warnings = []) {
       "  });",
       "});"
     ] : [],
-    ...operation.requestBody?.jsonSchemas && Object.keys(operation.requestBody.jsonSchemas).length > 0 ? [
+    ...operation2.requestBody?.jsonSchemas && Object.keys(operation2.requestBody.jsonSchemas).length > 0 ? [
       "pm.test('Request body matches OpenAPI request schema', function () {",
       "  var body = pm.request.body;",
       '  var raw = body && body.mode === "raw" && typeof body.raw === "string" ? body.raw : "";',
@@ -280538,44 +280565,44 @@ function hasRequestBody(request) {
   if (typeof body2.raw === "string" && body2.raw.trim()) return true;
   return ["urlencoded", "formdata", "graphql"].some((key) => Array.isArray(body2[key]) ? body2[key].length > 0 : Boolean(body2[key]));
 }
-function assertStaticRequestShape(operation, request) {
+function assertStaticRequestShape(operation2, request) {
   const queryNames = requestQueryNames(request);
   const headerNames = requestHeaderNames(request);
-  for (const parameter of operation.requiredParameters) {
+  for (const parameter of operation2.requiredParameters) {
     if (parameter.securityDerived) continue;
     if (parameter.in === "query" && !queryNames.has(parameter.name.toLowerCase())) {
-      throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} missing required query parameter ${parameter.name}`);
+      throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation2.id} missing required query parameter ${parameter.name}`);
     }
     if (parameter.in === "header" && !headerNames.has(parameter.name.toLowerCase())) {
-      throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} missing required header ${parameter.name}`);
+      throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation2.id} missing required header ${parameter.name}`);
     }
   }
-  if (operation.requestBody?.required && !hasRequestBody(request)) {
-    throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} missing required requestBody`);
+  if (operation2.requestBody?.required && !hasRequestBody(request)) {
+    throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation2.id} missing required requestBody`);
   }
   const contentType2 = requestHeaderValue(request, "Content-Type");
-  if (operation.requestBody?.required && operation.requestBody.contentTypes.length > 0) {
+  if (operation2.requestBody?.required && operation2.requestBody.contentTypes.length > 0) {
     if (!contentType2) {
-      throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} missing required request Content-Type`);
+      throw new Error(`CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation2.id} missing required request Content-Type`);
     }
     const actual = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
-    const matches = operation.requestBody.contentTypes.some((expected) => mediaTypeMatchesPattern(expected.toLowerCase(), actual));
+    const matches = operation2.requestBody.contentTypes.some((expected) => mediaTypeMatchesPattern(expected.toLowerCase(), actual));
     if (!matches) {
       throw new Error(
-        `CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} request Content-Type ${contentType2} does not match ${operation.requestBody.contentTypes.join(", ")}`
+        `CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation2.id} request Content-Type ${contentType2} does not match ${operation2.requestBody.contentTypes.join(", ")}`
       );
     }
   }
-  const warnings = collectStaticBodyWarnings(operation, request, contentType2);
-  if (["GET", "HEAD", "DELETE"].includes(operation.method) && hasRequestBody(request)) {
-    warnings.push(`CONTRACT_METHOD_BODY_SEMANTICS: ${operation.id} sends a request body with ${operation.method}; RFC 9110 defines no request-body semantics for this method`);
+  const warnings = collectStaticBodyWarnings(operation2, request, contentType2);
+  if (["GET", "HEAD", "DELETE"].includes(operation2.method) && hasRequestBody(request)) {
+    warnings.push(`CONTRACT_METHOD_BODY_SEMANTICS: ${operation2.id} sends a request body with ${operation2.method}; RFC 9110 defines no request-body semantics for this method`);
   }
-  if (operation.requestBody && !operation.requestBody.required && operation.requestBody.contentTypes.length > 0 && hasRequestBody(request) && contentType2) {
+  if (operation2.requestBody && !operation2.requestBody.required && operation2.requestBody.contentTypes.length > 0 && hasRequestBody(request) && contentType2) {
     const actual = contentType2.toLowerCase().split(";")[0]?.trim() ?? "";
-    const matches = operation.requestBody.contentTypes.some((expected) => mediaTypeMatchesPattern(expected.toLowerCase(), actual));
+    const matches = operation2.requestBody.contentTypes.some((expected) => mediaTypeMatchesPattern(expected.toLowerCase(), actual));
     if (!matches) {
       warnings.push(
-        `CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation.id} optional request body Content-Type ${contentType2} does not match ${operation.requestBody.contentTypes.join(", ")}`
+        `CONTRACT_STATIC_REQUEST_CHECK_FAILED: ${operation2.id} optional request body Content-Type ${contentType2} does not match ${operation2.requestBody.contentTypes.join(", ")}`
       );
     }
   }
@@ -280623,7 +280650,7 @@ function isJsonEncodingContentType(declared) {
 function isPlaceholderValue(value) {
   return /^<[^>]*>$/.test(value.trim()) || value.includes("{{");
 }
-function collectStaticEncodingWarnings(operation, request, base, rule) {
+function collectStaticEncodingWarnings(operation2, request, base, rule) {
   const encodings = rule.encodings;
   if (!encodings) return [];
   const multipart = base === "multipart/form-data";
@@ -280634,17 +280661,17 @@ function collectStaticEncodingWarnings(operation, request, base, rule) {
   for (const [field, encoding] of Object.entries(encodings)) {
     for (const entry of entries.filter((candidate) => String(candidate.key || "") === field)) {
       if (multipart && encoding.binary && String(entry.type || "") !== "file") {
-        warnings.push(`CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} should be a file part per its binary schema`);
+        warnings.push(`CONTRACT_ENCODING_MISMATCH: ${operation2.id} generated multipart field ${field} should be a file part per its binary schema`);
       }
       if (multipart && encoding.contentType) {
         const actual = typeof entry.contentType === "string" ? (entry.contentType.toLowerCase().split(";")[0] ?? "").trim() : "";
         if (!actual) {
           warnings.push(
-            `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} does not declare Content-Type ${encoding.contentType} from its encoding object`
+            `CONTRACT_ENCODING_MISMATCH: ${operation2.id} generated multipart field ${field} does not declare Content-Type ${encoding.contentType} from its encoding object`
           );
         } else if (!mediaTypeMatchesPattern(encoding.contentType, actual)) {
           warnings.push(
-            `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated multipart field ${field} Content-Type ${actual} does not match declared encoding ${encoding.contentType}`
+            `CONTRACT_ENCODING_MISMATCH: ${operation2.id} generated multipart field ${field} Content-Type ${actual} does not match declared encoding ${encoding.contentType}`
           );
         }
       }
@@ -280655,7 +280682,7 @@ function collectStaticEncodingWarnings(operation, request, base, rule) {
             JSON.parse(value);
           } catch {
             warnings.push(
-              `CONTRACT_ENCODING_MISMATCH: ${operation.id} generated ${part} field ${field} declares JSON encoding ${encoding.contentType} but its value is not parseable JSON`
+              `CONTRACT_ENCODING_MISMATCH: ${operation2.id} generated ${part} field ${field} declares JSON encoding ${encoding.contentType} but its value is not parseable JSON`
             );
           }
         }
@@ -280672,7 +280699,7 @@ function coerceFormValue(value, schema3) {
   if (types2.includes("boolean") && (value === "true" || value === "false")) return value === "true";
   return value;
 }
-function collectStaticFieldSchemaWarnings(operation, request, base, rule) {
+function collectStaticFieldSchemaWarnings(operation2, request, base, rule) {
   const fieldSchemas = rule.fieldSchemas;
   if (!fieldSchemas) return [];
   const entries = requestBodyEntries(request, base);
@@ -280687,32 +280714,32 @@ function collectStaticFieldSchemaWarnings(operation, request, base, rule) {
       const value = typeof entry.value === "string" ? entry.value : "";
       if (!value.trim() || isPlaceholderValue(value)) continue;
       if (!validate4(coerceFormValue(value, schema3))) {
-        warnings.push(`CONTRACT_FORM_FIELD_SCHEMA_MISMATCH: ${operation.id} generated ${part} field ${field} value does not match its schema`);
+        warnings.push(`CONTRACT_FORM_FIELD_SCHEMA_MISMATCH: ${operation2.id} generated ${part} field ${field} value does not match its schema`);
       }
     }
   }
   return warnings;
 }
-function collectStaticBodyWarnings(operation, request, contentType2) {
-  const rules = operation.requestBody?.fieldRules;
+function collectStaticBodyWarnings(operation2, request, contentType2) {
+  const rules = operation2.requestBody?.fieldRules;
   if (!rules) return [];
   const base = (contentType2 || "").toLowerCase().split(";")[0]?.trim() ?? "";
   const rule = rules[base];
   if (!rule) return [];
   const warnings = [
-    ...collectStaticEncodingWarnings(operation, request, base, rule),
-    ...collectStaticFieldSchemaWarnings(operation, request, base, rule)
+    ...collectStaticEncodingWarnings(operation2, request, base, rule),
+    ...collectStaticFieldSchemaWarnings(operation2, request, base, rule)
   ];
   const names = requestBodyFieldNames(request, base);
   if (!names) return warnings;
   const present = new Set(names);
   const missing = rule.required.filter((name) => !present.has(name));
   if (missing.length > 0) {
-    warnings.push(`CONTRACT_REQUEST_BODY_INCOMPLETE: ${operation.id} generated request body is missing required properties: ${missing.join(", ")}`);
+    warnings.push(`CONTRACT_REQUEST_BODY_INCOMPLETE: ${operation2.id} generated request body is missing required properties: ${missing.join(", ")}`);
   }
   const readOnlySent = rule.readOnly.filter((name) => present.has(name));
   if (readOnlySent.length > 0) {
-    warnings.push(`CONTRACT_READONLY_PROPERTY_IN_REQUEST: ${operation.id} generated request body includes readOnly properties: ${readOnlySent.join(", ")}`);
+    warnings.push(`CONTRACT_READONLY_PROPERTY_IN_REQUEST: ${operation2.id} generated request body includes readOnly properties: ${readOnlySent.join(", ")}`);
   }
   return warnings;
 }
@@ -280756,7 +280783,7 @@ function instrumentContractCollection(collection, index, limits = {}) {
   if (maxCollectionUpdateBytes !== false && (!Number.isSafeInteger(maxCollectionUpdateBytes) || maxCollectionUpdateBytes <= 0)) {
     throw new Error("CONTRACT_COLLECTION_SIZE_EXCEEDED: Contract collection size limit must be a finite positive bounded integer");
   }
-  const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
+  const warnings = [...index.warnings, ...index.operations.flatMap((operation2) => operation2.warnings)];
   const covered = /* @__PURE__ */ new Map();
   const inject = (item) => {
     if (isResolverItem(item)) return;
@@ -280789,9 +280816,9 @@ function instrumentContractCollection(collection, index, limits = {}) {
   const items = asArray5(collection.item).map((entry) => asRecord9(entry)).filter((entry) => Boolean(entry)).filter((entry) => !isResolverItem(entry));
   collection.item = items;
   for (const item of items) inject(item);
-  const missing = index.operations.filter((operation) => !covered.has(operation.id));
+  const missing = index.operations.filter((operation2) => !covered.has(operation2.id));
   if (missing.length > 0) {
-    throw new Error(`CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation) => `${operation.id} (${operation.pointer})`).join(", ")}`);
+    throw new Error(`CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation2) => `${operation2.id} (${operation2.pointer})`).join(", ")}`);
   }
   const resolverProvider = limits.secretsResolverProvider ?? "none";
   if (isSecretsResolverEnabled(resolverProvider)) {
@@ -280837,7 +280864,7 @@ function v3ItemToContractRequest(item) {
   return request;
 }
 function planContractItemScripts(items, index) {
-  const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
+  const warnings = [...index.warnings, ...index.operations.flatMap((operation2) => operation2.warnings)];
   const covered = /* @__PURE__ */ new Map();
   const scripts = [];
   for (const { itemId, item } of items) {
@@ -280879,10 +280906,10 @@ function planContractItemScripts(items, index) {
     if (sizeWarning) warnings.push(sizeWarning);
     scripts.push({ itemId, exec: script });
   }
-  const missing = index.operations.filter((operation) => !covered.has(operation.id));
+  const missing = index.operations.filter((operation2) => !covered.has(operation2.id));
   if (missing.length > 0) {
     throw new Error(
-      `CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation) => `${operation.id} (${operation.pointer})`).join(", ")}`
+      `CONTRACT_OPERATION_COVERAGE_FAILED: Contract collection is missing generated request coverage for ${missing.map((operation2) => `${operation2.id} (${operation2.pointer})`).join(", ")}`
     );
   }
   return { scripts, warnings };
@@ -301584,10 +301611,10 @@ var OpenAPISpecificationValidator = class extends SpecificationValidator {
    */
   validatePath(path12, pathId, operationIds) {
     supportedHTTPMethods.forEach((operationName) => {
-      const operation = path12[operationName];
+      const operation2 = path12[operationName];
       const operationId = `${pathId}/${operationName}`;
-      if (operation) {
-        const declaredOperationId = operation.operationId;
+      if (operation2) {
+        const declaredOperationId = operation2.operationId;
         if (declaredOperationId) {
           if (!operationIds.includes(declaredOperationId)) {
             operationIds.push(declaredOperationId);
@@ -301597,9 +301624,9 @@ var OpenAPISpecificationValidator = class extends SpecificationValidator {
             this.reportError(`The operationId \`${declaredOperationId}\` is duplicated and must be made unique.`);
           }
         }
-        this.validateParameters(path12, pathId, operation, operationId);
-        Object.keys(operation.responses || {}).forEach((responseCode) => {
-          const response = operation.responses[responseCode];
+        this.validateParameters(path12, pathId, operation2, operationId);
+        Object.keys(operation2.responses || {}).forEach((responseCode) => {
+          const response = operation2.responses[responseCode];
           const responseId = `${operationId}/responses/${responseCode}`;
           if (response && !("$ref" in response)) {
             this.validateResponse(response, responseId);
@@ -301612,9 +301639,9 @@ var OpenAPISpecificationValidator = class extends SpecificationValidator {
    * Validates the parameters for the given operation.
    *
    */
-  validateParameters(path12, pathId, operation, operationId) {
+  validateParameters(path12, pathId, operation2, operationId) {
     const pathParams = path12.parameters || [];
-    const operationParams = operation.parameters || [];
+    const operationParams = operation2.parameters || [];
     this.checkForDuplicates(pathParams, pathId);
     this.checkForDuplicates(operationParams, operationId);
     const params = pathParams.reduce((combinedParams, value) => {
@@ -301935,10 +301962,10 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
    */
   validatePath(path12, pathId, operationIds) {
     swaggerHTTPMethods.forEach((operationName) => {
-      const operation = path12[operationName];
+      const operation2 = path12[operationName];
       const operationId = `${pathId}/${operationName}`;
-      if (operation) {
-        const declaredOperationId = operation.operationId;
+      if (operation2) {
+        const declaredOperationId = operation2.operationId;
         if (declaredOperationId) {
           if (!operationIds.includes(declaredOperationId)) {
             operationIds.push(declaredOperationId);
@@ -301948,9 +301975,9 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
             this.reportError(`The operationId \`${declaredOperationId}\` is duplicated and must be made unique.`);
           }
         }
-        this.validateParameters(path12, pathId, operation, operationId);
-        Object.keys(operation.responses || {}).forEach((responseName) => {
-          const response = operation.responses[responseName];
+        this.validateParameters(path12, pathId, operation2, operationId);
+        Object.keys(operation2.responses || {}).forEach((responseName) => {
+          const response = operation2.responses[responseName];
           if ("$ref" in response || !response) {
             return;
           }
@@ -301964,9 +301991,9 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
    * Validates the parameters for the given operation.
    *
    */
-  validateParameters(path12, pathId, operation, operationId) {
+  validateParameters(path12, pathId, operation2, operationId) {
     const pathParams = (path12.parameters || []).filter((param) => !("$ref" in param));
-    const operationParams = (operation.parameters || []).filter(
+    const operationParams = (operation2.parameters || []).filter(
       (param) => !("$ref" in param)
     );
     this.checkForDuplicates(pathParams, pathId);
@@ -301985,7 +302012,7 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
     }, operationParams.slice());
     this.validateBodyParameters(params, operationId);
     this.validatePathParameters(params, pathId, operationId);
-    this.validateParameterTypes(params, operation, operationId);
+    this.validateParameterTypes(params, operation2, operationId);
   }
   /**
    * Validates body and formData parameters for the given operation.
@@ -302054,7 +302081,7 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
    * Validates data types of parameters for the given operation.
    *
    */
-  validateParameterTypes(params, operation, operationId) {
+  validateParameterTypes(params, operation2, operationId) {
     params.forEach((param) => {
       const parameterId = `${operationId}/parameters/${param.name}`;
       let schema3;
@@ -302073,7 +302100,7 @@ var SwaggerSpecificationValidator = class extends SpecificationValidator {
       if (schema3.type === "file") {
         const formData = /multipart\/(.*\+)?form-data/;
         const urlEncoded = /application\/(.*\+)?x-www-form-urlencoded/;
-        const consumes = operation.consumes || this.api.consumes || [];
+        const consumes = operation2.consumes || this.api.consumes || [];
         const hasValidMimeType = consumes.some((consume) => {
           return formData.test(consume) || urlEncoded.test(consume);
         });
@@ -304155,9 +304182,9 @@ function repairNumber(value, schema3, integer) {
   }
   return normalizedNumber(candidate);
 }
-function sourceOperation(root, operation) {
-  const rawOperation = resolvePointer(root, `#${operation.pointer}`);
-  const pathPointer = operation.pointer.replace(/\/[^/]+$/, "");
+function sourceOperation(root, operation2) {
+  const rawOperation = resolvePointer(root, `#${operation2.pointer}`);
+  const pathPointer = operation2.pointer.replace(/\/[^/]+$/, "");
   return {
     operation: resolveSourceRecord(root, rawOperation),
     pathItem: resolveSourceRecord(root, resolvePointer(root, `#${pathPointer}`))
@@ -304173,8 +304200,8 @@ function headerValue2(headers, name) {
   }
   return "";
 }
-function sourceRequestMedia(root, operation, base) {
-  const source = sourceOperation(root, operation).operation;
+function sourceRequestMedia(root, operation2, base) {
+  const source = sourceOperation(root, operation2).operation;
   const body2 = resolveSourceRecord(root, source?.requestBody);
   const content = isRecord2(body2?.content) ? body2.content : {};
   for (const [contentType2, rawMedia] of Object.entries(content)) {
@@ -304200,11 +304227,11 @@ function repairJsonValue(value, packedSchema, rawSchema, media, sourceRoot, vers
   }
   return repaired;
 }
-function repairFormBody(operation, body2, index, candidate) {
+function repairFormBody(operation2, body2, index, candidate) {
   const mode = typeof body2.mode === "string" ? body2.mode : "";
   const base = mode === "urlencoded" ? "application/x-www-form-urlencoded" : mode === "formdata" ? "multipart/form-data" : "";
   if (!base) return;
-  const fieldSchemas = operation.requestBody?.fieldRules?.[base]?.fieldSchemas;
+  const fieldSchemas = operation2.requestBody?.fieldRules?.[base]?.fieldSchemas;
   if (!fieldSchemas) return;
   const entries = Array.isArray(body2[mode]) ? body2[mode].filter(isRecord2) : [];
   for (const entry of entries) {
@@ -304213,7 +304240,7 @@ function repairFormBody(operation, body2, index, candidate) {
     if (entry.value.includes("{{")) continue;
     const schema3 = fieldSchemas[String(entry.key ?? "")];
     if (schema3 === void 0) continue;
-    const label = `${base} field ${String(entry.key ?? "")} for ${operation.id}`;
+    const label = `${base} field ${String(entry.key ?? "")} for ${operation2.id}`;
     const root = isRecord2(schema3) ? schema3 : {};
     const policy = new SourcePolicy([], entry.value, label);
     const repaired = new SchemaRepairer(candidate, policy).repair(coerceScalar(entry.value, schema3), schema3, root);
@@ -304224,12 +304251,12 @@ function repairFormBody(operation, body2, index, candidate) {
     entry.value = scalarString(repaired);
   }
 }
-function repairRequestBody(operation, request, sourceRoot, index, candidate) {
+function repairRequestBody(operation2, request, sourceRoot, index, candidate) {
   const base = requestContentType(request);
-  const schema3 = operation.requestBody?.jsonSchemas?.[base];
+  const schema3 = operation2.requestBody?.jsonSchemas?.[base];
   const body2 = isRecord2(request.body) ? request.body : null;
   if (body2 && body2.mode !== "raw") {
-    repairFormBody(operation, body2, index, candidate);
+    repairFormBody(operation2, body2, index, candidate);
     return;
   }
   if (schema3 === void 0 || body2?.mode !== "raw" || typeof body2.raw !== "string" || !body2.raw.trim()) return;
@@ -304238,9 +304265,9 @@ function repairRequestBody(operation, request, sourceRoot, index, candidate) {
   try {
     value = JSON.parse(body2.raw);
   } catch (error) {
-    throw new Error(`generated JSON request body for ${operation.id} is not parseable`, { cause: error });
+    throw new Error(`generated JSON request body for ${operation2.id} is not parseable`, { cause: error });
   }
-  const source = sourceRequestMedia(sourceRoot, operation, base);
+  const source = sourceRequestMedia(sourceRoot, operation2, base);
   const repaired = repairJsonValue(
     value,
     schema3,
@@ -304249,7 +304276,7 @@ function repairRequestBody(operation, request, sourceRoot, index, candidate) {
     sourceRoot,
     index.version,
     "request",
-    `${base} request body for ${operation.id}`,
+    `${base} request body for ${operation2.id}`,
     candidate
   );
   if (!sameValue(value, repaired)) body2.raw = JSON.stringify(repaired, null, 2);
@@ -304267,8 +304294,8 @@ function scalarString(value) {
   if (value === null || value === void 0) return "";
   return typeof value === "string" ? value : JSON.stringify(value);
 }
-function sourceParameter(root, operation, check) {
-  const source = sourceOperation(root, operation);
+function sourceParameter(root, operation2, check) {
+  const source = sourceOperation(root, operation2);
   const params = [
     ...Array.isArray(source.operation?.parameters) ? source.operation.parameters : [],
     ...Array.isArray(source.pathItem?.parameters) ? source.pathItem.parameters : []
@@ -304279,27 +304306,27 @@ function sourceParameter(root, operation, check) {
   }
   return null;
 }
-function parameterPolicy(root, operation, check, value, version) {
-  const param = sourceParameter(root, operation, check);
+function parameterPolicy(root, operation2, check, value, version) {
+  const param = sourceParameter(root, operation2, check);
   const content = isRecord2(param?.content) ? Object.values(param.content) : [];
   const rawSchema = param?.schema ?? (content.length === 1 && isRecord2(content[0]) ? content[0].schema : void 0);
   return new SourcePolicy(
     mediaAuthoredValues(root, param, rawSchema, check.schema, version, "request"),
     value,
-    `parameter ${check.in}:${check.name} on ${operation.id}`
+    `parameter ${check.in}:${check.name} on ${operation2.id}`
   );
 }
-function repairParameterValue(operation, check, value, sourceRoot, index, candidate) {
-  const param = sourceParameter(sourceRoot, operation, check);
+function repairParameterValue(operation2, check, value, sourceRoot, index, candidate) {
+  const param = sourceParameter(sourceRoot, operation2, check);
   const content = isRecord2(param?.content) ? Object.values(param.content) : [];
   const rawSchema = param?.schema ?? (content.length === 1 && isRecord2(content[0]) ? content[0].schema : void 0);
-  const policy = parameterPolicy(sourceRoot, operation, check, value, index.version);
+  const policy = parameterPolicy(sourceRoot, operation2, check, value, index.version);
   const root = isRecord2(check.schema) ? check.schema : {};
   const pruned = pruneDirectionalProperties(value, rawSchema, sourceRoot, "request");
   const repaired = new SchemaRepairer(candidate, policy).repair(pruned, check.schema, root);
   const validate4 = compileSchemaValidator(check.schema);
   if (!validate4 || !validate4(repaired)) {
-    throw new Error(`generated parameter ${check.in}:${check.name} on ${operation.id} could not be safely repaired to satisfy its OpenAPI schema`);
+    throw new Error(`generated parameter ${check.in}:${check.name} on ${operation2.id} could not be safely repaired to satisfy its OpenAPI schema`);
   }
   return repaired;
 }
@@ -304310,9 +304337,9 @@ function replaceQueryEntries(url, name, values) {
   const others = query.filter((entry) => String(entry.key || "").toLowerCase() !== name.toLowerCase());
   url.query = [...others, ...values.map((value) => ({ ...template, key: name, value }))];
 }
-function repairParameters(operation, request, sourceRoot, index, candidate) {
+function repairParameters(operation2, request, sourceRoot, index, candidate) {
   const url = isRecord2(request.url) ? request.url : null;
-  for (const check of operation.parameterChecks ?? []) {
+  for (const check of operation2.parameterChecks ?? []) {
     if (check.in === "cookie") continue;
     if (check.in === "path") {
       const variables = Array.isArray(url?.variable) ? url.variable.filter(isRecord2) : [];
@@ -304320,7 +304347,7 @@ function repairParameters(operation, request, sourceRoot, index, candidate) {
       if (!variable || typeof variable.value !== "string" || variable.value.includes("{{")) continue;
       const prefix = check.pathStyle === "label" ? "." : check.pathStyle === "matrix" ? `;${check.name}=` : "";
       const raw = prefix && variable.value.startsWith(prefix) ? variable.value.slice(prefix.length) : variable.value;
-      const repaired2 = repairParameterValue(operation, check, coerceScalar(raw, check.schema), sourceRoot, index, candidate);
+      const repaired2 = repairParameterValue(operation2, check, coerceScalar(raw, check.schema), sourceRoot, index, candidate);
       variable.value = `${prefix}${scalarString(repaired2)}`;
       continue;
     }
@@ -304329,7 +304356,7 @@ function repairParameters(operation, request, sourceRoot, index, candidate) {
       const header = headers.find((entry) => entry.disabled !== true && String(entry.key || "").toLowerCase() === check.name.toLowerCase());
       if (!header || typeof header.value !== "string" || header.value.includes("{{")) continue;
       const decoded2 = check.decode === "csv" ? header.value.split(",").map((entry) => coerceScalar(entry.trim(), check.items)) : check.content ? JSON.parse(header.value) : coerceScalar(header.value, check.schema);
-      const repaired2 = repairParameterValue(operation, check, decoded2, sourceRoot, index, candidate);
+      const repaired2 = repairParameterValue(operation2, check, decoded2, sourceRoot, index, candidate);
       header.value = check.decode === "csv" && Array.isArray(repaired2) ? repaired2.map(scalarString).join(",") : check.content ? JSON.stringify(repaired2) : scalarString(repaired2);
       continue;
     }
@@ -304346,7 +304373,7 @@ function repairParameters(operation, request, sourceRoot, index, candidate) {
         if (!match?.[1]) continue;
         decoded2[match[1]] = coerceScalar(String(entry.value ?? ""), properties[match[1]]);
       }
-      const repaired2 = repairParameterValue(operation, check, decoded2, sourceRoot, index, candidate);
+      const repaired2 = repairParameterValue(operation2, check, decoded2, sourceRoot, index, candidate);
       if (!isRecord2(repaired2)) continue;
       const others = query.filter((entry) => !String(entry.key || "").toLowerCase().startsWith(prefix));
       url.query = [
@@ -304364,7 +304391,7 @@ function repairParameters(operation, request, sourceRoot, index, candidate) {
       decoded = String(entries[0].value ?? "").split(delimiter2).map((entry) => coerceScalar(entry.trim(), check.items));
     } else if (check.content) decoded = JSON.parse(String(entries[0].value ?? ""));
     else decoded = coerceScalar(String(entries[0].value ?? ""), check.schema);
-    const repaired = repairParameterValue(operation, check, decoded, sourceRoot, index, candidate);
+    const repaired = repairParameterValue(operation2, check, decoded, sourceRoot, index, candidate);
     if (check.decode === "multi" && Array.isArray(repaired)) replaceQueryEntries(url, check.name, repaired.map(scalarString));
     else if (check.decode && Array.isArray(repaired)) {
       const delimiter2 = check.decode === "ssv" ? " " : check.decode === "pipes" ? "|" : ",";
@@ -304380,26 +304407,26 @@ function matchWebhookOperation(index, item) {
   const name = String(item.name || "").trim().toLowerCase();
   if (!name) return void 0;
   const collapsed = name.replace(/[\s_-]+/g, "");
-  const matches = webhooks.filter((operation) => {
-    if (operation.method !== method) return false;
-    const key = operation.path.replace(/^\//, "").toLowerCase();
+  const matches = webhooks.filter((operation2) => {
+    if (operation2.method !== method) return false;
+    const key = operation2.path.replace(/^\//, "").toLowerCase();
     return key === name || key.replace(/[\s_-]+/g, "") === collapsed;
   });
   return matches.length === 1 ? matches[0] : void 0;
 }
-function repairRequest(operation, request, sourceRoot, index, candidate) {
-  repairParameters(operation, request, sourceRoot, index, candidate);
-  repairRequestBody(operation, request, sourceRoot, index, candidate);
+function repairRequest(operation2, request, sourceRoot, index, candidate) {
+  repairParameters(operation2, request, sourceRoot, index, candidate);
+  repairRequestBody(operation2, request, sourceRoot, index, candidate);
 }
-function responseContract(operation, code) {
+function responseContract(operation2, code) {
   const exact = String(code);
-  if (operation.responses[exact]) return { key: exact, value: operation.responses[exact] };
+  if (operation2.responses[exact]) return { key: exact, value: operation2.responses[exact] };
   const range = `${Math.floor(code / 100)}XX`;
-  if (operation.responses[range]) return { key: range, value: operation.responses[range] };
-  return operation.responses.default ? { key: "default", value: operation.responses.default } : null;
+  if (operation2.responses[range]) return { key: range, value: operation2.responses[range] };
+  return operation2.responses.default ? { key: "default", value: operation2.responses.default } : null;
 }
-function sourceResponseMedia(root, operation, status, base) {
-  const source = sourceOperation(root, operation).operation;
+function sourceResponseMedia(root, operation2, status, base) {
+  const source = sourceOperation(root, operation2).operation;
   const responses = isRecord2(source?.responses) ? source.responses : {};
   const response = resolveSourceRecord(root, responses[status]);
   const content = isRecord2(response?.content) ? response.content : {};
@@ -304410,10 +304437,10 @@ function sourceResponseMedia(root, operation, status, base) {
   }
   return { media: null, schema: void 0 };
 }
-function repairSavedResponse(operation, response, sourceRoot, index, candidate) {
+function repairSavedResponse(operation2, response, sourceRoot, index, candidate) {
   const code = typeof response.code === "number" ? response.code : Number(response.code);
   if (!Number.isFinite(code)) return;
-  const contract = responseContract(operation, code);
+  const contract = responseContract(operation2, code);
   if (!contract) return;
   const base = headerValue2(response.header, "content-type").toLowerCase().split(";")[0]?.trim() ?? "";
   const mediaEntry = Object.entries(contract.value.content).find(([contentType2]) => (contentType2.toLowerCase().split(";")[0]?.trim() ?? "") === base);
@@ -304423,9 +304450,9 @@ function repairSavedResponse(operation, response, sourceRoot, index, candidate) 
     try {
       value = JSON.parse(response.body);
     } catch (error) {
-      throw new Error(`generated saved response body for ${operation.id} status ${code} is not parseable JSON`, { cause: error });
+      throw new Error(`generated saved response body for ${operation2.id} status ${code} is not parseable JSON`, { cause: error });
     }
-    const source = sourceResponseMedia(sourceRoot, operation, contract.key, base);
+    const source = sourceResponseMedia(sourceRoot, operation2, contract.key, base);
     const repaired = repairJsonValue(
       value,
       packedSchema,
@@ -304434,7 +304461,7 @@ function repairSavedResponse(operation, response, sourceRoot, index, candidate) 
       sourceRoot,
       index.version,
       "response",
-      `${base} saved response body for ${operation.id} status ${code}`,
+      `${base} saved response body for ${operation2.id} status ${code}`,
       candidate
     );
     if (!sameValue(value, repaired)) response.body = JSON.stringify(repaired, null, 2);
@@ -304454,11 +304481,11 @@ function repairGeneratedCollectionExamples(collection, index, bundledOpenApi, ca
   if (mode === "off") return [];
   const warnings = [];
   const sourceRoot = parseOpenApiDocument(bundledOpenApi);
-  const warning = (operation, context, error) => {
+  const warning = (operation2, context, error) => {
     const detail = error instanceof Error ? error.message : String(error);
-    warnings.push(`LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: operation ${operation.id} ${context}: ${detail.replace(/\s+/g, " ").trim()}`);
+    warnings.push(`LOCAL_OPENAPI_EXAMPLE_REPAIR_SKIPPED: operation ${operation2.id} ${context}: ${detail.replace(/\s+/g, " ").trim()}`);
   };
-  const transactional = (operation, context, target, repair) => {
+  const transactional = (operation2, context, target, repair) => {
     try {
       const copy = clone(target);
       repair(copy);
@@ -304466,7 +304493,7 @@ function repairGeneratedCollectionExamples(collection, index, bundledOpenApi, ca
       Object.assign(target, copy);
     } catch (error) {
       if (mode === "strict") throw error;
-      warning(operation, context, error);
+      warning(operation2, context, error);
     }
   };
   const visit4 = (items) => {
@@ -304475,19 +304502,19 @@ function repairGeneratedCollectionExamples(collection, index, bundledOpenApi, ca
       if (!isRecord2(raw)) continue;
       if (isRecord2(raw.request)) {
         const matched = matchOperation(index, raw.request);
-        const operation = matched.operation ?? matchWebhookOperation(index, raw);
-        if (operation) {
-          transactional(operation, "request example", raw.request, (request) => {
-            repairRequest(operation, request, sourceRoot, index, candidate);
+        const operation2 = matched.operation ?? matchWebhookOperation(index, raw);
+        if (operation2) {
+          transactional(operation2, "request example", raw.request, (request) => {
+            repairRequest(operation2, request, sourceRoot, index, candidate);
           });
           for (const saved of Array.isArray(raw.response) ? raw.response.filter(isRecord2) : []) {
             if (isRecord2(saved.originalRequest)) {
-              transactional(operation, "saved request example", saved.originalRequest, (request) => {
-                repairRequest(operation, request, sourceRoot, index, candidate);
+              transactional(operation2, "saved request example", saved.originalRequest, (request) => {
+                repairRequest(operation2, request, sourceRoot, index, candidate);
               });
             }
-            transactional(operation, "saved response example", saved, (response) => {
-              repairSavedResponse(operation, response, sourceRoot, index, candidate);
+            transactional(operation2, "saved response example", saved, (response) => {
+              repairSavedResponse(operation2, response, sourceRoot, index, candidate);
             });
           }
         }
@@ -305083,7 +305110,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-07-31T18:47:42.753Z",
-  bootstrapCommit: "f2d88498493afc271bcb5d637e018368162a97d1",
+  bootstrapCommit: "c8e6d402a92ae5516cf3babf7ef4b0d58c1fa040",
   legs: [
     {
       mode: "nonorg",
@@ -306173,6 +306200,54 @@ function specTreeNextCursor(value) {
 function asItemArray(value) {
   return Array.isArray(value) ? value : [];
 }
+var MemoizedWorkspaceInventoryObserver = class {
+  constructor(readInventory, sleep2, onPhysicalRead, onSleep) {
+    this.readInventory = readInventory;
+    this.sleep = sleep2;
+    this.onPhysicalRead = onPhysicalRead;
+    this.onSleep = onSleep;
+  }
+  readInventory;
+  sleep;
+  onPhysicalRead;
+  onSleep;
+  inFlight;
+  async observe(cursor, retryPolicy) {
+    let rows;
+    try {
+      rows = await this.read(retryPolicy);
+    } catch {
+      rows = void 0;
+    }
+    const observation = { rows };
+    cursor.observations.push(observation);
+    return observation;
+  }
+  async consumeDelay(cursor) {
+    const delay = cursor.delays[cursor.nextDelayIndex];
+    if (delay === void 0) return false;
+    cursor.nextDelayIndex += 1;
+    this.onSleep(delay);
+    await this.sleep(delay);
+    return true;
+  }
+  read(retryPolicy) {
+    if (this.inFlight) return this.inFlight;
+    this.onPhysicalRead();
+    const shared = this.readInventory(retryPolicy).then(
+      (rows) => {
+        if (this.inFlight === shared) this.inFlight = void 0;
+        return rows;
+      },
+      (error) => {
+        if (this.inFlight === shared) this.inFlight = void 0;
+        throw error;
+      }
+    );
+    this.inFlight = shared;
+    return shared;
+  }
+};
 function asRecord13(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -306378,11 +306453,14 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
    * visibility merely lags, which is the case election was built to survive.
    */
   static rootUidResolveDelaysForFinalName(finalName) {
-    const settle = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
-    if (settle !== _PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS) return settle;
+    if (_PostmanGatewayAssetsClient.PREVIEW_ASSET_NAME_SUFFIX.test(finalName)) {
+      return _PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS;
+    }
     return [
-      ...settle,
-      ..._PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(settle.length)
+      ..._PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+      ..._PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(
+        _PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+      )
     ];
   }
   /**
@@ -306410,6 +306488,9 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
   createIdentity;
   reconcileCapabilityPolicy;
   onRetry;
+  workspaceInventoryObservers = /* @__PURE__ */ new Map();
+  activeImportMutations = 0;
+  importMutationWaiters = [];
   constructor(options) {
     this.gateway = options.gateway;
     this.createIdentity = options.createIdentity ?? import_node_crypto7.randomUUID;
@@ -307559,45 +307640,53 @@ ${error.responseBody ?? ""}`
    * fallback, never adopt a final-name peer. Generation callers keep
    * {@link renameGeneratedCollection}.
    */
-  async renameImportedCollectionCanonical(workspaceId, collectionId, finalName) {
-    const rootId = await this.resolveCollectionRootUid(
+  async renameImportedCollectionCanonical(workspaceId, collectionId, finalName, resolution) {
+    const settled = resolution ?? await this.resolveCollectionRootUid(
       workspaceId,
       collectionId,
-      _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName)
+      _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName),
+      "safe",
+      _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName).length
     );
+    const rootId = settled.rootUid;
     if (!rootId) {
-      return;
+      return settled;
     }
+    const started = this.now();
     try {
-      await this.gateway.requestJson({
+      await this.withImportMutation(() => this.gateway.requestJson({
         service: "collection",
         method: "patch",
         path: `/v3/collections/${rootId}`,
         retry: "none",
         body: [{ op: "replace", path: "/name", value: finalName }]
-      });
+      }));
+      this.recordCursorRename(settled.cursor, rootId, finalName);
     } catch (error) {
       if (error instanceof HttpError && error.status === 400 && /must update at least one|REJECTED_PATCH/i.test(
         `${error.message}
 ${error.responseBody ?? ""}`
       )) {
-        return;
+        this.recordCursorRename(settled.cursor, rootId, finalName);
+        return settled;
       }
       if (!isAmbiguousTransportError(error)) throw error;
       const preferredIdentity = normalizeCollectionModelIdentity(collectionId);
-      const delays = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
-      for (let observation = 0; observation <= delays.length; observation += 1) {
-        const matches = await this.findCollectionsByExactName(workspaceId, finalName, "safe");
-        const committed = matches.find(
-          (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
+      const observer = this.workspaceInventoryObserver(workspaceId);
+      do {
+        const observation = await observer.observe(settled.cursor, "safe");
+        const committed = observation.rows?.find(
+          (entry) => entry.name === finalName && normalizeCollectionModelIdentity(entry.id) === preferredIdentity
         );
-        if (committed) return;
-        if (observation < delays.length) {
-          await this.sleep(delays[observation]);
+        if (committed) {
+          return settled;
         }
-      }
+      } while (settled.cursor.nextDelayIndex < settled.cursor.peerDelayCount && await observer.consumeDelay(settled.cursor));
       throw error;
+    } finally {
+      this.writeMetrics.renameMs += Math.max(0, this.now() - started);
     }
+    return settled;
   }
   /**
    * Create a team-visible workspace through the gateway workspaces service.
@@ -307846,23 +307935,148 @@ ${error.responseBody ?? ""}`
    * within the budget (or inventory stayed unreadable throughout) — the caller
    * decides how to fail, since there is no safe bare-id fallback.
    */
-  async resolveCollectionRootUid(workspaceId, collectionId, delays, retryPolicy = "safe") {
+  async resolveCollectionRootUid(workspaceId, collectionId, delays, retryPolicy = "safe", peerDelayCount = delays.length) {
+    const started = this.now();
     const id = String(collectionId ?? "").trim();
-    if (!id) return void 0;
-    if (!isBareCollectionUuid(id)) return id;
     const targetIdentity = normalizeCollectionModelIdentity(id);
-    for (let observation = 0; observation <= delays.length; observation += 1) {
-      try {
-        const inventory = await this.listWorkspaceCollections(workspaceId, retryPolicy);
-        const match = inventory.find(
+    const cursor = this.createImportSettleCursor(
+      workspaceId,
+      targetIdentity,
+      delays,
+      peerDelayCount
+    );
+    const observer = this.workspaceInventoryObserver(workspaceId);
+    let resolvedRow;
+    try {
+      do {
+        const observation = await observer.observe(cursor, retryPolicy);
+        const match = observation.rows?.find(
           (entry) => normalizeCollectionModelIdentity(entry.id) === targetIdentity
         );
-        if (match?.id && isFullPublicCollectionUid(match.id)) return match.id;
+        if (match && (!isBareCollectionUuid(id) || isFullPublicCollectionUid(match.id))) {
+          resolvedRow = match;
+          break;
+        }
+      } while (await observer.consumeDelay(cursor));
+      return {
+        rootUid: !id ? void 0 : isBareCollectionUuid(id) ? resolvedRow?.id : id,
+        resolvedRow,
+        observations: cursor.observations,
+        cursor
+      };
+    } finally {
+      this.writeMetrics.rootResolveMs += Math.max(0, this.now() - started);
+    }
+  }
+  createImportSettleCursor(workspaceId, identity, delays, peerDelayCount) {
+    return {
+      workspaceId,
+      identity,
+      delays,
+      peerDelayCount: Math.min(delays.length, peerDelayCount),
+      observations: [],
+      nextDelayIndex: 0
+    };
+  }
+  recordCursorRename(cursor, rootId, finalName) {
+    const rootIdentity = normalizeCollectionModelIdentity(rootId);
+    let recorded = false;
+    for (let index = 0; index < cursor.observations.length; index += 1) {
+      const observation = cursor.observations[index];
+      const rows = observation.rows?.map((row) => {
+        if (normalizeCollectionModelIdentity(row.id) !== rootIdentity) return row;
+        recorded = true;
+        return { ...row, name: finalName };
+      });
+      if (rows) cursor.observations[index] = { rows };
+    }
+    if (!recorded) {
+      cursor.observations.push({ rows: [{ id: rootId, name: finalName }] });
+    }
+  }
+  workspaceInventoryObserver(workspaceId) {
+    let observer = this.workspaceInventoryObservers.get(workspaceId);
+    if (!observer) {
+      observer = new MemoizedWorkspaceInventoryObserver(
+        (retryPolicy) => this.listWorkspaceCollections(workspaceId, retryPolicy),
+        this.sleep,
+        () => {
+          this.writeMetrics.inventoryReads += 1;
+        },
+        (delayMs) => {
+          this.writeMetrics.inventorySleepMs += delayMs;
+        }
+      );
+      this.workspaceInventoryObservers.set(workspaceId, observer);
+    }
+    return observer;
+  }
+  async withImportMutation(mutation) {
+    if (this.activeImportMutations >= 2) {
+      await new Promise((resolve7) => this.importMutationWaiters.push(resolve7));
+    }
+    this.activeImportMutations += 1;
+    try {
+      return await mutation();
+    } finally {
+      this.activeImportMutations -= 1;
+      this.importMutationWaiters.shift()?.();
+    }
+  }
+  /**
+   * Ambiguous whole-tree write visibility budget: one immediate export plus at
+   * most four 2.5 second re-exports, for a 10 second budget. A client abort says
+   * the response is unknown, not that the server rejected the write, so the
+   * desired digest is polled before any decision to resend or fail.
+   */
+  static AMBIGUOUS_WRITE_VERIFY_DELAYS_MS = [2500, 2500, 2500, 2500];
+  writeMetrics = {
+    ambiguousWrites: 0,
+    convergedWithoutResend: 0,
+    resendCount: 0,
+    verifyPolls: 0,
+    recoveryMs: 0,
+    inventoryReads: 0,
+    inventorySleepMs: 0,
+    rootResolveMs: 0,
+    renameMs: 0,
+    electionMs: 0,
+    deltaOpsByKind: { create: 0, patch: 0, move: 0, delete: 0 },
+    changedBytes: 0,
+    deltaMs: 0,
+    fallbackReasons: []
+  };
+  /** Snapshot of sanitized convergence counters. Never carries collection content. */
+  get collectionWriteMetrics() {
+    return {
+      ...this.writeMetrics,
+      deltaOpsByKind: { ...this.writeMetrics.deltaOpsByKind },
+      fallbackReasons: [...this.writeMetrics.fallbackReasons]
+    };
+  }
+  /**
+   * Bounded export/digest visibility poll used only after an ambiguous write.
+   * Returns whether the desired semantic digest became visible and how many
+   * export observations were spent. An unreadable export burns one observation
+   * rather than aborting the budget.
+   */
+  async awaitExportedDigest(uid, digest) {
+    const delays = _PostmanGatewayAssetsClient.AMBIGUOUS_WRITE_VERIFY_DELAYS_MS;
+    let polls = 0;
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      polls += 1;
+      try {
+        const exported = await this.exportV2Collection(uid);
+        if (computePayloadDigest(exported) === digest) {
+          return { converged: true, polls };
+        }
       } catch {
       }
-      if (observation < delays.length) await this.sleep(delays[observation]);
+      if (observation < delays.length) {
+        await this.sleep(delays[observation]);
+      }
     }
-    return void 0;
+    return { converged: false, polls };
   }
   /**
    * Collection id for ITEMS routes. Prefer the full public uid; fall back to the
@@ -307884,7 +308098,7 @@ ${error.responseBody ?? ""}`
    * transient retry, to wait out a longer platform hiccup on this fragile write.
    * Non-transient errors (e.g. 4xx schema rejections) surface immediately.
    */
-  async patchNewItemScripts(cid, itemId, scripts, entityType = "http-request") {
+  async patchNewItemScripts(cid, itemId, scripts, entityType2 = "http-request") {
     const maxAttempts = 6;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
@@ -307893,7 +308107,7 @@ ${error.responseBody ?? ""}`
           method: "patch",
           path: `/v3/collections/${cid}/items/${itemId}`,
           retry: "safe",
-          headers: { "X-Entity-Type": entityType },
+          headers: { "X-Entity-Type": entityType2 },
           body: [{ op: "add", path: "/scripts", value: scripts }]
         });
         return;
@@ -308764,14 +308978,14 @@ ${error.responseBody ?? ""}`
     );
     let created;
     try {
-      created = await this.gateway.requestJson({
+      created = await this.withImportMutation(() => this.gateway.requestJson({
         service: "sync",
         method: "post",
         path: "/collection/import",
         query: { workspace: workspaceId, format: "2.1.0" },
         retry: "rate-limit",
         body: importPayload
-      });
+      }));
     } catch (error) {
       if (!isAmbiguousTransportError(error)) {
         throw this.sanitizeImportError("import-transport", error);
@@ -308792,13 +309006,14 @@ ${error.responseBody ?? ""}`
     }
     journal(rawId);
     try {
-      await this.renameImportedCollectionCanonical(workspaceId, rawId, desiredName);
+      const resolution = await this.renameImportedCollectionCanonical(workspaceId, rawId, desiredName);
       const electedId = await this.electImportedCollectionIdentity(
         workspaceId,
         desiredName,
         rawId,
         staleFinalIdentities,
-        desiredDescription
+        desiredDescription,
+        resolution.cursor
       );
       const rawBare = this.bareModelId(rawId);
       const electedBare = this.bareModelId(electedId);
@@ -308847,23 +309062,43 @@ ${error.responseBody ?? ""}`
     info._postman_id = bareId;
     prepared.info = info;
     this.assertV21Collection(prepared);
+    const putEnvelope = {
+      service: "sync",
+      method: "put",
+      path: `/collection/deepupdate/${bareId}`,
+      query: { format: "2.1.0" },
+      retry: "none",
+      body: prepared
+    };
     try {
-      await this.gateway.requestJson({
-        service: "sync",
-        method: "put",
-        path: `/collection/deepupdate/${bareId}`,
-        query: { format: "2.1.0" },
-        retry: "none",
-        body: prepared
-      });
+      await this.gateway.requestJson(putEnvelope);
       return uid;
     } catch (error) {
       if (!isAmbiguousTransportError(error)) {
         throw this.sanitizeDeepUpdateError("deep-update-transport", error);
       }
-      const exported = await this.exportV2Collection(uid);
-      const actualDigest = computePayloadDigest(exported);
-      if (actualDigest !== digest) {
+      const recoveryStarted = this.now();
+      this.writeMetrics.ambiguousWrites += 1;
+      const first = await this.awaitExportedDigest(uid, digest);
+      this.writeMetrics.verifyPolls += first.polls;
+      if (first.converged) {
+        this.writeMetrics.convergedWithoutResend += 1;
+        this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
+        return uid;
+      }
+      this.writeMetrics.resendCount += 1;
+      try {
+        await this.gateway.requestJson(putEnvelope);
+      } catch (resendError) {
+        if (!isAmbiguousTransportError(resendError)) {
+          this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
+          throw this.sanitizeDeepUpdateError("deep-update-resend", resendError);
+        }
+      }
+      const second = await this.awaitExportedDigest(uid, digest);
+      this.writeMetrics.verifyPolls += second.polls;
+      this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
+      if (!second.converged) {
         throw new Error(
           `LOCAL_OPENAPI_DEEP_UPDATE_FAILED: ambiguous-deep-update-digest-mismatch stage=deep-update-verify`,
           { cause: error }
@@ -308871,6 +309106,197 @@ ${error.responseBody ?? ""}`
       }
       return uid;
     }
+  }
+  /**
+   * Apply a conservative, preplanned v2.1 content delta through the collection
+   * item surface. This method intentionally owns only transport convergence:
+   * callers retain the preflight snapshot as their transaction rollback
+   * authority and may pass it here for immediate final-digest rollback.
+   */
+  async applyCollectionDelta(collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback) {
+    const uid = String(collectionUid ?? "").trim();
+    const digest = String(expectedPayloadDigest ?? "").trim();
+    if (!isFullPublicCollectionUid(uid)) {
+      throw new Error("COLLECTION_DELTA_UID_REQUIRED: a full public collection uid is required");
+    }
+    if (!/^[a-f0-9]{64}$/.test(digest)) {
+      throw new Error("COLLECTION_DELTA_DIGEST_REQUIRED: expectedPayloadDigest must be lowercase 64-hex");
+    }
+    if (plan.decision === "unchanged") return { strategy: "unchanged" };
+    if (plan.decision === "fallback") {
+      this.recordDeltaFallback(plan.reason, plan.changedBytes);
+      await this.deepUpdateV2Collection(uid, desiredCollection, digest);
+      return { strategy: "whole-fallback", fallbackReason: plan.reason };
+    }
+    this.writeMetrics.changedBytes += plan.changedBytes;
+    for (const operation2 of plan.operations) {
+      this.writeMetrics.deltaOpsByKind[operation2.kind] += 1;
+    }
+    const started = this.now();
+    const itemIds = /* @__PURE__ */ new Map();
+    try {
+      for (const item of await this.listCollectionItems(uid)) {
+        const itemId = String(item.id ?? "").trim();
+        if (itemId) itemIds.set(`id:${normalizeCollectionModelIdentity(itemId)}`, itemId);
+      }
+      for (let offset = 0; offset < plan.operations.length; ) {
+        const first = plan.operations[offset];
+        const group = [first];
+        offset += 1;
+        while (offset < plan.operations.length && plan.operations[offset].kind === first.kind && plan.operations[offset].parentKey === first.parentKey) {
+          group.push(plan.operations[offset]);
+          offset += 1;
+        }
+        const outcome = await this.applyPlannedCollectionDeltaGroup(uid, group, itemIds, digest);
+        if (outcome === "fallback") {
+          this.recordDeltaFallback("ambiguous-delta-mutation", 0);
+          await this.deepUpdateV2Collection(uid, desiredCollection, digest);
+          this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
+          return { strategy: "whole-fallback", fallbackReason: "ambiguous-delta-mutation" };
+        }
+      }
+      const exported = await this.exportV2Collection(uid);
+      if (computePayloadDigest(exported) !== digest) {
+        await this.rollbackCollectionDelta(uid, rollback);
+        throw new Error("LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch");
+      }
+      this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
+      return { strategy: "delta" };
+    } catch (error) {
+      if (error instanceof Error && error.message === "LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch") {
+        throw error;
+      }
+      this.recordDeltaFallback("delta-mutation-failed", 0);
+      try {
+        await this.deepUpdateV2Collection(uid, desiredCollection, digest);
+      } catch (fallbackError) {
+        await this.rollbackCollectionDelta(uid, rollback);
+        throw fallbackError;
+      } finally {
+        this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
+      }
+      return { strategy: "whole-fallback", fallbackReason: "delta-mutation-failed" };
+    }
+  }
+  recordDeltaFallback(reason, changedBytes) {
+    this.writeMetrics.fallbackReasons.push(reason);
+    this.writeMetrics.changedBytes += changedBytes;
+  }
+  async rollbackCollectionDelta(uid, rollback) {
+    if (!rollback) return;
+    await this.deepUpdateV2Collection(uid, rollback.collection, rollback.payloadDigest);
+  }
+  deltaV3Item(item) {
+    const converted = this.convertV2CollectionToV3({
+      info: {
+        name: "Delta conversion",
+        schema: `https://schema.getpostman.com/json/collection/${"v2.1.0"}/collection.json`
+      },
+      item: [item]
+    });
+    const convertedItem = asItemArray(converted.items)[0];
+    if (!convertedItem) throw new Error("LOCAL_OPENAPI_DELTA_FAILED: item conversion returned no item");
+    return convertedItem;
+  }
+  resolveDeltaItemId(operation2, itemIds) {
+    if (operation2.sourceId) {
+      const matched = itemIds.get(`id:${normalizeCollectionModelIdentity(operation2.sourceId)}`);
+      if (matched) return matched;
+    }
+    throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: exact item identity unavailable for ${operation2.key}`);
+  }
+  async applyPlannedCollectionDeltaOperation(uid, operation2, itemIds, desiredDigest) {
+    const cid = this.collectionItemsId(uid);
+    const request = async () => {
+      if (operation2.kind === "create") {
+        const parentId = operation2.parentKey ? itemIds.get(operation2.parentKey) : cid;
+        if (!parentId) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create parent unavailable for ${operation2.key}`);
+        }
+        const created = await this.gateway.requestJson({
+          service: "collection",
+          method: "post",
+          path: `/v3/collections/${cid}/items/`,
+          retry: "none",
+          headers: { "X-Entity-Type": operation2.entityType },
+          body: this.buildItemCreateBody(this.deltaV3Item(operation2.item), parentId)
+        });
+        const id = String(asRecord13(created?.data)?.id ?? "").trim();
+        if (!id) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create returned no id for ${operation2.key}`);
+        itemIds.set(operation2.key, id);
+        return;
+      }
+      const itemId = this.resolveDeltaItemId(operation2, itemIds);
+      if (operation2.kind === "delete") {
+        await this.gateway.requestJson({
+          service: "collection",
+          method: "delete",
+          path: `/v3/collections/${cid}/items/${itemId}`,
+          retry: "none",
+          headers: { "X-Entity-Type": operation2.entityType }
+        });
+        return;
+      }
+      if (operation2.kind === "move") {
+        const parentId = operation2.parentKey ? itemIds.get(operation2.parentKey) : cid;
+        if (!parentId) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move parent unavailable for ${operation2.key}`);
+        await this.gateway.requestJson({
+          service: "collection",
+          method: "patch",
+          path: `/v3/collections/${cid}/items/${itemId}`,
+          retry: "none",
+          headers: { "X-Entity-Type": operation2.entityType },
+          body: [{ op: "replace", path: "/position", value: { parent: { id: parentId, $kind: "collection" }, index: operation2.index } }]
+        });
+        return;
+      }
+      const target = this.deltaV3Item(operation2.item);
+      const fields = operation2.entityType === "collection" ? ["name", "description"] : ["name", "description", "method", "url", "headers", "queryParams", "pathVariables", "body", "settings"];
+      const body2 = fields.filter((field) => target[field] !== void 0).map((field) => ({ op: "add", path: `/${field}`, value: target[field] }));
+      if (body2.length === 0) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: no supported patch fields for ${operation2.key}`);
+      await this.gateway.requestJson({
+        service: "collection",
+        method: "patch",
+        path: `/v3/collections/${cid}/items/${itemId}`,
+        retry: "none",
+        headers: { "X-Entity-Type": operation2.entityType },
+        body: body2
+      });
+    };
+    try {
+      await request();
+      return "applied";
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) throw error;
+      const recoveryStarted = this.now();
+      this.writeMetrics.ambiguousWrites += 1;
+      const observed = await this.awaitExportedDigest(uid, desiredDigest);
+      this.writeMetrics.verifyPolls += observed.polls;
+      this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
+      if (observed.converged) {
+        this.writeMetrics.convergedWithoutResend += 1;
+        return "applied";
+      }
+      return "fallback";
+    }
+  }
+  /** At most two independent siblings mutate concurrently. */
+  async applyPlannedCollectionDeltaGroup(uid, operations, itemIds, desiredDigest) {
+    let next = 0;
+    let fallback = false;
+    const worker = async () => {
+      while (!fallback) {
+        const operation2 = operations[next];
+        next += 1;
+        if (!operation2) return;
+        if (await this.applyPlannedCollectionDeltaOperation(uid, operation2, itemIds, desiredDigest) === "fallback") {
+          fallback = true;
+          return;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, operations.length) }, () => worker()));
+    return fallback ? "fallback" : "applied";
   }
   /** Delete and verify absence of only the supplied run-owned collection roots. */
   async deleteVerifiedRunOwnedCollections(workspaceId, collectionIds) {
@@ -308989,14 +309415,22 @@ ${error.responseBody ?? ""}`
     }
     return "";
   }
-  async electImportedCollectionIdentity(workspaceId, finalName, preferredId, staleFinalIdentities, desiredDescription) {
+  async electImportedCollectionIdentity(workspaceId, finalName, preferredId, staleFinalIdentities, desiredDescription, existingCursor) {
+    const started = this.now();
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
-    const delays = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+    const settleDelays = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+    const cursor = existingCursor ?? this.createImportSettleCursor(
+      workspaceId,
+      preferredIdentity,
+      _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName),
+      settleDelays.length
+    );
+    const observer = this.workspaceInventoryObserver(workspaceId);
     let eligible = [];
     let ownCanonical;
     let sameNameSurvivors = [];
-    const observeInventory = async () => {
-      const inventory = await this.listWorkspaceCollections(workspaceId, "safe");
+    const observeInventory = (observation) => {
+      const inventory = observation.rows ?? [];
       sameNameSurvivors = inventory.filter((entry) => entry.name === finalName).sort((a, b) => a.id.localeCompare(b.id));
       eligible = sameNameSurvivors.filter(
         (entry) => !isBareCollectionUuid(entry.id) && !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
@@ -309005,38 +309439,37 @@ ${error.responseBody ?? ""}`
         (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
       );
     };
-    for (let observation = 0; observation <= delays.length; observation += 1) {
-      await observeInventory();
-      if (observation < delays.length) await this.sleep(delays[observation]);
-    }
-    if (!ownCanonical && delays === _PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS) {
-      for (const delay of _PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(
-        delays.length
-      )) {
-        await this.sleep(delay);
-        await observeInventory();
+    try {
+      for (const observation of cursor.observations) observeInventory(observation);
+      if (cursor.observations.length === 0) {
+        observeInventory(await observer.observe(cursor, "safe"));
       }
-    }
-    if (!ownCanonical) {
-      const adoptable = await this.adoptableSameMarkerFinal(
-        sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
-        desiredDescription
-      );
-      if (adoptable) {
-        await this.deleteVerifiedRunOwnedCollections(workspaceId, [preferredId]);
-        return adoptable;
+      while (cursor.nextDelayIndex < cursor.peerDelayCount && await observer.consumeDelay(cursor)) {
+        observeInventory(await observer.observe(cursor, "safe"));
       }
-      throw new Error(
-        "COLLECTION_ROOT_UID_RESOLUTION_FAILED: imported collection did not become inventory-visible with a ROOT-addressable canonical uid"
-      );
+      if (!ownCanonical) {
+        const adoptable = await this.adoptableSameMarkerFinal(
+          sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
+          desiredDescription
+        );
+        if (adoptable) {
+          await this.deleteVerifiedRunOwnedCollections(workspaceId, [preferredId]);
+          return adoptable;
+        }
+        throw new Error(
+          "COLLECTION_ROOT_UID_RESOLUTION_FAILED: imported collection did not become inventory-visible with a ROOT-addressable canonical uid"
+        );
+      }
+      const winner = eligible[0];
+      const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
+      if (preferredIdentity !== winnerIdentity) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
+        return winner.id;
+      }
+      return ownCanonical.id;
+    } finally {
+      this.writeMetrics.electionMs += Math.max(0, this.now() - started);
     }
-    const winner = eligible[0];
-    const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
-    if (preferredIdentity !== winnerIdentity) {
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
-      return winner.id;
-    }
-    return ownCanonical.id;
   }
   /**
    * Collapse duplicate preview/channel finals to the lowest UID. Exact name is
@@ -310258,6 +310691,308 @@ function resolveActionVersion2() {
   } catch {
     return "unknown";
   }
+}
+
+// src/lib/spec/collection-delta.ts
+var COLLECTION_DELTA_MAX_OPERATIONS = 5;
+var COLLECTION_DELTA_MAX_CHANGED_BYTES = 64 * 1024;
+function isRecord5(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function stable(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  const record = value;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stable(record[key])}`).join(",")}}`;
+}
+function cloneRecord(value) {
+  return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+}
+function entityType(item) {
+  if (Array.isArray(item.item) && !isRecord5(item.request)) return "collection";
+  if (isRecord5(item.request) && !Array.isArray(item.item)) return "http-request";
+  return null;
+}
+function semanticSegment(item, kind) {
+  const name = typeof item.name === "string" ? item.name : "";
+  const method = kind === "http-request" && isRecord5(item.request) ? String(item.request.method ?? "").toUpperCase() : "";
+  return `${kind}:${method}:${name}`;
+}
+function preservedId(item) {
+  const id = typeof item.id === "string" ? item.id.trim() : "";
+  return id || void 0;
+}
+function structuralNodes(collection) {
+  const nodes = [];
+  let invalid = !Array.isArray(collection.item);
+  const visit4 = (items, parentPath) => {
+    for (const raw of items) {
+      if (!isRecord5(raw)) {
+        invalid = true;
+        continue;
+      }
+      const kind = entityType(raw);
+      if (!kind) {
+        invalid = true;
+        continue;
+      }
+      const semantic = `${parentPath}/${semanticSegment(raw, kind)}`;
+      nodes.push({ item: raw, kind, id: preservedId(raw), semanticKey: semantic });
+      if (kind === "collection") visit4(raw.item, semantic);
+    }
+  };
+  if (Array.isArray(collection.item)) visit4(collection.item, "");
+  return { nodes, invalid };
+}
+function directId(record) {
+  return typeof record.id === "string" && record.id.trim() ? record.id : void 0;
+}
+function copyDirectStructuralId(snapshot, desired) {
+  const id = directId(snapshot);
+  if (id) desired.id = id;
+  else delete desired.id;
+}
+function responseWithoutStructuralId(value) {
+  const copy = cloneRecord(value);
+  delete copy.id;
+  return copy;
+}
+function normalizeSavedResponseIds(snapshot, desired) {
+  if (!Array.isArray(snapshot.response) || !Array.isArray(desired.response)) return;
+  if (snapshot.response.length !== desired.response.length) return;
+  for (let index = 0; index < snapshot.response.length; index += 1) {
+    const previous = snapshot.response[index];
+    const next = desired.response[index];
+    if (!isRecord5(previous) || !isRecord5(next)) continue;
+    if (stable(responseWithoutStructuralId(previous)) !== stable(responseWithoutStructuralId(next))) continue;
+    copyDirectStructuralId(previous, next);
+  }
+}
+function normalizeMatchedStructuralIds(snapshot, desired) {
+  copyDirectStructuralId(snapshot.item, desired.item);
+  if (isRecord5(snapshot.item.request) && isRecord5(desired.item.request)) {
+    copyDirectStructuralId(snapshot.item.request, desired.item.request);
+  }
+  normalizeSavedResponseIds(snapshot.item, desired.item);
+}
+function normalizeDesiredStructuralIdentities(snapshot, desired) {
+  const normalized = cloneRecord(desired);
+  const before = structuralNodes(snapshot);
+  const after = structuralNodes(normalized);
+  if (before.invalid || after.invalid) return { desired: normalized, ambiguous: false };
+  const snapshotIds = /* @__PURE__ */ new Map();
+  const desiredIdCounts = /* @__PURE__ */ new Map();
+  for (const node of before.nodes) {
+    if (!node.id) continue;
+    if (snapshotIds.has(node.id)) return { desired: normalized, ambiguous: true };
+    snapshotIds.set(node.id, node);
+  }
+  for (const node of after.nodes) {
+    if (node.id) desiredIdCounts.set(node.id, (desiredIdCounts.get(node.id) ?? 0) + 1);
+  }
+  const matched = /* @__PURE__ */ new Map();
+  const usedSnapshot = /* @__PURE__ */ new Set();
+  for (const node of after.nodes) {
+    if (!node.id || desiredIdCounts.get(node.id) !== 1) continue;
+    const previous = snapshotIds.get(node.id);
+    if (previous && !usedSnapshot.has(previous)) {
+      matched.set(node, previous);
+      usedSnapshot.add(previous);
+    }
+  }
+  const bySemantic = (nodes) => {
+    const groups = /* @__PURE__ */ new Map();
+    for (const node of nodes) groups.set(node.semanticKey, [...groups.get(node.semanticKey) ?? [], node]);
+    return groups;
+  };
+  const beforeSemantic = bySemantic(before.nodes);
+  const afterSemantic = bySemantic(after.nodes);
+  let ambiguous = false;
+  for (const desiredNode of after.nodes) {
+    if (matched.has(desiredNode)) continue;
+    const priorCandidates = beforeSemantic.get(desiredNode.semanticKey) ?? [];
+    const desiredCandidates = afterSemantic.get(desiredNode.semanticKey) ?? [];
+    if (priorCandidates.length === 0) continue;
+    if (priorCandidates.length !== 1 || desiredCandidates.length !== 1) {
+      ambiguous = true;
+      continue;
+    }
+    const previous = priorCandidates[0];
+    if (!usedSnapshot.has(previous)) {
+      matched.set(desiredNode, previous);
+      usedSnapshot.add(previous);
+    }
+  }
+  if (ambiguous) return { desired: normalized, ambiguous: true };
+  for (const [desiredNode, snapshotNode] of matched) {
+    normalizeMatchedStructuralIds(snapshotNode, desiredNode);
+  }
+  return { desired: normalized, ambiguous: false };
+}
+function indexCollection(collection) {
+  const entries = [];
+  const seenKeys = /* @__PURE__ */ new Set();
+  let invalid = !Array.isArray(collection.item);
+  let ambiguous = false;
+  const visit4 = (items, parentKey, parentPath, depth) => {
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (!isRecord5(item)) {
+        invalid = true;
+        continue;
+      }
+      const kind = entityType(item);
+      if (!kind) {
+        invalid = true;
+        continue;
+      }
+      const sourceId = preservedId(item);
+      const semantic = `${parentPath}/${semanticSegment(item, kind)}`;
+      const key = sourceId ? `id:${sourceId}` : `semantic:${semantic}`;
+      if (seenKeys.has(key)) {
+        ambiguous = true;
+        continue;
+      }
+      seenKeys.add(key);
+      const entry = { key, sourceId, entityType: kind, parentKey, index, depth, item };
+      entries.push(entry);
+      if (kind === "collection") {
+        visit4(item.item, key, semantic, depth + 1);
+      }
+    }
+  };
+  if (Array.isArray(collection.item)) visit4(collection.item, void 0, "", 0);
+  return { entries, invalid, ambiguous };
+}
+function changedUnsupportedField(snapshot, desired, field) {
+  return stable(snapshot[field]) !== stable(desired[field]);
+}
+function unsupportedTransform(snapshot, desired) {
+  for (const item of [snapshot, desired]) {
+    if ("workflow" in item || "workflows" in item) return "unsupported-workflow-shape";
+  }
+  if (changedUnsupportedField(snapshot, desired, "event")) return "unsupported-script-transform";
+  if (changedUnsupportedField(snapshot, desired, "response")) return "unsupported-response-transform";
+  if (changedUnsupportedField(snapshot, desired, "auth")) return "unsupported-auth-transform";
+  if (changedUnsupportedField(snapshot, desired, "example")) return "unsupported-example-transform";
+  const allowed = /* @__PURE__ */ new Set(["id", "name", "description", "request", "item", "event", "response", "auth", "example"]);
+  for (const key of /* @__PURE__ */ new Set([...Object.keys(snapshot), ...Object.keys(desired)])) {
+    if (!allowed.has(key) && changedUnsupportedField(snapshot, desired, key)) {
+      return "unsupported-entity-transform";
+    }
+  }
+  return null;
+}
+function operation(kind, entry) {
+  return {
+    kind,
+    key: entry.key,
+    entityType: entry.entityType,
+    ...entry.sourceId ? { sourceId: entry.sourceId } : {},
+    ...entry.parentKey ? { parentKey: entry.parentKey } : {},
+    index: entry.index,
+    item: cloneRecord(entry.item)
+  };
+}
+function planCollectionDelta(input) {
+  if (!isRecord5(input.snapshot) || !isRecord5(input.desired)) {
+    return { decision: "fallback", reason: "invalid-collection-shape", changedBytes: 0, operations: [] };
+  }
+  const normalized = normalizeDesiredStructuralIdentities(input.snapshot, input.desired);
+  if (normalized.ambiguous) {
+    return { decision: "fallback", reason: "ambiguous-semantic-key", changedBytes: 0, operations: [] };
+  }
+  const desired = normalized.desired;
+  if (computePayloadDigest(input.snapshot) === computePayloadDigest(desired)) {
+    return { decision: "unchanged", changedBytes: 0, operations: [] };
+  }
+  const snapshotInfo = isRecord5(input.snapshot.info) ? cloneRecord(input.snapshot.info) : {};
+  const desiredInfo = isRecord5(desired.info) ? cloneRecord(desired.info) : {};
+  delete snapshotInfo._postman_id;
+  delete desiredInfo._postman_id;
+  if (stable(snapshotInfo) !== stable(desiredInfo)) {
+    return { decision: "fallback", reason: "unsupported-root-attribute", changedBytes: 0, operations: [] };
+  }
+  if ("workflow" in input.snapshot || "workflows" in input.snapshot || "workflow" in desired || "workflows" in desired) {
+    return { decision: "fallback", reason: "unsupported-workflow-shape", changedBytes: 0, operations: [] };
+  }
+  const rootAttributesOutsideItems = (collection) => {
+    const rest = {};
+    for (const key of Object.keys(collection)) {
+      if (key === "info" || key === "item") continue;
+      rest[key] = collection[key];
+    }
+    return stable(rest);
+  };
+  if (rootAttributesOutsideItems(input.snapshot) !== rootAttributesOutsideItems(desired)) {
+    return { decision: "fallback", reason: "unsupported-root-attribute", changedBytes: 0, operations: [] };
+  }
+  const before = indexCollection(input.snapshot);
+  const after = indexCollection(desired);
+  if (before.invalid || after.invalid) {
+    return { decision: "fallback", reason: "invalid-collection-shape", changedBytes: 0, operations: [] };
+  }
+  if (before.ambiguous || after.ambiguous) {
+    return { decision: "fallback", reason: "ambiguous-semantic-key", changedBytes: 0, operations: [] };
+  }
+  const beforeByKey = new Map(before.entries.map((entry) => [entry.key, entry]));
+  const afterByKey = new Map(after.entries.map((entry) => [entry.key, entry]));
+  const creates = [];
+  const patches = [];
+  const moves = [];
+  const deletes = [];
+  for (const entry of after.entries) {
+    const previous = beforeByKey.get(entry.key);
+    if (!previous) {
+      const unsupported4 = unsupportedTransform({}, entry.item);
+      if (unsupported4) return { decision: "fallback", reason: unsupported4, changedBytes: 0, operations: [] };
+      creates.push(entry);
+      continue;
+    }
+    if (previous.entityType !== entry.entityType) {
+      return { decision: "fallback", reason: "unsupported-entity-transform", changedBytes: 0, operations: [] };
+    }
+    const unsupported3 = unsupportedTransform(previous.item, entry.item);
+    if (unsupported3) return { decision: "fallback", reason: unsupported3, changedBytes: 0, operations: [] };
+    const oldContent = cloneRecord(previous.item);
+    const newContent = cloneRecord(entry.item);
+    delete oldContent.id;
+    delete newContent.id;
+    delete oldContent.item;
+    delete newContent.item;
+    if (stable(oldContent) !== stable(newContent)) patches.push(entry);
+    if (previous.parentKey !== entry.parentKey || previous.index !== entry.index) moves.push(entry);
+  }
+  for (const entry of before.entries) {
+    if (!afterByKey.has(entry.key)) deletes.push(entry);
+  }
+  creates.sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key));
+  patches.sort((a, b) => a.key.localeCompare(b.key));
+  const explicitMoves = moves.filter((entry) => {
+    const previous = beforeByKey.get(entry.key);
+    return previous?.parentKey !== entry.parentKey || (previous?.index ?? entry.index) < entry.index;
+  });
+  const orderedMoves = (explicitMoves.length > 0 ? explicitMoves : moves).sort((a, b) => a.depth - b.depth || a.key.localeCompare(b.key));
+  deletes.sort((a, b) => b.depth - a.depth || a.key.localeCompare(b.key));
+  const operations = [
+    ...creates.map((entry) => operation("create", entry)),
+    ...patches.map((entry) => operation("patch", entry)),
+    ...orderedMoves.map((entry) => operation("move", entry)),
+    ...deletes.map((entry) => operation("delete", entry))
+  ];
+  const changedBytes = Buffer.byteLength(stable(operations), "utf8");
+  const maxOperations = input.maxOperations ?? COLLECTION_DELTA_MAX_OPERATIONS;
+  const maxChangedBytes = input.maxChangedBytes ?? COLLECTION_DELTA_MAX_CHANGED_BYTES;
+  if (operations.length > maxOperations) {
+    return { decision: "fallback", reason: "operation-count-exceeded", changedBytes, operations: [] };
+  }
+  if (changedBytes > maxChangedBytes) {
+    return { decision: "fallback", reason: "changed-bytes-exceeded", changedBytes, operations: [] };
+  }
+  if (operations.length === 0) {
+    return { decision: "fallback", reason: "unsupported-root-attribute", changedBytes, operations: [] };
+  }
+  return { decision: "apply", changedBytes, operations };
 }
 
 // node_modules/graphql/jsutils/inspect.mjs
@@ -311534,7 +312269,7 @@ var printDocASTReducer = {
     leave: ({ description, directives, operationTypes }) => wrap("", description, "\n") + join5(["schema", join5(directives, " "), block(operationTypes)], " ")
   },
   OperationTypeDefinition: {
-    leave: ({ operation, type: type2 }) => operation + ": " + type2
+    leave: ({ operation: operation2, type: type2 }) => operation2 + ": " + type2
   },
   ScalarTypeDefinition: {
     leave: ({ description, name, directives }) => wrap("", description, "\n") + join5(["scalar", name, join5(directives, " ")], " ")
@@ -313954,8 +314689,8 @@ var GraphQLSchema = class {
   getSubscriptionType() {
     return this._subscriptionType;
   }
-  getRootType(operation) {
-    switch (operation) {
+  getRootType(operation2) {
+    switch (operation2) {
       case OperationTypeNode.QUERY:
         return this.getQueryType();
       case OperationTypeNode.MUTATION:
@@ -314113,8 +314848,8 @@ function validateRootTypes(context) {
     }
   }
 }
-function getOperationTypeNode(schema3, operation) {
-  return [schema3.astNode, ...schema3.extensionASTNodes].flatMap((schemaNode) => schemaNode?.operationTypes ?? []).find((operationNode) => operationNode.operation === operation)?.type;
+function getOperationTypeNode(schema3, operation2) {
+  return [schema3.astNode, ...schema3.extensionASTNodes].flatMap((schemaNode) => schemaNode?.operationTypes ?? []).find((operationNode) => operationNode.operation === operation2)?.type;
 }
 function validateDirectives(context) {
   for (const directive of context.schema.getDirectives()) {
@@ -315192,14 +315927,14 @@ var Parser = class {
       });
     }
     const description = this.parseDescription();
-    const operation = this.parseOperationType();
+    const operation2 = this.parseOperationType();
     let name;
     if (this.peek(TokenKind.NAME)) {
       name = this.parseName();
     }
     return this.node(start, {
       kind: kinds_exports.OPERATION_DEFINITION,
-      operation,
+      operation: operation2,
       description,
       name,
       variableDefinitions: this.parseVariableDefinitions(),
@@ -315523,12 +316258,12 @@ var Parser = class {
   }
   parseOperationTypeDefinition() {
     const start = this._lexer.token;
-    const operation = this.parseOperationType();
+    const operation2 = this.parseOperationType();
     this.expectToken(TokenKind.COLON);
     const type2 = this.parseNamedType();
     return this.node(start, {
       kind: kinds_exports.OPERATION_TYPE_DEFINITION,
-      operation,
+      operation: operation2,
       type: type2
     });
   }
@@ -316465,8 +317200,8 @@ function canBeSkippedViaIncludeDirective(node) {
 }
 function DeferStreamDirectiveOnValidOperationsRule(context) {
   return {
-    OperationDefinition(operation) {
-      if (operation.operation !== OperationTypeNode.SUBSCRIPTION) {
+    OperationDefinition(operation2) {
+      if (operation2.operation !== OperationTypeNode.SUBSCRIPTION) {
         return;
       }
       const document2 = context.getDocument();
@@ -316480,7 +317215,7 @@ function DeferStreamDirectiveOnValidOperationsRule(context) {
       forbidUnconditionalDeferStream({
         context,
         fragments,
-        selectionSet: operation.selectionSet,
+        selectionSet: operation2.selectionSet,
         parentNodes: [],
         visitedFragments
       });
@@ -316801,8 +317536,8 @@ function getDirectiveLocationForASTPath(ancestors) {
       invariant(false, "Unexpected kind: " + inspect(appliedTo.kind));
   }
 }
-function getDirectiveLocationForOperation(operation) {
-  switch (operation) {
+function getDirectiveLocationForOperation(operation2) {
+  switch (operation2) {
     case OperationTypeNode.QUERY:
       return DirectiveLocation.QUERY;
     case OperationTypeNode.MUTATION:
@@ -316832,9 +317567,9 @@ function KnownOperationTypesRule(context) {
   const schema3 = context.getSchema();
   return {
     OperationDefinition(node) {
-      const operation = node.operation;
-      if (!schema3.getRootType(operation)) {
-        context.reportError(new GraphQLError(`The ${operation} operation is not supported by the schema.`, { nodes: node }));
+      const operation2 = node.operation;
+      if (!schema3.getRootType(operation2)) {
+        context.reportError(new GraphQLError(`The ${operation2} operation is not supported by the schema.`, { nodes: node }));
       }
     }
   };
@@ -316999,16 +317734,16 @@ function NoFragmentCyclesRule(context) {
 // node_modules/graphql/validation/rules/NoUndefinedVariablesRule.mjs
 function NoUndefinedVariablesRule(context) {
   return {
-    OperationDefinition(operation) {
-      const variableNameDefined = new Set(operation.variableDefinitions?.map((node) => node.variable.name.value));
-      const usages = context.getRecursiveVariableUsages(operation);
+    OperationDefinition(operation2) {
+      const variableNameDefined = new Set(operation2.variableDefinitions?.map((node) => node.variable.name.value));
+      const usages = context.getRecursiveVariableUsages(operation2);
       for (const { node, fragmentVariableDefinition } of usages) {
         if (fragmentVariableDefinition) {
           continue;
         }
         const varName = node.name.value;
         if (!variableNameDefined.has(varName)) {
-          context.reportError(new GraphQLError(operation.name ? `Variable "$${varName}" is not defined by operation "${operation.name.value}".` : `Variable "$${varName}" is not defined.`, { nodes: [node, operation] }));
+          context.reportError(new GraphQLError(operation2.name ? `Variable "$${varName}" is not defined by operation "${operation2.name.value}".` : `Variable "$${varName}" is not defined.`, { nodes: [node, operation2] }));
         }
       }
     }
@@ -317020,8 +317755,8 @@ function NoUnusedFragmentsRule(context) {
   const fragmentNameUsed = /* @__PURE__ */ new Set();
   const fragmentDefs = [];
   return {
-    OperationDefinition(operation) {
-      for (const fragment of context.getRecursivelyReferencedFragments(operation)) {
+    OperationDefinition(operation2) {
+      for (const fragment of context.getRecursivelyReferencedFragments(operation2)) {
         fragmentNameUsed.add(fragment.name.value);
       }
       return false;
@@ -317059,8 +317794,8 @@ function NoUnusedVariablesRule(context) {
         }
       }
     },
-    OperationDefinition(operation) {
-      const usages = context.getRecursiveVariableUsages(operation);
+    OperationDefinition(operation2) {
+      const usages = context.getRecursiveVariableUsages(operation2);
       const operationVariableNameUsed = /* @__PURE__ */ new Set();
       for (const { node, fragmentVariableDefinition } of usages) {
         const varName = node.name.value;
@@ -317068,11 +317803,11 @@ function NoUnusedVariablesRule(context) {
           operationVariableNameUsed.add(varName);
         }
       }
-      const variableDefinitions = operation.variableDefinitions ?? [];
+      const variableDefinitions = operation2.variableDefinitions ?? [];
       for (const variableDef of variableDefinitions) {
         const variableName = variableDef.variable.name.value;
         if (!operationVariableNameUsed.has(variableName)) {
-          context.reportError(new GraphQLError(operation.name ? `Variable "$${variableName}" is never used in operation "${operation.name.value}".` : `Variable "$${variableName}" is never used.`, { nodes: variableDef }));
+          context.reportError(new GraphQLError(operation2.name ? `Variable "$${variableName}" is never used in operation "${operation2.name.value}".` : `Variable "$${variableName}" is never used.`, { nodes: variableDef }));
         }
       }
     }
@@ -318611,14 +319346,14 @@ function UniqueOperationTypesRule(context) {
   function checkOperationTypes(node) {
     const operationTypesNodes = node.operationTypes ?? [];
     for (const operationType of operationTypesNodes) {
-      const operation = operationType.operation;
-      const alreadyDefinedOperationType = definedOperationTypes.get(operation);
-      if (existingOperationTypes[operation]) {
-        context.reportError(new GraphQLError(`Type for ${operation} already defined in the schema. It cannot be redefined.`, { nodes: operationType }));
+      const operation2 = operationType.operation;
+      const alreadyDefinedOperationType = definedOperationTypes.get(operation2);
+      if (existingOperationTypes[operation2]) {
+        context.reportError(new GraphQLError(`Type for ${operation2} already defined in the schema. It cannot be redefined.`, { nodes: operationType }));
       } else if (alreadyDefinedOperationType) {
-        context.reportError(new GraphQLError(`There can be only one ${operation} type in schema.`, { nodes: [alreadyDefinedOperationType, operationType] }));
+        context.reportError(new GraphQLError(`There can be only one ${operation2} type in schema.`, { nodes: [alreadyDefinedOperationType, operationType] }));
       } else {
-        definedOperationTypes.set(operation, operationType);
+        definedOperationTypes.set(operation2, operationType);
       }
     }
     return false;
@@ -318714,8 +319449,8 @@ function VariablesInAllowedPositionRule(context) {
       enter() {
         varDefMap = /* @__PURE__ */ new Map();
       },
-      leave(operation) {
-        const usages = context.getRecursiveVariableUsages(operation);
+      leave(operation2) {
+        const usages = context.getRecursiveVariableUsages(operation2);
         for (const { node, type: type2, parentType, defaultValue, fragmentVariableDefinition } of usages) {
           const varName = node.name.value;
           let varDef = fragmentVariableDefinition;
@@ -318859,12 +319594,12 @@ var ASTValidationContext = class {
     }
     return spreads;
   }
-  getRecursivelyReferencedFragments(operation) {
-    let fragments = this._recursivelyReferencedFragments.get(operation);
+  getRecursivelyReferencedFragments(operation2) {
+    let fragments = this._recursivelyReferencedFragments.get(operation2);
     if (!fragments) {
       fragments = [];
       const collectedNames = /* @__PURE__ */ new Set();
-      const nodesToVisit = [operation.selectionSet];
+      const nodesToVisit = [operation2.selectionSet];
       let node;
       while (node = nodesToVisit.pop()) {
         for (const spread of this.getFragmentSpreads(node)) {
@@ -318879,7 +319614,7 @@ var ASTValidationContext = class {
           }
         }
       }
-      this._recursivelyReferencedFragments.set(operation, fragments);
+      this._recursivelyReferencedFragments.set(operation2, fragments);
     }
     return fragments;
   }
@@ -318953,14 +319688,14 @@ var ValidationContext = class extends ASTValidationContext {
     }
     return usages;
   }
-  getRecursiveVariableUsages(operation) {
-    let usages = this._recursiveVariableUsages.get(operation);
+  getRecursiveVariableUsages(operation2) {
+    let usages = this._recursiveVariableUsages.get(operation2);
     if (!usages) {
-      usages = this.getVariableUsages(operation);
-      for (const frag of this.getRecursivelyReferencedFragments(operation)) {
+      usages = this.getVariableUsages(operation2);
+      for (const frag of this.getRecursivelyReferencedFragments(operation2)) {
         usages = usages.concat(this.getVariableUsages(frag));
       }
-      this._recursiveVariableUsages.set(operation, usages);
+      this._recursiveVariableUsages.set(operation2, usages);
     }
     return usages;
   }
@@ -319067,25 +319802,25 @@ function isLocatedGraphQLError(error) {
 
 // node_modules/graphql/utilities/getOperationAST.mjs
 function getOperationAST(documentAST, operationName) {
-  let operation = null;
+  let operation2 = null;
   for (const definition of documentAST.definitions) {
     if (definition.kind === kinds_exports.OPERATION_DEFINITION) {
       if (operationName == null) {
-        if (operation) {
+        if (operation2) {
           return null;
         }
-        operation = definition;
+        operation2 = definition;
       } else if (definition.name?.value === operationName) {
         return definition;
       }
     }
   }
-  return operation;
+  return operation2;
 }
 
 // node_modules/graphql/execution/buildResolveInfo.mjs
 function buildResolveInfo(validatedExecutionArgs, fieldDef, fieldNodes, parentType, path12, getAbortSignal, getAsyncHelpers) {
-  const { schema: schema3, fragmentDefinitions, rootValue, operation, variableValues } = validatedExecutionArgs;
+  const { schema: schema3, fragmentDefinitions, rootValue, operation: operation2, variableValues } = validatedExecutionArgs;
   return {
     fieldName: fieldDef.name,
     fieldNodes,
@@ -319095,7 +319830,7 @@ function buildResolveInfo(validatedExecutionArgs, fieldDef, fieldNodes, parentTy
     schema: schema3,
     fragments: fragmentDefinitions,
     rootValue,
-    operation,
+    operation: operation2,
     variableValues,
     getAbortSignal,
     getAsyncHelpers
@@ -319304,7 +320039,7 @@ function collectIteratorPromises(iterator) {
 
 // node_modules/graphql/execution/getStreamUsage.mjs
 function getStreamUsage(validatedExecutionArgs, fieldDetailsList) {
-  const { operation, variableValues } = validatedExecutionArgs;
+  const { operation: operation2, variableValues } = validatedExecutionArgs;
   const stream = getDirectiveValues(GraphQLStreamDirective, fieldDetailsList[0].node, variableValues, fieldDetailsList[0].fragmentVariableValues);
   if (!stream) {
     return;
@@ -319316,7 +320051,7 @@ function getStreamUsage(validatedExecutionArgs, fieldDetailsList) {
     invariant(false, "initialCount must be a number");
   if (!(stream.initialCount >= 0))
     invariant(false, "initialCount must be a positive integer");
-  if (!(operation.operation !== OperationTypeNode.SUBSCRIPTION))
+  if (!(operation2.operation !== OperationTypeNode.SUBSCRIPTION))
     invariant(false, "`@stream` directive not supported on subscription operations. Disable `@stream` by setting the `if` argument to `false`.");
   const streamedFieldDetailsList = fieldDetailsList.map((fieldDetails) => ({
     node: fieldDetails.node,
@@ -319438,11 +320173,11 @@ var Executor = class {
     };
     let result;
     try {
-      const { schema: schema3, fragments, rootValue, operation, variableValues, hideSuggestions } = this.validatedExecutionArgs;
-      const { operation: operationType, selectionSet } = operation;
+      const { schema: schema3, fragments, rootValue, operation: operation2, variableValues, hideSuggestions } = this.validatedExecutionArgs;
+      const { operation: operationType, selectionSet } = operation2;
       const rootType = schema3.getRootType(operationType);
       if (rootType == null) {
-        throw new GraphQLError(`Schema is not configured to execute ${operationType} operation.`, { nodes: operation });
+        throw new GraphQLError(`Schema is not configured to execute ${operationType} operation.`, { nodes: operation2 });
       }
       const { groupedFieldSet, newDeferUsages } = collectFields(schema3, fragments, variableValues, rootType, selectionSet, hideSuggestions);
       result = this.executeCollectedRootFields(rootType, rootValue, groupedFieldSet, serially ?? operationType === OperationTypeNode.MUTATION, newDeferUsages);
@@ -321226,12 +321961,12 @@ function deliveryGroupFromDeferUsage(deferUsage, deliveryGroupMap) {
 
 // node_modules/graphql/execution/execute.mjs
 function buildOperationContextFromArgs(args) {
-  let operation;
+  let operation2;
   const resolveOperation = () => {
-    if (operation === void 0) {
-      operation = getOperationAST(args.document, args.operationName);
+    if (operation2 === void 0) {
+      operation2 = getOperationAST(args.document, args.operationName);
     }
-    return operation;
+    return operation2;
   };
   return {
     schema: args.schema,
@@ -321271,7 +322006,7 @@ function executeSync(args) {
 function validateExecutionArgs(args) {
   const { schema: schema3, document: document2, rootValue, contextValue, variableValues: rawVariableValues, operationName, fieldResolver, typeResolver, subscribeFieldResolver, abortSignal: externalAbortSignal, enableEarlyExecution, hooks, options } = args;
   assertValidSchema(schema3);
-  let operation;
+  let operation2;
   const fragmentDefinitions = /* @__PURE__ */ Object.create(null);
   const fragments = /* @__PURE__ */ Object.create(null);
   const fragmentVariableSignatureErrors = [];
@@ -321279,14 +322014,14 @@ function validateExecutionArgs(args) {
     switch (definition.kind) {
       case kinds_exports.OPERATION_DEFINITION:
         if (operationName == null) {
-          if (operation !== void 0) {
+          if (operation2 !== void 0) {
             return [
               new GraphQLError("Must provide operation name if query contains multiple operations.")
             ];
           }
-          operation = definition;
+          operation2 = definition;
         } else if (definition.name?.value === operationName) {
-          operation = definition;
+          operation2 = definition;
         }
         break;
       case kinds_exports.FRAGMENT_DEFINITION: {
@@ -321310,7 +322045,7 @@ function validateExecutionArgs(args) {
       default:
     }
   }
-  if (!operation) {
+  if (!operation2) {
     if (operationName != null) {
       return [new GraphQLError(`Unknown operation named "${operationName}".`)];
     }
@@ -321319,7 +322054,7 @@ function validateExecutionArgs(args) {
   if (fragmentVariableSignatureErrors.length > 0) {
     return fragmentVariableSignatureErrors;
   }
-  const variableDefinitions = operation.variableDefinitions ?? [];
+  const variableDefinitions = operation2.variableDefinitions ?? [];
   const hideSuggestions = args.hideSuggestions ?? false;
   const coercionInput = rawVariableValues ?? {};
   const coercionOptions = {
@@ -321330,15 +322065,15 @@ function validateExecutionArgs(args) {
   const variableValuesOrErrors = shouldTrace(coercionChannel) ? traceMixed(coercionChannel, {
     schema: schema3,
     document: document2,
-    operation,
+    operation: operation2,
     rawVariableValues,
-    operationName: operation.name?.value,
-    operationType: operation.operation
+    operationName: operation2.name?.value,
+    operationType: operation2.operation
   }, () => getVariableValues(schema3, variableDefinitions, coercionInput, coercionOptions)) : getVariableValues(schema3, variableDefinitions, coercionInput, coercionOptions);
   if (variableValuesOrErrors.errors) {
     return variableValuesOrErrors.errors;
   }
-  const errorPropagation = !operation.directives?.find((directive) => directive.name.value === GraphQLDisableErrorPropagationDirective.name);
+  const errorPropagation = !operation2.directives?.find((directive) => directive.name.value === GraphQLDisableErrorPropagationDirective.name);
   return {
     schema: schema3,
     document: document2,
@@ -321346,7 +322081,7 @@ function validateExecutionArgs(args) {
     fragments,
     rootValue,
     contextValue,
-    operation,
+    operation: operation2,
     variableValues: variableValuesOrErrors.variableValues,
     fieldResolver: fieldResolver ?? defaultFieldResolver,
     typeResolver: typeResolver ?? defaultTypeResolver,
@@ -322509,7 +323244,7 @@ function buildProbeItems(index, opts) {
     '{"query": "quer',
     url
   ));
-  if (index.operations.some((operation) => operation.kind === "mutation")) {
+  if (index.operations.some((operation2) => operation2.kind === "mutation")) {
     const getUrl = buildUrlDescriptor(url);
     getUrl.query = [{ key: "query", value: "mutation PostmanContractGetMutationProbe { __typename }" }];
     getUrl.raw = `${String(getUrl.raw)}?query=${encodeURIComponent("mutation PostmanContractGetMutationProbe { __typename }")}`;
@@ -322542,14 +323277,14 @@ function argTypeSdl(arg) {
   }
   return ref.nonNull ? `${inner}!` : inner;
 }
-function buildOperationDocument(operation, index) {
-  const opName = `${operation.field.charAt(0).toUpperCase()}${operation.field.slice(1)}`;
-  const declaredVars = operation.args.filter((arg) => arg.required);
+function buildOperationDocument(operation2, index) {
+  const opName = `${operation2.field.charAt(0).toUpperCase()}${operation2.field.slice(1)}`;
+  const declaredVars = operation2.args.filter((arg) => arg.required);
   const varDecls = declaredVars.length ? `(${declaredVars.map((arg) => `$${arg.name}: ${argTypeSdl(arg)}`).join(", ")})` : "";
   const fieldArgs = declaredVars.length ? `(${declaredVars.map((arg) => `${arg.name}: $${arg.name}`).join(", ")})` : "";
-  const selection = renderSelection(selectFields(operation.returns, index, 1), 1);
-  return `${operation.kind} ${opName}${varDecls} {
-  ${operation.field}${fieldArgs}${selection}
+  const selection = renderSelection(selectFields(operation2.returns, index, 1), 1);
+  return `${operation2.kind} ${opName}${varDecls} {
+  ${operation2.field}${fieldArgs}${selection}
 }`;
 }
 var UNQUOTED_SCALARS = /* @__PURE__ */ new Set(["Int", "Float", "Boolean"]);
@@ -322559,10 +323294,10 @@ function shouldEmitUnquoted(ref) {
   if (ref.kind === "scalar" && UNQUOTED_SCALARS.has(ref.name)) return true;
   return false;
 }
-function buildVariablesJson(operation) {
-  const declaredVars = operation.args.filter((arg) => arg.required);
+function buildVariablesJson(operation2) {
+  const declaredVars = operation2.args.filter((arg) => arg.required);
   if (declaredVars.length === 0) return "";
-  const placeholder = (arg) => `{{${operation.field}_${arg.name}}}`;
+  const placeholder = (arg) => `{{${operation2.field}_${arg.name}}}`;
   const entries = declaredVars.map((arg) => {
     const key = JSON.stringify(arg.name);
     const val = shouldEmitUnquoted(arg.type) ? placeholder(arg) : JSON.stringify(placeholder(arg));
@@ -322582,7 +323317,7 @@ function buildUrlDescriptor(raw) {
   if (segments2.length > 0) descriptor.path = segments2;
   return descriptor;
 }
-function buildItem(operation, index, opts) {
+function buildItem(operation2, index, opts) {
   const header = [
     { key: "Content-Type", value: "application/json" },
     // GraphQL-over-HTTP: clients MUST include Accept; prefer the modern media
@@ -322591,16 +323326,16 @@ function buildItem(operation, index, opts) {
     ...(opts.headers ?? []).map((entry) => ({ ...entry }))
   ];
   return {
-    id: operation.id,
-    name: `${operation.kind} ${operation.field}`,
+    id: operation2.id,
+    name: `${operation2.kind} ${operation2.field}`,
     request: {
       method: "POST",
       header,
       body: {
         mode: "graphql",
         graphql: {
-          query: buildOperationDocument(operation, index),
-          variables: buildVariablesJson(operation)
+          query: buildOperationDocument(operation2, index),
+          variables: buildVariablesJson(operation2)
         }
       },
       url: buildUrlDescriptor(opts.url?.trim() || DEFAULT_URL)
@@ -322617,7 +323352,7 @@ function buildGraphQLCollection(index, opts = {}) {
       schema: COLLECTION_V210_SCHEMA
     },
     item: [
-      ...index.operations.map((operation) => buildItem(operation, index, opts)),
+      ...index.operations.map((operation2) => buildItem(operation2, index, opts)),
       ...buildProbeItems(index, opts)
     ],
     variable: variables.map((entry) => ({ key: entry.key, value: entry.value ?? "" }))
@@ -323480,7 +324215,7 @@ function parseGraphQLSchema(content, opts = {}) {
   if (operations.length === 0) {
     throw new Error("GQL_NO_EXECUTABLE_OPERATIONS: schema defines no Query, Mutation, or Subscription root fields");
   }
-  for (const operation of operations) warnings.push(...operation.warnings);
+  for (const operation2 of operations) warnings.push(...operation2.warnings);
   const enumValues = {};
   const unionMembers = {};
   const interfacePossibleTypes = {};
@@ -323534,15 +324269,15 @@ function parseGraphQLSchema(content, opts = {}) {
     federated,
     warnings
   };
-  for (const operation of operations) {
-    warnings.push(...collectDeprecatedSelectionWarnings(schema3, operation, index));
+  for (const operation2 of operations) {
+    warnings.push(...collectDeprecatedSelectionWarnings(schema3, operation2, index));
   }
-  for (const operation of operations) {
-    warnings.push(...lintGeneratedDocument(schema3, operation.id, buildOperationDocument(operation, index)));
+  for (const operation2 of operations) {
+    warnings.push(...lintGeneratedDocument(schema3, operation2.id, buildOperationDocument(operation2, index)));
   }
   return index;
 }
-function collectDeprecatedSelectionWarnings(schema3, operation, index) {
+function collectDeprecatedSelectionWarnings(schema3, operation2, index) {
   const warnings = [];
   const visit4 = (typeName, selection) => {
     if (!selection) return;
@@ -323555,13 +324290,13 @@ function collectDeprecatedSelectionWarnings(schema3, operation, index) {
       if (!fieldDef) continue;
       if (fieldDef.deprecationReason != null) {
         warnings.push(
-          "GQL_DEPRECATED_FIELD_SELECTED: " + operation.id + " selects deprecated field " + typeName + "." + selected.name + " (" + (fieldDef.deprecationReason || "no reason given") + "); the generated operation still exercises it"
+          "GQL_DEPRECATED_FIELD_SELECTED: " + operation2.id + " selects deprecated field " + typeName + "." + selected.name + " (" + (fieldDef.deprecationReason || "no reason given") + "); the generated operation still exercises it"
         );
       }
       visit4(selected.type.name, selected.selection);
     }
   };
-  visit4(operation.returns.name, selectFields(operation.returns, index, 1));
+  visit4(operation2.returns.name, selectFields(operation2.returns, index, 1));
   return warnings;
 }
 
@@ -323611,11 +324346,11 @@ function enumAssertions(accessor, typeName, ctx, index, warnings) {
     `pm.expect(${accessor}, ${JSON.stringify(`${ctx}: value is not a member of enum ${typeName}`)}).to.be.oneOf(${JSON.stringify(values)});`
   ];
 }
-function buildOperationScript(operation, index, warnings) {
-  const field = operation.field;
-  const returns = operation.returns;
+function buildOperationScript(operation2, index, warnings) {
+  const field = operation2.field;
+  const returns = operation2.returns;
   const lines = [];
-  const label = `${operation.kind} ${field}`;
+  const label = `${operation2.kind} ${field}`;
   lines.push(
     "var gqlBody = (function () { try { return pm.response.json() || {}; } catch (e) { return {}; } })();",
     'var gqlContentType = ((pm.response.headers && pm.response.headers.get && pm.response.headers.get("Content-Type")) || "").toLowerCase();',
@@ -323770,9 +324505,9 @@ function buildOperationScript(operation, index, warnings) {
     '    if (!hasData && errors.length > 0) { pm.expect.fail("GraphQL request returned errors and no data: " + JSON.stringify(errors)); }',
     "});"
   );
-  if (operation.kind === "subscription") {
+  if (operation2.kind === "subscription") {
     warnings.push(
-      `GQL_SUBSCRIPTION_LIVE_ASSERTIONS_SKIPPED: ${operation.id} is a subscription; data-shape assertions are emitted but the Postman CLI cannot execute subscriptions, so they will not run live`
+      `GQL_SUBSCRIPTION_LIVE_ASSERTIONS_SKIPPED: ${operation2.id} is a subscription; data-shape assertions are emitted but the Postman CLI cannot execute subscriptions, so they will not run live`
     );
   }
   lines.push(
@@ -323803,7 +324538,7 @@ function buildOperationScript(operation, index, warnings) {
       "});"
     );
   }
-  const shapeLines = buildShapeAssertions(operation, index, warnings);
+  const shapeLines = buildShapeAssertions(operation2, index, warnings);
   if (shapeLines.length > 0) {
     lines.push(
       `pm.test(${JSON.stringify(`[${label}] data.${field} matches schema return type`)}, function () {`,
@@ -323816,9 +324551,9 @@ function buildOperationScript(operation, index, warnings) {
   }
   return lines;
 }
-function buildShapeAssertions(operation, index, warnings) {
-  const selection = selectFields(operation.returns, index, 1);
-  return emitValueAssertions("value", operation.returns, selection, operation.id, index, warnings);
+function buildShapeAssertions(operation2, index, warnings) {
+  const selection = selectFields(operation2.returns, index, 1);
+  return emitValueAssertions("value", operation2.returns, selection, operation2.id, index, warnings);
 }
 function selectedResponseKeys(selection) {
   if (selection === null) return [];
@@ -323920,10 +324655,10 @@ function emitFieldAssertions(objectAccessor, parentTypeName, field, ctx, index, 
   }
   return lines;
 }
-function buildVariableScript(operation) {
-  const required = operation.args.filter((arg) => arg.required);
+function buildVariableScript(operation2) {
+  const required = operation2.args.filter((arg) => arg.required);
   if (required.length === 0) return [];
-  const label = `${operation.kind} ${operation.field}`;
+  const label = `${operation2.kind} ${operation2.field}`;
   const names = required.map((arg) => arg.name);
   return [
     `pm.test(${JSON.stringify(`[${label}] required variables are supplied`)}, function () {`,
@@ -324099,8 +324834,8 @@ function injectItem(item, index, covered, warnings) {
   }
   if (isGraphQLHttpRequest(item)) {
     const id = String(item.id ?? "");
-    const operation = index.operations.find((op) => op.id === id);
-    if (!operation) {
+    const operation2 = index.operations.find((op) => op.id === id);
+    if (!operation2) {
       const mappingError = `graphql request item '${id || item.name || "<unnamed>"}' did not match any indexed GraphQL operation`;
       warnings.push(`PROTO_ITEM_UNMATCHED: ${mappingError}; attached fail-closed assertion`);
       const failExec = [
@@ -324113,16 +324848,16 @@ function injectItem(item, index, covered, warnings) {
       item.event = [...priorEvents, { listen: "test", script: { type: "text/javascript", exec: failExec } }];
       return;
     }
-    covered.add(operation.id);
-    warnings.push(...operation.warnings);
+    covered.add(operation2.id);
+    warnings.push(...operation2.warnings);
     const exec3 = [
-      ...buildOperationScript(operation, index, warnings),
-      ...buildVariableScript(operation)
+      ...buildOperationScript(operation2, index, warnings),
+      ...buildVariableScript(operation2)
     ];
     const scriptBytes = Buffer.byteLength(exec3.join("\n"), "utf8");
     if (scriptBytes > GRAPHQL_INSTRUMENT_LIMITS.maxTestScriptBytes) {
       throw new Error(
-        `GQL_SCRIPT_SIZE_EXCEEDED: generated test script for '${operation.id}' exceeded ${GRAPHQL_INSTRUMENT_LIMITS.maxTestScriptBytes} bytes`
+        `GQL_SCRIPT_SIZE_EXCEEDED: generated test script for '${operation2.id}' exceeded ${GRAPHQL_INSTRUMENT_LIMITS.maxTestScriptBytes} bytes`
       );
     }
     const events2 = asArray8(item.event).filter((entry) => asRecord16(entry)?.listen !== "test");
@@ -324139,10 +324874,10 @@ function instrumentGraphQLCollection(collection, index) {
     const childRecord = asRecord16(child4);
     if (childRecord) injectItem(childRecord, index, covered, warnings);
   }
-  const missing = index.operations.filter((operation) => !covered.has(operation.id));
+  const missing = index.operations.filter((operation2) => !covered.has(operation2.id));
   if (missing.length > 0) {
     throw new Error(
-      `GQL_OPERATION_COVERAGE_FAILED: collection is missing GraphQL item coverage for ${missing.map((operation) => operation.id).join(", ")}`
+      `GQL_OPERATION_COVERAGE_FAILED: collection is missing GraphQL item coverage for ${missing.map((operation2) => operation2.id).join(", ")}`
     );
   }
   return { collection, warnings: [...new Set(warnings)] };
@@ -324998,20 +325733,20 @@ function stableId(seed, key) {
   const hex = (h1 >>> 0).toString(16).padStart(8, "0");
   return `${hex}-0000-4000-8000-${key.length.toString(16).padStart(12, "0")}`;
 }
-function buildItem2(operation, options) {
+function buildItem2(operation2, options) {
   const url = options.baseUrl?.trim() ?? "";
   const createdAt = options.createdAt ?? DEFAULT_CREATED_AT;
   const seed = options.idSeed ?? "grpc";
-  const methodDescriptor = options.methodDescriptors?.[operation.methodPath] ?? "";
+  const methodDescriptor = options.methodDescriptors?.[operation2.methodPath] ?? "";
   return {
     type: "grpc-request",
-    id: stableId(seed, operation.id),
-    title: operation.id,
-    name: operation.id,
+    id: stableId(seed, operation2.id),
+    title: operation2.id,
+    name: operation2.id,
     createdAt,
     payload: {
       url,
-      methodPath: operation.methodPath,
+      methodPath: operation2.methodPath,
       methodDescriptor,
       message: { content: "{}" },
       metadata: [],
@@ -325026,10 +325761,10 @@ function buildItem2(operation, options) {
 }
 function buildServiceFolders(index, options) {
   const byService = /* @__PURE__ */ new Map();
-  for (const operation of index.operations) {
-    const list = byService.get(operation.serviceFullName) ?? [];
-    list.push(operation);
-    byService.set(operation.serviceFullName, list);
+  for (const operation2 of index.operations) {
+    const list = byService.get(operation2.serviceFullName) ?? [];
+    list.push(operation2);
+    byService.set(operation2.serviceFullName, list);
   }
   const seed = options.idSeed ?? "grpc";
   return [...byService.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([serviceFullName, operations]) => ({
@@ -325037,11 +325772,11 @@ function buildServiceFolders(index, options) {
     id: stableId(seed, `folder:${serviceFullName}`),
     name: serviceFullName,
     title: serviceFullName,
-    item: operations.map((operation) => buildItem2(operation, options))
+    item: operations.map((operation2) => buildItem2(operation2, options))
   }));
 }
 function buildGrpcCollection(index, options = {}) {
-  const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
+  const warnings = [...index.warnings, ...index.operations.flatMap((operation2) => operation2.warnings)];
   if (!options.baseUrl || !options.baseUrl.trim()) {
     warnings.push("GRPC_NO_TARGET: no gRPC target url was provided; generated grpc-request items carry an empty url and must be pointed at a host:port before they can execute");
   }
@@ -325183,19 +325918,19 @@ function buildAnyRegistry(index, warnings, operationId) {
   }
   return registry;
 }
-function buildOperationSpec(operation, index, warnings) {
-  const responseShape = buildShape(operation.responseType, index, warnings, operation.id, "response", 0, []);
+function buildOperationSpec(operation2, index, warnings) {
+  const responseShape = buildShape(operation2.responseType, index, warnings, operation2.id, "response", 0, []);
   const spec = {
-    id: operation.id,
-    methodPath: operation.methodPath,
-    stream: operation.stream,
-    responseType: operation.responseType,
+    id: operation2.id,
+    methodPath: operation2.methodPath,
+    stream: operation2.stream,
+    responseType: operation2.responseType,
     responseShape,
     hasResponseShape: shapeIsAssertable(responseShape),
-    ...operation.responseType === "google.rpc.Status" ? { responseIsRpcStatus: true } : {}
+    ...operation2.responseType === "google.rpc.Status" ? { responseIsRpcStatus: true } : {}
   };
   if (spec.responseIsRpcStatus || shapeContainsAny(responseShape)) {
-    const anyMessages = buildAnyRegistry(index, warnings, operation.id);
+    const anyMessages = buildAnyRegistry(index, warnings, operation2.id);
     if (anyMessages) spec.anyMessages = anyMessages;
   }
   return spec;
@@ -325917,13 +326652,13 @@ function staticRequestCheck(item, shape, methodPath2, warnings) {
   }
 }
 function instrumentGrpcCollection(collection, index) {
-  const warnings = [...index.warnings, ...index.operations.flatMap((operation) => operation.warnings)];
+  const warnings = [...index.warnings, ...index.operations.flatMap((operation2) => operation2.warnings)];
   warnings.push("GRPC_UNKNOWN_FIELDS_NOT_REJECTED: extra response JSON keys are not rejected (proto3 forward-compat + open well-known types; unknown wire fields are not surfaced by the binary->JSON decode)");
   const specs = /* @__PURE__ */ new Map();
   const requestShapes = /* @__PURE__ */ new Map();
-  for (const operation of index.operations) {
-    specs.set(operation.methodPath, buildOperationSpec(operation, index, warnings));
-    requestShapes.set(operation.methodPath, buildShape(operation.requestType, index, warnings, operation.id, "request", 0, []));
+  for (const operation2 of index.operations) {
+    specs.set(operation2.methodPath, buildOperationSpec(operation2, index, warnings));
+    requestShapes.set(operation2.methodPath, buildShape(operation2.requestType, index, warnings, operation2.id, "request", 0, []));
   }
   const covered = /* @__PURE__ */ new Map();
   const inject = (item) => {
@@ -325958,9 +326693,9 @@ function instrumentGrpcCollection(collection, index) {
     const item = asRecord18(entry);
     if (item) inject(item);
   }
-  const missing = index.operations.filter((operation) => !covered.has(operation.methodPath));
+  const missing = index.operations.filter((operation2) => !covered.has(operation2.methodPath));
   if (missing.length > 0) {
-    throw new Error(`PROTO_OPERATION_COVERAGE_FAILED: gRPC collection is missing generated grpc-request coverage for ${missing.map((operation) => operation.methodPath).join(", ")}`);
+    throw new Error(`PROTO_OPERATION_COVERAGE_FAILED: gRPC collection is missing generated grpc-request coverage for ${missing.map((operation2) => operation2.methodPath).join(", ")}`);
   }
   const bytes = Buffer.byteLength(JSON.stringify(collection), "utf8");
   if (bytes > GRPC_INSTRUMENT_LIMITS.maxCollectionUpdateBytes) {
@@ -326262,7 +326997,7 @@ var GOOGLE_RPC_ERROR_DETAIL_TYPES = /* @__PURE__ */ new Set([
 var PROTO_FQN_RE = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/;
 function lintGoogleApiServiceConfig(config, index, warnings) {
   warnings.push("GRPC_SERVICE_CONFIG_KIND_MISMATCH: input declares apis[], the shape of a google.api.Service document, not a gRPC service config (service_config.proto); cross-referencing its declared surface against the proto contract instead");
-  const declaredServices = new Set(index.operations.map((operation) => operation.serviceFullName));
+  const declaredServices = new Set(index.operations.map((operation2) => operation2.serviceFullName));
   const seenApis = /* @__PURE__ */ new Set();
   asArray11(config.apis).forEach((entry, i) => {
     const record = asRecord19(entry);
@@ -326318,8 +327053,8 @@ function lintGoogleApiServiceConfig(config, index, warnings) {
 var KNOWN_TOP_LEVEL_FIELDS = /* @__PURE__ */ new Set(["loadBalancingPolicy", "loadBalancingConfig", "methodConfig", "retryThrottling", "healthCheckConfig"]);
 var KNOWN_METHOD_CONFIG_FIELDS = /* @__PURE__ */ new Set(["name", "timeout", "waitForReady", "maxRequestMessageBytes", "maxResponseMessageBytes", "retryPolicy", "hedgingPolicy"]);
 function lintServiceConfigObject(config, index, warnings) {
-  const declaredServices = new Set(index.operations.map((operation) => operation.serviceFullName));
-  const declaredMethods = new Set(index.operations.map((operation) => `${operation.serviceFullName}/${operation.method}`));
+  const declaredServices = new Set(index.operations.map((operation2) => operation2.serviceFullName));
+  const declaredMethods = new Set(index.operations.map((operation2) => `${operation2.serviceFullName}/${operation2.method}`));
   for (const key of Object.keys(config)) {
     if (!KNOWN_TOP_LEVEL_FIELDS.has(key)) {
       warnings.push(`GRPC_SERVICE_CONFIG_FIELD_UNKNOWN: "${key}" is not a service config field (service_config.proto); clients ignore unknown fields`);
@@ -326469,21 +327204,21 @@ function lintServiceConfigObject(config, index, warnings) {
     }
   });
   const winners = /* @__PURE__ */ new Set();
-  for (const operation of index.operations) {
-    const exact = `${operation.serviceFullName}/${operation.method}`;
+  for (const operation2 of index.operations) {
+    const exact = `${operation2.serviceFullName}/${operation2.method}`;
     let winner = -1;
-    for (const target of [exact, operation.serviceFullName, "{}"]) {
+    for (const target of [exact, operation2.serviceFullName, "{}"]) {
       winner = entryMeta.findIndex((meta2) => meta2.targets.has(target));
       if (winner !== -1) break;
     }
     if (winner === -1) continue;
     winners.add(winner);
     const meta = entryMeta[winner];
-    if (meta.retry && operation.stream !== "unary") {
-      warnings.push(`GRPC_SERVICE_CONFIG_STREAMING_RETRY_DISCLOSURE: methodConfig[${winner}].retryPolicy is the effective config for ${operation.id}, a ${operation.stream}-streaming RPC; retries only replay when no response has been committed, and client/bidi streams require replayable request messages (gRFC A6)`);
+    if (meta.retry && operation2.stream !== "unary") {
+      warnings.push(`GRPC_SERVICE_CONFIG_STREAMING_RETRY_DISCLOSURE: methodConfig[${winner}].retryPolicy is the effective config for ${operation2.id}, a ${operation2.stream}-streaming RPC; retries only replay when no response has been committed, and client/bidi streams require replayable request messages (gRFC A6)`);
     }
-    if (meta.hedge && (operation.stream === "client" || operation.stream === "bidi")) {
-      warnings.push(`GRPC_SERVICE_CONFIG_STREAMING_HEDGE_DISCLOSURE: methodConfig[${winner}].hedgingPolicy is the effective config for ${operation.id}, a ${operation.stream}-streaming RPC; hedged attempts run concurrently and cannot replay client-streamed messages (gRFC A6)`);
+    if (meta.hedge && (operation2.stream === "client" || operation2.stream === "bidi")) {
+      warnings.push(`GRPC_SERVICE_CONFIG_STREAMING_HEDGE_DISCLOSURE: methodConfig[${winner}].hedgingPolicy is the effective config for ${operation2.id}, a ${operation2.stream}-streaming RPC; hedged attempts run concurrently and cannot replay client-streamed messages (gRFC A6)`);
     }
   }
   entryMeta.forEach((meta, i) => {
@@ -332201,14 +332936,14 @@ function parseSoapBindings11(definitionNodes, messages, warnings) {
         }
       }
       const ops = /* @__PURE__ */ new Map();
-      for (const operation of children3(binding, "operation")) {
-        const opName = attr3(operation, "name");
+      for (const operation2 of children3(binding, "operation")) {
+        const opName = attr3(operation2, "name");
         if (!opName) continue;
         let soapAction = "";
         let styleRaw = bindingStyle;
-        for (const key of Object.keys(operation)) {
+        for (const key of Object.keys(operation2)) {
           if (localName2(key) !== "operation") continue;
-          for (const marker of asArray13(operation[key])) {
+          for (const marker of asArray13(operation2[key])) {
             const rec = asRecord21(marker);
             const action = attr3(rec, "soapAction");
             if (action) soapAction = action;
@@ -332222,8 +332957,8 @@ function parseSoapBindings11(definitionNodes, messages, warnings) {
           warnings.push(`SOAP_BINDING_STYLE_UNPARSEABLE: binding ${bindingName} operation ${opName} declares style "${styleRaw}" (expected document|rpc); style-specific assertions are skipped`);
           style = void 0;
         }
-        const inputDirection = asRecord21(child3(operation, "input"));
-        const outputDirection = asRecord21(child3(operation, "output"));
+        const inputDirection = asRecord21(child3(operation2, "input"));
+        const outputDirection = asRecord21(child3(operation2, "output"));
         const inputBody = bodyMarker(inputDirection);
         const outputBody = bodyMarker(outputDirection);
         const useRaw = attr3(outputBody, "use") || attr3(inputBody, "use");
@@ -332234,8 +332969,8 @@ function parseSoapBindings11(definitionNodes, messages, warnings) {
         const bodyNamespace = attr3(outputBody, "namespace") || attr3(inputBody, "namespace") || void 0;
         const encodingStyle = attr3(outputBody, "encodingStyle") || attr3(inputBody, "encodingStyle") || void 0;
         const headerFaults = [
-          ...headerFaultDecls(inputDirection, messages, [definitions, binding, operation]),
-          ...headerFaultDecls(outputDirection, messages, [definitions, binding, operation])
+          ...headerFaultDecls(inputDirection, messages, [definitions, binding, operation2]),
+          ...headerFaultDecls(outputDirection, messages, [definitions, binding, operation2])
         ];
         const outputBodyParts = hasLocalAttr(outputBody, "parts") ? attr3(outputBody, "parts") : void 0;
         const inputHeaders = headerDecls(inputDirection, messages, [definitions, binding]);
@@ -332306,11 +333041,11 @@ function parseServices11(definitionNodes, messages, bindings, warnings) {
   const buildOperations = (portTypeName, scopeDefinitions) => {
     const portType = portTypes.get(portTypeName);
     if (!portType) return [];
-    return children3(portType, "operation").map((operation) => {
-      const name = attr3(operation, "name");
+    return children3(portType, "operation").map((operation2) => {
+      const name = attr3(operation2, "name");
       const opWarnings = [];
-      const inputRecord = asRecord21(child3(operation, "input"));
-      const outputRecord = asRecord21(child3(operation, "output"));
+      const inputRecord = asRecord21(child3(operation2, "input"));
+      const outputRecord = asRecord21(child3(operation2, "output"));
       const inputRef = localName2(attr3(inputRecord, "message"));
       const outputRef = localName2(attr3(outputRecord, "message"));
       const input = inputRef ? messages.get(inputRef) : void 0;
@@ -332398,16 +333133,16 @@ function parseBindings20(description, warnings) {
     }
     const soapVersion = attr3(binding, "version") === "1.1" ? "1.1" : "1.2";
     const ops = /* @__PURE__ */ new Map();
-    for (const operation of children3(binding, "operation")) {
-      const ref = localName2(attr3(operation, "ref"));
+    for (const operation2 of children3(binding, "operation")) {
+      const ref = localName2(attr3(operation2, "ref"));
       if (!ref) continue;
       const headerDecls20 = (direction) => {
         const decls = [];
-        for (const dirNode of children3(operation, direction)) {
+        for (const dirNode of children3(operation2, direction)) {
           for (const header of children3(dirNode, "header")) {
             const element = attr3(header, "element");
             if (!element || element.startsWith("#")) continue;
-            decls.push({ element: localName2(element), namespace: namespaceForPrefix2([description, binding, operation, dirNode, header], prefixOf2(element)) || void 0 });
+            decls.push({ element: localName2(element), namespace: namespaceForPrefix2([description, binding, operation2, dirNode, header], prefixOf2(element)) || void 0 });
           }
         }
         return decls;
@@ -332415,15 +333150,15 @@ function parseBindings20(description, warnings) {
       const inputHeaders20 = headerDecls20("input");
       const outputHeaders20 = headerDecls20("output");
       const outputHttpHeaders20 = [];
-      for (const dirNode of children3(operation, "output")) {
+      for (const dirNode of children3(operation2, "output")) {
         for (const header of children3(dirNode, "header")) {
           const fieldName = attr3(header, "name");
           if (fieldName && /^(true|1)$/.test(attr3(header, "required"))) outputHttpHeaders20.push(fieldName);
         }
       }
       ops.set(ref, {
-        action: attr3(operation, "action") || void 0,
-        mep: attr3(operation, "mep") || void 0,
+        action: attr3(operation2, "action") || void 0,
+        mep: attr3(operation2, "mep") || void 0,
         inputHeaders: inputHeaders20.length > 0 ? inputHeaders20 : void 0,
         outputHeaders: outputHeaders20.length > 0 ? outputHeaders20 : void 0,
         outputHttpHeaders: outputHttpHeaders20.length > 0 ? outputHttpHeaders20 : void 0
@@ -332452,11 +333187,11 @@ function parseServices20(description, warnings) {
     if (name) interfaces.set(name, iface);
   }
   const bindings = parseBindings20(description, warnings);
-  const buildOperations = (iface, binding) => children3(iface, "operation").map((operation) => {
-    const name = attr3(operation, "name");
+  const buildOperations = (iface, binding) => children3(iface, "operation").map((operation2) => {
+    const name = attr3(operation2, "name");
     const opWarnings = [];
-    const inputRecord = asRecord21(child3(operation, "input"));
-    const outputRecord = asRecord21(child3(operation, "output"));
+    const inputRecord = asRecord21(child3(operation2, "input"));
+    const outputRecord = asRecord21(child3(operation2, "output"));
     const inputElement = attr3(inputRecord, "element");
     const outputElement = attr3(outputRecord, "element");
     const outLocal = outputElement.startsWith("#") ? "" : localName2(outputElement);
@@ -332468,7 +333203,7 @@ function parseServices20(description, warnings) {
       const faultElement = attr3(fault, "element");
       if (faultName && faultElement && !faultElement.startsWith("#")) ifaceFaultElements.set(faultName, localName2(faultElement));
     }
-    const faultElements = [...children3(operation, "infault"), ...children3(operation, "outfault")].map((faultRef) => ifaceFaultElements.get(localName2(attr3(faultRef, "ref")))).filter((element) => Boolean(element));
+    const faultElements = [...children3(operation2, "infault"), ...children3(operation2, "outfault")].map((faultRef) => ifaceFaultElements.get(localName2(attr3(faultRef, "ref")))).filter((element) => Boolean(element));
     const inputAction = attr3(inputRecord, "Action") || void 0;
     if (inputAction && bindingOp?.action && inputAction !== bindingOp.action) {
       opWarnings.push(`SOAP_WSDL20_ACTION_MISMATCH: operation ${name} declares wsam:Action "${inputAction}" but the binding declares wsoap:action "${bindingOp.action}"; WS-Addressing Metadata section 4.4.1 requires them to be identical`);
@@ -332478,7 +333213,7 @@ function parseServices20(description, warnings) {
       name,
       soapAction: bindingOp?.action ?? "",
       soapVersion: binding?.soapVersion ?? "1.2",
-      mepPattern: attr3(operation, "pattern") || void 0,
+      mepPattern: attr3(operation2, "pattern") || void 0,
       soapMep: bindingOp?.mep ?? binding?.mepDefault,
       inputAction,
       inputHeaders: bindingOp?.inputHeaders,
@@ -332490,7 +333225,7 @@ function parseServices20(description, warnings) {
       input,
       output: outLocal ? { name, parts: [{ name, element: outputElement }] } : void 0,
       expectedResponseElement: outLocal || void 0,
-      expectedResponseNamespace: outLocal ? namespaceForPrefix2([description, iface, operation, outputRecord ?? {}], prefixOf2(outputElement)) || void 0 : void 0,
+      expectedResponseNamespace: outLocal ? namespaceForPrefix2([description, iface, operation2, outputRecord ?? {}], prefixOf2(outputElement)) || void 0 : void 0,
       warnings: opWarnings
     };
   });
@@ -332606,30 +333341,30 @@ function lintWsdl112(definitions, messages, warnings) {
     }
     const portTypeOps = /* @__PURE__ */ new Map();
     if (portType) {
-      for (const operation of children3(portType, "operation")) {
-        const name = attr3(operation, "name");
-        if (name) portTypeOps.set(name, operation);
+      for (const operation2 of children3(portType, "operation")) {
+        const name = attr3(operation2, "name");
+        if (name) portTypeOps.set(name, operation2);
       }
     }
     const styles = /* @__PURE__ */ new Set();
     const wireSignatures = /* @__PURE__ */ new Map();
     const bindingOpNames = /* @__PURE__ */ new Set();
-    for (const operation of children3(binding, "operation")) {
-      const opName = attr3(operation, "name");
+    for (const operation2 of children3(binding, "operation")) {
+      const opName = attr3(operation2, "name");
       if (!opName) continue;
       bindingOpNames.add(opName);
       let styleRaw = bindingStyle;
-      for (const key of Object.keys(operation)) {
+      for (const key of Object.keys(operation2)) {
         if (localName2(key) !== "operation") continue;
-        for (const entry of asArray13(operation[key])) {
+        for (const entry of asArray13(operation2[key])) {
           const style = attr3(asRecord21(entry), "style");
           if (style) styleRaw = style;
         }
       }
       const effStyle = styleRaw === "rpc" ? "rpc" : "document";
       styles.add(effStyle);
-      const inputDirection = asRecord21(child3(operation, "input"));
-      const outputDirection = asRecord21(child3(operation, "output"));
+      const inputDirection = asRecord21(child3(operation2, "input"));
+      const outputDirection = asRecord21(child3(operation2, "output"));
       const inputBody = bodyMarker(inputDirection);
       const outputBody = bodyMarker(outputDirection);
       for (const [direction, body2] of [["input", inputBody], ["output", outputBody]]) {
@@ -332657,7 +333392,7 @@ function lintWsdl112(definitions, messages, warnings) {
       const inputMessage = portTypeOp ? messages.get(localName2(attr3(asRecord21(child3(portTypeOp, "input")), "message"))) : void 0;
       const outputMessage = portTypeOp ? messages.get(localName2(attr3(asRecord21(child3(portTypeOp, "output")), "message"))) : void 0;
       if (portTypeOp) {
-        const bindingHasOutput = child3(operation, "output") !== void 0;
+        const bindingHasOutput = child3(operation2, "output") !== void 0;
         const portTypeHasOutput = child3(portTypeOp, "output") !== void 0;
         if (bindingHasOutput !== portTypeHasOutput) {
           warnings.push(`SOAP_LINT_ONE_WAY_OUTPUT_MISMATCH: operation ${opName} declares an output in ${bindingHasOutput ? "the binding but not the portType" : "the portType but not the binding"}; one-way operations must not declare an output`);
@@ -332688,7 +333423,7 @@ function lintWsdl112(definitions, messages, warnings) {
         if (prior) warnings.push(`SOAP_LINT_DUPLICATE_WIRE_SIGNATURE: operations ${prior} and ${opName} in binding ${bindingName} produce the same top-level Body element QName on the wire; WS-I Basic Profile 1.1 R2710 requires unique wire signatures`);
         else wireSignatures.set(signature, opName);
       }
-      for (const wsdlFault of children3(operation, "fault")) {
+      for (const wsdlFault of children3(operation2, "fault")) {
         const faultName = attr3(wsdlFault, "name");
         for (const soapFault of children3(wsdlFault, "fault")) {
           const soapFaultName = attr3(soapFault, "name");
@@ -332894,16 +333629,16 @@ function envelopeNamespace(version) {
 function contentType(version) {
   return version === "1.2" ? SOAP12_CONTENT_TYPE : SOAP11_CONTENT_TYPE;
 }
-function buildEnvelope(operation, targetNamespace, declaresAddressing, endpoint = "") {
-  const version = operation.soapVersion;
+function buildEnvelope(operation2, targetNamespace, declaresAddressing, endpoint = "") {
+  const version = operation2.soapVersion;
   const envNs = envelopeNamespace(version);
-  const part = operation.input?.parts[0];
-  const wrapper = part?.element ? localName2(part.element) : operation.name;
+  const part = operation2.input?.parts[0];
+  const wrapper = part?.element ? localName2(part.element) : operation2.name;
   const bodyNsAttr = targetNamespace ? ` xmlns:op="${targetNamespace}"` : "";
   const wrapperOpen = targetNamespace ? `op:${wrapper}` : wrapper;
-  const action = declaresAddressing ? requestActionIri(operation, targetNamespace) : "";
+  const action = declaresAddressing ? requestActionIri(operation2, targetNamespace) : "";
   const wsaNsAttr = action ? ` xmlns:wsa="${WSA_NS}"` : "";
-  const headerBlocks = (operation.inputHeaders ?? []).map(
+  const headerBlocks = (operation2.inputHeaders ?? []).map(
     (header) => `    <${header.element}${header.namespace ? ` xmlns="${header.namespace}"` : ""}><!-- TODO: populate required header ${header.element} --></${header.element}>`
   );
   const headerLines = action || headerBlocks.length > 0 ? [
@@ -332913,7 +333648,7 @@ function buildEnvelope(operation, targetNamespace, declaresAddressing, endpoint 
       // 1.0 Core section 3.2); omitted when the WSDL declares no endpoint.
       ...endpoint ? [`    <wsa:To>${endpoint}</wsa:To>`] : [],
       `    <wsa:Action>${action}</wsa:Action>`,
-      ...operation.output ? [
+      ...operation2.output ? [
         "    <wsa:MessageID>urn:uuid:{{$guid}}</wsa:MessageID>",
         "    <wsa:ReplyTo>",
         `      <wsa:Address>${WSA_NS}/anonymous</wsa:Address>`,
@@ -332936,19 +333671,19 @@ function buildEnvelope(operation, targetNamespace, declaresAddressing, endpoint 
   ];
   return lines.join("\n");
 }
-function requestActionIri(operation, targetNamespace) {
-  return operation.inputAction || operation.soapAction || defaultActionIri(targetNamespace, operation.portTypeName, operation.inputName || `${operation.name}Request`);
+function requestActionIri(operation2, targetNamespace) {
+  return operation2.inputAction || operation2.soapAction || defaultActionIri(targetNamespace, operation2.portTypeName, operation2.inputName || `${operation2.name}Request`);
 }
-function headersFor(operation) {
+function headersFor(operation2) {
   const headers = [
-    { key: "Content-Type", value: contentType(operation.soapVersion) }
+    { key: "Content-Type", value: contentType(operation2.soapVersion) }
   ];
-  if (operation.soapVersion === "1.1") {
-    headers.push({ key: "SOAPAction", value: `"${operation.soapAction}"` });
-  } else if (operation.soapAction) {
+  if (operation2.soapVersion === "1.1") {
+    headers.push({ key: "SOAPAction", value: `"${operation2.soapAction}"` });
+  } else if (operation2.soapAction) {
     headers[0] = {
       key: "Content-Type",
-      value: `${contentType(operation.soapVersion).replace(/; charset=UTF-8$/i, "")}; action="${operation.soapAction}"; charset=UTF-8`
+      value: `${contentType(operation2.soapVersion).replace(/; charset=UTF-8$/i, "")}; action="${operation2.soapAction}"; charset=UTF-8`
     };
   }
   return headers;
@@ -332965,11 +333700,11 @@ function buildUrlDescriptor2(raw) {
   if (segments2.length > 0) descriptor.path = segments2;
   return descriptor;
 }
-function buildItem3(service, operation, targetNamespace, declaresAddressing) {
-  if (operation.soapMep === SOAP_RESPONSE_MEP) {
+function buildItem3(service, operation2, targetNamespace, declaresAddressing) {
+  if (operation2.soapMep === SOAP_RESPONSE_MEP) {
     return {
-      id: stableId2(`${service.name}::${operation.name}`),
-      name: operation.name,
+      id: stableId2(`${service.name}::${operation2.name}`),
+      name: operation2.name,
       request: {
         method: "GET",
         header: [{ key: "Accept", value: "application/soap+xml" }],
@@ -332980,14 +333715,14 @@ function buildItem3(service, operation, targetNamespace, declaresAddressing) {
     };
   }
   return {
-    id: stableId2(`${service.name}::${operation.name}`),
-    name: operation.name,
+    id: stableId2(`${service.name}::${operation2.name}`),
+    name: operation2.name,
     request: {
       method: "POST",
-      header: headersFor(operation),
+      header: headersFor(operation2),
       body: {
         mode: "raw",
-        raw: buildEnvelope(operation, targetNamespace, declaresAddressing, service.endpoint),
+        raw: buildEnvelope(operation2, targetNamespace, declaresAddressing, service.endpoint),
         options: { raw: { language: "xml" } }
       },
       url: buildUrlDescriptor2(service.endpoint || "{{baseUrl}}"),
@@ -332997,7 +333732,7 @@ function buildItem3(service, operation, targetNamespace, declaresAddressing) {
   };
 }
 var SOAP12_UNSUPPORTED_MEDIA_PROBE_NAME = "Unsupported media type probe (SOAP 1.2)";
-function buildUnsupportedMediaProbeItem(service, operation, targetNamespace) {
+function buildUnsupportedMediaProbeItem(service, operation2, targetNamespace) {
   return {
     id: stableId2(`${service.name}::${SOAP12_UNSUPPORTED_MEDIA_PROBE_NAME}`),
     name: SOAP12_UNSUPPORTED_MEDIA_PROBE_NAME,
@@ -333006,7 +333741,7 @@ function buildUnsupportedMediaProbeItem(service, operation, targetNamespace) {
       header: [{ key: "Content-Type", value: "text/plain; charset=UTF-8" }],
       body: {
         mode: "raw",
-        raw: buildEnvelope(operation, targetNamespace, false),
+        raw: buildEnvelope(operation2, targetNamespace, false),
         options: { raw: { language: "xml" } }
       },
       url: buildUrlDescriptor2(service.endpoint || "{{baseUrl}}"),
@@ -333019,10 +333754,10 @@ function buildSoapCollection(index, options = {}) {
   const folders = [];
   for (const service of index.services) {
     const items = [];
-    for (const operation of service.operations) {
-      items.push(buildItem3(service, operation, index.targetNamespace, index.declaresAddressing));
+    for (const operation2 of service.operations) {
+      items.push(buildItem3(service, operation2, index.targetNamespace, index.declaresAddressing));
     }
-    const probeOperation = service.operations.find((operation) => operation.soapVersion === "1.2");
+    const probeOperation = service.operations.find((operation2) => operation2.soapVersion === "1.2");
     if (probeOperation) {
       items.push(buildUnsupportedMediaProbeItem(service, probeOperation, index.targetNamespace));
     }
@@ -333147,12 +333882,12 @@ function childMeta(c) {
     ...c.enumeration && c.enumeration.length > 0 ? { enums: c.enumeration } : {}
   };
 }
-function resolveResponseDecl(operation, index) {
-  if (!index || operation.style === "rpc" || operation.use === "encoded" || !operation.expectedResponseElement) return void 0;
-  return lookupXsdElement(index, operation.expectedResponseNamespace, operation.expectedResponseElement);
+function resolveResponseDecl(operation2, index) {
+  if (!index || operation2.style === "rpc" || operation2.use === "encoded" || !operation2.expectedResponseElement) return void 0;
+  return lookupXsdElement(index, operation2.expectedResponseNamespace, operation2.expectedResponseElement);
 }
-function xsdPayloadLines(operation, index) {
-  const decl = resolveResponseDecl(operation, index);
+function xsdPayloadLines(operation2, index) {
+  const decl = resolveResponseDecl(operation2, index);
   if (!decl || !index) return [];
   const childrenKnown = decl.children !== void 0;
   const meta = {
@@ -333165,7 +333900,7 @@ function xsdPayloadLines(operation, index) {
     attrs: (decl.attributes ?? []).map((a) => ({ name: a.name, required: a.required, ...a.fixed !== void 0 && a.fixed !== "" ? { fixed: a.fixed } : {} })),
     typeNames: [...index.typeLocalNames].sort(),
     builtins: XSD_BUILTIN_TYPE_NAMES,
-    envNs: operation.soapVersion === "1.2" ? "http://www.w3.org/2003/05/soap-envelope" : "http://schemas.xmlsoap.org/soap/envelope/"
+    envNs: operation2.soapVersion === "1.2" ? "http://www.w3.org/2003/05/soap-envelope" : "http://schemas.xmlsoap.org/soap/envelope/"
   };
   const lines = [
     "",
@@ -333357,8 +334092,8 @@ var ALLOW_405_LINES = [
 function jsString2(value) {
   return JSON.stringify(value);
 }
-function requestDisciplineLines(operation) {
-  if (operation.soapMep === SOAP_RESPONSE_MEP) {
+function requestDisciplineLines(operation2) {
+  if (operation2.soapMep === SOAP_RESPONSE_MEP) {
     return [
       "",
       "pm.test('SOAP-response MEP request is a plain HTTP GET with no envelope (WSDL 2.0 Adjuncts section 5.10.3)', function () {",
@@ -333379,14 +334114,14 @@ function requestDisciplineLines(operation) {
     '  pm.expect(pm.request.method, "SOAP over HTTP binds operations to POST").to.eql("POST");',
     "});"
   ];
-  if (operation.soapVersion === "1.1") {
+  if (operation2.soapVersion === "1.1") {
     lines.push(
       "",
       "pm.test('SOAPAction request header is present and quoted (WS-I Basic Profile 1.1 R2744/R2745)', function () {",
       '  var sa = pm.request.headers.get("SOAPAction");',
       '  if (sa === null || sa === undefined) { pm.expect.fail("SOAP 1.1 HTTP requests carry a SOAPAction header, quoted, even when empty"); return; }',
       '  if (!/^"[\\s\\S]*"$/.test(sa)) pm.expect.fail("SOAPAction must be quoted on the wire (got: " + sa + ")");',
-      "  if (sa.slice(1, -1) !== " + jsString2(operation.soapAction) + ') pm.expect.fail("SOAPAction " + sa + " does not match the WSDL soapAction value");',
+      "  if (sa.slice(1, -1) !== " + jsString2(operation2.soapAction) + ') pm.expect.fail("SOAPAction " + sa + " does not match the WSDL soapAction value");',
       "});"
     );
   } else {
@@ -333398,9 +334133,9 @@ function requestDisciplineLines(operation) {
       '  var action = /action="([^"]*)"/.exec(ct);',
       '  if (action && !action[1]) pm.expect.fail("the action media-type parameter must not be empty (RFC 3902)");',
       '  if (action && action[1] && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(action[1])) pm.expect.fail("the action media-type parameter must be an absolute URI (RFC 3902); got " + action[1]);',
-      operation.soapAction ? "  if (action && action[1] !== " + jsString2(operation.soapAction) + ') pm.expect.fail("the action parameter " + action[1] + " does not match the WSDL soapAction value");' : "",
+      operation2.soapAction ? "  if (action && action[1] !== " + jsString2(operation2.soapAction) + ') pm.expect.fail("the action parameter " + action[1] + " does not match the WSDL soapAction value");' : "",
       "});",
-      ...operation.soapVersion === "1.2" ? [
+      ...operation2.soapVersion === "1.2" ? [
         "",
         "pm.test('SOAP 1.2 response Content-Type action parameter is well-formed (RFC 3902 section 2)', function () {",
         "  if (accepted202) return;",
@@ -333430,8 +334165,8 @@ function requestDisciplineLines(operation) {
   }
   return lines.filter((line, i, all3) => line !== "" || all3[i - 1] !== "");
 }
-function deepConformanceLines(operation) {
-  const is12 = operation.soapVersion === "1.2";
+function deepConformanceLines(operation2) {
+  const is12 = operation2.soapVersion === "1.2";
   const lines = [
     "",
     "pm.test('SOAP response contains no DTD or processing instruction (WS-I Basic Profile 1.1 R1008/R1009)', function () {",
@@ -333518,7 +334253,7 @@ function deepConformanceLines(operation) {
       "});"
     );
   }
-  if (operation.style !== "rpc" && operation.expectedResponseElement) {
+  if (operation2.style !== "rpc" && operation2.expectedResponseElement) {
     lines.push(
       "",
       "pm.test('Expected response element is the direct child of soap:Body (WS-I Basic Profile 1.1 R2201)', function () {",
@@ -333527,23 +334262,23 @@ function deepConformanceLines(operation) {
       "  var kids = directChildNames(inner);",
       "  if (kids.length === 0) return;",
       '  if (kids.some(function (k) { return localPart(k) === "Fault"; })) return;',
-      "  if (!kids.some(function (k) { return localPart(k) === " + jsString2(operation.expectedResponseElement) + '; })) pm.expect.fail("the WSDL output element " + ' + jsString2(operation.expectedResponseElement) + ' + " must be the direct child of soap:Body (got: " + kids.join(", ") + ")");',
+      "  if (!kids.some(function (k) { return localPart(k) === " + jsString2(operation2.expectedResponseElement) + '; })) pm.expect.fail("the WSDL output element " + ' + jsString2(operation2.expectedResponseElement) + ' + " must be the direct child of soap:Body (got: " + kids.join(", ") + ")");',
       "});"
     );
-    if (operation.expectedResponseNamespace) {
-      const escaped = operation.expectedResponseElement.replace(/[.*+?^$()|[\]{}\\]/g, "\\function createOneWayScript");
+    if (operation2.expectedResponseNamespace) {
+      const escaped = operation2.expectedResponseElement.replace(/[.*+?^$()|[\]{}\\]/g, "\\function createOneWayScript");
       lines.push(
         "",
         "pm.test('Response element namespace matches the WSDL schema declaration (WS-I Basic Profile 1.1 R2712)', function () {",
         '  var open = cleanXml.match(new RegExp("<([A-Za-z_][\\\\w.-]*):' + escaped + '[\\\\s/>]"));',
         "  if (!open) return;",
         `  var decl = new RegExp("xmlns:" + open[1] + "\\\\s*=\\\\s*[\\"']([^\\"']*)[\\"']").exec(cleanXml);`,
-        "  if (decl && decl[1] !== " + jsString2(operation.expectedResponseNamespace) + ') pm.expect.fail("response element is bound to namespace " + decl[1] + " but the WSDL schema declares " + ' + jsString2(operation.expectedResponseNamespace) + ");",
+        "  if (decl && decl[1] !== " + jsString2(operation2.expectedResponseNamespace) + ') pm.expect.fail("response element is bound to namespace " + decl[1] + " but the WSDL schema declares " + ' + jsString2(operation2.expectedResponseNamespace) + ");",
         "});"
       );
     }
   }
-  const declaredOutputHeaders = (operation.outputHeaders ?? []).map((header) => header.element);
+  const declaredOutputHeaders = (operation2.outputHeaders ?? []).map((header) => header.element);
   if (declaredOutputHeaders.length > 0) {
     lines.push(
       "",
@@ -333558,7 +334293,7 @@ function deepConformanceLines(operation) {
       "});"
     );
   }
-  if (operation.outputBodyPartCount === 0) {
+  if (operation2.outputBodyPartCount === 0) {
     lines.push(
       "",
       "pm.test('Zero-part document-literal response Body is empty (WS-I Basic Profile 1.1 R2201)', function () {",
@@ -333568,9 +334303,9 @@ function deepConformanceLines(operation) {
       "});"
     );
   }
-  if (operation.style === "rpc" && operation.use !== "encoded" && operation.output) {
-    const wrapper = operation.name + "Response";
-    const partNames = operation.output.parts.map((p) => p.name);
+  if (operation2.style === "rpc" && operation2.use !== "encoded" && operation2.output) {
+    const wrapper = operation2.name + "Response";
+    const partNames = operation2.output.parts.map((p) => p.name);
     lines.push(
       "",
       "pm.test('RPC-literal response wrapper and part accessors follow WS-I Basic Profile 1.1 (R2729/R2735)', function () {",
@@ -333591,7 +334326,7 @@ function deepConformanceLines(operation) {
       `  if (/xsi:nil\\s*=\\s*["'](?:1|true)["']/.test(wrapInner)) pm.expect.fail("rpc-literal part accessors must not carry xsi:nil (WS-I Basic Profile 1.1)");`,
       "});"
     );
-  } else if (operation.style !== "rpc") {
+  } else if (operation2.style !== "rpc") {
     lines.push(
       "",
       "pm.test('SOAP Body children are namespace-qualified (WS-I Basic Profile 1.1 R1014)', function () {",
@@ -333664,12 +334399,12 @@ function deepConformanceLines(operation) {
       "});"
     );
   }
-  if (operation.headerFaults && operation.headerFaults.length > 0) {
+  if (operation2.headerFaults && operation2.headerFaults.length > 0) {
     lines.push(
       "",
       "pm.test('Declared soap:headerfault blocks ride the SOAP Header, not Body detail (WSDL 1.1 section 3.7)', function () {",
       '  if (!matchTag("Fault").test(bodyText)) return;',
-      "  var hfNames = " + JSON.stringify(operation.headerFaults.map((decl) => decl.element)) + ";",
+      "  var hfNames = " + JSON.stringify(operation2.headerFaults.map((decl) => decl.element)) + ";",
       '  var hfHeader = elementInner(cleanXml, "Header") || "";',
       '  var hfDetail = (elementInner(cleanXml, "detail") || "") + (elementInner(cleanXml, "Detail") || "");',
       "  for (var i = 0; i < hfNames.length; i++) {",
@@ -333680,21 +334415,21 @@ function deepConformanceLines(operation) {
       "});"
     );
   }
-  if (operation.outputHttpHeaders && operation.outputHttpHeaders.length > 0) {
+  if (operation2.outputHttpHeaders && operation2.outputHttpHeaders.length > 0) {
     lines.push(
       "",
       "pm.test('Required whttp:header fields are present on the response (WSDL 2.0 Adjuncts section 6.9)', function () {",
       "  if (accepted202) return;",
-      "  var requiredHeaders = " + JSON.stringify(operation.outputHttpHeaders) + ";",
+      "  var requiredHeaders = " + JSON.stringify(operation2.outputHttpHeaders) + ";",
       '  for (var i = 0; i < requiredHeaders.length; i++) { if (!header(requiredHeaders[i])) pm.expect.fail("HTTP header " + requiredHeaders[i] + " is declared required (whttp:header) but missing on the response"); }',
       "});"
     );
   }
-  if (operation.use === "encoded" && operation.encodingStyle) {
+  if (operation2.use === "encoded" && operation2.encodingStyle) {
     lines.push(
       "",
       "pm.test('Encoded response encodingStyle includes the WSDL-declared encoding (SOAP 1.1 section 4.1.1 / WSDL 1.1 section 3.5)', function () {",
-      "  var declaredEnc = " + jsString2(operation.encodingStyle) + ";",
+      "  var declaredEnc = " + jsString2(operation2.encodingStyle) + ";",
       '  var encRe = /encodingStyle\\s*=\\s*["' + String.fromCharCode(39) + ']([^"' + String.fromCharCode(39) + ']*)["' + String.fromCharCode(39) + "]/g; var em;",
       '  while ((em = encRe.exec(cleanXml))) { var toks = em[1].split(/\\s+/).filter(Boolean); if (toks.length > 0 && toks.indexOf(declaredEnc) === -1) pm.expect.fail("encodingStyle " + em[1] + " does not include the WSDL-declared encoding " + declaredEnc); }',
       "});"
@@ -333702,9 +334437,9 @@ function deepConformanceLines(operation) {
   }
   return lines;
 }
-function createOneWayScript(operation) {
-  const meta = { name: operation.name, soapVersion: operation.soapVersion, oneWay: true };
-  const mepKey = operation.mepPattern && operation.mepPattern.startsWith("http://www.w3.org/ns/wsdl/") ? operation.mepPattern.slice("http://www.w3.org/ns/wsdl/".length) : void 0;
+function createOneWayScript(operation2) {
+  const meta = { name: operation2.name, soapVersion: operation2.soapVersion, oneWay: true };
+  const mepKey = operation2.mepPattern && operation2.mepPattern.startsWith("http://www.w3.org/ns/wsdl/") ? operation2.mepPattern.slice("http://www.w3.org/ns/wsdl/".length) : void 0;
   const allowFault = mepKey !== "in-only";
   const statusTest = mepKey === "in-only" ? [
     "pm.test('In-only SOAP response status is 202 or 204 (WSDL 2.0 Adjuncts / SOAP 1.2 Part 2 section 6.3)', function () {",
@@ -333737,28 +334472,28 @@ function createOneWayScript(operation) {
       '  if (!oneWayFaulted) pm.expect.fail("HTTP 500 from a one-way operation must carry a SOAP Fault describing the processing error");',
       "});"
     ] : [],
-    ...requestDisciplineLines(operation),
+    ...requestDisciplineLines(operation2),
     ...ALLOW_405_LINES
   ];
   return lines.join("\n");
 }
-function createSoapScript(operation, warnings = [], options = {}) {
-  if (operation.input && !operation.output) return createOneWayScript(operation);
-  const responseAction = options.declaresAddressing ? operation.outputAction || defaultActionIri(options.targetNamespace ?? "", operation.portTypeName, operation.outputName || `${operation.name}Response`) : "";
+function createSoapScript(operation2, warnings = [], options = {}) {
+  if (operation2.input && !operation2.output) return createOneWayScript(operation2);
+  const responseAction = options.declaresAddressing ? operation2.outputAction || defaultActionIri(options.targetNamespace ?? "", operation2.portTypeName, operation2.outputName || `${operation2.name}Response`) : "";
   if (options.declaresAddressing && !responseAction) {
-    warnings.push(`SOAP_ADDRESSING_ACTION_UNDERIVABLE: operation ${operation.name} engages WS-Addressing but no output action IRI is declared or derivable; asserting wsa header presence only`);
+    warnings.push(`SOAP_ADDRESSING_ACTION_UNDERIVABLE: operation ${operation2.name} engages WS-Addressing but no output action IRI is declared or derivable; asserting wsa header presence only`);
   }
   const meta = {
-    name: operation.name,
-    soapVersion: operation.soapVersion,
-    expectedResponseElement: operation.expectedResponseElement ?? "",
-    hasOutput: Boolean(operation.output),
+    name: operation2.name,
+    soapVersion: operation2.soapVersion,
+    expectedResponseElement: operation2.expectedResponseElement ?? "",
+    hasOutput: Boolean(operation2.output),
     ...responseAction ? { wsaAction: responseAction } : {}
   };
-  const responseRegex = operation.expectedResponseElement ? elementPresenceRegex(operation.expectedResponseElement) : "";
-  const mediaType = operation.soapVersion === "1.2" ? "application/soap+xml" : "text/xml";
-  const envelopeNs = operation.soapVersion === "1.2" ? "http://www.w3.org/2003/05/soap-envelope" : "http://schemas.xmlsoap.org/soap/envelope/";
-  const faultStatusLine = operation.soapVersion === "1.2" ? '  if (faulted && code !== 500 && code !== 400) pm.expect.fail("SOAP 1.2 Faults ride HTTP 500, or 400 for env:Sender faults (SOAP 1.2 Part 2 HTTP binding); got HTTP " + code);' : '  if (faulted && code !== 500) pm.expect.fail("SOAP 1.1 Faults must ride HTTP 500 (WS-I Basic Profile R1126); got HTTP " + code);';
+  const responseRegex = operation2.expectedResponseElement ? elementPresenceRegex(operation2.expectedResponseElement) : "";
+  const mediaType = operation2.soapVersion === "1.2" ? "application/soap+xml" : "text/xml";
+  const envelopeNs = operation2.soapVersion === "1.2" ? "http://www.w3.org/2003/05/soap-envelope" : "http://schemas.xmlsoap.org/soap/envelope/";
+  const faultStatusLine = operation2.soapVersion === "1.2" ? '  if (faulted && code !== 500 && code !== 400) pm.expect.fail("SOAP 1.2 Faults ride HTTP 500, or 400 for env:Sender faults (SOAP 1.2 Part 2 HTTP binding); got HTTP " + code);' : '  if (faulted && code !== 500) pm.expect.fail("SOAP 1.1 Faults must ride HTTP 500 (WS-I Basic Profile R1126); got HTTP " + code);';
   const lines = [
     `var soap = JSON.parse(${JSON.stringify(JSON.stringify(meta))});`,
     'var bodyText = (pm.response.text && pm.response.text()) || "";',
@@ -333774,10 +334509,10 @@ function createSoapScript(operation, warnings = [], options = {}) {
     "",
     // SOAP 1.1 responses bind to text/xml (SOAP 1.1 HTTP binding, WS-I Basic
     // Profile); SOAP 1.2 responses bind to application/soap+xml (RFC 3902).
-    `pm.test('SOAP response Content-Type matches the SOAP ${operation.soapVersion} binding', function () {`,
+    `pm.test('SOAP response Content-Type matches the SOAP ${operation2.soapVersion} binding', function () {`,
     "  if (accepted202) return;",
     '  var ct = header("Content-Type").toLowerCase();',
-    `  pm.expect(ct, "SOAP ${operation.soapVersion} responses use ${mediaType} (got: " + (ct || "<missing>") + ")").to.include("${mediaType}");`,
+    `  pm.expect(ct, "SOAP ${operation2.soapVersion} responses use ${mediaType} (got: " + (ct || "<missing>") + ")").to.include("${mediaType}");`,
     "});",
     "",
     "pm.test('SOAP Envelope element is present', function () {",
@@ -333785,9 +334520,9 @@ function createSoapScript(operation, warnings = [], options = {}) {
     '  pm.expect(bodyText, "response body is not a SOAP envelope").to.match(matchTag("Envelope"));',
     "});",
     "",
-    `pm.test('SOAP Envelope namespace matches SOAP ${operation.soapVersion}', function () {`,
+    `pm.test('SOAP Envelope namespace matches SOAP ${operation2.soapVersion}', function () {`,
     '  if (!matchTag("Envelope").test(bodyText)) return;',
-    `  pm.expect(bodyText.indexOf(${JSON.stringify(envelopeNs)}) !== -1, "SOAP ${operation.soapVersion} envelopes must declare the ${envelopeNs} namespace").to.equal(true);`,
+    `  pm.expect(bodyText.indexOf(${JSON.stringify(envelopeNs)}) !== -1, "SOAP ${operation2.soapVersion} envelopes must declare the ${envelopeNs} namespace").to.equal(true);`,
     "});",
     "",
     "pm.test('SOAP Body element is present', function () {",
@@ -333819,18 +334554,18 @@ function createSoapScript(operation, warnings = [], options = {}) {
     "  var faultKids = directChildNames(faultBodyInner);",
     '  if (faultKids.length !== 1 || localPart(faultKids[0]) !== "Fault") pm.expect.fail("a Fault must be the sole direct child of soap:Body; got [" + faultKids.join(", ") + "]");',
     "});",
-    ...operation.faultElements && operation.faultElements.length > 0 ? [
+    ...operation2.faultElements && operation2.faultElements.length > 0 ? [
       "",
       "pm.test('SOAP Fault Detail children match the declared interface faults (WSDL 2.0 section 2.6)', function () {",
       '  if (!matchTag("Fault").test(bodyText)) return;',
       '  var detailInner = elementInner(cleanXml, "Detail") || elementInner(cleanXml, "detail");',
       "  if (detailInner === null || !detailInner.trim()) return;",
-      "  var declaredDetail = " + JSON.stringify(operation.faultElements) + ";",
+      "  var declaredDetail = " + JSON.stringify(operation2.faultElements) + ";",
       "  var detailKids = directChildNames(detailInner).map(localPart);",
       '  for (var d = 0; d < detailKids.length; d++) { if (declaredDetail.indexOf(detailKids[d]) === -1) pm.expect.fail("fault Detail child " + detailKids[d] + " matches no declared interface fault element (" + declaredDetail.join(", ") + ")"); }',
       "});"
     ] : [],
-    ...operation.faultCodes && operation.faultCodes.length > 0 && operation.soapVersion === "1.2" ? [
+    ...operation2.faultCodes && operation2.faultCodes.length > 0 && operation2.soapVersion === "1.2" ? [
       "",
       "pm.test('SOAP Fault Subcode is declared by the binding (WSDL 2.0 Adjuncts section 5.5.7)', function () {",
       '  if (!matchTag("Fault").test(bodyText)) return;',
@@ -333838,7 +334573,7 @@ function createSoapScript(operation, warnings = [], options = {}) {
       "  if (!subMatch) return;",
       "  var subValue = subMatch[1].trim();",
       '  var subLocal = subValue.indexOf(":") === -1 ? subValue : subValue.slice(subValue.indexOf(":") + 1);',
-      "  var declaredCodes = " + JSON.stringify(operation.faultCodes) + ";",
+      "  var declaredCodes = " + JSON.stringify(operation2.faultCodes) + ";",
       '  if (declaredCodes.indexOf(subLocal) === -1) pm.expect.fail("fault Subcode " + subValue + " is not one of the binding-declared codes (" + declaredCodes.join(", ") + ")");',
       "});"
     ] : [],
@@ -333847,7 +334582,7 @@ function createSoapScript(operation, warnings = [], options = {}) {
     // section 4.4 requires faultcode + faultstring children; SOAP 1.2 Part 1
     // section 5.4 requires Code/Value + Reason/Text and pins the top-level
     // Value QName to the five defined fault codes.
-    ...operation.soapVersion === "1.2" ? [
+    ...operation2.soapVersion === "1.2" ? [
       "",
       "pm.test('SOAP Fault is well-formed for SOAP 1.2', function () {",
       '  if (!matchTag("Fault").test(bodyText)) return;',
@@ -333942,12 +334677,12 @@ function createSoapScript(operation, warnings = [], options = {}) {
       `  pm.expect(bodyText, "expected SOAP response element <" + soap.expectedResponseElement + "> not found").to.match(new RegExp(${JSON.stringify(responseRegex)}));`,
       "});"
     );
-    const responseDecl = resolveResponseDecl(operation, options.schemaIndex);
+    const responseDecl = resolveResponseDecl(operation2, options.schemaIndex);
     if (!responseDecl || responseDecl.children === void 0) {
-      warnings.push("SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation " + operation.name + " asserts the SOAP envelope/body/fault and the top-level response element <" + operation.expectedResponseElement + "> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)");
+      warnings.push("SOAP_RESPONSE_BODY_WRAPPER_ONLY: operation " + operation2.name + " asserts the SOAP envelope/body/fault and the top-level response element <" + operation2.expectedResponseElement + "> but NOT its child element/scalar shapes (WSDL/XSD payload validation is out of scope)");
     }
-  } else if (operation.output) {
-    warnings.push(`SOAP_RESPONSE_ELEMENT_UNKNOWN: operation ${operation.name} has an output message but no resolvable response element; only Envelope/Body/Fault are asserted`);
+  } else if (operation2.output) {
+    warnings.push(`SOAP_RESPONSE_ELEMENT_UNKNOWN: operation ${operation2.name} has an output message but no resolvable response element; only Envelope/Body/Fault are asserted`);
   }
   if (options.declaresAddressing) {
     lines.push(
@@ -333987,7 +334722,7 @@ function createSoapScript(operation, warnings = [], options = {}) {
       "});"
     );
   }
-  lines.push(...requestDisciplineLines(operation), ...deepConformanceLines(operation), ...xsdPayloadLines(operation, options.schemaIndex));
+  lines.push(...requestDisciplineLines(operation2), ...deepConformanceLines(operation2), ...xsdPayloadLines(operation2, options.schemaIndex));
   return lines.join("\n");
 }
 function forEachHttpRequest(node, visit4) {
@@ -334006,10 +334741,10 @@ function instrumentSoapCollection(collection, index) {
   const byName = /* @__PURE__ */ new Map();
   const allOperationNames = /* @__PURE__ */ new Set();
   for (const service of index.services) {
-    for (const operation of service.operations) {
-      byName.set(operation.name, operation);
-      allOperationNames.add(operation.name);
-      warnings.push(...operation.warnings);
+    for (const operation2 of service.operations) {
+      byName.set(operation2.name, operation2);
+      allOperationNames.add(operation2.name);
+      warnings.push(...operation2.warnings);
     }
   }
   const covered = /* @__PURE__ */ new Set();
@@ -334028,8 +334763,8 @@ function instrumentSoapCollection(collection, index) {
       item.event = [...existingEvents, { listen: "test", script: { type: "text/javascript", exec: probeExec } }];
       return;
     }
-    const operation = byName.get(name) ?? byName.get(localName2(name));
-    if (!operation) {
+    const operation2 = byName.get(name) ?? byName.get(localName2(name));
+    if (!operation2) {
       const mappingError = `SOAP request "${name}" did not match any WSDL operation`;
       warnings.push(`SOAP_ITEM_UNMATCHED: request "${name}" did not match any WSDL operation; attached fail-closed assertion`);
       const failExec = [
@@ -334042,8 +334777,8 @@ function instrumentSoapCollection(collection, index) {
       item.event = [...existing2, { listen: "test", script: { type: "text/javascript", exec: failExec } }];
       return;
     }
-    covered.add(operation.name);
-    const exec3 = createSoapScript(operation, warnings, { declaresAddressing: index.declaresAddressing, targetNamespace: index.targetNamespace, schemaIndex: index.schemaIndex }).split("\n");
+    covered.add(operation2.name);
+    const exec3 = createSoapScript(operation2, warnings, { declaresAddressing: index.declaresAddressing, targetNamespace: index.targetNamespace, schemaIndex: index.schemaIndex }).split("\n");
     const existing = asArray14(item.event).map((entry) => asRecord22(entry)).filter((entry) => Boolean(entry) && entry.listen !== "test");
     item.event = [
       ...existing,
@@ -334303,8 +335038,8 @@ function collectMqttInfo(channel, servers, messagesRaw, documentJson) {
   }
   const unescapePointer = (segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~");
   const operations = asRecord23(documentJson.operations) ?? {};
-  for (const operation of Object.values(operations)) {
-    const operationRecord = asRecord23(operation);
+  for (const operation2 of Object.values(operations)) {
+    const operationRecord = asRecord23(operation2);
     if (!operationRecord) continue;
     const ref = String(asRecord23(operationRecord.channel)?.$ref ?? "");
     const lastSegment = ref.includes("/") ? unescapePointer(ref.slice(ref.lastIndexOf("/") + 1)) : "";
@@ -334332,10 +335067,10 @@ function collectMqttInfo(channel, servers, messagesRaw, documentJson) {
 function buildReplySchemaByMessageId(document2) {
   const map2 = /* @__PURE__ */ new Map();
   const operations = document2.operations?.().all() ?? [];
-  for (const operation of operations) {
+  for (const operation2 of operations) {
     let reply;
     try {
-      reply = operation.reply?.();
+      reply = operation2.reply?.();
     } catch {
       reply = void 0;
     }
@@ -334343,7 +335078,7 @@ function buildReplySchemaByMessageId(document2) {
     const replyMessage = reply.messages().all().find((message) => message.hasPayload());
     const replySchema = replyMessage ? asRecord23(replyMessage.payload()?.json()) ?? void 0 : void 0;
     if (!replySchema) continue;
-    for (const requestMessage of operation.messages().all()) {
+    for (const requestMessage of operation2.messages().all()) {
       const id = requestMessage.id();
       if (id && !map2.has(id)) map2.set(id, replySchema);
     }
@@ -335291,22 +336026,22 @@ function lintChannels(documentJson, is3, minor, warnings) {
 function lintOperations3(documentJson, warnings) {
   const operations = asRecord24(documentJson.operations) ?? {};
   for (const [operationKey, operationRaw] of Object.entries(operations)) {
-    const operation = asRecord24(operationRaw);
-    if (!operation) continue;
+    const operation2 = asRecord24(operationRaw);
+    if (!operation2) continue;
     const label = `operation ${operationKey}`;
-    if (operation.action !== "send" && operation.action !== "receive") {
-      warnings.push(`ASYNCAPI_OPERATION_ACTION_INVALID: ${label} action ${JSON.stringify(operation.action)} must be "send" or "receive" (AsyncAPI 3.0 Operation Object)`);
+    if (operation2.action !== "send" && operation2.action !== "receive") {
+      warnings.push(`ASYNCAPI_OPERATION_ACTION_INVALID: ${label} action ${JSON.stringify(operation2.action)} must be "send" or "receive" (AsyncAPI 3.0 Operation Object)`);
     }
-    const replyAddress = asRecord24(asRecord24(operation.reply)?.address);
+    const replyAddress = asRecord24(asRecord24(operation2.reply)?.address);
     if (replyAddress && typeof replyAddress.location === "string" && !isAsyncApiRuntimeExpression(replyAddress.location)) {
       warnings.push(
         `ASYNCAPI_RUNTIME_EXPRESSION_INVALID: ${label} reply.address location ${JSON.stringify(replyAddress.location)} is not a valid AsyncAPI runtime expression ($message.header#/<pointer> or $message.payload#/<pointer>)`
       );
     }
-    lintTraits(label, operation.traits, warnings);
-    lintBindings(label, operation.bindings, warnings);
-    lintSecurityRequirements(documentJson, true, label, operation.security, warnings);
-    lintTagsAndExternalDocs(label, operation, warnings);
+    lintTraits(label, operation2.traits, warnings);
+    lintBindings(label, operation2.bindings, warnings);
+    lintSecurityRequirements(documentJson, true, label, operation2.security, warnings);
+    lintTagsAndExternalDocs(label, operation2, warnings);
   }
 }
 function resolveLocalPointer(root, ref) {
@@ -336496,9 +337231,9 @@ function channelHasPublishDirection(documentJson, channelId) {
   const unescapePointer = (segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~");
   const operations = asRecord26(documentJson.operations) ?? {};
   for (const operationRaw of Object.values(operations)) {
-    const operation = asRecord26(operationRaw);
-    if (!operation || operation.action !== "send") continue;
-    const opChannel = asRecord26(operation.channel);
+    const operation2 = asRecord26(operationRaw);
+    if (!operation2 || operation2.action !== "send") continue;
+    const opChannel = asRecord26(operation2.channel);
     if (!opChannel) continue;
     if (channel && opChannel === channel) return true;
     const uid = opChannel["x-parser-unique-object-id"];
@@ -339882,6 +340617,11 @@ function resolveInputs(env = process.env) {
     ),
     syncExamples: parseBooleanInput("sync-examples", getInput("sync-examples", env), true),
     collectionSyncMode: parseCollectionSyncMode(getInput("collection-sync-mode", env)),
+    collectionUpdateStrategy: parseEnumInput(
+      "collection-update-strategy",
+      getInput("collection-update-strategy", env),
+      "whole"
+    ),
     specSyncMode: parseSpecSyncMode(getInput("spec-sync-mode", env)),
     releaseLabel: getInput("release-label", env),
     domain: getInput("domain", env),
@@ -341639,6 +342379,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
         "Generate Collections from Spec",
         async () => {
           const assetProjectName = collectionAssetProjectName;
+          const collectionUpdateStrategy = inputs.collectionUpdateStrategy ?? "whole";
           const orchestrationStarted = Date.now();
           const collectionRoles = [
             {
@@ -341703,6 +342444,17 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
           let conversionMs;
           let importCount = 0;
           let updateCount = 0;
+          const snapshotMsByRole = {
+            baseline: 0,
+            smoke: 0,
+            contract: 0
+          };
+          const writeMsByRole = {
+            baseline: 0,
+            smoke: 0,
+            contract: 0
+          };
+          const skippedRoles = [];
           let payloads;
           const conversionStarted = Date.now();
           try {
@@ -341752,14 +342504,43 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                 ));
               }
             }
-            const reuseIds = collectionRoles.map((role) => role.existingId || discoveredIds.get(role.role)).filter((id) => Boolean(id) && inputs.collectionSyncMode === "refresh");
+            const reuseIdsByRole = /* @__PURE__ */ new Map();
+            for (const role of collectionRoles) {
+              const reuseId = role.existingId || discoveredIds.get(role.role);
+              if (reuseId && inputs.collectionSyncMode === "refresh") {
+                reuseIdsByRole.set(role.role, reuseId);
+              }
+            }
+            const reuseIds = [...new Set(reuseIdsByRole.values())];
             if (reuseIds.length > 0) {
               if (!dependencies.postman.exportV2Collection) {
                 throw new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support");
               }
-              for (const collectionId of new Set(reuseIds)) {
-                const collection = await dependencies.postman.exportV2Collection(collectionId);
-                deepUpdateSnapshots.set(collectionId, { collection, payloadDigest: computePayloadDigest(collection) });
+              const snapshotMsByCollectionId = /* @__PURE__ */ new Map();
+              let nextSnapshotIndex = 0;
+              let snapshotFailure;
+              const snapshotWorker = async () => {
+                while (snapshotFailure === void 0) {
+                  const collectionId = reuseIds[nextSnapshotIndex];
+                  nextSnapshotIndex += 1;
+                  if (!collectionId) return;
+                  const snapshotStarted = Date.now();
+                  try {
+                    const collection = await dependencies.postman.exportV2Collection(collectionId);
+                    deepUpdateSnapshots.set(collectionId, {
+                      collection,
+                      payloadDigest: computePayloadDigest(collection)
+                    });
+                    snapshotMsByCollectionId.set(collectionId, Math.max(0, Date.now() - snapshotStarted));
+                  } catch (error) {
+                    snapshotFailure = error;
+                  }
+                }
+              };
+              await Promise.all([snapshotWorker(), snapshotWorker()]);
+              if (snapshotFailure !== void 0) throw snapshotFailure;
+              for (const [role, collectionId] of reuseIdsByRole) {
+                snapshotMsByRole[role] = snapshotMsByCollectionId.get(collectionId) ?? 0;
               }
             }
           } catch (error) {
@@ -341767,7 +342548,9 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
           }
           const importStarted = Date.now();
           const writeRole = async (role) => {
+            const writeStarted = Date.now();
             const payload = payloads.roles[role.role];
+            const payloadBytes = Buffer.byteLength(JSON.stringify(payload.collection), "utf8");
             const finalName = roleNames[role.role];
             const reuseId = role.existingId || discoveredIds.get(role.role);
             const useDeepUpdate = Boolean(reuseId) && inputs.collectionSyncMode === "refresh";
@@ -341775,17 +342558,71 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               if (!deepUpdateSnapshots.has(reuseId)) {
                 throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing rollback snapshot for ${reuseId}`);
               }
+              if (deepUpdateSnapshots.get(reuseId).payloadDigest === payload.payloadDigest) {
+                return {
+                  role: role.role,
+                  outputKey: role.outputKey,
+                  kind: "unchanged",
+                  collectionId: reuseId,
+                  writeMs: Math.max(0, Date.now() - writeStarted),
+                  payloadBytes,
+                  changedBytes: 0,
+                  operationCount: 0,
+                  networkMs: 0,
+                  fallbackReason: null
+                };
+              }
               attemptedDeepUpdates.add(reuseId);
-              const preservedId = await observedLocalOpenApiPostman.deepUpdateV2Collection(
+              if (collectionUpdateStrategy === "auto") {
+                if (!observedLocalOpenApiPostman.applyCollectionDelta) {
+                  throw new Error(
+                    "LOCAL_OPENAPI_ORCHESTRATION_FAILED: applyCollectionDelta requires access-token gateway support"
+                  );
+                }
+                const snapshot = deepUpdateSnapshots.get(reuseId);
+                const plan = planCollectionDelta({
+                  snapshot: snapshot.collection,
+                  desired: payload.collection
+                });
+                const deltaResult = await observedLocalOpenApiPostman.applyCollectionDelta(
+                  reuseId,
+                  plan,
+                  payload.collection,
+                  payload.payloadDigest,
+                  snapshot
+                );
+                const writeMs3 = Math.max(0, Date.now() - writeStarted);
+                const usedDelta = deltaResult.strategy === "delta";
+                return {
+                  role: role.role,
+                  outputKey: role.outputKey,
+                  kind: usedDelta ? "delta" : "deep-update",
+                  collectionId: reuseId,
+                  writeMs: writeMs3,
+                  payloadBytes,
+                  changedBytes: usedDelta ? plan.changedBytes : payloadBytes,
+                  operationCount: usedDelta ? plan.operations.length : 1,
+                  networkMs: writeMs3,
+                  fallbackReason: deltaResult.fallbackReason ?? null
+                };
+              }
+              const preservedId2 = await observedLocalOpenApiPostman.deepUpdateV2Collection(
                 reuseId,
                 payload.collection,
                 payload.payloadDigest
               );
+              const writeMs2 = Math.max(0, Date.now() - writeStarted);
               return {
                 role: role.role,
                 outputKey: role.outputKey,
                 kind: "deep-update",
-                collectionId: preservedId
+                collectionId: preservedId2,
+                writeMs: writeMs2,
+                payloadBytes,
+                changedBytes: payloadBytes,
+                operationCount: 1,
+                networkMs: writeMs2,
+                fallbackReason: null
               };
             }
             const imported = await observedLocalOpenApiPostman.importV2Collection(
@@ -341816,12 +342653,19 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                 throw error;
               }
             }
+            const writeMs = Math.max(0, Date.now() - writeStarted);
             return {
               role: role.role,
               outputKey: role.outputKey,
               kind: "import",
               collectionId: imported.collectionId,
-              journaledRootIds: [...imported.journaledRootIds]
+              journaledRootIds: [...imported.journaledRootIds],
+              writeMs,
+              payloadBytes,
+              changedBytes: payloadBytes,
+              operationCount: 1,
+              networkMs: writeMs,
+              fallbackReason: null
             };
           };
           const settledWrites = new Array(collectionRoles.length);
@@ -341860,6 +342704,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             const result = fulfilledByRole.get(role.role);
             if (!result) continue;
             outputs[result.outputKey] = result.collectionId;
+            writeMsByRole[result.role] = result.writeMs;
             if (result.kind === "import") {
               for (const id of result.journaledRootIds) {
                 if (!ownedLedger.includes(id)) ownedLedger.push(id);
@@ -341868,10 +342713,19 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               dependencies.core.info(
                 `Imported ${result.role} collection ${result.collectionId} from local OpenAPI payload`
               );
-            } else {
+            } else if (result.kind === "deep-update") {
               updateCount += 1;
               dependencies.core.info(
                 `Deep-updated existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
+              );
+            } else if (result.kind === "delta") {
+              dependencies.core.info(
+                `Delta-updated existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
+              );
+            } else {
+              skippedRoles.push(result.role);
+              dependencies.core.info(
+                `Skipped unchanged existing ${result.role} collection ${result.collectionId} from local OpenAPI payload`
               );
             }
           }
@@ -341935,16 +342789,79 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
           pendingFinalizedLocalOpenApiManifest = finalized;
           outputs["prebuilt-collections-json"] = JSON.stringify(finalized);
           const phase = importCount > 0 && updateCount > 0 ? "mixed-import-deep-update" : updateCount > 0 ? "changed-deep-update" : "fresh";
+          const emptyWriteMetrics = {
+            ambiguousWrites: 0,
+            convergedWithoutResend: 0,
+            resendCount: 0,
+            verifyPolls: 0,
+            recoveryMs: 0,
+            inventoryReads: 0,
+            inventorySleepMs: 0,
+            rootResolveMs: 0,
+            renameMs: 0,
+            electionMs: 0,
+            deltaOpsByKind: { create: 0, patch: 0, move: 0, delete: 0 },
+            changedBytes: 0,
+            deltaMs: 0,
+            fallbackReasons: []
+          };
+          const writeMetrics = observedLocalOpenApiPostman.collectionWriteMetrics ?? emptyWriteMetrics;
+          const convergenceRoles = collectionRoles.map((role) => {
+            const result = fulfilledByRole.get(role.role);
+            if (!result) {
+              throw new Error(`LOCAL_OPENAPI_ORCHESTRATION_FAILED: missing role result for ${role.role}`);
+            }
+            return {
+              role: role.role,
+              outcome: result.kind,
+              desiredSemanticDigest: payloads.roles[role.role].payloadDigest,
+              observedSemanticDigest: payloads.roles[role.role].payloadDigest,
+              snapshotMs: snapshotMsByRole[role.role],
+              writeMs: result.writeMs,
+              payloadBytes: result.payloadBytes,
+              changedBytes: result.changedBytes,
+              operationCount: result.operationCount,
+              networkMs: result.networkMs,
+              wallMs: snapshotMsByRole[role.role] + result.writeMs,
+              reconciliationMs: 0,
+              fallbackReason: result.fallbackReason
+            };
+          });
           const ledger = {
             schemaVersion: 1,
             mode: "local",
             phase,
             roleCount: 3,
+            skippedRoles,
             counts,
+            convergence: {
+              strategy: collectionUpdateStrategy,
+              skippedRoles: skippedRoles.length,
+              roles: convergenceRoles,
+              ambiguousWrites: writeMetrics.ambiguousWrites,
+              convergedWithoutResend: writeMetrics.convergedWithoutResend,
+              resendCount: writeMetrics.resendCount,
+              verifyPolls: writeMetrics.verifyPolls,
+              recoveryMs: writeMetrics.recoveryMs,
+              inventoryReads: writeMetrics.inventoryReads,
+              inventorySleepMs: writeMetrics.inventorySleepMs,
+              rootResolveMs: writeMetrics.rootResolveMs,
+              renameMs: writeMetrics.renameMs,
+              electionMs: writeMetrics.electionMs,
+              deltaOpsByKind: writeMetrics.deltaOpsByKind,
+              changedBytes: convergenceRoles.reduce((total, role) => total + role.changedBytes, 0),
+              deltaMs: writeMetrics.deltaMs,
+              fallbackReasons: [.../* @__PURE__ */ new Set([
+                ...writeMetrics.fallbackReasons,
+                ...convergenceRoles.flatMap((role) => role.fallbackReason ? [role.fallbackReason] : [])
+              ])]
+            },
             timings: {
               conversionMs,
               importMs,
-              totalMs: Math.max(0, Date.now() - orchestrationStarted)
+              snapshotMsByRole,
+              totalMs: Math.max(0, Date.now() - orchestrationStarted),
+              writeMsByRole
             }
           };
           openApiOperationLedger = ledger;
@@ -342271,9 +343188,9 @@ async function runGatedValidation(inputs, decision, actionCore) {
 function createRoutingPostmanClient(options) {
   const { gateway } = options;
   const secretsResolverProvider = options.secretsResolverProvider ?? DEFAULT_SECRETS_RESOLVER_PROVIDER;
-  const requireAccessToken = (operation) => async () => {
+  const requireAccessToken = (operation2) => async () => {
     throw new Error(
-      `${operation} requires an access token. Mint a service-account token with postman-resolve-service-token-action.`
+      `${operation2} requires an access token. Mint a service-account token with postman-resolve-service-token-action.`
     );
   };
   if (!gateway) {
@@ -342560,6 +343477,7 @@ var cliInputNames = [
   "onboarding-scope",
   "sync-examples",
   "collection-sync-mode",
+  "collection-update-strategy",
   "spec-sync-mode",
   "release-label",
   "domain",

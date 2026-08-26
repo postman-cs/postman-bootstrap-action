@@ -39,7 +39,7 @@
  *     npx tsx scripts/probe-god-members.ts
  */
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
-import { AccessTokenGatewayClient } from '@postman-cse/automation-core';
+import { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { POSTMAN_ENDPOINT_PROFILES } from '../src/lib/postman/base-urls.js';
 
 const IAPUB = POSTMAN_ENDPOINT_PROFILES.prod.iapubBaseUrl;

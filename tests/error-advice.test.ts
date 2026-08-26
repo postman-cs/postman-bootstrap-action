@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { HttpError } from '@postman-cse/automation-core';
+import { HttpError } from '@postman-cs/automation-core';
 import { createSecretMasker, REDACTED } from '../src/lib/secrets.js';
 import {
   WORKSPACE_PERSONAL_ONLY_ADVICE,

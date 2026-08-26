@@ -127,6 +127,16 @@ describe('runner input semantics', () => {
     expect(inputs.protocolEndpointUrl).toBe('grpc://payments.internal.test:443');
   });
 
+  it('resolves collection-update-strategy from the action runner input', () => {
+    const core = createRunnerCore({
+      'INPUT_PROJECT-NAME': 'payments-openapi',
+      'INPUT_SPEC-PATH': 'apis/payments/openapi.yaml',
+      'INPUT_COLLECTION-UPDATE-STRATEGY': 'auto'
+    });
+
+    expect(readActionInputs(core).collectionUpdateStrategy).toBe('auto');
+  });
+
   it('never reads a hyphenated runner input through the underscore CLI spelling', () => {
     // The runner never sets the underscore form. If readActionInputs leaned on
     // the ambient process.env spread instead of core.getInput, this would leak.

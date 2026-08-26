@@ -1,4 +1,4 @@
-import { createEmptyCassette, type Cassette } from '@postman-cse/automation-core/cassette';
+import { createEmptyCassette, type Cassette } from '@postman-cs/automation-core/cassette';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';

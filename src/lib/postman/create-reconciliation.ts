@@ -22,6 +22,25 @@ export class AmbiguousCreateMatchError extends Error {
   }
 }
 
+export function isAbortLikeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const name = (error as { name?: unknown }).name;
+  if (name === 'AbortError' || name === 'TimeoutError') {
+    return true;
+  }
+  if (typeof DOMException === 'function' && error instanceof DOMException && error.name === 'AbortError') {
+    return true;
+  }
+  const code = (error as { code?: unknown }).code;
+  if (code === 'ABORT_ERR' || code === 20) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String((error as { message?: unknown }).message ?? '');
+  return /\b(?:This|The) operation was aborted\b/i.test(message);
+}
+
 export function isAmbiguousTransportError(error: unknown): boolean {
   if (!error) {
     return false;
@@ -31,6 +50,9 @@ export function isAmbiguousTransportError(error: unknown): boolean {
   }
   if (typeof error !== 'object') {
     return false;
+  }
+  if (isAbortLikeError(error)) {
+    return true;
   }
   const status = (error as { status?: unknown }).status;
   if (typeof status === 'number') {

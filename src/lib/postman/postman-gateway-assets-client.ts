@@ -9,7 +9,7 @@ import {
   fullJitterDelayMs,
   retry,
   type GatewayRetryEvent as RetryEvent
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 import {
   adoptExactMatch,
   isAmbiguousTransportError
@@ -28,7 +28,7 @@ import {
   isSecretsResolverEnabled,
   isSecretsResolverItemName,
   type SecretsResolverProvider
-} from '@postman-cse/automation-core';
+} from '@postman-cs/automation-core';
 import {
   assertSupportedLocalViewContract,
   normalizeLocalViewScriptType
@@ -37,6 +37,10 @@ import { planContractItemScripts } from '../spec/collection-contracts.js';
 import type { ContractIndex } from '../spec/contract-index.js';
 import type { DefinitionBundle, DefinitionFormat } from '../spec/definition-bundle.js';
 import { computePayloadDigest } from '../spec/local-openapi-collection-generation.js';
+import type {
+  CollectionDeltaOperation,
+  CollectionDeltaPlan
+} from '../spec/collection-delta.js';
 import { parseAssetMarker } from '../repo/branch-decision.js';
 import {
   assertNoCloudPathCollisions,
@@ -66,7 +70,120 @@ function asItemArray(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? (value as JsonRecord[]) : [];
 }
 
+/**
+ * Sanitized convergence counters for collection writes. Counts and durations
+ * only: collection content, names, and ids never enter this record.
+ */
+export interface CollectionWriteMetrics {
+  ambiguousWrites: number;
+  convergedWithoutResend: number;
+  resendCount: number;
+  verifyPolls: number;
+  recoveryMs: number;
+  inventoryReads: number;
+  inventorySleepMs: number;
+  rootResolveMs: number;
+  renameMs: number;
+  electionMs: number;
+  deltaOpsByKind: { create: number; patch: number; move: number; delete: number };
+  changedBytes: number;
+  deltaMs: number;
+  fallbackReasons: string[];
+}
+
 type JsonRecord = Record<string, unknown>;
+
+type InventoryRetryPolicy = 'safe' | 'rate-limit' | 'none';
+
+export interface WorkspaceInventoryRow {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface WorkspaceInventoryObservation {
+  readonly rows: readonly WorkspaceInventoryRow[] | undefined;
+}
+
+/** One imported identity's bounded inventory-settle timeline. */
+export interface ImportSettleCursor {
+  readonly workspaceId: string;
+  readonly identity: string;
+  readonly delays: readonly number[];
+  readonly peerDelayCount: number;
+  readonly observations: WorkspaceInventoryObservation[];
+  nextDelayIndex: number;
+}
+
+export interface ImportRootResolution {
+  readonly rootUid: string | undefined;
+  readonly resolvedRow: WorkspaceInventoryRow | undefined;
+  readonly observations: readonly WorkspaceInventoryObservation[];
+  readonly cursor: ImportSettleCursor;
+}
+
+/** Workspace-local physical inventory reads shared by concurrent settle cursors. */
+export interface WorkspaceInventoryObserver {
+  observe(
+    cursor: ImportSettleCursor,
+    retryPolicy: InventoryRetryPolicy
+  ): Promise<WorkspaceInventoryObservation>;
+  consumeDelay(cursor: ImportSettleCursor): Promise<boolean>;
+}
+
+class MemoizedWorkspaceInventoryObserver implements WorkspaceInventoryObserver {
+  private inFlight: Promise<WorkspaceInventoryRow[]> | undefined;
+
+  constructor(
+    private readonly readInventory: (retryPolicy: InventoryRetryPolicy) => Promise<WorkspaceInventoryRow[]>,
+    private readonly sleep: (delayMs: number) => Promise<void>,
+    private readonly onPhysicalRead: () => void,
+    private readonly onSleep: (delayMs: number) => void
+  ) {}
+
+  async observe(
+    cursor: ImportSettleCursor,
+    retryPolicy: InventoryRetryPolicy
+  ): Promise<WorkspaceInventoryObservation> {
+    let rows: WorkspaceInventoryRow[] | undefined;
+    try {
+      rows = await this.read(retryPolicy);
+    } catch {
+      // An unreadable observation consumes this cursor's bounded budget. The
+      // caller retains the failure as an absent row and therefore fails closed.
+      rows = undefined;
+    }
+    const observation: WorkspaceInventoryObservation = { rows };
+    cursor.observations.push(observation);
+    return observation;
+  }
+
+  async consumeDelay(cursor: ImportSettleCursor): Promise<boolean> {
+    const delay = cursor.delays[cursor.nextDelayIndex];
+    if (delay === undefined) return false;
+    cursor.nextDelayIndex += 1;
+    this.onSleep(delay);
+    await this.sleep(delay);
+    return true;
+  }
+
+  private read(retryPolicy: InventoryRetryPolicy): Promise<WorkspaceInventoryRow[]> {
+    if (this.inFlight) return this.inFlight;
+    this.onPhysicalRead();
+    const shared = this.readInventory(retryPolicy).then(
+      (rows) => {
+        if (this.inFlight === shared) this.inFlight = undefined;
+        return rows;
+      },
+      (error: unknown) => {
+        if (this.inFlight === shared) this.inFlight = undefined;
+        throw error;
+      }
+    );
+    this.inFlight = shared;
+    return shared;
+  }
+}
 
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -418,11 +535,14 @@ export class PostmanGatewayAssetsClient {
    * visibility merely lags, which is the case election was built to survive.
    */
   private static rootUidResolveDelaysForFinalName(finalName: string): readonly number[] {
-    const settle = PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
-    if (settle !== PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS) return settle;
+    if (PostmanGatewayAssetsClient.PREVIEW_ASSET_NAME_SUFFIX.test(finalName)) {
+      return PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS;
+    }
     return [
-      ...settle,
-      ...PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(settle.length)
+      ...PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS,
+      ...PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(
+        PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS.length
+      )
     ];
   }
   /**
@@ -445,6 +565,9 @@ export class PostmanGatewayAssetsClient {
   private readonly createIdentity: () => string;
   private readonly reconcileCapabilityPolicy: SpecReconcileCapabilityPolicy;
   private readonly onRetry?: (event: RetryEvent) => void;
+  private readonly workspaceInventoryObservers = new Map<string, WorkspaceInventoryObserver>();
+  private activeImportMutations = 0;
+  private readonly importMutationWaiters: Array<() => void> = [];
 
   constructor(options: PostmanGatewayAssetsClientOptions) {
     this.gateway = options.gateway;
@@ -1855,16 +1978,20 @@ export class PostmanGatewayAssetsClient {
   private async renameImportedCollectionCanonical(
     workspaceId: string,
     collectionId: string,
-    finalName: string
-  ): Promise<void> {
+    finalName: string,
+    resolution?: ImportRootResolution
+  ): Promise<ImportRootResolution> {
     // Sync's import envelope returns a BARE model id, which the ROOT PATCH now
     // rejects 403. Resolve the canonical <owner>-<uuid> from inventory before
     // the only PATCH this canonical rename is allowed to send.
-    const rootId = await this.resolveCollectionRootUid(
+    const settled = resolution ?? await this.resolveCollectionRootUid(
       workspaceId,
       collectionId,
-      PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName)
+      PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName),
+      'safe',
+      PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName).length
     );
+    const rootId = settled.rootUid;
     if (!rootId) {
       // The identity never became inventory-visible across the full window, so
       // no ROOT-addressable id exists and the bare id is never sent (it would
@@ -1878,16 +2005,18 @@ export class PostmanGatewayAssetsClient {
       // deleting or adopting a collection this run does not own. A root that is
       // still absent here is likewise not final-name eligible there, so an
       // unrenamed temp-named collection can never be silently shipped.
-      return;
+      return settled;
     }
+    const started = this.now();
     try {
-      await this.gateway.requestJson<JsonRecord>({
-        service: 'collection',
-        method: 'patch',
-        path: `/v3/collections/${rootId}`,
-        retry: 'none',
-        body: [{ op: 'replace', path: '/name', value: finalName }]
-      });
+      await this.withImportMutation(() => this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'patch',
+          path: `/v3/collections/${rootId}`,
+          retry: 'none',
+          body: [{ op: 'replace', path: '/name', value: finalName }]
+        }));
+      this.recordCursorRename(settled.cursor, rootId, finalName);
     } catch (error) {
       if (
         error instanceof HttpError &&
@@ -1896,24 +2025,31 @@ export class PostmanGatewayAssetsClient {
           `${error.message}\n${error.responseBody ?? ''}`
         )
       ) {
-        return;
+        this.recordCursorRename(settled.cursor, rootId, finalName);
+        return settled;
       }
       if (!isAmbiguousTransportError(error)) throw error;
       const preferredIdentity = normalizeCollectionModelIdentity(collectionId);
-      const delays =
-        PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
-      for (let observation = 0; observation <= delays.length; observation += 1) {
-        const matches = await this.findCollectionsByExactName(workspaceId, finalName, 'safe');
-        const committed = matches.find(
-          (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
+      const observer = this.workspaceInventoryObserver(workspaceId);
+      do {
+        const observation = await observer.observe(settled.cursor, 'safe');
+        const committed = observation.rows?.find(
+          (entry) =>
+            entry.name === finalName &&
+            normalizeCollectionModelIdentity(entry.id) === preferredIdentity
         );
-        if (committed) return;
-        if (observation < delays.length) {
-          await this.sleep(delays[observation]!);
+        if (committed) {
+          return settled;
         }
-      }
+      } while (
+        settled.cursor.nextDelayIndex < settled.cursor.peerDelayCount &&
+        await observer.consumeDelay(settled.cursor)
+      );
       throw error;
+    } finally {
+      this.writeMetrics.renameMs += Math.max(0, this.now() - started);
     }
+    return settled;
   }
 
   /**
@@ -2199,30 +2335,170 @@ export class PostmanGatewayAssetsClient {
     workspaceId: string,
     collectionId: string,
     delays: readonly number[],
-    retryPolicy: 'safe' | 'rate-limit' | 'none' = 'safe'
-  ): Promise<string | undefined> {
+    retryPolicy: 'safe' | 'rate-limit' | 'none' = 'safe',
+    peerDelayCount = delays.length
+  ): Promise<ImportRootResolution> {
+    const started = this.now();
     const id = String(collectionId ?? '').trim();
-    if (!id) return undefined;
-    if (!isBareCollectionUuid(id)) return id;
     const targetIdentity = normalizeCollectionModelIdentity(id);
-    for (let observation = 0; observation <= delays.length; observation += 1) {
-      try {
-        const inventory = await this.listWorkspaceCollections(workspaceId, retryPolicy);
-        const match = inventory.find(
+    const cursor = this.createImportSettleCursor(
+      workspaceId,
+      targetIdentity,
+      delays,
+      peerDelayCount
+    );
+    const observer = this.workspaceInventoryObserver(workspaceId);
+    let resolvedRow: WorkspaceInventoryRow | undefined;
+    try {
+      do {
+        const observation = await observer.observe(cursor, retryPolicy);
+        const match = observation.rows?.find(
           (entry) => normalizeCollectionModelIdentity(entry.id) === targetIdentity
         );
         // Inventory sometimes exposes only the bare model id. That confirms the
         // identity exists but is not ROOT-addressable, so keep polling for the
         // owner-prefixed public uid rather than sending a forbidden ROOT request.
-        if (match?.id && isFullPublicCollectionUid(match.id)) return match.id;
-      } catch {
-        // Inventory unreadable on this observation; spend the remaining budget.
-      }
-      if (observation < delays.length) await this.sleep(delays[observation]!);
+        if (match && (!isBareCollectionUuid(id) || isFullPublicCollectionUid(match.id))) {
+          resolvedRow = match;
+          break;
+        }
+      } while (await observer.consumeDelay(cursor));
+      return {
+        rootUid: !id ? undefined : isBareCollectionUuid(id) ? resolvedRow?.id : id,
+        resolvedRow,
+        observations: cursor.observations,
+        cursor
+      };
+    } finally {
+      this.writeMetrics.rootResolveMs += Math.max(0, this.now() - started);
     }
-    return undefined;
   }
 
+  private createImportSettleCursor(
+    workspaceId: string,
+    identity: string,
+    delays: readonly number[],
+    peerDelayCount: number
+  ): ImportSettleCursor {
+    return {
+      workspaceId,
+      identity,
+      delays,
+      peerDelayCount: Math.min(delays.length, peerDelayCount),
+      observations: [],
+      nextDelayIndex: 0
+    };
+  }
+
+  private recordCursorRename(cursor: ImportSettleCursor, rootId: string, finalName: string): void {
+    const rootIdentity = normalizeCollectionModelIdentity(rootId);
+    let recorded = false;
+    for (let index = 0; index < cursor.observations.length; index += 1) {
+      const observation = cursor.observations[index]!;
+      const rows = observation.rows?.map((row) => {
+        if (normalizeCollectionModelIdentity(row.id) !== rootIdentity) return row;
+        recorded = true;
+        return { ...row, name: finalName };
+      });
+      if (rows) cursor.observations[index] = { rows };
+    }
+    if (!recorded) {
+      // The definitive PATCH response proves the owned ROOT write. Keep that
+      // trusted transition in this identity's timeline while later inventory
+      // observations remain responsible for delayed-peer discovery.
+      cursor.observations.push({ rows: [{ id: rootId, name: finalName }] });
+    }
+  }
+
+  private workspaceInventoryObserver(workspaceId: string): WorkspaceInventoryObserver {
+    let observer = this.workspaceInventoryObservers.get(workspaceId);
+    if (!observer) {
+      observer = new MemoizedWorkspaceInventoryObserver(
+        (retryPolicy) => this.listWorkspaceCollections(workspaceId, retryPolicy),
+        this.sleep,
+        () => { this.writeMetrics.inventoryReads += 1; },
+        (delayMs) => { this.writeMetrics.inventorySleepMs += delayMs; }
+      );
+      this.workspaceInventoryObservers.set(workspaceId, observer);
+    }
+    return observer;
+  }
+
+  private async withImportMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    if (this.activeImportMutations >= 2) {
+      await new Promise<void>((resolve) => this.importMutationWaiters.push(resolve));
+    }
+    this.activeImportMutations += 1;
+    try {
+      return await mutation();
+    } finally {
+      this.activeImportMutations -= 1;
+      this.importMutationWaiters.shift()?.();
+    }
+  }
+
+  /**
+   * Ambiguous whole-tree write visibility budget: one immediate export plus at
+   * most four 2.5 second re-exports, for a 10 second budget. A client abort says
+   * the response is unknown, not that the server rejected the write, so the
+   * desired digest is polled before any decision to resend or fail.
+   */
+  private static readonly AMBIGUOUS_WRITE_VERIFY_DELAYS_MS: readonly number[] = [2500, 2500, 2500, 2500];
+
+  private readonly writeMetrics: CollectionWriteMetrics = {
+    ambiguousWrites: 0,
+    convergedWithoutResend: 0,
+    resendCount: 0,
+    verifyPolls: 0,
+    recoveryMs: 0,
+    inventoryReads: 0,
+    inventorySleepMs: 0,
+    rootResolveMs: 0,
+    renameMs: 0,
+    electionMs: 0,
+    deltaOpsByKind: { create: 0, patch: 0, move: 0, delete: 0 },
+    changedBytes: 0,
+    deltaMs: 0,
+    fallbackReasons: []
+  };
+
+  /** Snapshot of sanitized convergence counters. Never carries collection content. */
+  get collectionWriteMetrics(): CollectionWriteMetrics {
+    return {
+      ...this.writeMetrics,
+      deltaOpsByKind: { ...this.writeMetrics.deltaOpsByKind },
+      fallbackReasons: [...this.writeMetrics.fallbackReasons]
+    };
+  }
+
+  /**
+   * Bounded export/digest visibility poll used only after an ambiguous write.
+   * Returns whether the desired semantic digest became visible and how many
+   * export observations were spent. An unreadable export burns one observation
+   * rather than aborting the budget.
+   */
+  private async awaitExportedDigest(
+    uid: string,
+    digest: string
+  ): Promise<{ converged: boolean; polls: number }> {
+    const delays = PostmanGatewayAssetsClient.AMBIGUOUS_WRITE_VERIFY_DELAYS_MS;
+    let polls = 0;
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      polls += 1;
+      try {
+        const exported = await this.exportV2Collection(uid);
+        if (computePayloadDigest(exported) === digest) {
+          return { converged: true, polls };
+        }
+      } catch {
+        // Export unreadable on this observation; spend the remaining budget.
+      }
+      if (observation < delays.length) {
+        await this.sleep(delays[observation]!);
+      }
+    }
+    return { converged: false, polls };
+  }
 
   /**
    * Collection id for ITEMS routes. Prefer the full public uid; fall back to the
@@ -3309,14 +3585,14 @@ export class PostmanGatewayAssetsClient {
 
     let created: JsonRecord | null;
     try {
-      created = await this.gateway.requestJson<JsonRecord>({
-        service: 'sync',
-        method: 'post',
-        path: '/collection/import',
-        query: { workspace: workspaceId, format: '2.1.0' },
-        retry: 'rate-limit',
-        body: importPayload
-      });
+      created = await this.withImportMutation(() => this.gateway.requestJson<JsonRecord>({
+          service: 'sync',
+          method: 'post',
+          path: '/collection/import',
+          query: { workspace: workspaceId, format: '2.1.0' },
+          retry: 'rate-limit',
+          body: importPayload
+        }));
     } catch (error) {
       if (!isAmbiguousTransportError(error)) {
         throw this.sanitizeImportError('import-transport', error);
@@ -3340,13 +3616,14 @@ export class PostmanGatewayAssetsClient {
     journal(rawId);
 
     try {
-      await this.renameImportedCollectionCanonical(workspaceId, rawId, desiredName);
+      const resolution = await this.renameImportedCollectionCanonical(workspaceId, rawId, desiredName);
       const electedId = await this.electImportedCollectionIdentity(
         workspaceId,
         desiredName,
         rawId,
         staleFinalIdentities,
-        desiredDescription
+        desiredDescription,
+        resolution.cursor
       );
       const rawBare = this.bareModelId(rawId);
       const electedBare = this.bareModelId(electedId);
@@ -3411,23 +3688,51 @@ export class PostmanGatewayAssetsClient {
     prepared.info = info;
     this.assertV21Collection(prepared);
 
+    const putEnvelope = {
+      service: 'sync' as const,
+      method: 'put' as const,
+      path: `/collection/deepupdate/${bareId}`,
+      query: { format: '2.1.0' },
+      retry: 'none' as const,
+      body: prepared
+    };
+
     try {
-      await this.gateway.requestJson<JsonRecord>({
-        service: 'sync',
-        method: 'put',
-        path: `/collection/deepupdate/${bareId}`,
-        query: { format: '2.1.0' },
-        retry: 'none',
-        body: prepared
-      });
+      await this.gateway.requestJson<JsonRecord>(putEnvelope);
       return uid;
     } catch (error) {
       if (!isAmbiguousTransportError(error)) {
         throw this.sanitizeDeepUpdateError('deep-update-transport', error);
       }
-      const exported = await this.exportV2Collection(uid);
-      const actualDigest = computePayloadDigest(exported);
-      if (actualDigest !== digest) {
+      // Ambiguous outcome (5xx, socket failure, or a client deadline abort):
+      // the server may have committed this exact payload. Verify remote state
+      // before deciding to resend or fail. No generic retry policy is attached
+      // to the unsafe PUT and terminal 4xx never reaches this path.
+      const recoveryStarted = this.now();
+      this.writeMetrics.ambiguousWrites += 1;
+      const first = await this.awaitExportedDigest(uid, digest);
+      this.writeMetrics.verifyPolls += first.polls;
+      if (first.converged) {
+        this.writeMetrics.convergedWithoutResend += 1;
+        this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
+        return uid;
+      }
+      // The desired bytes never appeared inside the visibility budget, so the
+      // write is not merely invisible. Exactly one explicitly verified resend of
+      // the identical root-pinned payload is permitted, still with retry:'none'.
+      this.writeMetrics.resendCount += 1;
+      try {
+        await this.gateway.requestJson<JsonRecord>(putEnvelope);
+      } catch (resendError) {
+        if (!isAmbiguousTransportError(resendError)) {
+          this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
+          throw this.sanitizeDeepUpdateError('deep-update-resend', resendError);
+        }
+      }
+      const second = await this.awaitExportedDigest(uid, digest);
+      this.writeMetrics.verifyPolls += second.polls;
+      this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
+      if (!second.converged) {
         throw new Error(
           `LOCAL_OPENAPI_DEEP_UPDATE_FAILED: ambiguous-deep-update-digest-mismatch stage=deep-update-verify`,
           { cause: error }
@@ -3435,6 +3740,228 @@ export class PostmanGatewayAssetsClient {
       }
       return uid;
     }
+  }
+
+  /**
+   * Apply a conservative, preplanned v2.1 content delta through the collection
+   * item surface. This method intentionally owns only transport convergence:
+   * callers retain the preflight snapshot as their transaction rollback
+   * authority and may pass it here for immediate final-digest rollback.
+   */
+  async applyCollectionDelta(
+    collectionUid: string,
+    plan: CollectionDeltaPlan,
+    desiredCollection: unknown,
+    expectedPayloadDigest: string,
+    rollback?: { collection: unknown; payloadDigest: string }
+  ): Promise<{ strategy: 'unchanged' | 'delta' | 'whole-fallback'; fallbackReason?: string }> {
+    const uid = String(collectionUid ?? '').trim();
+    const digest = String(expectedPayloadDigest ?? '').trim();
+    if (!isFullPublicCollectionUid(uid)) {
+      throw new Error('COLLECTION_DELTA_UID_REQUIRED: a full public collection uid is required');
+    }
+    if (!/^[a-f0-9]{64}$/.test(digest)) {
+      throw new Error('COLLECTION_DELTA_DIGEST_REQUIRED: expectedPayloadDigest must be lowercase 64-hex');
+    }
+    if (plan.decision === 'unchanged') return { strategy: 'unchanged' };
+    if (plan.decision === 'fallback') {
+      this.recordDeltaFallback(plan.reason, plan.changedBytes);
+      await this.deepUpdateV2Collection(uid, desiredCollection, digest);
+      return { strategy: 'whole-fallback', fallbackReason: plan.reason };
+    }
+
+    this.writeMetrics.changedBytes += plan.changedBytes;
+    for (const operation of plan.operations) {
+      this.writeMetrics.deltaOpsByKind[operation.kind] += 1;
+    }
+    const started = this.now();
+    const itemIds = new Map<string, string>();
+    try {
+      for (const item of await this.listCollectionItems(uid)) {
+        const itemId = String(item.id ?? '').trim();
+        if (itemId) itemIds.set(`id:${normalizeCollectionModelIdentity(itemId)}`, itemId);
+      }
+      for (let offset = 0; offset < plan.operations.length;) {
+        const first = plan.operations[offset]!;
+        const group = [first];
+        offset += 1;
+        // Only siblings share a transport batch. Parent/child operations and
+        // different mutation kinds stay ordered so a failed or ambiguous parent
+        // can never be followed by a dependent child write.
+        while (
+          offset < plan.operations.length &&
+          plan.operations[offset]!.kind === first.kind &&
+          plan.operations[offset]!.parentKey === first.parentKey
+        ) {
+          group.push(plan.operations[offset]!);
+          offset += 1;
+        }
+        const outcome = await this.applyPlannedCollectionDeltaGroup(uid, group, itemIds, digest);
+        if (outcome === 'fallback') {
+          this.recordDeltaFallback('ambiguous-delta-mutation', 0);
+          await this.deepUpdateV2Collection(uid, desiredCollection, digest);
+          this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
+          return { strategy: 'whole-fallback', fallbackReason: 'ambiguous-delta-mutation' };
+        }
+      }
+      const exported = await this.exportV2Collection(uid);
+      if (computePayloadDigest(exported) !== digest) {
+        await this.rollbackCollectionDelta(uid, rollback);
+        throw new Error('LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch');
+      }
+      this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
+      return { strategy: 'delta' };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'LOCAL_OPENAPI_DELTA_FAILED: delta-digest-mismatch') {
+        throw error;
+      }
+      this.recordDeltaFallback('delta-mutation-failed', 0);
+      try {
+        await this.deepUpdateV2Collection(uid, desiredCollection, digest);
+      } catch (fallbackError) {
+        await this.rollbackCollectionDelta(uid, rollback);
+        throw fallbackError;
+      } finally {
+        this.writeMetrics.deltaMs += Math.max(0, this.now() - started);
+      }
+      return { strategy: 'whole-fallback', fallbackReason: 'delta-mutation-failed' };
+    }
+  }
+
+  private recordDeltaFallback(reason: string, changedBytes: number): void {
+    this.writeMetrics.fallbackReasons.push(reason);
+    this.writeMetrics.changedBytes += changedBytes;
+  }
+
+  private async rollbackCollectionDelta(
+    uid: string,
+    rollback: { collection: unknown; payloadDigest: string } | undefined
+  ): Promise<void> {
+    if (!rollback) return;
+    await this.deepUpdateV2Collection(uid, rollback.collection, rollback.payloadDigest);
+  }
+
+  private deltaV3Item(item: JsonRecord): JsonRecord {
+    const converted = this.convertV2CollectionToV3({
+      info: {
+        name: 'Delta conversion',
+        schema: `https://schema.getpostman.com/json/collection/${'v2.1.0'}/collection.json`
+      },
+      item: [item]
+    });
+    const convertedItem = asItemArray(converted.items)[0];
+    if (!convertedItem) throw new Error('LOCAL_OPENAPI_DELTA_FAILED: item conversion returned no item');
+    return convertedItem;
+  }
+
+  private resolveDeltaItemId(
+    operation: CollectionDeltaOperation,
+    itemIds: ReadonlyMap<string, string>
+  ): string {
+    if (operation.sourceId) {
+      const matched = itemIds.get(`id:${normalizeCollectionModelIdentity(operation.sourceId)}`);
+      if (matched) return matched;
+    }
+    throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: exact item identity unavailable for ${operation.key}`);
+  }
+
+  private async applyPlannedCollectionDeltaOperation(
+    uid: string,
+    operation: CollectionDeltaOperation,
+    itemIds: Map<string, string>,
+    desiredDigest: string
+  ): Promise<'applied' | 'fallback'> {
+    const cid = this.collectionItemsId(uid);
+    const request = async (): Promise<void> => {
+      if (operation.kind === 'create') {
+        const parentId = operation.parentKey ? itemIds.get(operation.parentKey) : cid;
+        if (!parentId) {
+          throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create parent unavailable for ${operation.key}`);
+        }
+        const created = await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'post',
+          path: `/v3/collections/${cid}/items/`,
+          retry: 'none',
+          headers: { 'X-Entity-Type': operation.entityType },
+          body: this.buildItemCreateBody(this.deltaV3Item(operation.item), parentId)
+        });
+        const id = String(asRecord(created?.data)?.id ?? '').trim();
+        if (!id) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: create returned no id for ${operation.key}`);
+        itemIds.set(operation.key, id);
+        return;
+      }
+      const itemId = this.resolveDeltaItemId(operation, itemIds);
+      if (operation.kind === 'delete') {
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection', method: 'delete', path: `/v3/collections/${cid}/items/${itemId}`,
+          retry: 'none', headers: { 'X-Entity-Type': operation.entityType }
+        });
+        return;
+      }
+      if (operation.kind === 'move') {
+        const parentId = operation.parentKey ? itemIds.get(operation.parentKey) : cid;
+        if (!parentId) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: move parent unavailable for ${operation.key}`);
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection', method: 'patch', path: `/v3/collections/${cid}/items/${itemId}`,
+          retry: 'none', headers: { 'X-Entity-Type': operation.entityType },
+          body: [{ op: 'replace', path: '/position', value: { parent: { id: parentId, $kind: 'collection' }, index: operation.index } }]
+        });
+        return;
+      }
+      const target = this.deltaV3Item(operation.item);
+      const fields = operation.entityType === 'collection'
+        ? ['name', 'description']
+        : ['name', 'description', 'method', 'url', 'headers', 'queryParams', 'pathVariables', 'body', 'settings'];
+      const body = fields
+        .filter((field) => target[field] !== undefined)
+        .map((field) => ({ op: 'add', path: `/${field}`, value: target[field] }));
+      if (body.length === 0) throw new Error(`LOCAL_OPENAPI_DELTA_FAILED: no supported patch fields for ${operation.key}`);
+      await this.gateway.requestJson<JsonRecord>({
+        service: 'collection', method: 'patch', path: `/v3/collections/${cid}/items/${itemId}`,
+        retry: 'none', headers: { 'X-Entity-Type': operation.entityType }, body
+      });
+    };
+    try {
+      await request();
+      return 'applied';
+    } catch (error) {
+      if (!isAmbiguousTransportError(error)) throw error;
+      const recoveryStarted = this.now();
+      this.writeMetrics.ambiguousWrites += 1;
+      const observed = await this.awaitExportedDigest(uid, desiredDigest);
+      this.writeMetrics.verifyPolls += observed.polls;
+      this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
+      if (observed.converged) {
+        this.writeMetrics.convergedWithoutResend += 1;
+        return 'applied';
+      }
+      return 'fallback';
+    }
+  }
+
+  /** At most two independent siblings mutate concurrently. */
+  private async applyPlannedCollectionDeltaGroup(
+    uid: string,
+    operations: readonly CollectionDeltaOperation[],
+    itemIds: Map<string, string>,
+    desiredDigest: string
+  ): Promise<'applied' | 'fallback'> {
+    let next = 0;
+    let fallback = false;
+    const worker = async (): Promise<void> => {
+      while (!fallback) {
+        const operation = operations[next];
+        next += 1;
+        if (!operation) return;
+        if (await this.applyPlannedCollectionDeltaOperation(uid, operation, itemIds, desiredDigest) === 'fallback') {
+          fallback = true;
+          return;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, operations.length) }, () => worker()));
+    return fallback ? 'fallback' : 'applied';
   }
 
   /** Delete and verify absence of only the supplied run-owned collection roots. */
@@ -3586,16 +4113,24 @@ export class PostmanGatewayAssetsClient {
     finalName: string,
     preferredId: string,
     staleFinalIdentities: ReadonlySet<string>,
-    desiredDescription: string
+    desiredDescription: string,
+    existingCursor?: ImportSettleCursor
   ): Promise<string> {
+    const started = this.now();
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
-    const delays =
-      PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+    const settleDelays = PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
+    const cursor = existingCursor ?? this.createImportSettleCursor(
+      workspaceId,
+      preferredIdentity,
+      PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName),
+      settleDelays.length
+    );
+    const observer = this.workspaceInventoryObserver(workspaceId);
     let eligible: Array<{ id: string; name: string }> = [];
     let ownCanonical: { id: string; name: string } | undefined;
     let sameNameSurvivors: Array<{ id: string; name: string; description?: string }> = [];
-    const observeInventory = async (): Promise<void> => {
-      const inventory = await this.listWorkspaceCollections(workspaceId, 'safe');
+    const observeInventory = (observation: WorkspaceInventoryObservation): void => {
+      const inventory = observation.rows ?? [];
       sameNameSurvivors = inventory
         .filter((entry) => entry.name === finalName)
         .sort((a, b) => a.id.localeCompare(b.id));
@@ -3609,28 +4144,25 @@ export class PostmanGatewayAssetsClient {
       );
     };
 
-    // Observe the full settle window so a delayed concurrent peer final is not
-    // missed after own UID becomes visible. Never early-break on first sighting.
-    for (let observation = 0; observation <= delays.length; observation += 1) {
-      await observeInventory();
-      if (observation < delays.length) await this.sleep(delays[observation]!);
-    }
-
-    if (
-      !ownCanonical &&
-      delays === PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS
-    ) {
-      // Healthy canonical imports retain the standard latency. Only a still-hidden
-      // owned identity consumes the remaining live-proven inventory visibility budget.
-      for (const delay of PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS.slice(
-        delays.length
-      )) {
-        await this.sleep(delay);
-        await observeInventory();
+    try {
+      // Root resolution and ambiguous-rename readback already observed this
+      // identity. Replay those observations before spending another delay so a
+      // delayed same-marker peer cannot disappear behind a phase restart.
+      for (const observation of cursor.observations) observeInventory(observation);
+      if (cursor.observations.length === 0) {
+        observeInventory(await observer.observe(cursor, 'safe'));
       }
-    }
+      // Consume only this identity's remaining delayed-peer budget. A cursor
+      // created by a later import starts at zero even when earlier roles have
+      // exhausted theirs; there is deliberately no workspace-global deadline.
+      while (
+        cursor.nextDelayIndex < cursor.peerDelayCount &&
+        await observer.consumeDelay(cursor)
+      ) {
+        observeInventory(await observer.observe(cursor, 'safe'));
+      }
 
-    if (!ownCanonical) {
+      if (!ownCanonical) {
       // Own root is absent from inventory. It may have been deleted by a peer,
       // or it may still exist but remain inventory-invisible after an unresolved
       // rename. Before adopting a same-marker peer and dropping this run's
@@ -3649,33 +4181,36 @@ export class PostmanGatewayAssetsClient {
       // identity is still proven per candidate over the v2.1 export route, so a
       // stranger is never adopted on the strength of the name alone. Bare rows
       // are excluded because canonical election may never return one.
-      const adoptable = await this.adoptableSameMarkerFinal(
-        sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
-        desiredDescription
-      );
-      if (adoptable) {
-        await this.deleteVerifiedRunOwnedCollections(workspaceId, [preferredId]);
-        return adoptable;
+        const adoptable = await this.adoptableSameMarkerFinal(
+          sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
+          desiredDescription
+        );
+        if (adoptable) {
+          await this.deleteVerifiedRunOwnedCollections(workspaceId, [preferredId]);
+          return adoptable;
+        }
+        throw new Error(
+          'COLLECTION_ROOT_UID_RESOLUTION_FAILED: imported collection did not become inventory-visible with a ROOT-addressable canonical uid'
+        );
       }
-      throw new Error(
-        'COLLECTION_ROOT_UID_RESOLUTION_FAILED: imported collection did not become inventory-visible with a ROOT-addressable canonical uid'
-      );
-    }
 
-    const winner = eligible[0]!;
-    const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
-    if (preferredIdentity !== winnerIdentity) {
+      const winner = eligible[0]!;
+      const winnerIdentity = normalizeCollectionModelIdentity(winner.id);
+      if (preferredIdentity !== winnerIdentity) {
       // True peer won: delete only the run-owned loser and verify absence before
       // returning the peer winner so the caller drops journal ownership only
       // after the owned root is confirmed gone. Winners never delete peers here —
       // that races a peer still inside its election window.
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
-      return winner.id;
-    }
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [ownCanonical.id]);
+        return winner.id;
+      }
 
-    // Same root (bare Sync model_id vs canonical <owner>-<model_id>): return the
-    // inventory UID so downstream tagging and relation writes never see bare id.
-    return ownCanonical.id;
+      // Same root (bare Sync model_id vs canonical <owner>-<model_id>): return the
+      // inventory UID so downstream tagging and relation writes never see bare id.
+      return ownCanonical.id;
+    } finally {
+      this.writeMetrics.electionMs += Math.max(0, this.now() - started);
+    }
   }
 
   /**

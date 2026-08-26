@@ -403,6 +403,37 @@ describe('runCli', () => {
     await expect(readFile(path.join(dir, 'result.env'), 'utf8')).rejects.toThrow();
   });
 
+  it('fails an invalid collection-update-strategy before bootstrap mutation or output artifacts', async () => {
+    const dir = await makeTempDir('postman-bootstrap-invalid-update-strategy-');
+    const executeBootstrap = vi.fn();
+
+    await withCwd(dir, async () => {
+      await expect(
+        runCli([
+          '--project-name',
+          'core-payments',
+          '--spec-url',
+          'https://example.test/openapi.yaml',
+          '--postman-api-key',
+          'test-api-key',
+          '--collection-update-strategy',
+          'incremental',
+          '--result-json',
+          'result.json',
+          '--dotenv-path',
+          'result.env'
+        ], {
+          env: {},
+          executeBootstrap
+        })
+      ).rejects.toThrow(/Unsupported collection-update-strategy/);
+    });
+
+    expect(executeBootstrap).not.toHaveBeenCalled();
+    await expect(readFile(path.join(dir, 'result.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(path.join(dir, 'result.env'), 'utf8')).rejects.toThrow();
+  });
+
   it('allows absolute output paths that resolve inside the real workspace', async () => {
     const workspace = await makeTempDir('postman-bootstrap-workspace-');
     const resultPath = path.join(workspace, 'tmp', 'result.json');

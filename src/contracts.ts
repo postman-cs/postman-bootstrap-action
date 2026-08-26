@@ -70,6 +70,13 @@ export const bootstrapActionContract: ActionContract = {
       default: 'refresh',
       allowedValues: ['refresh', 'version']
     },
+    'collection-update-strategy': {
+      description:
+        'Collection refresh write strategy. whole preserves the whole-tree rollback path; auto uses bounded deltas when eligible before whole-tree fallback.',
+      required: false,
+      default: 'whole',
+      allowedValues: ['auto', 'whole']
+    },
     'spec-sync-mode': {
       description:
         'Spec lifecycle policy: update the canonical spec or create/reuse a versioned spec for the resolved release label.',

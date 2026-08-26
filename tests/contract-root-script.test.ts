@@ -21,8 +21,8 @@ import { buildContractIndex } from '../src/lib/spec/contract-index.js';
 import { parseOpenApiDocument } from '../src/lib/spec/openapi-loader.js';
 
 const FIXTURES = [
-  '../../onboarding-e2e/fixtures/local-openapi-large/openapi.yaml',
-  '../../onboarding-e2e/fixtures/telecom/openapi.yaml',
+  'fixtures/e2e-spec-oas31.yaml',
+  'fixtures/e2e-spec.yaml',
   '../integration/fixtures/rest/openapi.yaml'
 ];
 

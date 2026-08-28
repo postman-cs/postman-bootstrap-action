@@ -30,6 +30,12 @@ const EXT_XSD = ['<?xml version="1.0"?>', '<schema xmlns="http://www.w3.org/2001
 const resolver = (location: string) => (location === 'other.wsdl' ? OTHER_WSDL : location === 'ext.xsd' ? EXT_XSD : undefined);
 
 describe('WSDL 1.1 WS-I conformance lints (catalog additions)', () => {
+  it('rejects DTD declarations before the ordered lint parser runs', () => {
+    expect(() => lintWsiConformance(`<!DOCTYPE definitions [<!ENTITY x "y">]>${ROOT_WSDL}`)).toThrow(
+      /SOAP_XML_DOCTYPE_FORBIDDEN/
+    );
+  });
+
   it('checks ports without a resolver: address count, scheme vs transport', () => {
     const warnings = lintWsiConformance(ROOT_WSDL).join('\n');
     expect(warnings).toContain('SOAP_WSI_ADDRESS_SCHEME');

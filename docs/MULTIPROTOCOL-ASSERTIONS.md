@@ -54,6 +54,11 @@ compiled, channel-to-message coverage is enforced against the built collection (
 count-stable duplicate fails closed with `ASYNCAPI_MESSAGE_COVERAGE_FAILED`), and a collection size
 gate is applied.
 
+When a message has no declared example, schema sample synthesis is independently capped by depth,
+properties per object, total generated nodes, and active-reference cycle detection. If any cap is
+reached, generation emits `ASYNCAPI_SAMPLE_TRUNCATED` and uses the bounded partial sample rather than
+amplifying a recursive or wide resolved schema graph.
+
 Non-JSON payloads are validated structurally. An AsyncAPI example `payload` is a structured value that
 validates against the payload schema independent of the wire content type (content type governs
 serialization; the value's structure is validated), so JSON, XML, text, and HTML example values are

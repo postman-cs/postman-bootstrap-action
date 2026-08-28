@@ -294,7 +294,9 @@ export function createCliDependencies(
 ): BootstrapExecutionDependencies {
   const secretMasker = createSecretMasker([
     inputs.postmanApiKey,
-    inputs.postmanAccessToken
+    inputs.postmanAccessToken,
+    inputs.githubToken,
+    inputs.ghFallbackToken
   ]);
   const cliExec = createCliExec(secretMasker);
 

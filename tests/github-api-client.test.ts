@@ -94,6 +94,42 @@ describe('GitHubApiClient', () => {
     ).rejects.not.toThrow('fallback-token');
   });
 
+  it('always masks its own auth tokens when a caller injects another masker', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response('primary-token fallback-token app-token postman-token', { status: 500 })
+    );
+    const client = new GitHubApiClient({
+      repository: 'postman-cs/bootstrap-demo',
+      token: 'primary-token',
+      fallbackToken: 'fallback-token',
+      appToken: 'app-token',
+      secretMasker: (value) => value.replaceAll('postman-token', '[REDACTED]'),
+      fetch: fetchMock
+    });
+
+    await expect(client.getRepositoryVariable('POSTMAN_WORKSPACE_ID')).rejects.toThrow(
+      'GET /repos/postman-cs/bootstrap-demo/actions/variables/POSTMAN_WORKSPACE_ID failed with 500 - [REDACTED] [REDACTED] [REDACTED] [REDACTED]'
+    );
+  });
+
+  it('rejects repository and variable names that could alter the REST endpoint', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    expect(() => new GitHubApiClient({
+      repository: 'postman-cs/bootstrap-demo/extra',
+      token: 'token',
+      fetch: fetchMock
+    })).toThrow(/repository/i);
+
+    const client = new GitHubApiClient({
+      repository: 'postman-cs/bootstrap-demo',
+      token: 'token',
+      fetch: fetchMock
+    });
+    await expect(client.getRepositoryVariable('x/../../../secrets/GH_PAT')).rejects.toThrow(/variable name/i);
+    await expect(client.setRepositoryVariable('bad name', 'value')).rejects.toThrow(/variable name/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('retries rate-limit-shaped responses with deterministic Retry-After delays', async () => {
     vi.useFakeTimers();
     const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -102,7 +138,7 @@ describe('GitHubApiClient', () => {
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
         jsonResponse(
-          { message: 'API rate limit exceeded for user' },
+          { message: 'API rate limit exceeded\u2028for user' },
           {
             status: 403,
             headers: {
@@ -114,7 +150,7 @@ describe('GitHubApiClient', () => {
       )
       .mockResolvedValueOnce(jsonResponse({ value: 'ws-123' }));
 
-    const repository = 'postman-cs/bootstrap\u2028demo';
+    const repository = 'postman-cs/bootstrap-demo';
     const client = new GitHubApiClient({
       repository,
       token: 'primary-token',
@@ -137,9 +173,9 @@ describe('GitHubApiClient', () => {
     const diagnostic = String(stderrSpy.mock.calls[0]?.[0] ?? '');
     expect(diagnostic).toMatch(/GET/);
     expect(diagnostic).toContain(
-      '/repos/postman-cs/bootstrap demo/actions/variables/POSTMAN_WORKSPACE_ID'
+      '/repos/postman-cs/bootstrap-demo/actions/variables/POSTMAN_WORKSPACE_ID'
     );
-    expect(diagnostic).toContain('repository postman-cs/bootstrap demo');
+    expect(diagnostic).toContain('repository postman-cs/bootstrap-demo');
     expect(diagnostic).toMatch(/status 403/);
     expect(diagnostic).toContain('API rate limit exceeded');
     expect(diagnostic).toMatch(/waiting 1s/);

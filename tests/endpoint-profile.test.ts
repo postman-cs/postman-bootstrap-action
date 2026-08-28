@@ -85,6 +85,19 @@ describe('bootstrap emulator endpoint profile', () => {
       appVersionBaseUrl: 'http://127.0.0.1:8084/app-version'
     });
   });
+
+  it.each(['http://localhost:8080/api', 'https://[::1]:8443/api'])(
+    'accepts loopback emulator host %s',
+    (apiBaseUrl) => {
+      expect(
+        resolvePostmanEndpointProfile(
+          'prod',
+          'us',
+          armed({ ...COMPLETE_OVERRIDES, [ENDPOINT_OVERRIDE_ENV.apiBaseUrl]: apiBaseUrl })
+        ).apiBaseUrl
+      ).toBe(apiBaseUrl);
+    }
+  );
 });
 
 describe('bootstrap emulator endpoint profile fail-closed validation', () => {
@@ -161,4 +174,19 @@ describe('bootstrap emulator endpoint profile fail-closed validation', () => {
       ).toThrow(envName);
     }
   );
+
+  it.each([
+    'http://169.254.169.254/latest',
+    'http://10.0.0.8/api',
+    'https://metadata.google.internal/computeMetadata/v1',
+    'https://attacker.example/api'
+  ])('rejects a non-loopback emulator endpoint %s', (value) => {
+    expect(() =>
+      resolvePostmanEndpointProfile(
+        'prod',
+        'us',
+        armed({ ...COMPLETE_OVERRIDES, [ENDPOINT_OVERRIDE_ENV.apiBaseUrl]: value })
+      )
+    ).toThrow(/ENDPOINT_PROFILE_OVERRIDE_INVALID.*loopback/);
+  });
 });

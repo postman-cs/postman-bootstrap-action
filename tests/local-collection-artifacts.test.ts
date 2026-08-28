@@ -151,6 +151,14 @@ describe('local collection artifacts', () => {
     expect(deriveArtifactSafeCollectionName(longUnsafe)).toBe(
       deriveArtifactSafeCollectionName(longUnsafe)
     );
+    expect(deriveArtifactSafeCollectionName('.__local_artifact_incoming__Payments')).toMatch(
+      /^collection-[a-f0-9]{64}$/
+    );
+    expect(deriveArtifactSafeCollectionName('Payments.__local_artifact_backup__')).toMatch(
+      /^collection-[a-f0-9]{64}$/
+    );
+    expect(() => assertSafeCollectionName('.__local_artifact_incoming__Payments')).toThrow(/reserved/i);
+    expect(() => assertSafeCollectionName('Payments.__local_artifact_backup__')).toThrow(/reserved/i);
   });
 
   it('pins @postman/v3.export and emits runtime.models→v3.export trees', async () => {
@@ -367,6 +375,31 @@ describe('local collection artifacts', () => {
       await expect(
         readFile(path.join(collectionDir, '.resources/definition.yaml'), 'utf8')
       ).rejects.toBeTruthy();
+    } finally {
+      await cleanup();
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('aborts when an ancestor is replaced by a symlink during splitting', async () => {
+    const { repoRoot, runTempDir, cleanup } = await makeRepo();
+    const outside = await mkdtemp(path.join(tmpdir(), 'local-artifacts-race-target-'));
+    const collections = path.join(repoRoot, 'postman/collections');
+    const parked = path.join(repoRoot, 'postman/collections-before-swap');
+    try {
+      await mkdir(collections, { recursive: true });
+      const roles = await roleInputs();
+      await expect(materializeLocalCollectionArtifacts({
+        repoRoot,
+        runTempDir,
+        roles: [roles[0]!],
+        splitter: async () => {
+          await fsRename(collections, parked);
+          await symlink(outside, collections);
+          return harmlessSplitter()({});
+        }
+      })).rejects.toThrow(/ancestor|symlink|changed/i);
+      await expect(access(path.join(outside, 'Artifact API'))).rejects.toBeTruthy();
     } finally {
       await cleanup();
       await rm(outside, { recursive: true, force: true });

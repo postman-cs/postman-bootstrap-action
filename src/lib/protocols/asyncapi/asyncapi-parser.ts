@@ -272,7 +272,11 @@ function createBundleBackedParser(bundle: DefinitionBundle): Parser {
 const SOCKETIO_PROTOCOLS = new Set(['socketio', 'socket.io', 'sio']);
 const MQTT_PROTOCOLS = new Set(['mqtt', 'mqtts', 'secure-mqtt', 'mqtt5']);
 const DEFAULT_SOCKETIO_PATH = '/socket.io';
-const SAMPLE_MAX_DEPTH = 5;
+export const ASYNCAPI_SAMPLE_LIMITS = {
+  maxDepth: 5,
+  maxNodes: 256,
+  maxPropertiesPerObject: 32
+} as const;
 
 function asRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -354,11 +358,15 @@ function contentKindFor(contentType: string | undefined): AsyncApiMessageDescrip
   return 'binary';
 }
 
-// Deterministic sample from a JSON Schema: prefers declared example/default/enum,
-// otherwise synthesizes a minimal instance by type. Depth-capped and cycle-free
-// (recursion is bounded by depth, not by tracking $refs, since parser schemas
-// may be circular).
-function sampleFromSchema(schema: unknown, depth: number): unknown {
+interface SampleSynthesisContext {
+  activeSchemas: WeakSet<object>;
+  nodes: number;
+  truncated: boolean;
+}
+
+// Deterministic sample from a JSON Schema. Independent depth, breadth, total-node,
+// and active-reference guards keep resolved reference graphs from amplifying.
+function sampleFromSchema(schema: unknown, depth: number, context: SampleSynthesisContext): unknown {
   const record = asRecord(schema);
   if (!record) return record === null ? null : {};
   if (record.example !== undefined) return record.example;
@@ -369,47 +377,82 @@ function sampleFromSchema(schema: unknown, depth: number): unknown {
   if (enumValues.length > 0) return enumValues[0];
   if (record.const !== undefined) return record.const;
 
-  if (depth >= SAMPLE_MAX_DEPTH) return {};
-
-  const type = Array.isArray(record.type)
-    ? (record.type.find((t) => t !== 'null') as string | undefined)
-    : (record.type as string | undefined);
-
-  const composite = asArray<unknown>(record.allOf).concat(asArray<unknown>(record.anyOf), asArray<unknown>(record.oneOf));
-  if (!type && composite.length > 0) return sampleFromSchema(composite[0], depth + 1);
-
-  switch (type) {
-    case 'object':
-    case undefined: {
-      const properties = asRecord(record.properties);
-      if (!properties) return {};
-      const required = new Set(asArray<string>(record.required));
-      const out: JsonRecord = {};
-      for (const [name, propSchema] of Object.entries(properties)) {
-        // Prefer required props; include a bounded number of optionals for a
-        // useful, still-deterministic sample.
-        if (required.has(name) || Object.keys(out).length < 8) {
-          out[name] = sampleFromSchema(propSchema, depth + 1);
-        }
-      }
-      return out;
-    }
-    case 'array': {
-      const items = Array.isArray(record.items) ? record.items[0] : record.items;
-      return items === undefined ? [] : [sampleFromSchema(items, depth + 1)];
-    }
-    case 'string':
-      return typeof record.format === 'string' ? `<${record.format}>` : 'string';
-    case 'integer':
-    case 'number':
-      return 0;
-    case 'boolean':
-      return true;
-    case 'null':
-      return null;
-    default:
-      return {};
+  context.nodes += 1;
+  if (depth >= ASYNCAPI_SAMPLE_LIMITS.maxDepth || context.nodes >= ASYNCAPI_SAMPLE_LIMITS.maxNodes) {
+    context.truncated = true;
+    return {};
   }
+  if (context.activeSchemas.has(record)) {
+    context.truncated = true;
+    return {};
+  }
+  context.activeSchemas.add(record);
+
+  try {
+    const type = Array.isArray(record.type)
+      ? (record.type.find((t) => t !== 'null') as string | undefined)
+      : (record.type as string | undefined);
+
+    const composite = asArray<unknown>(record.allOf).concat(asArray<unknown>(record.anyOf), asArray<unknown>(record.oneOf));
+    if (!type && composite.length > 0) return sampleFromSchema(composite[0], depth + 1, context);
+
+    switch (type) {
+      case 'object':
+      case undefined: {
+        const properties = asRecord(record.properties);
+        if (!properties) return {};
+        const required = new Set(asArray<string>(record.required));
+        const out: JsonRecord = {};
+        for (const [name, propSchema] of Object.entries(properties)) {
+          const include = required.has(name) || Object.keys(out).length < 8;
+          if (!include) continue;
+          if (
+            Object.keys(out).length >= ASYNCAPI_SAMPLE_LIMITS.maxPropertiesPerObject ||
+            context.nodes >= ASYNCAPI_SAMPLE_LIMITS.maxNodes
+          ) {
+            context.truncated = true;
+            break;
+          }
+          out[name] = sampleFromSchema(propSchema, depth + 1, context);
+        }
+        return out;
+      }
+      case 'array': {
+        const items = Array.isArray(record.items) ? record.items[0] : record.items;
+        if (items === undefined) return [];
+        if (context.nodes >= ASYNCAPI_SAMPLE_LIMITS.maxNodes) {
+          context.truncated = true;
+          return [];
+        }
+        return [sampleFromSchema(items, depth + 1, context)];
+      }
+      case 'string':
+        return typeof record.format === 'string' ? `<${record.format}>` : 'string';
+      case 'integer':
+      case 'number':
+        return 0;
+      case 'boolean':
+        return true;
+      case 'null':
+        return null;
+      default:
+        return {};
+    }
+  } finally {
+    context.activeSchemas.delete(record);
+  }
+}
+
+export function synthesizeAsyncApiSample(schema: unknown): { sample: unknown; truncated: boolean } {
+  const context: SampleSynthesisContext = {
+    activeSchemas: new WeakSet<object>(),
+    nodes: 0,
+    truncated: false
+  };
+  return {
+    sample: sampleFromSchema(schema, 0, context),
+    truncated: context.truncated
+  };
 }
 
 // Collect the ws binding's declared header/query property names as placeholder
@@ -586,7 +629,13 @@ function messageDescriptor(
   if (hasExample) {
     sample = examples[0].payload();
   } else if (payloadSchema) {
-    sample = sampleFromSchema(payloadSchema, 0);
+    const synthesized = synthesizeAsyncApiSample(payloadSchema);
+    sample = synthesized.sample;
+    if (synthesized.truncated) {
+      warnings.push(
+        `ASYNCAPI_SAMPLE_TRUNCATED: message ${id} on channel ${channelId} exceeded bounded schema sample synthesis limits`
+      );
+    }
   } else {
     sample = {};
   }

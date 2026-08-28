@@ -538,6 +538,16 @@ async function assertBinaryWorks(
   }
 }
 
+export function assertSafeTarEntryTypes(listing: string): void {
+  for (const line of listing.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const type = line[0];
+    if (type !== '-' && type !== 'd') {
+      throw new Error(`Refusing unsafe archive entry type ${JSON.stringify(type)}: ${line.trim()}`);
+    }
+  }
+}
+
 async function assertSafeTarEntries(
   archivePath: string,
   dependencies: OpenApiChangesDependencies
@@ -558,6 +568,14 @@ async function assertSafeTarEntries(
       throw new Error(`Refusing unsafe archive entry: ${entry}`);
     }
   }
+  const verbose = await dependencies.exec.getExecOutput('tar', ['-tvzf', archivePath], {
+    ignoreReturnCode: true,
+    silent: true
+  });
+  if (verbose.exitCode !== 0) {
+    throw new Error(`Could not inspect ${TOOL_NAME} archive entry types: ${verbose.stderr}`);
+  }
+  assertSafeTarEntryTypes(verbose.stdout);
 }
 
 function findBinary(searchRoot: string, binaryName: string): string {

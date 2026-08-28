@@ -8,6 +8,8 @@
 
 import { XMLParser } from 'fast-xml-parser';
 
+import { assertNoXmlDoctype } from './xml-safety.js';
+
 interface XNode {
   tag: string;
   attrs: Record<string, string>;
@@ -20,7 +22,8 @@ const ORDERED_PARSER_OPTIONS = {
   attributeNamePrefix: '',
   allowBooleanAttributes: true,
   parseTagValue: false,
-  parseAttributeValue: false
+  parseAttributeValue: false,
+  processEntities: false
 };
 
 function normalize(nodes: unknown): XNode[] {
@@ -148,6 +151,7 @@ interface PortTypeOperation {
 }
 
 export function lintWsiConformance(text: string, resolveImport?: WsdlImportResolver): string[] {
+  assertNoXmlDoctype(text);
   const warnings: string[] = [];
   const decl = /^\uFEFF?\s*<\?xml\b([^?]*)\?>/.exec(text);
   if (decl) {

@@ -145,6 +145,7 @@ function isBlockedIPv6(address: string): boolean {
   const second = Number.parseInt(parts[1] ?? '0', 16);
   if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
   if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((first & 0xffc0) === 0xfec0) return true; // fec0::/10 deprecated site-local
   if ((first & 0xff00) === 0xff00) return true; // multicast
   if (first === 0x0064 && second === 0xff9b) return true; // 64:ff9b::/32 and 64:ff9b:1::/48 translation ranges
   if (first === 0x0100 && parts.slice(1, 4).every((part) => part === '0000')) return true; // 100::/64 discard-only block

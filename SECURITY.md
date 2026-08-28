@@ -19,3 +19,4 @@ You should receive an acknowledgement within five business days. Please include 
 - Do not echo `POSTMAN_API_KEY`, `POSTMAN_ACCESS_TOKEN`, or generated dotenv output in your own workflow steps.
 - Reports about secrets you exposed in your own workflow configuration are out of scope; rotate the credential in Postman immediately.
 - Do not include live PMAKs, access tokens, GitHub tokens, or private workflow logs in vulnerability reports.
+- Local artifact writes reject symlinks and detected ancestor replacement. A hostile process running concurrently as the same OS user with write access to the checked-out repository is outside the supported isolation boundary; use an isolated runner for untrusted workloads.

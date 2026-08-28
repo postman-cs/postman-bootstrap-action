@@ -30,7 +30,7 @@ Modes:
 - `pr-native`: compares `breaking-target-ref` or the detected PR target branch version of `spec-path` against the checked-out working tree. If no target-branch spec is available, it falls back to `breaking-baseline-spec-path` when configured.
 - `baseline-only`: compares `breaking-baseline-spec-path` against the incoming spec. If the baseline file is missing, the check is marked `skipped`.
 
-The action installs a pinned `pb33f/openapi-changes` release into the runner temp directory, verifies the archive checksum, validates archive paths before extraction, and runs the binary by absolute path. It does not require customers to preinstall the tool, and it does not use `npx`, global npm installs, or `curl | sh`.
+The action installs a pinned `pb33f/openapi-changes` release into the runner temp directory, verifies the archive checksum, and validates archive paths and entry types before extraction. Only regular files and directories are accepted; links and special entries are rejected. The verified binary is run by absolute path. It does not require customers to preinstall the tool, and it does not use `npx`, global npm installs, or `curl | sh`.
 
 Summary and log files default to `$RUNNER_TEMP/postman-bootstrap/`, so they are runner files rather than committed repo changes. The markdown summary is also appended to the GitHub job summary when `$GITHUB_STEP_SUMMARY` is available. Pass `breaking-summary-path` or `breaking-log-path` only if your workflow wants explicit file locations for later `actions/upload-artifact` steps.
 

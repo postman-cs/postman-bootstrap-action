@@ -450,8 +450,8 @@ export interface AssetMarker {
   prNumber?: number;
   role: 'preview' | 'channel';
   headSha?: string;
-  createdAt: string;
-  lastSyncedAt: string;
+  createdAt?: string;
+  lastSyncedAt?: string;
   expiresAt?: string;
   run?: string;
   retirementDetectedAt?: string;

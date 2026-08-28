@@ -342904,20 +342904,17 @@ function extractSpecBranchMarker(content) {
   }
   return { repo, rawBranch, role, createdAt, lastSyncedAt };
 }
-function renderCollectionBranchMarker(decision, repo, now = /* @__PURE__ */ new Date()) {
+function renderCollectionBranchMarker(decision, repo) {
   if (decision.tier !== "preview" && decision.tier !== "channel" || !decision.identity.headBranch || !repo) {
     return void 0;
   }
   const rawBranch = decision.identity.headBranch;
-  const timestamp2 = now.toISOString();
   return renderAssetMarker({
     repo,
     rawBranch,
     sanitizedBranch: rawBranch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-+/g, "-").slice(0, 30),
     role: decision.tier,
-    headSha: decision.identity.headSha,
-    createdAt: timestamp2,
-    lastSyncedAt: timestamp2
+    headSha: decision.identity.headSha
   });
 }
 function createPlannedOutputs(inputs) {

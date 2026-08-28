@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   BRANCH_DECISION_ENV,
@@ -442,19 +442,42 @@ describe('durable collection marker', () => {
     });
     expect(parseAssetMarker(renderCollectionBranchMarker(
       preview,
-      'https://github.com/org/repo',
-      new Date('2026-07-15T00:00:00Z')
+      'https://github.com/org/repo'
     ))).toMatchObject({
       repo: 'https://github.com/org/repo',
       rawBranch: 'feature/payments',
-      role: 'preview',
-      createdAt: '2026-07-15T00:00:00.000Z'
+      role: 'preview'
     });
+    expect(renderCollectionBranchMarker(preview, 'https://github.com/org/repo')).not.toContain(
+      'lastSyncedAt'
+    );
 
     const canonical = resolveBranchDecision({
       strategy: 'publish-gate',
       identity: identity({ headBranch: 'main', defaultBranch: 'main', refKind: 'default-branch' })
     });
     expect(renderCollectionBranchMarker(canonical, 'https://github.com/org/repo')).toBeUndefined();
+  });
+
+  it('is stable across concurrent runs for the same branch revision', () => {
+    const preview = resolveBranchDecision({
+      strategy: 'preview',
+      identity: identity({
+        headBranch: 'feature/payments',
+        defaultBranch: 'main',
+        headSha: 'abc123'
+      })
+    });
+    const repo = 'https://github.com/org/repo';
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-15T00:00:00Z'));
+      const first = renderCollectionBranchMarker(preview, repo);
+      vi.setSystemTime(new Date('2026-07-16T00:00:00Z'));
+      expect(renderCollectionBranchMarker(preview, repo)).toBe(first);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

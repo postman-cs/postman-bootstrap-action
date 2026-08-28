@@ -388,7 +388,7 @@ jobs:
           E2E_GATE_SUITE: full
           E2E_GATE_REF: ${{ github.ref_name }}
           E2E_GATE_SOURCE_DIGEST: ${{ needs.verify-package.outputs.release_tgz_sha256 }}
-          E2E_GATE_REGISTRY_REVISION: 0b77666e38737189cd619db2c640ba483a054d70f1cd90b5f68e2294a289667a
+          E2E_GATE_REGISTRY_REVISION: 5c63b04437923b26e6226d01fb72081087f06914df6b284430ddff40b7ad68b7
           E2E_GATE_CONTRACT_SCENARIOS: '["bootstrap.fresh-import-finalize"]'
         run: node .github/scripts/verify-e2e-release.mjs
 

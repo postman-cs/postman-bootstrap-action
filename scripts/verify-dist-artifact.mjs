@@ -14,10 +14,9 @@
  * --help/--version, node --check on every entrypoint, and literal require()
  * builtins only (bare or node:, via builtinModules).
  *
- * The require() scan uses a code-context char-walker that records only
- * require() calls in CODE position, so it does not false-positive on
- * bundled codegen template strings (e.g. ajv emits `require("ajv/dist/...")`
- * INSIDE a backtick template) or on JSDoc examples / string literals.
+ * The require() scan parses each CommonJS entrypoint and records literal
+ * require() calls from the syntax tree, excluding comments and string or
+ * template data.
  *
  * Usage: node scripts/verify-dist-artifact.mjs [repoRoot]
  */
@@ -29,6 +28,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+
+import { parse } from 'acorn';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRoot = path.resolve(scriptDir, '..');
@@ -193,163 +194,43 @@ function isAllowedOptionalPeer(specifier) {
   return OPTIONAL_PEER_ALLOWLIST.includes(specifier);
 }
 
-// Walk the source tracking string, template, comment, AND regex-literal
-// state. Record a require() call ONLY when `require` appears as an
-// identifier in CODE position. Regex literals are recognized with the
-// standard operand-position heuristic (a `/` after an operator, opening
-// bracket, keyword such as return/typeof/case, or at expression start opens
-// a regex; after an identifier/literal it is division). Without this, dist
-// bundles containing regexes like /["'`]/ desync the walker and produce
-// false positives on codegen template strings (e.g. ajv emits
-// `require("ajv/dist/...")` INSIDE a backtick template).
-function literalRequireSpecifiers(source) {
+function literalRequireSpecifiers(source, sourcePath) {
+  let ast;
+  try {
+    ast = parse(source, {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+      allowHashBang: true
+    });
+  } catch (error) {
+    fail(`${sourcePath} failed JavaScript parsing for require census: ${error instanceof Error ? error.message : error}`);
+  }
+
   const specifiers = [];
-  const n = source.length;
-  const REGEX_KEYWORDS = new Set([
-    'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
-    'throw', 'case', 'do', 'else', 'yield', 'await'
-  ]);
 
-  function skipQuoted(start, quote) {
-    let i = start + 1;
-    while (i < n) {
-      if (source[i] === '\\') { i += 2; continue; }
-      if (source[i] === quote) { return i + 1; }
-      i += 1;
+  function visit(node) {
+    if (
+      node.type === 'CallExpression' &&
+      node.callee?.type === 'Identifier' &&
+      node.callee.name === 'require' &&
+      node.arguments.length === 1 &&
+      node.arguments[0]?.type === 'Literal' &&
+      typeof node.arguments[0].value === 'string'
+    ) {
+      specifiers.push(node.arguments[0].value);
     }
-    return i;
-  }
-
-  function skipBlockComment(start) {
-    let i = start + 2;
-    while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
-    return Math.min(n, i + 2);
-  }
-
-  function skipLineComment(start) {
-    let i = start + 2;
-    while (i < n && source[i] !== '\n') i += 1;
-    return i;
-  }
-
-  function skipRegex(start) {
-    let i = start + 1;
-    let inClass = false;
-    while (i < n) {
-      const c = source[i];
-      if (c === '\\') { i += 2; continue; }
-      if (c === '\n') { return i; }
-      if (inClass) {
-        if (c === ']') { inClass = false; }
-        i += 1;
-        continue;
-      }
-      if (c === '[') { inClass = true; i += 1; continue; }
-      if (c === '/') {
-        i += 1;
-        while (i < n && /[a-z]/i.test(source[i])) i += 1;
-        return i;
-      }
-      i += 1;
-    }
-    return i;
-  }
-
-  // Decide whether a `/` at position i opens a regex literal, given the
-  // index of the last significant (non-space, non-comment) character.
-  function regexPossible(lastSigIdx) {
-    if (lastSigIdx < 0) { return true; }
-    const c = source[lastSigIdx];
-    if (/[A-Za-z0-9_$]/.test(c)) {
-      let k = lastSigIdx;
-      while (k >= 0 && /[A-Za-z0-9_$]/.test(source[k])) k -= 1;
-      const word = source.slice(k + 1, lastSigIdx + 1);
-      return REGEX_KEYWORDS.has(word);
-    }
-    if (c === ')' || c === ']' || c === '}') { return false; }
-    if (c === '"' || c === "'" || c === '`') { return false; }
-    return true;
-  }
-
-  // Scan code starting at `start`. When `stopAtBrace` is true, return at the
-  // matching depth-0 `}` (used for template interpolations). require() calls
-  // found in code position anywhere (including interpolation code) are
-  // recorded.
-  function scanCode(start, stopAtBrace) {
-    let i = start;
-    let depth = 0;
-    let lastSigIdx = -1;
-    while (i < n) {
-      const c = source[i];
-      const next = source[i + 1];
-      if (c === '/' && next === '*') { i = skipBlockComment(i); continue; }
-      if (c === '/' && next === '/') { i = skipLineComment(i); continue; }
-      if (c === '/') {
-        if (regexPossible(lastSigIdx)) { i = skipRegex(i); lastSigIdx = -1; continue; }
-        lastSigIdx = i;
-        i += 1;
-        continue;
-      }
-      if (c === '"' || c === "'") { i = skipQuoted(i, c); lastSigIdx = i - 1; continue; }
-      if (c === '`') { i = scanTemplate(i); lastSigIdx = i - 1; continue; }
-      if (stopAtBrace) {
-        if (c === '{') { depth += 1; lastSigIdx = i; i += 1; continue; }
-        if (c === '}') {
-          if (depth === 0) { return i + 1; }
-          depth -= 1;
-          lastSigIdx = i;
-          i += 1;
-          continue;
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) {
+        for (const child of value) {
+          if (child && typeof child === 'object' && typeof child.type === 'string') visit(child);
         }
+      } else if (value && typeof value === 'object' && typeof value.type === 'string') {
+        visit(value);
       }
-      if (c === 'r' && source.slice(i, i + 7) === 'require') {
-        const before = source[i - 1];
-        if ((before && /[A-Za-z0-9_$]/.test(before)) || before === '.') { lastSigIdx = i + 6; i += 7; continue; }
-        let j = i + 7;
-        while (j < n && /\s/.test(source[j])) j += 1;
-        if (source[j] !== '(') { lastSigIdx = i + 6; i += 7; continue; }
-        j += 1;
-        while (j < n && /\s/.test(source[j])) j += 1;
-        const quote = source[j];
-        if (quote !== '"' && quote !== "'") { lastSigIdx = j - 1; i = j; continue; }
-        j += 1;
-        let spec = '';
-        while (j < n && source[j] !== quote) {
-          if (source[j] === '\\') { spec += source[j + 1] ?? ''; j += 2; continue; }
-          spec += source[j];
-          j += 1;
-        }
-        j += 1;
-        while (j < n && /\s/.test(source[j])) j += 1;
-        if (source[j] === ')') { specifiers.push(spec); }
-        lastSigIdx = j;
-        i = j;
-        continue;
-      }
-      if (!/\s/.test(c)) { lastSigIdx = i; }
-      i += 1;
     }
-    return i;
   }
 
-  // `start` points at the opening backtick; returns index after the closing
-  // backtick. Interpolations are scanned as code (recursively), so nested
-  // templates, strings, and regexes inside ${...} are handled exactly.
-  function scanTemplate(start) {
-    let i = start + 1;
-    while (i < n) {
-      if (source[i] === '\\') { i += 2; continue; }
-      if (source[i] === '`') { return i + 1; }
-      if (source[i] === '$' && source[i + 1] === '{') {
-        i = scanCode(i + 2, true);
-        continue;
-      }
-      i += 1;
-    }
-    return i;
-  }
-
-  scanCode(0, false);
+  visit(ast);
   return specifiers;
 }
 
@@ -536,7 +417,8 @@ function assertNodeCheck() {
 function assertLiteralRequiresAreBuiltins() {
   for (const name of manifest.expectedDist) {
     const contents = readFileSync(path.join(distDir, name), 'utf8');
-    for (const specifier of literalRequireSpecifiers(contents)) {
+    const sourcePath = path.join('dist', name);
+    for (const specifier of literalRequireSpecifiers(contents, sourcePath)) {
       if (isAllowedOptionalPeer(specifier)) {
         continue;
       }

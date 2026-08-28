@@ -46,6 +46,7 @@ interface FixtureOptions {
   brokenEntry?: string;
   requireSpecifier?: string;
   requireExampleOnly?: string;
+  requireCensusSource?: string;
   contractEntry?: string;
   contractEnv?: Record<string, string>;
   libraryGetterThrows?: boolean;
@@ -93,7 +94,8 @@ async function writeFixture(root: string, options: FixtureOptions = {}): Promise
   const requireExample = options.requireExampleOnly
     ? `// Example only: require(${JSON.stringify(options.requireExampleOnly)})\nconst example = ${JSON.stringify(`require(${JSON.stringify(options.requireExampleOnly)})`)};\nvoid example;\n`
     : '';
-  const cliSource = `${shebang}${requireLine}${requireExample}const args = process.argv.slice(2);
+  const requireCensusSource = options.requireCensusSource ? `${options.requireCensusSource}\n` : '';
+  const cliSource = `${shebang}${requireLine}${requireExample}${requireCensusSource}const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
   if (${Boolean(options.hangHelp)}) {
     setInterval(() => {}, 1_000);
@@ -408,6 +410,40 @@ describe('verify-dist-artifact canonical contract', { timeout: 30_000 }, () => {
     const result = await runVerify(root);
     expect(result.code).not.toBe(0);
     expect(result.stderr).toMatch(/non-builtin\/third-party require/);
+  }, 15_000);
+
+  it('rejects forbidden literal requires after control-header regex literals', async () => {
+    const sources = [
+      'const fs = require("node:fs"); if (0) /"/; require("evil"); void fs;',
+      'const fs = require("node:fs"); if (0) /["\']/; require("evil"); void fs;',
+      String.raw`const fs = require("node:fs"); if (0) /\"/; require("evil"); void fs;`
+    ];
+
+    for (const source of sources) {
+      const root = await makeTempDir('verify-dist-control-regex-');
+      await writeFixture(root, {
+        requireCensusSource: `function scannerDifferential() {\n${source}\n}`
+      });
+      const result = await runVerify(root);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/non-builtin\/third-party require\("evil"\)/);
+    }
+  }, 15_000);
+
+  it('accepts neighboring division and non-code require text', async () => {
+    const root = await makeTempDir('verify-dist-require-neighbors-');
+    await writeFixture(root, {
+      requireCensusSource: [
+        'const quotient = 8 / 2 / 2;',
+        '// require("evil")',
+        'const stringExample = \'require("evil")\';',
+        'const templateExample = `require("evil")`;',
+        'void quotient; void stringExample; void templateExample;'
+      ].join('\n')
+    });
+    const result = await runVerify(root);
+    expect(result.stderr).toBe('');
+    expect(result.code).toBe(0);
   }, 15_000);
 
   it('ignores require() examples in comments and string data', async () => {

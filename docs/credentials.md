@@ -41,36 +41,12 @@ For [EU data residency](https://learning.postman.com/docs/administration/enterpr
 1. Open the Postman desktop app or web UI.
 2. Go to **Settings** > **Account Settings** > **API Keys**.
 3. Generate an API key for the service account that should own onboarding automation.
-4. Store it as a CI secret:
-
-```bash
-gh secret set POSTMAN_API_KEY --repo <owner>/<repo>
-```
+4. In the repository, open **Settings** > **Secrets and variables** > **Actions**, create a repository secret named `POSTMAN_API_KEY`, and paste the key as its value.
 
 The PMAK is long-lived. Rotate it according to your organization's secret policy and update the CI secret when rotated.
 
 The [managing API keys](https://learning.postman.com/docs/administration/managing-your-team/managing-api-keys/) guide covers expiration, revocation, and exposed-key handling.
 
-## Legacy fallback: Postman CLI credential store
+## Access-token requirement
 
-Use this only when you cannot use the service-token action yet. Do not copy tokens from browser storage, cookies, or developer tools.
-
-1. Log in with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-auth/) interactive flow:
-
-   ```bash
-   postman login
-   ```
-
-2. Extract the access token from the CLI credential store:
-
-   ```bash
-   jq -r '.login._profiles[].accessToken' ~/.postman/postmanrc
-   ```
-
-3. Store it as a GitHub secret:
-
-   ```bash
-   gh secret set POSTMAN_ACCESS_TOKEN --repo <owner>/<repo>
-   ```
-
-The CLI login token is session-scoped and expires. When it expires, governance and canonical workspace validation degrade to warning-based behavior unless the workflow mints a fresh service-account token. `postman login --with-api-key` stores a PMAK, not the session access token these APIs need.
+Mint `POSTMAN_ACCESS_TOKEN` at run time from the service-account PMAK with `postman-resolve-service-token-action`. Interactive Postman CLI sessions, browser storage, cookies, and developer-tools values are not supported CI credential sources.

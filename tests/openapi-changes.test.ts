@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  assertSafeTarEntryTypes,
   runOpenApiBreakingChangeCheck,
   validatePinnedOpenApiChangesChecksums,
   type OpenApiChangesDependencies
@@ -101,6 +102,20 @@ describe('openapi-changes breaking-change check', () => {
 
   it('validates every pinned release checksum shape', () => {
     expect(() => validatePinnedOpenApiChangesChecksums()).not.toThrow();
+  });
+
+  it('allows only regular files and directories in release archives', () => {
+    expect(() => assertSafeTarEntryTypes([
+      '-rw-r--r--  0 user group 10 Jan 01 00:00 openapi-changes',
+      'drwxr-xr-x  0 user group  0 Jan 01 00:00 docs/'
+    ].join('\n'))).not.toThrow();
+    for (const listing of [
+      'lrwxr-xr-x  0 user group 0 Jan 01 00:00 sneaky -> ../../outside',
+      'hrw-r--r--  0 user group 0 Jan 01 00:00 hard link to outside',
+      'crw-r--r--  0 user group 0 Jan 01 00:00 device'
+    ]) {
+      expect(() => assertSafeTarEntryTypes(listing)).toThrow(/unsafe archive entry type/i);
+    }
   });
 
   it('keeps default reports in runner temp and fails when the JSON report marks breaking changes', async () => {

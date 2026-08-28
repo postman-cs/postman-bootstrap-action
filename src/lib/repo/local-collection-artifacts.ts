@@ -141,9 +141,11 @@ export async function persistLocalOpenApiArtifactManifest(
   await assertNoSymlinksInTree(parent, '.postman');
   await assertNoSymlinksInTree(abs, relative);
   await fs.mkdir(parent, { recursive: true });
+  const ancestorGuard = await captureAncestorGuard(root, abs);
   const temp = path.join(parent, `.${path.basename(abs)}.${randomUUID()}.tmp`);
   const rename = dependencies.rename ?? ((oldPath, newPath) => fs.rename(oldPath, newPath));
   try {
+    await assertAncestorGuard(ancestorGuard);
     const handle = await fs.open(temp, 'wx');
     try {
       await handle.writeFile(`${JSON.stringify(finalized, null, 2)}\n`, 'utf8');
@@ -151,9 +153,10 @@ export async function persistLocalOpenApiArtifactManifest(
     } finally {
       await handle.close();
     }
+    await assertAncestorGuard(ancestorGuard);
     await rename(temp, abs);
   } catch (error) {
-    await fs.rm(temp, { force: true }).catch(() => undefined);
+    await cleanupWithStableAncestors(ancestorGuard, () => fs.rm(temp, { force: true }));
     if (error instanceof LocalCollectionArtifactsError) throw error;
     throw new LocalCollectionArtifactsError('failed to atomically persist local OpenAPI artifact manifest', error);
   }
@@ -174,6 +177,12 @@ type WorkflowPair = {
 
 // Preview asset names use `@branch` suffixes (e.g. `Payments @feature-x`).
 const SAFE_COLLECTION_NAME = /^[A-Za-z0-9._@[\] -]+$/;
+const ARTIFACT_INCOMING_PREFIX = '.__local_artifact_incoming__';
+const ARTIFACT_BACKUP_SUFFIX = '.__local_artifact_backup__';
+
+function isReservedArtifactName(name: string): boolean {
+  return name.startsWith(ARTIFACT_INCOMING_PREFIX) || name.endsWith(ARTIFACT_BACKUP_SUFFIX);
+}
 
 /**
  * Derive a stable filesystem/resource-key segment without changing the Postman
@@ -185,7 +194,7 @@ const SAFE_COLLECTION_NAME = /^[A-Za-z0-9._@[\] -]+$/;
 export function deriveArtifactSafeCollectionName(displayName: string): string {
   const original = String(displayName ?? '');
   const trimmed = original.trim();
-  if (trimmed && SAFE_COLLECTION_NAME.test(trimmed)) {
+  if (trimmed && SAFE_COLLECTION_NAME.test(trimmed) && !isReservedArtifactName(trimmed)) {
     return trimmed;
   }
   const digest = createHash('sha256').update(original).digest('hex');
@@ -274,10 +283,11 @@ export function assertSafeCollectionName(collectionName: string, fieldName = 'co
     trimmed.includes('\\') ||
     trimmed === '.' ||
     trimmed === '..' ||
+    isReservedArtifactName(trimmed) ||
     !SAFE_COLLECTION_NAME.test(trimmed)
   ) {
     throw new LocalCollectionArtifactsError(
-      `${fieldName} must be a single safe collection segment; received ${collectionName}`
+      `${fieldName} must be a single safe collection segment and must not use reserved transaction names; received ${collectionName}`
     );
   }
   return trimmed;
@@ -386,6 +396,58 @@ export function directoryTraversalIdentity(
   const canonicalize = deps.canonicalize ?? ((p: string) => realpathSync.native(p));
   const canonical = canonicalize(absolutePath);
   return platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
+type AncestorGuard = Array<{ absolutePath: string; identity: string }>;
+
+async function captureAncestorGuard(repoRoot: string, targetPath: string): Promise<AncestorGuard> {
+  const parent = path.dirname(targetPath);
+  const relative = path.relative(repoRoot, parent);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new LocalCollectionArtifactsError(`ancestor guard target escapes repository root: ${targetPath}`);
+  }
+  const paths = [repoRoot];
+  let current = repoRoot;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    paths.push(current);
+  }
+  const guard: AncestorGuard = [];
+  for (const absolutePath of paths) {
+    const stat = await fs.lstat(absolutePath);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new LocalCollectionArtifactsError(`destination ancestor must remain a real directory: ${absolutePath}`);
+    }
+    guard.push({ absolutePath, identity: directoryTraversalIdentity(absolutePath, stat) });
+  }
+  return guard;
+}
+
+async function assertAncestorGuard(guard: AncestorGuard): Promise<void> {
+  for (const expected of guard) {
+    let stat;
+    try {
+      stat = await fs.lstat(expected.absolutePath);
+    } catch (error) {
+      throw new LocalCollectionArtifactsError(`destination ancestor changed during materialization: ${expected.absolutePath}`, error);
+    }
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isDirectory() ||
+      directoryTraversalIdentity(expected.absolutePath, stat) !== expected.identity
+    ) {
+      throw new LocalCollectionArtifactsError(`destination ancestor changed during materialization: ${expected.absolutePath}`);
+    }
+  }
+}
+
+async function cleanupWithStableAncestors(guard: AncestorGuard, operation: () => Promise<void>): Promise<void> {
+  try {
+    await assertAncestorGuard(guard);
+    await operation();
+  } catch {
+    // Refuse cleanup through a path whose ancestor identity changed.
+  }
 }
 
 async function assertNoSymlinksInTree(absPath: string, fieldName: string): Promise<void> {
@@ -631,14 +693,19 @@ async function copyDir(source: string, destination: string): Promise<void> {
 async function moveOrCopyToSibling(
   sourceDir: string,
   siblingDir: string,
-  rename: RenameFn
+  rename: RenameFn,
+  ancestorGuard: AncestorGuard
 ): Promise<void> {
+  await assertAncestorGuard(ancestorGuard);
   await fs.rm(siblingDir, { recursive: true, force: true });
   try {
+    await assertAncestorGuard(ancestorGuard);
     await rename(sourceDir, siblingDir);
   } catch (error) {
     if (!isExdev(error)) throw error;
+    await assertAncestorGuard(ancestorGuard);
     await copyDir(sourceDir, siblingDir);
+    await assertAncestorGuard(ancestorGuard);
     await fs.rm(sourceDir, { recursive: true, force: true });
   }
 }
@@ -653,8 +720,9 @@ async function writeTreeAtomic(options: {
   destDir: string;
   files: SplitCollectionFile[];
   rename: RenameFn;
+  ancestorGuard: AncestorGuard;
 }): Promise<void> {
-  const { runStageDir, destDir, files, rename } = options;
+  const { runStageDir, destDir, files, rename, ancestorGuard } = options;
   await fs.rm(runStageDir, { recursive: true, force: true });
   await fs.mkdir(runStageDir, { recursive: true });
   const confined = validateSplitFiles(files, runStageDir);
@@ -664,37 +732,45 @@ async function writeTreeAtomic(options: {
     await fs.writeFile(dest, file.content, 'utf8');
   }
 
+  await assertAncestorGuard(ancestorGuard);
   await fs.mkdir(path.dirname(destDir), { recursive: true });
   const siblingDir = path.join(
     path.dirname(destDir),
     `.__local_artifact_incoming__${path.basename(destDir)}`
   );
   const backupDir = `${destDir}.__local_artifact_backup__`;
+  await assertAncestorGuard(ancestorGuard);
   await fs.rm(siblingDir, { recursive: true, force: true });
+  await assertAncestorGuard(ancestorGuard);
   await fs.rm(backupDir, { recursive: true, force: true });
 
-  await moveOrCopyToSibling(runStageDir, siblingDir, rename);
+  await moveOrCopyToSibling(runStageDir, siblingDir, rename, ancestorGuard);
 
   let hadDest = false;
   try {
+    await assertAncestorGuard(ancestorGuard);
     await rename(destDir, backupDir);
     hadDest = true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
   }
   try {
+    await assertAncestorGuard(ancestorGuard);
     await rename(siblingDir, destDir);
   } catch (error) {
     if (hadDest) {
-      await fs.rm(destDir, { recursive: true, force: true }).catch(() => undefined);
-      await rename(backupDir, destDir).catch(() => undefined);
+      await cleanupWithStableAncestors(ancestorGuard, async () => {
+        await fs.rm(destDir, { recursive: true, force: true });
+        await rename(backupDir, destDir);
+      });
     } else {
-      await fs.rm(destDir, { recursive: true, force: true }).catch(() => undefined);
+      await cleanupWithStableAncestors(ancestorGuard, () => fs.rm(destDir, { recursive: true, force: true }));
     }
-    await fs.rm(siblingDir, { recursive: true, force: true }).catch(() => undefined);
+    await cleanupWithStableAncestors(ancestorGuard, () => fs.rm(siblingDir, { recursive: true, force: true }));
     throw error;
   }
   if (hadDest) {
+    await assertAncestorGuard(ancestorGuard);
     await fs.rm(backupDir, { recursive: true, force: true });
   }
 }
@@ -873,6 +949,18 @@ export async function materializeLocalCollectionArtifacts(
   for (const plan of rolePlans) {
     await assertNoSymlinksInTree(plan.absCollectionPath, plan.collectionPath);
   }
+  await fs.mkdir(path.join(repoRoot, 'postman', 'collections'), { recursive: true });
+  await fs.mkdir(path.dirname(workflowsAbs), { recursive: true });
+  const roleGuards = new Map<string, AncestorGuard>();
+  for (const plan of rolePlans) {
+    roleGuards.set(plan.absCollectionPath, await captureAncestorGuard(repoRoot, plan.absCollectionPath));
+  }
+  const workflowsGuard = await captureAncestorGuard(repoRoot, workflowsAbs);
+
+  const assertTransactionAncestors = async (): Promise<void> => {
+    for (const guard of roleGuards.values()) await assertAncestorGuard(guard);
+    await assertAncestorGuard(workflowsGuard);
+  };
 
   const snapshots: SnapshotEntry[] = [];
   const snapshotStoreRoot = path.join(runTempDir, 'snapshots', randomUUID());
@@ -883,6 +971,7 @@ export async function materializeLocalCollectionArtifacts(
   snapshots.push(await snapshotPath(workflowsAbs, snapshotStoreRoot, 'workflows'));
 
   const restore = async (): Promise<void> => {
+    await assertTransactionAncestors();
     for (const entry of snapshots) {
       await restoreSnapshot(entry);
     }
@@ -905,7 +994,8 @@ export async function materializeLocalCollectionArtifacts(
         runStageDir: stagedDir,
         destDir: plan.absCollectionPath,
         files,
-        rename
+        rename,
+        ancestorGuard: roleGuards.get(plan.absCollectionPath)!
       });
       await assertNoSymlinksInTree(plan.absCollectionPath, plan.collectionPath);
       const artifactDigest = await computeArtifactDigestFromTree(plan.absCollectionPath);
@@ -927,6 +1017,7 @@ export async function materializeLocalCollectionArtifacts(
     }
 
     if (relativeSpecPath && workflowPairs.length > 0) {
+      await assertAncestorGuard(workflowsGuard);
       let existingRaw: string | undefined;
       try {
         const workflowsStat = await fs.lstat(workflowsAbs);
@@ -945,33 +1036,40 @@ export async function materializeLocalCollectionArtifacts(
       const stagedWorkflows = path.join(runTempDir, 'stage', 'workflows.yaml');
       const siblingWorkflows = path.join(path.dirname(workflowsAbs), '.__local_artifact_incoming__workflows.yaml');
       await fs.writeFile(stagedWorkflows, nextYaml, 'utf8');
+      await assertAncestorGuard(workflowsGuard);
       await fs.rm(siblingWorkflows, { force: true });
       try {
+        await assertAncestorGuard(workflowsGuard);
         await rename(stagedWorkflows, siblingWorkflows);
       } catch (error) {
         if (!isExdev(error)) throw error;
+        await assertAncestorGuard(workflowsGuard);
         await fs.copyFile(stagedWorkflows, siblingWorkflows);
         await fs.rm(stagedWorkflows, { force: true });
       }
       const backupWorkflows = `${workflowsAbs}.__local_artifact_backup__`;
+      await assertAncestorGuard(workflowsGuard);
       await fs.rm(backupWorkflows, { force: true });
       let hadWorkflows = false;
       try {
+        await assertAncestorGuard(workflowsGuard);
         await rename(workflowsAbs, backupWorkflows);
         hadWorkflows = true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
       }
       try {
+        await assertAncestorGuard(workflowsGuard);
         await rename(siblingWorkflows, workflowsAbs);
       } catch (error) {
         if (hadWorkflows) {
-          await rename(backupWorkflows, workflowsAbs).catch(() => undefined);
+          await cleanupWithStableAncestors(workflowsGuard, () => rename(backupWorkflows, workflowsAbs));
         }
-        await fs.rm(siblingWorkflows, { force: true }).catch(() => undefined);
+        await cleanupWithStableAncestors(workflowsGuard, () => fs.rm(siblingWorkflows, { force: true }));
         throw error;
       }
       if (hadWorkflows) {
+        await assertAncestorGuard(workflowsGuard);
         await fs.rm(backupWorkflows, { force: true });
       }
     }

@@ -4662,7 +4662,9 @@ export function createBootstrapDependencies(
 ): BootstrapExecutionDependencies {
   const mutableMasker = createMutableSecretMasker([
     inputs.postmanApiKey,
-    inputs.postmanAccessToken
+    inputs.postmanAccessToken,
+    inputs.githubToken,
+    inputs.ghFallbackToken
   ]);
   const secretMasker = mutableMasker.mask;
   const appVersionProvider = new PostmanAppVersionProvider({

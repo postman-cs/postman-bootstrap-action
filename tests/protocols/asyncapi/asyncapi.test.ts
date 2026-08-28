@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { itemsByType } from '@postman/runtime.models/extensible';
 import { describe, expect, it } from 'vitest';
 
-import { parseAsyncApi } from '../../../src/lib/protocols/asyncapi/asyncapi-parser.js';
+import { parseAsyncApi, synthesizeAsyncApiSample } from '../../../src/lib/protocols/asyncapi/asyncapi-parser.js';
 import { buildAsyncApiCollection } from '../../../src/lib/protocols/asyncapi/asyncapi-collection-builder.js';
 import { instrumentAsyncApiCollection } from '../../../src/lib/protocols/asyncapi/asyncapi-instrumenter.js';
 
@@ -17,6 +17,54 @@ function read(rel: string): string {
 }
 
 type JsonRecord = Record<string, unknown>;
+
+function countSampleNodes(value: unknown): number {
+  if (value === null || typeof value !== 'object') return 1;
+  if (Array.isArray(value)) return 1 + value.reduce((sum, entry) => sum + countSampleNodes(entry), 0);
+  return 1 + Object.values(value as JsonRecord).reduce<number>((sum, entry) => sum + countSampleNodes(entry), 0);
+}
+
+function expansiveAsyncApiSchema(levels: number, breadth: number, cyclic: boolean): string {
+  const schemas: JsonRecord = {};
+  for (let level = 0; level < levels; level += 1) {
+    const next = cyclic || level + 1 < levels ? (cyclic ? 'Node0' : `Node${level + 1}`) : undefined;
+    const properties = Object.fromEntries(
+      Array.from({ length: breadth }, (_, index) => [
+        `child${index}`,
+        next ? { $ref: `#/components/schemas/${next}` } : { type: 'string' }
+      ])
+    );
+    schemas[`Node${level}`] = {
+      type: 'object',
+      required: Object.keys(properties),
+      properties
+    };
+    if (cyclic) break;
+  }
+  return JSON.stringify({
+    asyncapi: '2.6.0',
+    info: { title: 'bounded samples', version: '1.0.0' },
+    servers: { production: { url: 'wss://example.com', protocol: 'wss' } },
+    channels: {
+      events: { publish: { message: { $ref: '#/components/messages/Expansive' } } }
+    },
+    components: {
+      messages: { Expansive: { name: 'expansive', payload: { $ref: '#/components/schemas/Node0' } } },
+      schemas
+    }
+  });
+}
+
+function expansiveSchemaGraph(levels: number, breadth: number): JsonRecord {
+  let schema: JsonRecord = { type: 'string' };
+  for (let level = 0; level < levels; level += 1) {
+    const properties = Object.fromEntries(
+      Array.from({ length: breadth }, (_, index) => [`child${index}`, schema])
+    );
+    schema = { type: 'object', required: Object.keys(properties), properties };
+  }
+  return schema;
+}
 
 // Validate a built EC node against the official runtime.models item schema for
 // its type (the binding authority; the published v3.0.0 JSON Schema is 403).
@@ -85,6 +133,20 @@ describe('asyncapi parser', () => {
 
   it('rejects empty input', async () => {
     await expect(parseAsyncApi('   ')).rejects.toThrow(/ASYNCAPI_EMPTY_INPUT/);
+  });
+
+  it('bounds synthesized samples for a compact cyclic schema', async () => {
+    const index = await parseAsyncApi(expansiveAsyncApiSchema(1, 12, true));
+    const message = index.channels[0]!.messages[0]!;
+
+    expect(countSampleNodes(message.sample)).toBeLessThanOrEqual(256);
+    expect(index.channels[0]!.warnings.join('\n')).toContain('ASYNCAPI_SAMPLE_TRUNCATED');
+  });
+
+  it('bounds synthesized samples for a compact wide shared schema graph', () => {
+    const result = synthesizeAsyncApiSample(expansiveSchemaGraph(6, 12));
+    expect(countSampleNodes(result.sample)).toBeLessThanOrEqual(256);
+    expect(result.truncated).toBe(true);
   });
 });
 
@@ -397,4 +459,3 @@ describe('asyncapi spec-conformance static checks', () => {
     expect(warnings.some((w) => w.startsWith('ASYNCAPI_SOCKETIO_RESERVED_EVENT'))).toBe(true);
   });
 });
-

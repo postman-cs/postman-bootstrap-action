@@ -39,7 +39,9 @@ describe('safe OpenAPI spec fetch', () => {
       '::ffff:127.0.0.1',
       '::1',
       'fc00::1',
-      'fe80::1'
+      'fe80::1',
+      'fec0::1',
+      'feff:ffff::1'
     ].forEach((address) => expect(isBlockedAddress(address), address).toBe(true));
 
     expect(isBlockedAddress('93.184.216.34')).toBe(false);

@@ -75,6 +75,14 @@ function normalizeEndpointOverride(envName: string, raw: string): string {
   if (parsed.search || parsed.hash) {
     throw invalid('must not carry a query string or fragment');
   }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  const loopback =
+    hostname === 'localhost' ||
+    hostname === '::1' ||
+    /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  if (!loopback) {
+    throw invalid('must use a loopback host (localhost, 127.0.0.0/8, or ::1)');
+  }
   return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, '');
 }
 

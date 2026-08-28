@@ -16,6 +16,33 @@ export interface GitHubApiClientOptions {
   token: string;
 }
 
+const GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const GITHUB_REPOSITORY = /^[A-Za-z0-9._-]+$/;
+const GITHUB_VARIABLE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function repositoryComponents(repository: string): { owner: string; repo: string } {
+  const parts = String(repository || '').trim().split('/');
+  const [owner = '', repo = ''] = parts;
+  if (
+    parts.length !== 2 ||
+    !GITHUB_OWNER.test(owner) ||
+    !GITHUB_REPOSITORY.test(repo) ||
+    repo === '.' ||
+    repo === '..'
+  ) {
+    throw new Error(`Invalid GitHub repository ${JSON.stringify(repository)}; expected owner/repo`);
+  }
+  return { owner, repo };
+}
+
+function repositoryVariableName(name: string): string {
+  const normalized = String(name || '').trim();
+  if (!GITHUB_VARIABLE.test(normalized)) {
+    throw new Error(`Invalid GitHub repository variable name ${JSON.stringify(name)}`);
+  }
+  return normalized;
+}
+
 function buildErrorMessage(
   method: string,
   path: string,
@@ -51,14 +78,15 @@ export class GitHubApiClient {
     this.authMode = options.authMode || 'github_token_first';
     this.fallbackToken = String(options.fallbackToken || '').trim();
     this.fetchImpl = options.fetch ?? fetch;
-    this.repository = options.repository;
-    const [owner, repo] = options.repository.split('/');
+    const { owner, repo } = repositoryComponents(options.repository);
+    this.repository = `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
     this.owner = owner;
     this.repo = repo;
     this.token = String(options.token || '').trim();
-    this.secretMasker =
-      options.secretMasker ??
-      createSecretMasker([this.token, this.fallbackToken, this.appToken]);
+    const tokenMasker = createSecretMasker([this.token, this.fallbackToken, this.appToken]);
+    this.secretMasker = options.secretMasker
+      ? (value) => tokenMasker(options.secretMasker!(value))
+      : tokenMasker;
   }
 
   getTokenOrder(): string[] {
@@ -91,14 +119,14 @@ export class GitHubApiClient {
   }
 
   private isVariablesEndpoint(path: string): boolean {
-    return path.startsWith(`/repos/${this.owner}/${this.repo}/actions/variables`);
+    return path.startsWith(`/repos/${this.repository}/actions/variables`);
   }
 
   private canUseFallback(path: string): boolean {
     return (
       this.isVariablesEndpoint(path) ||
-      path === `/repos/${this.owner}/${this.repo}/properties/values` ||
-      path.includes(`/repos/${this.owner}/${this.repo}/contents`) ||
+      path === `/repos/${this.repository}/properties/values` ||
+      path.includes(`/repos/${this.repository}/contents`) ||
       path.includes('/dispatches')
     );
   }
@@ -197,12 +225,13 @@ export class GitHubApiClient {
   }
 
   async setRepositoryVariable(name: string, value: string): Promise<void> {
+    const variableName = repositoryVariableName(name);
     if (!value) {
-      throw new Error(`Repo variable ${name} is empty`);
+      throw new Error(`Repo variable ${variableName} is empty`);
     }
 
     const path = `/repos/${this.repository}/actions/variables`;
-    const body = JSON.stringify({ name, value: String(value) });
+    const body = JSON.stringify({ name: variableName, value: String(value) });
     const createResponse = await this.request(path, {
       method: 'POST',
       body
@@ -213,7 +242,7 @@ export class GitHubApiClient {
     }
 
     if (createResponse.status === 409 || createResponse.status === 422) {
-      const updatePath = `/repos/${this.repository}/actions/variables/${name}`;
+      const updatePath = `/repos/${this.repository}/actions/variables/${encodeURIComponent(variableName)}`;
       const updateResponse = await this.request(updatePath, {
         method: 'PATCH',
         body
@@ -234,7 +263,8 @@ export class GitHubApiClient {
   }
 
   async getRepositoryVariable(name: string): Promise<string> {
-    const path = `/repos/${this.repository}/actions/variables/${name}`;
+    const variableName = repositoryVariableName(name);
+    const path = `/repos/${this.repository}/actions/variables/${encodeURIComponent(variableName)}`;
     const response = await this.request(path, {
       method: 'GET'
     });

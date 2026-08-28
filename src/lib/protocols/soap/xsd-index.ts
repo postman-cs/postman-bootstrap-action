@@ -11,6 +11,8 @@
 
 import { XMLParser } from 'fast-xml-parser';
 
+import { assertNoXmlDoctype } from './xml-safety.js';
+
 type JsonRecord = Record<string, unknown>;
 
 const XSD_NS = 'http://www.w3.org/2001/XMLSchema';
@@ -234,12 +236,14 @@ export type XsdImportResolver = (
 ) => { key: string; content: string } | undefined;
 
 function parseSchemaDocument(content: string): JsonRecord | null {
+  assertNoXmlDoctype(content);
   try {
     const parser = new XMLParser({
       ignoreAttributes: false,
       attributeNamePrefix: '@_',
       textNodeName: '#text',
-      removeNSPrefix: false
+      removeNSPrefix: false,
+      processEntities: false
     });
     return asRecord(parser.parse(content));
   } catch {

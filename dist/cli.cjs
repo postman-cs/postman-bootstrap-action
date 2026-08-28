@@ -271638,6 +271638,24 @@ function createMutableSecretMasker(initialSecretValues = [], replacement = REDAC
 }
 
 // src/lib/github/github-api-client.ts
+var GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+var GITHUB_REPOSITORY = /^[A-Za-z0-9._-]+$/;
+var GITHUB_VARIABLE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function repositoryComponents(repository) {
+  const parts = String(repository || "").trim().split("/");
+  const [owner = "", repo = ""] = parts;
+  if (parts.length !== 2 || !GITHUB_OWNER.test(owner) || !GITHUB_REPOSITORY.test(repo) || repo === "." || repo === "..") {
+    throw new Error(`Invalid GitHub repository ${JSON.stringify(repository)}; expected owner/repo`);
+  }
+  return { owner, repo };
+}
+function repositoryVariableName(name) {
+  const normalized = String(name || "").trim();
+  if (!GITHUB_VARIABLE.test(normalized)) {
+    throw new Error(`Invalid GitHub repository variable name ${JSON.stringify(name)}`);
+  }
+  return normalized;
+}
 function buildErrorMessage(method, path12, response, body2, masker) {
   const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
   const sanitizedBody = masker(body2 || "");
@@ -271663,12 +271681,13 @@ var GitHubApiClient = class {
     this.authMode = options.authMode || "github_token_first";
     this.fallbackToken = String(options.fallbackToken || "").trim();
     this.fetchImpl = options.fetch ?? fetch;
-    this.repository = options.repository;
-    const [owner, repo] = options.repository.split("/");
+    const { owner, repo } = repositoryComponents(options.repository);
+    this.repository = `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
     this.owner = owner;
     this.repo = repo;
     this.token = String(options.token || "").trim();
-    this.secretMasker = options.secretMasker ?? createSecretMasker([this.token, this.fallbackToken, this.appToken]);
+    const tokenMasker = createSecretMasker([this.token, this.fallbackToken, this.appToken]);
+    this.secretMasker = options.secretMasker ? (value) => tokenMasker(options.secretMasker(value)) : tokenMasker;
   }
   getTokenOrder() {
     const ordered = [];
@@ -271692,10 +271711,10 @@ var GitHubApiClient = class {
     return ordered;
   }
   isVariablesEndpoint(path12) {
-    return path12.startsWith(`/repos/${this.owner}/${this.repo}/actions/variables`);
+    return path12.startsWith(`/repos/${this.repository}/actions/variables`);
   }
   canUseFallback(path12) {
-    return this.isVariablesEndpoint(path12) || path12 === `/repos/${this.owner}/${this.repo}/properties/values` || path12.includes(`/repos/${this.owner}/${this.repo}/contents`) || path12.includes("/dispatches");
+    return this.isVariablesEndpoint(path12) || path12 === `/repos/${this.repository}/properties/values` || path12.includes(`/repos/${this.repository}/contents`) || path12.includes("/dispatches");
   }
   rateLimitDelayMs(response, attempt) {
     const retryAfter = Number(response.headers.get("retry-after") || "");
@@ -271763,11 +271782,12 @@ var GitHubApiClient = class {
     return this.requestWithToken(path12, init, orderedTokens[1]);
   }
   async setRepositoryVariable(name, value) {
+    const variableName = repositoryVariableName(name);
     if (!value) {
-      throw new Error(`Repo variable ${name} is empty`);
+      throw new Error(`Repo variable ${variableName} is empty`);
     }
     const path12 = `/repos/${this.repository}/actions/variables`;
-    const body2 = JSON.stringify({ name, value: String(value) });
+    const body2 = JSON.stringify({ name: variableName, value: String(value) });
     const createResponse = await this.request(path12, {
       method: "POST",
       body: body2
@@ -271776,7 +271796,7 @@ var GitHubApiClient = class {
       return;
     }
     if (createResponse.status === 409 || createResponse.status === 422) {
-      const updatePath = `/repos/${this.repository}/actions/variables/${name}`;
+      const updatePath = `/repos/${this.repository}/actions/variables/${encodeURIComponent(variableName)}`;
       const updateResponse = await this.request(updatePath, {
         method: "PATCH",
         body: body2
@@ -271795,7 +271815,8 @@ var GitHubApiClient = class {
     );
   }
   async getRepositoryVariable(name) {
-    const path12 = `/repos/${this.repository}/actions/variables/${name}`;
+    const variableName = repositoryVariableName(name);
+    const path12 = `/repos/${this.repository}/actions/variables/${encodeURIComponent(variableName)}`;
     const response = await this.request(path12, {
       method: "GET"
     });
@@ -272227,6 +272248,15 @@ async function assertBinaryWorks(binaryPath, dependencies) {
     );
   }
 }
+function assertSafeTarEntryTypes(listing) {
+  for (const line of listing.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const type2 = line[0];
+    if (type2 !== "-" && type2 !== "d") {
+      throw new Error(`Refusing unsafe archive entry type ${JSON.stringify(type2)}: ${line.trim()}`);
+    }
+  }
+}
 async function assertSafeTarEntries(archivePath, dependencies) {
   const listing = await dependencies.exec.getExecOutput("tar", ["-tzf", archivePath], {
     ignoreReturnCode: true,
@@ -272244,6 +272274,14 @@ async function assertSafeTarEntries(archivePath, dependencies) {
       throw new Error(`Refusing unsafe archive entry: ${entry}`);
     }
   }
+  const verbose = await dependencies.exec.getExecOutput("tar", ["-tvzf", archivePath], {
+    ignoreReturnCode: true,
+    silent: true
+  });
+  if (verbose.exitCode !== 0) {
+    throw new Error(`Could not inspect ${TOOL_NAME} archive entry types: ${verbose.stderr}`);
+  }
+  assertSafeTarEntryTypes(verbose.stdout);
 }
 function findBinary(searchRoot, binaryName) {
   const entries = (0, import_node_fs.readdirSync)(searchRoot, { withFileTypes: true });
@@ -273262,6 +273300,11 @@ function normalizeEndpointOverride(envName, raw) {
   }
   if (parsed.search || parsed.hash) {
     throw invalid("must not carry a query string or fragment");
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  const loopback = hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  if (!loopback) {
+    throw invalid("must use a loopback host (localhost, 127.0.0.0/8, or ::1)");
   }
   return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
 }
@@ -275807,6 +275850,7 @@ function isBlockedIPv6(address) {
   const second = Number.parseInt(parts[1] ?? "0", 16);
   if ((first & 65024) === 64512) return true;
   if ((first & 65472) === 65152) return true;
+  if ((first & 65472) === 65216) return true;
   if ((first & 65280) === 65280) return true;
   if (first === 100 && second === 65435) return true;
   if (first === 256 && parts.slice(1, 4).every((part) => part === "0000")) return true;
@@ -310669,9 +310713,11 @@ async function persistLocalOpenApiArtifactManifest(repoRoot, finalized, dependen
   await assertNoSymlinksInTree(parent, ".postman");
   await assertNoSymlinksInTree(abs, relative3);
   await fs2.mkdir(parent, { recursive: true });
+  const ancestorGuard = await captureAncestorGuard(root, abs);
   const temp = path8.join(parent, `.${path8.basename(abs)}.${(0, import_node_crypto8.randomUUID)()}.tmp`);
   const rename3 = dependencies.rename ?? ((oldPath, newPath) => fs2.rename(oldPath, newPath));
   try {
+    await assertAncestorGuard(ancestorGuard);
     const handle = await fs2.open(temp, "wx");
     try {
       await handle.writeFile(`${JSON.stringify(finalized, null, 2)}
@@ -310680,19 +310726,25 @@ async function persistLocalOpenApiArtifactManifest(repoRoot, finalized, dependen
     } finally {
       await handle.close();
     }
+    await assertAncestorGuard(ancestorGuard);
     await rename3(temp, abs);
   } catch (error) {
-    await fs2.rm(temp, { force: true }).catch(() => void 0);
+    await cleanupWithStableAncestors(ancestorGuard, () => fs2.rm(temp, { force: true }));
     if (error instanceof LocalCollectionArtifactsError) throw error;
     throw new LocalCollectionArtifactsError("failed to atomically persist local OpenAPI artifact manifest", error);
   }
   return relative3;
 }
 var SAFE_COLLECTION_NAME = /^[A-Za-z0-9._@[\] -]+$/;
+var ARTIFACT_INCOMING_PREFIX = ".__local_artifact_incoming__";
+var ARTIFACT_BACKUP_SUFFIX = ".__local_artifact_backup__";
+function isReservedArtifactName(name) {
+  return name.startsWith(ARTIFACT_INCOMING_PREFIX) || name.endsWith(ARTIFACT_BACKUP_SUFFIX);
+}
 function deriveArtifactSafeCollectionName(displayName) {
   const original = String(displayName ?? "");
   const trimmed = original.trim();
-  if (trimmed && SAFE_COLLECTION_NAME.test(trimmed)) {
+  if (trimmed && SAFE_COLLECTION_NAME.test(trimmed) && !isReservedArtifactName(trimmed)) {
     return trimmed;
   }
   const digest = (0, import_node_crypto8.createHash)("sha256").update(original).digest("hex");
@@ -310747,9 +310799,9 @@ function confineRepoRelativePath(repoRoot, targetPath, fieldName) {
 }
 function assertSafeCollectionName(collectionName, fieldName = "collectionName") {
   const trimmed = String(collectionName || "").trim();
-  if (!trimmed || hasControlCharacter(collectionName) || hasControlCharacter(trimmed) || trimmed.includes("/") || trimmed.includes("\\") || trimmed === "." || trimmed === ".." || !SAFE_COLLECTION_NAME.test(trimmed)) {
+  if (!trimmed || hasControlCharacter(collectionName) || hasControlCharacter(trimmed) || trimmed.includes("/") || trimmed.includes("\\") || trimmed === "." || trimmed === ".." || isReservedArtifactName(trimmed) || !SAFE_COLLECTION_NAME.test(trimmed)) {
     throw new LocalCollectionArtifactsError(
-      `${fieldName} must be a single safe collection segment; received ${collectionName}`
+      `${fieldName} must be a single safe collection segment and must not use reserved transaction names; received ${collectionName}`
     );
   }
   return trimmed;
@@ -310817,6 +310869,48 @@ function directoryTraversalIdentity(absolutePath, stat2, deps = {}) {
   const canonicalize2 = deps.canonicalize ?? ((p) => import_node_fs6.realpathSync.native(p));
   const canonical = canonicalize2(absolutePath);
   return platform2 === "win32" ? canonical.toLowerCase() : canonical;
+}
+async function captureAncestorGuard(repoRoot, targetPath) {
+  const parent = path8.dirname(targetPath);
+  const relative3 = path8.relative(repoRoot, parent);
+  if (relative3.startsWith("..") || path8.isAbsolute(relative3)) {
+    throw new LocalCollectionArtifactsError(`ancestor guard target escapes repository root: ${targetPath}`);
+  }
+  const paths = [repoRoot];
+  let current = repoRoot;
+  for (const segment of relative3.split(path8.sep).filter(Boolean)) {
+    current = path8.join(current, segment);
+    paths.push(current);
+  }
+  const guard = [];
+  for (const absolutePath of paths) {
+    const stat2 = await fs2.lstat(absolutePath);
+    if (stat2.isSymbolicLink() || !stat2.isDirectory()) {
+      throw new LocalCollectionArtifactsError(`destination ancestor must remain a real directory: ${absolutePath}`);
+    }
+    guard.push({ absolutePath, identity: directoryTraversalIdentity(absolutePath, stat2) });
+  }
+  return guard;
+}
+async function assertAncestorGuard(guard) {
+  for (const expected of guard) {
+    let stat2;
+    try {
+      stat2 = await fs2.lstat(expected.absolutePath);
+    } catch (error) {
+      throw new LocalCollectionArtifactsError(`destination ancestor changed during materialization: ${expected.absolutePath}`, error);
+    }
+    if (stat2.isSymbolicLink() || !stat2.isDirectory() || directoryTraversalIdentity(expected.absolutePath, stat2) !== expected.identity) {
+      throw new LocalCollectionArtifactsError(`destination ancestor changed during materialization: ${expected.absolutePath}`);
+    }
+  }
+}
+async function cleanupWithStableAncestors(guard, operation2) {
+  try {
+    await assertAncestorGuard(guard);
+    await operation2();
+  } catch {
+  }
 }
 async function assertNoSymlinksInTree(absPath, fieldName) {
   let stat2;
@@ -311026,18 +311120,22 @@ async function copyDir(source, destination) {
     }
   }
 }
-async function moveOrCopyToSibling(sourceDir, siblingDir, rename3) {
+async function moveOrCopyToSibling(sourceDir, siblingDir, rename3, ancestorGuard) {
+  await assertAncestorGuard(ancestorGuard);
   await fs2.rm(siblingDir, { recursive: true, force: true });
   try {
+    await assertAncestorGuard(ancestorGuard);
     await rename3(sourceDir, siblingDir);
   } catch (error) {
     if (!isExdev(error)) throw error;
+    await assertAncestorGuard(ancestorGuard);
     await copyDir(sourceDir, siblingDir);
+    await assertAncestorGuard(ancestorGuard);
     await fs2.rm(sourceDir, { recursive: true, force: true });
   }
 }
 async function writeTreeAtomic(options) {
-  const { runStageDir, destDir, files, rename: rename3 } = options;
+  const { runStageDir, destDir, files, rename: rename3, ancestorGuard } = options;
   await fs2.rm(runStageDir, { recursive: true, force: true });
   await fs2.mkdir(runStageDir, { recursive: true });
   const confined = validateSplitFiles(files, runStageDir);
@@ -311046,35 +311144,43 @@ async function writeTreeAtomic(options) {
     await fs2.mkdir(path8.dirname(dest), { recursive: true });
     await fs2.writeFile(dest, file.content, "utf8");
   }
+  await assertAncestorGuard(ancestorGuard);
   await fs2.mkdir(path8.dirname(destDir), { recursive: true });
   const siblingDir = path8.join(
     path8.dirname(destDir),
     `.__local_artifact_incoming__${path8.basename(destDir)}`
   );
   const backupDir = `${destDir}.__local_artifact_backup__`;
+  await assertAncestorGuard(ancestorGuard);
   await fs2.rm(siblingDir, { recursive: true, force: true });
+  await assertAncestorGuard(ancestorGuard);
   await fs2.rm(backupDir, { recursive: true, force: true });
-  await moveOrCopyToSibling(runStageDir, siblingDir, rename3);
+  await moveOrCopyToSibling(runStageDir, siblingDir, rename3, ancestorGuard);
   let hadDest = false;
   try {
+    await assertAncestorGuard(ancestorGuard);
     await rename3(destDir, backupDir);
     hadDest = true;
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
   try {
+    await assertAncestorGuard(ancestorGuard);
     await rename3(siblingDir, destDir);
   } catch (error) {
     if (hadDest) {
-      await fs2.rm(destDir, { recursive: true, force: true }).catch(() => void 0);
-      await rename3(backupDir, destDir).catch(() => void 0);
+      await cleanupWithStableAncestors(ancestorGuard, async () => {
+        await fs2.rm(destDir, { recursive: true, force: true });
+        await rename3(backupDir, destDir);
+      });
     } else {
-      await fs2.rm(destDir, { recursive: true, force: true }).catch(() => void 0);
+      await cleanupWithStableAncestors(ancestorGuard, () => fs2.rm(destDir, { recursive: true, force: true }));
     }
-    await fs2.rm(siblingDir, { recursive: true, force: true }).catch(() => void 0);
+    await cleanupWithStableAncestors(ancestorGuard, () => fs2.rm(siblingDir, { recursive: true, force: true }));
     throw error;
   }
   if (hadDest) {
+    await assertAncestorGuard(ancestorGuard);
     await fs2.rm(backupDir, { recursive: true, force: true });
   }
 }
@@ -311225,6 +311331,17 @@ async function materializeLocalCollectionArtifacts(input) {
   for (const plan of rolePlans) {
     await assertNoSymlinksInTree(plan.absCollectionPath, plan.collectionPath);
   }
+  await fs2.mkdir(path8.join(repoRoot, "postman", "collections"), { recursive: true });
+  await fs2.mkdir(path8.dirname(workflowsAbs), { recursive: true });
+  const roleGuards = /* @__PURE__ */ new Map();
+  for (const plan of rolePlans) {
+    roleGuards.set(plan.absCollectionPath, await captureAncestorGuard(repoRoot, plan.absCollectionPath));
+  }
+  const workflowsGuard = await captureAncestorGuard(repoRoot, workflowsAbs);
+  const assertTransactionAncestors = async () => {
+    for (const guard of roleGuards.values()) await assertAncestorGuard(guard);
+    await assertAncestorGuard(workflowsGuard);
+  };
   const snapshots = [];
   const snapshotStoreRoot = path8.join(runTempDir, "snapshots", (0, import_node_crypto8.randomUUID)());
   await fs2.mkdir(snapshotStoreRoot, { recursive: true });
@@ -311233,6 +311350,7 @@ async function materializeLocalCollectionArtifacts(input) {
   }
   snapshots.push(await snapshotPath(workflowsAbs, snapshotStoreRoot, "workflows"));
   const restore = async () => {
+    await assertTransactionAncestors();
     for (const entry of snapshots) {
       await restoreSnapshot(entry);
     }
@@ -311253,7 +311371,8 @@ async function materializeLocalCollectionArtifacts(input) {
         runStageDir: stagedDir,
         destDir: plan.absCollectionPath,
         files,
-        rename: rename3
+        rename: rename3,
+        ancestorGuard: roleGuards.get(plan.absCollectionPath)
       });
       await assertNoSymlinksInTree(plan.absCollectionPath, plan.collectionPath);
       const artifactDigest = await computeArtifactDigestFromTree(plan.absCollectionPath);
@@ -311274,6 +311393,7 @@ async function materializeLocalCollectionArtifacts(input) {
       }
     }
     if (relativeSpecPath && workflowPairs.length > 0) {
+      await assertAncestorGuard(workflowsGuard);
       let existingRaw;
       try {
         const workflowsStat = await fs2.lstat(workflowsAbs);
@@ -311292,33 +311412,40 @@ async function materializeLocalCollectionArtifacts(input) {
       const stagedWorkflows = path8.join(runTempDir, "stage", "workflows.yaml");
       const siblingWorkflows = path8.join(path8.dirname(workflowsAbs), ".__local_artifact_incoming__workflows.yaml");
       await fs2.writeFile(stagedWorkflows, nextYaml, "utf8");
+      await assertAncestorGuard(workflowsGuard);
       await fs2.rm(siblingWorkflows, { force: true });
       try {
+        await assertAncestorGuard(workflowsGuard);
         await rename3(stagedWorkflows, siblingWorkflows);
       } catch (error) {
         if (!isExdev(error)) throw error;
+        await assertAncestorGuard(workflowsGuard);
         await fs2.copyFile(stagedWorkflows, siblingWorkflows);
         await fs2.rm(stagedWorkflows, { force: true });
       }
       const backupWorkflows = `${workflowsAbs}.__local_artifact_backup__`;
+      await assertAncestorGuard(workflowsGuard);
       await fs2.rm(backupWorkflows, { force: true });
       let hadWorkflows = false;
       try {
+        await assertAncestorGuard(workflowsGuard);
         await rename3(workflowsAbs, backupWorkflows);
         hadWorkflows = true;
       } catch (error) {
         if (error?.code !== "ENOENT") throw error;
       }
       try {
+        await assertAncestorGuard(workflowsGuard);
         await rename3(siblingWorkflows, workflowsAbs);
       } catch (error) {
         if (hadWorkflows) {
-          await rename3(backupWorkflows, workflowsAbs).catch(() => void 0);
+          await cleanupWithStableAncestors(workflowsGuard, () => rename3(backupWorkflows, workflowsAbs));
         }
-        await fs2.rm(siblingWorkflows, { force: true }).catch(() => void 0);
+        await cleanupWithStableAncestors(workflowsGuard, () => fs2.rm(siblingWorkflows, { force: true }));
         throw error;
       }
       if (hadWorkflows) {
+        await assertAncestorGuard(workflowsGuard);
         await fs2.rm(backupWorkflows, { force: true });
       }
     }
@@ -332101,6 +332228,13 @@ var XMLValidator = {
   validate: validate3
 };
 
+// src/lib/protocols/soap/xml-safety.ts
+function assertNoXmlDoctype(content) {
+  if (/<!DOCTYPE\b/i.test(content)) {
+    throw new Error("SOAP_XML_DOCTYPE_FORBIDDEN: WSDL and XSD documents must not declare a DTD");
+  }
+}
+
 // src/lib/protocols/soap/wsi-lints.ts
 var ORDERED_PARSER_OPTIONS = {
   preserveOrder: true,
@@ -332108,7 +332242,8 @@ var ORDERED_PARSER_OPTIONS = {
   attributeNamePrefix: "",
   allowBooleanAttributes: true,
   parseTagValue: false,
-  parseAttributeValue: false
+  parseAttributeValue: false,
+  processEntities: false
 };
 function normalize3(nodes) {
   if (!Array.isArray(nodes)) return [];
@@ -332190,6 +332325,7 @@ function lintImportedXmlDeclaration(content, label, warnings) {
   }
 }
 function lintWsiConformance(text, resolveImport) {
+  assertNoXmlDoctype(text);
   const warnings = [];
   const decl = /^\uFEFF?\s*<\?xml\b([^?]*)\?>/.exec(text);
   if (decl) {
@@ -333420,12 +333556,14 @@ function sequenceChildren(complexType, scopes, tns, simpleTypes) {
   return out;
 }
 function parseSchemaDocument(content) {
+  assertNoXmlDoctype(content);
   try {
     const parser = new XMLParser({
       ignoreAttributes: false,
       attributeNamePrefix: "@_",
       textNodeName: "#text",
-      removeNSPrefix: false
+      removeNSPrefix: false,
+      processEntities: false
     });
     return asRecord20(parser.parse(content));
   } catch {
@@ -333575,6 +333713,7 @@ function createParser() {
     removeNSPrefix: false,
     parseAttributeValue: false,
     parseTagValue: false,
+    processEntities: false,
     trimValues: true,
     isArray: () => false
   });
@@ -334232,6 +334371,7 @@ function lintWsdl112(definitions, messages, warnings) {
 function parseWsdlDocument(content) {
   const text = asString2(content).trim();
   if (!text) throw new Error("SOAP_EMPTY_WSDL: WSDL content is empty");
+  assertNoXmlDoctype(text);
   const validation = XMLValidator.validate(text);
   if (validation !== true) {
     throw new Error(`SOAP_WSDL_XML_INVALID: WSDL is not well-formed XML: ${validation.err.msg} (line ${validation.err.line})`);
@@ -335693,7 +335833,11 @@ function createBundleBackedParser(bundle4) {
 var SOCKETIO_PROTOCOLS = /* @__PURE__ */ new Set(["socketio", "socket.io", "sio"]);
 var MQTT_PROTOCOLS = /* @__PURE__ */ new Set(["mqtt", "mqtts", "secure-mqtt", "mqtt5"]);
 var DEFAULT_SOCKETIO_PATH = "/socket.io";
-var SAMPLE_MAX_DEPTH = 5;
+var ASYNCAPI_SAMPLE_LIMITS = {
+  maxDepth: 5,
+  maxNodes: 256,
+  maxPropertiesPerObject: 32
+};
 function asRecord23(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value;
@@ -335716,7 +335860,7 @@ function contentKindFor(contentType2) {
   if (ct.includes("text") || ct.includes("plain")) return "text";
   return "binary";
 }
-function sampleFromSchema(schema3, depth) {
+function sampleFromSchema(schema3, depth, context) {
   const record = asRecord23(schema3);
   if (!record) return record === null ? null : {};
   if (record.example !== void 0) return record.example;
@@ -335726,40 +335870,73 @@ function sampleFromSchema(schema3, depth) {
   const enumValues = asArray15(record.enum);
   if (enumValues.length > 0) return enumValues[0];
   if (record.const !== void 0) return record.const;
-  if (depth >= SAMPLE_MAX_DEPTH) return {};
-  const type2 = Array.isArray(record.type) ? record.type.find((t) => t !== "null") : record.type;
-  const composite = asArray15(record.allOf).concat(asArray15(record.anyOf), asArray15(record.oneOf));
-  if (!type2 && composite.length > 0) return sampleFromSchema(composite[0], depth + 1);
-  switch (type2) {
-    case "object":
-    case void 0: {
-      const properties = asRecord23(record.properties);
-      if (!properties) return {};
-      const required = new Set(asArray15(record.required));
-      const out = {};
-      for (const [name, propSchema] of Object.entries(properties)) {
-        if (required.has(name) || Object.keys(out).length < 8) {
-          out[name] = sampleFromSchema(propSchema, depth + 1);
-        }
-      }
-      return out;
-    }
-    case "array": {
-      const items = Array.isArray(record.items) ? record.items[0] : record.items;
-      return items === void 0 ? [] : [sampleFromSchema(items, depth + 1)];
-    }
-    case "string":
-      return typeof record.format === "string" ? `<${record.format}>` : "string";
-    case "integer":
-    case "number":
-      return 0;
-    case "boolean":
-      return true;
-    case "null":
-      return null;
-    default:
-      return {};
+  context.nodes += 1;
+  if (depth >= ASYNCAPI_SAMPLE_LIMITS.maxDepth || context.nodes >= ASYNCAPI_SAMPLE_LIMITS.maxNodes) {
+    context.truncated = true;
+    return {};
   }
+  if (context.activeSchemas.has(record)) {
+    context.truncated = true;
+    return {};
+  }
+  context.activeSchemas.add(record);
+  try {
+    const type2 = Array.isArray(record.type) ? record.type.find((t) => t !== "null") : record.type;
+    const composite = asArray15(record.allOf).concat(asArray15(record.anyOf), asArray15(record.oneOf));
+    if (!type2 && composite.length > 0) return sampleFromSchema(composite[0], depth + 1, context);
+    switch (type2) {
+      case "object":
+      case void 0: {
+        const properties = asRecord23(record.properties);
+        if (!properties) return {};
+        const required = new Set(asArray15(record.required));
+        const out = {};
+        for (const [name, propSchema] of Object.entries(properties)) {
+          const include = required.has(name) || Object.keys(out).length < 8;
+          if (!include) continue;
+          if (Object.keys(out).length >= ASYNCAPI_SAMPLE_LIMITS.maxPropertiesPerObject || context.nodes >= ASYNCAPI_SAMPLE_LIMITS.maxNodes) {
+            context.truncated = true;
+            break;
+          }
+          out[name] = sampleFromSchema(propSchema, depth + 1, context);
+        }
+        return out;
+      }
+      case "array": {
+        const items = Array.isArray(record.items) ? record.items[0] : record.items;
+        if (items === void 0) return [];
+        if (context.nodes >= ASYNCAPI_SAMPLE_LIMITS.maxNodes) {
+          context.truncated = true;
+          return [];
+        }
+        return [sampleFromSchema(items, depth + 1, context)];
+      }
+      case "string":
+        return typeof record.format === "string" ? `<${record.format}>` : "string";
+      case "integer":
+      case "number":
+        return 0;
+      case "boolean":
+        return true;
+      case "null":
+        return null;
+      default:
+        return {};
+    }
+  } finally {
+    context.activeSchemas.delete(record);
+  }
+}
+function synthesizeAsyncApiSample(schema3) {
+  const context = {
+    activeSchemas: /* @__PURE__ */ new WeakSet(),
+    nodes: 0,
+    truncated: false
+  };
+  return {
+    sample: sampleFromSchema(schema3, 0, context),
+    truncated: context.truncated
+  };
 }
 function bindingKeyValues(bindingSchema) {
   const properties = asRecord23(asRecord23(bindingSchema)?.properties);
@@ -335878,7 +336055,13 @@ function messageDescriptor2(message, warnings, channelId, defaultContentType, re
   if (hasExample) {
     sample = examples[0].payload();
   } else if (payloadSchema) {
-    sample = sampleFromSchema(payloadSchema, 0);
+    const synthesized = synthesizeAsyncApiSample(payloadSchema);
+    sample = synthesized.sample;
+    if (synthesized.truncated) {
+      warnings.push(
+        `ASYNCAPI_SAMPLE_TRUNCATED: message ${id} on channel ${channelId} exceeded bounded schema sample synthesis limits`
+      );
+    }
   } else {
     sample = {};
   }
@@ -338731,7 +338914,7 @@ var REGISTRY_SERVER_SCHEMA = {
 };
 
 // src/lib/protocols/mcp/mcp-parser.ts
-var SAMPLE_MAX_DEPTH2 = 5;
+var SAMPLE_MAX_DEPTH = 5;
 var REGISTRY_SCHEMA_URL_RE = /^https:\/\/static\.modelcontextprotocol\.io\/schemas\/[^/]+\/server(?:\.schema)?\.json$/;
 var RFC6570_EXPRESSION_RE = /^\{[+#./;?&]?[A-Za-z0-9_%.]+(?::[1-9][0-9]{0,3}|\*)?(?:,[A-Za-z0-9_%.]+(?::[1-9][0-9]{0,3}|\*)?)*\}$/;
 var RFC6570_OPERATOR_RE = /^[+#./;?&]/;
@@ -339013,7 +339196,7 @@ function sampleFromSchema2(schema3, depth) {
   const enumValues = asArray19(record.enum);
   if (enumValues.length > 0) return enumValues[0];
   if (record.const !== void 0) return record.const;
-  if (depth >= SAMPLE_MAX_DEPTH2) return {};
+  if (depth >= SAMPLE_MAX_DEPTH) return {};
   const type2 = Array.isArray(record.type) ? record.type.find((t) => t !== "null") : record.type;
   const composite = asArray19(record.allOf).concat(asArray19(record.anyOf), asArray19(record.oneOf));
   if (!type2 && composite.length > 0) return sampleFromSchema2(composite[0], depth + 1);
@@ -344120,7 +344303,9 @@ function createRoutingPostmanClient(options) {
 function createBootstrapDependencies(inputs, factories, orgMode = false) {
   const mutableMasker = createMutableSecretMasker([
     inputs.postmanApiKey,
-    inputs.postmanAccessToken
+    inputs.postmanAccessToken,
+    inputs.githubToken,
+    inputs.ghFallbackToken
   ]);
   const secretMasker = mutableMasker.mask;
   const appVersionProvider = new PostmanAppVersionProvider({
@@ -344420,7 +344605,9 @@ function createCliExec(secretMasker) {
 function createCliDependencies(inputs) {
   const secretMasker = createSecretMasker([
     inputs.postmanApiKey,
-    inputs.postmanAccessToken
+    inputs.postmanAccessToken,
+    inputs.githubToken,
+    inputs.ghFallbackToken
   ]);
   const cliExec = createCliExec(secretMasker);
   return createBootstrapDependencies(inputs, {

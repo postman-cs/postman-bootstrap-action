@@ -7,6 +7,7 @@ import {
   resolveBundleRelativeKey
 } from '../definition-bundle-support.js';
 import { lintWsiConformance, type WsdlImportResolver } from './wsi-lints.js';
+import { assertNoXmlDoctype } from './xml-safety.js';
 import { buildXsdIndex, type XsdSchemaIndex } from './xsd-index.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -153,6 +154,7 @@ function createParser(): XMLParser {
     removeNSPrefix: false,
     parseAttributeValue: false,
     parseTagValue: false,
+    processEntities: false,
     trimValues: true,
     isArray: () => false
   });
@@ -972,6 +974,7 @@ function lintWsdl11(definitions: JsonRecord, messages: Map<string, SoapMessage>,
 function parseWsdlDocument(content: string): { root: JsonRecord; definitions: JsonRecord | null; description: JsonRecord | null } {
   const text = asString(content).trim();
   if (!text) throw new Error('SOAP_EMPTY_WSDL: WSDL content is empty');
+  assertNoXmlDoctype(text);
   const validation = XMLValidator.validate(text);
   if (validation !== true) {
     throw new Error(`SOAP_WSDL_XML_INVALID: WSDL is not well-formed XML: ${validation.err.msg} (line ${validation.err.line})`);

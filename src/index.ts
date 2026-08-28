@@ -938,25 +938,25 @@ function extractSpecBranchMarker(content: string | undefined):
   return { repo, rawBranch, role, createdAt, lastSyncedAt };
 }
 
-/** Durable description marker for preview/channel collection roots. */
+/**
+ * Durable collection ownership marker. Retention clocks live on the spec and
+ * environment markers; keeping this marker clock-free lets concurrent triggers
+ * for one revision converge on identical collection payloads.
+ */
 export function renderCollectionBranchMarker(
   decision: BranchDecision,
-  repo: string | undefined,
-  now = new Date()
+  repo: string | undefined
 ): string | undefined {
   if ((decision.tier !== 'preview' && decision.tier !== 'channel') || !decision.identity.headBranch || !repo) {
     return undefined;
   }
   const rawBranch = decision.identity.headBranch;
-  const timestamp = now.toISOString();
   return renderAssetMarker({
     repo,
     rawBranch,
     sanitizedBranch: rawBranch.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/-+/g, '-').slice(0, 30),
     role: decision.tier,
-    headSha: decision.identity.headSha,
-    createdAt: timestamp,
-    lastSyncedAt: timestamp
+    headSha: decision.identity.headSha
   });
 }
 

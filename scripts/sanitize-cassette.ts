@@ -216,10 +216,21 @@ function isNumericPlaceholder(value: number, category: EntityCategory): boolean 
   return value <= base - 1 && value > base - 1_000;
 }
 
+function isSyntheticPublicCollectionUid(value: string): boolean {
+  const match = /^(\d+)-(00000000-0000-4000-8000-\d{12})$/.exec(value);
+  if (!match) return false;
+  const ownerId = Number(match[1]);
+  return [
+    ...(SYNTHETIC_NUMERIC_PLACEHOLDERS.team ?? []),
+    ...(SYNTHETIC_NUMERIC_PLACEHOLDERS.user ?? [])
+  ].includes(ownerId);
+}
+
 function isEntityPlaceholder(value: unknown, category: EntityCategory): boolean {
   if (typeof value === 'number') return isNumericPlaceholder(value, category);
   if (typeof value !== 'string') return false;
   if (/^00000000-0000-4000-8000-\d{12}$/.test(value)) return true;
+  if (isSyntheticPublicCollectionUid(value)) return true;
   if (/^-?\d+$/.test(value) && isNumericPlaceholder(Number(value), category)) return true;
   return placeholderPattern(category).test(value);
 }
@@ -487,7 +498,9 @@ function applyPlanReplacements(value: string, plan: ReplacementPlan): string {
 function sanitizeTextSegment(value: string, plan: ReplacementPlan): string {
   const sanitized = applyPlanReplacements(value, plan);
   return sanitized
-    .replace(POSTMAN_UID_PATTERN, (match) => `cassette-uid-${match.length}`)
+    .replace(POSTMAN_UID_PATTERN, (match) =>
+      isSyntheticPublicCollectionUid(match) ? match : `cassette-uid-${match.length}`
+    )
     .replace(UUID_PATTERN, (match) =>
       /^00000000-0000-4000-8000-\d{12}$/.test(match)
         ? match
@@ -679,13 +692,17 @@ function assertNoForbiddenText(value: string, location: string): void {
       'encoded repository URL',
       /(?:https?|ssh)%3A%2F%2F(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|ssh\.dev\.azure\.com)/i
     ],
-    ['Postman UID', /\b\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i],
     ['object UID', /\b[0-9a-f]{24}\b/i],
     ['local POSIX filesystem path', POSIX_LOCAL_PATH_FORBIDDEN],
     ['local Windows filesystem path', WINDOWS_LOCAL_PATH_FORBIDDEN]
   ];
   for (const [label, pattern] of forbidden) {
     if (pattern.test(value)) throw new Error(`Cassette redaction invariant failed at ${location}: ${label}`);
+  }
+  for (const match of value.matchAll(POSTMAN_UID_PATTERN)) {
+    if (!isSyntheticPublicCollectionUid(match[0])) {
+      throw new Error(`Cassette redaction invariant failed at ${location}: Postman UID`);
+    }
   }
   for (const match of value.matchAll(UUID_PATTERN)) {
     if (!/^00000000-0000-4000-8000-\d{12}$/.test(match[0])) {

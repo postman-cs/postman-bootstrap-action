@@ -3,16 +3,7 @@ name: Release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
-    inputs:
-      e2e_verification_mode:
-        description: Enforce correlated E2E success before moving the rolling alias, or explicitly report-only.
-        required: true
-        type: choice
-        options:
-          - enforce
-          - report-only
-        default: enforce
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -383,7 +374,7 @@ jobs:
         id: verifier
         env:
           E2E_DISPATCH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
-          E2E_GATE_MODE: ${{ inputs.e2e_verification_mode || 'enforce' }}
+          E2E_GATE_MODE: enforce
           E2E_GATE_ACTION: postman-bootstrap-action
           E2E_GATE_SUITE: full
           E2E_GATE_REF: ${{ github.ref_name }}
@@ -394,7 +385,7 @@ jobs:
 
   advance-major-alias:
     needs: [classify, verify-package, publish, verify-release-e2e]
-    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' }}
+    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' && needs.verify-release-e2e.outputs.outcome == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -450,7 +441,7 @@ jobs:
   # the composite's daily cron still picks the release up.
   notify-composite:
     needs: [classify, verify-package, publish, verify-release-e2e, advance-major-alias]
-    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.advance-major-alias.result == 'success' }}
+    if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' && needs.verify-release-e2e.outputs.outcome == 'success' && needs.advance-major-alias.result == 'success' }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:

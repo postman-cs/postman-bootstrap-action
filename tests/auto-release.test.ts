@@ -228,6 +228,21 @@ describe('auto-release workflow', () => {
     expect(autoReleaseWorkflow).toContain('gh workflow run release.yml --ref "$TAG"');
   });
 
+  it('does not blindly dispatch a newly cut tag when its push-triggered release run exists', () => {
+    const observe = autoReleaseWorkflow.indexOf(
+      'gh run list --workflow release.yml --branch "$TAG" --event push'
+    );
+    const recover = autoReleaseWorkflow.indexOf(
+      'gh workflow run release.yml --ref "$TAG"',
+      observe
+    );
+    expect(observe).toBeGreaterThan(-1);
+    expect(recover).toBeGreaterThan(observe);
+    expect(autoReleaseWorkflow).toContain('if [ "$RELEASE" = true ]; then');
+    expect(autoReleaseWorkflow).toContain('no duplicate dispatch needed');
+    expect(autoReleaseWorkflow).toContain('No tag-triggered release run');
+  });
+
   it('reconciles the prior incomplete tag before planning another cut', () => {
     const reconcile = autoReleaseWorkflow.indexOf('name: Reconcile prior release');
     const plan = autoReleaseWorkflow.indexOf('name: Plan release');

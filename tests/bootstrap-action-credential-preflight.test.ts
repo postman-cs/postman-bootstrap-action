@@ -229,17 +229,15 @@ describe('runAction credential preflight', () => {
         }
         if (svc === 'sync') {
           if (pmethod === 'post' && ppath === '/collection/import') {
-            const body = (payload as { body?: { info?: { name?: string } } }).body;
+            const body = (payload as {
+              body?: { info?: { _postman_id?: string; name?: string } };
+            }).body;
             const name = String(body?.info?.name ?? '');
-            const slot = name.includes('[Contract]')
-              ? 'contract'
-              : name.includes('[Smoke]')
-                ? 'smoke'
-                : 'baseline';
-            const id = `col-${slot}`;
+            const modelId = String(body?.info?._postman_id ?? '').trim();
+            const id = `2001-${modelId}`;
             importedCollections.push({ id, name });
             collectionExports.set(id, structuredClone(body as Record<string, unknown>));
-            return json({ data: { id, uid: id } });
+            return json({ model_id: modelId, data: { info: { _postman_id: modelId, name } } });
           }
           if (pmethod === 'put' && /\/collection\/deepupdate\//.test(ppath)) {
             const id = ppath.split('/').pop() || '';

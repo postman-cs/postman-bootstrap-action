@@ -43,7 +43,7 @@ describe('release workflow publishing contract', () => {
       "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}"
     );
     expect(job('advance-major-alias')).toContain(
-      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' }}"
+      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' && needs.verify-release-e2e.outputs.outcome == 'success' }}"
     );
   });
 
@@ -181,7 +181,8 @@ describe('release workflow publishing contract', () => {
     const verifier = job('verify-release-e2e');
     expect(verifier).toContain('needs: [classify, verify-package, publish]');
     expect(verifier).not.toContain('continue-on-error');
-    expect(verifier).toContain("E2E_GATE_MODE: ${{ inputs.e2e_verification_mode || 'enforce' }}");
+    expect(verifier).toContain('E2E_GATE_MODE: enforce');
+    expect(verifier).toContain('outcome: ${{ steps.verifier.outputs.e2e_outcome }}');
     expect(verifier).toContain('E2E_GATE_ACTION: postman-bootstrap-action');
     expect(verifier).toContain('E2E_GATE_SUITE: full');
     expect(verifier).toContain('E2E_GATE_REF: ${{ github.ref_name }}');
@@ -192,7 +193,12 @@ describe('release workflow publishing contract', () => {
     expect(job('advance-major-alias')).toContain(
       'needs: [classify, verify-package, publish, verify-release-e2e]'
     );
-    expect(workflow).toContain('default: enforce');
+    expect(workflow).toContain('workflow_dispatch: {}');
+    expect(workflow).not.toContain('e2e_verification_mode');
+    expect(workflow).not.toContain('report-only');
+    expect(job('advance-major-alias')).toContain(
+      "needs.verify-release-e2e.outputs.outcome == 'success'"
+    );
   });
 
   it('dispatches sibling-release from release.yml after alias advance because workflow_run cascades never fire for GITHUB_TOKEN-created Release runs', () => {
@@ -201,7 +207,7 @@ describe('release workflow publishing contract', () => {
       'needs: [classify, verify-package, publish, verify-release-e2e, advance-major-alias]'
     );
     expect(notify).toContain(
-      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.advance-major-alias.result == 'success' }}"
+      "if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' && needs.verify-release-e2e.outputs.outcome == 'success' && needs.advance-major-alias.result == 'success' }}"
     );
     expect(notify).toMatch(/permissions:\s*\{\}/);
     expect(notify).toContain('actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0');

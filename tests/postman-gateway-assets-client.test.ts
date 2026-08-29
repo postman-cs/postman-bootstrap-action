@@ -3930,10 +3930,10 @@ describe('PostmanGatewayAssetsClient', () => {
       250, 500, 750, 1000, 1500, 2000, 3000, 4000, 5000
     ] as const;
     const DELETE_ABSENCE_SETTLE_DELAYS_MS = [250, 500, 750, 1000, 1500, 2000, 3000] as const;
-    // Bare-model-id -> ROOT-addressable uid resolution before the finalize PATCH.
-    // Sync returns a bare id and collection ROOT PATCH rejects it 403, so every
-    // import spends one inventory read here, and polls this schedule -- the same
-    // visibility window election gets -- while the imported row is still hidden.
+    // Bare-model-id -> ROOT-addressable uid resolution for exact identity proof
+    // and downstream use. Sync returns a bare id, so every import spends one
+    // inventory read here and polls this schedule -- the same visibility window
+    // election gets -- while the imported row is still hidden.
     const ROOT_UID_RESOLVE_DELAYS_MS = [
       ...STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS,
       ...PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.slice(
@@ -3957,6 +3957,15 @@ describe('PostmanGatewayAssetsClient', () => {
         }
       ]
     };
+
+    const collectionWithRootId = (
+      rootId: string,
+      name = v21Collection.info.name,
+      description = v21Collection.info.description
+    ) => ({
+      ...v21Collection,
+      info: { ...v21Collection.info, _postman_id: rootId, name, description }
+    });
 
     it('memoizes concurrent post-import inventory reads and returns one cursor per identity', async () => {
       const bareId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -4077,7 +4086,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(reads).toBe((STANDARD_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1) * 2);
     });
 
-    it('caps import and rename mutations at two while three finalizers share an inventory read', async () => {
+    it('caps import mutations at two while three finalizers share an inventory read', async () => {
       const identities = [
         'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
         'bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
@@ -4119,28 +4128,24 @@ describe('PostmanGatewayAssetsClient', () => {
           if (slot === 2) postsStarted();
           await postGate;
           activeMutations -= 1;
-          const bare = identities[slot - 1]!;
-          const name = String((env.body as { info?: { name?: string } }).info?.name ?? '');
+          const body = env.body as { info?: { name?: string; _postman_id?: string } };
+          const bare = String(body.info?._postman_id ?? identities[slot - 1]);
+          const name = String(body.info?.name ?? '');
           inventory.push({ id: `100-${bare}`, name });
           return jsonResponse({ model_id: bare });
         }
-        if (env.service === 'collection' && env.method === 'patch') {
-          activeMutations += 1;
-          peakMutations = Math.max(peakMutations, activeMutations);
-          const op = (env.body as Array<{ value?: string }>)[0];
-          const id = String(env.path).split('/').pop() ?? '';
-          const row = inventory.find((entry) => entry.id === id);
-          if (row) row.name = String(op?.value ?? '');
-          activeMutations -= 1;
-          return jsonResponse({ data: { ok: true } });
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          const bare = env.path.split('/').at(-2) ?? '';
+          const name = inventory.find((entry) => entry.id.endsWith(bare))?.name ?? 'Payments';
+          return jsonResponse({ data: { collection: collectionWithRootId(bare, name) } });
         }
         return jsonResponse({ data: { ok: true } });
       }, { createIdentity: () => `run-${created + 1}` });
 
       const imports = [
-        client.importV2Collection('ws-mutations', v21Collection, 'Payments'),
-        client.importV2Collection('ws-mutations', v21Collection, 'Invoices'),
-        client.importV2Collection('ws-mutations', v21Collection, 'Contracts')
+        client.importV2Collection('ws-mutations', collectionWithRootId(identities[0]!), 'Payments'),
+        client.importV2Collection('ws-mutations', collectionWithRootId(identities[1]!), 'Invoices'),
+        client.importV2Collection('ws-mutations', collectionWithRootId(identities[2]!), 'Contracts')
       ];
       await twoPosts;
       expect(peakMutations).toBe(2);
@@ -4155,47 +4160,199 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(peakMutations).toBe(2);
     });
 
-    it('imports with one sync POST /collection/import using format 2.1.0, run-unique temp name, and preserved supplied root identity', async () => {
+    it('imports the final name with one sync POST, preserves the preallocated root identity, and emits no rename PATCH', async () => {
+      const bareId = '11111111-1111-1111-1111-111111111111';
+      const canonicalId = `12345678-${bareId}`;
       const inventory: Array<{ id: string; name: string }> = [];
       const { client, gateway, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
           const body = env.body as { info?: { name?: string; _postman_id?: string } };
-          expect(body.info?.name).toContain('[bootstrap:test-run]');
+          expect(body.info?.name).toBe('Payments');
           expect(body.info?._postman_id).toBeTruthy();
-          expect(body.info?._postman_id).toBe('11111111-1111-1111-1111-111111111111');
-          inventory.push({ id: 'col-imported', name: String(body.info?.name) });
-          return jsonResponse({ data: { id: 'col-imported', uid: 'col-imported' } });
+          expect(body.info?._postman_id).toBe(bareId);
+          inventory.push({ id: canonicalId, name: String(body.info?.name) });
+          return jsonResponse({ model_id: bareId, data: { info: { _postman_id: bareId } } });
         }
         if (env.service === 'collection' && env.method === 'get' && String(env.path).startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'patch') {
-          const ops = env.body as Array<{ path?: string; value?: string }>;
-          const nameOp = ops.find((op) => op.path === '/name');
-          if (nameOp?.value) {
-            const hit = inventory.find((entry) => entry.id === 'col-imported');
-            if (hit) hit.name = String(nameOp.value);
-          }
-          return jsonResponse({ data: { id: 'col-imported' } });
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
         }
         return jsonResponse({ data: { ok: true } });
       });
       const requestJson = vi.spyOn(gateway, 'requestJson');
 
-      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
-      expect(result.collectionId).toBe('col-imported');
-      expect(result.journaledRootIds).toEqual(['col-imported']);
+      const result = await client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(bareId),
+        'Payments'
+      );
+      expect(result.collectionId).toBe(canonicalId);
+      expect(result.journaledRootIds).toEqual([canonicalId]);
       const importCall = calls.find(
         (call) => call.service === 'sync' && call.method === 'post' && call.path === '/collection/import'
       );
       expect(importCall?.query).toEqual({ workspace: 'ws-1', format: '2.1.0' });
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.service === 'collection' && call.method === 'patch')).toEqual([]);
       const inventoryCalls = requestJson.mock.calls
         .map(([options]) => options)
         .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
       expect(inventoryCalls.length).toBeGreaterThan(1);
       expect(inventoryCalls[0]?.retry).toBe('none');
       expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
+    });
+
+    it('recovers a lost import response only by exact preallocated identity plus matching final payload evidence', async () => {
+      const bareId = '11111111-1111-1111-1111-111111111111';
+      const canonicalId = `12345678-${bareId}`;
+      const foreignBareId = '00000000-0000-4000-8000-000000000000';
+      const foreignId = `12345678-${foreignBareId}`;
+      const foreignCollection = structuredClone(v21Collection);
+      foreignCollection.info._postman_id = foreignBareId;
+      foreignCollection.item[0]!.name = 'FOREIGN';
+      let submitted = false;
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          submitted = true;
+          return jsonResponse(
+            { error: { details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
+            { status: 500 }
+          );
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: submitted
+              ? [
+                  { id: foreignId, name: 'Payments' },
+                  { id: canonicalId, name: 'Payments' }
+                ]
+              : []
+          });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${bareId}/export`
+        ) {
+          return jsonResponse({ data: { collection: v21Collection } });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${foreignBareId}/export`
+        ) {
+          return jsonResponse({ data: { collection: foreignCollection } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
+        collectionId: canonicalId,
+        journaledRootIds: [canonicalId]
+      });
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'patch')).toEqual([]);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+    });
+
+    it('rejects an exact-ID ambiguous-import candidate whose exported payload digest is foreign', async () => {
+      const bareId = '11111111-1111-1111-1111-111111111111';
+      const canonicalId = `12345678-${bareId}`;
+      let submitted = false;
+      const foreign = structuredClone(v21Collection);
+      foreign.item[0]!.name = 'FOREIGN';
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          submitted = true;
+          return jsonResponse({ error: 'ESOCKETTIMEDOUT' }, { status: 504 });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: submitted ? [{ id: canonicalId, name: 'Payments' }] : [] });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: foreign } });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+        /IMPORT_IDENTITY_CONFLICT.*digest/i
+      );
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'patch')).toEqual([]);
+    });
+
+    it('rejects a successful import response whose model identity differs from the preallocated root', async () => {
+      const preallocatedId = v21Collection.info._postman_id;
+      const wrongBareId = '99999999-9999-4999-8999-999999999999';
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          return jsonResponse({ model_id: wrongBareId });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [] });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+        /IMPORT_RESPONSE_ID_MISMATCH/
+      );
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'patch')).toEqual([]);
+      expect(calls.filter((call) => call.method === 'delete').map((call) => call.path)).toEqual([
+        `/v3/collections/${preallocatedId}`
+      ]);
+      expect(calls.some((call) => call.path.includes(wrongBareId) && call.method === 'delete')).toBe(false);
+    });
+
+    it('cleans only the preallocated root when a successful import response has no identity', async () => {
+      const preallocatedId = v21Collection.info._postman_id;
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          return jsonResponse({ data: {} });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [] });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+        /import did not return a collection id/
+      );
+      expect(calls.filter((call) => call.method === 'delete').map((call) => call.path)).toEqual([
+        `/v3/collections/${preallocatedId}`
+      ]);
+    });
+
+    it('rejects and preserves a nominal-success exact ID whose exported digest is foreign', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const canonicalId = `12345678-${bareId}`;
+      const foreign = structuredClone(v21Collection);
+      foreign.item[0]!.name = 'FOREIGN';
+      let submitted = false;
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          submitted = true;
+          return jsonResponse({ model_id: bareId });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: submitted ? [{ id: canonicalId, name: 'Payments' }] : [] });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: foreign } });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+        /IMPORT_IDENTITY_CONFLICT.*digest/i
+      );
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
     });
 
     it('accepts the live Sync import envelope model_id / data.info._postman_id (Q11)', async () => {
@@ -4220,6 +4377,9 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && String(env.path).startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: inventory });
         }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        }
         if (env.service === 'collection' && env.method === 'patch' && env.path === `/v3/collections/${canonicalId}`) {
           const ops = env.body as Array<{ path?: string; value?: string }>;
           const nameOp = ops.find((op) => op.path === '/name');
@@ -4232,13 +4392,17 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ data: { ok: true } });
       });
 
-      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
+      const result = await client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(bareId),
+        'Payments'
+      );
       expect(result.collectionId).toBe(canonicalId);
       expect(result.journaledRootIds).toEqual([canonicalId]);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(calls.filter(
         (call) => call.service === 'collection' && call.method === 'patch'
-      ).map((call) => call.path)).toEqual([`/v3/collections/${canonicalId}`]);
+      )).toEqual([]);
       expect(inventory.some((entry) => entry.id === canonicalId && entry.name === 'Payments')).toBe(true);
     });
 
@@ -4265,6 +4429,9 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && String(env.path).startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: inventory });
         }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        }
         if (env.service === 'collection' && env.method === 'patch') {
           const ops = env.body as Array<{ path?: string; value?: string }>;
           const nameOp = ops.find((op) => op.path === '/name');
@@ -4283,7 +4450,11 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ data: { ok: true } });
       });
 
-      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
+      const result = await client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(bareId),
+        'Payments'
+      );
       expect(result.collectionId).toBe(canonicalId);
       expect(result.journaledRootIds).toEqual([canonicalId]);
       expect(result.journaledRootIds).not.toContain(bareId);
@@ -4292,207 +4463,91 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(inventory.some((entry) => entry.id === canonicalId && entry.name === 'Payments')).toBe(true);
     });
 
-    it('accepts import rename after ambiguous 500 only via same-UID final-name inventory readback', async () => {
-      const inventory: Array<{ id: string; name: string }> = [];
-      let renamePatches = 0;
-      const { client, gateway, calls } = makeClient((env) => {
+    it('surfaces a terminal import 4xx after one POST without reconciliation or cleanup', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [] });
+        }
         if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
-          const body = env.body as { info?: { name?: string } };
-          inventory.push({ id: 'col-imported', name: String(body.info?.name || '') });
-          return jsonResponse({ data: { id: 'col-imported', uid: 'col-imported' } });
+          return jsonResponse({ error: { message: 'invalid collection' } }, { status: 422 });
         }
-        if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          String(env.path).startsWith('/v3/collections/?workspace=')
-        ) {
-          return jsonResponse({ data: inventory });
-        }
-        if (env.service === 'collection' && env.method === 'patch') {
-          renamePatches += 1;
-          const ops = env.body as Array<{ path?: string; value?: string }>;
-          const nameOp = ops.find((op) => op.path === '/name');
-          // Commit the final name server-side, then return an ambiguous 500.
-          if (nameOp?.value) {
-            const hit = inventory.find((entry) => entry.id === 'col-imported');
-            if (hit) hit.name = String(nameOp.value);
-          }
-          return jsonResponse(
-            { error: { details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
-            { status: 500 }
-          );
-        }
-        return jsonResponse({ data: { ok: true } });
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
       });
-      const requestJson = vi.spyOn(gateway, 'requestJson');
-
-      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
-      expect(result.collectionId).toBe('col-imported');
-      expect(result.journaledRootIds).toEqual(['col-imported']);
-      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
-      expect(renamePatches).toBe(1);
-      const renameCalls = requestJson.mock.calls
-        .map(([options]) => options)
-        .filter(
-          (options) =>
-            options.service === 'collection' &&
-            options.method === 'patch' &&
-            String(options.path).includes('/v3/collections/')
-        );
-      expect(renameCalls).toHaveLength(1);
-      expect(renameCalls[0]?.retry).toBe('none');
-      const inventoryCalls = requestJson.mock.calls
-        .map(([options]) => options)
-        .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
-      expect(inventoryCalls.length).toBeGreaterThan(1);
-      expect(inventoryCalls[0]?.retry).toBe('none');
-      expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
-      expect(inventory.some((entry) => entry.id === 'col-imported' && entry.name === 'Payments')).toBe(
-        true
-      );
-    });
-
-    it('fails closed on ambiguous rename 500 without same-UID final-name commit and never resends PATCH', async () => {
-      const peerId = 'peer-final';
-      const ownId = 'col-imported';
-      let ownedName = 'Payments [bootstrap:test-run]';
-      let renamePatches = 0;
-      const { client, gateway, calls } = makeClient((env) => {
-        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
-          const body = env.body as { info?: { name?: string } };
-          ownedName = String(body.info?.name || ownedName);
-          return jsonResponse({ data: { id: ownId, uid: ownId } });
-        }
-        if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          String(env.path).startsWith('/v3/collections/?workspace=')
-        ) {
-          return jsonResponse({
-            data: [
-              { id: peerId, name: 'Payments' },
-              { id: ownId, name: ownedName }
-            ]
-          });
-        }
-        if (env.service === 'collection' && env.method === 'patch') {
-          renamePatches += 1;
-          // Ambiguous 500 without committing the exact same UID/name.
-          return jsonResponse(
-            { error: { details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
-            { status: 500 }
-          );
-        }
-        if (env.service === 'collection' && env.method === 'delete') {
-          return jsonResponse({ data: { ok: true } });
-        }
-        if (env.service === 'collection' && env.method === 'get') {
-          return jsonResponse({ error: 'missing' }, { status: 404 });
-        }
-        return jsonResponse({ data: { ok: true } });
-      });
-      const requestJson = vi.spyOn(gateway, 'requestJson');
 
       await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
-        /LOCAL_OPENAPI_IMPORT_FAILED/
+        /stage=import-transport.*422/
       );
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
-      expect(renamePatches).toBe(1);
-      const renameCalls = requestJson.mock.calls
-        .map(([options]) => options)
-        .filter(
-          (options) =>
-            options.service === 'collection' &&
-            options.method === 'patch' &&
-            String(options.path).includes('/v3/collections/')
-        );
-      expect(renameCalls).toHaveLength(1);
-      expect(renameCalls[0]?.retry).toBe('none');
-      // Peer final-name identity must never be adopted after an unproven rename.
+      expect(calls.filter((call) => call.method === 'patch' || call.method === 'delete')).toEqual([]);
       expect(
-        requestJson.mock.calls.some(
-          ([options]) =>
-            options.service === 'collection' &&
-            options.method === 'delete' &&
-            String(options.path).includes(peerId)
-        )
-      ).toBe(false);
+        calls.filter((call) => call.service === 'collection' && call.method === 'get')
+      ).toHaveLength(1);
     });
 
-    it('polls same-UID final-name inventory after ambiguous rename 500 until delayed commit appears', async () => {
-      const ownId = 'col-imported';
-      let tempName = 'Payments [bootstrap:test-run]';
-      let renamedAttempted = false;
-      let postRenameInventoryReads = 0;
-      let renamePatches = 0;
-      const sleep = vi.fn(async (delayMs: number) => {
-        void delayMs;
-      });
-      const { client, gateway, calls } = makeClient((env) => {
+    it('never treats a same-name peer as proof that an ambiguous import committed', async () => {
+      const peerId = '100-22222222-2222-4222-8222-222222222222';
+      let submitted = false;
+      const { client, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
-          const body = env.body as { info?: { name?: string } };
-          tempName = String(body.info?.name || tempName);
-          return jsonResponse({ data: { id: ownId, uid: ownId } });
+          submitted = true;
+          return jsonResponse({ error: 'ESOCKETTIMEDOUT' }, { status: 504 });
         }
-        if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          String(env.path).startsWith('/v3/collections/?workspace=')
-        ) {
-          if (!renamedAttempted) {
-            return jsonResponse({ data: [{ id: ownId, name: tempName }] });
-          }
-          postRenameInventoryReads += 1;
-          // Commit is durable after PATCH but list lag hides the final name at first.
-          if (postRenameInventoryReads < 3) {
-            return jsonResponse({ data: [{ id: ownId, name: tempName }] });
-          }
-          return jsonResponse({ data: [{ id: ownId, name: 'Payments' }] });
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: submitted ? [{ id: peerId, name: 'Payments' }] : [] });
         }
-        if (env.service === 'collection' && env.method === 'patch') {
-          renamePatches += 1;
-          renamedAttempted = true;
-          return jsonResponse(
-            { error: { details: 'ESOCKETTIMEDOUT', source: 'downstream' } },
-            { status: 500 }
-          );
-        }
-        return jsonResponse({ data: { ok: true } });
-      }, { sleep });
-      const requestJson = vi.spyOn(gateway, 'requestJson');
+        return jsonResponse({ data: {} });
+      });
 
-      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
-      expect(result.collectionId).toBe(ownId);
-      expect(result.journaledRootIds).toEqual([ownId]);
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+        /import-ambiguous-unreconciled/
+      );
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
-      expect(renamePatches).toBe(1);
-      const renameCalls = requestJson.mock.calls
-        .map(([options]) => options)
-        .filter(
-          (options) =>
-            options.service === 'collection' &&
-            options.method === 'patch' &&
-            String(options.path).includes('/v3/collections/')
-        );
-      expect(renameCalls).toHaveLength(1);
-      expect(renameCalls[0]?.retry).toBe('none');
-      const inventoryCalls = requestJson.mock.calls
-        .map(([options]) => options)
-        .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
-      expect(inventoryCalls.length).toBeGreaterThan(1);
-      expect(inventoryCalls[0]?.retry).toBe('none');
-      expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
-      // Rename spends the first two cursor gaps; election consumes only the
-      // unspent [750,1000,1250] gaps instead of restarting observation zero.
-      expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-        250, 500, 750, 1000, 1250
+      expect(calls.filter((call) => call.method === 'patch')).toEqual([]);
+      expect(calls.filter((call) => call.method === 'delete').map((call) => call.path)).toEqual([
+        `/v3/collections/${v21Collection.info._postman_id}`
       ]);
+      expect(calls.some((call) => call.method === 'delete' && call.path.includes(peerId))).toBe(false);
+    });
+
+    it('polls exact-ID inventory after an ambiguous import until matching evidence appears', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const ownId = `12345678-${bareId}`;
+      let submitted = false;
+      let postImportReads = 0;
+      const sleep = vi.fn(async (delayMs: number) => { void delayMs; });
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          submitted = true;
+          return jsonResponse({ error: 'ESOCKETTIMEDOUT' }, { status: 504 });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          if (!submitted) return jsonResponse({ data: [] });
+          postImportReads += 1;
+          return jsonResponse({
+            data: postImportReads < 3 ? [] : [{ id: ownId, name: 'Payments' }]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: v21Collection } });
+        }
+        return jsonResponse({ data: {} });
+      }, { sleep });
+
+      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
+        collectionId: ownId,
+        journaledRootIds: [ownId]
+      });
+      expect(postImportReads).toBeGreaterThanOrEqual(3);
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'patch')).toEqual([]);
+      expect(sleep).toHaveBeenCalled();
     });
 
     it('elects lowest peer final UID when own appears first and peer becomes visible later', async () => {
       const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
       const ownId = `300-${ownBare}`;
-      const peerId = '200-11111111-1111-1111-1111-111111111111';
+      const peerBare = '11111111-1111-1111-1111-111111111111';
+      const peerId = `200-${peerBare}`;
       let imported = false;
       let electionObs = 0;
       const deleted: string[] = [];
@@ -4530,6 +4585,14 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          const requested = env.path.split('/').at(-2);
+          return jsonResponse({
+            data: {
+              collection: collectionWithRootId(requested === ownBare ? ownBare : peerBare)
+            }
+          });
+        }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
           return jsonResponse({ data: {} });
@@ -4545,7 +4608,11 @@ describe('PostmanGatewayAssetsClient', () => {
       }, { sleep });
       const requestJson = vi.spyOn(gateway, 'requestJson');
 
-      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
+      const result = await client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(ownBare),
+        'Payments'
+      );
       expect(result.collectionId).toBe(peerId);
       expect(result.journaledRootIds).toEqual([]);
       expect(deleted).toEqual([`/v3/collections/${ownBare}`]);
@@ -4570,14 +4637,15 @@ describe('PostmanGatewayAssetsClient', () => {
         requestJson.mock.calls.filter(
           ([options]) => options.service === 'collection' && options.method === 'patch'
         )
-      ).toHaveLength(1);
+      ).toHaveLength(0);
     });
 
 
     it('import-finalize fails when elected-loser cleanup cannot be verified', async () => {
       const ownBare = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
       const ownId = `300-${ownBare}`;
-      const peerId = '100-11111111-1111-1111-1111-111111111111';
+      const peerBare = '11111111-1111-1111-1111-111111111111';
+      const peerId = `100-${peerBare}`;
       let imported = false;
       const deleted: string[] = [];
       const sleep = vi.fn(async (delayMs: number) => {
@@ -4604,6 +4672,14 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          const requested = env.path.split('/').at(-2);
+          return jsonResponse({
+            data: {
+              collection: collectionWithRootId(requested === ownBare ? ownBare : peerBare)
+            }
+          });
+        }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
           return jsonResponse({ data: {} });
@@ -4618,7 +4694,11 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       }, { sleep });
 
-      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+      await expect(client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(ownBare),
+        'Payments'
+      )).rejects.toThrow(
         /LOCAL_OPENAPI_IMPORT_FAILED: stage=import-finalize cause=LOCAL_OPENAPI_CLEANUP_FAILED/
       );
       expect(deleted.length).toBeGreaterThanOrEqual(1);
@@ -4643,8 +4723,12 @@ describe('PostmanGatewayAssetsClient', () => {
       const finalName = PREVIEW_FINAL_NAME;
       const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
       const ownId = `300-${ownBare}`;
-      const peerId = '100-11111111-1111-1111-1111-111111111111';
-      const marked = { ...v21Collection, info: { ...v21Collection.info, description: marker } };
+      const peerBare = '11111111-1111-1111-1111-111111111111';
+      const peerId = `100-${peerBare}`;
+      const marked = {
+        ...v21Collection,
+        info: { ...v21Collection.info, _postman_id: ownBare, description: marker }
+      };
       let imported = false;
       const deleted: string[] = [];
       const adoptDeepUpdates: Array<{ path: string; body: unknown }> = [];
@@ -4672,6 +4756,11 @@ describe('PostmanGatewayAssetsClient', () => {
           // Own root never appears: the peer election already deleted it.
           return jsonResponse({
             data: [{ id: peerId, name: finalName, description: marker }]
+          });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({
+            data: { collection: collectionWithRootId(peerBare, finalName, marker) }
           });
         }
         if (env.service === 'collection' && env.method === 'delete') {
@@ -4721,7 +4810,10 @@ describe('PostmanGatewayAssetsClient', () => {
       const ownId = `300-${ownBare}`;
       const peerBare = '33333333-3333-3333-3333-333333333333';
       const peerId = `100-${peerBare}`;
-      const marked = { ...v21Collection, info: { ...v21Collection.info, description: marker } };
+      const marked = {
+        ...v21Collection,
+        info: { ...v21Collection.info, _postman_id: ownBare, description: marker }
+      };
       let imported = false;
       const deleted: string[] = [];
       const sleep = vi.fn(async (delayMs: number) => {
@@ -4753,14 +4845,7 @@ describe('PostmanGatewayAssetsClient', () => {
           env.path === `/v3/collections/${peerBare}/export`
         ) {
           return jsonResponse({
-            data: {
-              info: {
-                name: finalName,
-                description: marker,
-                schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'
-              },
-              item: []
-            }
+            data: { collection: collectionWithRootId(peerBare, finalName, marker) }
           });
         }
         if (env.service === 'collection' && env.method === 'delete') {
@@ -4811,7 +4896,10 @@ describe('PostmanGatewayAssetsClient', () => {
       const finalName = PREVIEW_FINAL_NAME;
       const ownBare = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
       const strangerId = '100-22222222-2222-2222-2222-222222222222';
-      const marked = { ...v21Collection, info: { ...v21Collection.info, description: marker } };
+      const marked = {
+        ...v21Collection,
+        info: { ...v21Collection.info, _postman_id: ownBare, description: marker }
+      };
       let imported = false;
       const sleep = vi.fn(async (delayMs: number) => {
         void delayMs;
@@ -4889,7 +4977,8 @@ describe('PostmanGatewayAssetsClient', () => {
       const finalName = PREVIEW_FINAL_NAME;
       const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
       const ownId = `300-${ownBare}`;
-      const peerId = '200-11111111-1111-1111-1111-111111111111';
+      const peerBare = '11111111-1111-1111-1111-111111111111';
+      const peerId = `200-${peerBare}`;
       let imported = false;
       let electionObs = 0;
       let cleanupInventoryReads = 0;
@@ -4940,6 +5029,17 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          const requested = env.path.split('/').at(-2);
+          return jsonResponse({
+            data: {
+              collection: collectionWithRootId(
+                requested === ownBare ? ownBare : peerBare,
+                finalName
+              )
+            }
+          });
+        }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
           return jsonResponse({ data: {} });
@@ -4958,7 +5058,11 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       }, { sleep });
 
-      const result = await client.importV2Collection('ws-1', v21Collection, finalName);
+      const result = await client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(ownBare),
+        finalName
+      );
       expect(result.collectionId).toBe(peerId);
       expect(result.journaledRootIds).toEqual([]);
       // First DELETE leaves a stale root GET 200 + inventory hit; second DELETE
@@ -4968,7 +5072,7 @@ describe('PostmanGatewayAssetsClient', () => {
         `/v3/collections/${ownBare}`
       ]);
       expect(ownRootReads).toBe(2);
-      // The successful rename is retained in the cursor; election consumes only
+      // Exact-root resolution is retained in the cursor; election consumes only
       // its remaining delayed timeline instead of restarting observation zero.
       expect(electionObs).toBe(PREVIEW_IMPORT_IDENTITY_SETTLE_DELAYS_MS.length + 1);
       expect(cleanupInventoryReads).toBe(1);
@@ -5028,6 +5132,11 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({
+            data: { collection: collectionWithRootId(ownBare, finalName) }
+          });
+        }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
           return jsonResponse({ data: {} });
@@ -5042,7 +5151,11 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       }, { sleep });
 
-      const result = await client.importV2Collection('ws-1', v21Collection, finalName);
+      const result = await client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(ownBare),
+        finalName
+      );
       expect(result.collectionId).toBe(ownId);
       expect(result.journaledRootIds).toEqual([ownId]);
       expect(deleted).toEqual([]);
@@ -5067,31 +5180,37 @@ describe('PostmanGatewayAssetsClient', () => {
         let releaseA!: () => void;
         const aAtElection = new Promise<void>((resolve) => { releaseA = resolve; });
         let releaseB!: () => void;
-        const bRenamed = new Promise<void>((resolve) => { releaseB = resolve; });
+        const bImported = new Promise<void>((resolve) => { releaseB = resolve; });
 
         const handler = (env: Envelope): Response => {
           if (env.service === 'sync' && env.method === 'put' && String(env.path).startsWith('/collection/deepupdate/')) {
             return jsonResponse({ data: { ok: true } });
           }
           if (env.service === 'sync' && env.path === '/collection/import') {
-            const body = env.body as { info?: { name?: string; description?: string } };
-            const runner = String(body.info?.name).includes('runner-a') ? 'a' : 'b';
+            const body = env.body as {
+              info?: { name?: string; description?: string; _postman_id?: string };
+            };
+            const runner = own.a.endsWith(String(body.info?._postman_id)) ? 'a' : 'b';
             entries.push({
               id: own[runner],
               name: String(body.info?.name),
               description: String(body.info?.description)
             });
+            if (runner === 'b') releaseB();
             return jsonResponse({ model_id: own[runner].slice(4) });
-          }
-          if (env.service === 'collection' && env.method === 'patch') {
-            const bare = String(env.path).split('/').pop();
-            const hit = entries.find((entry) => entry.id.endsWith(String(bare)));
-            if (hit) hit.name = finalName;
-            if (hit?.id === own.b) releaseB();
-            return jsonResponse({ data: {} });
           }
           if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
             return jsonResponse({ data: entries });
+          }
+          if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+            const bare = String(env.path).split('/').at(-2) ?? '';
+            const hit = entries.find((entry) => entry.id.endsWith(bare));
+            if (!hit) return jsonResponse({ error: 'missing' }, { status: 404 });
+            return jsonResponse({
+              data: {
+                collection: collectionWithRootId(bare, finalName, hit.description)
+              }
+            });
           }
           if (
             env.service === 'collection' &&
@@ -5122,7 +5241,7 @@ describe('PostmanGatewayAssetsClient', () => {
             aSleepCount += 1;
             if (aSleepCount === 1) {
               releaseA();
-              await bRenamed;
+              await bImported;
             }
           }
         }).client;
@@ -5136,7 +5255,9 @@ describe('PostmanGatewayAssetsClient', () => {
         const previewB = structuredClone(v21Collection) as typeof previewA;
         previewA.info.description =
           'x-pm-onboarding: {"repo":"org/repo","rawBranch":"feature/x","sanitizedBranch":"feature-x","role":"preview","createdAt":"2026-07-23T00:00:00Z","lastSyncedAt":"2026-07-23T00:00:00Z"}';
-        previewB.info.description = previewA.info.description.replaceAll('00:00:00', '00:00:01');
+        previewB.info.description = previewA.info.description;
+        previewA.info._postman_id = own.a.slice(4);
+        previewB.info._postman_id = own.b.slice(4);
 
         const first = clientA.importV2Collection('ws-1', previewA, finalName);
         await aAtElection;
@@ -5151,10 +5272,11 @@ describe('PostmanGatewayAssetsClient', () => {
       }
     );
 
-    it('reconciles ambiguous import only by exact temp name', async () => {
+    it('reconciles ambiguous import only by exact preallocated identity', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const ownedId = `12345678-${bareId}`;
       let listed = false;
       let importAttempted = false;
-      let ownedName = 'Payments [bootstrap:test-run]';
       const { client, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.path === '/collection/import') {
           importAttempted = true;
@@ -5164,34 +5286,35 @@ describe('PostmanGatewayAssetsClient', () => {
           listed = true;
           return jsonResponse({
             data: [
-              { id: 'peer-final', name: 'Payments' },
-              ...(importAttempted ? [{ id: 'owned-temp', name: ownedName }] : [])
+              { id: '12345678-22222222-2222-4222-8222-222222222222', name: 'Payments' },
+              ...(importAttempted ? [{ id: ownedId, name: 'Payments' }] : [])
             ]
           });
         }
-        if (env.service === 'collection' && env.method === 'patch') {
-          ownedName = 'Payments';
-          return jsonResponse({ data: { id: 'owned-temp' } });
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: v21Collection } });
         }
         return jsonResponse({ data: { ok: true } });
       });
 
       const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
       expect(listed).toBe(true);
-      expect(result.collectionId).toBe('owned-temp');
-      expect(result.journaledRootIds).toContain('owned-temp');
-      expect(result.journaledRootIds).not.toContain('peer-final');
+      expect(result.collectionId).toBe(ownedId);
+      expect(result.journaledRootIds).toEqual([ownedId]);
       expect(calls.some((call) => call.path === '/collection/import')).toBe(true);
+      expect(calls.filter((call) => call.method === 'patch')).toEqual([]);
     });
 
-    it('reconciles a committed rate-limited import by exact temp identity without resending POST', async () => {
+    it('reconciles a committed rate-limited import by exact identity without resending POST', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const ownedId = `12345678-${bareId}`;
       const inventory: Array<{ id: string; name: string }> = [];
       let importAttempts = 0;
       const { client, gateway, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.path === '/collection/import') {
           importAttempts += 1;
           const body = env.body as { info?: { name?: string } };
-          inventory.push({ id: 'owned-import', name: String(body.info?.name || '') });
+          inventory.push({ id: ownedId, name: String(body.info?.name || '') });
           return jsonResponse(
             { error: { message: 'rate limited after commit' } },
             { status: 429, headers: { 'Retry-After': '0' } }
@@ -5200,16 +5323,15 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'patch') {
-          inventory[0]!.name = 'Payments';
-          return jsonResponse({ data: { id: 'owned-import' } });
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: v21Collection } });
         }
         return jsonResponse({ data: { ok: true } });
       });
       const requestJson = vi.spyOn(gateway, 'requestJson');
 
       await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
-        collectionId: 'owned-import'
+        collectionId: ownedId
       });
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       const importCalls = requestJson.mock.calls
@@ -5247,6 +5369,8 @@ describe('PostmanGatewayAssetsClient', () => {
     });
 
     it('retries a transient post-import inventory 500 without resending the import', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const ownedId = `12345678-${bareId}`;
       const inventory: Array<{ id: string; name: string }> = [];
       let imported = false;
       let postImportInventoryReads = 0;
@@ -5254,8 +5378,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'sync' && env.path === '/collection/import') {
           imported = true;
           const body = env.body as { info?: { name?: string } };
-          inventory.push({ id: 'owned-import', name: String(body.info?.name || '') });
-          return jsonResponse({ data: { id: 'owned-import', uid: 'owned-import' } });
+          inventory.push({ id: ownedId, name: String(body.info?.name || '') });
+          return jsonResponse({ model_id: bareId });
         }
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           if (imported) {
@@ -5266,15 +5390,14 @@ describe('PostmanGatewayAssetsClient', () => {
           }
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'patch') {
-          inventory[0]!.name = 'Payments';
-          return jsonResponse({ data: { id: 'owned-import' } });
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: v21Collection } });
         }
         return jsonResponse({ data: { ok: true } });
       });
 
       await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
-        collectionId: 'owned-import'
+        collectionId: ownedId
       });
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(postImportInventoryReads).toBeGreaterThan(1);
@@ -5331,10 +5454,17 @@ describe('PostmanGatewayAssetsClient', () => {
             data: observations < 7 ? [] : [{ id: canonicalId, name: 'Payments' }]
           });
         }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        }
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       }, { sleep });
 
-      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
+      await expect(client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(bareId),
+        'Payments'
+      )).resolves.toMatchObject({
         collectionId: canonicalId,
         journaledRootIds: [canonicalId]
       });
@@ -5381,7 +5511,11 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       }, { sleep });
 
-      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).rejects.toThrow(
+      await expect(client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(bareId),
+        'Payments'
+      )).rejects.toThrow(
         /inventory-visible/
       );
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
@@ -5391,9 +5525,8 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
         ...ROOT_UID_RESOLVE_DELAYS_MS
       ]);
-      // Resolution exhausted without a ROOT-addressable uid: the finalize PATCH
-      // is never attempted with the bare id, and the run fails closed on
-      // election rather than shipping a temp-named collection.
+      // Resolution exhausted without a ROOT-addressable uid: no ROOT route is
+      // attempted with the bare id, and the run fails closed on election.
       expect(
         calls.filter((call) => call.service === 'collection' && call.method === 'patch')
       ).toHaveLength(0);
@@ -5403,7 +5536,8 @@ describe('PostmanGatewayAssetsClient', () => {
     it('excludes stale finals from fresh-peer election and never deletes them', async () => {
       const staleBare = '00000000-0000-0000-0000-000000000001';
       const staleId = `100-${staleBare}`;
-      const peerId = '200-11111111-1111-1111-1111-111111111111';
+      const peerBare = '11111111-1111-1111-1111-111111111111';
+      const peerId = `200-${peerBare}`;
       const ownBare = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
       const ownId = `300-${ownBare}`;
       let imported = false;
@@ -5428,6 +5562,14 @@ describe('PostmanGatewayAssetsClient', () => {
               : [{ id: staleId, name: 'Payments' }]
           });
         }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          const requested = env.path.split('/').at(-2);
+          return jsonResponse({
+            data: {
+              collection: collectionWithRootId(requested === ownBare ? ownBare : peerBare)
+            }
+          });
+        }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
           return jsonResponse({ data: {} });
@@ -5442,7 +5584,11 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       });
 
-      const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
+      const result = await client.importV2Collection(
+        'ws-1',
+        collectionWithRootId(ownBare),
+        'Payments'
+      );
       expect(result.collectionId).toBe(peerId);
       expect(result.journaledRootIds).toEqual([]);
       expect(deleted).toEqual([`/v3/collections/${ownBare}`]);

@@ -71,6 +71,11 @@ import {
 } from './spec-file-reconcile.js';
 import { parseSpecTreePage, specTreeNextCursor } from './spec-tree.js';
 import { convergentCollectionRootIdentity } from './convergent-collection-root.js';
+import {
+  parseCollectionSemanticReceipt,
+  renderCollectionSemanticReceipt,
+  stripCollectionSemanticReceipt
+} from './collection-semantic-receipt.js';
 
 export { convergentCollectionRootIdentity } from './convergent-collection-root.js';
 
@@ -2400,6 +2405,32 @@ export class PostmanGatewayAssetsClient {
     return { converged: false, polls, observed };
   }
 
+  /** Existing ambiguous-write budget, using the atomic Sync receipt projection. */
+  private async awaitSemanticReceiptDigest(
+    uid: string,
+    digest: string
+  ): Promise<{ converged: boolean; polls: number }> {
+    const delays = PostmanGatewayAssetsClient.AMBIGUOUS_WRITE_VERIFY_DELAYS_MS;
+    const expectedIdentity = normalizeCollectionModelIdentity(uid);
+    let polls = 0;
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      polls += 1;
+      try {
+        const observed = await this.readCollectionSemanticReceiptRoot(uid);
+        if (
+          normalizeCollectionModelIdentity(observed.id) === expectedIdentity &&
+          observed.digest === digest
+        ) {
+          return { converged: true, polls };
+        }
+      } catch {
+        // A not-yet-visible receipt spends one existing recovery observation.
+      }
+      if (observation < delays.length) await this.sleep(delays[observation]!);
+    }
+    return { converged: false, polls };
+  }
+
   /**
    * Collection id for ITEMS routes. Prefer the full public uid; fall back to the
    * trimmed input when the caller already has a bare/model id.
@@ -3495,7 +3526,15 @@ export class PostmanGatewayAssetsClient {
       throw new Error('LOCAL_OPENAPI_IMPORT_FAILED: final collection name is required');
     }
     const prepared = this.prepareV2ImportPayload(collection, desiredName);
-    const desiredDescription = String(asRecord(prepared.info)?.description ?? '').trim();
+    const rawDesiredDescription = stripCollectionSemanticReceipt(
+      asRecord(prepared.info)?.description
+    );
+    // The receipt digest and submitted payload preserve description bytes
+    // exactly. Marker/identity comparisons may normalize surrounding
+    // whitespace independently, but must never mutate the claimed bytes.
+    const markerDescription = typeof rawDesiredDescription === 'string'
+      ? rawDesiredDescription.trim()
+      : '';
     const importPayload = this.cloneJson(prepared);
     const info = asRecord(importPayload.info) ?? {};
     info.name = desiredName;
@@ -3507,11 +3546,13 @@ export class PostmanGatewayAssetsClient {
       info._postman_id = convergentCollectionRootIdentity(
         workspaceId,
         desiredName,
-        desiredDescription
+        markerDescription
       );
     } else if (typeof info._postman_id !== 'string' || !info._postman_id.trim()) {
       info._postman_id = randomUUID();
     }
+    const semanticDigest = computePayloadDigest(importPayload);
+    info.description = renderCollectionSemanticReceipt(rawDesiredDescription, semanticDigest);
     importPayload.info = info;
     // Enforce v2.1 schema before the unsafe create.
     this.assertV21Collection(importPayload);
@@ -3532,7 +3573,7 @@ export class PostmanGatewayAssetsClient {
       ? new Set<string>()
       : new Set(
           (await this.findCollectionsByExactName(workspaceId, desiredName, 'none'))
-            .filter((entry) => !this.hasSameBranchAssetMarker(entry.description, desiredDescription))
+            .filter((entry) => !this.hasSameBranchAssetMarker(entry.description, markerDescription))
             .map((entry) => normalizeCollectionModelIdentity(entry.id))
         );
 
@@ -3549,9 +3590,10 @@ export class PostmanGatewayAssetsClient {
           body: importPayload
         }));
     } catch (error) {
+      const convergentConflict = convergentRoot && this.isConvergentImportConflict(error);
       if (
         convergentRoot &&
-        (isAmbiguousTransportError(error) || this.isConvergentImportConflict(error))
+        (isAmbiguousTransportError(error) || convergentConflict)
       ) {
         // The deterministic identity is the only admissible recovery target.
         // Resolve it through the non-error inventory surface, then prove exact
@@ -3568,13 +3610,37 @@ export class PostmanGatewayAssetsClient {
         if (!resolution.rootUid || !resolution.resolvedRow) {
           throw this.sanitizeImportError('import-convergent-unreconciled', error);
         }
-        const observed = await this.assertConvergentRootOwnershipEvidence(
-          resolution.resolvedRow,
-          preallocatedIdentity,
-          desiredName,
-          desiredDescription
-        );
-        if (computePayloadDigest(observed) !== computePayloadDigest(importPayload)) {
+        let observedDigest: string | undefined;
+        let requiresReceiptInstall = false;
+        try {
+          observedDigest = await this.assertConvergentRootReceiptEvidence(
+            resolution.resolvedRow,
+            preallocatedIdentity,
+            desiredName,
+            markerDescription
+          );
+        } catch (receiptError) {
+          if (
+            !convergentConflict ||
+            !this.isMissingCollectionSemanticReceipt(receiptError)
+          ) {
+            throw receiptError;
+          }
+          // One-time migration for deterministic roots created before semantic
+          // receipts existed. Only an explicit duplicate response can enter
+          // this path: a fresh ambiguous POST with an incomplete root must not
+          // be mistaken for mature state. Prove the old exact root through its
+          // stable export identity/name/marker before installing a receipt via
+          // an in-place whole-tree update.
+          await this.assertExportedRootOwnershipEvidence(
+            resolution.resolvedRow,
+            preallocatedIdentity,
+            desiredName,
+            markerDescription
+          );
+          requiresReceiptInstall = true;
+        }
+        if (requiresReceiptInstall || observedDigest !== semanticDigest) {
           // A later ID-less run for the same branch deliberately has no tracked
           // collection id, but it addresses this same stable logical root. Once
           // exact identity, name, and stable marker prove ownership, converge
@@ -3583,15 +3649,15 @@ export class PostmanGatewayAssetsClient {
           await this.deepUpdateV2Collection(
             resolution.rootUid,
             importPayload,
-            computePayloadDigest(importPayload)
+            semanticDigest
           );
           if (options.deferNominalSemanticVerification !== true) {
-            await this.assertRecoveredImportEvidence(
+            await this.assertRecoveredConvergentImportReceipt(
               resolution.resolvedRow,
               preallocatedIdentity,
               desiredName,
               importPayload,
-              desiredDescription
+              markerDescription
             );
           }
         }
@@ -3627,7 +3693,7 @@ export class PostmanGatewayAssetsClient {
           preallocatedIdentity,
           desiredName,
           importPayload,
-          desiredDescription
+          markerDescription
         );
         preferredIdentityEligibleForElection = true;
         created = {
@@ -3662,9 +3728,9 @@ export class PostmanGatewayAssetsClient {
       // immediate export here: the collection export projection is known to
       // return one transient 500 per freshly imported collection even after the
       // inventory identity has settled. The orchestration layer already performs
-      // one bounded, two-lane semantic export of every final collection after all
+      // one bounded, two-lane semantic proof of every final collection after all
       // three imports have completed, so payload correctness remains a mandatory
-      // success condition without probing an unstable per-import projection.
+      // success condition without probing an unstable export projection.
       preferredIdentityEligibleForElection = true;
     }
 
@@ -3683,7 +3749,7 @@ export class PostmanGatewayAssetsClient {
             desiredName,
             preallocatedId,
             staleFinalIdentities,
-            desiredDescription,
+            markerDescription,
             resolution.cursor,
             importPayload,
             preferredIdentityEligibleForElection
@@ -3703,12 +3769,12 @@ export class PostmanGatewayAssetsClient {
             'COLLECTION_ROOT_UID_RESOLUTION_FAILED: convergent collection inventory row is unavailable'
           );
         }
-        await this.assertRecoveredImportEvidence(
+        await this.assertRecoveredConvergentImportReceipt(
           resolution.resolvedRow,
           preallocatedIdentity,
           desiredName,
           importPayload,
-          desiredDescription
+          markerDescription
         );
       }
       const rawBare = this.bareModelId(preallocatedId);
@@ -3734,7 +3800,7 @@ export class PostmanGatewayAssetsClient {
         await this.deepUpdateV2Collection(
           electedId,
           prepared,
-          computePayloadDigest(prepared)
+          semanticDigest
         );
       }
       return {
@@ -3759,7 +3825,7 @@ export class PostmanGatewayAssetsClient {
   /**
    * In-place deep-update of an existing collection with a complete final v2.1
    * payload. Preserves the root UID. Ambiguous transport never retries/creates/
-   * replaces: export + semantic digest verification only.
+   * replaces: exact Sync receipt verification only.
    */
   async deepUpdateV2Collection(
     collectionUid: string,
@@ -3780,7 +3846,20 @@ export class PostmanGatewayAssetsClient {
     // replace the existing collection UID on deep-update.
     const info = asRecord(prepared.info) ?? {};
     info._postman_id = bareId;
+    const baseDescription = stripCollectionSemanticReceipt(info.description);
+    info.description = baseDescription;
     prepared.info = info;
+    // Validate the digest against the exact receipt-free payload shape that
+    // will be submitted. Structural root IDs are intentionally excluded by
+    // the digest convention, so rollback snapshots remain compatible while a
+    // caller-supplied foreign ID can never survive into the write.
+    const observedDesiredDigest = computePayloadDigest(prepared);
+    if (observedDesiredDigest !== digest) {
+      throw new Error(
+        'LOCAL_OPENAPI_DEEP_UPDATE_FAILED: expectedPayloadDigest does not match desired collection'
+      );
+    }
+    info.description = renderCollectionSemanticReceipt(baseDescription, digest);
     this.assertV21Collection(prepared);
 
     const putEnvelope = {
@@ -3805,7 +3884,7 @@ export class PostmanGatewayAssetsClient {
       // to the unsafe PUT and terminal 4xx never reaches this path.
       const recoveryStarted = this.now();
       this.writeMetrics.ambiguousWrites += 1;
-      const first = await this.awaitExportedDigest(uid, digest);
+      const first = await this.awaitSemanticReceiptDigest(uid, digest);
       this.writeMetrics.verifyPolls += first.polls;
       if (first.converged) {
         this.writeMetrics.convergedWithoutResend += 1;
@@ -3824,7 +3903,7 @@ export class PostmanGatewayAssetsClient {
           throw this.sanitizeDeepUpdateError('deep-update-resend', resendError);
         }
       }
-      const second = await this.awaitExportedDigest(uid, digest);
+      const second = await this.awaitSemanticReceiptDigest(uid, digest);
       this.writeMetrics.verifyPolls += second.polls;
       this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
       if (!second.converged) {
@@ -4322,12 +4401,175 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
+   * Read the same lightweight collection root projection used by the Postman
+   * app. Unlike the expensive v3 export projection, this Sync read is stable
+   * immediately after an acknowledged atomic import/deep-update. It is always
+   * one fail-closed request: a 5xx is surfaced, never hidden behind a retry.
+   */
+  private async readCollectionSemanticReceiptRoot(
+    collectionUid: string
+  ): Promise<{
+    id: string;
+    name: string;
+    description: string;
+    revision: string;
+    digest: string;
+  }> {
+    const uid = this.collectionRootId(collectionUid);
+    const path =
+      `/collection/${encodeURIComponent(uid)}/sync` +
+      '?since_id=0&favorite=true&exclude=response%2Crequest';
+    const response = await this.gateway.requestDirectJson<JsonRecord>({
+      path,
+      method: 'get',
+      retry: 'none',
+      maxRetries: 0
+    });
+    const entities = Array.isArray(response?.entities) ? response.entities : [];
+    if (entities.length !== 1) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root read must return exactly one entity'
+      );
+    }
+    const entity = asRecord(entities[0]);
+    const data = asRecord(entity?.data);
+    if (!entity || !data) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root entity data is unavailable'
+      );
+    }
+    const id = String(data.uid ?? data.id ?? entity.model_id ?? '').trim();
+    const name = String(data.name ?? '').trim();
+    const description = String(data.description ?? '');
+    const rawRevision = entity.revision ?? data.lastRevision;
+    const revision = String(rawRevision ?? '').trim();
+    if (!id || !name || !/^\d+$/.test(revision)) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root identity, name, or revision is malformed'
+      );
+    }
+    const receipt = parseCollectionSemanticReceipt(description);
+    if (!receipt) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root is missing its semantic receipt'
+      );
+    }
+    return { id, name, description, revision, digest: receipt.digest };
+  }
+
+  /**
+   * Prove one atomic whole-tree write through its exact Sync identity and the
+   * desired-payload receipt embedded in that same write.
+   */
+  async verifyCollectionSemanticReceipt(
+    collectionUid: string,
+    expectedCollection: unknown,
+    expectedPayloadDigest: string
+  ): Promise<void> {
+    const expected = asRecord(expectedCollection) ?? {};
+    const digest = String(expectedPayloadDigest ?? '').trim();
+    if (!/^[a-f0-9]{64}$/.test(digest) || computePayloadDigest(expected) !== digest) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: expected digest does not match desired collection'
+      );
+    }
+    const expectedInfo = asRecord(expected.info) ?? {};
+    const expectedName = String(expectedInfo.name ?? '').trim();
+    if (!expectedName) {
+      throw new Error('COLLECTION_SEMANTIC_RECEIPT_INVALID: desired collection name is missing');
+    }
+    const observed = await this.readCollectionSemanticReceiptRoot(collectionUid);
+    const expectedIdentity = normalizeCollectionModelIdentity(collectionUid);
+    if (normalizeCollectionModelIdentity(observed.id) !== expectedIdentity) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root identity does not match requested collection'
+      );
+    }
+    if (observed.name !== expectedName) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root name does not match desired collection'
+      );
+    }
+    const expectedDescription = String(
+      stripCollectionSemanticReceipt(expectedInfo.description) ?? ''
+    );
+    if (
+      parseAssetMarker(expectedDescription) &&
+      !this.hasSameBranchAssetMarker(observed.description, expectedDescription)
+    ) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root carries a foreign ownership marker'
+      );
+    }
+    if (observed.digest !== digest) {
+      throw new Error(
+        'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root semantic digest does not match desired collection'
+      );
+    }
+  }
+
+  /**
    * Prove ownership of a convergent root before any in-place update. The
    * client-known root id is the ownership boundary for canonical collections;
    * branch-scoped collections additionally require their stable branch marker.
    * A name/list match alone is never proof.
    */
-  private async assertConvergentRootOwnershipEvidence(
+  private async assertConvergentRootReceiptEvidence(
+    row: WorkspaceInventoryRow,
+    expectedIdentity: string,
+    expectedName: string,
+    expectedDescription: string
+  ): Promise<string> {
+    if (normalizeCollectionModelIdentity(row.id) !== expectedIdentity) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: recovered collection does not match the preallocated identity'
+      );
+    }
+    if (row.name !== expectedName) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exact preallocated collection has a different final name'
+      );
+    }
+
+    let observed: Awaited<ReturnType<PostmanGatewayAssetsClient['readCollectionSemanticReceiptRoot']>>;
+    try {
+      observed = await this.readCollectionSemanticReceiptRoot(row.id);
+    } catch (error) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exact preallocated collection evidence is unavailable',
+        { cause: error }
+      );
+    }
+    if (normalizeCollectionModelIdentity(observed.id) !== expectedIdentity) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: Sync collection root differs from the preallocated identity'
+      );
+    }
+    if (observed.name !== expectedName) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: Sync collection root has a different final name'
+      );
+    }
+    if (
+      parseAssetMarker(expectedDescription) &&
+      !this.hasSameBranchAssetMarker(
+        observed.description,
+        expectedDescription
+      )
+    ) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exact preallocated collection carries a foreign ownership marker'
+      );
+    }
+    return observed.digest;
+  }
+
+  /**
+   * Preserve the mature export-based ownership proof for legacy random-root
+   * imports and same-name election. Those paths do not share a deterministic
+   * logical root and therefore cannot rely on the atomic receipt contract.
+   */
+  private async assertExportedRootOwnershipEvidence(
     row: WorkspaceInventoryRow,
     expectedIdentity: string,
     expectedName: string,
@@ -4363,6 +4605,11 @@ export class PostmanGatewayAssetsClient {
         'IMPORT_IDENTITY_CONFLICT: exported collection root differs from the preallocated identity'
       );
     }
+    if (String(exportedInfo.name ?? '').trim() !== expectedName) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exported collection root has a different final name'
+      );
+    }
     if (
       parseAssetMarker(expectedDescription) &&
       !this.hasSameBranchAssetMarker(
@@ -4389,13 +4636,34 @@ export class PostmanGatewayAssetsClient {
     expectedCollection: JsonRecord,
     expectedDescription: string
   ): Promise<void> {
-    const exported = await this.assertConvergentRootOwnershipEvidence(
+    const exported = await this.assertExportedRootOwnershipEvidence(
       row,
       expectedIdentity,
       expectedName,
       expectedDescription
     );
     if (computePayloadDigest(exported) !== computePayloadDigest(expectedCollection)) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match'
+      );
+    }
+  }
+
+  /** Exact deterministic-root recovery proof through the atomic Sync receipt. */
+  private async assertRecoveredConvergentImportReceipt(
+    row: WorkspaceInventoryRow,
+    expectedIdentity: string,
+    expectedName: string,
+    expectedCollection: JsonRecord,
+    expectedDescription: string
+  ): Promise<void> {
+    const observedDigest = await this.assertConvergentRootReceiptEvidence(
+      row,
+      expectedIdentity,
+      expectedName,
+      expectedDescription
+    );
+    if (observedDigest !== computePayloadDigest(expectedCollection)) {
       throw new Error(
         'IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match'
       );
@@ -4409,9 +4677,38 @@ export class PostmanGatewayAssetsClient {
     );
   }
 
+  private isMissingCollectionSemanticReceipt(error: unknown): boolean {
+    let current: unknown = error;
+    const visited = new Set<unknown>();
+    while (current instanceof Error && !visited.has(current)) {
+      visited.add(current);
+      if (current.message.includes('Sync root is missing its semantic receipt')) return true;
+      current = current.cause;
+    }
+    return false;
+  }
+
   private isConvergentImportConflict(error: unknown): boolean {
     if (!(error instanceof HttpError)) return false;
     if (error.status === 409) return true;
+    if (error.status === 400) {
+      try {
+        const body = JSON.parse(error.responseBody) as JsonRecord;
+        const detail = asRecord(body.error);
+        if (
+          detail?.name === 'WLError' &&
+          detail.message === '1 attribute is invalid'
+        ) {
+          // Sync's duplicate-preallocated-root response is not a conventional
+          // 409. Treat only this live-observed signature as a possible conflict;
+          // recovery still requires exact deterministic id/name/marker/receipt
+          // evidence, so an unrelated validation error cannot become success.
+          return true;
+        }
+      } catch {
+        // Non-JSON 400s fall through to the narrow legacy text classifier.
+      }
+    }
     return (
       (error.status === 400 || error.status === 422) &&
       /\b(?:already exists|conflict|duplicate)\b/i.test(error.responseBody)
@@ -4824,17 +5121,19 @@ export interface ImportV2CollectionOptions {
   /**
    * Defer semantic readback only for a non-ambiguous 2xx response that echoes
    * the caller-preallocated root identity. The caller must perform a mandatory
-   * exact export/digest verification after its import batch settles. Ambiguous
-   * responses always require exact-ID ownership evidence before recovery; a
-   * stale owned root is deep-updated in place and left to the caller's final
-   * digest proof when this option is enabled.
+   * exact semantic verification after its import batch settles. Deterministic
+   * atomic roots use their Sync receipt; legacy random-root paths retain export
+   * proof. Ambiguous responses always require exact-ID ownership evidence before
+   * recovery; a stale owned root is deep-updated in place and left to the
+   * caller's final digest proof when this option is enabled.
    */
   deferNominalSemanticVerification?: boolean;
 
   /**
    * Replace the generated root id with the deterministic workspace/logical-
    * asset identity. The root is shared with concurrent callers and therefore
-   * is never journaled, peer-elected, deep-updated, or deleted by this import.
+   * is never journaled, peer-elected, or deleted. A later logical revision may
+   * deep-update this exact root after identity/name/marker/receipt proof.
    */
   convergentLogicalRoot?: boolean;
 }

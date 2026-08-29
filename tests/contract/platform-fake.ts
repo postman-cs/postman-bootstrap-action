@@ -49,6 +49,7 @@ export const PLATFORM_FAKE_ROUTES: readonly PlatformFakeRoute[] = [
   { service: 'postman-api', method: 'POST', path: '/service-account-tokens', body: 'record' },
   { service: 'postman-api', method: 'GET', path: '/me', body: 'none' },
   { service: 'iapub', method: 'GET', path: '/api/sessions/current', body: 'none' },
+  { service: 'bifrost-direct', method: 'GET', path: '/collection/{param}/sync', query: ['exclude', 'favorite', 'since_id'], requiredQuery: ['exclude', 'favorite', 'since_id'], body: 'none' },
   { service: 'dl.pstmn.io', method: 'GET', path: '/update/status', query: ['currentVersion', 'platform'], body: 'none' },
   { service: 'ums', method: 'GET', path: '/api/teams/{param}/squads', query: ['settings', 'userRoles'], requiredQuery: ['settings', 'userRoles'], body: 'none' },
   { service: 'workspaces', method: 'POST', path: '/workspaces', body: 'record' },
@@ -691,6 +692,8 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           ? 'postman-api'
           : parsedUrl.origin === hosts.iapub
             ? 'iapub'
+            : parsedUrl.origin === hosts.bifrost
+              ? 'bifrost-direct'
             : parsedUrl.hostname === 'dl.pstmn.io'
               ? 'dl.pstmn.io'
               : parsedUrl.hostname;
@@ -733,6 +736,26 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
     }
     if (url.startsWith('https://dl.pstmn.io/')) {
       return json({ version: '12.0.0' });
+    }
+    if (request.service === 'bifrost-direct' && method === 'GET') {
+      const requested = decodeURIComponent(request.pathname.split('/')[2] ?? '');
+      const id = resolveCollectionId(requested);
+      if (!id || deletedIds.has(id) || vanishedIds.has(id)) {
+        return json({ error: 'missing' }, 404);
+      }
+      const entry = collectionsById.get(id)!;
+      const exported = collectionExports.get(id) ?? defaultV21Export(id, entry.name, entry.description);
+      const info = asRecord(exported.info) ?? {};
+      return json({
+        entities: [{
+          revision: 1,
+          data: {
+            uid: id,
+            name: String(info.name ?? entry.name),
+            description: String(info.description ?? entry.description ?? '')
+          }
+        }]
+      });
     }
 
     // --- Bifrost /ws/proxy envelope ---
@@ -810,7 +833,7 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           const info = asRecord(body.info) ?? {};
           const name = String(info.name ?? `Imported ${importSeq}`);
           const description =
-            typeof info.description === 'string' ? info.description.trim() : '';
+            typeof info.description === 'string' ? info.description : '';
           const slot = roleFromName(name);
           // Sync preserves the client-supplied collection root identity. The
           // fallback keeps legacy fake callers working, but production import
@@ -863,6 +886,15 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           const body = asRecord(proxy.body);
           if (body && collectionsById.has(id)) {
             collectionExports.set(id, structuredClone(body));
+            const entry = collectionsById.get(id)!;
+            const info = asRecord(body.info);
+            if (typeof info?.name === 'string' && info.name) entry.name = info.name;
+            if (typeof info?.description === 'string' && info.description) {
+              entry.description = info.description;
+            } else {
+              delete entry.description;
+            }
+            refreshCollectionState();
           }
           return json({ data: { id } });
         }

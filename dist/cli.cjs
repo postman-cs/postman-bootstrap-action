@@ -281337,6 +281337,83 @@ function planContractItemScripts(items, index) {
 var import_node_crypto5 = require("node:crypto");
 var import_openapi_to_postmanv2 = __toESM(require_dist4(), 1);
 
+// src/lib/postman/collection-semantic-receipt.ts
+var RECEIPT_KEY = "x-pm-onboarding-content-receipt";
+function invalidReceipt(reason) {
+  return new Error(`COLLECTION_SEMANTIC_RECEIPT_INVALID: ${reason}`);
+}
+function receiptSuffix(description) {
+  const prefix = `${RECEIPT_KEY}: `;
+  const ownLine = description.startsWith(prefix) ? 0 : description.lastIndexOf(`
+${prefix}`);
+  if (ownLine < 0) return void 0;
+  const lineStart = ownLine === 0 ? 0 : ownLine + 1;
+  const payload = description.slice(lineStart + prefix.length);
+  if (payload.includes("\n") || payload.includes("\r")) {
+    throw invalidReceipt("reserved receipt must be the final description line");
+  }
+  return {
+    base: ownLine === 0 ? "" : description.slice(0, ownLine),
+    payload
+  };
+}
+function parseCollectionSemanticReceipt(description) {
+  if (typeof description !== "string" || !description) return void 0;
+  const suffix = receiptSuffix(description);
+  if (!suffix) {
+    if (description.includes(RECEIPT_KEY)) {
+      throw invalidReceipt("reserved receipt key is not a final-line receipt");
+    }
+    return void 0;
+  }
+  if (suffix.base.includes(RECEIPT_KEY)) {
+    throw invalidReceipt("multiple reserved receipt keys are forbidden");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(suffix.payload);
+  } catch {
+    throw invalidReceipt("receipt payload is not valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw invalidReceipt("receipt payload must be an object");
+  }
+  const record = parsed;
+  const keys = Object.keys(record).sort();
+  if (keys.length !== 3 || keys[0] !== "algorithm" || keys[1] !== "digest" || keys[2] !== "schemaVersion" || record.schemaVersion !== 1 || record.algorithm !== "sha256" || typeof record.digest !== "string" || !/^[a-f0-9]{64}$/.test(record.digest)) {
+    throw invalidReceipt("receipt shape is not the supported sha256 schema");
+  }
+  return {
+    schemaVersion: 1,
+    algorithm: "sha256",
+    digest: record.digest
+  };
+}
+function stripCollectionSemanticReceipt(description) {
+  if (typeof description !== "string" || !description) return description;
+  const receipt = parseCollectionSemanticReceipt(description);
+  if (!receipt) return description;
+  return receiptSuffix(description).base;
+}
+function renderCollectionSemanticReceipt(description, digest) {
+  if (!/^[a-f0-9]{64}$/.test(digest)) {
+    throw invalidReceipt("digest must be lowercase 64-hex");
+  }
+  if (description !== void 0 && description !== null && typeof description !== "string") {
+    throw invalidReceipt("collection description must be a string when a receipt is attached");
+  }
+  const stripped = stripCollectionSemanticReceipt(description);
+  const base = typeof stripped === "string" ? stripped : "";
+  const receipt = {
+    schemaVersion: 1,
+    algorithm: "sha256",
+    digest
+  };
+  const line = `${RECEIPT_KEY}: ${JSON.stringify(receipt)}`;
+  return base ? `${base}
+${line}` : line;
+}
+
 // src/lib/spec/deterministic-schema-faker.ts
 var import_node_crypto3 = require("node:crypto");
 var import_json_schema_faker = __toESM(require_json_schema_faker(), 1);
@@ -305022,7 +305099,10 @@ function withoutStructuralIds(collection) {
   stripSyncDefaults(clone2);
   if (isRecord3(clone2.info)) {
     delete clone2.info._postman_id;
-    if (clone2.info.description === "") delete clone2.info.description;
+    const description = stripCollectionSemanticReceipt(clone2.info.description);
+    if (description === void 0 || description === null || description === "") {
+      delete clone2.info.description;
+    } else clone2.info.description = description;
   }
   normalizeSyncAuth(clone2.auth);
   if (Array.isArray(clone2.event) && clone2.event.length === 0) delete clone2.event;
@@ -308573,6 +308653,24 @@ ${error.responseBody ?? ""}`
     }
     return { converged: false, polls, observed };
   }
+  /** Existing ambiguous-write budget, using the atomic Sync receipt projection. */
+  async awaitSemanticReceiptDigest(uid, digest) {
+    const delays = _PostmanGatewayAssetsClient.AMBIGUOUS_WRITE_VERIFY_DELAYS_MS;
+    const expectedIdentity = normalizeCollectionModelIdentity(uid);
+    let polls = 0;
+    for (let observation = 0; observation <= delays.length; observation += 1) {
+      polls += 1;
+      try {
+        const observed = await this.readCollectionSemanticReceiptRoot(uid);
+        if (normalizeCollectionModelIdentity(observed.id) === expectedIdentity && observed.digest === digest) {
+          return { converged: true, polls };
+        }
+      } catch {
+      }
+      if (observation < delays.length) await this.sleep(delays[observation]);
+    }
+    return { converged: false, polls };
+  }
   /**
    * Collection id for ITEMS routes. Prefer the full public uid; fall back to the
    * trimmed input when the caller already has a bare/model id.
@@ -309484,7 +309582,10 @@ ${error.responseBody ?? ""}`
       throw new Error("LOCAL_OPENAPI_IMPORT_FAILED: final collection name is required");
     }
     const prepared = this.prepareV2ImportPayload(collection, desiredName);
-    const desiredDescription = String(asRecord13(prepared.info)?.description ?? "").trim();
+    const rawDesiredDescription = stripCollectionSemanticReceipt(
+      asRecord13(prepared.info)?.description
+    );
+    const markerDescription = typeof rawDesiredDescription === "string" ? rawDesiredDescription.trim() : "";
     const importPayload = this.cloneJson(prepared);
     const info = asRecord13(importPayload.info) ?? {};
     info.name = desiredName;
@@ -309493,11 +309594,13 @@ ${error.responseBody ?? ""}`
       info._postman_id = convergentCollectionRootIdentity(
         workspaceId,
         desiredName,
-        desiredDescription
+        markerDescription
       );
     } else if (typeof info._postman_id !== "string" || !info._postman_id.trim()) {
       info._postman_id = (0, import_node_crypto8.randomUUID)();
     }
+    const semanticDigest = computePayloadDigest(importPayload);
+    info.description = renderCollectionSemanticReceipt(rawDesiredDescription, semanticDigest);
     importPayload.info = info;
     this.assertV21Collection(importPayload);
     const preallocatedId = String(info._postman_id).trim();
@@ -309507,7 +309610,7 @@ ${error.responseBody ?? ""}`
     }
     const journaledRootIds = convergentRoot ? [] : [preallocatedId];
     const staleFinalIdentities = convergentRoot ? /* @__PURE__ */ new Set() : new Set(
-      (await this.findCollectionsByExactName(workspaceId, desiredName, "none")).filter((entry) => !this.hasSameBranchAssetMarker(entry.description, desiredDescription)).map((entry) => normalizeCollectionModelIdentity(entry.id))
+      (await this.findCollectionsByExactName(workspaceId, desiredName, "none")).filter((entry) => !this.hasSameBranchAssetMarker(entry.description, markerDescription)).map((entry) => normalizeCollectionModelIdentity(entry.id))
     );
     let created;
     let resolution;
@@ -309522,7 +309625,8 @@ ${error.responseBody ?? ""}`
         body: importPayload
       }));
     } catch (error) {
-      if (convergentRoot && (isAmbiguousTransportError(error) || this.isConvergentImportConflict(error))) {
+      const convergentConflict = convergentRoot && this.isConvergentImportConflict(error);
+      if (convergentRoot && (isAmbiguousTransportError(error) || convergentConflict)) {
         resolution = await this.resolveCollectionRootUid(
           workspaceId,
           preallocatedId,
@@ -309533,25 +309637,40 @@ ${error.responseBody ?? ""}`
         if (!resolution.rootUid || !resolution.resolvedRow) {
           throw this.sanitizeImportError("import-convergent-unreconciled", error);
         }
-        const observed = await this.assertConvergentRootOwnershipEvidence(
-          resolution.resolvedRow,
-          preallocatedIdentity,
-          desiredName,
-          desiredDescription
-        );
-        if (computePayloadDigest(observed) !== computePayloadDigest(importPayload)) {
+        let observedDigest;
+        let requiresReceiptInstall = false;
+        try {
+          observedDigest = await this.assertConvergentRootReceiptEvidence(
+            resolution.resolvedRow,
+            preallocatedIdentity,
+            desiredName,
+            markerDescription
+          );
+        } catch (receiptError) {
+          if (!convergentConflict || !this.isMissingCollectionSemanticReceipt(receiptError)) {
+            throw receiptError;
+          }
+          await this.assertExportedRootOwnershipEvidence(
+            resolution.resolvedRow,
+            preallocatedIdentity,
+            desiredName,
+            markerDescription
+          );
+          requiresReceiptInstall = true;
+        }
+        if (requiresReceiptInstall || observedDigest !== semanticDigest) {
           await this.deepUpdateV2Collection(
             resolution.rootUid,
             importPayload,
-            computePayloadDigest(importPayload)
+            semanticDigest
           );
           if (options.deferNominalSemanticVerification !== true) {
-            await this.assertRecoveredImportEvidence(
+            await this.assertRecoveredConvergentImportReceipt(
               resolution.resolvedRow,
               preallocatedIdentity,
               desiredName,
               importPayload,
-              desiredDescription
+              markerDescription
             );
           }
         }
@@ -309580,7 +309699,7 @@ ${error.responseBody ?? ""}`
           preallocatedIdentity,
           desiredName,
           importPayload,
-          desiredDescription
+          markerDescription
         );
         preferredIdentityEligibleForElection = true;
         created = {
@@ -309620,7 +309739,7 @@ ${error.responseBody ?? ""}`
         desiredName,
         preallocatedId,
         staleFinalIdentities,
-        desiredDescription,
+        markerDescription,
         resolution.cursor,
         importPayload,
         preferredIdentityEligibleForElection
@@ -309636,12 +309755,12 @@ ${error.responseBody ?? ""}`
             "COLLECTION_ROOT_UID_RESOLUTION_FAILED: convergent collection inventory row is unavailable"
           );
         }
-        await this.assertRecoveredImportEvidence(
+        await this.assertRecoveredConvergentImportReceipt(
           resolution.resolvedRow,
           preallocatedIdentity,
           desiredName,
           importPayload,
-          desiredDescription
+          markerDescription
         );
       }
       const rawBare = this.bareModelId(preallocatedId);
@@ -309659,7 +309778,7 @@ ${error.responseBody ?? ""}`
         await this.deepUpdateV2Collection(
           electedId,
           prepared,
-          computePayloadDigest(prepared)
+          semanticDigest
         );
       }
       return {
@@ -309680,7 +309799,7 @@ ${error.responseBody ?? ""}`
   /**
    * In-place deep-update of an existing collection with a complete final v2.1
    * payload. Preserves the root UID. Ambiguous transport never retries/creates/
-   * replaces: export + semantic digest verification only.
+   * replaces: exact Sync receipt verification only.
    */
   async deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest) {
     const uid = String(collectionUid || "").trim();
@@ -309695,7 +309814,16 @@ ${error.responseBody ?? ""}`
     const prepared = this.prepareV2ImportPayload(collection, void 0);
     const info = asRecord13(prepared.info) ?? {};
     info._postman_id = bareId;
+    const baseDescription = stripCollectionSemanticReceipt(info.description);
+    info.description = baseDescription;
     prepared.info = info;
+    const observedDesiredDigest = computePayloadDigest(prepared);
+    if (observedDesiredDigest !== digest) {
+      throw new Error(
+        "LOCAL_OPENAPI_DEEP_UPDATE_FAILED: expectedPayloadDigest does not match desired collection"
+      );
+    }
+    info.description = renderCollectionSemanticReceipt(baseDescription, digest);
     this.assertV21Collection(prepared);
     const putEnvelope = {
       service: "sync",
@@ -309714,7 +309842,7 @@ ${error.responseBody ?? ""}`
       }
       const recoveryStarted = this.now();
       this.writeMetrics.ambiguousWrites += 1;
-      const first = await this.awaitExportedDigest(uid, digest);
+      const first = await this.awaitSemanticReceiptDigest(uid, digest);
       this.writeMetrics.verifyPolls += first.polls;
       if (first.converged) {
         this.writeMetrics.convergedWithoutResend += 1;
@@ -309730,7 +309858,7 @@ ${error.responseBody ?? ""}`
           throw this.sanitizeDeepUpdateError("deep-update-resend", resendError);
         }
       }
-      const second = await this.awaitExportedDigest(uid, digest);
+      const second = await this.awaitSemanticReceiptDigest(uid, digest);
       this.writeMetrics.verifyPolls += second.polls;
       this.writeMetrics.recoveryMs += Math.max(0, this.now() - recoveryStarted);
       if (!second.converged) {
@@ -310146,12 +310274,146 @@ ${error.responseBody ?? ""}`
     return clone2;
   }
   /**
+   * Read the same lightweight collection root projection used by the Postman
+   * app. Unlike the expensive v3 export projection, this Sync read is stable
+   * immediately after an acknowledged atomic import/deep-update. It is always
+   * one fail-closed request: a 5xx is surfaced, never hidden behind a retry.
+   */
+  async readCollectionSemanticReceiptRoot(collectionUid) {
+    const uid = this.collectionRootId(collectionUid);
+    const path12 = `/collection/${encodeURIComponent(uid)}/sync?since_id=0&favorite=true&exclude=response%2Crequest`;
+    const response = await this.gateway.requestDirectJson({
+      path: path12,
+      method: "get",
+      retry: "none",
+      maxRetries: 0
+    });
+    const entities = Array.isArray(response?.entities) ? response.entities : [];
+    if (entities.length !== 1) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root read must return exactly one entity"
+      );
+    }
+    const entity = asRecord13(entities[0]);
+    const data = asRecord13(entity?.data);
+    if (!entity || !data) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root entity data is unavailable"
+      );
+    }
+    const id = String(data.uid ?? data.id ?? entity.model_id ?? "").trim();
+    const name = String(data.name ?? "").trim();
+    const description = String(data.description ?? "");
+    const rawRevision = entity.revision ?? data.lastRevision;
+    const revision = String(rawRevision ?? "").trim();
+    if (!id || !name || !/^\d+$/.test(revision)) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root identity, name, or revision is malformed"
+      );
+    }
+    const receipt = parseCollectionSemanticReceipt(description);
+    if (!receipt) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root is missing its semantic receipt"
+      );
+    }
+    return { id, name, description, revision, digest: receipt.digest };
+  }
+  /**
+   * Prove one atomic whole-tree write through its exact Sync identity and the
+   * desired-payload receipt embedded in that same write.
+   */
+  async verifyCollectionSemanticReceipt(collectionUid, expectedCollection, expectedPayloadDigest) {
+    const expected = asRecord13(expectedCollection) ?? {};
+    const digest = String(expectedPayloadDigest ?? "").trim();
+    if (!/^[a-f0-9]{64}$/.test(digest) || computePayloadDigest(expected) !== digest) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: expected digest does not match desired collection"
+      );
+    }
+    const expectedInfo = asRecord13(expected.info) ?? {};
+    const expectedName = String(expectedInfo.name ?? "").trim();
+    if (!expectedName) {
+      throw new Error("COLLECTION_SEMANTIC_RECEIPT_INVALID: desired collection name is missing");
+    }
+    const observed = await this.readCollectionSemanticReceiptRoot(collectionUid);
+    const expectedIdentity = normalizeCollectionModelIdentity(collectionUid);
+    if (normalizeCollectionModelIdentity(observed.id) !== expectedIdentity) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root identity does not match requested collection"
+      );
+    }
+    if (observed.name !== expectedName) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root name does not match desired collection"
+      );
+    }
+    const expectedDescription = String(
+      stripCollectionSemanticReceipt(expectedInfo.description) ?? ""
+    );
+    if (parseAssetMarker(expectedDescription) && !this.hasSameBranchAssetMarker(observed.description, expectedDescription)) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root carries a foreign ownership marker"
+      );
+    }
+    if (observed.digest !== digest) {
+      throw new Error(
+        "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root semantic digest does not match desired collection"
+      );
+    }
+  }
+  /**
    * Prove ownership of a convergent root before any in-place update. The
    * client-known root id is the ownership boundary for canonical collections;
    * branch-scoped collections additionally require their stable branch marker.
    * A name/list match alone is never proof.
    */
-  async assertConvergentRootOwnershipEvidence(row, expectedIdentity, expectedName, expectedDescription) {
+  async assertConvergentRootReceiptEvidence(row, expectedIdentity, expectedName, expectedDescription) {
+    if (normalizeCollectionModelIdentity(row.id) !== expectedIdentity) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: recovered collection does not match the preallocated identity"
+      );
+    }
+    if (row.name !== expectedName) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exact preallocated collection has a different final name"
+      );
+    }
+    let observed;
+    try {
+      observed = await this.readCollectionSemanticReceiptRoot(row.id);
+    } catch (error) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exact preallocated collection evidence is unavailable",
+        { cause: error }
+      );
+    }
+    if (normalizeCollectionModelIdentity(observed.id) !== expectedIdentity) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: Sync collection root differs from the preallocated identity"
+      );
+    }
+    if (observed.name !== expectedName) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: Sync collection root has a different final name"
+      );
+    }
+    if (parseAssetMarker(expectedDescription) && !this.hasSameBranchAssetMarker(
+      observed.description,
+      expectedDescription
+    )) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exact preallocated collection carries a foreign ownership marker"
+      );
+    }
+    return observed.digest;
+  }
+  /**
+   * Preserve the mature export-based ownership proof for legacy random-root
+   * imports and same-name election. Those paths do not share a deterministic
+   * logical root and therefore cannot rely on the atomic receipt contract.
+   */
+  async assertExportedRootOwnershipEvidence(row, expectedIdentity, expectedName, expectedDescription) {
     if (normalizeCollectionModelIdentity(row.id) !== expectedIdentity) {
       throw new Error(
         "IMPORT_IDENTITY_CONFLICT: recovered collection does not match the preallocated identity"
@@ -310178,6 +310440,11 @@ ${error.responseBody ?? ""}`
         "IMPORT_IDENTITY_CONFLICT: exported collection root differs from the preallocated identity"
       );
     }
+    if (String(exportedInfo.name ?? "").trim() !== expectedName) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exported collection root has a different final name"
+      );
+    }
     if (parseAssetMarker(expectedDescription) && !this.hasSameBranchAssetMarker(
       String(exportedInfo.description ?? "").trim() || void 0,
       expectedDescription
@@ -310194,7 +310461,7 @@ ${error.responseBody ?? ""}`
    * semantic bytes, so a foreign same-name root is never accepted.
    */
   async assertRecoveredImportEvidence(row, expectedIdentity, expectedName, expectedCollection, expectedDescription) {
-    const exported = await this.assertConvergentRootOwnershipEvidence(
+    const exported = await this.assertExportedRootOwnershipEvidence(
       row,
       expectedIdentity,
       expectedName,
@@ -310206,12 +310473,46 @@ ${error.responseBody ?? ""}`
       );
     }
   }
+  /** Exact deterministic-root recovery proof through the atomic Sync receipt. */
+  async assertRecoveredConvergentImportReceipt(row, expectedIdentity, expectedName, expectedCollection, expectedDescription) {
+    const observedDigest = await this.assertConvergentRootReceiptEvidence(
+      row,
+      expectedIdentity,
+      expectedName,
+      expectedDescription
+    );
+    if (observedDigest !== computePayloadDigest(expectedCollection)) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match"
+      );
+    }
+  }
   isImportIdentityConflict(error) {
     return error instanceof Error && /\bIMPORT_(?:IDENTITY_CONFLICT|RESPONSE_ID_MISMATCH)\b/.test(error.message);
+  }
+  isMissingCollectionSemanticReceipt(error) {
+    let current = error;
+    const visited = /* @__PURE__ */ new Set();
+    while (current instanceof Error && !visited.has(current)) {
+      visited.add(current);
+      if (current.message.includes("Sync root is missing its semantic receipt")) return true;
+      current = current.cause;
+    }
+    return false;
   }
   isConvergentImportConflict(error) {
     if (!(error instanceof HttpError)) return false;
     if (error.status === 409) return true;
+    if (error.status === 400) {
+      try {
+        const body2 = JSON.parse(error.responseBody);
+        const detail = asRecord13(body2.error);
+        if (detail?.name === "WLError" && detail.message === "1 attribute is invalid") {
+          return true;
+        }
+      } catch {
+      }
+    }
     return (error.status === 400 || error.status === 422) && /\b(?:already exists|conflict|duplicate)\b/i.test(error.responseBody);
   }
   /** A same-name peer is eligible only when its exact exported bytes are ours. */
@@ -343766,29 +344067,6 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                 deferNominalSemanticVerification: true
               }
             );
-            if (collectionBranchMarker) {
-              if (!dependencies.postman.updateCollectionDescription) {
-                throw new Error(
-                  "Branch-scoped generated collections require updateCollectionDescription support"
-                );
-              }
-              try {
-                await dependencies.postman.updateCollectionDescription(
-                  imported.collectionId,
-                  collectionBranchMarker
-                );
-              } catch (error) {
-                if (imported.deleteVerifiedCleanup) {
-                  await imported.deleteVerifiedCleanup(imported.journaledRootIds);
-                } else if (dependencies.postman.deleteVerifiedRunOwnedCollections) {
-                  await dependencies.postman.deleteVerifiedRunOwnedCollections(
-                    workspaceId || "",
-                    imported.journaledRootIds
-                  );
-                }
-                throw error;
-              }
-            }
             const writeMs = Math.max(0, Date.now() - writeStarted);
             return {
               role: role.role,
@@ -343881,10 +344159,10 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               failures[0]
             );
           }
-          if (!dependencies.postman.exportV2Collection) {
+          if (!dependencies.postman.exportV2Collection && !dependencies.postman.verifyCollectionSemanticReceipt) {
             await failOwned(
               "collection-final-verification",
-              new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support")
+              new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: final collection verification requires access-token gateway support")
             );
           }
           const observedDigestByRole = /* @__PURE__ */ new Map();
@@ -343912,11 +344190,26 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
                   observedDigestByRole.set(role.role, preverifiedDigest);
                   continue;
                 }
+                const desiredDigest = payloads.roles[role.role].payloadDigest;
+                if ((result.kind === "import" || result.kind === "deep-update") && dependencies.postman.verifyCollectionSemanticReceipt) {
+                  await dependencies.postman.verifyCollectionSemanticReceipt(
+                    result.collectionId,
+                    payloads.roles[role.role].collection,
+                    desiredDigest
+                  );
+                  reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
+                  observedDigestByRole.set(role.role, desiredDigest);
+                  continue;
+                }
+                if (!dependencies.postman.exportV2Collection) {
+                  throw new Error(
+                    "LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection is required for non-atomic collection verification"
+                  );
+                }
                 const exported = await dependencies.postman.exportV2Collection(result.collectionId);
                 const observedDigest = computePayloadDigest(exported);
                 reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
                 observedDigestByRole.set(role.role, observedDigest);
-                const desiredDigest = payloads.roles[role.role].payloadDigest;
                 if (observedDigest !== desiredDigest) {
                   verificationFailure = new Error(
                     `final export digest mismatch for ${role.role}: expected ${desiredDigest}, got ${observedDigest}; ${describePayloadDigestDifference(payloads.roles[role.role].collection, exported)}`
@@ -344382,6 +344675,7 @@ function createRoutingPostmanClient(options) {
       updateCollectionDescription: requireAccessToken("updateCollectionDescription"),
       importV2Collection: requireAccessToken("importV2Collection"),
       deepUpdateV2Collection: requireAccessToken("deepUpdateV2Collection"),
+      verifyCollectionSemanticReceipt: requireAccessToken("verifyCollectionSemanticReceipt"),
       exportV2Collection: requireAccessToken("exportV2Collection"),
       deleteVerifiedRunOwnedCollections: requireAccessToken("deleteVerifiedRunOwnedCollections"),
       reconcileDuplicateFinalCollections: requireAccessToken("reconcileDuplicateFinalCollections")
@@ -344428,6 +344722,7 @@ function createRoutingPostmanClient(options) {
     updateCollectionDescription: (collectionUid, description) => gateway.updateCollectionDescription(collectionUid, description),
     importV2Collection: (workspaceId, collection, finalName, options2) => gateway.importV2Collection(workspaceId, collection, finalName, options2),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) => gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
+    verifyCollectionSemanticReceipt: (collectionUid, collection, expectedPayloadDigest) => gateway.verifyCollectionSemanticReceipt(collectionUid, collection, expectedPayloadDigest),
     applyCollectionDelta: (collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback) => gateway.applyCollectionDelta(collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback),
     get collectionWriteMetrics() {
       return gateway.collectionWriteMetrics;

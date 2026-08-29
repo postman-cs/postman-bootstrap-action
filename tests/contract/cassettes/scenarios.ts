@@ -123,6 +123,9 @@ const TOKEN_INPUTS = { 'postman-access-token': ACCESS_TOKEN } as const;
 const IMPORT_KEY = 'proxy:sync POST /collection/import';
 const DEEP_UPDATE_KEY = 'proxy:sync PUT /collection/deepupdate/';
 const COLLECTION_EXPORT_KEY = 'proxy:collection GET /v3/collections/';
+const COLLECTION_ROOT_PATCH_KEY = 'proxy:collection PATCH /v3/collections/';
+const COLLECTION_SYNC_RECEIPT_KEY =
+  'GET https://bifrost-premium-https-v4.gw.postman.com/collection/';
 const WORKSPACE_CREATE_KEY = 'proxy:workspaces POST /workspaces';
 const SQUADS_KEY = 'proxy:ums GET /api/teams/';
 const SPEC_CREATE_KEY = 'proxy:specification POST /specifications';
@@ -287,9 +290,10 @@ export const CASSETTE_SCENARIOS: readonly CassetteScenario[] = [
     expectWire: (keys) => {
       expect(countKeys(keys, MINT_KEY)).toBe(1);
       expect(countKeys(keys, IMPORT_KEY)).toBe(3);
-      // ID-less convergent imports defer their nominal readback to the mandatory
-      // post-batch semantic proof, so each of the three roots is exported once.
-      expect(keys.filter((key) => key.startsWith(COLLECTION_EXPORT_KEY) && key.includes('/export')).length).toBe(3);
+      // ID-less convergent imports defer nominal readback to the mandatory
+      // post-batch atomic Sync receipt proof. Fresh roots never hit export.
+      expect(keys.filter((key) => key.startsWith(COLLECTION_SYNC_RECEIPT_KEY) && key.includes('/sync?')).length).toBe(3);
+      expect(keys.filter((key) => key.startsWith(COLLECTION_EXPORT_KEY) && key.includes('/export')).length).toBe(0);
       expect(countKeys(keys, DEEP_UPDATE_KEY)).toBe(0);
       expect(countKeys(keys, WORKSPACE_CREATE_KEY)).toBe(1);
       expect(countKeys(keys, SPEC_CREATE_KEY)).toBeGreaterThanOrEqual(1);
@@ -322,7 +326,10 @@ export const CASSETTE_SCENARIOS: readonly CassetteScenario[] = [
     },
     expectWire: (keys) => {
       expect(countKeys(keys, DEEP_UPDATE_KEY)).toBe(3);
-      expect(keys.filter((key) => key.startsWith(COLLECTION_EXPORT_KEY) && key.includes('/export')).length).toBe(6);
+      // Three mature preflight snapshots still use export; three acknowledged
+      // atomic whole-tree writes use the lightweight Sync receipt projection.
+      expect(keys.filter((key) => key.startsWith(COLLECTION_EXPORT_KEY) && key.includes('/export')).length).toBe(3);
+      expect(keys.filter((key) => key.startsWith(COLLECTION_SYNC_RECEIPT_KEY) && key.includes('/sync?')).length).toBe(3);
       expect(countKeys(keys, IMPORT_KEY)).toBe(0);
       // A supplied workspace id must not create a second workspace.
       expect(countKeys(keys, WORKSPACE_CREATE_KEY)).toBe(0);
@@ -415,6 +422,10 @@ export const CASSETTE_SCENARIOS: readonly CassetteScenario[] = [
       // deep-update against canonical collections it was never handed.
       expect(countKeys(keys, IMPORT_KEY)).toBe(3);
       expect(countKeys(keys, DEEP_UPDATE_KEY)).toBe(0);
+      // Deterministic generated roots carry their marker and semantic receipt
+      // in the atomic import body. A later root PATCH could overwrite a newer
+      // peer receipt while leaving that peer's tree in place.
+      expect(countKeys(keys, COLLECTION_ROOT_PATCH_KEY)).toBe(0);
     }
   },
   {

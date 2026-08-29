@@ -654,6 +654,44 @@ describe('contract: cassette sanitizer', () => {
     );
   });
 
+  it('does not trust an arbitrary UUID-shaped root merely because Sync returns a receipt', () => {
+    const arbitrary = 'aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+    const syncUrl =
+      `https://bifrost-premium-https-v4.gw.postman.com/collection/2001-${arbitrary}/sync` +
+      '?exclude=response%2Crequest&favorite=true&since_id=0';
+    const receipt =
+      'x-pm-onboarding-content-receipt: ' +
+      JSON.stringify({ schemaVersion: 1, algorithm: 'sha256', digest: 'a'.repeat(64) });
+    const poisoned = {
+      version: 2 as const,
+      interactions: [
+        {
+          key: 'proxy:sync POST /collection/import?format=2.1.0&workspace=cassette-workspace-1',
+          requestQuery: '',
+          status: 200,
+          body: JSON.stringify({ data: { imported: true } }),
+          responseHeaders: {}
+        },
+        {
+          ...cassetteRequest(syncUrl, 'GET'),
+          status: 200,
+          body: JSON.stringify({
+            entities: [{
+              model_id: arbitrary,
+              revision: 1,
+              data: { id: arbitrary, name: 'Payments', description: receipt }
+            }]
+          }),
+          responseHeaders: {}
+        }
+      ]
+    };
+
+    expect(() => assertCassetteRedacted(poisoned)).toThrow(
+      /Postman UID|UUID|real collection ID/
+    );
+  });
+
   it('round-trips a sanitized platform-fake recording through the full action flow', async () => {
     const { raw, cassette: sanitized, outputs: recordedOutputs, liveFetch } =
       await recordSanitizedFakeCassette();

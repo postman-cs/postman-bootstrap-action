@@ -3,7 +3,7 @@
  *
  * A deep update whose transport aborts mid-flight may still have been applied
  * upstream. These tests pin the recovery path: classify the abort as ambiguous,
- * verify convergence by bounded exported-digest reads, permit at most one
+ * verify convergence by bounded atomic Sync receipt reads, permit at most one
  * idempotent re-PUT, and fail closed when the desired digest never appears.
  * Time is injected, so no test sleeps on wall-clock.
  */
@@ -12,6 +12,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import { PostmanGatewayAssetsClient } from '../src/lib/postman/postman-gateway-assets-client.js';
+import { renderCollectionSemanticReceipt } from '../src/lib/postman/collection-semantic-receipt.js';
+import { computePayloadDigest } from '../src/lib/spec/local-openapi-collection-generation.js';
 
 const COLLECTION_SCHEMA =
   'https://schema.getpostman.com/json/collection/v2.1.0/collection.json';
@@ -95,7 +97,7 @@ describe('ambiguous deep-update recovery', () => {
 
   function v21(name: string, requestName: string) {
     return {
-      info: { name, schema: COLLECTION_SCHEMA, _postman_id: bareId },
+      info: { name, schema: COLLECTION_SCHEMA, _postman_id: bareId, description: '' },
       item: [
         {
           name: requestName,
@@ -115,8 +117,15 @@ describe('ambiguous deep-update recovery', () => {
     const calls: RecordedCall[] = [];
     const sleeps: number[] = [];
     let i = 0;
-    const fetchImpl = vi.fn<typeof fetch>(async (_url, init) => {
-      const env = JSON.parse(String((init as RequestInit).body)) as Envelope;
+    const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+      const parsed = new URL(String(url));
+      const env = parsed.pathname === '/ws/proxy'
+        ? JSON.parse(String((init as RequestInit).body)) as Envelope
+        : {
+            service: 'direct',
+            method: String((init as RequestInit).method ?? 'GET').toLowerCase(),
+            path: `${parsed.pathname}${parsed.search}`
+          };
       const headers = Object.fromEntries(
         new Headers((init as RequestInit).headers).entries()
       ) as Record<string, string>;
@@ -143,18 +152,27 @@ describe('ambiguous deep-update recovery', () => {
 
   const isDeepUpdate = (env: Envelope) =>
     env.method === 'put' && env.path === `/collection/deepupdate/${bareId}`;
-  const isExport = (env: Envelope) =>
-    env.method === 'get' && env.path === `/v3/collections/${bareId}/export`;
+  const isReceiptRead = (env: Envelope) =>
+    env.service === 'direct' &&
+    env.method === 'get' &&
+    env.path === `/collection/${recoveryUid}/sync?since_id=0&favorite=true&exclude=response%2Crequest`;
 
-  async function exportedDigestOf(document: unknown): Promise<string> {
-    const { computePayloadDigest } = await import(
-      '../src/lib/spec/local-openapi-collection-generation.js'
+  function syncReceipt(document: ReturnType<typeof v21>): Response {
+    const committed = structuredClone(document);
+    committed.info.description = renderCollectionSemanticReceipt(
+      committed.info.description,
+      computePayloadDigest(committed)
     );
-    const { client } = makeRecoveryClient((env) => {
-      if (isExport(env)) return jsonResponse({ data: { collection: document } });
-      return jsonResponse({ data: {} });
+    return jsonResponse({
+      entities: [{
+        revision: 1,
+        data: {
+          uid: recoveryUid,
+          name: committed.info.name,
+          description: committed.info.description
+        }
+      }]
     });
-    return computePayloadDigest(await client.exportV2Collection(recoveryUid));
   }
 
   function abortError(message: string): Error {
@@ -164,18 +182,18 @@ describe('ambiguous deep-update recovery', () => {
   it('succeeds without a resend when an aborted write becomes digest-visible after delayed reads', async () => {
     const desired = v21('Payments', 'GET /payments');
     const stale = v21('Payments', 'GET /stale');
-    const digest = await exportedDigestOf(desired);
+    const digest = computePayloadDigest(desired);
 
-    let exports = 0;
+    let reads = 0;
     let puts = 0;
     const { client, sleeps } = makeRecoveryClient((env) => {
       if (isDeepUpdate(env)) {
         puts += 1;
         throw abortError('This operation was aborted');
       }
-      if (isExport(env)) {
-        exports += 1;
-        return jsonResponse({ data: { collection: exports >= 4 ? desired : stale } });
+      if (isReceiptRead(env)) {
+        reads += 1;
+        return syncReceipt(reads >= 4 ? desired : stale);
       }
       return jsonResponse({ data: {} });
     });
@@ -184,7 +202,7 @@ describe('ambiguous deep-update recovery', () => {
       recoveryUid
     );
     expect(puts).toBe(1);
-    expect(exports).toBe(4);
+    expect(reads).toBe(4);
     expect(sleeps).toEqual([2500, 2500, 2500]);
     const metrics = client.collectionWriteMetrics;
     expect(metrics.ambiguousWrites).toBe(1);
@@ -197,9 +215,9 @@ describe('ambiguous deep-update recovery', () => {
   it('permits at most one idempotent re-PUT and still requires a final digest match', async () => {
     const desired = v21('Payments', 'GET /payments');
     const stale = v21('Payments', 'GET /stale');
-    const digest = await exportedDigestOf(desired);
+    const digest = computePayloadDigest(desired);
 
-    let exports = 0;
+    let reads = 0;
     let puts = 0;
     const { client, sleeps } = makeRecoveryClient((env) => {
       if (isDeepUpdate(env)) {
@@ -207,10 +225,10 @@ describe('ambiguous deep-update recovery', () => {
         if (puts === 1) throw abortError('The operation was aborted');
         return jsonResponse({ data: {} });
       }
-      if (isExport(env)) {
-        exports += 1;
+      if (isReceiptRead(env)) {
+        reads += 1;
         // Desired bytes appear only after the single verified resend.
-        return jsonResponse({ data: { collection: puts >= 2 ? desired : stale } });
+        return syncReceipt(puts >= 2 ? desired : stale);
       }
       return jsonResponse({ data: {} });
     });
@@ -220,7 +238,7 @@ describe('ambiguous deep-update recovery', () => {
     );
     expect(puts).toBe(2);
     // Full first budget (5 observations, 4 sleeps) then one converged read.
-    expect(exports).toBe(6);
+    expect(reads).toBe(6);
     expect(sleeps).toEqual([2500, 2500, 2500, 2500]);
     const metrics = client.collectionWriteMetrics;
     expect(metrics.resendCount).toBe(1);
@@ -231,18 +249,18 @@ describe('ambiguous deep-update recovery', () => {
   it('fails closed after a persistent digest mismatch across both bounded budgets', async () => {
     const desired = v21('Payments', 'GET /payments');
     const stale = v21('Payments', 'GET /stale');
-    const digest = await exportedDigestOf(desired);
+    const digest = computePayloadDigest(desired);
 
-    let exports = 0;
+    let reads = 0;
     let puts = 0;
     const { client, sleeps } = makeRecoveryClient((env) => {
       if (isDeepUpdate(env)) {
         puts += 1;
         throw abortError('This operation was aborted');
       }
-      if (isExport(env)) {
-        exports += 1;
-        return jsonResponse({ data: { collection: stale } });
+      if (isReceiptRead(env)) {
+        reads += 1;
+        return syncReceipt(stale);
       }
       return jsonResponse({ data: {} });
     });
@@ -251,25 +269,25 @@ describe('ambiguous deep-update recovery', () => {
       /ambiguous-deep-update-digest-mismatch/
     );
     expect(puts).toBe(2);
-    expect(exports).toBe(10);
+    expect(reads).toBe(10);
     expect(sleeps).toHaveLength(8);
     expect(client.collectionWriteMetrics.resendCount).toBe(1);
   });
 
   it('never polls or resends after a terminal 4xx deep-update rejection', async () => {
     const desired = v21('Payments', 'GET /payments');
-    const digest = await exportedDigestOf(desired);
+    const digest = computePayloadDigest(desired);
 
-    let exports = 0;
+    let reads = 0;
     let puts = 0;
     const { client } = makeRecoveryClient((env) => {
       if (isDeepUpdate(env)) {
         puts += 1;
         return new Response('{"error":"SCHEMA_ENFORCED"}', { status: 400 });
       }
-      if (isExport(env)) {
-        exports += 1;
-        return jsonResponse({ data: { collection: desired } });
+      if (isReceiptRead(env)) {
+        reads += 1;
+        return syncReceipt(desired);
       }
       return jsonResponse({ data: {} });
     });
@@ -278,7 +296,7 @@ describe('ambiguous deep-update recovery', () => {
       /400|SCHEMA_ENFORCED|deep-update-transport/i
     );
     expect(puts).toBe(1);
-    expect(exports).toBe(0);
+    expect(reads).toBe(0);
     expect(client.collectionWriteMetrics.ambiguousWrites).toBe(0);
   });
 });

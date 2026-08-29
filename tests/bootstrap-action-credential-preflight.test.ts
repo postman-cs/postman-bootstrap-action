@@ -199,6 +199,26 @@ describe('runAction credential preflight', () => {
         }
         return json({});
       }
+      const syncRoot = /^https:\/\/bifrost-premium-https-v4\.gw\.postman\.com\/collection\/([^/?]+)\/sync\?/.exec(url);
+      if (syncRoot && method === 'GET') {
+        const requested = decodeURIComponent(syncRoot[1]!);
+        const id = importedCollections.find(
+          (entry) => entry.id === requested || entry.id.endsWith(requested)
+        )?.id;
+        const exported = id ? collectionExports.get(id) : undefined;
+        const info = exported?.info as Record<string, unknown> | undefined;
+        if (!id || !info) return json({ error: 'missing' }, 404);
+        return json({
+          entities: [{
+            revision: 1,
+            data: {
+              uid: id,
+              name: String(info.name ?? ''),
+              description: String(info.description ?? '')
+            }
+          }]
+        });
+      }
       if (url === 'https://bifrost-premium-https-v4.gw.postman.com/ws/proxy') {
         const payload = JSON.parse(String(init?.body ?? '{}')) as {
           service?: string;

@@ -6322,6 +6322,31 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls).toHaveLength(1);
     });
 
+    it('rejects a structured root description in one retry-free preflight request', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const structured = {
+        ...v21Collection,
+        info: {
+          ...v21Collection.info,
+          description: { content: 'SDK description', type: 'text/plain' }
+        }
+      };
+      const { client, gateway, calls } = makeClient(() => syncSnapshotResponse(structured));
+      const requestJson = vi.spyOn(gateway, 'requestJson');
+
+      await expect(client.exportV2Collection(bareId)).rejects.toThrow(
+        /COLLECTION_SNAPSHOT_INVALID: structured collection descriptions/
+      );
+      expect(calls).toHaveLength(1);
+      expect(requestJson).toHaveBeenCalledExactlyOnceWith({
+        service: 'sync',
+        method: 'get',
+        path: `/collection/${bareId}`,
+        query: { populate: 'true', format: '2.1.0', uid: 'false' },
+        retry: 'none'
+      });
+    });
+
     it('fails closed on malformed data, foreign identity, or an invalid reserved receipt', async () => {
       const bareId = v21Collection.info._postman_id;
       const fullUid = `12345678-${bareId}`;

@@ -311972,6 +311972,11 @@ ${error2.responseBody ?? ""}`
     if (!observedId || normalizeCollectionModelIdentity(observedId) !== normalizeCollectionModelIdentity(requestedId)) {
       throw new Error("COLLECTION_SNAPSHOT_INVALID: populated Sync read returned a different collection identity");
     }
+    if (info2?.description !== void 0 && info2.description !== null && typeof info2.description !== "string") {
+      throw new Error(
+        "COLLECTION_SNAPSHOT_INVALID: structured collection descriptions cannot be restored safely"
+      );
+    }
     parseCollectionSemanticReceipt(info2?.description);
     return collection;
   }

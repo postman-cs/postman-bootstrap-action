@@ -5095,6 +5095,19 @@ export class PostmanGatewayAssetsClient {
     ) {
       throw new Error('COLLECTION_SNAPSHOT_INVALID: populated Sync read returned a different collection identity');
     }
+    if (
+      info?.description !== undefined &&
+      info.description !== null &&
+      typeof info.description !== 'string'
+    ) {
+      // Receipt rendering deliberately supports only byte-exact string
+      // descriptions. Reject SDK Description objects during the all-role
+      // snapshot preflight so a later role failure can never discover that a
+      // captured rollback payload is unwritable after another role mutated.
+      throw new Error(
+        'COLLECTION_SNAPSHOT_INVALID: structured collection descriptions cannot be restored safely'
+      );
+    }
     // Reject a poisoned/malformed reserved receipt, but do not compare its
     // digest to this read projection. Sync's populated v2.1 response is the
     // authoritative rollback payload yet normalizes optional input fields

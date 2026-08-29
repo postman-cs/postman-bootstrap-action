@@ -18,6 +18,7 @@ import {
 import * as localCollectionArtifacts from '../src/lib/repo/local-collection-artifacts.js';
 import { buildContractIndex } from '../src/lib/spec/contract-index.js';
 import {
+  computePayloadDigest,
   generateLocalOpenApiRolePayloads,
   type CollectionRole
 } from '../src/lib/spec/local-openapi-collection-generation.js';
@@ -469,6 +470,31 @@ describe('local OpenAPI orchestration', () => {
       expect(pending.size).toBe(3);
       for (const resolve of pending.values()) resolve();
       await run;
+    });
+  });
+
+  it('uses semantic Sync receipts instead of fresh export projections for all imported roles', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const postman = buildPostman(events);
+      const verifyCollectionSemanticReceipt = vi.fn(async (
+        _id: string,
+        collection: unknown,
+        digest: string
+      ) => {
+        expect(computePayloadDigest(collection as JsonRecord)).toBe(digest);
+      });
+      Object.assign(postman, { verifyCollectionSemanticReceipt });
+
+      await runBootstrap(createInputs({ workspaceId: 'ws-1' }), {
+        core: createCoreStub(), exec: createExecStub(), io: { which: async () => 'tool' },
+        internalIntegration: buildIntegration(events),
+        postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+        resourcesState: { read: () => null, write: () => undefined }, specFetcher: vi.fn()
+      });
+
+      expect(verifyCollectionSemanticReceipt).toHaveBeenCalledTimes(3);
+      expect(postman.exportV2Collection).not.toHaveBeenCalled();
     });
   });
 

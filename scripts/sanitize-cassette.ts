@@ -14,6 +14,7 @@ import {
   normalizeCollectionModelIdentity
 } from '../src/lib/postman/collection-model-identity.ts';
 import { convergentCollectionRootIdentity } from '../src/lib/postman/convergent-collection-root.ts';
+import { stripCollectionSemanticReceipt } from '../src/lib/postman/collection-semantic-receipt.ts';
 
 const REDACTED = '[REDACTED]';
 const REDACTED_REPOSITORY = '[REDACTED-REPOSITORY]';
@@ -280,7 +281,8 @@ function categoryForPath(path: string[], interactionKey: string): EntityCategory
   if (/^(?:collection|collectionid|collectionuid|modelid|postmanid)$/.test(name)) {
     return 'collection';
   }
-  if (/^(?:uid|fileid|delegateeid|pubid|installationuid)$/.test(name)) return 'uid';
+  if (name === 'uid') return routeCategory(interactionKey) ?? 'uid';
+  if (/^(?:fileid|delegateeid|pubid|installationuid)$/.test(name)) return 'uid';
   if (name !== 'id') return undefined;
   if (ancestors.some((entry) => /^(?:user|users|member|members|owner)$/.test(entry))) return 'user';
   if (ancestors.some((entry) => /^(?:team|teams|organization|squad|squads)$/.test(entry))) {
@@ -886,27 +888,41 @@ function provenConvergentRoots(cassette: Cassette): Set<string> {
   }
   const proven = new Set<string>();
   for (const interaction of cassette.interactions) {
-    const route = /proxy:collection GET \/v3\/collections\/([^/?# ]+)\/export/.exec(
+    const exportRoute = /proxy:collection GET \/v3\/collections\/([^/?# ]+)\/export/.exec(
       interaction.key
     );
-    if (!route?.[1]) continue;
+    const syncRoute = /GET https:\/\/[^/]+\/collection\/([^/?# ]+)\/sync(?:[? #]|$)/.exec(
+      interaction.key
+    );
+    const routeIdentityRaw = exportRoute?.[1] ?? syncRoute?.[1];
+    if (!routeIdentityRaw) continue;
     let payload: JsonRecord | undefined;
     try {
       payload = asRecord(JSON.parse(interaction.body));
     } catch {
       continue;
     }
-    const data = asRecord(payload?.data) ?? payload;
-    const collection = asRecord(data?.collection) ?? data;
-    const info = asRecord(collection?.info);
+    const info = syncRoute
+      ? asRecord(asRecord(Array.isArray(payload?.entities) ? payload.entities[0] : undefined)?.data)
+      : (() => {
+          const data = asRecord(payload?.data) ?? payload;
+          const collection = asRecord(data?.collection) ?? data;
+          return asRecord(collection?.info);
+        })();
     const name = String(info?.name ?? '').trim();
     if (!name) continue;
-    const routeIdentity = normalizeCollectionModelIdentity(decodeURIComponent(route[1]));
+    const routeIdentity = normalizeCollectionModelIdentity(decodeURIComponent(routeIdentityRaw));
+    const strippedDescription = stripCollectionSemanticReceipt(info?.description);
+    if (
+      strippedDescription !== undefined &&
+      strippedDescription !== null &&
+      typeof strippedDescription !== 'string'
+    ) continue;
     for (const workspace of workspaces) {
       const derived = convergentCollectionRootIdentity(
         workspace,
         name,
-        String(info?.description ?? '')
+        String(strippedDescription ?? '').trim()
       );
       if (derived === routeIdentity) proven.add(derived);
     }

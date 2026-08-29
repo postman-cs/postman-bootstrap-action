@@ -374,6 +374,11 @@ export interface BootstrapExecutionDependencies {
       rollback?: { collection: unknown; payloadDigest: string }
     ): ReturnType<PostmanGatewayAssetsClient['applyCollectionDelta']>;
     readonly collectionWriteMetrics?: CollectionWriteMetrics;
+    verifyCollectionSemanticReceipt?(
+      collectionUid: string,
+      expectedCollection: unknown,
+      expectedPayloadDigest: string
+    ): Promise<void>;
     exportV2Collection?(collectionUid: string): Promise<Record<string, unknown>>;
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
@@ -3665,32 +3670,6 @@ async function runBootstrapInner(
               deferNominalSemanticVerification: true
             }
           );
-          if (collectionBranchMarker) {
-            if (!dependencies.postman.updateCollectionDescription) {
-              throw new Error(
-                'Branch-scoped generated collections require updateCollectionDescription support'
-              );
-            }
-            // Sync import does not reliably surface info.description on the v3
-            // inventory row. Persist the marker explicitly before final semantic
-            // verification; exact name alone is never treated as ownership.
-            try {
-              await dependencies.postman.updateCollectionDescription(
-                imported.collectionId,
-                collectionBranchMarker
-              );
-            } catch (error) {
-              if (imported.deleteVerifiedCleanup) {
-                await imported.deleteVerifiedCleanup(imported.journaledRootIds);
-              } else if (dependencies.postman.deleteVerifiedRunOwnedCollections) {
-                await dependencies.postman.deleteVerifiedRunOwnedCollections(
-                  workspaceId || '',
-                  imported.journaledRootIds
-                );
-              }
-              throw error;
-            }
-          }
           const writeMs = Math.max(0, Date.now() - writeStarted);
           return {
             role: role.role,
@@ -3797,15 +3776,18 @@ async function runBootstrapInner(
           );
         }
 
-        // Success requires an exact semantic export of every final collection,
-        // including imports, deltas, whole writes, and unchanged roles. Fresh
-        // imports already share one deterministic logical root, so no process
-        // performs destructive same-marker peer election. Two read lanes bound
-        // gateway pressure.
-        if (!dependencies.postman.exportV2Collection) {
+        // Success requires exact semantic proof for every final collection.
+        // Atomic imports/deep-updates use their embedded Sync receipt; deltas
+        // and unchanged roles retain mature export proof. Fresh imports share
+        // one deterministic logical root, so no process performs destructive
+        // same-marker peer election. Two read lanes bound gateway pressure.
+        if (
+          !dependencies.postman.exportV2Collection &&
+          !dependencies.postman.verifyCollectionSemanticReceipt
+        ) {
           await failOwned(
             'collection-final-verification',
-            new Error('LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support')
+            new Error('LOCAL_OPENAPI_ORCHESTRATION_FAILED: final collection verification requires access-token gateway support')
           );
         }
         const observedDigestByRole = new Map<CollectionRole, string>();
@@ -3833,11 +3815,29 @@ async function runBootstrapInner(
                 observedDigestByRole.set(role.role, preverifiedDigest);
                 continue;
               }
+              const desiredDigest = payloads.roles[role.role].payloadDigest;
+              if (
+                (result.kind === 'import' || result.kind === 'deep-update') &&
+                dependencies.postman.verifyCollectionSemanticReceipt
+              ) {
+                await dependencies.postman.verifyCollectionSemanticReceipt(
+                  result.collectionId,
+                  payloads.roles[role.role].collection,
+                  desiredDigest
+                );
+                reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
+                observedDigestByRole.set(role.role, desiredDigest);
+                continue;
+              }
+              if (!dependencies.postman.exportV2Collection) {
+                throw new Error(
+                  'LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection is required for non-atomic collection verification'
+                );
+              }
               const exported = await dependencies.postman.exportV2Collection!(result.collectionId);
               const observedDigest = computePayloadDigest(exported);
               reconciliationMsByRole[role.role] = Math.max(0, Date.now() - started);
               observedDigestByRole.set(role.role, observedDigest);
-              const desiredDigest = payloads.roles[role.role].payloadDigest;
               if (observedDigest !== desiredDigest) {
                 verificationFailure = new Error(
                   `final export digest mismatch for ${role.role}: expected ${desiredDigest}, got ${observedDigest}; ${describePayloadDigestDifference(payloads.roles[role.role].collection, exported)}`
@@ -4515,6 +4515,7 @@ export function createRoutingPostmanClient(options: {
       updateCollectionDescription: requireAccessToken('updateCollectionDescription'),
       importV2Collection: requireAccessToken('importV2Collection'),
       deepUpdateV2Collection: requireAccessToken('deepUpdateV2Collection'),
+      verifyCollectionSemanticReceipt: requireAccessToken('verifyCollectionSemanticReceipt'),
       exportV2Collection: requireAccessToken('exportV2Collection'),
       deleteVerifiedRunOwnedCollections: requireAccessToken('deleteVerifiedRunOwnedCollections'),
       reconcileDuplicateFinalCollections: requireAccessToken('reconcileDuplicateFinalCollections')
@@ -4579,6 +4580,8 @@ export function createRoutingPostmanClient(options: {
       gateway.importV2Collection(workspaceId, collection, finalName, options),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) =>
       gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
+    verifyCollectionSemanticReceipt: (collectionUid, collection, expectedPayloadDigest) =>
+      gateway.verifyCollectionSemanticReceipt(collectionUid, collection, expectedPayloadDigest),
     applyCollectionDelta: (collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback) =>
       gateway.applyCollectionDelta(collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback),
     get collectionWriteMetrics() {

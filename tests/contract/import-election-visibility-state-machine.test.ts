@@ -4,6 +4,7 @@ import { AccessTokenGatewayClient } from '@postman-cs/automation-core';
 import { PostmanGatewayAssetsClient } from '../../src/lib/postman/postman-gateway-assets-client.js';
 import { WORKSPACE_PERSONAL_ONLY_ADVICE } from '../../src/lib/postman/error-advice.js';
 import { AccessTokenProvider } from '../../src/lib/postman/token-provider.js';
+import { stripCollectionSemanticReceipt } from '../../src/lib/postman/collection-semantic-receipt.js';
 import { renderAssetMarker } from '../../src/lib/repo/branch-decision.js';
 import {
   createPlatformFake,
@@ -216,7 +217,9 @@ describe('contract: import election state machine', () => {
       expect.objectContaining({ id: STRANGER_UID, origin: 'peer' }),
       expect.objectContaining({ id: OWN_UID, origin: 'imported' })
     ]);
-    expect(activeCollections(fake).filter((entry) => entry.description === ownMarker)).toHaveLength(1);
+    expect(activeCollections(fake).filter(
+      (entry) => stripCollectionSemanticReceipt(entry.description) === ownMarker
+    )).toHaveLength(1);
     expect(fake.state.collectionDeleteLedger).toEqual([]);
     expect(importRequests(fake)).toHaveLength(1);
     expect(collectionRequests(fake, 'delete')).toEqual([]);
@@ -257,8 +260,9 @@ describe('contract: import election state machine', () => {
       collectionRequests(fake, 'get').some((request) => request.path === `/v3/collections/${PEER_BARE}/export`)
     ).toBe(true);
     expect(activeCollections(fake)).toEqual([
-      expect.objectContaining({ id: PEER_UID, description: sharedMarker })
+      expect.objectContaining({ id: PEER_UID })
     ]);
+    expect(stripCollectionSemanticReceipt(activeCollections(fake)[0]?.description)).toBe(sharedMarker);
     expect(importRequests(fake)).toHaveLength(1);
     expect(collectionRequests(fake, 'delete').map((request) => request.path)).toEqual([
       `/v3/collections/${OWN_BARE}`

@@ -8,6 +8,7 @@ import {
 } from 'openapi-to-postmanv2';
 
 import { canonicalizeV2CollectionForSync } from '../postman/collection-model-conversion.js';
+import { stripCollectionSemanticReceipt } from '../postman/collection-semantic-receipt.js';
 import { instrumentContractCollection } from './collection-contracts.js';
 import type { ContractIndex } from './contract-index.js';
 import { withDeterministicSchemaFaker } from './deterministic-schema-faker.js';
@@ -189,7 +190,10 @@ function withoutStructuralIds(collection: JsonRecord): JsonRecord {
   stripSyncDefaults(clone);
   if (isRecord(clone.info)) {
     delete clone.info._postman_id;
-    if (clone.info.description === '') delete clone.info.description;
+    const description = stripCollectionSemanticReceipt(clone.info.description);
+    if (description === undefined || description === null || description === '') {
+      delete clone.info.description;
+    } else clone.info.description = description;
   }
   normalizeSyncAuth(clone.auth);
   if (Array.isArray(clone.event) && clone.event.length === 0) delete clone.event;

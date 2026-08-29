@@ -12,6 +12,12 @@ import { WORKSPACE_PERSONAL_ONLY_ADVICE } from '../src/lib/postman/error-advice.
 import { normalizeCollectionModelIdentity } from '../src/lib/postman/collection-model-identity.js';
 import { renderAssetMarker } from '../src/lib/repo/branch-decision.js';
 import {
+  parseCollectionSemanticReceipt,
+  renderCollectionSemanticReceipt,
+  stripCollectionSemanticReceipt
+} from '../src/lib/postman/collection-semantic-receipt.js';
+import { computePayloadDigest } from '../src/lib/spec/local-openapi-collection-generation.js';
+import {
   createDefinitionBundle,
   createDefinitionFile
 } from '../src/lib/spec/definition-bundle.js';
@@ -36,6 +42,32 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
     headers: { 'Content-Type': 'application/json' },
     ...init
+  });
+}
+
+function withSemanticReceipt<T extends { info: Record<string, unknown> }>(collection: T): T {
+  const copy = structuredClone(collection);
+  copy.info.description = renderCollectionSemanticReceipt(
+    copy.info.description,
+    computePayloadDigest(copy)
+  );
+  return copy;
+}
+
+function syncRootResponse(
+  collection: { info: Record<string, unknown> },
+  revision: number | string = 1,
+  uid = String(collection.info._postman_id ?? '')
+): Response {
+  return jsonResponse({
+    entities: [{
+      revision,
+      data: {
+        uid,
+        name: collection.info.name,
+        description: collection.info.description
+      }
+    }]
   });
 }
 
@@ -3968,6 +4000,69 @@ describe('PostmanGatewayAssetsClient', () => {
       info: { ...v21Collection.info, _postman_id: rootId, name, description }
     });
 
+    it('verifies an atomic write through one full-UID direct Sync receipt read with retries disabled', async () => {
+      const bareId = 'aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+      const fullUid = `12345678-${bareId}`;
+      const desired = collectionWithRootId(bareId);
+      const committed = withSemanticReceipt(desired);
+      const { client, gateway, calls } = makeClient((env) => {
+        expect(env).toMatchObject({
+          service: 'direct',
+          method: 'get',
+          path: `/collection/${fullUid}/sync?since_id=0&favorite=true&exclude=response%2Crequest`
+        });
+        return syncRootResponse(committed, 42, fullUid);
+      });
+      const directRead = vi.spyOn(gateway, 'requestDirectJson');
+
+      await expect(client.verifyCollectionSemanticReceipt(
+        fullUid,
+        desired,
+        computePayloadDigest(desired)
+      )).resolves.toBeUndefined();
+      expect(calls).toHaveLength(1);
+      expect(calls.some((call) => call.path.endsWith('/export'))).toBe(false);
+      expect(directRead).toHaveBeenCalledExactlyOnceWith({
+        path: `/collection/${fullUid}/sync?since_id=0&favorite=true&exclude=response%2Crequest`,
+        method: 'get',
+        retry: 'none',
+        maxRetries: 0
+      });
+    });
+
+    it('fails a malformed or mismatched Sync receipt without retrying or exporting', async () => {
+      const bareId = 'aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+      const fullUid = `12345678-${bareId}`;
+      const desired = collectionWithRootId(bareId);
+      const committed = withSemanticReceipt(desired);
+      committed.info.description = renderCollectionSemanticReceipt('', 'f'.repeat(64));
+      const { client, calls } = makeClient(() => syncRootResponse(committed));
+
+      await expect(client.verifyCollectionSemanticReceipt(
+        fullUid,
+        desired,
+        computePayloadDigest(desired)
+      )).rejects.toThrow(/semantic digest does not match/);
+      expect(calls).toHaveLength(1);
+      expect(calls.some((call) => call.path.endsWith('/export'))).toBe(false);
+    });
+
+    it('surfaces a direct Sync 500 after exactly one request', async () => {
+      const bareId = 'aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+      const fullUid = `12345678-${bareId}`;
+      const desired = collectionWithRootId(bareId);
+      const { client, calls } = makeClient(() =>
+        jsonResponse({ error: 'unavailable' }, { status: 500 })
+      );
+
+      await expect(client.verifyCollectionSemanticReceipt(
+        fullUid,
+        desired,
+        computePayloadDigest(desired)
+      )).rejects.toThrow(/500/);
+      expect(calls).toHaveLength(1);
+    });
+
     it('derives one stable logical root across trigger SHAs and separates workspaces, names, and branches', () => {
       const markerA = renderAssetMarker({
         repo: 'https://github.com/acme/payments',
@@ -3995,6 +4090,43 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(convergentCollectionRootIdentity('ws-2', PREVIEW_FINAL_NAME, markerA)).not.toBe(identity);
       expect(convergentCollectionRootIdentity('ws-1', `${PREVIEW_FINAL_NAME} smoke`, markerA)).not.toBe(identity);
       expect(convergentCollectionRootIdentity('ws-1', PREVIEW_FINAL_NAME, markerB)).not.toBe(identity);
+    });
+
+    it('binds the receipt to the byte-exact submitted description without trimming it', async () => {
+      const description = '  customer prose with leading space\ntrailing space  ';
+      const desired = collectionWithRootId(
+        v21Collection.info._postman_id,
+        'Payments',
+        description
+      );
+      const bareId = convergentCollectionRootIdentity('ws-shared', 'Payments', description.trim());
+      const canonicalId = `12345678-${bareId}`;
+      let submitted: typeof desired | undefined;
+      const { client } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          submitted = structuredClone(env.body as typeof desired);
+          return jsonResponse({ model_id: bareId });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [{ id: canonicalId, name: 'Payments' }] });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.importV2Collection(
+        'ws-shared',
+        desired,
+        'Payments',
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      )).resolves.toMatchObject({ collectionId: canonicalId });
+
+      expect(submitted).toBeDefined();
+      const submittedDescription = submitted!.info.description;
+      expect(stripCollectionSemanticReceipt(submittedDescription)).toBe(description);
+      expect(parseCollectionSemanticReceipt(submittedDescription)?.digest).toBe(
+        computePayloadDigest(submitted!)
+      );
+      expect(computePayloadDigest(submitted!)).toBe(computePayloadDigest(desired));
     });
 
     it('converges on the exact logical root without inspecting, deleting, or deep-updating a stale-snapshot peer', async () => {
@@ -4045,6 +4177,7 @@ describe('PostmanGatewayAssetsClient', () => {
     it('recovers an explicit duplicate-root conflict by exact identity without retrying or deleting', async () => {
       const bareId = convergentCollectionRootIdentity('ws-shared', 'Payments', '');
       const canonicalId = `12345678-${bareId}`;
+      const committed = withSemanticReceipt(collectionWithRootId(bareId));
       let importCalls = 0;
       const { client, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
@@ -4057,8 +4190,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: [{ id: canonicalId, name: 'Payments' }] });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        if (env.service === 'direct' && env.method === 'get') {
+          return syncRootResponse(committed);
         }
         return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
       });
@@ -4070,8 +4203,142 @@ describe('PostmanGatewayAssetsClient', () => {
         { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
       )).resolves.toMatchObject({ collectionId: canonicalId, journaledRootIds: [] });
       expect(importCalls).toBe(1);
-      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(1);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(0);
+      expect(calls.filter((call) => call.service === 'direct')).toHaveLength(1);
       expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+    });
+
+    it('reconciles only the live exact Sync WLError duplicate signature through exact receipt proof', async () => {
+      const bareId = convergentCollectionRootIdentity('ws-shared', 'Payments', '');
+      const canonicalId = `12345678-${bareId}`;
+      const committed = withSemanticReceipt(collectionWithRootId(bareId));
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          return jsonResponse(
+            { error: { name: 'WLError', message: '1 attribute is invalid' } },
+            { status: 400 }
+          );
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [{ id: canonicalId, name: 'Payments' }] });
+        }
+        if (env.service === 'direct') return syncRootResponse(committed);
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.importV2Collection(
+        'ws-shared',
+        v21Collection,
+        'Payments',
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      )).resolves.toMatchObject({ collectionId: canonicalId, journaledRootIds: [] });
+      expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.service === 'direct')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+    });
+
+    it('migrates an exact pre-receipt deterministic root only after explicit conflict and mature export proof', async () => {
+      const marker = renderAssetMarker({
+        repo: 'https://github.com/acme/payments',
+        rawBranch: 'feature/a',
+        sanitizedBranch: 'feature-a',
+        role: 'preview'
+      });
+      const bareId = convergentCollectionRootIdentity('ws-shared', PREVIEW_FINAL_NAME, marker);
+      const canonicalId = `12345678-${bareId}`;
+      const prior = collectionWithRootId(bareId, PREVIEW_FINAL_NAME, marker);
+      const desired = {
+        ...collectionWithRootId(v21Collection.info._postman_id, PREVIEW_FINAL_NAME, marker),
+        item: [{
+          name: 'GET /payments/{id}',
+          request: { method: 'GET', header: [], url: 'https://example.test/payments/42' }
+        }]
+      };
+      let current = structuredClone(prior);
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          return jsonResponse(
+            { error: { name: 'WLError', message: '1 attribute is invalid' } },
+            { status: 400 }
+          );
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [{ id: canonicalId, name: PREVIEW_FINAL_NAME }] });
+        }
+        if (env.service === 'direct') return syncRootResponse(current);
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: prior } });
+        }
+        if (env.service === 'sync' && env.method === 'put' && env.path === `/collection/deepupdate/${bareId}`) {
+          current = structuredClone(env.body as typeof desired);
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      const result = await client.importV2Collection(
+        'ws-shared',
+        desired,
+        PREVIEW_FINAL_NAME,
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      );
+      await expect(client.verifyCollectionSemanticReceipt(
+        result.collectionId,
+        desired,
+        computePayloadDigest(desired)
+      )).resolves.toBeUndefined();
+
+      expect(result).toMatchObject({ collectionId: canonicalId, journaledRootIds: [] });
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(1);
+      expect(calls.filter((call) => call.path.includes('/deepupdate/'))).toHaveLength(1);
+      expect(calls.filter((call) => call.service === 'direct')).toHaveLength(2);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+    });
+
+    it('never treats an ambiguous fresh import with a missing receipt as pre-receipt migration', async () => {
+      const bareId = convergentCollectionRootIdentity('ws-shared', 'Payments', '');
+      const canonicalId = `12345678-${bareId}`;
+      const noReceipt = collectionWithRootId(bareId);
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          return jsonResponse({ error: 'ESOCKETTIMEDOUT' }, { status: 504 });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [{ id: canonicalId, name: 'Payments' }] });
+        }
+        if (env.service === 'direct') return syncRootResponse(noReceipt);
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.importV2Collection(
+        'ws-shared',
+        v21Collection,
+        'Payments',
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      )).rejects.toThrow(/evidence is unavailable|missing its semantic receipt/);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toEqual([]);
+      expect(calls.filter((call) => call.path.includes('/deepupdate/'))).toEqual([]);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+    });
+
+    it('does not broaden a different WLError 400 into convergent recovery', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          return jsonResponse(
+            { error: { name: 'WLError', message: '2 attributes are invalid' } },
+            { status: 400 }
+          );
+        }
+        return jsonResponse({ data: [] });
+      });
+
+      await expect(client.importV2Collection(
+        'ws-shared',
+        v21Collection,
+        'Payments',
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      )).rejects.toThrow(/stage=import-transport/);
+      expect(calls.filter((call) => call.path.includes('?workspace='))).toEqual([]);
     });
 
     it('lets two independent clients interleave on one logical root without deleting or replacing a peer root', async () => {
@@ -4082,6 +4349,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const firstPostObserved = new Promise<void>((resolve) => { firstPosted = resolve; });
       const firstPostRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
       let rootExists = false;
+      const committed = withSemanticReceipt(collectionWithRootId(bareId));
       const handler = (client: 'first' | 'second') => async (env: Envelope): Promise<Response> => {
         if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
           if (client === 'first') {
@@ -4099,8 +4367,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: rootExists ? [{ id: canonicalId, name: 'Payments' }] : [] });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        if (env.service === 'direct' && env.method === 'get') {
+          return syncRootResponse(committed);
         }
         return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
       };
@@ -4130,6 +4398,7 @@ describe('PostmanGatewayAssetsClient', () => {
       const allCalls = [...first.calls, ...second.calls];
       expect(allCalls.filter((call) => call.method === 'delete')).toEqual([]);
       expect(allCalls.filter((call) => call.method === 'put')).toEqual([]);
+      expect(allCalls.filter((call) => call.path.endsWith('/export'))).toEqual([]);
       expect(allCalls.filter((call) => call.method === 'post' && call.path === '/collection/import')).toHaveLength(2);
     });
 
@@ -4168,7 +4437,7 @@ describe('PostmanGatewayAssetsClient', () => {
           request: { method: 'GET', header: [], url: 'https://example.test/payments/42' }
         }]
       };
-      let updated = false;
+      let current = withSemanticReceipt(prior);
       const { client, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
           return jsonResponse(
@@ -4179,17 +4448,16 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: [{ id: canonicalId, name: PREVIEW_FINAL_NAME }] });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: updated
-            ? { ...next, info: { ...next.info, _postman_id: bareId } }
-            : prior } });
+        if (env.service === 'direct' && env.method === 'get') {
+          return syncRootResponse(current);
         }
         if (env.service === 'sync' && env.method === 'put' && env.path === `/collection/deepupdate/${bareId}`) {
           const body = env.body as typeof next;
           expect(body.info._postman_id).toBe(bareId);
-          expect(body.info.description).toBe(nextMarker);
+          expect(body.info.description).toContain(nextMarker);
+          expect(body.info.description).toContain('x-pm-onboarding-content-receipt:');
           expect(body.item[0]?.name).toBe('GET /payments/{id}');
-          updated = true;
+          current = structuredClone(body);
           return jsonResponse({ ok: true });
         }
         return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
@@ -4203,13 +4471,15 @@ describe('PostmanGatewayAssetsClient', () => {
       );
       expect(imported.collectionId).toBe(canonicalId);
       expect(imported.journaledRootIds).toEqual([]);
-      expect(updated).toBe(true);
-      await expect(client.exportV2Collection(imported.collectionId)).resolves.toMatchObject({
-        info: { _postman_id: bareId, description: nextMarker },
-        item: [{ name: 'GET /payments/{id}' }]
-      });
+      expect(current.item[0]?.name).toBe('GET /payments/{id}');
+      await expect(client.verifyCollectionSemanticReceipt(
+        imported.collectionId,
+        next,
+        computePayloadDigest(next)
+      )).resolves.toBeUndefined();
       expect(calls.filter((call) => call.method === 'post' && call.path === '/collection/import')).toHaveLength(1);
       expect(calls.filter((call) => call.method === 'put' && call.path.includes('/deepupdate/'))).toHaveLength(1);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toEqual([]);
       expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
     });
 
@@ -5917,9 +6187,12 @@ describe('PostmanGatewayAssetsClient', () => {
       const uid = '12345678-1234-1234-1234-1234567890ab';
       const { client, calls } = makeClient((env) => {
         if (env.service === 'sync' && env.method === 'put' && String(env.path).startsWith('/collection/deepupdate/')) {
-          const body = env.body as { info?: { _postman_id?: string } };
+          const body = env.body as { info?: { _postman_id?: string; description?: string } };
           expect(body.info?._postman_id).toBe(uid);
           expect(body.info?._postman_id).not.toBe('11111111-1111-1111-1111-111111111111');
+          expect(body.info?.description).toContain('x-pm-onboarding-content-receipt:');
+          expect(parseCollectionSemanticReceipt(body.info?.description)?.digest).toBe(digest);
+          expect(computePayloadDigest(body as never)).toBe(digest);
           return jsonResponse({ data: { ok: true } });
         }
         return jsonResponse({ data: { ok: true } });
@@ -5941,12 +6214,14 @@ describe('PostmanGatewayAssetsClient', () => {
     it('ambiguous deep-update accepts only exact digest match and never creates', async () => {
       const { computePayloadDigest } = await import('../src/lib/spec/local-openapi-collection-generation.js');
       const digest = computePayloadDigest(v21Collection as never);
+      let committed: { info: Record<string, unknown> } | undefined;
       const { client, calls } = makeClient((env) => {
         if (env.service === 'sync' && String(env.path).includes('/collection/deepupdate/')) {
+          committed = structuredClone(env.body as { info: Record<string, unknown> });
           return jsonResponse({ error: 'ESOCKETTIMEDOUT' }, { status: 504, statusText: 'Gateway Timeout' });
         }
-        if (env.service === 'collection' && env.method === 'get' && String(env.path).endsWith('/export')) {
-          return jsonResponse({ data: { collection: v21Collection } });
+        if (env.service === 'direct' && committed) {
+          return syncRootResponse(committed);
         }
         return jsonResponse({ data: { ok: true } });
       });
@@ -5956,6 +6231,7 @@ describe('PostmanGatewayAssetsClient', () => {
       ).resolves.toBe('col-existing');
       expect(calls.some((call) => call.path === '/collection/import')).toBe(false);
       expect(calls.filter((call) => String(call.path).includes('/collection/deepupdate/'))).toHaveLength(1);
+      expect(calls.filter((call) => String(call.path).endsWith('/export'))).toHaveLength(0);
 
       await expect(
         client.deepUpdateV2Collection('col-existing', v21Collection, 'a'.repeat(64))

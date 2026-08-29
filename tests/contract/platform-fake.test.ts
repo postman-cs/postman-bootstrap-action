@@ -40,6 +40,8 @@ function cassetteRoute(key: string): { service: string; method: string; path: st
       ? 'postman-api'
       : url.hostname === 'iapub.postman.co'
         ? 'iapub'
+        : url.hostname === 'bifrost-premium-https-v4.gw.postman.com'
+          ? 'bifrost-direct'
         : url.hostname;
   return { service, method: directMatch[1]!, path: `${url.pathname}${url.search}` };
 }

@@ -430,13 +430,10 @@ describe('branch-aware bootstrap runs', () => {
       expect(postman.updateSpec).not.toHaveBeenCalled();
       expect(outputs['sync-status']).toBe('synced');
       expect(JSON.parse(outputs['branch-decision']).tier).toBe('preview');
-      // Sync import does not reliably project info.description into v3 inventory,
-      // so each generated root receives an explicit durable marker PATCH.
-      expect(postman.updateCollectionDescription).toHaveBeenCalledTimes(3);
-      expect(postman.updateCollectionDescription).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.stringContaining('"role":"preview"')
-      );
+      // The import client atomically embeds both the branch marker and semantic
+      // receipt in each whole-tree write. Finalization must never PATCH the
+      // description after a concurrent peer may have advanced the same root.
+      expect(postman.updateCollectionDescription).not.toHaveBeenCalled();
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
       for (const call of postman.importV2Collection.mock.calls) {
@@ -495,8 +492,8 @@ describe('branch-aware bootstrap runs', () => {
     });
   });
 
-  it('preview marker failure never deletes a shared convergent root', async () => {
-    const workspace = mkdtempSync(join(tmpdir(), 'branch-preview-marker-fail-'));
+  it('preview finalization cannot overwrite a peer deep-update receipt with a late marker PATCH', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'branch-preview-no-late-patch-'));
     writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
     for (const [key, value] of Object.entries(githubPreviewEnv(workspace))) {
       vi.stubEnv(key, value);
@@ -525,17 +522,35 @@ describe('branch-aware bootstrap runs', () => {
           };
         }
       );
-      postman.updateCollectionDescription.mockRejectedValue(new Error('marker patch failed'));
+      // Model a peer advancing all deterministic roots after this run's atomic
+      // import acknowledgement. Any late description-only PATCH would rewrite
+      // the peer receipt without rewriting the tree and is therefore forbidden.
+      postman.updateCollectionDescription.mockRejectedValue(
+        new Error('late marker patch would overwrite the peer receipt')
+      );
+      const verifyCollectionSemanticReceipt = vi.fn(
+        async (collectionId: string) => {
+          await postman.deepUpdateV2Collection(collectionId, {
+            info: { _postman_id: collectionId, name: 'peer revision' },
+            item: []
+          });
+          throw new Error('peer deep-update superseded this run receipt');
+        }
+      );
+      (postman as Record<string, unknown>).verifyCollectionSemanticReceipt =
+        verifyCollectionSemanticReceipt;
 
       await expect(
         runBootstrap(
           createInputs({ branchStrategy: 'preview', workspaceId: 'ws-existing' }),
           runDeps(postman)
         )
-      ).rejects.toThrow(/marker patch failed/);
+      ).rejects.toThrow(/peer deep-update superseded this run receipt/);
 
-      expect(cleanup).toHaveBeenCalledTimes(3);
-      expect(cleanup).toHaveBeenCalledWith([]);
+      expect(verifyCollectionSemanticReceipt).toHaveBeenCalled();
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalled();
+      expect(postman.updateCollectionDescription).not.toHaveBeenCalled();
+      expect(cleanup).not.toHaveBeenCalled();
       expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
       expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
     });
@@ -711,7 +726,7 @@ describe('branch-aware bootstrap runs', () => {
       expect(findAdoptableSameMarkerCollection).not.toHaveBeenCalled();
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
-      expect(postman.updateCollectionDescription).toHaveBeenCalledTimes(3);
+      expect(postman.updateCollectionDescription).not.toHaveBeenCalled();
     });
   });
 

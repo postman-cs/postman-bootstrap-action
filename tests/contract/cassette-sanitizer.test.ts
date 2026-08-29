@@ -677,7 +677,7 @@ describe('contract: cassette sanitizer', () => {
     expect(JSON.stringify(sanitized)).not.toContain(RAW_WORKSPACE_ID);
     expect(JSON.stringify(sanitized)).not.toContain(LIVE_PMAK);
     expect(syncModelIds.size).toBe(3);
-    expect(rootPatchIds).toEqual(syncModelIds);
+    expect(rootPatchIds.size).toBe(0);
     liveFetch.mockClear();
     uuidSequence.next = 0;
     const replayed = await runWithFakeTimers(() =>

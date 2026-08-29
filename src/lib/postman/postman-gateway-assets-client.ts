@@ -497,11 +497,10 @@ export class PostmanGatewayAssetsClient {
    */
   private static readonly SPEC_CREATE_SINGLETON_MIN_POLL_INDEX = 2;
   /**
-   * Bounded org eventual-consistency settle schedule for local Sync-import rename
-   * commit visibility and concurrent final-name election on canonical/channel/legacy
-   * final names. Each delay is one observation gap while org list visibility
-   * catches up to a late peer; 3.75s total budget. Shared so both seams observe
-   * the same remote-convergence window; never a size/depth rejection cap.
+   * Bounded org eventual-consistency settle schedule for resolving a final-name
+   * Sync import and concurrent final-name election on canonical/channel/legacy
+   * names. Each delay is one observation gap while org list visibility catches
+   * up to a late peer; never a size/depth rejection cap.
    */
   private static readonly IMPORT_IDENTITY_SETTLE_DELAYS_MS = [
     250, 500, 750, 1000, 1250
@@ -527,18 +526,10 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Inventory-visibility schedule for resolving a bare Sync model id to the
-   * ROOT-addressable uid the finalize PATCH needs: this final name's settle
-   * window, extended by the live-proven preview continuation when the standard
-   * window is the one in play.
-   *
-   * This is deliberately the same total budget {@link
-   * electImportedCollectionIdentity} spends waiting for the very same inventory
-   * row. The rename cannot be deferred to election as a fallback — election
-   * matches candidates by exact final name, so a root still carrying its
-   * run-unique temp name is invisible there — and the ROOT PATCH has no bare-id
-   * fallback. Any shorter budget would therefore fail imports whose inventory
-   * visibility merely lags, which is the case election was built to survive.
+   * Inventory-visibility schedule for resolving a bare Sync model id to its
+   * ROOT-addressable uid. Import already carries the final name, so this read
+   * observes only the exact preallocated model identity and shares its remaining
+   * delayed-peer window with election.
    */
   private static rootUidResolveDelaysForFinalName(finalName: string): readonly number[] {
     if (PostmanGatewayAssetsClient.PREVIEW_ASSET_NAME_SUFFIX.test(finalName)) {
@@ -1976,91 +1967,6 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Local Sync-import canonical rename: one PATCH with retry:'none'. On
-   * ambiguous transport/5xx only, poll safe-read workspace inventory until the
-   * exact same normalized collection identity shows the exact requested final
-   * name, or the settle budget is exhausted. Never resend PATCH, never
-   * fallback, never adopt a final-name peer. Generation callers keep
-   * {@link renameGeneratedCollection}.
-   */
-  private async renameImportedCollectionCanonical(
-    workspaceId: string,
-    collectionId: string,
-    finalName: string,
-    resolution?: ImportRootResolution
-  ): Promise<ImportRootResolution> {
-    // Sync's import envelope returns a BARE model id, which the ROOT PATCH now
-    // rejects 403. Resolve the canonical <owner>-<uuid> from inventory before
-    // the only PATCH this canonical rename is allowed to send.
-    const settled = resolution ?? await this.resolveCollectionRootUid(
-      workspaceId,
-      collectionId,
-      PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName),
-      'safe',
-      PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName).length
-    );
-    const rootId = settled.rootUid;
-    if (!rootId) {
-      // The identity never became inventory-visible across the full window, so
-      // no ROOT-addressable id exists and the bare id is never sent (it would
-      // 403 unconditionally and burn the single attempt this rename is allowed).
-      //
-      // Return rather than throw: under dual-trigger the expected cause is that
-      // a peer run already won this final name and deleted this run's root, and
-      // election is the authority for that outcome. Election re-reads the same
-      // inventory and either adopts a verified same-marker peer or fails closed
-      // with `did not become inventory-visible with canonical identity`, without
-      // deleting or adopting a collection this run does not own. A root that is
-      // still absent here is likewise not final-name eligible there, so an
-      // unrenamed temp-named collection can never be silently shipped.
-      return settled;
-    }
-    const started = this.now();
-    try {
-      await this.withImportMutation(() => this.gateway.requestJson<JsonRecord>({
-          service: 'collection',
-          method: 'patch',
-          path: `/v3/collections/${rootId}`,
-          retry: 'none',
-          body: [{ op: 'replace', path: '/name', value: finalName }]
-        }));
-      this.recordCursorRename(settled.cursor, rootId, finalName);
-    } catch (error) {
-      if (
-        error instanceof HttpError &&
-        error.status === 400 &&
-        /must update at least one|REJECTED_PATCH/i.test(
-          `${error.message}\n${error.responseBody ?? ''}`
-        )
-      ) {
-        this.recordCursorRename(settled.cursor, rootId, finalName);
-        return settled;
-      }
-      if (!isAmbiguousTransportError(error)) throw error;
-      const preferredIdentity = normalizeCollectionModelIdentity(collectionId);
-      const observer = this.workspaceInventoryObserver(workspaceId);
-      do {
-        const observation = await observer.observe(settled.cursor, 'safe');
-        const committed = observation.rows?.find(
-          (entry) =>
-            entry.name === finalName &&
-            normalizeCollectionModelIdentity(entry.id) === preferredIdentity
-        );
-        if (committed) {
-          return settled;
-        }
-      } while (
-        settled.cursor.nextDelayIndex < settled.cursor.peerDelayCount &&
-        await observer.consumeDelay(settled.cursor)
-      );
-      throw error;
-    } finally {
-      this.writeMetrics.renameMs += Math.max(0, this.now() - started);
-    }
-    return settled;
-  }
-
-  /**
    * Create a team-visible workspace through the gateway workspaces service.
    *
    * Org-mode accounts (when `targetTeamId` is the resolved sub-team/squad id):
@@ -2396,26 +2302,6 @@ export class PostmanGatewayAssetsClient {
       observations: [],
       nextDelayIndex: 0
     };
-  }
-
-  private recordCursorRename(cursor: ImportSettleCursor, rootId: string, finalName: string): void {
-    const rootIdentity = normalizeCollectionModelIdentity(rootId);
-    let recorded = false;
-    for (let index = 0; index < cursor.observations.length; index += 1) {
-      const observation = cursor.observations[index]!;
-      const rows = observation.rows?.map((row) => {
-        if (normalizeCollectionModelIdentity(row.id) !== rootIdentity) return row;
-        recorded = true;
-        return { ...row, name: finalName };
-      });
-      if (rows) cursor.observations[index] = { rows };
-    }
-    if (!recorded) {
-      // The definitive PATCH response proves the owned ROOT write. Keep that
-      // trusted transition in this identity's timeline while later inventory
-      // observations remain responsible for delayed-peer discovery.
-      cursor.observations.push({ rows: [{ id: rootId, name: finalName }] });
-    }
   }
 
   private workspaceInventoryObserver(workspaceId: string): WorkspaceInventoryObserver {
@@ -3590,9 +3476,10 @@ export class PostmanGatewayAssetsClient {
 
   /**
    * Whole-collection import of a final v2.1 payload via sync
-   * `POST /collection/import`. Create is unsafe: one attempt, exact run-unique
-   * temp-name reconciliation only, then rename/elect with preview ownership
-   * isolation. Journals every root created by this call for verified cleanup.
+   * `POST /collection/import`. The payload carries its final name and a
+   * client-known root identity before the sole unsafe request. Ambiguous
+   * outcomes reconcile only that normalized identity and require exact
+   * ownership/payload evidence; display-name peers are never response recovery.
    */
   async importV2Collection(
     workspaceId: string,
@@ -3605,14 +3492,12 @@ export class PostmanGatewayAssetsClient {
     }
     const prepared = this.prepareV2ImportPayload(collection, desiredName);
     const desiredDescription = String(asRecord(prepared.info)?.description ?? '').trim();
-    const runToken = this.createIdentity();
-    const tempName = `${desiredName} [bootstrap:${runToken}]`;
     const importPayload = this.cloneJson(prepared);
     const info = asRecord(importPayload.info) ?? {};
-    info.name = tempName;
-    // Role generation already assigns pairwise-disjoint root identities before
-    // digesting. Preserve that stable identity across concurrent imports; only
-    // synthesize one for legacy callers that did not supply a root id.
+    info.name = desiredName;
+    // Role generation assigns pairwise-disjoint root identities before
+    // materialization. Preserve that identity across the import; synthesize one
+    // only for legacy direct callers that did not supply it.
     if (typeof info._postman_id !== 'string' || !info._postman_id.trim()) {
       info._postman_id = randomUUID();
     }
@@ -3620,13 +3505,14 @@ export class PostmanGatewayAssetsClient {
     // Enforce v2.1 schema before the unsafe create.
     this.assertV21Collection(importPayload);
 
-    const journaledRootIds: string[] = [];
-    const journal = (id: string) => {
-      const trimmed = String(id || '').trim();
-      if (trimmed && !journaledRootIds.includes(trimmed)) {
-        journaledRootIds.push(trimmed);
-      }
-    };
+    const preallocatedId = String(info._postman_id).trim();
+    const preallocatedIdentity = normalizeCollectionModelIdentity(preallocatedId);
+    if (!preallocatedIdentity) {
+      throw new Error('LOCAL_OPENAPI_IMPORT_FAILED: preallocated root identity is required');
+    }
+    // Journal before the request. The bare id is already a unique run-owned
+    // deletion identity; promote it to the public uid once inventory resolves.
+    const journaledRootIds: string[] = [preallocatedId];
 
     // The pre-mutation snapshot is part of the safety boundary. If it cannot be
     // read without hidden retry, no unsafe import is attempted.
@@ -3637,6 +3523,8 @@ export class PostmanGatewayAssetsClient {
     );
 
     let created: JsonRecord | null;
+    let resolution: ImportRootResolution | undefined;
+    let preferredEvidenceVerified = false;
     try {
       created = await this.withImportMutation(() => this.gateway.requestJson<JsonRecord>({
           service: 'sync',
@@ -3650,42 +3538,78 @@ export class PostmanGatewayAssetsClient {
       if (!isAmbiguousTransportError(error)) {
         throw this.sanitizeImportError('import-transport', error);
       }
-      // Reconcile only the exact run-unique temp identity — never final-name peers.
-      const match = adoptExactMatch(
-        `collection-import:${workspaceId}:${tempName}`,
-        await this.findCollectionsByExactName(workspaceId, tempName, 'safe'),
-        (entry) => entry.id
+      // A final name is not an identity. Resolve only the client-known root and
+      // never adopt a same-name peer as proof that this POST committed.
+      resolution = await this.resolveCollectionRootUid(
+        workspaceId,
+        preallocatedId,
+        PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
+        'safe',
+        PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
       );
-      if (!match) {
+      if (!resolution.rootUid || !resolution.resolvedRow) {
+        // The response is unknown but the mutation key is not: the exact
+        // preallocated root was journaled before submit. Best-effort delete and
+        // absence verification can target only that run-owned identity; a
+        // same-name peer is never touched.
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds)
+          .catch(() => undefined);
         throw this.sanitizeImportError('import-ambiguous-unreconciled', error);
       }
-      created = { data: { id: match.id, uid: match.id } };
+      await this.assertRecoveredImportEvidence(
+        resolution.resolvedRow,
+        preallocatedIdentity,
+        desiredName,
+        importPayload,
+        desiredDescription
+      );
+      preferredEvidenceVerified = true;
+      created = {
+        model_id: preallocatedId,
+        data: { info: { _postman_id: preallocatedId, name: desiredName } }
+      };
     }
 
     const rawId = this.extractCollectionUid(created);
     if (!rawId) {
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId])
+        .catch(() => undefined);
       throw new Error('LOCAL_OPENAPI_IMPORT_FAILED: import did not return a collection id');
     }
-    journal(rawId);
+    if (normalizeCollectionModelIdentity(rawId) !== preallocatedIdentity) {
+      // The response's foreign id is not ours to touch. The only safe cleanup
+      // target is the root identity journaled before the request.
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId])
+        .catch(() => undefined);
+      throw new Error(
+        'LOCAL_OPENAPI_IMPORT_FAILED: IMPORT_RESPONSE_ID_MISMATCH: server returned a different collection identity'
+      );
+    }
 
     try {
-      const resolution = await this.renameImportedCollectionCanonical(workspaceId, rawId, desiredName);
+      resolution ??= await this.resolveCollectionRootUid(
+        workspaceId,
+        preallocatedId,
+        PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
+        'safe',
+        PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
+      );
       const electedId = await this.electImportedCollectionIdentity(
         workspaceId,
         desiredName,
-        rawId,
+        preallocatedId,
         staleFinalIdentities,
         desiredDescription,
-        resolution.cursor
+        resolution.cursor,
+        importPayload,
+        preferredEvidenceVerified
       );
-      const rawBare = this.bareModelId(rawId);
+      const rawBare = this.bareModelId(preallocatedId);
       const electedBare = this.bareModelId(electedId);
       if (rawBare && electedBare && rawBare === electedBare) {
-        // Same root: Sync may return bare model_id while inventory returns the
-        // canonical <owner>-<model_id>. Promote the journal; never drop ownership.
-        const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
-        if (idx >= 0) journaledRootIds[idx] = electedId;
-        else journal(electedId);
+        // Same root: promote the pre-request bare journal entry to the
+        // canonical <owner>-<model_id> inventory uid.
+        journaledRootIds[0] = electedId;
       } else {
         // True peer won: our journaled root was deleted during election.
         const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
@@ -3709,7 +3633,12 @@ export class PostmanGatewayAssetsClient {
         }
       };
     } catch (error) {
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => undefined);
+      // A verified exact-ID digest conflict can be a foreign UUID collision;
+      // never delete it. Every other finalize failure concerns the preallocated
+      // run identity and retains the existing best-effort exact cleanup.
+      if (!this.isImportIdentityConflict(error)) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => undefined);
+      }
       throw this.sanitizeImportError('import-finalize', error);
     }
   }
@@ -4279,6 +4208,94 @@ export class PostmanGatewayAssetsClient {
     return clone;
   }
 
+  /**
+   * Prove that an exact-ID row observed after an ambiguous import is this
+   * request's committed payload. The client-known root id is the ownership
+   * marker for canonical collections; branch-scoped collections additionally
+   * require their durable branch marker. A name/list match alone is never proof.
+   */
+  private async assertRecoveredImportEvidence(
+    row: WorkspaceInventoryRow,
+    expectedIdentity: string,
+    expectedName: string,
+    expectedCollection: JsonRecord,
+    expectedDescription: string
+  ): Promise<void> {
+    if (normalizeCollectionModelIdentity(row.id) !== expectedIdentity) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: recovered collection does not match the preallocated identity'
+      );
+    }
+    if (row.name !== expectedName) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exact preallocated collection has a different final name'
+      );
+    }
+
+    let exported: JsonRecord;
+    try {
+      exported = await this.exportV2Collection(row.id);
+    } catch (error) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exact preallocated collection evidence is unavailable',
+        { cause: error }
+      );
+    }
+    const exportedInfo = asRecord(exported.info) ?? {};
+    const exportedId = String(exportedInfo._postman_id ?? '').trim();
+    if (
+      exportedId &&
+      normalizeCollectionModelIdentity(exportedId) !== expectedIdentity
+    ) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exported collection root differs from the preallocated identity'
+      );
+    }
+    if (
+      parseAssetMarker(expectedDescription) &&
+      !this.hasSameBranchAssetMarker(
+        String(exportedInfo.description ?? '').trim() || undefined,
+        expectedDescription
+      )
+    ) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exact preallocated collection carries a foreign ownership marker'
+      );
+    }
+    if (computePayloadDigest(exported) !== computePayloadDigest(expectedCollection)) {
+      throw new Error(
+        'IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match'
+      );
+    }
+  }
+
+  private isImportIdentityConflict(error: unknown): boolean {
+    return (
+      error instanceof Error &&
+      /\bIMPORT_(?:IDENTITY_CONFLICT|RESPONSE_ID_MISMATCH)\b/.test(error.message)
+    );
+  }
+
+  /** A same-name peer is eligible only when its exact exported bytes are ours. */
+  private async matchesImportedPeerEvidence(
+    row: WorkspaceInventoryRow,
+    expectedCollection: JsonRecord,
+    expectedDescription: string
+  ): Promise<boolean> {
+    try {
+      await this.assertRecoveredImportEvidence(
+        row,
+        normalizeCollectionModelIdentity(row.id),
+        String(asRecord(expectedCollection.info)?.name ?? '').trim(),
+        expectedCollection,
+        expectedDescription
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private assertV21Collection(collection: JsonRecord): void {
     try {
       assertV2CollectionModel(collection);
@@ -4326,7 +4343,9 @@ export class PostmanGatewayAssetsClient {
     preferredId: string,
     staleFinalIdentities: ReadonlySet<string>,
     desiredDescription: string,
-    existingCursor?: ImportSettleCursor
+    existingCursor?: ImportSettleCursor,
+    desiredCollection?: JsonRecord,
+    preferredEvidenceVerified = false
   ): Promise<string> {
     const started = this.now();
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
@@ -4338,11 +4357,17 @@ export class PostmanGatewayAssetsClient {
       settleDelays.length
     );
     const observer = this.workspaceInventoryObserver(workspaceId);
-    let eligible: Array<{ id: string; name: string }> = [];
-    let ownCanonical: { id: string; name: string } | undefined;
-    let sameNameSurvivors: Array<{ id: string; name: string; description?: string }> = [];
+    let eligible: WorkspaceInventoryRow[] = [];
+    let ownCanonical: WorkspaceInventoryRow | undefined;
+    let sameNameSurvivors: WorkspaceInventoryRow[] = [];
+    let preferredObserved: WorkspaceInventoryRow | undefined;
     const observeInventory = (observation: WorkspaceInventoryObservation): void => {
       const inventory = observation.rows ?? [];
+      preferredObserved = inventory.find(
+        (entry) =>
+          !isBareCollectionUuid(entry.id) &&
+          normalizeCollectionModelIdentity(entry.id) === preferredIdentity
+      );
       sameNameSurvivors = inventory
         .filter((entry) => entry.name === finalName)
         .sort((a, b) => a.id.localeCompare(b.id));
@@ -4357,7 +4382,7 @@ export class PostmanGatewayAssetsClient {
     };
 
     try {
-      // Root resolution and ambiguous-rename readback already observed this
+      // Root resolution and ambiguous-import readback already observed this
       // identity. Replay those observations before spending another delay so a
       // delayed same-marker peer cannot disappear behind a phase restart.
       for (const observation of cursor.observations) observeInventory(observation);
@@ -4374,10 +4399,40 @@ export class PostmanGatewayAssetsClient {
         observeInventory(await observer.observe(cursor, 'safe'));
       }
 
+      if (desiredCollection) {
+        if (preferredObserved && !preferredEvidenceVerified) {
+          // A nominal 2xx proves only what the response claimed. Prove that the
+          // exact inventory row has the requested final name, ownership marker,
+          // and semantic bytes before it can win election or cleanup ownership.
+          await this.assertRecoveredImportEvidence(
+            preferredObserved,
+            preferredIdentity,
+            finalName,
+            desiredCollection,
+            desiredDescription
+          );
+          preferredEvidenceVerified = true;
+        }
+        const verified: WorkspaceInventoryRow[] = [];
+        for (const entry of eligible) {
+          if (
+            (normalizeCollectionModelIdentity(entry.id) === preferredIdentity &&
+              preferredEvidenceVerified) ||
+            await this.matchesImportedPeerEvidence(entry, desiredCollection, desiredDescription)
+          ) {
+            verified.push(entry);
+          }
+        }
+        eligible = verified;
+        ownCanonical = eligible.find(
+          (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
+        );
+      }
+
       if (!ownCanonical) {
       // Own root is absent from inventory. It may have been deleted by a peer,
-      // or it may still exist but remain inventory-invisible after an unresolved
-      // rename. Before adopting a same-marker peer and dropping this run's
+      // or it may still exist but remain inventory-invisible after import.
+      // Before adopting a same-marker peer and dropping this run's
       // journal ownership, actively delete and prove absence of the run-owned
       // preferred root.
       // Adopt the sole surviving same-marker final for this exact name when the
@@ -4393,10 +4448,23 @@ export class PostmanGatewayAssetsClient {
       // identity is still proven per candidate over the v2.1 export route, so a
       // stranger is never adopted on the strength of the name alone. Bare rows
       // are excluded because canonical election may never return one.
-        const adoptable = await this.adoptableSameMarkerFinal(
-          sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
-          desiredDescription
-        );
+        let adoptable: string | undefined;
+        if (desiredCollection) {
+          const verifiedPeers: WorkspaceInventoryRow[] = [];
+          for (const peer of sameNameSurvivors.filter(
+            (entry) => !isBareCollectionUuid(entry.id)
+          )) {
+            if (await this.matchesImportedPeerEvidence(peer, desiredCollection, desiredDescription)) {
+              verifiedPeers.push(peer);
+            }
+          }
+          adoptable = verifiedPeers.sort((a, b) => a.id.localeCompare(b.id))[0]?.id;
+        } else {
+          adoptable = await this.adoptableSameMarkerFinal(
+            sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
+            desiredDescription
+          );
+        }
         if (adoptable) {
           await this.deleteVerifiedRunOwnedCollections(workspaceId, [preferredId]);
           return adoptable;

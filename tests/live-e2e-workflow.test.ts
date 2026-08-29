@@ -22,7 +22,9 @@ describe('live e2e tiering contract', () => {
     expect(releaseWorkflow).toContain('E2E_GATE_SUITE: full');
     expect(releaseWorkflow).toContain('node .github/scripts/verify-e2e-release.mjs');
     expect(releaseWorkflow).toContain('needs.verify-release-e2e.result == \'success\'');
+    expect(releaseWorkflow).toContain("needs.verify-release-e2e.outputs.outcome == 'success'");
+    expect(releaseWorkflow).toContain('E2E_GATE_MODE: enforce');
     expect(releaseWorkflow).toContain('publish:\n    needs: [classify, verify-package]');
-    expect(releaseWorkflow).toContain('default: enforce');
+    expect(releaseWorkflow).not.toContain('e2e_verification_mode');
   });
 });

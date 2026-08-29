@@ -31,13 +31,13 @@ function marker(branch: 'feature/x' | 'feature/y' = 'feature/x'): string {
   });
 }
 
-function collection(description = marker()): Record<string, unknown> {
+function collection(description = marker(), rootId = OWN_BARE): Record<string, unknown> {
   return {
     info: {
       name: FINAL_NAME,
       description,
       schema: SCHEMA,
-      _postman_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+      _postman_id: rootId
     },
     item: []
   };
@@ -82,7 +82,7 @@ function workspaceRequestMethods(fake: PlatformFake): string[] {
 }
 
 describe('contract: import election state machine', () => {
-  it('moves an owned import from temp name through rename to one canonical identity', async () => {
+  it('imports the final name under one preallocated canonical identity', async () => {
     const fake = createPlatformFake({
       collectionId: () => OWN_BARE,
       importElection: { importedCanonicalId: OWN_UID }
@@ -98,18 +98,13 @@ describe('contract: import election state machine', () => {
     expect(activeCollections(fake)).toEqual([
       expect.objectContaining({ id: OWN_UID, name: FINAL_NAME, origin: 'imported' })
     ]);
-    // Rename addresses ROOT by full public UID, so the canonical identity must be
-    // observed in workspace inventory before the finalize PATCH can be issued.
     expect(fake.state.collectionTransitions).toEqual([
-      expect.stringMatching(`^imported:${OWN_UID}:Payments \\[bootstrap:`),
-      `visible:${OWN_UID}:observation=1`,
-      `renamed:${OWN_UID}:Payments [bootstrap:state-machine-run]->${FINAL_NAME}`
+      `imported:${OWN_UID}:${FINAL_NAME}`,
+      `visible:${OWN_UID}:observation=1`
     ]);
     expect(fake.state.collectionDeleteLedger).toEqual([]);
     expect(importRequests(fake)).toHaveLength(1);
-    expect(collectionRequests(fake, 'patch').map((request) => request.path)).toEqual([
-      `/v3/collections/${OWN_UID}`
-    ]);
+    expect(collectionRequests(fake, 'patch')).toEqual([]);
     expect(collectionRequests(fake, 'delete')).toEqual([]);
   });
 
@@ -126,7 +121,7 @@ describe('contract: import election state machine', () => {
             name: FINAL_NAME,
             description: sharedMarker,
             visibleAfterObservations: 2,
-            collection: collection(sharedMarker)
+            collection: collection(sharedMarker, PEER_BARE)
           }
         ]
       }
@@ -166,7 +161,7 @@ describe('contract: import election state machine', () => {
             name: FINAL_NAME,
             description: sharedMarker,
             visibleAfterObservations: 2,
-            collection: collection(sharedMarker)
+            collection: collection(sharedMarker, PEER_BARE)
           }
         ]
       }
@@ -241,7 +236,7 @@ describe('contract: import election state machine', () => {
             id: PEER_UID,
             name: FINAL_NAME,
             description: sharedMarker,
-            collection: collection(sharedMarker)
+            collection: collection(sharedMarker, PEER_BARE)
           }
         ]
       }

@@ -25,6 +25,11 @@ describe('correlated release verification contract', () => {
     expect(releaseWorkflow).toMatch(
       /advance-major-alias:[\s\S]*?needs\.verify-release-e2e\.result == 'success'/
     );
+    expect(releaseWorkflow).toMatch(
+      /advance-major-alias:[\s\S]*?needs\.verify-release-e2e\.outputs\.outcome == 'success'/
+    );
+    expect(releaseWorkflow).toContain('E2E_GATE_MODE: enforce');
+    expect(releaseWorkflow).not.toContain('e2e_verification_mode');
   });
 
   it('keeps publication dependent on immutable artifact verification', () => {

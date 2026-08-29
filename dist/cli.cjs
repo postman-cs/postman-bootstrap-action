@@ -305638,7 +305638,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-08-28T17:35:35.305Z",
-  bootstrapCommit: "13b92da30be6a9cacd2170c4c73b412a10fdeb57",
+  bootstrapCommit: "43aaea0a6d1ab9672fae2ed5451fa8191b632dce",
   legs: [
     {
       mode: "nonorg",
@@ -306931,11 +306931,10 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
    */
   static SPEC_CREATE_SINGLETON_MIN_POLL_INDEX = 2;
   /**
-   * Bounded org eventual-consistency settle schedule for local Sync-import rename
-   * commit visibility and concurrent final-name election on canonical/channel/legacy
-   * final names. Each delay is one observation gap while org list visibility
-   * catches up to a late peer; 3.75s total budget. Shared so both seams observe
-   * the same remote-convergence window; never a size/depth rejection cap.
+   * Bounded org eventual-consistency settle schedule for resolving a final-name
+   * Sync import and concurrent final-name election on canonical/channel/legacy
+   * names. Each delay is one observation gap while org list visibility catches
+   * up to a late peer; never a size/depth rejection cap.
    */
   static IMPORT_IDENTITY_SETTLE_DELAYS_MS = [
     250,
@@ -306967,18 +306966,10 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
     return _PostmanGatewayAssetsClient.PREVIEW_ASSET_NAME_SUFFIX.test(finalName) ? _PostmanGatewayAssetsClient.IMPORT_IDENTITY_PREVIEW_SETTLE_DELAYS_MS : _PostmanGatewayAssetsClient.IMPORT_IDENTITY_SETTLE_DELAYS_MS;
   }
   /**
-   * Inventory-visibility schedule for resolving a bare Sync model id to the
-   * ROOT-addressable uid the finalize PATCH needs: this final name's settle
-   * window, extended by the live-proven preview continuation when the standard
-   * window is the one in play.
-   *
-   * This is deliberately the same total budget {@link
-   * electImportedCollectionIdentity} spends waiting for the very same inventory
-   * row. The rename cannot be deferred to election as a fallback — election
-   * matches candidates by exact final name, so a root still carrying its
-   * run-unique temp name is invisible there — and the ROOT PATCH has no bare-id
-   * fallback. Any shorter budget would therefore fail imports whose inventory
-   * visibility merely lags, which is the case election was built to survive.
+   * Inventory-visibility schedule for resolving a bare Sync model id to its
+   * ROOT-addressable uid. Import already carries the final name, so this read
+   * observes only the exact preallocated model identity and shares its remaining
+   * delayed-peer window with election.
    */
   static rootUidResolveDelaysForFinalName(finalName) {
     if (_PostmanGatewayAssetsClient.PREVIEW_ASSET_NAME_SUFFIX.test(finalName)) {
@@ -308163,62 +308154,6 @@ ${error.responseBody ?? ""}`
     }
   }
   /**
-   * Local Sync-import canonical rename: one PATCH with retry:'none'. On
-   * ambiguous transport/5xx only, poll safe-read workspace inventory until the
-   * exact same normalized collection identity shows the exact requested final
-   * name, or the settle budget is exhausted. Never resend PATCH, never
-   * fallback, never adopt a final-name peer. Generation callers keep
-   * {@link renameGeneratedCollection}.
-   */
-  async renameImportedCollectionCanonical(workspaceId, collectionId, finalName, resolution) {
-    const settled = resolution ?? await this.resolveCollectionRootUid(
-      workspaceId,
-      collectionId,
-      _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(finalName),
-      "safe",
-      _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName).length
-    );
-    const rootId = settled.rootUid;
-    if (!rootId) {
-      return settled;
-    }
-    const started = this.now();
-    try {
-      await this.withImportMutation(() => this.gateway.requestJson({
-        service: "collection",
-        method: "patch",
-        path: `/v3/collections/${rootId}`,
-        retry: "none",
-        body: [{ op: "replace", path: "/name", value: finalName }]
-      }));
-      this.recordCursorRename(settled.cursor, rootId, finalName);
-    } catch (error) {
-      if (error instanceof HttpError && error.status === 400 && /must update at least one|REJECTED_PATCH/i.test(
-        `${error.message}
-${error.responseBody ?? ""}`
-      )) {
-        this.recordCursorRename(settled.cursor, rootId, finalName);
-        return settled;
-      }
-      if (!isAmbiguousTransportError(error)) throw error;
-      const preferredIdentity = normalizeCollectionModelIdentity(collectionId);
-      const observer = this.workspaceInventoryObserver(workspaceId);
-      do {
-        const observation = await observer.observe(settled.cursor, "safe");
-        const committed = observation.rows?.find(
-          (entry) => entry.name === finalName && normalizeCollectionModelIdentity(entry.id) === preferredIdentity
-        );
-        if (committed) {
-          return settled;
-        }
-      } while (settled.cursor.nextDelayIndex < settled.cursor.peerDelayCount && await observer.consumeDelay(settled.cursor));
-      throw error;
-    } finally {
-      this.writeMetrics.renameMs += Math.max(0, this.now() - started);
-    }
-    return settled;
-  }
-  /**
    * Create a team-visible workspace through the gateway workspaces service.
    *
    * Org-mode accounts (when `targetTeamId` is the resolved sub-team/squad id):
@@ -308507,22 +308442,6 @@ ${error.responseBody ?? ""}`
       observations: [],
       nextDelayIndex: 0
     };
-  }
-  recordCursorRename(cursor, rootId, finalName) {
-    const rootIdentity = normalizeCollectionModelIdentity(rootId);
-    let recorded = false;
-    for (let index = 0; index < cursor.observations.length; index += 1) {
-      const observation = cursor.observations[index];
-      const rows = observation.rows?.map((row) => {
-        if (normalizeCollectionModelIdentity(row.id) !== rootIdentity) return row;
-        recorded = true;
-        return { ...row, name: finalName };
-      });
-      if (rows) cursor.observations[index] = { rows };
-    }
-    if (!recorded) {
-      cursor.observations.push({ rows: [{ id: rootId, name: finalName }] });
-    }
   }
   workspaceInventoryObserver(workspaceId) {
     let observer = this.workspaceInventoryObservers.get(workspaceId);
@@ -309511,9 +309430,10 @@ ${error.responseBody ?? ""}`
   }
   /**
    * Whole-collection import of a final v2.1 payload via sync
-   * `POST /collection/import`. Create is unsafe: one attempt, exact run-unique
-   * temp-name reconciliation only, then rename/elect with preview ownership
-   * isolation. Journals every root created by this call for verified cleanup.
+   * `POST /collection/import`. The payload carries its final name and a
+   * client-known root identity before the sole unsafe request. Ambiguous
+   * outcomes reconcile only that normalized identity and require exact
+   * ownership/payload evidence; display-name peers are never response recovery.
    */
   async importV2Collection(workspaceId, collection, finalName) {
     const desiredName = String(finalName || "").trim();
@@ -309522,27 +309442,26 @@ ${error.responseBody ?? ""}`
     }
     const prepared = this.prepareV2ImportPayload(collection, desiredName);
     const desiredDescription = String(asRecord13(prepared.info)?.description ?? "").trim();
-    const runToken = this.createIdentity();
-    const tempName = `${desiredName} [bootstrap:${runToken}]`;
     const importPayload = this.cloneJson(prepared);
     const info = asRecord13(importPayload.info) ?? {};
-    info.name = tempName;
+    info.name = desiredName;
     if (typeof info._postman_id !== "string" || !info._postman_id.trim()) {
       info._postman_id = (0, import_node_crypto7.randomUUID)();
     }
     importPayload.info = info;
     this.assertV21Collection(importPayload);
-    const journaledRootIds = [];
-    const journal = (id) => {
-      const trimmed = String(id || "").trim();
-      if (trimmed && !journaledRootIds.includes(trimmed)) {
-        journaledRootIds.push(trimmed);
-      }
-    };
+    const preallocatedId = String(info._postman_id).trim();
+    const preallocatedIdentity = normalizeCollectionModelIdentity(preallocatedId);
+    if (!preallocatedIdentity) {
+      throw new Error("LOCAL_OPENAPI_IMPORT_FAILED: preallocated root identity is required");
+    }
+    const journaledRootIds = [preallocatedId];
     const staleFinalIdentities = new Set(
       (await this.findCollectionsByExactName(workspaceId, desiredName, "none")).filter((entry) => !this.hasSameBranchAssetMarker(entry.description, desiredDescription)).map((entry) => normalizeCollectionModelIdentity(entry.id))
     );
     let created;
+    let resolution;
+    let preferredEvidenceVerified = false;
     try {
       created = await this.withImportMutation(() => this.gateway.requestJson({
         service: "sync",
@@ -309556,37 +309475,63 @@ ${error.responseBody ?? ""}`
       if (!isAmbiguousTransportError(error)) {
         throw this.sanitizeImportError("import-transport", error);
       }
-      const match = adoptExactMatch(
-        `collection-import:${workspaceId}:${tempName}`,
-        await this.findCollectionsByExactName(workspaceId, tempName, "safe"),
-        (entry) => entry.id
+      resolution = await this.resolveCollectionRootUid(
+        workspaceId,
+        preallocatedId,
+        _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
+        "safe",
+        _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
       );
-      if (!match) {
+      if (!resolution.rootUid || !resolution.resolvedRow) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => void 0);
         throw this.sanitizeImportError("import-ambiguous-unreconciled", error);
       }
-      created = { data: { id: match.id, uid: match.id } };
+      await this.assertRecoveredImportEvidence(
+        resolution.resolvedRow,
+        preallocatedIdentity,
+        desiredName,
+        importPayload,
+        desiredDescription
+      );
+      preferredEvidenceVerified = true;
+      created = {
+        model_id: preallocatedId,
+        data: { info: { _postman_id: preallocatedId, name: desiredName } }
+      };
     }
     const rawId = this.extractCollectionUid(created);
     if (!rawId) {
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId]).catch(() => void 0);
       throw new Error("LOCAL_OPENAPI_IMPORT_FAILED: import did not return a collection id");
     }
-    journal(rawId);
+    if (normalizeCollectionModelIdentity(rawId) !== preallocatedIdentity) {
+      await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId]).catch(() => void 0);
+      throw new Error(
+        "LOCAL_OPENAPI_IMPORT_FAILED: IMPORT_RESPONSE_ID_MISMATCH: server returned a different collection identity"
+      );
+    }
     try {
-      const resolution = await this.renameImportedCollectionCanonical(workspaceId, rawId, desiredName);
+      resolution ??= await this.resolveCollectionRootUid(
+        workspaceId,
+        preallocatedId,
+        _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
+        "safe",
+        _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
+      );
       const electedId = await this.electImportedCollectionIdentity(
         workspaceId,
         desiredName,
-        rawId,
+        preallocatedId,
         staleFinalIdentities,
         desiredDescription,
-        resolution.cursor
+        resolution.cursor,
+        importPayload,
+        preferredEvidenceVerified
       );
-      const rawBare = this.bareModelId(rawId);
+      const rawBare = this.bareModelId(preallocatedId);
       const electedBare = this.bareModelId(electedId);
       if (rawBare && electedBare && rawBare === electedBare) {
-        const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
-        if (idx >= 0) journaledRootIds[idx] = electedId;
-        else journal(electedId);
+        journaledRootIds[0] = electedId;
       } else {
         const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
         if (idx >= 0) journaledRootIds.splice(idx, 1);
@@ -309604,7 +309549,9 @@ ${error.responseBody ?? ""}`
         }
       };
     } catch (error) {
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => void 0);
+      if (!this.isImportIdentityConflict(error)) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => void 0);
+      }
       throw this.sanitizeImportError("import-finalize", error);
     }
   }
@@ -310076,6 +310023,71 @@ ${error.responseBody ?? ""}`
     }
     return clone2;
   }
+  /**
+   * Prove that an exact-ID row observed after an ambiguous import is this
+   * request's committed payload. The client-known root id is the ownership
+   * marker for canonical collections; branch-scoped collections additionally
+   * require their durable branch marker. A name/list match alone is never proof.
+   */
+  async assertRecoveredImportEvidence(row, expectedIdentity, expectedName, expectedCollection, expectedDescription) {
+    if (normalizeCollectionModelIdentity(row.id) !== expectedIdentity) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: recovered collection does not match the preallocated identity"
+      );
+    }
+    if (row.name !== expectedName) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exact preallocated collection has a different final name"
+      );
+    }
+    let exported;
+    try {
+      exported = await this.exportV2Collection(row.id);
+    } catch (error) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exact preallocated collection evidence is unavailable",
+        { cause: error }
+      );
+    }
+    const exportedInfo = asRecord13(exported.info) ?? {};
+    const exportedId = String(exportedInfo._postman_id ?? "").trim();
+    if (exportedId && normalizeCollectionModelIdentity(exportedId) !== expectedIdentity) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exported collection root differs from the preallocated identity"
+      );
+    }
+    if (parseAssetMarker(expectedDescription) && !this.hasSameBranchAssetMarker(
+      String(exportedInfo.description ?? "").trim() || void 0,
+      expectedDescription
+    )) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exact preallocated collection carries a foreign ownership marker"
+      );
+    }
+    if (computePayloadDigest(exported) !== computePayloadDigest(expectedCollection)) {
+      throw new Error(
+        "IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match"
+      );
+    }
+  }
+  isImportIdentityConflict(error) {
+    return error instanceof Error && /\bIMPORT_(?:IDENTITY_CONFLICT|RESPONSE_ID_MISMATCH)\b/.test(error.message);
+  }
+  /** A same-name peer is eligible only when its exact exported bytes are ours. */
+  async matchesImportedPeerEvidence(row, expectedCollection, expectedDescription) {
+    try {
+      await this.assertRecoveredImportEvidence(
+        row,
+        normalizeCollectionModelIdentity(row.id),
+        String(asRecord13(expectedCollection.info)?.name ?? "").trim(),
+        expectedCollection,
+        expectedDescription
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
   assertV21Collection(collection) {
     try {
       assertV2CollectionModel(collection);
@@ -310111,7 +310123,7 @@ ${error.responseBody ?? ""}`
     }
     return "";
   }
-  async electImportedCollectionIdentity(workspaceId, finalName, preferredId, staleFinalIdentities, desiredDescription, existingCursor) {
+  async electImportedCollectionIdentity(workspaceId, finalName, preferredId, staleFinalIdentities, desiredDescription, existingCursor, desiredCollection, preferredEvidenceVerified = false) {
     const started = this.now();
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
     const settleDelays = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
@@ -310125,8 +310137,12 @@ ${error.responseBody ?? ""}`
     let eligible = [];
     let ownCanonical;
     let sameNameSurvivors = [];
+    let preferredObserved;
     const observeInventory = (observation) => {
       const inventory = observation.rows ?? [];
+      preferredObserved = inventory.find(
+        (entry) => !isBareCollectionUuid(entry.id) && normalizeCollectionModelIdentity(entry.id) === preferredIdentity
+      );
       sameNameSurvivors = inventory.filter((entry) => entry.name === finalName).sort((a, b) => a.id.localeCompare(b.id));
       eligible = sameNameSurvivors.filter(
         (entry) => !isBareCollectionUuid(entry.id) && !staleFinalIdentities.has(normalizeCollectionModelIdentity(entry.id))
@@ -310143,11 +310159,46 @@ ${error.responseBody ?? ""}`
       while (cursor.nextDelayIndex < cursor.peerDelayCount && await observer.consumeDelay(cursor)) {
         observeInventory(await observer.observe(cursor, "safe"));
       }
-      if (!ownCanonical) {
-        const adoptable = await this.adoptableSameMarkerFinal(
-          sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
-          desiredDescription
+      if (desiredCollection) {
+        if (preferredObserved && !preferredEvidenceVerified) {
+          await this.assertRecoveredImportEvidence(
+            preferredObserved,
+            preferredIdentity,
+            finalName,
+            desiredCollection,
+            desiredDescription
+          );
+          preferredEvidenceVerified = true;
+        }
+        const verified = [];
+        for (const entry of eligible) {
+          if (normalizeCollectionModelIdentity(entry.id) === preferredIdentity && preferredEvidenceVerified || await this.matchesImportedPeerEvidence(entry, desiredCollection, desiredDescription)) {
+            verified.push(entry);
+          }
+        }
+        eligible = verified;
+        ownCanonical = eligible.find(
+          (entry) => normalizeCollectionModelIdentity(entry.id) === preferredIdentity
         );
+      }
+      if (!ownCanonical) {
+        let adoptable;
+        if (desiredCollection) {
+          const verifiedPeers = [];
+          for (const peer of sameNameSurvivors.filter(
+            (entry) => !isBareCollectionUuid(entry.id)
+          )) {
+            if (await this.matchesImportedPeerEvidence(peer, desiredCollection, desiredDescription)) {
+              verifiedPeers.push(peer);
+            }
+          }
+          adoptable = verifiedPeers.sort((a, b) => a.id.localeCompare(b.id))[0]?.id;
+        } else {
+          adoptable = await this.adoptableSameMarkerFinal(
+            sameNameSurvivors.filter((entry) => !isBareCollectionUuid(entry.id)),
+            desiredDescription
+          );
+        }
         if (adoptable) {
           await this.deleteVerifiedRunOwnedCollections(workspaceId, [preferredId]);
           return adoptable;

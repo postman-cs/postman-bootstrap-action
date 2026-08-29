@@ -20,9 +20,9 @@ import { renderAssetMarker } from '../src/lib/repo/branch-decision.js';
  * The 403 body is
  *   {"error":{"code":"FORBIDDEN","message":"Access to the requested resource ..."}}
  *
- * `sync POST /collection/import` returns a BARE model id, so the import
- * finalize rename PATCHed a bare id and 403'd — and import-finalize's catch
- * DELETES the fresh collection, so the customer lost the import.
+ * `sync POST /collection/import` returns a BARE model id. Fresh imports now
+ * carry their final name and preallocated id in that request, so they never
+ * need a ROOT rename PATCH.
  *
  * These tests pin the wire vocabulary per route family. They fail on the
  * pre-fix source, where every ROOT path was built with `bareModelId`.
@@ -112,12 +112,15 @@ function aclEnforcingHandler(options: {
   inventory: Array<{ id: string; name: string; description?: string }>;
   onImport?: (body: unknown) => void;
 }): (env: Envelope) => Response {
+  let importedCollection: unknown;
   return (env) => {
     const path = String(env.path);
 
     if (env.service === 'sync' && env.method === 'post' && path === '/collection/import') {
       options.onImport?.(env.body);
-      const body = env.body as { info?: { name?: string } };
+      importedCollection = structuredClone(env.body);
+      const body = env.body as { info?: { name?: string; _postman_id?: string } };
+      expect(body.info?._postman_id).toBe(UUID);
       options.inventory.push({ id: FULL, name: String(body.info?.name ?? '') });
       // Live SyncService envelope: BARE model id, never the full public uid.
       return jsonResponse({
@@ -135,7 +138,7 @@ function aclEnforcingHandler(options: {
     }
 
     if (env.service === 'collection' && /\/export$/.test(path)) {
-      return jsonResponse({ data: { collection: { info: { name: 'Payments' }, item: [] } } });
+      return jsonResponse({ data: { collection: importedCollection } });
     }
 
     const segment = rootSegment(path);
@@ -168,7 +171,7 @@ const v21Collection = {
   info: {
     name: 'Payments',
     schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
-    _postman_id: '11111111-1111-1111-1111-111111111111',
+    _postman_id: UUID,
     description: ''
   },
   item: [
@@ -188,8 +191,9 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
 
     // Election still returns the canonical inventory uid.
     expect(result.collectionId).toBe(FULL);
-    // The rename actually landed rather than 403ing.
+    // The final name was imported directly; no ROOT rename is necessary.
     expect(inventory.some((entry) => entry.id === FULL && entry.name === 'Payments')).toBe(true);
+    expect(calls.filter((call) => call.service === 'collection' && call.method === 'patch')).toEqual([]);
 
     // No ROOT GET/PATCH may ever carry a bare id.
     const offenders = calls.filter((call) => {
@@ -304,13 +308,13 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
   });
 
   it('polls inventory for the canonical uid when the imported row is briefly invisible', async () => {
-    // Read-after-write: the ROOT-addressable uid does not exist until the row is
-    // inventory-visible, and there is no bare-id fallback. The finalize PATCH has
-    // to wait that lag out rather than 403.
+    // Read-after-write: the canonical uid does not exist until the row is
+    // inventory-visible. Identity resolution waits that lag out without a PATCH.
     const inventory: Array<{ id: string; name: string }> = [];
     let inventoryReads = 0;
     const visibleAfterReads = 3;
     const sleeps: number[] = [];
+    const aclHandler = aclEnforcingHandler({ inventory });
     const { client, calls } = makeClient(
       (env) => {
         const path = String(env.path);
@@ -320,7 +324,7 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
           if (inventoryReads < visibleAfterReads) return jsonResponse({ data: [] });
           return jsonResponse({ data: inventory });
         }
-        return aclEnforcingHandler({ inventory })(env);
+        return aclHandler(env);
       },
       { sleep: async (delayMs: number) => { sleeps.push(delayMs); } }
     );
@@ -328,10 +332,9 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
     const result = await client.importV2Collection('ws-1', v21Collection, 'Payments');
 
     expect(result.collectionId).toBe(FULL);
-    // The rename landed on the resolved full uid once the row appeared.
+    // The directly imported final name is visible once the row appears.
     expect(inventory.some((entry) => entry.id === FULL && entry.name === 'Payments')).toBe(true);
-    const patch = calls.find((call) => call.service === 'collection' && call.method === 'patch');
-    expect(patch?.path).toBe(`/v3/collections/${FULL}`);
+    expect(calls.filter((call) => call.service === 'collection' && call.method === 'patch')).toEqual([]);
     // The lag was slept through on the client's existing sleep seam.
     expect(sleeps.length).toBeGreaterThan(0);
   });
@@ -339,7 +342,7 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
   it('keeps polling when inventory first exposes only the bare identity', async () => {
     let imported = false;
     let inventoryReadsAfterImport = 0;
-    let currentName = 'Payments [bootstrap:test-run]';
+    const currentName = 'Payments';
     const { client, calls } = makeClient((env) => {
       const path = String(env.path);
       if (env.service === 'sync' && env.method === 'post' && path === '/collection/import') {
@@ -358,11 +361,8 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
           ]
         });
       }
-      const segment = rootSegment(path);
-      if (env.service === 'collection' && env.method === 'patch' && segment !== undefined) {
-        if (!FULL_PUBLIC_UID_RE.test(segment)) return forbidden(segment);
-        currentName = 'Payments';
-        return jsonResponse({ data: { id: FULL } });
+      if (env.service === 'collection' && /\/export$/.test(path)) {
+        return jsonResponse({ data: { collection: v21Collection } });
       }
       return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
     });
@@ -372,9 +372,7 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
       journaledRootIds: [FULL]
     });
     expect(inventoryReadsAfterImport).toBeGreaterThanOrEqual(3);
-    expect(
-      calls.filter((call) => call.service === 'collection' && call.method === 'patch')
-    ).toEqual([expect.objectContaining({ path: `/v3/collections/${FULL}` })]);
+    expect(calls.filter((call) => call.service === 'collection' && call.method === 'patch')).toEqual([]);
   });
 
   it('fails closed when inventory never promotes a bare identity to a ROOT-addressable uid', async () => {
@@ -415,9 +413,9 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
     expect(deleted).toBe(true);
   });
 
-  it('never sends the bare id to the finalize PATCH when the uid stays unresolvable', async () => {
+  it('never sends the bare id to a ROOT route when the uid stays unresolvable', async () => {
     // Inventory never reports the imported identity. Sending the bare id here is
-    // a guaranteed 403, so no ROOT PATCH may be attempted at all; the run fails
+    // a guaranteed 403, so no ROOT route may be attempted at all; the run fails
     // closed on election without deleting or adopting a foreign collection.
     const { client, calls } = makeClient((env) => {
       const path = String(env.path);
@@ -524,12 +522,11 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
       createdAt: '2026-01-01T00:00:00.000Z',
       lastSyncedAt: '2026-01-01T00:00:00.000Z'
     });
-    let renamed = false;
     const { client, calls } = makeClient((env) => {
       const path = String(env.path);
       if (env.service === 'collection' && path.startsWith('/v3/collections/?workspace=')) {
         return jsonResponse({
-          data: renamed ? [{ id: peerUid, name: 'Payments', description }] : [{ id: UUID, name: 'temp' }]
+          data: [{ id: peerUid, name: 'Payments', description }]
         });
       }
       if (env.service === 'collection' && /\/export$/.test(path)) {
@@ -541,7 +538,6 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
       return jsonResponse({ data: { ok: true } });
     });
     const privateClient = client as unknown as {
-      renameImportedCollectionCanonical: (workspaceId: string, id: string, finalName: string) => Promise<void>;
       electImportedCollectionIdentity: (
         workspaceId: string,
         finalName: string,
@@ -551,8 +547,6 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
       ) => Promise<string>;
     };
 
-    await privateClient.renameImportedCollectionCanonical('ws-1', UUID, 'Payments');
-    renamed = true;
     await expect(
       privateClient.electImportedCollectionIdentity('ws-1', 'Payments', UUID, new Set(), description)
     ).resolves.toBe(peerUid);

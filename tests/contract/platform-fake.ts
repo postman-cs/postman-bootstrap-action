@@ -812,7 +812,11 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
           const description =
             typeof info.description === 'string' ? info.description.trim() : '';
           const slot = roleFromName(name);
-          const modelId = collectionId(slot, importSeq);
+          // Sync preserves the client-supplied collection root identity. The
+          // fallback keeps legacy fake callers working, but production import
+          // tests must observe the exact id that was sent on the unsafe POST.
+          const suppliedModelId = String(info._postman_id ?? '').trim();
+          const modelId = suppliedModelId || collectionId(slot, importSeq);
           const id =
             options.importElection?.importedCanonicalId ??
             (BARE_COLLECTION_MODEL_ID.test(modelId) ? `${Math.abs(userId)}-${modelId}` : modelId);

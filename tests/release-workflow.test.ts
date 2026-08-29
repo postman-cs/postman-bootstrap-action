@@ -224,7 +224,7 @@ describe('release workflow publishing contract', () => {
     );
     expect(verifier).not.toContain('__FILL_PROVIDER_');
     expect(verifier).toContain(
-      'E2E_GATE_PEER_TAGS: \'{"postman-cs/postman-api-onboarding-action":"v3.5.8","postman-cs/postman-insights-onboarding-action":"v2.5.2","postman-cs/postman-repo-sync-action":"v2.10.8","postman-cs/postman-resolve-service-token-action":"v2.2.4","postman-cs/postman-smoke-flow-action":"v3.7.4"}\''
+      'E2E_GATE_PEER_TAGS: \'{"postman-cs/postman-api-onboarding-action":"v3.5.8","postman-cs/postman-insights-onboarding-action":"v2.5.2","postman-cs/postman-repo-sync-action":"v2.10.9","postman-cs/postman-resolve-service-token-action":"v2.2.4","postman-cs/postman-smoke-flow-action":"v3.7.4"}\''
     );
     expect(verifier).not.toContain('E2E_GATE_REGISTRY_REVISION');
     expect(verifier).not.toContain('E2E_GATE_CONTRACT_SCENARIOS');

@@ -13,6 +13,7 @@ import {
   isFullPublicCollectionUid,
   normalizeCollectionModelIdentity
 } from '../src/lib/postman/collection-model-identity.ts';
+import { convergentCollectionRootIdentity } from '../src/lib/postman/convergent-collection-root.ts';
 
 const REDACTED = '[REDACTED]';
 const REDACTED_REPOSITORY = '[REDACTED-REPOSITORY]';
@@ -416,6 +417,7 @@ function collectionModelIdentity(value: string): string | undefined {
 function replacementPlan(cassette: Cassette): ReplacementPlan {
   const candidates = createCandidates();
   const secrets = new Map<string, string>();
+  const existingConvergentRoots = provenConvergentRoots(cassette);
   for (const interaction of cassette.interactions) {
     collectRouteIds(interaction.key, candidates);
     try {
@@ -454,6 +456,10 @@ function replacementPlan(cassette: Cassette): ReplacementPlan {
         index += 1;
         for (const raw of raws) {
           if (entities.has(raw) || secrets.has(raw)) continue;
+          if (existingConvergentRoots.has(normalizeCollectionModelIdentity(raw))) {
+            entities.set(raw, { numeric: false, value: raw });
+            continue;
+          }
           entities.set(raw, { numeric: false, value: `cassette-collection-${index}` });
         }
       }
@@ -470,7 +476,65 @@ function replacementPlan(cassette: Cassette): ReplacementPlan {
       });
     });
   }
-  return { entities, secrets };
+  const plan = { entities, secrets };
+  parameterizeConvergentImportRoots(cassette, plan);
+  return plan;
+}
+
+/**
+ * Convergent collection roots include the workspace id in their derivation.
+ * When a live workspace id is replaced in a sanitized cassette, recompute the
+ * root from the sanitized workspace/name/marker rather than replacing it with
+ * an unrelated collection alias. Replay will derive these exact same bytes.
+ */
+function parameterizeConvergentImportRoots(
+  cassette: Cassette,
+  plan: ReplacementPlan
+): void {
+  for (const interaction of cassette.interactions) {
+    const rawRequestBody = (interaction as RawCassetteInteraction).rawRequestBody;
+    if (typeof rawRequestBody !== 'string') continue;
+    let envelope: JsonRecord | undefined;
+    try {
+      envelope = asRecord(JSON.parse(rawRequestBody));
+    } catch {
+      continue;
+    }
+    if (
+      envelope?.service !== 'sync' ||
+      envelope.method !== 'post' ||
+      envelope.path !== '/collection/import'
+    ) continue;
+    const query = asRecord(envelope.query);
+    const body = asRecord(envelope.body);
+    const info = asRecord(body?.info);
+    const workspace = String(query?.workspace ?? '').trim();
+    const name = String(info?.name ?? '').trim();
+    const rawRoot = String(info?._postman_id ?? '').trim();
+    if (!workspace || !name || !isBareCollectionUuid(rawRoot)) continue;
+
+    const sanitizedWorkspace = applyPlanReplacements(workspace, plan);
+    const sanitizedName = applyPlanReplacements(name, plan);
+    const sanitizedDescription = applyPlanReplacements(
+      String(info?.description ?? ''),
+      plan
+    );
+    const sanitizedRoot = convergentCollectionRootIdentity(
+      sanitizedWorkspace,
+      sanitizedName,
+      sanitizedDescription
+    );
+    const rawIdentity = normalizeCollectionModelIdentity(rawRoot);
+    for (const [candidate, replacement] of plan.entities) {
+      if (normalizeCollectionModelIdentity(candidate) !== rawIdentity) continue;
+      const publicUid = /^(\d+)-([0-9a-f-]{36})$/i.exec(candidate);
+      replacement.value = publicUid
+        ? `${applyPlanReplacements(publicUid[1]!, plan)}-${sanitizedRoot}`
+        : sanitizedRoot;
+    }
+    // A request-only root may not have appeared in a response candidate yet.
+    plan.entities.set(rawRoot, { numeric: false, value: sanitizedRoot });
+  }
 }
 
 function replaceLiteral(value: string, raw: string, replacement: string): string {
@@ -497,12 +561,19 @@ function applyPlanReplacements(value: string, plan: ReplacementPlan): string {
 
 function sanitizeTextSegment(value: string, plan: ReplacementPlan): string {
   const sanitized = applyPlanReplacements(value, plan);
+  const convergentRoots = new Set(
+    [...plan.entities.values()]
+      .map((replacement) => normalizeCollectionModelIdentity(String(replacement.value)))
+      .filter((identity) => isBareCollectionUuid(identity))
+  );
   return sanitized
     .replace(POSTMAN_UID_PATTERN, (match) =>
-      isSyntheticPublicCollectionUid(match) ? match : `cassette-uid-${match.length}`
+      isSyntheticPublicCollectionUid(match) || convergentRoots.has(normalizeCollectionModelIdentity(match))
+        ? match
+        : `cassette-uid-${match.length}`
     )
     .replace(UUID_PATTERN, (match) =>
-      /^00000000-0000-4000-8000-\d{12}$/.test(match)
+      /^00000000-0000-4000-8000-\d{12}$/.test(match) || convergentRoots.has(match.toLowerCase())
         ? match
         : `cassette-uid-${match.length}`
     )
@@ -677,7 +748,11 @@ export function sanitizeCassette(raw: unknown): Cassette {
   return sanitized;
 }
 
-function assertNoForbiddenText(value: string, location: string): void {
+function assertNoForbiddenText(
+  value: string,
+  location: string,
+  convergentRoots: ReadonlySet<string> = new Set()
+): void {
   const forbidden: Array<[string, RegExp]> = [
     ['PMAK prefix', /\bPMAK-/i],
     ['Postman access/service-account token', /\b(?:PMAT|PMSA|PMSC)-/i],
@@ -700,12 +775,18 @@ function assertNoForbiddenText(value: string, location: string): void {
     if (pattern.test(value)) throw new Error(`Cassette redaction invariant failed at ${location}: ${label}`);
   }
   for (const match of value.matchAll(POSTMAN_UID_PATTERN)) {
-    if (!isSyntheticPublicCollectionUid(match[0])) {
+    if (
+      !isSyntheticPublicCollectionUid(match[0]) &&
+      !convergentRoots.has(normalizeCollectionModelIdentity(match[0]))
+    ) {
       throw new Error(`Cassette redaction invariant failed at ${location}: Postman UID`);
     }
   }
   for (const match of value.matchAll(UUID_PATTERN)) {
-    if (!/^00000000-0000-4000-8000-\d{12}$/.test(match[0])) {
+    if (
+      !/^00000000-0000-4000-8000-\d{12}$/.test(match[0]) &&
+      !convergentRoots.has(match[0].toLowerCase())
+    ) {
       throw new Error(`Cassette redaction invariant failed at ${location}: UUID`);
     }
   }
@@ -730,8 +811,14 @@ function assertSafeIdentityValue(
   name: string,
   value: unknown,
   category: EntityCategory,
-  location: string
+  location: string,
+  convergentRoots: ReadonlySet<string>
 ): void {
+  if (
+    category === 'collection' &&
+    typeof value === 'string' &&
+    convergentRoots.has(normalizeCollectionModelIdentity(value))
+  ) return;
   if (!isEntityPlaceholder(value, category)) {
     const actualCategory = CATEGORY_ORDER.find((candidate) =>
       isEntityPlaceholder(value, candidate)
@@ -747,11 +834,12 @@ function assertBodyRedacted(
   value: unknown,
   path: string[],
   location: string,
-  interactionKey: string
+  interactionKey: string,
+  convergentRoots: ReadonlySet<string>
 ): void {
   if (Array.isArray(value)) {
     value.forEach((entry, index) =>
-      assertBodyRedacted(entry, [...path, String(index)], location, interactionKey)
+      assertBodyRedacted(entry, [...path, String(index)], location, interactionKey, convergentRoots)
     );
     return;
   }
@@ -774,13 +862,56 @@ function assertBodyRedacted(
       }
       const category = categoryForEntry(record, name, path, interactionKey);
       if (category && (typeof entry === 'string' || typeof entry === 'number')) {
-        assertSafeIdentityValue(name, entry, category, location);
+        assertSafeIdentityValue(name, entry, category, location, convergentRoots);
       }
-      assertBodyRedacted(entry, [...path, name], location, interactionKey);
+      assertBodyRedacted(entry, [...path, name], location, interactionKey, convergentRoots);
     }
     return;
   }
-  if (typeof value === 'string') assertNoForbiddenText(value, location);
+  if (typeof value === 'string') assertNoForbiddenText(value, location, convergentRoots);
+}
+
+/**
+ * Accept only deterministic UUIDs that can be independently re-derived from a
+ * sanitized workspace plus an exact exported collection name/marker. An
+ * arbitrary UUIDv5-shaped value remains forbidden.
+ */
+function provenConvergentRoots(cassette: Cassette): Set<string> {
+  const workspaces = new Set<string>();
+  for (const interaction of cassette.interactions) {
+    for (const match of interaction.key.matchAll(/[?&]workspace=([^&# ]+)/g)) {
+      const workspace = decodeURIComponent(match[1] ?? '').trim();
+      if (workspace) workspaces.add(workspace);
+    }
+  }
+  const proven = new Set<string>();
+  for (const interaction of cassette.interactions) {
+    const route = /proxy:collection GET \/v3\/collections\/([^/?# ]+)\/export/.exec(
+      interaction.key
+    );
+    if (!route?.[1]) continue;
+    let payload: JsonRecord | undefined;
+    try {
+      payload = asRecord(JSON.parse(interaction.body));
+    } catch {
+      continue;
+    }
+    const data = asRecord(payload?.data) ?? payload;
+    const collection = asRecord(data?.collection) ?? data;
+    const info = asRecord(collection?.info);
+    const name = String(info?.name ?? '').trim();
+    if (!name) continue;
+    const routeIdentity = normalizeCollectionModelIdentity(decodeURIComponent(route[1]));
+    for (const workspace of workspaces) {
+      const derived = convergentCollectionRootIdentity(
+        workspace,
+        name,
+        String(info?.description ?? '')
+      );
+      if (derived === routeIdentity) proven.add(derived);
+    }
+  }
+  return proven;
 }
 
 export function assertCassetteRedacted(value: unknown): asserts value is Cassette {
@@ -789,23 +920,32 @@ export function assertCassetteRedacted(value: unknown): asserts value is Cassett
   if (value.recordedAt && value.recordedAt !== FIXED_ISO_TIMESTAMP) {
     throw new Error('Cassette redaction invariant failed at recordedAt: live timestamp');
   }
+  const convergentRoots = provenConvergentRoots(value);
   value.interactions.forEach((interaction, index) => {
     const location = `interactions[${index}]`;
     if ('rawRequestBody' in interaction) {
       throw new Error(`Cassette redaction invariant failed at ${location}: rawRequestBody`);
     }
-    assertNoForbiddenText(interaction.key, `${location}.key`);
-    assertNoForbiddenText(interaction.requestQuery, `${location}.requestQuery`);
+    assertNoForbiddenText(interaction.key, `${location}.key`, convergentRoots);
+    assertNoForbiddenText(interaction.requestQuery, `${location}.requestQuery`, convergentRoots);
     for (const [name, headerValue] of Object.entries(interaction.responseHeaders)) {
       if (SENSITIVE_RESPONSE_HEADER_NAMES.has(name.toLowerCase()) && headerValue !== REDACTED) {
         throw new Error(`Cassette redaction invariant failed at ${location}: live ${name} header`);
       }
-      assertNoForbiddenText(headerValue, `${location}.responseHeaders.${name}`);
+      assertNoForbiddenText(headerValue, `${location}.responseHeaders.${name}`, convergentRoots);
     }
     try {
-      assertBodyRedacted(JSON.parse(interaction.body), [], `${location}.body`, interaction.key);
+      assertBodyRedacted(
+        JSON.parse(interaction.body),
+        [],
+        `${location}.body`,
+        interaction.key,
+        convergentRoots
+      );
     } catch (error) {
-      if (error instanceof SyntaxError) assertNoForbiddenText(interaction.body, `${location}.body`);
+      if (error instanceof SyntaxError) {
+        assertNoForbiddenText(interaction.body, `${location}.body`, convergentRoots);
+      }
       else throw error;
     }
   });

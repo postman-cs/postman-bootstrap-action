@@ -199,7 +199,13 @@ describe('local OpenAPI orchestration', () => {
   function buildPostman(events: string[]) {
     const storedCollections = new Map<string, JsonRecord>();
     const importV2Collection = vi.fn(
-      async (_workspaceId: string, collection: unknown, finalName: string) => {
+      async (
+        _workspaceId: string,
+        collection: unknown,
+        finalName: string,
+        _options?: { deferNominalSemanticVerification?: boolean }
+      ) => {
+        void _options;
         events.push(`import:${finalName}`);
         const id =
           finalName.includes('[Contract]')
@@ -363,6 +369,13 @@ describe('local OpenAPI orchestration', () => {
       });
 
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+      for (const call of postman.importV2Collection.mock.calls) {
+        expect(call[3]).toEqual({
+          convergentLogicalRoot: true,
+          deferNominalSemanticVerification: true
+        });
+      }
+      expect(postman.exportV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
       expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
       expect(postman.generateCollection).not.toHaveBeenCalled();

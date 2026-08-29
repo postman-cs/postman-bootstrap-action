@@ -23,10 +23,13 @@ The tag is created only after the exact bytes of the release commit pass every
 gate, so a failed cut leaves no tag and burns no version number. The next merge
 retries on a fresh version, skipping any already-tagged one.
 
-Before planning another cut, auto-release reconciles the latest immutable tag
-when its GitHub release is missing or its rolling alias has not advanced. It
-does not duplicate an active release run, and a successful release completion
-resumes planning. Receipt normalization retries rebuild the pull request from
+Auto-release plans against the latest immutable tag before choosing recovery.
+An immutable tag whose GitHub release is missing must finish publication before
+another version is cut. A stale rolling alias is replayed only when there is no
+new release-worthy change; otherwise the new immutable release supersedes the
+failed evidence attempt and must pass its own exact-tag E2E gate before the alias
+can advance. Recovery never duplicates an active release run. Receipt
+normalization retries rebuild the pull request from
 the immutable tag rather than transient runner state, but only while `main`'s
 receipt binding is older than the source commit covered by that tag. Divergent
 receipt bindings stop recovery rather than choosing either side.

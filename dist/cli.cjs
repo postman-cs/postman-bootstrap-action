@@ -271242,7 +271242,7 @@ var ExitCode;
 })(ExitCode || (ExitCode = {}));
 
 // src/index.ts
-var import_node_crypto10 = require("node:crypto");
+var import_node_crypto11 = require("node:crypto");
 var import_promises3 = require("node:fs/promises");
 var import_node_os2 = require("node:os");
 var path10 = __toESM(require("node:path"), 1);
@@ -276526,7 +276526,7 @@ var PostmanExtensibleCollectionClient = class {
 };
 
 // src/lib/postman/postman-gateway-assets-client.ts
-var import_node_crypto7 = require("node:crypto");
+var import_node_crypto8 = require("node:crypto");
 
 // src/lib/postman/collection-model-conversion.ts
 var V2 = __toESM(require_v2(), 1);
@@ -305638,7 +305638,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-08-28T17:35:35.305Z",
-  bootstrapCommit: "43aaea0a6d1ab9672fae2ed5451fa8191b632dce",
+  bootstrapCommit: "ab570bf7fe23deb2c129f9d542e6b56a071fed18",
   legs: [
     {
       mode: "nonorg",
@@ -306724,6 +306724,49 @@ function specTreeNextCursor(value) {
   return typeof cursor?.next === "string" ? cursor.next.trim() : "";
 }
 
+// src/lib/postman/convergent-collection-root.ts
+var import_node_crypto7 = require("node:crypto");
+function logicalAssetMarker(description) {
+  const text = String(description ?? "");
+  const markerIndex = text.indexOf("x-pm-onboarding:");
+  const jsonStart = markerIndex < 0 ? -1 : text.indexOf("{", markerIndex);
+  if (jsonStart < 0) return void 0;
+  let depth = 0;
+  for (let index = jsonStart; index < text.length; index += 1) {
+    if (text[index] === "{") depth += 1;
+    if (text[index] !== "}") continue;
+    depth -= 1;
+    if (depth !== 0) continue;
+    try {
+      const parsed = JSON.parse(text.slice(jsonStart, index + 1));
+      return parsed && typeof parsed === "object" && parsed.repo && parsed.role ? parsed : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  return void 0;
+}
+function convergentCollectionRootIdentity(workspaceId, finalName, description) {
+  const workspace = String(workspaceId ?? "").trim();
+  const name = String(finalName ?? "").trim();
+  if (!workspace || !name) {
+    throw new Error("LOCAL_OPENAPI_IMPORT_FAILED: convergent root requires workspace and final name");
+  }
+  const marker = logicalAssetMarker(description);
+  const logicalMarker = marker ? JSON.stringify([
+    marker.repo,
+    marker.rawBranch,
+    marker.sanitizedBranch,
+    marker.role,
+    marker.headRepoId ?? ""
+  ]) : "canonical";
+  const bytes = (0, import_node_crypto7.createHash)("sha256").update("postman-bootstrap:collection-root:v1\0").update(workspace).update("\0").update(name).update("\0").update(logicalMarker).digest().subarray(0, 16);
+  bytes[6] = bytes[6] & 15 | 80;
+  bytes[8] = bytes[8] & 63 | 128;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // src/lib/postman/postman-gateway-assets-client.ts
 function asItemArray(value) {
   return Array.isArray(value) ? value : [];
@@ -307014,7 +307057,7 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
   importMutationWaiters = [];
   constructor(options) {
     this.gateway = options.gateway;
-    this.createIdentity = options.createIdentity ?? import_node_crypto7.randomUUID;
+    this.createIdentity = options.createIdentity ?? import_node_crypto8.randomUUID;
     this.sleep = options.sleep ?? ((delayMs) => new Promise((resolve7) => setTimeout(resolve7, delayMs)));
     this.random = options.random ?? Math.random;
     this.generationPollAttempts = resolvePollBudget(
@@ -309435,7 +309478,7 @@ ${error.responseBody ?? ""}`
    * outcomes reconcile only that normalized identity and require exact
    * ownership/payload evidence; display-name peers are never response recovery.
    */
-  async importV2Collection(workspaceId, collection, finalName) {
+  async importV2Collection(workspaceId, collection, finalName, options = {}) {
     const desiredName = String(finalName || "").trim();
     if (!desiredName) {
       throw new Error("LOCAL_OPENAPI_IMPORT_FAILED: final collection name is required");
@@ -309445,8 +309488,15 @@ ${error.responseBody ?? ""}`
     const importPayload = this.cloneJson(prepared);
     const info = asRecord13(importPayload.info) ?? {};
     info.name = desiredName;
-    if (typeof info._postman_id !== "string" || !info._postman_id.trim()) {
-      info._postman_id = (0, import_node_crypto7.randomUUID)();
+    const convergentRoot = options.convergentLogicalRoot === true;
+    if (convergentRoot) {
+      info._postman_id = convergentCollectionRootIdentity(
+        workspaceId,
+        desiredName,
+        desiredDescription
+      );
+    } else if (typeof info._postman_id !== "string" || !info._postman_id.trim()) {
+      info._postman_id = (0, import_node_crypto8.randomUUID)();
     }
     importPayload.info = info;
     this.assertV21Collection(importPayload);
@@ -309455,13 +309505,13 @@ ${error.responseBody ?? ""}`
     if (!preallocatedIdentity) {
       throw new Error("LOCAL_OPENAPI_IMPORT_FAILED: preallocated root identity is required");
     }
-    const journaledRootIds = [preallocatedId];
-    const staleFinalIdentities = new Set(
+    const journaledRootIds = convergentRoot ? [] : [preallocatedId];
+    const staleFinalIdentities = convergentRoot ? /* @__PURE__ */ new Set() : new Set(
       (await this.findCollectionsByExactName(workspaceId, desiredName, "none")).filter((entry) => !this.hasSameBranchAssetMarker(entry.description, desiredDescription)).map((entry) => normalizeCollectionModelIdentity(entry.id))
     );
     let created;
     let resolution;
-    let preferredEvidenceVerified = false;
+    let preferredIdentityEligibleForElection = false;
     try {
       created = await this.withImportMutation(() => this.gateway.requestJson({
         service: "sync",
@@ -309472,43 +309522,90 @@ ${error.responseBody ?? ""}`
         body: importPayload
       }));
     } catch (error) {
-      if (!isAmbiguousTransportError(error)) {
-        throw this.sanitizeImportError("import-transport", error);
+      if (convergentRoot && (isAmbiguousTransportError(error) || this.isConvergentImportConflict(error))) {
+        resolution = await this.resolveCollectionRootUid(
+          workspaceId,
+          preallocatedId,
+          _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
+          "safe",
+          _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
+        );
+        if (!resolution.rootUid || !resolution.resolvedRow) {
+          throw this.sanitizeImportError("import-convergent-unreconciled", error);
+        }
+        const observed = await this.assertConvergentRootOwnershipEvidence(
+          resolution.resolvedRow,
+          preallocatedIdentity,
+          desiredName,
+          desiredDescription
+        );
+        if (computePayloadDigest(observed) !== computePayloadDigest(importPayload)) {
+          await this.deepUpdateV2Collection(
+            resolution.rootUid,
+            importPayload,
+            computePayloadDigest(importPayload)
+          );
+          if (options.deferNominalSemanticVerification !== true) {
+            await this.assertRecoveredImportEvidence(
+              resolution.resolvedRow,
+              preallocatedIdentity,
+              desiredName,
+              importPayload,
+              desiredDescription
+            );
+          }
+        }
+        preferredIdentityEligibleForElection = true;
+        created = {
+          model_id: preallocatedId,
+          data: { info: { _postman_id: preallocatedId, name: desiredName } }
+        };
+      } else {
+        if (!isAmbiguousTransportError(error)) {
+          throw this.sanitizeImportError("import-transport", error);
+        }
+        resolution = await this.resolveCollectionRootUid(
+          workspaceId,
+          preallocatedId,
+          _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
+          "safe",
+          _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
+        );
+        if (!resolution.rootUid || !resolution.resolvedRow) {
+          await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => void 0);
+          throw this.sanitizeImportError("import-ambiguous-unreconciled", error);
+        }
+        await this.assertRecoveredImportEvidence(
+          resolution.resolvedRow,
+          preallocatedIdentity,
+          desiredName,
+          importPayload,
+          desiredDescription
+        );
+        preferredIdentityEligibleForElection = true;
+        created = {
+          model_id: preallocatedId,
+          data: { info: { _postman_id: preallocatedId, name: desiredName } }
+        };
       }
-      resolution = await this.resolveCollectionRootUid(
-        workspaceId,
-        preallocatedId,
-        _PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
-        "safe",
-        _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
-      );
-      if (!resolution.rootUid || !resolution.resolvedRow) {
-        await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => void 0);
-        throw this.sanitizeImportError("import-ambiguous-unreconciled", error);
-      }
-      await this.assertRecoveredImportEvidence(
-        resolution.resolvedRow,
-        preallocatedIdentity,
-        desiredName,
-        importPayload,
-        desiredDescription
-      );
-      preferredEvidenceVerified = true;
-      created = {
-        model_id: preallocatedId,
-        data: { info: { _postman_id: preallocatedId, name: desiredName } }
-      };
     }
     const rawId = this.extractCollectionUid(created);
     if (!rawId) {
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId]).catch(() => void 0);
+      if (!convergentRoot) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId]).catch(() => void 0);
+      }
       throw new Error("LOCAL_OPENAPI_IMPORT_FAILED: import did not return a collection id");
     }
     if (normalizeCollectionModelIdentity(rawId) !== preallocatedIdentity) {
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId]).catch(() => void 0);
+      if (!convergentRoot) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId]).catch(() => void 0);
+      }
       throw new Error(
         "LOCAL_OPENAPI_IMPORT_FAILED: IMPORT_RESPONSE_ID_MISMATCH: server returned a different collection identity"
       );
+    }
+    if (!resolution && options.deferNominalSemanticVerification === true) {
+      preferredIdentityEligibleForElection = true;
     }
     try {
       resolution ??= await this.resolveCollectionRootUid(
@@ -309518,7 +309615,7 @@ ${error.responseBody ?? ""}`
         "safe",
         _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
       );
-      const electedId = await this.electImportedCollectionIdentity(
+      const electedId = convergentRoot ? resolution.rootUid : await this.electImportedCollectionIdentity(
         workspaceId,
         desiredName,
         preallocatedId,
@@ -309526,13 +309623,37 @@ ${error.responseBody ?? ""}`
         desiredDescription,
         resolution.cursor,
         importPayload,
-        preferredEvidenceVerified
+        preferredIdentityEligibleForElection
       );
+      if (!electedId) {
+        throw new Error(
+          "COLLECTION_ROOT_UID_RESOLUTION_FAILED: convergent collection did not become inventory-visible"
+        );
+      }
+      if (convergentRoot && options.deferNominalSemanticVerification !== true && !preferredIdentityEligibleForElection) {
+        if (!resolution.resolvedRow) {
+          throw new Error(
+            "COLLECTION_ROOT_UID_RESOLUTION_FAILED: convergent collection inventory row is unavailable"
+          );
+        }
+        await this.assertRecoveredImportEvidence(
+          resolution.resolvedRow,
+          preallocatedIdentity,
+          desiredName,
+          importPayload,
+          desiredDescription
+        );
+      }
       const rawBare = this.bareModelId(preallocatedId);
       const electedBare = this.bareModelId(electedId);
       if (rawBare && electedBare && rawBare === electedBare) {
-        journaledRootIds[0] = electedId;
+        if (!convergentRoot) journaledRootIds[0] = electedId;
       } else {
+        if (convergentRoot) {
+          throw new Error(
+            "IMPORT_IDENTITY_CONFLICT: convergent root resolved to a different collection identity"
+          );
+        }
         const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
         if (idx >= 0) journaledRootIds.splice(idx, 1);
         await this.deepUpdateV2Collection(
@@ -309545,11 +309666,12 @@ ${error.responseBody ?? ""}`
         collectionId: electedId,
         journaledRootIds: [...journaledRootIds],
         deleteVerifiedCleanup: async (ids) => {
+          if (convergentRoot) return;
           await this.deleteVerifiedRunOwnedCollections(workspaceId, ids ?? journaledRootIds);
         }
       };
     } catch (error) {
-      if (!this.isImportIdentityConflict(error)) {
+      if (!convergentRoot && !this.isImportIdentityConflict(error)) {
         await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => void 0);
       }
       throw this.sanitizeImportError("import-finalize", error);
@@ -310024,12 +310146,12 @@ ${error.responseBody ?? ""}`
     return clone2;
   }
   /**
-   * Prove that an exact-ID row observed after an ambiguous import is this
-   * request's committed payload. The client-known root id is the ownership
-   * marker for canonical collections; branch-scoped collections additionally
-   * require their durable branch marker. A name/list match alone is never proof.
+   * Prove ownership of a convergent root before any in-place update. The
+   * client-known root id is the ownership boundary for canonical collections;
+   * branch-scoped collections additionally require their stable branch marker.
+   * A name/list match alone is never proof.
    */
-  async assertRecoveredImportEvidence(row, expectedIdentity, expectedName, expectedCollection, expectedDescription) {
+  async assertConvergentRootOwnershipEvidence(row, expectedIdentity, expectedName, expectedDescription) {
     if (normalizeCollectionModelIdentity(row.id) !== expectedIdentity) {
       throw new Error(
         "IMPORT_IDENTITY_CONFLICT: recovered collection does not match the preallocated identity"
@@ -310064,6 +310186,20 @@ ${error.responseBody ?? ""}`
         "IMPORT_IDENTITY_CONFLICT: exact preallocated collection carries a foreign ownership marker"
       );
     }
+    return exported;
+  }
+  /**
+   * Prove that an exact-ID row observed after an ambiguous import is this
+   * request's committed payload. Ownership is established before comparing
+   * semantic bytes, so a foreign same-name root is never accepted.
+   */
+  async assertRecoveredImportEvidence(row, expectedIdentity, expectedName, expectedCollection, expectedDescription) {
+    const exported = await this.assertConvergentRootOwnershipEvidence(
+      row,
+      expectedIdentity,
+      expectedName,
+      expectedDescription
+    );
     if (computePayloadDigest(exported) !== computePayloadDigest(expectedCollection)) {
       throw new Error(
         "IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match"
@@ -310072,6 +310208,11 @@ ${error.responseBody ?? ""}`
   }
   isImportIdentityConflict(error) {
     return error instanceof Error && /\bIMPORT_(?:IDENTITY_CONFLICT|RESPONSE_ID_MISMATCH)\b/.test(error.message);
+  }
+  isConvergentImportConflict(error) {
+    if (!(error instanceof HttpError)) return false;
+    if (error.status === 409) return true;
+    return (error.status === 400 || error.status === 422) && /\b(?:already exists|conflict|duplicate)\b/i.test(error.responseBody);
   }
   /** A same-name peer is eligible only when its exact exported bytes are ours. */
   async matchesImportedPeerEvidence(row, expectedCollection, expectedDescription) {
@@ -310123,7 +310264,7 @@ ${error.responseBody ?? ""}`
     }
     return "";
   }
-  async electImportedCollectionIdentity(workspaceId, finalName, preferredId, staleFinalIdentities, desiredDescription, existingCursor, desiredCollection, preferredEvidenceVerified = false) {
+  async electImportedCollectionIdentity(workspaceId, finalName, preferredId, staleFinalIdentities, desiredDescription, existingCursor, desiredCollection, preferredIdentityEligibleForElection = false) {
     const started = this.now();
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
     const settleDelays = _PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(finalName);
@@ -310160,7 +310301,7 @@ ${error.responseBody ?? ""}`
         observeInventory(await observer.observe(cursor, "safe"));
       }
       if (desiredCollection) {
-        if (preferredObserved && !preferredEvidenceVerified) {
+        if (preferredObserved && !preferredIdentityEligibleForElection) {
           await this.assertRecoveredImportEvidence(
             preferredObserved,
             preferredIdentity,
@@ -310168,11 +310309,11 @@ ${error.responseBody ?? ""}`
             desiredCollection,
             desiredDescription
           );
-          preferredEvidenceVerified = true;
+          preferredIdentityEligibleForElection = true;
         }
         const verified = [];
         for (const entry of eligible) {
-          if (normalizeCollectionModelIdentity(entry.id) === preferredIdentity && preferredEvidenceVerified || await this.matchesImportedPeerEvidence(entry, desiredCollection, desiredDescription)) {
+          if (normalizeCollectionModelIdentity(entry.id) === preferredIdentity && preferredIdentityEligibleForElection || await this.matchesImportedPeerEvidence(entry, desiredCollection, desiredDescription)) {
             verified.push(entry);
           }
         }
@@ -310715,7 +310856,7 @@ function detectRepoContext2(input, env = process.env) {
 }
 
 // src/lib/repo/local-collection-artifacts.ts
-var import_node_crypto8 = require("node:crypto");
+var import_node_crypto9 = require("node:crypto");
 var import_node_fs6 = require("node:fs");
 var fs2 = __toESM(require("node:fs/promises"), 1);
 var path8 = __toESM(require("node:path"), 1);
@@ -310765,7 +310906,7 @@ async function persistLocalOpenApiArtifactManifest(repoRoot, finalized, dependen
   await assertNoSymlinksInTree(abs, relative3);
   await fs2.mkdir(parent, { recursive: true });
   const ancestorGuard = await captureAncestorGuard(root, abs);
-  const temp = path8.join(parent, `.${path8.basename(abs)}.${(0, import_node_crypto8.randomUUID)()}.tmp`);
+  const temp = path8.join(parent, `.${path8.basename(abs)}.${(0, import_node_crypto9.randomUUID)()}.tmp`);
   const rename3 = dependencies.rename ?? ((oldPath, newPath) => fs2.rename(oldPath, newPath));
   try {
     await assertAncestorGuard(ancestorGuard);
@@ -310798,7 +310939,7 @@ function deriveArtifactSafeCollectionName(displayName) {
   if (trimmed && SAFE_COLLECTION_NAME.test(trimmed) && !isReservedArtifactName(trimmed)) {
     return trimmed;
   }
-  const digest = (0, import_node_crypto8.createHash)("sha256").update(original).digest("hex");
+  const digest = (0, import_node_crypto9.createHash)("sha256").update(original).digest("hex");
   return `collection-${digest}`;
 }
 function asArray6(value) {
@@ -311057,7 +311198,7 @@ async function listRegularFilesRelative(dir, base) {
 }
 async function computeArtifactDigestFromTree(absDir) {
   const relatives = (await listRegularFilesRelative(absDir, absDir)).sort((a, b) => a.localeCompare(b));
-  const hash = (0, import_node_crypto8.createHash)("sha256");
+  const hash = (0, import_node_crypto9.createHash)("sha256");
   for (const relative3 of relatives) {
     hash.update(relative3);
     hash.update("\0");
@@ -311394,7 +311535,7 @@ async function materializeLocalCollectionArtifacts(input) {
     await assertAncestorGuard(workflowsGuard);
   };
   const snapshots = [];
-  const snapshotStoreRoot = path8.join(runTempDir, "snapshots", (0, import_node_crypto8.randomUUID)());
+  const snapshotStoreRoot = path8.join(runTempDir, "snapshots", (0, import_node_crypto9.randomUUID)());
   await fs2.mkdir(snapshotStoreRoot, { recursive: true });
   for (const [index, plan] of rolePlans.entries()) {
     snapshots.push(await snapshotPath(plan.absCollectionPath, snapshotStoreRoot, `role-${index}-${plan.role}`));
@@ -334574,7 +334715,7 @@ function parseWsdl(content, opts) {
 }
 
 // src/lib/protocols/soap/builder.ts
-var import_node_crypto9 = require("node:crypto");
+var import_node_crypto10 = require("node:crypto");
 var COLLECTION_V210_SCHEMA2 = "https://schema.getpostman.com/json/collection/v2.1.0/collection.json";
 var SOAP11_ENVELOPE_NS = "http://schemas.xmlsoap.org/soap/envelope/";
 var SOAP12_ENVELOPE_NS = "http://www.w3.org/2003/05/soap-envelope";
@@ -334582,7 +334723,7 @@ var SOAP11_CONTENT_TYPE = "text/xml; charset=UTF-8";
 var SOAP12_CONTENT_TYPE = "application/soap+xml; charset=UTF-8";
 var WSA_NS = "http://www.w3.org/2005/08/addressing";
 function stableId2(seed) {
-  return (0, import_node_crypto9.createHash)("sha256").update(seed).digest("hex").slice(0, 32);
+  return (0, import_node_crypto10.createHash)("sha256").update(seed).digest("hex").slice(0, 32);
 }
 function envelopeNamespace(version) {
   return version === "1.2" ? SOAP12_ENVELOPE_NS : SOAP11_ENVELOPE_NS;
@@ -342927,7 +343068,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             previousRaw,
             (msg) => dependencies.core.warning(`Previous spec normalization: ${msg}`)
           );
-          previousSpecRollbackHash = (0, import_node_crypto10.createHash)("sha256").update(previousSpecContent).digest("hex");
+          previousSpecRollbackHash = (0, import_node_crypto11.createHash)("sha256").update(previousSpecContent).digest("hex");
           const existingSpecType = normalizeSpecTypeFromContent(previousSpecContent);
           if (existingSpecType !== incomingSpecType) {
             throw new Error(
@@ -343294,7 +343435,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               previousSpecRollbackHash = uploaded.priorSnapshot?.digest || "";
             }
           } else if (specId) {
-            if (previousSpecContent !== void 0 && (0, import_node_crypto10.createHash)("sha256").update(uploadSpecContent).digest("hex") === (0, import_node_crypto10.createHash)("sha256").update(previousSpecContent).digest("hex")) {
+            if (previousSpecContent !== void 0 && (0, import_node_crypto11.createHash)("sha256").update(uploadSpecContent).digest("hex") === (0, import_node_crypto11.createHash)("sha256").update(previousSpecContent).digest("hex")) {
               specContentUnchanged = true;
               dependencies.core.info(
                 `Spec content unchanged (sha256 match); skipping Spec Hub update and version tag for ${specId}.`
@@ -343491,15 +343632,6 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
           }
           const discoveredIds = /* @__PURE__ */ new Map();
           try {
-            for (const role of collectionRoles) {
-              if (!role.existingId && collectionBranchMarker && workspaceId && inputs.collectionSyncMode === "refresh" && dependencies.postman.findAdoptableSameMarkerCollection) {
-                discoveredIds.set(role.role, await dependencies.postman.findAdoptableSameMarkerCollection(
-                  workspaceId,
-                  roleNames[role.role],
-                  collectionBranchMarker
-                ));
-              }
-            }
             const reuseIdsByRole = /* @__PURE__ */ new Map();
             for (const role of collectionRoles) {
               const reuseId = role.existingId || discoveredIds.get(role.role);
@@ -343628,7 +343760,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
             const imported = await observedLocalOpenApiPostman.importV2Collection(
               workspaceId || "",
               payload.collection,
-              finalName
+              finalName,
+              {
+                convergentLogicalRoot: true,
+                deferNominalSemanticVerification: true
+              }
             );
             if (collectionBranchMarker) {
               if (!dependencies.postman.updateCollectionDescription) {
@@ -343744,52 +343880,6 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
               importCount > 0 && updateCount > 0 ? "mixed-import-deep-update" : importCount > 0 ? "partial-import" : updateCount > 0 ? "deep-update" : "cloud-collection-write",
               failures[0]
             );
-          }
-          if (importCount > 0 && dependencies.postman.reconcileDuplicateFinalCollections && workspaceId && collectionBranchMarker) {
-            const importedFinals = collectionRoles.filter((role) => fulfilledByRole.get(role.role)?.kind === "import").map((role) => ({
-              finalName: roleNames[role.role],
-              desiredDescription: collectionBranchMarker
-            }));
-            try {
-              const winners = await dependencies.postman.reconcileDuplicateFinalCollections(
-                workspaceId,
-                importedFinals
-              );
-              for (const role of collectionRoles) {
-                const result = fulfilledByRole.get(role.role);
-                if (!result || result.kind !== "import") continue;
-                const finalName = roleNames[role.role];
-                const winnerId = winners[finalName];
-                if (!winnerId) continue;
-                if (result.collectionId !== winnerId) {
-                  if (!deepUpdateSnapshots.has(winnerId)) {
-                    if (!dependencies.postman.exportV2Collection) {
-                      throw new Error("LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support");
-                    }
-                    const collection = await dependencies.postman.exportV2Collection(winnerId);
-                    deepUpdateSnapshots.set(winnerId, {
-                      collection,
-                      payloadDigest: computePayloadDigest(collection)
-                    });
-                  }
-                  attemptedDeepUpdates.add(winnerId);
-                  await observedLocalOpenApiPostman.deepUpdateV2Collection(
-                    winnerId,
-                    payloads.roles[role.role].collection,
-                    payloads.roles[role.role].payloadDigest
-                  );
-                  for (const id of result.journaledRootIds) {
-                    const idx = ownedLedger.indexOf(id);
-                    if (idx >= 0) ownedLedger.splice(idx, 1);
-                  }
-                  result.journaledRootIds = [];
-                  result.collectionId = winnerId;
-                  outputs[result.outputKey] = winnerId;
-                }
-              }
-            } catch (error) {
-              await failOwned("cloud-collection-write", error);
-            }
           }
           if (!dependencies.postman.exportV2Collection) {
             await failOwned(
@@ -344336,7 +344426,7 @@ function createRoutingPostmanClient(options) {
     createCollection: (workspaceId, collection, options2) => gateway.createCollection(workspaceId, collection, options2),
     updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection),
     updateCollectionDescription: (collectionUid, description) => gateway.updateCollectionDescription(collectionUid, description),
-    importV2Collection: (workspaceId, collection, finalName) => gateway.importV2Collection(workspaceId, collection, finalName),
+    importV2Collection: (workspaceId, collection, finalName, options2) => gateway.importV2Collection(workspaceId, collection, finalName, options2),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) => gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
     applyCollectionDelta: (collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback) => gateway.applyCollectionDelta(collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback),
     get collectionWriteMetrics() {

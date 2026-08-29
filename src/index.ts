@@ -47,7 +47,8 @@ import { safeFetchText } from './lib/spec/safe-spec-fetch.js';
 import { PostmanExtensibleCollectionClient } from './lib/postman/postman-ec-client.js';
 import {
   PostmanGatewayAssetsClient,
-  SquadDiscoveryUnavailableError
+  SquadDiscoveryUnavailableError,
+  type ImportV2CollectionOptions
 } from './lib/postman/postman-gateway-assets-client.js';
 import { PostmanAppVersionProvider } from './lib/postman/app-version.js';
 import { AccessTokenProvider, mintAccessTokenIfNeeded } from './lib/postman/token-provider.js';
@@ -353,7 +354,8 @@ export interface BootstrapExecutionDependencies {
     importV2Collection?(
       workspaceId: string,
       collection: unknown,
-      finalName: string
+      finalName: string,
+      options?: ImportV2CollectionOptions
     ): Promise<{
       collectionId: string;
       journaledRootIds: string[];
@@ -3469,17 +3471,13 @@ async function runBootstrapInner(
         // Discovery and rollback snapshots are a complete preflight. In
         // particular, an ambiguous discovery rejection cannot arrive after a
         // baseline or smoke mutation has already occurred.
+        // ID-less branch runs address deterministic logical roots. Do not
+        // discover/adopt a same-name marker peer here: another process may
+        // still be materializing that root, and a snapshot/export followed by
+        // decentralized loser deletion cannot establish cross-process
+        // ownership. Persisted explicit IDs continue through the refresh path.
         const discoveredIds = new Map<CollectionRole, string | undefined>();
         try {
-          for (const role of collectionRoles) {
-            if (!role.existingId && collectionBranchMarker && workspaceId &&
-              inputs.collectionSyncMode === 'refresh' &&
-              dependencies.postman.findAdoptableSameMarkerCollection) {
-              discoveredIds.set(role.role, await dependencies.postman.findAdoptableSameMarkerCollection(
-                workspaceId, roleNames[role.role], collectionBranchMarker
-              ));
-            }
-          }
           const reuseIdsByRole = new Map<CollectionRole, string>();
           for (const role of collectionRoles) {
             const reuseId = role.existingId || discoveredIds.get(role.role);
@@ -3661,7 +3659,11 @@ async function runBootstrapInner(
           const imported = await observedLocalOpenApiPostman.importV2Collection!(
             workspaceId || '',
             payload.collection,
-            finalName
+            finalName,
+            {
+              convergentLogicalRoot: true,
+              deferNominalSemanticVerification: true
+            }
           );
           if (collectionBranchMarker) {
             if (!dependencies.postman.updateCollectionDescription) {
@@ -3670,8 +3672,8 @@ async function runBootstrapInner(
               );
             }
             // Sync import does not reliably surface info.description on the v3
-            // inventory row. Persist the marker explicitly before duplicate
-            // reconciliation so exact name alone is never treated as ownership.
+            // inventory row. Persist the marker explicitly before final semantic
+            // verification; exact name alone is never treated as ownership.
             try {
               await dependencies.postman.updateCollectionDescription(
                 imported.collectionId,
@@ -3704,8 +3706,8 @@ async function runBootstrapInner(
             fallbackReason: null
           };
         };
-        // Fresh imports must all enter the client so each run-unique import can
-        // reach its inventory/election finalizer. The client separately limits
+        // Fresh imports must all enter the client so each deterministic logical
+        // root can reach its inventory finalizer. The client separately limits
         // only the unsafe import POST mutations to two. Reuse/mixed writes keep
         // the outer two-lane bound because their whole/delta mutations do not
         // have that split mutation/finalizer lifecycle.
@@ -3795,72 +3797,11 @@ async function runBootstrapInner(
           );
         }
 
-        // Collapse duplicate finals left when concurrent peers both finished
-        // election before seeing each other. Keeps the lowest inventory UID.
-        if (
-          importCount > 0 &&
-          dependencies.postman.reconcileDuplicateFinalCollections &&
-          workspaceId &&
-          collectionBranchMarker
-        ) {
-          const importedFinals = collectionRoles
-            .filter((role) => fulfilledByRole.get(role.role)?.kind === 'import')
-            .map((role) => ({
-              finalName: roleNames[role.role],
-              desiredDescription: collectionBranchMarker
-            }));
-          try {
-            const winners = await dependencies.postman.reconcileDuplicateFinalCollections(
-              workspaceId,
-              importedFinals
-            );
-            for (const role of collectionRoles) {
-              const result = fulfilledByRole.get(role.role);
-              if (!result || result.kind !== 'import') continue;
-              const finalName = roleNames[role.role];
-              const winnerId = winners[finalName];
-              if (!winnerId) continue;
-              if (result.collectionId !== winnerId) {
-                // Peer kept a lower UID; rebind outputs to the reconciled winner
-                // and drop journal ownership of the deleted local root (do not
-                // claim the peer-owned winner).
-                // The winner survives from an earlier or concurrent run, so its
-                // content is that run's payload. Converge it in place (UID
-                // preserved, digest-verified) so downstream gates never execute
-                // stale bytes; failure fails the reconcile closed.
-                if (!deepUpdateSnapshots.has(winnerId)) {
-                  if (!dependencies.postman.exportV2Collection) {
-                    throw new Error('LOCAL_OPENAPI_ORCHESTRATION_FAILED: exportV2Collection requires access-token gateway support');
-                  }
-                  const collection = await dependencies.postman.exportV2Collection(winnerId);
-                  deepUpdateSnapshots.set(winnerId, {
-                    collection,
-                    payloadDigest: computePayloadDigest(collection)
-                  });
-                }
-                attemptedDeepUpdates.add(winnerId);
-                await observedLocalOpenApiPostman.deepUpdateV2Collection!(
-                  winnerId,
-                  payloads.roles[role.role].collection,
-                  payloads.roles[role.role].payloadDigest
-                );
-                for (const id of result.journaledRootIds) {
-                  const idx = ownedLedger.indexOf(id);
-                  if (idx >= 0) ownedLedger.splice(idx, 1);
-                }
-                result.journaledRootIds = [];
-                result.collectionId = winnerId;
-                outputs[result.outputKey] = winnerId;
-              }
-            }
-          } catch (error) {
-            await failOwned('cloud-collection-write', error);
-          }
-        }
-
         // Success requires an exact semantic export of every final collection,
-        // including imports, deltas, whole writes, unchanged roles, and any
-        // duplicate-election winner. Two read lanes bound gateway pressure.
+        // including imports, deltas, whole writes, and unchanged roles. Fresh
+        // imports already share one deterministic logical root, so no process
+        // performs destructive same-marker peer election. Two read lanes bound
+        // gateway pressure.
         if (!dependencies.postman.exportV2Collection) {
           await failOwned(
             'collection-final-verification',
@@ -4634,8 +4575,8 @@ export function createRoutingPostmanClient(options: {
     updateCollection: (collectionUid, collection) => gateway.updateCollection(collectionUid, collection),
     updateCollectionDescription: (collectionUid, description) =>
       gateway.updateCollectionDescription(collectionUid, description),
-    importV2Collection: (workspaceId, collection, finalName) =>
-      gateway.importV2Collection(workspaceId, collection, finalName),
+    importV2Collection: (workspaceId, collection, finalName, options) =>
+      gateway.importV2Collection(workspaceId, collection, finalName, options),
     deepUpdateV2Collection: (collectionUid, collection, expectedPayloadDigest) =>
       gateway.deepUpdateV2Collection(collectionUid, collection, expectedPayloadDigest),
     applyCollectionDelta: (collectionUid, plan, desiredCollection, expectedPayloadDigest, rollback) =>

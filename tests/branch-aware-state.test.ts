@@ -115,7 +115,12 @@ function trackedCollection(collection: unknown, collectionUid: string): Record<s
 }
 
 function createDefaultImportV2Collection(collections: Map<string, Record<string, unknown>>) {
-  return vi.fn().mockImplementation(async (_workspaceId: string, collection: unknown, finalName?: string) => {
+  return vi.fn().mockImplementation(async (
+    _workspaceId: string,
+    collection: unknown,
+    finalName?: string,
+    options?: { convergentLogicalRoot?: boolean }
+  ) => {
     const info = (collection as { info?: { name?: string } } | null)?.info;
     const name = String(finalName || info?.name || '');
     const id = name.includes('[Contract]')
@@ -126,7 +131,7 @@ function createDefaultImportV2Collection(collections: Map<string, Record<string,
     collections.set(id, trackedCollection(collection, id));
     return {
       collectionId: id,
-      journaledRootIds: [id],
+      journaledRootIds: options?.convergentLogicalRoot ? [] : [id],
       deleteVerifiedCleanup: vi.fn().mockResolvedValue(undefined)
     };
   });
@@ -433,20 +438,15 @@ describe('branch-aware bootstrap runs', () => {
         expect.stringContaining('"role":"preview"')
       );
       expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
-      expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledTimes(1);
-      expect(postman.reconcileDuplicateFinalCollections).toHaveBeenCalledWith(
-        'ws-existing',
-        expect.arrayContaining([
-          expect.objectContaining({
-            finalName: expect.stringMatching(/@feature-payments/),
-            desiredDescription: expect.stringContaining('"role":"preview"')
-          })
-        ])
-      );
+      expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
       for (const call of postman.importV2Collection.mock.calls) {
         const collection = call[1] as { info?: { description?: string; name?: string } };
         expect(String(collection.info?.description || '')).toContain('"role":"preview"');
         expect(String(call[2] || collection.info?.name || '')).toMatch(/@feature-payments/);
+        expect(call[3]).toEqual({
+          convergentLogicalRoot: true,
+          deferNominalSemanticVerification: true
+        });
       }
 
       // Tracked state untouched byte-for-byte.
@@ -454,7 +454,7 @@ describe('branch-aware bootstrap runs', () => {
     });
   });
 
-  it('preview reconciliation rebinds peer winners without claiming them for rollback', async () => {
+  it('preview imports never run a stale-snapshot peer reconciler or claim shared roots for rollback', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'branch-preview-peer-'));
     writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
     for (const [key, value] of Object.entries(githubPreviewEnv(workspace))) {
@@ -463,57 +463,39 @@ describe('branch-aware bootstrap runs', () => {
 
     await withCwd(workspace, async () => {
       const postman = createPostman();
-      postman.reconcileDuplicateFinalCollections.mockImplementation(
-        async (_workspaceId: string, candidates: Array<{ finalName: string }>) =>
-          Object.fromEntries(
-            candidates.map(({ finalName }) => [
-              finalName,
-              finalName.includes('[Contract]')
-                ? 'peer-contract'
-                : finalName.includes('[Smoke]')
-                  ? 'peer-smoke'
-                  : 'peer-baseline'
-            ])
-          )
+      postman.reconcileDuplicateFinalCollections.mockRejectedValue(
+        new Error('stale snapshot reconciler must be unreachable')
       );
       const dependencies = runDeps(postman);
       const internalIntegration = dependencies.internalIntegration!;
       internalIntegration.linkCollectionsToSpecification = vi
         .fn()
-        .mockRejectedValue(new Error('link failed after reconcile'));
+        .mockRejectedValue(new Error('link failed after import'));
 
       await expect(
         runBootstrap(
           createInputs({ branchStrategy: 'preview', workspaceId: 'ws-existing' }),
           dependencies
         )
-      ).rejects.toThrow(/link failed after reconcile/);
+      ).rejects.toThrow(/link failed after import/);
 
       expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
-      // A rebound winner is a survivor from an earlier run; its content is that
-      // run's payload. Orchestration must converge each winner to THIS run's
-      // payload before links/tags, or the contract gate executes stale bytes.
-      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(6);
-      const deepUpdatedIds = postman.deepUpdateV2Collection.mock.calls.map(
-        (call: unknown[]) => call[0]
-      );
-      expect(deepUpdatedIds).toEqual(
-        expect.arrayContaining(['peer-baseline', 'peer-smoke', 'peer-contract'])
-      );
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+      expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
       expect(
         internalIntegration.linkCollectionsToSpecification
       ).toHaveBeenCalledWith(
         expect.any(String),
         expect.arrayContaining([
-          expect.objectContaining({ collectionId: 'peer-baseline' }),
-          expect.objectContaining({ collectionId: 'peer-smoke' }),
-          expect.objectContaining({ collectionId: 'peer-contract' })
+          expect.objectContaining({ collectionId: 'col-baseline' }),
+          expect.objectContaining({ collectionId: 'col-smoke' }),
+          expect.objectContaining({ collectionId: 'col-contract' })
         ])
       );
     });
   });
 
-  it('preview marker failure cleans each imported root before losing the role result', async () => {
+  it('preview marker failure never deletes a shared convergent root', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'branch-preview-marker-fail-'));
     writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
     for (const [key, value] of Object.entries(githubPreviewEnv(workspace))) {
@@ -524,7 +506,13 @@ describe('branch-aware bootstrap runs', () => {
       const postman = createPostman();
       const cleanup = vi.fn().mockResolvedValue(undefined);
       postman.importV2Collection.mockImplementation(
-        async (_workspaceId: string, _collection: unknown, finalName: string) => {
+        async (
+          _workspaceId: string,
+          _collection: unknown,
+          finalName: string,
+          options?: { convergentLogicalRoot?: boolean }
+        ) => {
+          expect(options?.convergentLogicalRoot).toBe(true);
           const id = finalName.includes('[Contract]')
             ? 'owned-contract'
             : finalName.includes('[Smoke]')
@@ -532,7 +520,7 @@ describe('branch-aware bootstrap runs', () => {
               : 'owned-baseline';
           return {
             collectionId: id,
-            journaledRootIds: [id],
+            journaledRootIds: [],
             deleteVerifiedCleanup: cleanup
           };
         }
@@ -547,9 +535,8 @@ describe('branch-aware bootstrap runs', () => {
       ).rejects.toThrow(/marker patch failed/);
 
       expect(cleanup).toHaveBeenCalledTimes(3);
-      expect(cleanup).toHaveBeenCalledWith(['owned-baseline']);
-      expect(cleanup).toHaveBeenCalledWith(['owned-smoke']);
-      expect(cleanup).toHaveBeenCalledWith(['owned-contract']);
+      expect(cleanup).toHaveBeenCalledWith([]);
+      expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
       expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
     });
   });
@@ -615,7 +602,7 @@ describe('branch-aware bootstrap runs', () => {
     });
   });
 
-  it('channel rerun adopts the same-marker final and deep-updates in place instead of importing', async () => {
+  it('ID-less channel rerun uses convergent roots without snapshot-adopting a marker peer', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'branch-channel-rerun-'));
     writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
     const eventPath = join(workspace, 'event.json');
@@ -655,14 +642,13 @@ describe('branch-aware bootstrap runs', () => {
         runDeps(postman)
       );
       expect(JSON.parse(outputs['branch-decision']).tier).toBe('channel');
-      // Every role found its prior-run final: no fresh imports, three in-place
-      // deep-updates preserving the prior UIDs.
-      expect(postman.importV2Collection).not.toHaveBeenCalled();
-      expect(postman.deepUpdateV2Collection).toHaveBeenCalledTimes(3);
+      expect(findAdoptableSameMarkerCollection).not.toHaveBeenCalled();
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
       expect(postman.reconcileDuplicateFinalCollections).not.toHaveBeenCalled();
-      expect(outputs['baseline-collection-id']).toBe('prior-baseline');
-      expect(outputs['smoke-collection-id']).toBe('prior-smoke');
-      expect(outputs['contract-collection-id']).toBe('prior-contract');
+      expect(outputs['baseline-collection-id']).toBe('col-baseline');
+      expect(outputs['smoke-collection-id']).toBe('col-smoke');
+      expect(outputs['contract-collection-id']).toBe('col-contract');
     });
   });
 
@@ -702,7 +688,7 @@ describe('branch-aware bootstrap runs', () => {
     });
   });
 
-  it('channel discovery ambiguity aborts before every import or deep-update', async () => {
+  it('ID-less channel imports do not consult an ambiguous same-marker snapshot', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'branch-channel-ambiguous-'));
     writeFileSync(join(workspace, 'openapi.yaml'), VALID_SPEC_31);
     const eventPath = join(workspace, 'event.json');
@@ -714,15 +700,18 @@ describe('branch-aware bootstrap runs', () => {
 
     await withCwd(workspace, async () => {
       const postman = createPostman();
-      (postman as Record<string, unknown>).findAdoptableSameMarkerCollection = vi.fn(async (_workspaceId: string, finalName: string) => {
+      const findAdoptableSameMarkerCollection = vi.fn(async (_workspaceId: string, finalName: string) => {
         if (finalName.includes('[Smoke]')) throw new Error('ambiguous same-marker collection');
         return undefined;
       });
+      (postman as Record<string, unknown>).findAdoptableSameMarkerCollection =
+        findAdoptableSameMarkerCollection;
       await expect(runBootstrap(createInputs({ branchStrategy: 'publish-gate', channels: 'develop=DEV', workspaceId: 'ws-existing' }), runDeps(postman)))
-        .rejects.toThrow(/collection-preflight.*ambiguous same-marker collection/);
-      expect(postman.importV2Collection).not.toHaveBeenCalled();
+        .resolves.toBeDefined();
+      expect(findAdoptableSameMarkerCollection).not.toHaveBeenCalled();
+      expect(postman.importV2Collection).toHaveBeenCalledTimes(3);
       expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
-      expect(postman.updateCollectionDescription).not.toHaveBeenCalled();
+      expect(postman.updateCollectionDescription).toHaveBeenCalledTimes(3);
     });
   });
 

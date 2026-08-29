@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AccessTokenGatewayClient, HttpError } from '@postman-cs/automation-core';
 import { AccessTokenProvider } from '../src/lib/postman/token-provider.js';
 import {
+  convergentCollectionRootIdentity,
   PostmanGatewayAssetsClient,
   SquadDiscoveryUnavailableError
 } from '../src/lib/postman/postman-gateway-assets-client.js';
@@ -3967,6 +3968,268 @@ describe('PostmanGatewayAssetsClient', () => {
       info: { ...v21Collection.info, _postman_id: rootId, name, description }
     });
 
+    it('derives one stable logical root across trigger SHAs and separates workspaces, names, and branches', () => {
+      const markerA = renderAssetMarker({
+        repo: 'https://github.com/acme/payments',
+        rawBranch: 'feature/a',
+        sanitizedBranch: 'feature-a',
+        role: 'preview',
+        headSha: 'a'.repeat(40)
+      });
+      const markerANewer = renderAssetMarker({
+        repo: 'https://github.com/acme/payments',
+        rawBranch: 'feature/a',
+        sanitizedBranch: 'feature-a',
+        role: 'preview',
+        headSha: 'b'.repeat(40)
+      });
+      const markerB = renderAssetMarker({
+        repo: 'https://github.com/acme/payments',
+        rawBranch: 'feature/b',
+        sanitizedBranch: 'feature-b',
+        role: 'preview'
+      });
+      const identity = convergentCollectionRootIdentity('ws-1', PREVIEW_FINAL_NAME, markerA);
+      expect(identity).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(convergentCollectionRootIdentity('ws-1', PREVIEW_FINAL_NAME, markerANewer)).toBe(identity);
+      expect(convergentCollectionRootIdentity('ws-2', PREVIEW_FINAL_NAME, markerA)).not.toBe(identity);
+      expect(convergentCollectionRootIdentity('ws-1', `${PREVIEW_FINAL_NAME} smoke`, markerA)).not.toBe(identity);
+      expect(convergentCollectionRootIdentity('ws-1', PREVIEW_FINAL_NAME, markerB)).not.toBe(identity);
+    });
+
+    it('converges on the exact logical root without inspecting, deleting, or deep-updating a stale-snapshot peer', async () => {
+      const marker = renderAssetMarker({
+        repo: 'https://github.com/acme/payments',
+        rawBranch: 'feature/a',
+        sanitizedBranch: 'feature-a',
+        role: 'preview'
+      });
+      const bareId = convergentCollectionRootIdentity('ws-shared', PREVIEW_FINAL_NAME, marker);
+      const canonicalId = `12345678-${bareId}`;
+      const stalePeer = '12345678-00000000-0000-4000-8000-000000000000';
+      let submitted = false;
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          const body = env.body as { info?: { _postman_id?: string } };
+          expect(body.info?._postman_id).toBe(bareId);
+          submitted = true;
+          return jsonResponse({ model_id: bareId });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: submitted
+              ? [
+                  { id: stalePeer, name: PREVIEW_FINAL_NAME },
+                  { id: canonicalId, name: PREVIEW_FINAL_NAME }
+                ]
+              : [{ id: stalePeer, name: PREVIEW_FINAL_NAME }]
+          });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      const result = await client.importV2Collection(
+        'ws-shared',
+        collectionWithRootId(v21Collection.info._postman_id, PREVIEW_FINAL_NAME, marker),
+        PREVIEW_FINAL_NAME,
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      );
+      expect(result.collectionId).toBe(canonicalId);
+      expect(result.journaledRootIds).toEqual([]);
+      await result.deleteVerifiedCleanup([canonicalId]);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toEqual([]);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+      expect(calls.filter((call) => call.method === 'put')).toEqual([]);
+    });
+
+    it('recovers an explicit duplicate-root conflict by exact identity without retrying or deleting', async () => {
+      const bareId = convergentCollectionRootIdentity('ws-shared', 'Payments', '');
+      const canonicalId = `12345678-${bareId}`;
+      let importCalls = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          importCalls += 1;
+          return jsonResponse(
+            { error: { code: 'DUPLICATE', message: 'collection already exists' } },
+            { status: 409 }
+          );
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [{ id: canonicalId, name: 'Payments' }] });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.importV2Collection(
+        'ws-shared',
+        v21Collection,
+        'Payments',
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      )).resolves.toMatchObject({ collectionId: canonicalId, journaledRootIds: [] });
+      expect(importCalls).toBe(1);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+    });
+
+    it('lets two independent clients interleave on one logical root without deleting or replacing a peer root', async () => {
+      const bareId = convergentCollectionRootIdentity('ws-shared', 'Payments', '');
+      const canonicalId = `12345678-${bareId}`;
+      let firstPosted!: () => void;
+      let releaseFirst!: () => void;
+      const firstPostObserved = new Promise<void>((resolve) => { firstPosted = resolve; });
+      const firstPostRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      let rootExists = false;
+      const handler = (client: 'first' | 'second') => async (env: Envelope): Promise<Response> => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          if (client === 'first') {
+            rootExists = true;
+            firstPosted();
+            await firstPostRelease;
+            return jsonResponse({ model_id: bareId });
+          }
+          expect(rootExists).toBe(true);
+          return jsonResponse(
+            { error: { code: 'DUPLICATE', message: 'collection already exists' } },
+            { status: 409 }
+          );
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: rootExists ? [{ id: canonicalId, name: 'Payments' }] : [] });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      };
+      const first = makeClient(handler('first'));
+      const second = makeClient(handler('second'));
+
+      const firstImport = first.client.importV2Collection(
+        'ws-shared',
+        v21Collection,
+        'Payments',
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      );
+      await firstPostObserved;
+      const secondResult = await second.client.importV2Collection(
+        'ws-shared',
+        v21Collection,
+        'Payments',
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      );
+      releaseFirst();
+      const firstResult = await firstImport;
+
+      expect(firstResult.collectionId).toBe(canonicalId);
+      expect(secondResult.collectionId).toBe(canonicalId);
+      expect(firstResult.journaledRootIds).toEqual([]);
+      expect(secondResult.journaledRootIds).toEqual([]);
+      const allCalls = [...first.calls, ...second.calls];
+      expect(allCalls.filter((call) => call.method === 'delete')).toEqual([]);
+      expect(allCalls.filter((call) => call.method === 'put')).toEqual([]);
+      expect(allCalls.filter((call) => call.method === 'post' && call.path === '/collection/import')).toHaveLength(2);
+    });
+
+    it('converges a second ID-less same-branch revision in place without deleting or rebinding its root', async () => {
+      const priorMarker = renderAssetMarker({
+        repo: 'https://github.com/acme/payments',
+        rawBranch: 'feature/a',
+        sanitizedBranch: 'feature-a',
+        role: 'preview',
+        headSha: 'a'.repeat(40)
+      });
+      const nextMarker = renderAssetMarker({
+        repo: 'https://github.com/acme/payments',
+        rawBranch: 'feature/a',
+        sanitizedBranch: 'feature-a',
+        role: 'preview',
+        headSha: 'b'.repeat(40)
+      });
+      const bareId = convergentCollectionRootIdentity(
+        'ws-shared',
+        PREVIEW_FINAL_NAME,
+        nextMarker
+      );
+      const canonicalId = `12345678-${bareId}`;
+      const prior = {
+        ...collectionWithRootId(bareId, PREVIEW_FINAL_NAME, priorMarker),
+        item: [{
+          name: 'GET /payments',
+          request: { method: 'GET', header: [], url: 'https://example.test/payments' }
+        }]
+      };
+      const next = {
+        ...collectionWithRootId(v21Collection.info._postman_id, PREVIEW_FINAL_NAME, nextMarker),
+        item: [{
+          name: 'GET /payments/{id}',
+          request: { method: 'GET', header: [], url: 'https://example.test/payments/42' }
+        }]
+      };
+      let updated = false;
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          return jsonResponse(
+            { error: { code: 'DUPLICATE', message: 'collection already exists' } },
+            { status: 409 }
+          );
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({ data: [{ id: canonicalId, name: PREVIEW_FINAL_NAME }] });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+          return jsonResponse({ data: { collection: updated
+            ? { ...next, info: { ...next.info, _postman_id: bareId } }
+            : prior } });
+        }
+        if (env.service === 'sync' && env.method === 'put' && env.path === `/collection/deepupdate/${bareId}`) {
+          const body = env.body as typeof next;
+          expect(body.info._postman_id).toBe(bareId);
+          expect(body.info.description).toBe(nextMarker);
+          expect(body.item[0]?.name).toBe('GET /payments/{id}');
+          updated = true;
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      const imported = await client.importV2Collection(
+        'ws-shared',
+        next,
+        PREVIEW_FINAL_NAME,
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      );
+      expect(imported.collectionId).toBe(canonicalId);
+      expect(imported.journaledRootIds).toEqual([]);
+      expect(updated).toBe(true);
+      await expect(client.exportV2Collection(imported.collectionId)).resolves.toMatchObject({
+        info: { _postman_id: bareId, description: nextMarker },
+        item: [{ name: 'GET /payments/{id}' }]
+      });
+      expect(calls.filter((call) => call.method === 'post' && call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'put' && call.path.includes('/deepupdate/'))).toHaveLength(1);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+    });
+
+    it('does not mask a malformed non-conflict import response as convergence', async () => {
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          return jsonResponse({ error: { message: 'invalid payload' } }, { status: 422 });
+        }
+        return jsonResponse({ data: [] });
+      });
+      await expect(client.importV2Collection(
+        'ws-shared',
+        v21Collection,
+        'Payments',
+        { convergentLogicalRoot: true, deferNominalSemanticVerification: true }
+      )).rejects.toThrow(/stage=import-transport/);
+      expect(calls.filter((call) => call.path.includes('?workspace='))).toEqual([]);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
+    });
+
     it('memoizes concurrent post-import inventory reads and returns one cursor per identity', async () => {
       const bareId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
       const canonicalId = `12345678-${bareId}`;
@@ -4186,7 +4449,8 @@ describe('PostmanGatewayAssetsClient', () => {
       const result = await client.importV2Collection(
         'ws-1',
         collectionWithRootId(bareId),
-        'Payments'
+        'Payments',
+        { deferNominalSemanticVerification: true }
       );
       expect(result.collectionId).toBe(canonicalId);
       expect(result.journaledRootIds).toEqual([canonicalId]);
@@ -4196,12 +4460,58 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(importCall?.query).toEqual({ workspace: 'ws-1', format: '2.1.0' });
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
       expect(calls.filter((call) => call.service === 'collection' && call.method === 'patch')).toEqual([]);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toEqual([]);
       const inventoryCalls = requestJson.mock.calls
         .map(([options]) => options)
         .filter((options) => options.path === '/v3/collections/?workspace=ws-1');
       expect(inventoryCalls.length).toBeGreaterThan(1);
       expect(inventoryCalls[0]?.retry).toBe('none');
       expect(inventoryCalls.slice(1).every((options) => options.retry === 'safe')).toBe(true);
+    });
+
+    it('defers evidence only for the acknowledged preallocated identity and still verifies a concurrent peer', async () => {
+      const ownBareId = v21Collection.info._postman_id;
+      const ownId = `12345678-${ownBareId}`;
+      const peerBareId = '00000000-0000-4000-8000-000000000000';
+      const peerId = `12345678-${peerBareId}`;
+      const foreignPeer = structuredClone(collectionWithRootId(peerBareId));
+      foreignPeer.item[0]!.name = 'FOREIGN';
+      let submitted = false;
+      const { client, calls } = makeClient((env) => {
+        if (env.service === 'sync' && env.method === 'post' && env.path === '/collection/import') {
+          submitted = true;
+          return jsonResponse({ model_id: ownBareId });
+        }
+        if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
+          return jsonResponse({
+            data: submitted
+              ? [{ id: peerId, name: 'Payments' }, { id: ownId, name: 'Payments' }]
+              : []
+          });
+        }
+        if (
+          env.service === 'collection' &&
+          env.method === 'get' &&
+          env.path === `/v3/collections/${peerBareId}/export`
+        ) {
+          return jsonResponse({ data: { collection: foreignPeer } });
+        }
+        return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
+      });
+
+      await expect(client.importV2Collection(
+        'ws-1',
+        v21Collection,
+        'Payments',
+        { deferNominalSemanticVerification: true }
+      )).resolves.toMatchObject({
+        collectionId: ownId,
+        journaledRootIds: [ownId]
+      });
+      expect(calls.filter((call) => call.path.endsWith('/export')).map((call) => call.path)).toEqual([
+        `/v3/collections/${peerBareId}/export`
+      ]);
+      expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
     });
 
     it('recovers a lost import response only by exact preallocated identity plus matching final payload evidence', async () => {
@@ -4509,7 +4819,7 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.some((call) => call.method === 'delete' && call.path.includes(peerId))).toBe(false);
     });
 
-    it('polls exact-ID inventory after an ambiguous import until matching evidence appears', async () => {
+    it('still verifies exact payload evidence immediately after an ambiguous import when nominal verification is deferred', async () => {
       const bareId = v21Collection.info._postman_id;
       const ownId = `12345678-${bareId}`;
       let submitted = false;
@@ -4533,12 +4843,18 @@ describe('PostmanGatewayAssetsClient', () => {
         return jsonResponse({ data: {} });
       }, { sleep });
 
-      await expect(client.importV2Collection('ws-1', v21Collection, 'Payments')).resolves.toMatchObject({
+      await expect(client.importV2Collection(
+        'ws-1',
+        v21Collection,
+        'Payments',
+        { deferNominalSemanticVerification: true }
+      )).resolves.toMatchObject({
         collectionId: ownId,
         journaledRootIds: [ownId]
       });
       expect(postImportReads).toBeGreaterThanOrEqual(3);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(1);
       expect(calls.filter((call) => call.method === 'patch')).toEqual([]);
       expect(sleep).toHaveBeenCalled();
     });

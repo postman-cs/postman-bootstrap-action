@@ -306877,7 +306877,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-08-28T17:35:35.305Z",
-  bootstrapCommit: "74d6ef2e45e8596c9937fe7563e76c91d43411f5",
+  bootstrapCommit: "01588a2982b274e5500241f469dbe84293ad832c",
   legs: [
     {
       mode: "nonorg",
@@ -308280,8 +308280,6 @@ var PostmanGatewayAssetsClient = class _PostmanGatewayAssetsClient {
     2e3,
     3e3
   ];
-  /** Successful export envelopes can briefly precede a complete collection model. */
-  static EXPORT_MODEL_SETTLE_DELAYS_MS = [100, 250, 500];
   gateway;
   sleep;
   random;
@@ -309755,8 +309753,8 @@ ${error2.responseBody ?? ""}`
     }
   }
   /**
-   * Ambiguous whole-tree write visibility budget: one immediate export plus at
-   * most four 2.5 second re-exports, for a 10 second budget. A client abort says
+   * Ambiguous whole-tree write visibility budget: one immediate observation plus
+   * at most four 2.5 second observations, for a 10 second budget. A client abort says
    * the response is unknown, not that the server rejected the write, so the
    * desired digest is polled before any decision to resend or fail.
    */
@@ -309788,9 +309786,9 @@ ${error2.responseBody ?? ""}`
     };
   }
   /**
-   * Bounded export/digest visibility poll used only after an ambiguous write.
+   * Bounded populated-Sync-snapshot/digest visibility poll used only after an ambiguous write.
    * Returns whether the desired semantic digest became visible and how many
-   * export observations were spent. An unreadable export burns one observation
+   * snapshot observations were spent. An unreadable snapshot burns one observation
    * rather than aborting the budget.
    */
   async awaitExportedDigest(uid, digest) {
@@ -311568,7 +311566,7 @@ ${error2.responseBody ?? ""}`
     return observed.digest;
   }
   /**
-   * Preserve the mature export-based ownership proof for legacy random-root
+   * Preserve the mature populated-snapshot ownership proof for legacy random-root
    * imports and same-name election. Those paths do not share a deterministic
    * logical root and therefore cannot rely on the atomic receipt contract.
    */
@@ -311583,36 +311581,36 @@ ${error2.responseBody ?? ""}`
         "IMPORT_IDENTITY_CONFLICT: exact preallocated collection has a different final name"
       );
     }
-    let exported;
+    let snapshot;
     try {
-      exported = await this.exportV2Collection(row.id);
+      snapshot = await this.exportV2Collection(row.id);
     } catch (error2) {
       throw new Error(
         "IMPORT_IDENTITY_CONFLICT: exact preallocated collection evidence is unavailable",
         { cause: error2 }
       );
     }
-    const exportedInfo = asRecord13(exported.info) ?? {};
-    const exportedId = String(exportedInfo._postman_id ?? "").trim();
-    if (exportedId && normalizeCollectionModelIdentity(exportedId) !== expectedIdentity) {
+    const snapshotInfo = asRecord13(snapshot.info) ?? {};
+    const snapshotId = String(snapshotInfo._postman_id ?? "").trim();
+    if (snapshotId && normalizeCollectionModelIdentity(snapshotId) !== expectedIdentity) {
       throw new Error(
-        "IMPORT_IDENTITY_CONFLICT: exported collection root differs from the preallocated identity"
+        "IMPORT_IDENTITY_CONFLICT: collection snapshot root differs from the preallocated identity"
       );
     }
-    if (String(exportedInfo.name ?? "").trim() !== expectedName) {
+    if (String(snapshotInfo.name ?? "").trim() !== expectedName) {
       throw new Error(
-        "IMPORT_IDENTITY_CONFLICT: exported collection root has a different final name"
+        "IMPORT_IDENTITY_CONFLICT: collection snapshot root has a different final name"
       );
     }
     if (parseAssetMarker(expectedDescription) && !this.hasSameBranchAssetMarker(
-      String(exportedInfo.description ?? "").trim() || void 0,
+      String(snapshotInfo.description ?? "").trim() || void 0,
       expectedDescription
     )) {
       throw new Error(
         "IMPORT_IDENTITY_CONFLICT: exact preallocated collection carries a foreign ownership marker"
       );
     }
-    return exported;
+    return snapshot;
   }
   /**
    * Prove that an exact-ID row observed after an ambiguous import is this
@@ -311620,13 +311618,13 @@ ${error2.responseBody ?? ""}`
    * semantic bytes, so a foreign same-name root is never accepted.
    */
   async assertRecoveredImportEvidence(row, expectedIdentity, expectedName, expectedCollection, expectedDescription) {
-    const exported = await this.assertExportedRootOwnershipEvidence(
+    const snapshot = await this.assertExportedRootOwnershipEvidence(
       row,
       expectedIdentity,
       expectedName,
       expectedDescription
     );
-    if (computePayloadDigest(exported) !== computePayloadDigest(expectedCollection)) {
+    if (computePayloadDigest(snapshot) !== computePayloadDigest(expectedCollection)) {
       throw new Error(
         "IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match"
       );
@@ -311674,7 +311672,7 @@ ${error2.responseBody ?? ""}`
     }
     return (error2.status === 400 || error2.status === 422) && /\b(?:already exists|conflict|duplicate)\b/i.test(error2.responseBody);
   }
-  /** A same-name peer is eligible only when its exact exported bytes are ours. */
+  /** A same-name peer is eligible only when its exact populated snapshot is ours. */
   async matchesImportedPeerEvidence(row, expectedCollection, expectedDescription) {
     try {
       await this.assertRecoveredImportEvidence(
@@ -311887,7 +311885,7 @@ ${error2.responseBody ?? ""}`
   /**
    * Sole exact-name final carrying the same durable branch marker as this run's
    * payload, or undefined. Org inventory omits root descriptions, so fall back
-   * to the v2.1 export route; an unprovable candidate is never adoptable. More
+   * to the populated v2.1 Sync read; an unprovable candidate is never adoptable. More
    * than one same-marker survivor is ambiguous and fails closed before a caller
    * can mutate or elect an arbitrary winner.
    */
@@ -311920,30 +311918,41 @@ ${error2.responseBody ?? ""}`
     );
   }
   async exportV2Collection(collectionUid) {
-    const bareId = this.bareModelId(collectionUid);
-    const delays = _PostmanGatewayAssetsClient.EXPORT_MODEL_SETTLE_DELAYS_MS;
-    let lastError;
-    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
-      const exported = await this.gateway.requestJson({
-        service: "collection",
-        method: "get",
-        path: `/v3/collections/${bareId}/export`,
-        retry: "safe"
-      });
-      const data = asRecord13(exported?.data) ?? exported;
-      const collection = asRecord13(asRecord13(data)?.collection) ?? asRecord13(data) ?? {};
-      try {
-        if (asRecord13(collection)?.$kind === "collection" || Array.isArray(asRecord13(collection)?.items)) {
-          return asRecord13(convertV3CollectionToV2Model(collection)) ?? {};
-        }
-        this.assertV21Collection(collection);
-        return collection;
-      } catch (error2) {
-        lastError = error2;
-        if (attempt < delays.length) await this.sleep(delays[attempt]);
-      }
+    const requestedId = String(collectionUid ?? "").trim();
+    if (!requestedId) {
+      throw new Error("COLLECTION_SNAPSHOT_INVALID: collection uid is required");
     }
-    throw lastError;
+    const response = await this.gateway.requestJson({
+      service: "sync",
+      method: "get",
+      path: `/collection/${encodeURIComponent(requestedId)}`,
+      query: { populate: "true", format: "2.1.0", uid: "false" },
+      retry: "none"
+    });
+    const collection = asRecord13(response?.data);
+    if (!collection) {
+      throw new Error("COLLECTION_SNAPSHOT_INVALID: populated Sync read returned no collection data");
+    }
+    try {
+      this.assertV21Collection(collection);
+    } catch (error2) {
+      throw new Error(
+        "COLLECTION_SNAPSHOT_INVALID: populated Sync payload failed v2.1 schema validation",
+        { cause: error2 }
+      );
+    }
+    const info2 = asRecord13(collection.info);
+    const observedId = String(info2?._postman_id ?? collection.id ?? "").trim();
+    if (!observedId || normalizeCollectionModelIdentity(observedId) !== normalizeCollectionModelIdentity(requestedId)) {
+      throw new Error("COLLECTION_SNAPSHOT_INVALID: populated Sync read returned a different collection identity");
+    }
+    if (info2?.description !== void 0 && info2.description !== null && typeof info2.description !== "string") {
+      throw new Error(
+        "COLLECTION_SNAPSHOT_INVALID: structured collection descriptions cannot be restored safely"
+      );
+    }
+    parseCollectionSemanticReceipt(info2?.description);
+    return collection;
   }
   cloneJson(value) {
     if (typeof structuredClone === "function") return structuredClone(value);

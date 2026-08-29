@@ -3478,7 +3478,7 @@ async function runBootstrapInner(
         // baseline or smoke mutation has already occurred.
         // ID-less branch runs address deterministic logical roots. Do not
         // discover/adopt a same-name marker peer here: another process may
-        // still be materializing that root, and a snapshot/export followed by
+        // still be materializing that root, and a snapshot followed by
         // decentralized loser deletion cannot establish cross-process
         // ownership. Persisted explicit IDs continue through the refresh path.
         const discoveredIds = new Map<CollectionRole, string | undefined>();

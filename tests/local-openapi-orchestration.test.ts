@@ -1829,6 +1829,79 @@ describe('local OpenAPI orchestration', () => {
     });
   });
 
+  it('rejects a structured-description rollback snapshot before any role mutation', async () => {
+    await withRepo(async () => {
+      const events: string[] = [];
+      const core = createCoreStub();
+      const postman = buildPostman(events);
+      const structuredSnapshot = {
+        info: {
+          _postman_id: 'col-contract-existing',
+          name: 'snapshot-col-contract-existing',
+          description: { content: 'SDK description', type: 'text/plain' }
+        },
+        item: []
+      };
+      postman.exportV2Collection = vi.fn(async (collectionUid: string) => {
+        events.push(`export:${collectionUid}`);
+        if (collectionUid === 'col-contract-existing') {
+          const description = structuredSnapshot.info.description;
+          if (typeof description !== 'string') {
+            throw new Error(
+              'COLLECTION_SNAPSHOT_INVALID: structured collection descriptions cannot be restored safely'
+            );
+          }
+          return structuredSnapshot;
+        }
+        return {
+          info: {
+            _postman_id: collectionUid,
+            name: `snapshot-${collectionUid}`,
+            description: 'restorable string description'
+          },
+          item: []
+        };
+      });
+      const internalIntegration = buildIntegration(events);
+      const resourcesWrite = vi.fn();
+
+      await expect(
+        runBootstrap(
+          createInputs({
+            workspaceId: 'ws-1',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-existing',
+            smokeCollectionId: 'col-smoke-existing',
+            contractCollectionId: 'col-contract-existing',
+            collectionSyncMode: 'refresh'
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: { which: async () => 'tool' },
+            internalIntegration,
+            postman: postman as unknown as BootstrapExecutionDependencies['postman'],
+            resourcesState: {
+              read: () => null,
+              write: resourcesWrite
+            },
+            specFetcher: vi.fn()
+          }
+        )
+      ).rejects.toThrow(/COLLECTION_SNAPSHOT_INVALID: structured collection descriptions/);
+
+      expect(postman.exportV2Collection).toHaveBeenCalledTimes(3);
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+      expect(postman.importV2Collection).not.toHaveBeenCalled();
+      expect(postman.deleteVerifiedRunOwnedCollections).not.toHaveBeenCalled();
+      expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
+      expect(postman.tagCollection).not.toHaveBeenCalled();
+      // Workspace discovery is persisted earlier; no collection identity or
+      // manifest may be persisted after the collection preflight rejects.
+      expect(resourcesWrite).toHaveBeenCalledExactlyOnceWith({ workspace: { id: 'ws-1' } });
+    });
+  });
+
   it('admits all three fresh import finalizers simultaneously within one workspace (Q7)', async () => {
     await withRepo(async () => {
       const events: string[] = [];

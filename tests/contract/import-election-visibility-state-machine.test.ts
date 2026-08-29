@@ -225,7 +225,7 @@ describe('contract: import election state machine', () => {
     expect(collectionRequests(fake, 'delete')).toEqual([]);
   });
 
-  it('hydrates an org peer marker from export when inventory omits descriptions', async () => {
+  it('hydrates an org peer marker from a populated Sync snapshot when inventory omits descriptions', async () => {
     const sharedMarker = marker();
     const fake = createPlatformFake({
       org: true,
@@ -257,7 +257,12 @@ describe('contract: import election state machine', () => {
       { id: OWN_UID, ownedByRun: true, verifiedAbsent: true }
     ]);
     expect(
-      collectionRequests(fake, 'get').some((request) => request.path === `/v3/collections/${PEER_BARE}/export`)
+      fake.state.requests.some((request) =>
+        request.service === 'sync' &&
+        request.method === 'get' &&
+        request.path === `/collection/${PEER_UID}` &&
+        request.query?.populate === 'true'
+      )
     ).toBe(true);
     expect(activeCollections(fake)).toEqual([
       expect.objectContaining({ id: PEER_UID })

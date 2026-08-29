@@ -122,7 +122,7 @@ const TOKEN_INPUTS = { 'postman-access-token': ACCESS_TOKEN } as const;
 
 const IMPORT_KEY = 'proxy:sync POST /collection/import';
 const DEEP_UPDATE_KEY = 'proxy:sync PUT /collection/deepupdate/';
-const COLLECTION_EXPORT_KEY = 'proxy:collection GET /v3/collections/';
+const COLLECTION_SNAPSHOT_KEY = 'proxy:sync GET /collection/';
 const COLLECTION_ROOT_PATCH_KEY = 'proxy:collection PATCH /v3/collections/';
 const COLLECTION_SYNC_RECEIPT_KEY =
   'GET https://bifrost-premium-https-v4.gw.postman.com/collection/';
@@ -293,7 +293,8 @@ export const CASSETTE_SCENARIOS: readonly CassetteScenario[] = [
       // ID-less convergent imports defer nominal readback to the mandatory
       // post-batch atomic Sync receipt proof. Fresh roots never hit export.
       expect(keys.filter((key) => key.startsWith(COLLECTION_SYNC_RECEIPT_KEY) && key.includes('/sync?')).length).toBe(3);
-      expect(keys.filter((key) => key.startsWith(COLLECTION_EXPORT_KEY) && key.includes('/export')).length).toBe(0);
+      expect(countKeys(keys, COLLECTION_SNAPSHOT_KEY)).toBe(0);
+      expect(keys.some((key) => key.includes('/v3/collections/') && key.includes('/export'))).toBe(false);
       expect(countKeys(keys, DEEP_UPDATE_KEY)).toBe(0);
       expect(countKeys(keys, WORKSPACE_CREATE_KEY)).toBe(1);
       expect(countKeys(keys, SPEC_CREATE_KEY)).toBeGreaterThanOrEqual(1);
@@ -326,9 +327,10 @@ export const CASSETTE_SCENARIOS: readonly CassetteScenario[] = [
     },
     expectWire: (keys) => {
       expect(countKeys(keys, DEEP_UPDATE_KEY)).toBe(3);
-      // Three mature preflight snapshots still use export; three acknowledged
-      // atomic whole-tree writes use the lightweight Sync receipt projection.
-      expect(keys.filter((key) => key.startsWith(COLLECTION_EXPORT_KEY) && key.includes('/export')).length).toBe(3);
+      // Three mature preflight/rollback snapshots use the populated Sync V2
+      // read; acknowledged writes use the lightweight receipt projection.
+      expect(countKeys(keys, COLLECTION_SNAPSHOT_KEY)).toBe(3);
+      expect(keys.some((key) => key.includes('/v3/collections/') && key.includes('/export'))).toBe(false);
       expect(keys.filter((key) => key.startsWith(COLLECTION_SYNC_RECEIPT_KEY) && key.includes('/sync?')).length).toBe(3);
       expect(countKeys(keys, IMPORT_KEY)).toBe(0);
       // A supplied workspace id must not create a second workspace.

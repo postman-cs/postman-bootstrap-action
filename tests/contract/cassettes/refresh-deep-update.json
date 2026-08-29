@@ -84,27 +84,27 @@
       "status": 200
     },
     {
-      "body": "{\"data\":{\"collection\":{\"info\":{\"_postman_id\":\"cassette-collection-4\",\"name\":\"contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}}",
-      "key": "proxy:collection GET /v3/collections/cassette-collection-4/export",
-      "requestQuery": "",
+      "body": "{\"data\":{\"info\":{\"_postman_id\":\"cassette-collection-4\",\"name\":\"contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}",
+      "key": "proxy:sync GET /collection/cassette-collection-4?format=2.1.0&populate=true&uid=false",
+      "requestQuery": "format=2.1.0&populate=true&uid=false",
       "responseHeaders": {
         "content-type": "text/plain;charset=UTF-8"
       },
       "status": 200
     },
     {
-      "body": "{\"data\":{\"collection\":{\"info\":{\"_postman_id\":\"cassette-collection-5\",\"name\":\"[Smoke] contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}}",
-      "key": "proxy:collection GET /v3/collections/cassette-collection-5/export",
-      "requestQuery": "",
+      "body": "{\"data\":{\"info\":{\"_postman_id\":\"cassette-collection-5\",\"name\":\"[Smoke] contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}",
+      "key": "proxy:sync GET /collection/cassette-collection-5?format=2.1.0&populate=true&uid=false",
+      "requestQuery": "format=2.1.0&populate=true&uid=false",
       "responseHeaders": {
         "content-type": "text/plain;charset=UTF-8"
       },
       "status": 200
     },
     {
-      "body": "{\"data\":{\"collection\":{\"info\":{\"_postman_id\":\"cassette-collection-6\",\"name\":\"[Contract] contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}}",
-      "key": "proxy:collection GET /v3/collections/cassette-collection-6/export",
-      "requestQuery": "",
+      "body": "{\"data\":{\"info\":{\"_postman_id\":\"cassette-collection-6\",\"name\":\"[Contract] contract-payments\",\"schema\":\"https://schema.getpostman.com/json/collection/v2.1.0/collection.json\"},\"item\":[]}}",
+      "key": "proxy:sync GET /collection/cassette-collection-6?format=2.1.0&populate=true&uid=false",
+      "requestQuery": "format=2.1.0&populate=true&uid=false",
       "responseHeaders": {
         "content-type": "text/plain;charset=UTF-8"
       },

@@ -13,7 +13,7 @@ import { renderAssetMarker } from '../src/lib/repo/branch-decision.js';
  *
  *   PATCH /v3/collections/:id            bare=403 FORBIDDEN   full=200
  *   GET   /v3/collections/:id            bare=403 FORBIDDEN   full=200
- *   GET   /v3/collections/:id/export     bare=200             full=200
+ *   GET   sync /collection/:id?populate  bare=200             full=200
  *   DELETE /v3/collections/:id           bare=200             full=200
  *   PUT   sync /collection/deepupdate/:id bare=200            full=200
  *
@@ -104,7 +104,7 @@ function makeClient(
 
 /**
  * A fake that enforces the live ACL: ROOT GET/PATCH 403 on anything that is not
- * a full `<owner>-<uuid>` public uid, while export/DELETE/sync keep accepting
+ * a full `<owner>-<uuid>` public uid, while DELETE/sync keep accepting
  * the bare model id. Any route family that regresses shows up as a hard 403,
  * exactly as production does.
  */
@@ -137,8 +137,13 @@ function aclEnforcingHandler(options: {
       return jsonResponse({ data: options.inventory });
     }
 
-    if (env.service === 'collection' && /\/export$/.test(path)) {
-      return jsonResponse({ data: { collection: importedCollection } });
+    if (
+      env.service === 'sync' &&
+      env.method === 'get' &&
+      path.startsWith('/collection/') &&
+      env.query?.populate === 'true'
+    ) {
+      return jsonResponse({ data: importedCollection });
     }
 
     const segment = rootSegment(path);
@@ -361,8 +366,13 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
           ]
         });
       }
-      if (env.service === 'collection' && /\/export$/.test(path)) {
-        return jsonResponse({ data: { collection: v21Collection } });
+      if (
+        env.service === 'sync' &&
+        env.method === 'get' &&
+        path.startsWith('/collection/') &&
+        env.query?.populate === 'true'
+      ) {
+        return jsonResponse({ data: v21Collection });
       }
       return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
     });
@@ -529,8 +539,23 @@ describe('collection ROOT routes address by full public uid (live ACL 2026-08-03
           data: [{ id: peerUid, name: 'Payments', description }]
         });
       }
-      if (env.service === 'collection' && /\/export$/.test(path)) {
-        return jsonResponse({ data: { collection: { info: { description }, item: [] } } });
+      if (
+        env.service === 'sync' &&
+        env.method === 'get' &&
+        path.startsWith('/collection/') &&
+        env.query?.populate === 'true'
+      ) {
+        return jsonResponse({
+          data: {
+            info: {
+              _postman_id: path.split('/').at(-1),
+              name: 'Payments',
+              schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
+              description
+            },
+            item: []
+          }
+        });
       }
       if (env.service === 'collection' && env.method === 'delete') {
         return jsonResponse({ data: { id: path.split('/').pop() } });

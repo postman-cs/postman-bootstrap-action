@@ -33,7 +33,7 @@ const RELEASE_TAG = 'v9.9.9';
 const PEER_TAGS = {
   'postman-cs/postman-api-onboarding-action': 'v3.5.8',
   'postman-cs/postman-insights-onboarding-action': 'v2.5.2',
-  'postman-cs/postman-repo-sync-action': 'v2.10.7',
+  'postman-cs/postman-repo-sync-action': 'v2.10.8',
   'postman-cs/postman-resolve-service-token-action': 'v2.2.4',
   'postman-cs/postman-smoke-flow-action': 'v3.7.4'
 };

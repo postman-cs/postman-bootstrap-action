@@ -45,6 +45,19 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   });
 }
 
+function isPopulatedSyncSnapshot(env: Envelope, requestedId?: string): boolean {
+  return env.service === 'sync' &&
+    env.method === 'get' &&
+    (requestedId === undefined || env.path === `/collection/${requestedId}`) &&
+    env.query?.populate === 'true' &&
+    env.query?.format === '2.1.0' &&
+    env.query?.uid === 'false';
+}
+
+function syncSnapshotResponse(collection: unknown): Response {
+  return jsonResponse({ data: collection });
+}
+
 function withSemanticReceipt<T extends { info: Record<string, unknown> }>(collection: T): T {
   const copy = structuredClone(collection);
   copy.info.description = renderCollectionSemanticReceipt(
@@ -4266,8 +4279,8 @@ describe('PostmanGatewayAssetsClient', () => {
           return jsonResponse({ data: [{ id: canonicalId, name: PREVIEW_FINAL_NAME }] });
         }
         if (env.service === 'direct') return syncRootResponse(current);
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: prior } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(prior);
         }
         if (env.service === 'sync' && env.method === 'put' && env.path === `/collection/deepupdate/${bareId}`) {
           current = structuredClone(env.body as typeof desired);
@@ -4289,7 +4302,8 @@ describe('PostmanGatewayAssetsClient', () => {
       )).resolves.toBeUndefined();
 
       expect(result).toMatchObject({ collectionId: canonicalId, journaledRootIds: [] });
-      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(1);
+      expect(calls.filter((call) => isPopulatedSyncSnapshot(call))).toHaveLength(1);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(0);
       expect(calls.filter((call) => call.path.includes('/deepupdate/'))).toHaveLength(1);
       expect(calls.filter((call) => call.service === 'direct')).toHaveLength(2);
       expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
@@ -4667,10 +4681,10 @@ describe('PostmanGatewayAssetsClient', () => {
           inventory.push({ id: `100-${bare}`, name });
           return jsonResponse({ model_id: bare });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          const bare = env.path.split('/').at(-2) ?? '';
+        if (isPopulatedSyncSnapshot(env)) {
+          const bare = normalizeCollectionModelIdentity(env.path.split('/').at(-1) ?? '');
           const name = inventory.find((entry) => entry.id.endsWith(bare))?.name ?? 'Payments';
-          return jsonResponse({ data: { collection: collectionWithRootId(bare, name) } });
+          return syncSnapshotResponse(collectionWithRootId(bare, name));
         }
         return jsonResponse({ data: { ok: true } });
       }, { createIdentity: () => `run-${created + 1}` });
@@ -4709,8 +4723,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && String(env.path).startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(collectionWithRootId(bareId));
         }
         return jsonResponse({ data: { ok: true } });
       });
@@ -4760,11 +4774,9 @@ describe('PostmanGatewayAssetsClient', () => {
           });
         }
         if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          env.path === `/v3/collections/${peerBareId}/export`
+          isPopulatedSyncSnapshot(env, peerId)
         ) {
-          return jsonResponse({ data: { collection: foreignPeer } });
+          return syncSnapshotResponse(foreignPeer);
         }
         return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
       });
@@ -4778,8 +4790,8 @@ describe('PostmanGatewayAssetsClient', () => {
         collectionId: ownId,
         journaledRootIds: [ownId]
       });
-      expect(calls.filter((call) => call.path.endsWith('/export')).map((call) => call.path)).toEqual([
-        `/v3/collections/${peerBareId}/export`
+      expect(calls.filter((call) => isPopulatedSyncSnapshot(call)).map((call) => call.path)).toEqual([
+        `/collection/${peerId}`
       ]);
       expect(calls.filter((call) => call.method === 'delete')).toEqual([]);
     });
@@ -4812,18 +4824,14 @@ describe('PostmanGatewayAssetsClient', () => {
           });
         }
         if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          env.path === `/v3/collections/${bareId}/export`
+          isPopulatedSyncSnapshot(env, canonicalId)
         ) {
-          return jsonResponse({ data: { collection: v21Collection } });
+          return syncSnapshotResponse(v21Collection);
         }
         if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          env.path === `/v3/collections/${foreignBareId}/export`
+          isPopulatedSyncSnapshot(env, foreignId)
         ) {
-          return jsonResponse({ data: { collection: foreignCollection } });
+          return syncSnapshotResponse(foreignCollection);
         }
         return jsonResponse({ error: `unexpected ${env.method} ${env.path}` }, { status: 500 });
       });
@@ -4851,8 +4859,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: submitted ? [{ id: canonicalId, name: 'Payments' }] : [] });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: foreign } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(foreign);
         }
         return jsonResponse({ data: {} });
       });
@@ -4922,8 +4930,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: submitted ? [{ id: canonicalId, name: 'Payments' }] : [] });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: foreign } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(foreign);
         }
         return jsonResponse({ data: {} });
       });
@@ -4957,8 +4965,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && String(env.path).startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(collectionWithRootId(bareId));
         }
         if (env.service === 'collection' && env.method === 'patch' && env.path === `/v3/collections/${canonicalId}`) {
           const ops = env.body as Array<{ path?: string; value?: string }>;
@@ -5009,8 +5017,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && String(env.path).startsWith('/v3/collections/?workspace=')) {
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(collectionWithRootId(bareId));
         }
         if (env.service === 'collection' && env.method === 'patch') {
           const ops = env.body as Array<{ path?: string; value?: string }>;
@@ -5107,8 +5115,8 @@ describe('PostmanGatewayAssetsClient', () => {
             data: postImportReads < 3 ? [] : [{ id: ownId, name: 'Payments' }]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: v21Collection } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(v21Collection);
         }
         return jsonResponse({ data: {} });
       }, { sleep });
@@ -5124,7 +5132,8 @@ describe('PostmanGatewayAssetsClient', () => {
       });
       expect(postImportReads).toBeGreaterThanOrEqual(3);
       expect(calls.filter((call) => call.path === '/collection/import')).toHaveLength(1);
-      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(1);
+      expect(calls.filter((call) => isPopulatedSyncSnapshot(call))).toHaveLength(1);
+      expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(0);
       expect(calls.filter((call) => call.method === 'patch')).toEqual([]);
       expect(sleep).toHaveBeenCalled();
     });
@@ -5171,13 +5180,11 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          const requested = env.path.split('/').at(-2);
-          return jsonResponse({
-            data: {
-              collection: collectionWithRootId(requested === ownBare ? ownBare : peerBare)
-            }
-          });
+        if (isPopulatedSyncSnapshot(env)) {
+          const requested = normalizeCollectionModelIdentity(env.path.split('/').at(-1) ?? '');
+          return syncSnapshotResponse(
+            collectionWithRootId(requested === ownBare ? ownBare : peerBare)
+          );
         }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
@@ -5258,13 +5265,11 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          const requested = env.path.split('/').at(-2);
-          return jsonResponse({
-            data: {
-              collection: collectionWithRootId(requested === ownBare ? ownBare : peerBare)
-            }
-          });
+        if (isPopulatedSyncSnapshot(env)) {
+          const requested = normalizeCollectionModelIdentity(env.path.split('/').at(-1) ?? '');
+          return syncSnapshotResponse(
+            collectionWithRootId(requested === ownBare ? ownBare : peerBare)
+          );
         }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
@@ -5344,10 +5349,8 @@ describe('PostmanGatewayAssetsClient', () => {
             data: [{ id: peerId, name: finalName, description: marker }]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({
-            data: { collection: collectionWithRootId(peerBare, finalName, marker) }
-          });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(collectionWithRootId(peerBare, finalName, marker));
         }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
@@ -5426,13 +5429,9 @@ describe('PostmanGatewayAssetsClient', () => {
           return jsonResponse({ data: [{ id: peerId, name: finalName }] });
         }
         if (
-          env.service === 'collection' &&
-          env.method === 'get' &&
-          env.path === `/v3/collections/${peerBare}/export`
+          isPopulatedSyncSnapshot(env, peerId)
         ) {
-          return jsonResponse({
-            data: { collection: collectionWithRootId(peerBare, finalName, marker) }
-          });
+          return syncSnapshotResponse(collectionWithRootId(peerBare, finalName, marker));
         }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
@@ -5615,16 +5614,12 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          const requested = env.path.split('/').at(-2);
-          return jsonResponse({
-            data: {
-              collection: collectionWithRootId(
-                requested === ownBare ? ownBare : peerBare,
-                finalName
-              )
-            }
-          });
+        if (isPopulatedSyncSnapshot(env)) {
+          const requested = normalizeCollectionModelIdentity(env.path.split('/').at(-1) ?? '');
+          return syncSnapshotResponse(collectionWithRootId(
+            requested === ownBare ? ownBare : peerBare,
+            finalName
+          ));
         }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
@@ -5718,10 +5713,8 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({
-            data: { collection: collectionWithRootId(ownBare, finalName) }
-          });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(collectionWithRootId(ownBare, finalName));
         }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
@@ -5788,15 +5781,11 @@ describe('PostmanGatewayAssetsClient', () => {
           if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
             return jsonResponse({ data: entries });
           }
-          if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-            const bare = String(env.path).split('/').at(-2) ?? '';
+          if (isPopulatedSyncSnapshot(env)) {
+            const bare = normalizeCollectionModelIdentity(String(env.path).split('/').at(-1) ?? '');
             const hit = entries.find((entry) => entry.id.endsWith(bare));
             if (!hit) return jsonResponse({ error: 'missing' }, { status: 404 });
-            return jsonResponse({
-              data: {
-                collection: collectionWithRootId(bare, finalName, hit.description)
-              }
-            });
+            return syncSnapshotResponse(collectionWithRootId(bare, finalName, hit.description));
           }
           if (
             env.service === 'collection' &&
@@ -5877,8 +5866,8 @@ describe('PostmanGatewayAssetsClient', () => {
             ]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: v21Collection } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(v21Collection);
         }
         return jsonResponse({ data: { ok: true } });
       });
@@ -5909,8 +5898,8 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: v21Collection } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(v21Collection);
         }
         return jsonResponse({ data: { ok: true } });
       });
@@ -5976,8 +5965,8 @@ describe('PostmanGatewayAssetsClient', () => {
           }
           return jsonResponse({ data: inventory });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: v21Collection } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(v21Collection);
         }
         return jsonResponse({ data: { ok: true } });
       });
@@ -6040,8 +6029,8 @@ describe('PostmanGatewayAssetsClient', () => {
             data: observations < 7 ? [] : [{ id: canonicalId, name: 'Payments' }]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({ data: { collection: collectionWithRootId(bareId) } });
+        if (isPopulatedSyncSnapshot(env)) {
+          return syncSnapshotResponse(collectionWithRootId(bareId));
         }
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       }, { sleep });
@@ -6148,13 +6137,11 @@ describe('PostmanGatewayAssetsClient', () => {
               : [{ id: staleId, name: 'Payments' }]
           });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          const requested = env.path.split('/').at(-2);
-          return jsonResponse({
-            data: {
-              collection: collectionWithRootId(requested === ownBare ? ownBare : peerBare)
-            }
-          });
+        if (isPopulatedSyncSnapshot(env)) {
+          const requested = normalizeCollectionModelIdentity(env.path.split('/').at(-1) ?? '');
+          return syncSnapshotResponse(
+            collectionWithRootId(requested === ownBare ? ownBare : peerBare)
+          );
         }
         if (env.service === 'collection' && env.method === 'delete') {
           deleted.push(env.path);
@@ -6238,63 +6225,179 @@ describe('PostmanGatewayAssetsClient', () => {
       ).rejects.toThrow(/ambiguous-deep-update-digest-mismatch|LOCAL_OPENAPI_DEEP_UPDATE_FAILED/);
     });
 
-    it('projects authoritative v3 item scripts into v2 events during export', async () => {
-      const { client } = makeClient((env) => {
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          return jsonResponse({
-            data: {
-              collection: {
-                $kind: 'collection',
-                id: 'root-1',
-                name: 'Scripted',
-                items: [{
-                  $kind: 'http-request',
-                  id: 'request-1',
-                  name: 'Request',
-                  method: 'GET',
-                  url: 'https://example.test',
-                  scripts: [{
-                    type: 'afterResponse',
-                    code: 'pm.test("one", () => {});\npm.test("two", () => {});',
-                    language: 'text/javascript'
-                  }]
-                }]
-              }
-            }
-          });
+    it('reads a complete rollback snapshot through one retry-free populated Sync GET', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const fullUid = `12345678-${bareId}`;
+      const committed = withSemanticReceipt(v21Collection);
+      const { client, gateway, calls } = makeClient((env) => {
+        if (
+          env.service === 'sync' &&
+          env.method === 'get' &&
+          env.path === `/collection/${fullUid}`
+        ) {
+          return jsonResponse({ data: committed });
         }
         return jsonResponse({ error: 'unexpected' }, { status: 500 });
       });
+      const requestJson = vi.spyOn(gateway, 'requestJson');
 
-      const exported = await client.exportV2Collection('12345678-root-1');
-      const item = (exported.item as Array<Record<string, unknown>>)[0]!;
-      expect(item.event).toEqual([{
-        listen: 'test',
-        script: {
-          type: 'text/javascript',
-          exec: ['pm.test("one", () => {});\npm.test("two", () => {});']
-        }
-      }]);
+      await expect(client.exportV2Collection(fullUid)).resolves.toEqual(committed);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        service: 'sync',
+        method: 'get',
+        path: `/collection/${fullUid}`,
+        query: { populate: 'true', format: '2.1.0', uid: 'false' }
+      });
+      expect(requestJson).toHaveBeenCalledExactlyOnceWith({
+        service: 'sync',
+        method: 'get',
+        path: `/collection/${fullUid}`,
+        query: { populate: 'true', format: '2.1.0', uid: 'false' },
+        retry: 'none'
+      });
+      expect(calls.some((call) => call.path.includes('/v3/collections/'))).toBe(false);
+      expect(calls.some((call) => call.path.endsWith('/export'))).toBe(false);
     });
 
-    it('retries a successful export envelope until its collection model is complete', async () => {
-      let exports = 0;
-      const sleeps: number[] = [];
-      const { client } = makeClient((env) => {
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          exports += 1;
-          return exports === 1
-            ? jsonResponse({ data: { collection: {} } })
-            : jsonResponse({ data: { collection: v21Collection } });
-        }
-        return jsonResponse({ error: 'unexpected' }, { status: 500 });
-      }, { sleep: async (delayMs) => { sleeps.push(delayMs); } });
+    it('preserves a receipt-free nested rollback tree byte-for-byte for bare and full caller ids', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const fullUid = `12345678-${bareId}`;
+      const nested = {
+        info: {
+          ...v21Collection.info,
+          description: 'legacy receipt-free root'
+        },
+        auth: { type: 'bearer', bearer: [{ key: 'token', value: '{{token}}', type: 'string' }] },
+        variable: [{ key: 'baseUrl', value: 'https://example.test' }],
+        event: [{ listen: 'prerequest', script: { type: 'text/javascript', exec: ['pm.variables.set("x", "y");'] } }],
+        item: [{
+          id: '22222222-2222-4222-8222-222222222222',
+          name: 'folder',
+          item: [{
+            id: '33333333-3333-4333-8333-333333333333',
+            name: 'GET /payments',
+            event: [{ listen: 'test', script: { type: 'text/javascript', exec: ['pm.test("ok", () => true);'] } }],
+            request: {
+              method: 'GET',
+              header: [{ key: 'Accept', value: 'application/json' }],
+              url: { protocol: 'https', host: ['example', 'test'], path: ['payments'] },
+              auth: { type: 'noauth' }
+            },
+            response: [{
+              id: '44444444-4444-4444-8444-444444444444',
+              name: 'ok',
+              code: 200,
+              status: 'OK',
+              header: [{ key: 'Content-Type', value: 'application/json' }],
+              body: '{}',
+              originalRequest: { method: 'GET', url: 'https://example.test/payments' }
+            }]
+          }]
+        }]
+      };
 
-      await expect(client.exportV2Collection('12345678-root-1')).resolves.toMatchObject({
-        info: { name: 'Payments' }
-      });
-      expect(exports).toBe(2);
-      expect(sleeps).toEqual([100]);
+      for (const requestedId of [bareId, fullUid]) {
+        const { client, calls } = makeClient((env) => {
+          expect(isPopulatedSyncSnapshot(env, requestedId)).toBe(true);
+          return syncSnapshotResponse(nested);
+        });
+        await expect(client.exportV2Collection(requestedId)).resolves.toEqual(nested);
+        expect(calls).toHaveLength(1);
+      }
+    });
+
+    it('accepts the authoritative populated snapshot when Sync omits an optional empty input field', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const atomicInput = { ...v21Collection, variable: [] };
+      const committed = withSemanticReceipt(atomicInput);
+      const populatedSnapshot = structuredClone(committed) as Record<string, unknown>;
+      delete populatedSnapshot.variable;
+      expect(parseCollectionSemanticReceipt(
+        (populatedSnapshot.info as Record<string, unknown>).description
+      )?.digest).not.toBe(computePayloadDigest(populatedSnapshot));
+      const { client, calls } = makeClient(() => syncSnapshotResponse(populatedSnapshot));
+
+      await expect(client.exportV2Collection(bareId)).resolves.toEqual(populatedSnapshot);
+      expect(calls).toHaveLength(1);
+    });
+
+    it('fails closed on malformed data, foreign identity, or an invalid reserved receipt', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const fullUid = `12345678-${bareId}`;
+      const cases: Array<{ label: string; data: unknown }> = [
+        { label: 'missing collection', data: undefined },
+        { label: 'null collection', data: null },
+        { label: 'array collection', data: [] },
+        { label: 'invalid v2.1 collection', data: { info: {}, item: 'not-an-array' } },
+        {
+          label: 'missing identity',
+          data: { ...v21Collection, info: { ...v21Collection.info, _postman_id: '' } }
+        },
+        {
+          label: 'foreign identity',
+          data: {
+            ...v21Collection,
+            info: { ...v21Collection.info, _postman_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }
+          }
+        },
+        {
+          label: 'malformed receipt',
+          data: {
+            ...v21Collection,
+            info: {
+              ...v21Collection.info,
+              description: 'x-pm-onboarding-content-receipt: {not-json}'
+            }
+          }
+        },
+        {
+          label: 'multiple receipts',
+          data: {
+            ...v21Collection,
+            info: {
+              ...v21Collection.info,
+              description:
+                'x-pm-onboarding-content-receipt: {"schemaVersion":1,"algorithm":"sha256","digest":"' +
+                `${'a'.repeat(64)}"}\n` +
+                'x-pm-onboarding-content-receipt: {"schemaVersion":1,"algorithm":"sha256","digest":"' +
+                `${'a'.repeat(64)}"}`
+            }
+          }
+        }
+      ];
+
+      for (const fixture of cases) {
+        const { client, calls } = makeClient(() => jsonResponse({ data: fixture.data }));
+        await expect(client.exportV2Collection(fullUid), fixture.label).rejects.toThrow(
+          /COLLECTION_SNAPSHOT_INVALID|COLLECTION_SEMANTIC_RECEIPT_INVALID|v2\.1/i
+        );
+        expect(calls).toHaveLength(1);
+        expect(calls.some((call) => call.path.endsWith('/export'))).toBe(false);
+      }
+    });
+
+    it('does not retry, sleep, or fall back when a populated Sync snapshot transport fails', async () => {
+      const bareId = v21Collection.info._postman_id;
+      const failures: Array<{ label: string; response?: Response; error?: Error }> = [
+        { label: 'terminal 4xx', response: jsonResponse({ error: 'forbidden' }, { status: 403 }) },
+        { label: 'terminal 5xx', response: jsonResponse({ error: 'upstream' }, { status: 500 }) },
+        {
+          label: 'aborted transport',
+          error: Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })
+        }
+      ];
+      for (const failure of failures) {
+        const sleep = vi.fn(async () => undefined);
+        const { client, calls } = makeClient(
+          () => failure.error ? Promise.reject(failure.error) : failure.response!,
+          { sleep }
+        );
+        await expect(client.exportV2Collection(bareId), failure.label).rejects.toBeDefined();
+        expect(calls).toHaveLength(1);
+        expect(sleep).not.toHaveBeenCalled();
+        expect(calls.some((call) => call.path.endsWith('/export'))).toBe(false);
+      }
     });
 
     it('deleteVerifiedRunOwnedCollections only deletes supplied ids', async () => {
@@ -6512,15 +6615,11 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: entries });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
-          const bare = String(env.path).split('/').at(-2);
-          return jsonResponse({
-            data: {
-              collection: {
-                ...v21Collection,
-                info: { ...v21Collection.info, _postman_id: bare, description: marker }
-              }
-            }
+        if (isPopulatedSyncSnapshot(env)) {
+          const bare = normalizeCollectionModelIdentity(String(env.path).split('/').at(-1) ?? '');
+          return syncSnapshotResponse({
+            ...v21Collection,
+            info: { ...v21Collection.info, _postman_id: bare, description: marker }
           });
         }
         if (env.service === 'collection' && env.method === 'delete') {
@@ -6560,7 +6659,7 @@ describe('PostmanGatewayAssetsClient', () => {
         if (env.service === 'collection' && env.method === 'get' && env.path.includes('?workspace=')) {
           return jsonResponse({ data: entries });
         }
-        if (env.service === 'collection' && env.method === 'get' && env.path.endsWith('/export')) {
+        if (isPopulatedSyncSnapshot(env)) {
           return jsonResponse({ error: 'forbidden' }, { status: 403 });
         }
         if (env.service === 'collection' && env.method === 'delete') {

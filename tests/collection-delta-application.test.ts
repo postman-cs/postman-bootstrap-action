@@ -16,11 +16,25 @@ interface Envelope {
   service: string;
   method: string;
   path: string;
+  query?: Record<string, unknown>;
   body?: unknown;
 }
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' }, ...init });
+}
+
+function isPopulatedSyncSnapshot(env: Envelope): boolean {
+  return env.service === 'sync' &&
+    env.method === 'get' &&
+    env.path === `/collection/${uid}` &&
+    env.query?.populate === 'true' &&
+    env.query?.format === '2.1.0' &&
+    env.query?.uid === 'false';
+}
+
+function syncSnapshotResponse(collection: unknown): Response {
+  return jsonResponse({ data: collection });
 }
 
 function collection(url: string) {
@@ -63,7 +77,7 @@ describe('applyCollectionDelta', () => {
         return jsonResponse({ data: [{ id: requestUid, $kind: 'http-request', name: 'GET /payments' }] });
       }
       if (env.path === `/v3/collections/${uid}/items/${requestUid}`) return jsonResponse({ data: {} });
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -73,7 +87,8 @@ describe('applyCollectionDelta', () => {
     const patch = calls.find((call) => call.method === 'patch');
     expect(patch?.path).toBe(`/v3/collections/${uid}/items/${requestUid}`);
     expect(patch?.headers['x-entity-type']).toBe('http-request');
-    expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(1);
+    expect(calls.filter((call) => isPopulatedSyncSnapshot(call))).toHaveLength(1);
+    expect(calls.filter((call) => call.path.endsWith('/export'))).toHaveLength(0);
     expect(client.collectionWriteMetrics.deltaRoutes).toEqual([
       'PATCH /v3/collections/{param}/items/{param}'
     ]);
@@ -94,7 +109,7 @@ describe('applyCollectionDelta', () => {
         return jsonResponse({ data: [{ id: requestUid, $kind: 'http-request', name: 'GET /payments' }] });
       }
       if (env.path === `/v3/collections/${uid}/items/${requestUid}`) return jsonResponse({ data: {} });
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -114,7 +129,7 @@ describe('applyCollectionDelta', () => {
         return jsonResponse({ data: [{ id: requestUid, $kind: 'http-request', name: 'GET /payments' }] });
       }
       if (env.path === `/v3/collections/${uid}/items/${requestUid}`) throw abortError();
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -136,22 +151,22 @@ describe('applyCollectionDelta', () => {
       ]
     };
     const digest = computePayloadDigest(desired);
-    let exportReads = 0;
+    let snapshotReads = 0;
     const { client, calls } = makeClient((env) => {
       if (env.path === `/v3/collections/${uid}/items/`) {
         return jsonResponse({ data: [{ id: requestUid, $kind: 'http-request', name: 'GET /payments' }] });
       }
       if (env.method === 'patch') throw abortError();
-      if (env.path === `/v3/collections/${bare}/export`) {
-        exportReads += 1;
-        return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) {
+        snapshotReads += 1;
+        return syncSnapshotResponse(desired);
       }
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
     await expect(client.applyCollectionDelta(uid, plan, desired, digest)).resolves.toMatchObject({ strategy: 'delta' });
     expect(calls.filter((call) => call.method === 'patch')).toHaveLength(1);
-    expect(exportReads).toBe(2);
+    expect(snapshotReads).toBe(2);
   });
 
   it('applies an independently rekeyed nested request patch using the exact public item uid', async () => {
@@ -177,7 +192,7 @@ describe('applyCollectionDelta', () => {
         ] }
       ] });
       if (env.path === `/v3/collections/${uid}/items/${requestUid}`) return jsonResponse({ data: {} });
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -207,7 +222,7 @@ describe('applyCollectionDelta', () => {
       if (env.path === `/v3/collections/${uid}/items/` && env.method === 'post') {
         return jsonResponse({ data: { id: '991-dddddddd-dddd-dddd-dddd-dddddddddddd' } });
       }
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -253,7 +268,7 @@ describe('applyCollectionDelta', () => {
       if (env.method === 'patch' && env.path === `/v3/collections/${uid}/items/${createdUid}`) {
         return jsonResponse({ data: {} });
       }
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -309,7 +324,7 @@ describe('applyCollectionDelta', () => {
         const moved = (env.body as { items: Array<{ id: string }> }).items.map((item) => item.id);
         return jsonResponse({ data: { moved, failed: [] } });
       }
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -362,7 +377,7 @@ describe('applyCollectionDelta', () => {
         active -= 1;
         return jsonResponse({ data: {} });
       }
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -408,7 +423,7 @@ describe('applyCollectionDelta', () => {
         return jsonResponse({ data: { moved, failed: [] } });
       }
       if (env.method === 'patch' || env.method === 'delete') return jsonResponse({ data: {} });
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: desired } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(desired);
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });
 
@@ -494,14 +509,10 @@ describe('applyCollectionDelta', () => {
         if (index >= 0) order.splice(index, 1);
         return jsonResponse({ data: {} });
       }
-      if (env.path === `/v3/collections/${bare}/export`) {
-        return jsonResponse({
-          data: {
-            collection: {
-              info: desired.info,
-              item: order.map((id) => structuredClone(byPublicId.get(id)!))
-            }
-          }
+      if (isPopulatedSyncSnapshot(env)) {
+        return syncSnapshotResponse({
+          info: desired.info,
+          item: order.map((id) => structuredClone(byPublicId.get(id)!))
         });
       }
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
@@ -568,7 +579,7 @@ describe('applyCollectionDelta', () => {
         return jsonResponse({ data: [{ id: requestUid, $kind: 'http-request', name: 'GET /payments' }] });
       }
       if (env.path === `/v3/collections/${uid}/items/${requestUid}`) return jsonResponse({ data: {} });
-      if (env.path === `/v3/collections/${bare}/export`) return jsonResponse({ data: { collection: snapshot } });
+      if (isPopulatedSyncSnapshot(env)) return syncSnapshotResponse(snapshot);
       if (env.path === `/collection/deepupdate/${bare}`) return jsonResponse({ data: {} });
       return jsonResponse({ error: `unexpected ${env.path}` }, { status: 500 });
     });

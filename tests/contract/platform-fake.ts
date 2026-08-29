@@ -62,6 +62,7 @@ export const PLATFORM_FAKE_ROUTES: readonly PlatformFakeRoute[] = [
   { service: 'workspaces', method: 'PATCH', path: '/workspaces/{param}/roles', body: 'record-or-array' },
   { service: 'workspaces', method: 'PUT', path: '/workspaces/{param}/visibility', body: 'record' },
   { service: 'sync', method: 'POST', path: '/collection/import', query: ['format', 'workspace'], requiredQuery: ['format', 'workspace'], body: 'record' },
+  { service: 'sync', method: 'GET', path: '/collection/{param}', query: ['format', 'populate', 'uid'], requiredQuery: ['format', 'populate', 'uid'], body: 'none' },
   { service: 'sync', method: 'PUT', path: '/collection/deepupdate/{param}', query: ['format'], requiredQuery: ['format'], body: 'record' },
   { service: 'specification', method: 'GET', path: '/specifications', query: ['containerId', 'containerType', 'cursor'], requiredQuery: ['containerId', 'containerType'], body: 'none' },
   { service: 'specification', method: 'POST', path: '/specifications', query: ['containerId', 'containerType'], requiredQuery: ['containerId', 'containerType'], body: 'record' },
@@ -897,6 +898,15 @@ export function createPlatformFake(options: PlatformFakeOptions = {}): PlatformF
             refreshCollectionState();
           }
           return json({ data: { id } });
+        }
+        if (pmethod === 'get' && /^\/collection\/[^/]+$/.test(ppath)) {
+          const requested = decodeURIComponent(ppath.split('/').pop() || '');
+          const id = resolveCollectionId(requested) ?? requested;
+          const entry = collectionsById.get(id);
+          const collection = entry
+            ? (collectionExports.get(id) ?? defaultV21Export(id, entry.name, entry.description))
+            : undefined;
+          return collection ? json({ data: collection }) : json({ error: 'missing' }, 404);
         }
       }
 

@@ -21,8 +21,7 @@ import {
 } from './collection-model-identity.js';
 import {
   assertV2CollectionModel,
-  convertV2CollectionToV3Model,
-  convertV3CollectionToV2Model
+  convertV2CollectionToV3Model
 } from './collection-model-conversion.js';
 import {
   createSecretsResolverExec,
@@ -560,9 +559,6 @@ export class PostmanGatewayAssetsClient {
   private static readonly DELETE_ABSENCE_SETTLE_DELAYS_MS = [
     250, 500, 750, 1000, 1500, 2000, 3000
   ] as const;
-  /** Successful export envelopes can briefly precede a complete collection model. */
-  private static readonly EXPORT_MODEL_SETTLE_DELAYS_MS = [100, 250, 500] as const;
-
   private readonly gateway: AccessTokenGatewayClient;
   private readonly sleep: (delayMs: number) => Promise<void>;
   private readonly random: () => number;
@@ -2340,8 +2336,8 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Ambiguous whole-tree write visibility budget: one immediate export plus at
-   * most four 2.5 second re-exports, for a 10 second budget. A client abort says
+   * Ambiguous whole-tree write visibility budget: one immediate observation plus
+   * at most four 2.5 second observations, for a 10 second budget. A client abort says
    * the response is unknown, not that the server rejected the write, so the
    * desired digest is polled before any decision to resend or fail.
    */
@@ -2376,9 +2372,9 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Bounded export/digest visibility poll used only after an ambiguous write.
+   * Bounded populated-Sync-snapshot/digest visibility poll used only after an ambiguous write.
    * Returns whether the desired semantic digest became visible and how many
-   * export observations were spent. An unreadable export burns one observation
+   * snapshot observations were spent. An unreadable snapshot burns one observation
    * rather than aborting the budget.
    */
   private async awaitExportedDigest(
@@ -2396,7 +2392,7 @@ export class PostmanGatewayAssetsClient {
           return { converged: true, polls, observed };
         }
       } catch {
-        // Export unreadable on this observation; spend the remaining budget.
+        // Snapshot unreadable on this observation; spend the remaining budget.
       }
       if (observation < delays.length) {
         await this.sleep(delays[observation]!);
@@ -4565,7 +4561,7 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Preserve the mature export-based ownership proof for legacy random-root
+   * Preserve the mature populated-snapshot ownership proof for legacy random-root
    * imports and same-name election. Those paths do not share a deterministic
    * logical root and therefore cannot rely on the atomic receipt contract.
    */
@@ -4586,34 +4582,34 @@ export class PostmanGatewayAssetsClient {
       );
     }
 
-    let exported: JsonRecord;
+    let snapshot: JsonRecord;
     try {
-      exported = await this.exportV2Collection(row.id);
+      snapshot = await this.exportV2Collection(row.id);
     } catch (error) {
       throw new Error(
         'IMPORT_IDENTITY_CONFLICT: exact preallocated collection evidence is unavailable',
         { cause: error }
       );
     }
-    const exportedInfo = asRecord(exported.info) ?? {};
-    const exportedId = String(exportedInfo._postman_id ?? '').trim();
+    const snapshotInfo = asRecord(snapshot.info) ?? {};
+    const snapshotId = String(snapshotInfo._postman_id ?? '').trim();
     if (
-      exportedId &&
-      normalizeCollectionModelIdentity(exportedId) !== expectedIdentity
+      snapshotId &&
+      normalizeCollectionModelIdentity(snapshotId) !== expectedIdentity
     ) {
       throw new Error(
-        'IMPORT_IDENTITY_CONFLICT: exported collection root differs from the preallocated identity'
+        'IMPORT_IDENTITY_CONFLICT: collection snapshot root differs from the preallocated identity'
       );
     }
-    if (String(exportedInfo.name ?? '').trim() !== expectedName) {
+    if (String(snapshotInfo.name ?? '').trim() !== expectedName) {
       throw new Error(
-        'IMPORT_IDENTITY_CONFLICT: exported collection root has a different final name'
+        'IMPORT_IDENTITY_CONFLICT: collection snapshot root has a different final name'
       );
     }
     if (
       parseAssetMarker(expectedDescription) &&
       !this.hasSameBranchAssetMarker(
-        String(exportedInfo.description ?? '').trim() || undefined,
+        String(snapshotInfo.description ?? '').trim() || undefined,
         expectedDescription
       )
     ) {
@@ -4621,7 +4617,7 @@ export class PostmanGatewayAssetsClient {
         'IMPORT_IDENTITY_CONFLICT: exact preallocated collection carries a foreign ownership marker'
       );
     }
-    return exported;
+    return snapshot;
   }
 
   /**
@@ -4636,13 +4632,13 @@ export class PostmanGatewayAssetsClient {
     expectedCollection: JsonRecord,
     expectedDescription: string
   ): Promise<void> {
-    const exported = await this.assertExportedRootOwnershipEvidence(
+    const snapshot = await this.assertExportedRootOwnershipEvidence(
       row,
       expectedIdentity,
       expectedName,
       expectedDescription
     );
-    if (computePayloadDigest(exported) !== computePayloadDigest(expectedCollection)) {
+    if (computePayloadDigest(snapshot) !== computePayloadDigest(expectedCollection)) {
       throw new Error(
         'IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match'
       );
@@ -4715,7 +4711,7 @@ export class PostmanGatewayAssetsClient {
     );
   }
 
-  /** A same-name peer is eligible only when its exact exported bytes are ours. */
+  /** A same-name peer is eligible only when its exact populated snapshot is ours. */
   private async matchesImportedPeerEvidence(
     row: WorkspaceInventoryRow,
     expectedCollection: JsonRecord,
@@ -4886,7 +4882,7 @@ export class PostmanGatewayAssetsClient {
       // Org inventory omits root descriptions, so the pre-import snapshot cannot
       // read a peer's marker and classifies that peer as stale; keeping it out
       // here would fail closed on an asset this branch legitimately owns. Marker
-      // identity is still proven per candidate over the v2.1 export route, so a
+      // identity is still proven per candidate over the populated v2.1 Sync read, so a
       // stranger is never adopted on the strength of the name alone. Bare rows
       // are excluded because canonical election may never return one.
         let adoptable: string | undefined;
@@ -4958,9 +4954,9 @@ export class PostmanGatewayAssetsClient {
       for (const entry of inventory.filter((candidate) => candidate.name === finalName)) {
         let description = entry.description;
         if (!description) {
-          // Org inventory omits root descriptions. The export route remains
-          // readable for generated collections and carries info.description.
-          // If export cannot prove ownership, leave the candidate untouched.
+          // Org inventory omits root descriptions. The populated Sync snapshot
+          // carries info.description; if it cannot prove ownership, leave the
+          // candidate untouched.
           try {
             const exported = await this.exportV2Collection(entry.id);
             description = String(asRecord(exported.info)?.description ?? '').trim() || undefined;
@@ -5014,7 +5010,7 @@ export class PostmanGatewayAssetsClient {
   /**
    * Sole exact-name final carrying the same durable branch marker as this run's
    * payload, or undefined. Org inventory omits root descriptions, so fall back
-   * to the v2.1 export route; an unprovable candidate is never adoptable. More
+   * to the populated v2.1 Sync read; an unprovable candidate is never adoptable. More
    * than one same-marker survivor is ambiguous and fails closed before a caller
    * can mutate or elect an arbitrary winner.
    */
@@ -5061,36 +5057,53 @@ export class PostmanGatewayAssetsClient {
   }
 
   async exportV2Collection(collectionUid: string): Promise<JsonRecord> {
-    // `/export` is NOT part of the ROOT GET/PATCH ACL tightening: it accepts
-    // the bare model id (2026-08-03 live A/B: bare=200). Keep the live-proven
-    // bare vocabulary rather than rewriting a working route on speculation.
-    const bareId = this.bareModelId(collectionUid);
-    const delays = PostmanGatewayAssetsClient.EXPORT_MODEL_SETTLE_DELAYS_MS;
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
-      const exported = await this.gateway.requestJson<JsonRecord>({
-        service: 'collection',
-        method: 'get',
-        path: `/v3/collections/${bareId}/export`,
-        retry: 'safe'
-      });
-      const data = asRecord(exported?.data) ?? exported;
-      const collection =
-        asRecord(asRecord(data)?.collection) ??
-        asRecord(data) ??
-        {};
-      try {
-        if (asRecord(collection)?.$kind === 'collection' || Array.isArray(asRecord(collection)?.items)) {
-          return asRecord(convertV3CollectionToV2Model(collection)) ?? {};
-        }
-        this.assertV21Collection(collection);
-        return collection;
-      } catch (error) {
-        lastError = error;
-        if (attempt < delays.length) await this.sleep(delays[attempt]!);
-      }
+    const requestedId = String(collectionUid ?? '').trim();
+    if (!requestedId) {
+      throw new Error('COLLECTION_SNAPSHOT_INVALID: collection uid is required');
     }
-    throw lastError;
+    // This is the canonical full v2.1 read used by api-specification-service
+    // before a whole-tree Sync update. Unlike Collection v3 `/export`, it does
+    // not run the expensive projection that produced provider 500s under
+    // concurrent mature-root preflight. Request model ids (`uid=false`) so the
+    // returned snapshot is directly reusable for rollback/deep-update. Both a
+    // full public uid and a bare model id are accepted live; preserve the
+    // caller's identity rather than guessing which form it holds.
+    const response = await this.gateway.requestJson<JsonRecord>({
+      service: 'sync',
+      method: 'get',
+      path: `/collection/${encodeURIComponent(requestedId)}`,
+      query: { populate: 'true', format: '2.1.0', uid: 'false' },
+      retry: 'none'
+    });
+    const collection = asRecord(response?.data);
+    if (!collection) {
+      throw new Error('COLLECTION_SNAPSHOT_INVALID: populated Sync read returned no collection data');
+    }
+    try {
+      this.assertV21Collection(collection);
+    } catch (error) {
+      throw new Error(
+        'COLLECTION_SNAPSHOT_INVALID: populated Sync payload failed v2.1 schema validation',
+        { cause: error }
+      );
+    }
+    const info = asRecord(collection.info);
+    const observedId = String(info?._postman_id ?? collection.id ?? '').trim();
+    if (
+      !observedId ||
+      normalizeCollectionModelIdentity(observedId) !== normalizeCollectionModelIdentity(requestedId)
+    ) {
+      throw new Error('COLLECTION_SNAPSHOT_INVALID: populated Sync read returned a different collection identity');
+    }
+    // Reject a poisoned/malformed reserved receipt, but do not compare its
+    // digest to this read projection. Sync's populated v2.1 response is the
+    // authoritative rollback payload yet normalizes optional input fields
+    // (live example: `variable: []` is omitted), so the populated projection's
+    // semantic digest need not equal the atomic input digest carried by the
+    // receipt. Final write authority is still the separate lightweight Sync
+    // receipt verification.
+    parseCollectionSemanticReceipt(info?.description);
+    return collection;
   }
 
   private cloneJson<T>(value: T): T {

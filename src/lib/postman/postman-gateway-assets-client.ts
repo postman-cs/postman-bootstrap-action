@@ -70,6 +70,9 @@ import {
   type SpecReconcileCapabilityPolicy
 } from './spec-file-reconcile.js';
 import { parseSpecTreePage, specTreeNextCursor } from './spec-tree.js';
+import { convergentCollectionRootIdentity } from './convergent-collection-root.js';
+
+export { convergentCollectionRootIdentity } from './convergent-collection-root.js';
 
 function asItemArray(value: unknown): JsonRecord[] {
   return Array.isArray(value) ? (value as JsonRecord[]) : [];
@@ -3484,7 +3487,8 @@ export class PostmanGatewayAssetsClient {
   async importV2Collection(
     workspaceId: string,
     collection: unknown,
-    finalName: string
+    finalName: string,
+    options: ImportV2CollectionOptions = {}
   ): Promise<ImportV2CollectionResult> {
     const desiredName = String(finalName || '').trim();
     if (!desiredName) {
@@ -3498,7 +3502,14 @@ export class PostmanGatewayAssetsClient {
     // Role generation assigns pairwise-disjoint root identities before
     // materialization. Preserve that identity across the import; synthesize one
     // only for legacy direct callers that did not supply it.
-    if (typeof info._postman_id !== 'string' || !info._postman_id.trim()) {
+    const convergentRoot = options.convergentLogicalRoot === true;
+    if (convergentRoot) {
+      info._postman_id = convergentCollectionRootIdentity(
+        workspaceId,
+        desiredName,
+        desiredDescription
+      );
+    } else if (typeof info._postman_id !== 'string' || !info._postman_id.trim()) {
       info._postman_id = randomUUID();
     }
     importPayload.info = info;
@@ -3510,21 +3521,24 @@ export class PostmanGatewayAssetsClient {
     if (!preallocatedIdentity) {
       throw new Error('LOCAL_OPENAPI_IMPORT_FAILED: preallocated root identity is required');
     }
-    // Journal before the request. The bare id is already a unique run-owned
-    // deletion identity; promote it to the public uid once inventory resolves.
-    const journaledRootIds: string[] = [preallocatedId];
+    // Random roots are run-owned and journaled before submit. A convergent root
+    // is a shared logical identity: another process may create or return it at
+    // any point, so this process must never claim or delete it.
+    const journaledRootIds: string[] = convergentRoot ? [] : [preallocatedId];
 
-    // The pre-mutation snapshot is part of the safety boundary. If it cannot be
-    // read without hidden retry, no unsafe import is attempted.
-    const staleFinalIdentities = new Set(
-      (await this.findCollectionsByExactName(workspaceId, desiredName, 'none'))
-        .filter((entry) => !this.hasSameBranchAssetMarker(entry.description, desiredDescription))
-        .map((entry) => normalizeCollectionModelIdentity(entry.id))
-    );
+    // Random-root election needs a pre-mutation same-name snapshot. Convergent
+    // roots never inspect, elect, mutate, or delete name peers.
+    const staleFinalIdentities = convergentRoot
+      ? new Set<string>()
+      : new Set(
+          (await this.findCollectionsByExactName(workspaceId, desiredName, 'none'))
+            .filter((entry) => !this.hasSameBranchAssetMarker(entry.description, desiredDescription))
+            .map((entry) => normalizeCollectionModelIdentity(entry.id))
+        );
 
     let created: JsonRecord | null;
     let resolution: ImportRootResolution | undefined;
-    let preferredEvidenceVerified = false;
+    let preferredIdentityEligibleForElection = false;
     try {
       created = await this.withImportMutation(() => this.gateway.requestJson<JsonRecord>({
           service: 'sync',
@@ -3535,55 +3549,123 @@ export class PostmanGatewayAssetsClient {
           body: importPayload
         }));
     } catch (error) {
-      if (!isAmbiguousTransportError(error)) {
-        throw this.sanitizeImportError('import-transport', error);
+      if (
+        convergentRoot &&
+        (isAmbiguousTransportError(error) || this.isConvergentImportConflict(error))
+      ) {
+        // The deterministic identity is the only admissible recovery target.
+        // Resolve it through the non-error inventory surface, then prove exact
+        // identity, name, and stable marker before any in-place convergence or
+        // marker update. No same-name peer is adopted and no shared root is
+        // deleted.
+        resolution = await this.resolveCollectionRootUid(
+          workspaceId,
+          preallocatedId,
+          PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
+          'safe',
+          PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
+        );
+        if (!resolution.rootUid || !resolution.resolvedRow) {
+          throw this.sanitizeImportError('import-convergent-unreconciled', error);
+        }
+        const observed = await this.assertConvergentRootOwnershipEvidence(
+          resolution.resolvedRow,
+          preallocatedIdentity,
+          desiredName,
+          desiredDescription
+        );
+        if (computePayloadDigest(observed) !== computePayloadDigest(importPayload)) {
+          // A later ID-less run for the same branch deliberately has no tracked
+          // collection id, but it addresses this same stable logical root. Once
+          // exact identity, name, and stable marker prove ownership, converge
+          // the root in place. Concurrent differing revisions may race here;
+          // the caller's mandatory final exact digest arbitrates them fail-closed.
+          await this.deepUpdateV2Collection(
+            resolution.rootUid,
+            importPayload,
+            computePayloadDigest(importPayload)
+          );
+          if (options.deferNominalSemanticVerification !== true) {
+            await this.assertRecoveredImportEvidence(
+              resolution.resolvedRow,
+              preallocatedIdentity,
+              desiredName,
+              importPayload,
+              desiredDescription
+            );
+          }
+        }
+        preferredIdentityEligibleForElection = true;
+        created = {
+          model_id: preallocatedId,
+          data: { info: { _postman_id: preallocatedId, name: desiredName } }
+        };
+      } else {
+        if (!isAmbiguousTransportError(error)) {
+          throw this.sanitizeImportError('import-transport', error);
+        }
+        // A final name is not an identity. Resolve only the client-known root and
+        // never adopt a same-name peer as proof that this POST committed.
+        resolution = await this.resolveCollectionRootUid(
+          workspaceId,
+          preallocatedId,
+          PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
+          'safe',
+          PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
+        );
+        if (!resolution.rootUid || !resolution.resolvedRow) {
+          // The response is unknown but the mutation key is not: the exact
+          // preallocated root was journaled before submit. Best-effort delete and
+          // absence verification can target only that run-owned identity; a
+          // same-name peer is never touched.
+          await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds)
+            .catch(() => undefined);
+          throw this.sanitizeImportError('import-ambiguous-unreconciled', error);
+        }
+        await this.assertRecoveredImportEvidence(
+          resolution.resolvedRow,
+          preallocatedIdentity,
+          desiredName,
+          importPayload,
+          desiredDescription
+        );
+        preferredIdentityEligibleForElection = true;
+        created = {
+          model_id: preallocatedId,
+          data: { info: { _postman_id: preallocatedId, name: desiredName } }
+        };
       }
-      // A final name is not an identity. Resolve only the client-known root and
-      // never adopt a same-name peer as proof that this POST committed.
-      resolution = await this.resolveCollectionRootUid(
-        workspaceId,
-        preallocatedId,
-        PostmanGatewayAssetsClient.rootUidResolveDelaysForFinalName(desiredName),
-        'safe',
-        PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
-      );
-      if (!resolution.rootUid || !resolution.resolvedRow) {
-        // The response is unknown but the mutation key is not: the exact
-        // preallocated root was journaled before submit. Best-effort delete and
-        // absence verification can target only that run-owned identity; a
-        // same-name peer is never touched.
-        await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds)
-          .catch(() => undefined);
-        throw this.sanitizeImportError('import-ambiguous-unreconciled', error);
-      }
-      await this.assertRecoveredImportEvidence(
-        resolution.resolvedRow,
-        preallocatedIdentity,
-        desiredName,
-        importPayload,
-        desiredDescription
-      );
-      preferredEvidenceVerified = true;
-      created = {
-        model_id: preallocatedId,
-        data: { info: { _postman_id: preallocatedId, name: desiredName } }
-      };
     }
 
     const rawId = this.extractCollectionUid(created);
     if (!rawId) {
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId])
-        .catch(() => undefined);
+      if (!convergentRoot) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId])
+          .catch(() => undefined);
+      }
       throw new Error('LOCAL_OPENAPI_IMPORT_FAILED: import did not return a collection id');
     }
     if (normalizeCollectionModelIdentity(rawId) !== preallocatedIdentity) {
       // The response's foreign id is not ours to touch. The only safe cleanup
       // target is the root identity journaled before the request.
-      await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId])
-        .catch(() => undefined);
+      if (!convergentRoot) {
+        await this.deleteVerifiedRunOwnedCollections(workspaceId, [preallocatedId])
+          .catch(() => undefined);
+      }
       throw new Error(
         'LOCAL_OPENAPI_IMPORT_FAILED: IMPORT_RESPONSE_ID_MISMATCH: server returned a different collection identity'
       );
+    }
+    if (!resolution && options.deferNominalSemanticVerification === true) {
+      // A non-ambiguous 2xx response that echoes the caller-preallocated model
+      // identity is sufficient ownership evidence for election. Do not issue an
+      // immediate export here: the collection export projection is known to
+      // return one transient 500 per freshly imported collection even after the
+      // inventory identity has settled. The orchestration layer already performs
+      // one bounded, two-lane semantic export of every final collection after all
+      // three imports have completed, so payload correctness remains a mandatory
+      // success condition without probing an unstable per-import projection.
+      preferredIdentityEligibleForElection = true;
     }
 
     try {
@@ -3594,23 +3676,53 @@ export class PostmanGatewayAssetsClient {
         'safe',
         PostmanGatewayAssetsClient.importIdentitySettleDelaysForFinalName(desiredName).length
       );
-      const electedId = await this.electImportedCollectionIdentity(
-        workspaceId,
-        desiredName,
-        preallocatedId,
-        staleFinalIdentities,
-        desiredDescription,
-        resolution.cursor,
-        importPayload,
-        preferredEvidenceVerified
-      );
+      const electedId = convergentRoot
+        ? resolution.rootUid
+        : await this.electImportedCollectionIdentity(
+            workspaceId,
+            desiredName,
+            preallocatedId,
+            staleFinalIdentities,
+            desiredDescription,
+            resolution.cursor,
+            importPayload,
+            preferredIdentityEligibleForElection
+          );
+      if (!electedId) {
+        throw new Error(
+          'COLLECTION_ROOT_UID_RESOLUTION_FAILED: convergent collection did not become inventory-visible'
+        );
+      }
+      if (
+        convergentRoot &&
+        options.deferNominalSemanticVerification !== true &&
+        !preferredIdentityEligibleForElection
+      ) {
+        if (!resolution.resolvedRow) {
+          throw new Error(
+            'COLLECTION_ROOT_UID_RESOLUTION_FAILED: convergent collection inventory row is unavailable'
+          );
+        }
+        await this.assertRecoveredImportEvidence(
+          resolution.resolvedRow,
+          preallocatedIdentity,
+          desiredName,
+          importPayload,
+          desiredDescription
+        );
+      }
       const rawBare = this.bareModelId(preallocatedId);
       const electedBare = this.bareModelId(electedId);
       if (rawBare && electedBare && rawBare === electedBare) {
         // Same root: promote the pre-request bare journal entry to the
         // canonical <owner>-<model_id> inventory uid.
-        journaledRootIds[0] = electedId;
+        if (!convergentRoot) journaledRootIds[0] = electedId;
       } else {
+        if (convergentRoot) {
+          throw new Error(
+            'IMPORT_IDENTITY_CONFLICT: convergent root resolved to a different collection identity'
+          );
+        }
         // True peer won: our journaled root was deleted during election.
         const idx = journaledRootIds.findIndex((id) => this.bareModelId(id) === rawBare);
         if (idx >= 0) journaledRootIds.splice(idx, 1);
@@ -3629,6 +3741,7 @@ export class PostmanGatewayAssetsClient {
         collectionId: electedId,
         journaledRootIds: [...journaledRootIds],
         deleteVerifiedCleanup: async (ids) => {
+          if (convergentRoot) return;
           await this.deleteVerifiedRunOwnedCollections(workspaceId, ids ?? journaledRootIds);
         }
       };
@@ -3636,7 +3749,7 @@ export class PostmanGatewayAssetsClient {
       // A verified exact-ID digest conflict can be a foreign UUID collision;
       // never delete it. Every other finalize failure concerns the preallocated
       // run identity and retains the existing best-effort exact cleanup.
-      if (!this.isImportIdentityConflict(error)) {
+      if (!convergentRoot && !this.isImportIdentityConflict(error)) {
         await this.deleteVerifiedRunOwnedCollections(workspaceId, journaledRootIds).catch(() => undefined);
       }
       throw this.sanitizeImportError('import-finalize', error);
@@ -4209,18 +4322,17 @@ export class PostmanGatewayAssetsClient {
   }
 
   /**
-   * Prove that an exact-ID row observed after an ambiguous import is this
-   * request's committed payload. The client-known root id is the ownership
-   * marker for canonical collections; branch-scoped collections additionally
-   * require their durable branch marker. A name/list match alone is never proof.
+   * Prove ownership of a convergent root before any in-place update. The
+   * client-known root id is the ownership boundary for canonical collections;
+   * branch-scoped collections additionally require their stable branch marker.
+   * A name/list match alone is never proof.
    */
-  private async assertRecoveredImportEvidence(
+  private async assertConvergentRootOwnershipEvidence(
     row: WorkspaceInventoryRow,
     expectedIdentity: string,
     expectedName: string,
-    expectedCollection: JsonRecord,
     expectedDescription: string
-  ): Promise<void> {
+  ): Promise<JsonRecord> {
     if (normalizeCollectionModelIdentity(row.id) !== expectedIdentity) {
       throw new Error(
         'IMPORT_IDENTITY_CONFLICT: recovered collection does not match the preallocated identity'
@@ -4262,6 +4374,27 @@ export class PostmanGatewayAssetsClient {
         'IMPORT_IDENTITY_CONFLICT: exact preallocated collection carries a foreign ownership marker'
       );
     }
+    return exported;
+  }
+
+  /**
+   * Prove that an exact-ID row observed after an ambiguous import is this
+   * request's committed payload. Ownership is established before comparing
+   * semantic bytes, so a foreign same-name root is never accepted.
+   */
+  private async assertRecoveredImportEvidence(
+    row: WorkspaceInventoryRow,
+    expectedIdentity: string,
+    expectedName: string,
+    expectedCollection: JsonRecord,
+    expectedDescription: string
+  ): Promise<void> {
+    const exported = await this.assertConvergentRootOwnershipEvidence(
+      row,
+      expectedIdentity,
+      expectedName,
+      expectedDescription
+    );
     if (computePayloadDigest(exported) !== computePayloadDigest(expectedCollection)) {
       throw new Error(
         'IMPORT_IDENTITY_CONFLICT: exact preallocated collection payload digest does not match'
@@ -4273,6 +4406,15 @@ export class PostmanGatewayAssetsClient {
     return (
       error instanceof Error &&
       /\bIMPORT_(?:IDENTITY_CONFLICT|RESPONSE_ID_MISMATCH)\b/.test(error.message)
+    );
+  }
+
+  private isConvergentImportConflict(error: unknown): boolean {
+    if (!(error instanceof HttpError)) return false;
+    if (error.status === 409) return true;
+    return (
+      (error.status === 400 || error.status === 422) &&
+      /\b(?:already exists|conflict|duplicate)\b/i.test(error.responseBody)
     );
   }
 
@@ -4345,7 +4487,7 @@ export class PostmanGatewayAssetsClient {
     desiredDescription: string,
     existingCursor?: ImportSettleCursor,
     desiredCollection?: JsonRecord,
-    preferredEvidenceVerified = false
+    preferredIdentityEligibleForElection = false
   ): Promise<string> {
     const started = this.now();
     const preferredIdentity = normalizeCollectionModelIdentity(preferredId);
@@ -4400,10 +4542,12 @@ export class PostmanGatewayAssetsClient {
       }
 
       if (desiredCollection) {
-        if (preferredObserved && !preferredEvidenceVerified) {
-          // A nominal 2xx proves only what the response claimed. Prove that the
-          // exact inventory row has the requested final name, ownership marker,
-          // and semantic bytes before it can win election or cleanup ownership.
+        if (preferredObserved && !preferredIdentityEligibleForElection) {
+          // Unless the caller has explicitly deferred nominal readback, prove
+          // that the exact inventory row has the requested final name,
+          // ownership marker, and semantic bytes before it can win election or
+          // cleanup ownership. Ambiguous recovery always reaches this point
+          // with that evidence already established.
           await this.assertRecoveredImportEvidence(
             preferredObserved,
             preferredIdentity,
@@ -4411,13 +4555,13 @@ export class PostmanGatewayAssetsClient {
             desiredCollection,
             desiredDescription
           );
-          preferredEvidenceVerified = true;
+          preferredIdentityEligibleForElection = true;
         }
         const verified: WorkspaceInventoryRow[] = [];
         for (const entry of eligible) {
           if (
             (normalizeCollectionModelIdentity(entry.id) === preferredIdentity &&
-              preferredEvidenceVerified) ||
+              preferredIdentityEligibleForElection) ||
             await this.matchesImportedPeerEvidence(entry, desiredCollection, desiredDescription)
           ) {
             verified.push(entry);
@@ -4674,4 +4818,23 @@ export interface ImportV2CollectionResult {
   journaledRootIds: string[];
   /** Delete and verify only journaled (or explicitly supplied) run-owned roots. */
   deleteVerifiedCleanup: (ids?: string[]) => Promise<void>;
+}
+
+export interface ImportV2CollectionOptions {
+  /**
+   * Defer semantic readback only for a non-ambiguous 2xx response that echoes
+   * the caller-preallocated root identity. The caller must perform a mandatory
+   * exact export/digest verification after its import batch settles. Ambiguous
+   * responses always require exact-ID ownership evidence before recovery; a
+   * stale owned root is deep-updated in place and left to the caller's final
+   * digest proof when this option is enabled.
+   */
+  deferNominalSemanticVerification?: boolean;
+
+  /**
+   * Replace the generated root id with the deterministic workspace/logical-
+   * asset identity. The root is shared with concurrent callers and therefore
+   * is never journaled, peer-elected, deep-updated, or deleted by this import.
+   */
+  convergentLogicalRoot?: boolean;
 }

@@ -42,12 +42,34 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Plan release
+        id: plan
+        env:
+          PLAN_FILE: ${{ runner.temp }}/plan.json
+        run: |
+          set -euo pipefail
+          # Write the plan outside the worktree: the cut refuses to run from a
+          # dirty tree, so a stray artifact here would block every release.
+          node scripts/release-cut.mjs --plan | tee "$PLAN_FILE"
+          {
+            echo "release=$(node -p "require(process.env.PLAN_FILE).release === true")"
+            echo "version=$(node -p "require(process.env.PLAN_FILE).version || ''")"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Reconcile prior release
         id: reconcile
         env:
           GH_TOKEN: ${{ github.token }}
+          PLAN_FILE: ${{ runner.temp }}/plan.json
         run: |
           set -euo pipefail
+          RELEASE="$(node -p "require(process.env.PLAN_FILE).release === true")"
           LATEST=""
           while IFS= read -r CANDIDATE; do
             if [[ "$CANDIDATE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -66,13 +88,24 @@ jobs:
 
           TAG=""
           if [ -n "$LATEST" ] && ! gh release view "$LATEST" >/dev/null 2>&1; then
+            # Publication must finish for the already-public immutable tag
+            # before another version is cut.
             TAG="$LATEST"
+          elif [ -n "$LATEST" ] && [ "$RELEASE" != true ]; then
+            VERSION="${LATEST#v}"
+            IFS='.' read -r MAJOR _ <<< "$VERSION"
+            if [ "$MAJOR" != 0 ]; then
+              TARGET="$(git rev-parse "${LATEST}^{commit}")"
+              ALIAS="v$MAJOR"
+              ALIAS_COMMIT="$(git rev-parse --verify "${ALIAS}^{commit}" 2>/dev/null || true)"
+              if [ "$ALIAS_COMMIT" != "$TARGET" ]; then
+                # Only release.yml may advance aliases, and only after its
+                # exact-tag E2E verifier succeeds. Replay stale-alias evidence
+                # only when no newer release-worthy change can supersede it.
+                TAG="$LATEST"
+              fi
+            fi
           fi
-
-          # A published immutable tag is complete even when its rolling alias
-          # never advanced. Retrying that burnt tag can never change its bytes
-          # and deadlocks every later fix. Let the planner cut the next version;
-          # its successful release advances the rolling alias safely.
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if [ -z "$TAG" ]; then
@@ -88,12 +121,6 @@ jobs:
           fi
           gh workflow run release.yml --ref "$TAG"
 
-      - uses: actions/setup-node@v7
-        if: steps.reconcile.outputs.blocked != 'true'
-        with:
-          node-version: '24'
-          cache: npm
-          registry-url: 'https://registry.npmjs.org'
       - name: Prefetch vendored dependencies
         if: steps.reconcile.outputs.blocked != 'true'
         env:
@@ -108,23 +135,8 @@ jobs:
       - if: steps.reconcile.outputs.blocked != 'true'
         run: postman --version
 
-      - name: Plan release
-        id: plan
-        if: steps.reconcile.outputs.blocked != 'true'
-        env:
-          PLAN_FILE: ${{ runner.temp }}/plan.json
-        run: |
-          set -euo pipefail
-          # Write the plan outside the worktree: the cut refuses to run from a
-          # dirty tree, so a stray artifact here would block every release.
-          node scripts/release-cut.mjs --plan | tee "$PLAN_FILE"
-          {
-            echo "release=$(node -p "require(process.env.PLAN_FILE).release === true")"
-            echo "version=$(node -p "require(process.env.PLAN_FILE).version || ''")"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Cut release
-        if: steps.plan.outputs.release == 'true'
+        if: steps.reconcile.outputs.blocked != 'true' && steps.plan.outputs.release == 'true'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -132,7 +144,7 @@ jobs:
           node scripts/release-cut.mjs --execute
 
       - name: Push release tag
-        if: steps.plan.outputs.release == 'true'
+        if: steps.reconcile.outputs.blocked != 'true' && steps.plan.outputs.release == 'true'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
         run: |

@@ -3980,12 +3980,19 @@ async function runBootstrapInner(
         dependencies.core,
         'Sync Additional Collections',
         async () => {
+          // Curated collection ids must be durable the moment the root exists,
+          // not at the terminal flush. `onRootCreated` fires before the create
+          // can fail, and every stage after this one (link, tag, manifest) can
+          // throw into the rollback path. A no-op writer here means a lost id,
+          // and a lost id means the next run creates a duplicate of
+          // user-authored content instead of updating it. `stateStore` is the
+          // branch-aware wrapper, so non-canonical runs still write nothing.
           const additionalResults = await syncAdditionalCollections({
             collectionFiles: additionalCollections,
             core: dependencies.core,
             postman: dependencies.postman,
             resourcesState: writableResourcesState,
-            writeResourcesState: () => undefined,
+            writeResourcesState: (state) => stateStore.write(state),
             workspaceId: workspaceId || ''
           });
           for (const result of additionalResults) {

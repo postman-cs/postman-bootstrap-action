@@ -772,12 +772,16 @@ describe('bootstrap action', () => {
           }),
           expect.objectContaining({ onRootCreated: expect.any(Function) })
         );
-        expect(postman.updateCollection).toHaveBeenCalledWith(
+        // A v2.1 curated collection refreshes through deep-update, never the
+        // delete-then-recreate item surface.
+        expect(postman.deepUpdateV2Collection).toHaveBeenCalledWith(
           'col-payments-existing',
           expect.objectContaining({
             info: expect.objectContaining({ name: 'Payments curated' })
-          })
+          }),
+          expect.stringMatching(/^[a-f0-9]{64}$/)
         );
+        expect(postman.updateCollection).not.toHaveBeenCalled();
         const resources = parseYaml(readFileSync('.postman/resources.yaml', 'utf8'));
         expect(resources.canonical?.additionalCollections).toMatchObject({
           '../postman/curated/nested/refunds.yaml': 'col-refunds-created',
@@ -1306,6 +1310,18 @@ components:
           return Object.keys(cloud?.collections ?? {}).length === 3;
         });
         expect(hasOpenApiCollections).toBe(false);
+        // Curated ids are the opposite case. They name user-authored content
+        // that no spec regenerates, so a root that exists in the cloud must be
+        // durable immediately. Deferring it to the terminal flush means a
+        // failure here loses the id and the next run duplicates the collection.
+        const hasCuratedId = writes.some((state) => {
+          const cloud = (state.cloudResources ?? state.canonical) as
+            | { additionalCollections?: Record<string, string> }
+            | undefined;
+          return cloud?.additionalCollections?.['../postman/curated/payments.json']
+            === 'col-payments-created';
+        });
+        expect(hasCuratedId).toBe(true);
       });
     } finally {
       rmSync(workspace, { recursive: true, force: true });

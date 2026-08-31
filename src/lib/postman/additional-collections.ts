@@ -15,6 +15,7 @@ import {
   assertSupportedLocalViewContract,
   normalizeLocalViewScriptType
 } from './local-view-contract.js';
+import { computePayloadDigest } from '../spec/local-openapi-collection-generation.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -79,6 +80,16 @@ export interface AdditionalCollectionsPostmanClient {
     workspaceId: string,
     collection: unknown,
     options?: { onRootCreated?: (id: string) => void | Promise<void> }
+  ) => Promise<string>;
+  /**
+   * Whole-tree in-place update of a v2.1 payload that preserves the root UID.
+   * Preferred over {@link updateCollection} for curated content: it is one
+   * server-side write with no window in which the collection is empty.
+   */
+  deepUpdateV2Collection?: (
+    collectionUid: string,
+    collection: unknown,
+    expectedPayloadDigest: string
   ) => Promise<string>;
   updateCollection?: (collectionUid: string, collection: unknown) => Promise<void>;
 }
@@ -699,6 +710,48 @@ function isNotFoundError(error: unknown): boolean {
   return (error as { status?: unknown }).status === 404;
 }
 
+/**
+ * Local View directories load as collection v3 (`$kind` + `items`); JSON/YAML
+ * files load as v2.1 (`info` + `item`). Only the v2.1 shape can go through the
+ * deep-update route, and there is no v3 -> v2.1 converter in this package.
+ */
+function isCollectionV3Payload(collection: unknown): boolean {
+  return asRecord(collection)?.$kind === 'collection';
+}
+
+/**
+ * Replace the contents of a curated collection that already exists in the cloud.
+ *
+ * Deep-update is the safe route: one Sync write that replaces the whole tree and
+ * keeps the root UID. The item-surface fallback deletes every root item, verifies
+ * the deletes, and only then recreates the tree, so anything that throws in that
+ * window leaves the collection stripped. Curated collections are user-authored
+ * and cannot be regenerated from a spec, so that window is real data loss.
+ * The fallback is reached only for collection v3 payloads, which deep-update
+ * cannot accept.
+ */
+async function updateExistingAdditionalCollection(options: {
+  collectionId: string;
+  file: AdditionalCollectionFile;
+  postman: AdditionalCollectionsPostmanClient;
+}): Promise<void> {
+  const { collectionId, file, postman } = options;
+  if (postman.deepUpdateV2Collection && !isCollectionV3Payload(file.collection)) {
+    await postman.deepUpdateV2Collection(
+      collectionId,
+      file.collection,
+      computePayloadDigest(file.collection as JsonRecord)
+    );
+    return;
+  }
+  if (!postman.updateCollection) {
+    throw new Error(
+      'Additional collection updates require updateCollection support from the Postman client'
+    );
+  }
+  await postman.updateCollection(collectionId, file.collection);
+}
+
 async function createAdditionalCollection(options: {
   core: AdditionalCollectionsLogger;
   file: AdditionalCollectionFile;
@@ -753,13 +806,12 @@ export async function syncAdditionalCollections(options: {
 
   for (const file of collectionFiles) {
     if (file.existingCollectionId) {
-      if (!postman.updateCollection) {
-        throw new Error(
-          'Additional collection updates require updateCollection support from the Postman client'
-        );
-      }
       try {
-        await postman.updateCollection(file.existingCollectionId, file.collection);
+        await updateExistingAdditionalCollection({
+          collectionId: file.existingCollectionId,
+          file,
+          postman
+        });
       } catch (error) {
         if (!isNotFoundError(error)) {
           throw error;

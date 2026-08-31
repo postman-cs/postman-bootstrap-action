@@ -5131,7 +5131,15 @@ export class PostmanGatewayAssetsClient {
 
   private sanitizeDeepUpdateError(stage: string, error: unknown): Error {
     const cause = error instanceof Error ? error.message.replace(/\s+/g, ' ').trim().slice(0, 240) : 'failure';
-    return new Error(`LOCAL_OPENAPI_DEEP_UPDATE_FAILED: stage=${stage} cause=${cause}`);
+    const sanitized = new Error(`LOCAL_OPENAPI_DEEP_UPDATE_FAILED: stage=${stage} cause=${cause}`);
+    // Carry the transport status forward. Callers that deep-update a tracked id
+    // need 404 (the target was deleted out of band, recreate it) to stay
+    // distinguishable from a genuine write failure. The status is a number, so
+    // it adds no response content to the sanitized message.
+    if (error instanceof HttpError) {
+      (sanitized as Error & { status?: number }).status = error.status;
+    }
+    return sanitized;
   }
 }
 

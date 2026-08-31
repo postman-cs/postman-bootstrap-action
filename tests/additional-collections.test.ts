@@ -17,6 +17,7 @@ import {
   syncAdditionalCollections,
   type PostmanResourcesState
 } from '../src/lib/postman/additional-collections.js';
+import { computePayloadDigest } from '../src/lib/spec/local-openapi-collection-generation.js';
 
 const COLLECTION_SCHEMA =
   'https://schema.getpostman.com/json/collection/v2.1.0/collection.json';
@@ -521,6 +522,177 @@ describe('additional local collection provisioning', () => {
       expect(postman.createCollection).not.toHaveBeenCalled();
       expect(readResources().cloudResources?.additionalCollections).toEqual({
         '../postman/curated/payments.json': 'col-payments-existing'
+      });
+    });
+  });
+
+  it('refreshes an existing v2.1 curated collection through deep-update, not the item surface', async () => {
+    const workspace = makeTempWorkspace();
+    tempDirs.push(workspace);
+    mkdirSync(path.join(workspace, 'postman/curated'), { recursive: true });
+    mkdirSync(path.join(workspace, '.postman'), { recursive: true });
+    writeFileSync(
+      path.join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(collection('Payments curated'), null, 2)
+    );
+    writeFileSync(
+      path.join(workspace, '.postman/resources.yaml'),
+      stringify({
+        workspace: { id: 'ws-existing' },
+        cloudResources: {
+          additionalCollections: {
+            '../postman/curated/payments.json': 'col-payments-existing'
+          }
+        }
+      })
+    );
+
+    await withCwdAsync(workspace, async () => {
+      const resourcesState = parse(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
+      const loaded = loadAdditionalCollectionFiles('postman/curated', resourcesState);
+      const postman = {
+        createCollection: vi.fn().mockResolvedValue('col-unused'),
+        deepUpdateV2Collection: vi.fn().mockResolvedValue('col-payments-existing'),
+        updateCollection: vi.fn().mockResolvedValue(undefined)
+      };
+      const core = { info: vi.fn(), warning: vi.fn() };
+
+      const results = await syncAdditionalCollections({
+        collectionFiles: loaded,
+        core,
+        postman,
+        resourcesState,
+        workspaceId: 'ws-existing'
+      });
+
+      // The item surface deletes every root item before recreating the tree.
+      // Curated content is user-authored, so that window must never open.
+      expect(postman.updateCollection).not.toHaveBeenCalled();
+      expect(postman.createCollection).not.toHaveBeenCalled();
+      expect(postman.deepUpdateV2Collection).toHaveBeenCalledWith(
+        'col-payments-existing',
+        expect.objectContaining({
+          info: expect.objectContaining({ name: 'Payments curated' })
+        }),
+        computePayloadDigest(loaded[0]!.collection as Record<string, unknown>)
+      );
+      expect(results).toEqual([
+        expect.objectContaining({
+          collectionId: 'col-payments-existing',
+          operation: 'updated',
+          resourcePath: '../postman/curated/payments.json'
+        })
+      ]);
+    });
+  });
+
+  it('keeps the item surface for a collection v3 curated directory deep-update cannot accept', async () => {
+    const workspace = makeTempWorkspace();
+    tempDirs.push(workspace);
+    mkdirSync(path.join(workspace, 'postman/curated/v3-col/.resources'), { recursive: true });
+    mkdirSync(path.join(workspace, '.postman'), { recursive: true });
+    writeFileSync(
+      path.join(workspace, 'postman/curated/v3-col/.resources/definition.yaml'),
+      stringify({ $kind: 'collection', name: 'V3 curated' })
+    );
+    writeFileSync(
+      path.join(workspace, 'postman/curated/v3-col/Ping.request.yaml'),
+      stringify({ $kind: 'http-request', method: 'GET', url: 'https://example.test/ping' })
+    );
+    writeFileSync(
+      path.join(workspace, '.postman/resources.yaml'),
+      stringify({
+        workspace: { id: 'ws-existing' },
+        cloudResources: {
+          additionalCollections: {
+            '../postman/curated/v3-col': 'col-v3-existing'
+          }
+        }
+      })
+    );
+
+    await withCwdAsync(workspace, async () => {
+      const resourcesState = parse(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
+      const loaded = loadAdditionalCollectionFiles('postman/curated', resourcesState);
+      const postman = {
+        createCollection: vi.fn().mockResolvedValue('col-unused'),
+        deepUpdateV2Collection: vi.fn().mockResolvedValue('col-v3-existing'),
+        updateCollection: vi.fn().mockResolvedValue(undefined)
+      };
+      const core = { info: vi.fn(), warning: vi.fn() };
+
+      await syncAdditionalCollections({
+        collectionFiles: loaded,
+        core,
+        postman,
+        resourcesState,
+        workspaceId: 'ws-existing'
+      });
+
+      // Deep-update takes v2.1 only and this package has no v3 -> v2.1 converter.
+      expect(postman.deepUpdateV2Collection).not.toHaveBeenCalled();
+      expect(postman.updateCollection).toHaveBeenCalledWith(
+        'col-v3-existing',
+        expect.objectContaining({ $kind: 'collection', name: 'V3 curated' })
+      );
+    });
+  });
+
+  it('recreates a curated collection when deep-update reports the tracked id is gone', async () => {
+    const workspace = makeTempWorkspace();
+    tempDirs.push(workspace);
+    mkdirSync(path.join(workspace, 'postman/curated'), { recursive: true });
+    mkdirSync(path.join(workspace, '.postman'), { recursive: true });
+    writeFileSync(
+      path.join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(collection('Payments curated'), null, 2)
+    );
+    writeFileSync(
+      path.join(workspace, '.postman/resources.yaml'),
+      stringify({
+        workspace: { id: 'ws-existing' },
+        cloudResources: {
+          additionalCollections: {
+            '../postman/curated/payments.json': 'col-payments-stale'
+          }
+        }
+      })
+    );
+
+    await withCwdAsync(workspace, async () => {
+      const resourcesState = parse(readFileSync('.postman/resources.yaml', 'utf8')) as PostmanResourcesState;
+      const loaded = loadAdditionalCollectionFiles('postman/curated', resourcesState);
+      // Matches the shape the gateway raises: a sanitized deep-update error that
+      // still carries the transport status.
+      const gone = Object.assign(
+        new Error('LOCAL_OPENAPI_DEEP_UPDATE_FAILED: stage=deep-update-transport cause=not found'),
+        { status: 404 }
+      );
+      const postman = {
+        createCollection: vi.fn().mockResolvedValue('col-payments-recreated'),
+        deepUpdateV2Collection: vi.fn().mockRejectedValue(gone),
+        updateCollection: vi.fn().mockResolvedValue(undefined)
+      };
+      const core = { info: vi.fn(), warning: vi.fn() };
+
+      const results = await syncAdditionalCollections({
+        collectionFiles: loaded,
+        core,
+        postman,
+        resourcesState,
+        workspaceId: 'ws-existing'
+      });
+
+      expect(postman.updateCollection).not.toHaveBeenCalled();
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('col-payments-stale'));
+      expect(results).toEqual([
+        expect.objectContaining({
+          collectionId: 'col-payments-recreated',
+          operation: 'created'
+        })
+      ]);
+      expect(readResources().canonical?.additionalCollections).toEqual({
+        '../postman/curated/payments.json': 'col-payments-recreated'
       });
     });
   });

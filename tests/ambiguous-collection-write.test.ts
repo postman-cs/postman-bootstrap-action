@@ -299,4 +299,26 @@ describe('ambiguous deep-update recovery', () => {
     expect(reads).toBe(0);
     expect(client.collectionWriteMetrics.ambiguousWrites).toBe(0);
   });
+
+  it('carries the transport status onto a sanitized deep-update rejection', async () => {
+    const desired = v21('Payments', 'GET /payments');
+    const digest = computePayloadDigest(desired);
+
+    const { client } = makeRecoveryClient((env) => {
+      if (isDeepUpdate(env)) {
+        return new Response('{"error":"not found"}', { status: 404 });
+      }
+      return jsonResponse({ data: {} });
+    });
+
+    // Curated-collection sync distinguishes "the tracked id was deleted out of
+    // band" (recreate) from a real write failure by reading status off the
+    // error. Sanitizing the message must not drop it.
+    const rejection = await client
+      .deepUpdateV2Collection(recoveryUid, desired, digest)
+      .then(() => undefined, (error: unknown) => error);
+
+    expect((rejection as Error).message).toContain('LOCAL_OPENAPI_DEEP_UPDATE_FAILED');
+    expect((rejection as { status?: number }).status).toBe(404);
+  });
 });

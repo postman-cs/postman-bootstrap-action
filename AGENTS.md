@@ -75,6 +75,8 @@ Tags are an **output** of passing run, never input. Never push release tag by ha
 - Version comes from highest tag ever cut, not `package.json`. Existing tags are burnt and skipped, so failed cut never reuses or rewinds version.
 - Conventional-commit type picks bump; `chore`/`ci`/`build`/`test`/`style` alone cut nothing.
 - release commit lives only on tag. Cut opens pull request to carry normalized receipt and rebuilt `dist/` back to `main`, which requires pull requests.
+- `main` requires pull requests and green `ready` + `build-and-smoke` checks (admins included, no bypass). Merge with `gh pr checks <n> --watch --fail-fast && gh pr merge <n> --merge --delete-branch`; never `--admin`.
+- `.githooks/pre-push` runs typecheck, lint, and test before every branch push.
 - `RELEASE_POLICY.md` holds full contract.
 
 ## Anti-Patterns

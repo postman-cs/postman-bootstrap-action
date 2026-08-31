@@ -1,4 +1,5 @@
 #!/bin/sh
+# cleanup-traps: not-applicable -- foreground npm gates only; git reaps the hook process
 # Release tags are cut by .github/workflows/auto-release.yml, never by hand.
 #
 # A hand-pushed tag creates an immutable public identifier before any gate has
@@ -26,6 +27,12 @@ done
 
 # dist/ embeds validation/evidence/multifile-spec-sync.json via
 # src/lib/postman/spec-file-reconcile.ts, so a receipt edit is a dist edit.
+# Local mirror of the CI gate. A red tree must never reach the remote; CI on
+# the pull request remains the merge authority (required status checks).
+npm run typecheck && npm run lint && npm test || {
+  echo "local gate failed (typecheck/lint/test); fix before pushing." >&2
+  exit 1
+}
 if git diff HEAD --name-only | grep -Eq '^(src/|validation/evidence/|package\.json|package-lock\.json|tsconfig)'; then
   npm run verify:dist || {
     echo "dist is stale. Run 'npm run build' and stage dist/ before pushing." >&2

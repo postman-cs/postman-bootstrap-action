@@ -1,109 +1,42 @@
 # Contributing to postman-bootstrap-action
 
-Thank you for your interest in contributing. This guide covers the workflow and standards for submitting changes.
+This repository is one independently released component of the Postman Enterprise Automation Suite. `AGENTS.md` is the single source of truth for its structure, exact gate commands, credential rules, and release contract; this page covers only the contribution workflow.
 
-## Getting Started
-
-1. Fork and clone the repository
-2. Install dependencies: `npm ci`
-3. Create a feature branch: `git checkout -b my-change`
-
-## Development Workflow
+## Setup
 
 ```bash
-npm ci              # Install dependencies
-npm run lint        # ESLint
-npm run typecheck   # TypeScript type checking
-npm test            # Run tests (vitest)
-npm run build       # Rebuild dist/ (stage it before pushing)
-npm run verify:dist # CI/hook gate: rebuild + git diff committed dist/
-actionlint          # Validate GitHub workflow syntax, if installed
+npm ci   # install from the committed lockfile
 ```
 
-## Before Submitting a PR
+Most repos wire `.githooks/` through the `prepare` script during `npm ci`; where `AGENTS.md` names `npm run setup:hooks` instead, run it once. Do not replace the lockfile or the package manager.
 
-- [ ] `npm run lint` passes
-- [ ] `npm run typecheck` passes
-- [ ] `npm test` passes
-- [ ] `npm run build` was run and updated `dist/` is staged (`npm run verify:dist` passes)
-- [ ] `actionlint` passes for workflow changes
-- [ ] The offline `gate` check passes.
-- [ ] Changes are focused and address a single concern
-- [ ] New functionality includes tests
+## Before you open a pull request
 
-### Rebuilding dist/
+Run the gate set named in `AGENTS.md` from the repository root. At minimum every repo declares `npm test`, `npm run typecheck`, and `npm run lint`; repos that ship a bundle also declare a dist gate that must pass with the rebuilt `dist/` staged in the same commit.
 
-This action ships bundled JavaScript in `dist/`. After any source change, run `npm run build` and include the updated `dist/` files in your commit. CI bundles once before its bounded queue and then runs read-only `verify:dist:assert`; a pre-push hook runs `npm run verify:dist` (rebuild + diff) for you.
+- Keep each pull request to one concern.
+- New behavior ships with deterministic tests in `tests/`.
+- Never commit Postman API keys, access tokens, cloud credentials, or captured request bodies. Mask credentials before logging.
+- Do not add Newman, token-authenticated npm publishing, or cross-action TypeScript imports; shared code lives in `@postman-cs/automation-core`.
 
-## Live E2E Tier
+## Pull requests and merges
 
-Ordinary PRs use the deterministic offline gate. Live sandbox coverage runs as an
-async post-publish monitor on immutable releases and nightly in
-`postman-cs/postman-actions-e2e`.
+Every change lands through a pull request against `main`; direct pushes to `main` are blocked by branch protection. CI runs one bounded `gate` job (plus a Windows job where the repo has one). Merge only after the required checks pass.
 
-## Release Monitor
+## Commit messages
 
-Immutable release tags for this repo publish after local validate succeeds
-(deterministic tests, typecheck, dist verify, actionlint, and tag/version
-checks). After a real npm publish tag publishes, the release workflow
-fire-and-forget dispatches the central live e2e suite in
-`postman-cs/postman-actions-e2e` with this exact tag pinned for
-`postman-bootstrap-action`. That dispatch is an async monitor
-(`continue-on-error`); missing/denied dispatch or a later e2e failure never
-blocks or rolls back publish.
-
-The rolling major alias validates locally but skips npm publish and the live e2e
-monitor dispatch. `E2E_DISPATCH_TOKEN` powers the post-publish monitor for
-immutable publishing tags; record the dispatch notice from the release logs as
-monitor evidence.
-
-## Commit Messages
-
-This project uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). All commits must follow this format:
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) and are validated by commitlint on every pull request:
 
 ```
-<type>: <description>
-
-[optional body]
-
-[optional footer(s)]
+<type>(<optional scope>): <description>
 ```
 
-**Types:** `feat`, `fix`, `docs`, `chore`, `ci`, `refactor`, `test`, `perf`, `revert`
+`feat` cuts a minor release, `fix` / `perf` / `refactor` / `docs` cut a patch, and `chore` / `ci` / `build` / `test` / `style` cut nothing. Releases are tagged automatically from `main`; never push a release tag by hand.
 
-**Examples:**
+## Reporting problems
 
-```
-feat: add retry logic to spec upload
-fix: handle 429 rate limit in API client
-docs: update CLI usage examples
-ci: add ESLint to CI workflow
-```
-
-Commit messages are validated in CI via commitlint. Optionally install git hooks locally for faster feedback -- see [Local Git Hooks](#local-git-hooks).
-
-## Local Git Hooks (Optional)
-
-For commit message validation before push:
-
-```bash
-npx husky init
-echo 'npx --no-install commitlint --edit "$1"' > .husky/commit-msg
-```
-
-This is optional. CI validates commit messages on every pull request regardless.
-
-## Code Style
-
-- TypeScript strict mode
-- ESLint enforced (run `npm run lint` or `npm run lint:fix`)
-- Keep changes minimal and focused
-- Match existing patterns in the codebase
-
-## Reporting Issues
-
-Use the GitHub issue templates for bug reports and feature requests. For questions, open a Discussion thread.
+Open a GitHub issue for bugs, usage questions, or documentation gaps (see `SUPPORT.md`). Report vulnerabilities privately per `SECURITY.md`.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+Contributions are licensed under the repository's MIT License.

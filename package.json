@@ -26,6 +26,7 @@
     "verify:dist:assert": "npm run verify:dist:shape && npm run verify:dist:parity",
     "verify:dist": "npm run build && npm run verify:dist:assert",
     "docs:tables": "node scripts/render-action-tables.mjs",
+    "docs:pins": "node scripts/check-doc-pins.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "vitest run --exclude tests/windows-gates.test.ts && vitest run tests/windows-gates.test.ts && node --test .github/scripts/dispatch-e2e-monitor.test.mjs .github/scripts/verify-e2e-release.test.mjs .github/scripts/prefetch-vendored-deps.test.mjs",

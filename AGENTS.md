@@ -37,13 +37,13 @@ npm run verify:dist         # rebuild + git diff + assert
 - **Workspace selection**: `workspace-id` input -> repo var `POSTMAN_WORKSPACE_ID` -> create new. Access-token validates via Bifrost.
 - **Spec normalization**: Fixes missing/long `summary` fields pre-upload to prevent collection-gen failures.
 - **Collection generation (OpenAPI)**: Converts validated/bundled OpenAPI once locally into complete baseline/smoke/contract v2.1 payloads (scripts embedded), materializes Collection v3 trees + workflows, then whole-collection `sync` import (fresh/versioned) or deep-update (refresh existing). Links with retained generation `options` + `syncOptions`; no Spec Hub collection generation, temp specs, per-item create, or post-create script PATCH on OpenAPI path.
-- **Lint**: PMAK-only. Installs Postman CLI, runs `postman spec lint` against spec UID, hard-fails on errors. No PMAK = skip, `{ status: "skipped", reason: "no postman-api-key" }`, warn, no fail. CLI has no access-token login.
+- **Lint**: No Postman CLI `spec lint` runs. `lint-summary-json` is retained for output-contract compatibility and always carries an empty summary. Static document lints (`CONTRACT_*`) are warnings only and never fail the run.
 - **Team ID**: From access-token session (`GET /api/sessions/current`). Org-mode sub-team via `ums` service. `POSTMAN_TEAM_ID` overrides.
-- **Repo variables**: Persists `POSTMAN_WORKSPACE_ID`, `POSTMAN_SPEC_UID`, collection UIDs, lint counts as GitHub repo vars for rerun idempotency.
+- **Repo variables**: Persists `POSTMAN_WORKSPACE_ID`, `POSTMAN_SPEC_UID`, and collection UIDs as GitHub repo vars for rerun idempotency.
 
 ## Postman Routes
 
-All asset ops via access-token gateway (Bifrost `POST /ws/proxy`, `x-access-token`). PMAK only mints/re-mints access token + Postman CLI `spec lint` login.
+All asset ops via access-token gateway (Bifrost `POST /ws/proxy`, `x-access-token`). PMAK only mints/re-mints the access token.
 
 - `workspaces`: org `POST /workspaces` w/ `visibilityStatus: team`, `squad`, group roles; non-org `POST` + `PUT /{id}/visibility` + `GET`; `PATCH /{id}/roles` - admins + requester invite (email->id via `god GET /api/organizations/{teamId}/members`)
 - `specification`: `POST /specifications` + `PATCH /{id}/files/{fileId}` (JSON-patch `/content`) - upload/update; OpenAPI collection linking via `PUT /{id}/collections`
@@ -53,7 +53,7 @@ All asset ops via access-token gateway (Bifrost `POST /ws/proxy`, `x-access-toke
 - `POST /service-account-tokens` (PMAK) - mint/re-mint
 - Bifrost adapter: governance assignment, workspace-to-repo linking, specification and collection relation readback
 
-Residual PMAK: `POST /service-account-tokens` mint/re-mint; Postman CLI `login --with-api-key`; read-only `GET /me` preflight. Every asset op on access-token. OpenAPI contract/smoke scripts are embedded in local payloads before import/deep-update (no post-create `/scripts` PATCH). No PMAK collection CRUD. Enforced by `tests/no-pmak-asset-or-newman.test.ts` + `tests/no-collection-v2.test.ts`.
+Residual PMAK: `POST /service-account-tokens` mint/re-mint; read-only `GET /me` preflight. Every asset op on access-token. OpenAPI contract/smoke scripts are embedded in local payloads before import/deep-update (no post-create `/scripts` PATCH). No PMAK collection CRUD. Enforced by `tests/no-pmak-asset-or-newman.test.ts` + `tests/no-collection-v2.test.ts`.
 
 ## Gotchas
 

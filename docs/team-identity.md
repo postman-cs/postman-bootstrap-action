@@ -42,7 +42,7 @@ The failure names `workspace-team-id`, the `POSTMAN_WORKSPACE_TEAM_ID` environme
 ### GitHub Actions example
 
 ```yaml
-- uses: postman-cs/postman-bootstrap-action@v1
+- uses: postman-cs/postman-bootstrap-action@v2
   with:
     project-name: core-payments
     spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml

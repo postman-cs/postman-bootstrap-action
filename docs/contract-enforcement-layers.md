@@ -1,16 +1,15 @@
 # Contract Enforcement Layers
 
-The bootstrap action enforces the same OpenAPI contract at three distinct points, with three distinct failure modes. This page explains what runs where, what each layer can and cannot see, and why a rule from the same RFC often appears in more than one layer.
+The bootstrap action enforces the same OpenAPI contract at two distinct points, with two distinct failure modes. This page explains what runs where, what each layer can and cannot see, and why a rule from the same RFC often appears in both layers.
 
 | Layer | When it runs | What it inspects | Effect |
 | --- | --- | --- | --- |
-| Postman CLI `spec lint` | Bootstrap time | The uploaded Spec Hub spec, via Postman's ruleset engine | Fails the run on lint errors (PMAK-gated; skipped without `postman-api-key`) |
 | Static document lints | Bootstrap time | The parsed OpenAPI document | Warning only; logged, never fails, never becomes a test |
 | Runtime contract tests | Every CI collection run | The live HTTP response | `pm.test()` pass/fail against the actual server |
 
 ## One index, two outputs
 
-Both bespoke layers derive from a single pass: `buildContractIndex(parseOpenApiDocument(document))` (`src/lib/spec/openapi-loader.ts`, `src/lib/spec/contract-index.ts`). That pass walks every operation and produces two independent outputs side by side:
+Both layers derive from a single pass: `buildContractIndex(parseOpenApiDocument(document))` (`src/lib/spec/openapi-loader.ts`, `src/lib/spec/contract-index.ts`). That pass walks every operation and produces two independent outputs side by side:
 
 1. **Static lint warnings** -- collected by `collectDocumentStaticLints`, `collectOperationStaticLints`, `collectSchemaStaticLints`, `collectSecurityStaticLints` (all in `contract-index.ts`), `collectHttpSemanticStaticLints` (`http-semantic-lints.ts`), and `collectSchemaObjectLints` (`oas-schema-object-lints.ts`). Each returns `CONTRACT_*` warning strings.
 2. **The structured contract** -- declared responses, parameter checks, request-body schemas, security requirements, assembled into `ContractOperation` records.
@@ -81,8 +80,7 @@ Where a runtime validator cannot be built, a warning documents the gap so the sk
 
 Every code, its layer, and its effect on the run is cataloged in [Contract Error Codes](contract-error-codes.md).
 
-## How this differs from Spectral-style linting
+## Why there is no ruleset linter
 
-The Postman CLI `spec lint` step (`lintSpecViaCli` in `src/index.ts`) is the ruleset-engine layer: declarative rules, a violations report, and a hard failure on errors. It is PMAK-gated and covers OpenAPI structural and governance rules.
-
+Bootstrap does not run Postman CLI `spec lint` or any other ruleset engine. The `lint-summary-json` output is retained for output-contract compatibility and always carries an empty summary (`{ "errors": 0, "total": 0, "violations": [], "warnings": 0 }`). Governance linting belongs to Spec Hub itself, not to this action.
 The static lint collectors are a bespoke imperative analyzer, not a rules engine. They exist because the RFC-semantic checks they cover -- HEAD bodies, 304 method scope, 206 `Content-Range` parity, 401 `WWW-Authenticate`, RFC 9457 problem members, token-in-query leaks -- are protocol-correctness rules from RFC 9110, RFC 6750, RFC 9457, RFC 8288, and friends, not OpenAPI structural rules, and no default ruleset checks them. They run in-process inside the bundled action, need no external linter, and cost nothing to keep on.

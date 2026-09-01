@@ -196,6 +196,7 @@ describe('CI workflow dist/pack race contract', () => {
       'dist-shape',
       'integ',
       'actionlint',
+      'docs-pins',
       'commitlint',
     ]);
     expect(runGates).toContain('run lint       npm run lint');

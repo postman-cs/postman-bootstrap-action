@@ -19,12 +19,12 @@ Create a [Postman service account](https://learning.postman.com/docs/administrat
 
 ```yaml
 - id: postman_token
-  uses: postman-cs/postman-resolve-service-token-action@v1
+  uses: postman-cs/postman-resolve-service-token-action@v2
   with:
     postman-api-key: ${{ secrets.POSTMAN_API_KEY }}
     postman-region: us
 
-- uses: postman-cs/postman-bootstrap-action@v1
+- uses: postman-cs/postman-bootstrap-action@v2
   with:
     project-name: core-payments
     spec-url: https://raw.githubusercontent.com/postman-cs/postman-bootstrap-action/main/examples/core-payments-openapi.yaml

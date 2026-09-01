@@ -1,5 +1,6 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { Script } from 'node:vm';
 
 import type { CollectionRole } from './local-openapi-collection-generation.js';
 
@@ -180,14 +181,25 @@ function readManifestText(
     errorCode(inputName, 'MANIFEST'),
     realpath
   );
+  let contents: string;
   try {
-    return readFile(target);
+    contents = readFile(target);
   } catch (error) {
     throw new Error(
       `${errorCode(inputName, 'MANIFEST')}_UNREADABLE: ${inputName} manifest could not be read from ${value}`,
       { cause: error }
     );
   }
+  // An explicitly named manifest that is blank is a malformed input, not an
+  // omitted one. Returning it would let the downstream envelope parser treat it
+  // as absent, so the run would silently proceed with no scripts and no
+  // variables despite the caller having asked for them.
+  if (!contents.trim()) {
+    throw new Error(
+      `${errorCode(inputName, 'MANIFEST')}_EMPTY: ${inputName} manifest at ${value} contains no content`
+    );
+  }
+  return contents;
 }
 
 /**
@@ -325,6 +337,27 @@ function parseVariableValues(
   );
 }
 
+/**
+ * Compile-only parse gate, mirroring `assertParsableContractScript`. Injection
+ * deliberately happens after the contract script scan and nothing on the write
+ * path executes customer source, so a syntax error would otherwise import
+ * cleanly and then fail every single request at run time inside Postman.
+ *
+ * Wrapped in an async IIFE because a collection-level prerequest script may use
+ * top-level `await`, which is legal in the Postman sandbox but a syntax error
+ * for a bare `new Script(...)`.
+ */
+function assertParsableCollectionScript(source: string, label: string, scriptPath: string): void {
+  try {
+    new Script(`;(async () => {;\n${source}\n;})();`, { filename: scriptPath });
+  } catch (error) {
+    throw new Error(
+      `COLLECTION_SCRIPT_UNPARSABLE: ${label} failed to parse (${error instanceof Error ? error.message : String(error)})`,
+      { cause: error }
+    );
+  }
+}
+
 function inlineScripts(
   roles: Record<string, CollectionScriptPaths>,
   workspaceRoot: string,
@@ -382,6 +415,7 @@ function inlineScripts(
       if (!normalized.trim()) {
         throw new Error(`COLLECTION_SCRIPT_EMPTY: ${label} has no script content at ${scriptPath}`);
       }
+      assertParsableCollectionScript(normalized, label, scriptPath);
       code[scriptType] = normalized;
     }
     if (Object.keys(code).length > 0) resolved[role] = code;

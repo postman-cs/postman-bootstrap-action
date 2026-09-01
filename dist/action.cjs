@@ -81533,7 +81533,7 @@ var require_script2 = __commonJS({
     var _2 = require_util8().lodash;
     var Property = require_property().Property;
     var Url = require_url2().Url;
-    var Script2;
+    var Script3;
     var SCRIPT_NEWLINE_PATTERN = /\r?\n/g;
     _2.inherit(
       /**
@@ -81544,14 +81544,14 @@ var require_script2 = __commonJS({
        *
        * @param {Object} options -
        */
-      Script2 = function PostmanScript(options) {
-        Script2.super_.apply(this, arguments);
+      Script3 = function PostmanScript(options) {
+        Script3.super_.apply(this, arguments);
         options && this.update(options);
       },
       Property
     );
     _2.assign(
-      Script2.prototype,
+      Script3.prototype,
       /** @lends Script.prototype */
       {
         /**
@@ -81608,7 +81608,7 @@ var require_script2 = __commonJS({
       }
     );
     _2.assign(
-      Script2,
+      Script3,
       /** @lends Script */
       {
         /**
@@ -81626,12 +81626,12 @@ var require_script2 = __commonJS({
          * @returns {Boolean}
          */
         isScript: function(obj) {
-          return Boolean(obj) && (obj instanceof Script2 || _2.inSuperChain(obj.constructor, "_postman_propertyName", Script2._postman_propertyName));
+          return Boolean(obj) && (obj instanceof Script3 || _2.inSuperChain(obj.constructor, "_postman_propertyName", Script3._postman_propertyName));
         }
       }
     );
     module2.exports = {
-      Script: Script2
+      Script: Script3
     };
   }
 });
@@ -81641,7 +81641,7 @@ var require_event2 = __commonJS({
   "node_modules/postman-collection/lib/collection/event.js"(exports2, module2) {
     var _2 = require_util8().lodash;
     var Property = require_property().Property;
-    var Script2 = require_script2().Script;
+    var Script3 = require_script2().Script;
     var Event2;
     _2.inherit(
       /**
@@ -81673,12 +81673,12 @@ var require_event2 = __commonJS({
             return;
           }
           var result, script = definition.script;
-          if (Script2.isScript(script)) {
+          if (Script3.isScript(script)) {
             result = script;
           } else if (_2.isArray(script) || _2.isString(script)) {
-            result = new Script2({ exec: script });
+            result = new Script3({ exec: script });
           } else if (_2.isObject(script)) {
-            result = new Script2(script);
+            result = new Script3(script);
           }
           _2.mergeDefined(
             this,
@@ -272443,11 +272443,11 @@ var bootstrapActionContract = {
       required: false
     },
     "collection-scripts-json": {
-      description: 'Collection-root prerequest scripts for generated collections, as inline JSON starting with { or a workspace-relative path to a JSON manifest. Shape: {"schemaVersion":1,"roles":{"*":{"beforeRequest":".postman/scripts/signer.js"}}}. Role keys are * (every role), baseline, smoke, or contract; a role key overrides * for the same script type. Values are workspace-relative paths to plain JavaScript, inlined at load time and rebuilt into the payload on every run, so edits ship automatically and survive spec regeneration. Use for computed per-request signatures (OAuth 1.0a, HMAC, SigV4, JWS) that no OpenAPI security scheme can express. afterResponse is reserved and rejected. Note that postman-smoke-flow-action auth-config-json writes this same collection-root prerequest channel on the smoke collection; enabling both stacks two scripts and applies its bearer after this script signs, which breaks the signature.',
+      description: 'Collection-root prerequest scripts for generated collections, as inline JSON starting with { or a workspace-relative path to a JSON manifest. Shape: {"schemaVersion":1,"roles":{"*":{"beforeRequest":".postman/scripts/signer.js"}}}. Role keys are * (every role), baseline, smoke, or contract; a role key overrides * for the same script type. Values are workspace-relative paths to plain JavaScript, inlined at load time and rebuilt into the payload on every run. Use for computed per-request signatures (OAuth 1.0a, HMAC, SigV4, JWS) that no OpenAPI security scheme can express. Applies to OpenAPI collections only; a GraphQL, gRPC, SOAP, or AsyncAPI run fails rather than ignoring it. afterResponse is reserved and rejected. Script edits ship on the next run when collection-sync-mode is refresh, even if the spec is unchanged. Two limits: under collection-sync-mode version an unchanged spec still short-circuits, so a script edit needs a spec change to publish; and *removing* this input cannot be detected on an unchanged spec, so a previously injected script stays on the existing collections until a spec byte changes or the collection ids move. Note that postman-smoke-flow-action auth-config-json writes this same collection-root prerequest channel on the smoke collection; enabling both stacks two scripts and applies its bearer after this script signs, which breaks the signature.',
       required: false
     },
     "collection-variables-json": {
-      description: 'Collection-root variable declarations for generated collections, as inline JSON starting with { or a workspace-relative path to a JSON manifest. Shape: {"schemaVersion":1,"roles":{"*":{"consumerKey":"","signatureMethod":"RSA-SHA256"}}}. Role keys behave as in collection-scripts-json. Declares the keys a collection-scripts-json script reads, since generated collections otherwise carry only spec-derived variables. Values must be strings and only the initial value travels in the collection document, so declare secrets as "" and supply them per run via the app Current Value column or postman collection run --env-var. Never commit a credential here.',
+      description: 'Collection-root variable declarations for generated collections, as inline JSON starting with { or a workspace-relative path to a JSON manifest. Shape: {"schemaVersion":1,"roles":{"*":{"consumerKey":"","signatureMethod":"RSA-SHA256"}}}. Role keys behave as in collection-scripts-json, and the same OpenAPI-only restriction and refresh/version/removal limits apply. Declares the keys a collection-scripts-json script reads, since generated collections otherwise carry only spec-derived variables. Values must be strings and only the initial value travels in the collection document, so declare secrets as "" and supply them per run via the app Current Value column or postman collection run --env-var. Never commit a credential here.',
       required: false
     },
     "onboarding-scope": {
@@ -282587,6 +282587,7 @@ ${line}` : line;
 // src/lib/spec/collection-root-content.ts
 var import_node_fs3 = require("node:fs");
 var import_node_path3 = __toESM(require("node:path"), 1);
+var import_node_vm2 = require("node:vm");
 var COLLECTION_ROOT_CONTENT_SCHEMA_VERSION = 1;
 var WILDCARD_ROLE = "*";
 var COLLECTION_ROLES = ["baseline", "smoke", "contract"];
@@ -282656,14 +282657,21 @@ function readManifestText(raw, inputName, workspaceRoot, dependencies) {
     errorCode(inputName, "MANIFEST"),
     realpath2
   );
+  let contents;
   try {
-    return readFile4(target);
+    contents = readFile4(target);
   } catch (error2) {
     throw new Error(
       `${errorCode(inputName, "MANIFEST")}_UNREADABLE: ${inputName} manifest could not be read from ${value}`,
       { cause: error2 }
     );
   }
+  if (!contents.trim()) {
+    throw new Error(
+      `${errorCode(inputName, "MANIFEST")}_EMPTY: ${inputName} manifest at ${value} contains no content`
+    );
+  }
+  return contents;
 }
 function parseRoleEnvelope(text, inputName, parseEntry) {
   const invalid = (detail) => {
@@ -282765,6 +282773,18 @@ function parseVariableValues(text) {
     }
   );
 }
+function assertParsableCollectionScript(source, label, scriptPath) {
+  try {
+    new import_node_vm2.Script(`;(async () => {;
+${source}
+;})();`, { filename: scriptPath });
+  } catch (error2) {
+    throw new Error(
+      `COLLECTION_SCRIPT_UNPARSABLE: ${label} failed to parse (${error2 instanceof Error ? error2.message : String(error2)})`,
+      { cause: error2 }
+    );
+  }
+}
 function inlineScripts(roles, workspaceRoot, dependencies) {
   const readFile4 = dependencies.readFile ?? ((target) => (0, import_node_fs3.readFileSync)(target, "utf8"));
   const realpath2 = dependencies.realpath ?? ((candidate) => (0, import_node_fs3.realpathSync)(candidate));
@@ -282810,6 +282830,7 @@ function inlineScripts(roles, workspaceRoot, dependencies) {
       if (!normalized.trim()) {
         throw new Error(`COLLECTION_SCRIPT_EMPTY: ${label} has no script content at ${scriptPath}`);
       }
+      assertParsableCollectionScript(normalized, label, scriptPath);
       code[scriptType] = normalized;
     }
     if (Object.keys(code).length > 0) resolved[role] = code;
@@ -344890,6 +344911,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
         `onboarding-scope=${onboardingScope} currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
       );
     }
+    if (collectionRootContent) {
+      throw new Error(
+        `COLLECTION_ROOT_CONTENT_UNSUPPORTED_PROTOCOL: collection-scripts-json and collection-variables-json apply to OpenAPI-generated collections only; detected ${resolvedSpecType}`
+      );
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     return runProtocolBootstrap(
       resolvedSpecType,
@@ -345457,7 +345483,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info(
         `onboarding-scope=${onboardingScope}; preserving workspace/spec onboarding and syncing authored additional collections only.`
       );
-    } else if (specContentUnchanged && !collectionRootContent) {
+    } else if (specContentUnchanged && !(collectionRootContent && inputs.collectionSyncMode === "refresh")) {
       outputs["baseline-collection-id"] = baselineCollectionId || "";
       outputs["smoke-collection-id"] = smokeCollectionId || "";
       outputs["contract-collection-id"] = contractCollectionId || "";

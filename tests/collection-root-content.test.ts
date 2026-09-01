@@ -152,9 +152,9 @@ describe('collection-root content resolution', () => {
   });
 
   it('normalizes CRLF and trailing newlines so a rerun digests identically', () => {
-    const root = workspaceWithSigner('line one\r\nline two\r\n\n');
+    const root = workspaceWithSigner('var a = 1;\r\nvar b = 2;\r\n\n');
     const content = resolveCollectionRootContent(SCRIPTS_INLINE, undefined, root);
-    expect(content?.scripts?.smoke?.beforeRequest).toBe('line one\nline two');
+    expect(content?.scripts?.smoke?.beforeRequest).toBe('var a = 1;\nvar b = 2;');
   });
 
   it('resolves declared variables for every role without touching the filesystem', () => {
@@ -244,6 +244,30 @@ describe('collection-root content resolution', () => {
           root
         )
       ).toThrow(/COLLECTION_SCRIPT_OUTSIDE_WORKSPACE/);
+    });
+
+    // Nothing on the write path executes customer source, so a syntax error
+    // would import cleanly and then fail every request inside Postman.
+    it('rejects a script that does not parse', () => {
+      const root = workspaceWithSigner('pm.request.headers.add({ key: "X" ');
+      expect(() => resolveCollectionRootContent(SCRIPTS_INLINE, undefined, root)).toThrow(
+        /COLLECTION_SCRIPT_UNPARSABLE/
+      );
+    });
+
+    it('accepts a script using top-level await', () => {
+      const root = workspaceWithSigner('const res = await pm.sendRequest("https://example.test");');
+      expect(() =>
+        resolveCollectionRootContent(SCRIPTS_INLINE, undefined, root)
+      ).not.toThrow();
+    });
+
+    it('rejects an explicitly named manifest file that is blank', () => {
+      const root = workspaceWithSigner();
+      writeFileSync(path.join(root, '.postman', 'blank.json'), '   \n', 'utf8');
+      expect(() =>
+        resolveCollectionRootContent('.postman/blank.json', undefined, root)
+      ).toThrow(/COLLECTION_SCRIPTS_JSON_MANIFEST_EMPTY/);
     });
 
     it('rejects a script carrying the smoke-flow generated-OAuth marker', () => {

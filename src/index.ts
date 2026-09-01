@@ -2706,6 +2706,15 @@ async function runBootstrapInner(
         `onboarding-scope=${onboardingScope} currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
       );
     }
+    // Fail rather than silently ignore. The multi-protocol path builds its
+    // collections through a different generator that has no collection-root
+    // content channel, so accepting these inputs here would produce a green run
+    // whose collections carry none of the requested authentication.
+    if (collectionRootContent) {
+      throw new Error(
+        `COLLECTION_ROOT_CONTENT_UNSUPPORTED_PROTOCOL: collection-scripts-json and collection-variables-json apply to OpenAPI-generated collections only; detected ${resolvedSpecType}`
+      );
+    }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
     // Protocol collections are local EC generation; protobuf never uploads to Spec Hub.
     return runProtocolBootstrap(
@@ -3405,16 +3414,32 @@ async function runBootstrapInner(
     dependencies.core.info(
       `onboarding-scope=${onboardingScope}; preserving workspace/spec onboarding and syncing authored additional collections only.`
     );
-  } else if (specContentUnchanged && !collectionRootContent) {
+  } else if (
+    specContentUnchanged &&
+    !(collectionRootContent && inputs.collectionSyncMode === 'refresh')
+  ) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
     //
-    // Gated on there being no collection-root content, because a signer script
-    // or variable manifest can change while the spec does not. Skipping here
-    // would make that edit a silent no-op. Regeneration is cheap and does not
-    // imply a write: the per-role payload digest comparison against the
-    // rollback snapshot still resolves an unchanged role to `unchanged` with
-    // zero network operations.
+    // Two conditions have to hold before the fast path is given up, because a
+    // signer script or variable manifest can change while the spec does not and
+    // skipping would make that edit a silent no-op.
+    //
+    // `collectionRootContent`: no configured content means no payload
+    // difference to find, so there is nothing to regenerate for.
+    //
+    // `refresh`: only that mode fetches rollback snapshots, which are what the
+    // per-role digest comparison compares against, so only there does
+    // regenerating stay write-free when nothing actually changed. Under
+    // `version` there is no snapshot and no comparison, so bypassing would
+    // publish three fresh collection versions on every idempotent rerun.
+    //
+    // Known gap, documented on both inputs: *removing* the inputs cannot be
+    // detected here. Absent content is indistinguishable from never-configured
+    // content without per-run state, and `.postman/resources.yaml` is not a
+    // trustworthy source for it since not every consumer commits it back.
+    // A previously injected script therefore survives on the existing
+    // collections until any spec byte changes or the collection ids are moved.
     outputs['baseline-collection-id'] = baselineCollectionId || '';
     outputs['smoke-collection-id'] = smokeCollectionId || '';
     outputs['contract-collection-id'] = contractCollectionId || '';

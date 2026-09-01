@@ -1670,6 +1670,37 @@ paths:
     });
   });
 
+  // Only `refresh` fetches the rollback snapshots the payload-digest comparison
+  // needs, so only there is regenerating write-free. Under `version` there is
+  // no snapshot and no comparison, and bypassing the fast path would publish
+  // three fresh collection versions on every idempotent rerun.
+  it('keeps the unchanged-spec fast path under collection-sync-mode version', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'root-content-version-'));
+    mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+    writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+    await withCwd(dir, async () => {
+      const { core, infos } = createCoreStub();
+      const postman = createRollbackPostman({
+        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      });
+
+      await runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          collectionSyncMode: 'version',
+          releaseLabel: 'v1.0.0',
+          collectionScriptsJson: JSON.stringify({
+            schemaVersion: 1,
+            roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+          })
+        }
+      });
+
+      expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+    });
+  });
+
   it('reports a content-changing canonical publish for repo-sync finalization', async () => {
     const { core, outputs } = createCoreStub();
     const tagSpecVersion = vi.fn().mockResolvedValue({ id: 'tag-1', name: 'v1 (deadbee)' });

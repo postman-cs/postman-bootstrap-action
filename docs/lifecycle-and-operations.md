@@ -56,8 +56,20 @@ Set the same region on the service-token step and bootstrap step so the PMAK, ac
 
 ## Release policy
 
-Consumers can pin immutable tags such as `v1.0.0` for reproducibility or use the moving `v1` alias for the latest compatible release. See [Release Policy](../RELEASE_POLICY.md).
+Consumers can pin immutable tags such as `v2.0.0` for reproducibility or use the moving `v2` alias for the latest compatible release. See [Release Policy](../RELEASE_POLICY.md).
 
 ## Backend selection
 
 Public inputs and outputs are backend-neutral; backend-specific details are not part of the caller workflow syntax.
+
+## Phase independence
+
+Bootstrap succeeds independently. It creates or updates the Postman workspace and collections even if a later stage (repo sync, Insights onboarding) fails. This is intentional:
+
+- **Postman side is self-contained:** workspace creation, spec upload, and local OpenAPI conversion (import/deep-update) do not depend on repository access or merge status.
+- **Repository side is async:** later stages may fail due to repo permissions, branch protection, or pending approval. Bootstrap completion is not blocked by these downstream concerns.
+- **Idempotent reruns:** if a later stage fails, subsequent reruns reuse existing Postman assets (via `workspace-id`, `spec-id`, collection IDs) and focus on the failed stage without recreating everything.
+
+**When bootstrap fails:** the action stops and does not proceed to repo sync. Postman assets are left in the state they reached before the failure (run-owned fresh imports are compensated on link/tag failure before resources persist). Clear error messages identify which required bootstrap step failed (for example, spec upload or local collection import/deep-update). Optional workspace enrichment steps, such as governance assignment and requester invitation, warn and continue so created workspaces and collections remain usable.
+
+This lets customers verify Postman workspace health independently, debug repository issues (branch protection, permissions) separately from Postman provisioning, and reuse existing Postman assets when fixing downstream failures.

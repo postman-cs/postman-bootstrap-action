@@ -46,7 +46,7 @@ jobs:
 
 Provide either `spec-url` (public HTTPS) or `spec-path` (a file in the checked-out repo) for the [Spec Hub import](https://learning.postman.com/docs/design-apis/specifications/import-a-specification/) path.
 
-Mint the `postman-access-token` with the [service-token action](https://github.com/postman-cs/postman-resolve-service-token-action): it is the primary credential and carries every Postman asset operation. A [service account](https://learning.postman.com/docs/administration/service-accounts/) PMAK for `postman-api-key` is optional; it mints and re-mints that access token and logs the Postman CLI in for `spec lint`. See [Obtaining Credentials](docs/credentials.md) for the credential matrix and legacy fallback.
+Mint the `postman-access-token` with the [service-token action](https://github.com/postman-cs/postman-resolve-service-token-action): it is the primary credential and carries every Postman asset operation. A [service account](https://learning.postman.com/docs/administration/service-accounts/) PMAK for `postman-api-key` is optional; it mints and re-mints that access token. See [Obtaining Credentials](docs/credentials.md) for the credential matrix and legacy fallback.
 
 > [!NOTE]
 > The action defaults to the US production region (`postman-region: us`). [EU data residency](https://learning.postman.com/docs/administration/enterprise/about-eu-data-residency/) teams should set `postman-region: eu` on this action and on the service-token step that feeds it.
@@ -294,11 +294,11 @@ Credentials resolve from a CLI flag, then the `INPUT_*` env var, then a plain `P
 
 ## How it works
 
-The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), lint it with the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-governance/), convert OpenAPI locally into baseline, smoke, and contract collections (whole-collection import or in-place deep-update with scripts already embedded), apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
+The action handles the bootstrap slice of the Postman onboarding workflow: create or reuse a Postman workspace, assign governance, invite the requester and workspace admins, upload or update the spec in [Spec Hub](https://learning.postman.com/docs/design-apis/specifications/overview/), convert OpenAPI locally into baseline, smoke, and contract collections (whole-collection import or in-place deep-update with scripts already embedded), apply tags, and reuse committed `.postman/resources.yaml` state when present. Inputs and outputs use kebab-case.
 
-- **Phase independence:** bootstrap succeeds on its own even when later pipeline stages fail, and reruns reuse existing assets. See [Bootstrap Phase Independence](docs/bootstrap-phase-independence.md).
+- **Phase independence:** bootstrap succeeds on its own even when later pipeline stages fail, and reruns reuse existing assets. See [Phase independence](docs/lifecycle-and-operations.md#phase-independence).
 - **Team identity:** the team ID is resolved from the access-token session identity; org-mode tenants pass `workspace-team-id`. See [Team Identity](docs/team-identity.md).
-- **Git providers:** workspace-to-repository linking supports GitHub and GitLab, cloud and self-hosted. See [Git Provider Support](docs/git-provider-support.md).
+- **Git providers:** workspace-to-repository linking supports GitHub, GitLab, Bitbucket, and Azure DevOps, cloud and self-hosted; the provider is detected from the repository URL (`src/lib/repo/context.ts`).
 - **Spec handling:** operation summaries are normalized before upload, `spec-url` fetches are SSRF-hardened HTTPS with pinned DNS, and breaking-change comparison runs before any Postman mutation when enabled. See [OpenAPI Spec Handling](docs/spec-handling.md).
 - **Lifecycle modes:** `collection-sync-mode` (`refresh`/`version`, legacy `reuse`), `spec-sync-mode` (`update`/`version`), release-label derivation, ref-native state, local conversion → repo v3 artifacts → classic sync import/deep-update (canonical spec upload remains in Spec Hub; path-only pre-link when spec-path exists), and smoke monitoring. See [Lifecycle Modes and Operational Reference](docs/lifecycle-and-operations.md).
 - **Credentials:** `postman-access-token` authenticates every identity and asset operation; the optional `postman-api-key` is used only to preflight the mint credential with `GET /me` and mint or re-mint that token. See [Obtaining Credentials](docs/credentials.md).

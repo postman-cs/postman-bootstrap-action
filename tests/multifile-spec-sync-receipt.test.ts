@@ -8,6 +8,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+// @ts-expect-error -- CI helper is plain ESM and intentionally outside tsconfig source roots
+import * as rebindModule from '../.github/scripts/rebind-multifile-receipt.mjs';
 
 // Probe script is plain ESM (.mjs). Keep the contract test adjacent without
 // expanding tsconfig to cover scripts/.
@@ -568,6 +570,11 @@ describe('multifile-spec-sync receipt contract', () => {
     expect(isReleaseOnlyDriftPath('docs/LIVE_TESTING_RUNBOOK.md')).toBe(true);
     expect(isReleaseOnlyDriftPath('.github/workflows/ci.yml')).toBe(true);
     expect(isReleaseOnlyDriftPath('tests/ci-workflow.test.ts')).toBe(true);
+    expect(isReleaseOnlyDriftPath('AGENTS.md')).toBe(true);
+    expect(isReleaseOnlyDriftPath('SUPPORT.md')).toBe(true);
+    expect(isReleaseOnlyDriftPath('.github/pull_request_template.md')).toBe(true);
+    expect(isReleaseOnlyDriftPath('scripts/check-doc-pins.mjs')).toBe(true);
+    expect(isReleaseOnlyDriftPath('scripts/probe-multifile-spec-sync.mjs')).toBe(false);
     expect(isReleaseOnlyDriftPath('src/index.ts')).toBe(false);
     expect(isReleaseOnlyDriftPath('action.yml')).toBe(false);
     expect(isReleaseOnlyDriftPath('.github/workflows/release.yml')).toBe(false);
@@ -766,14 +773,60 @@ describe('multifile-spec-sync receipt contract', () => {
     expect(rebound.capabilities).toEqual(originalCapabilities);
   });
 
+const planMultifileReceiptRebind = rebindModule.planMultifileReceiptRebind as (
+  receipt: Receipt,
+  options: {
+    headCommit: string;
+    isAncestor: (ancestor: string, descendant: string) => boolean;
+    changedPaths: string[];
+  }
+) => { updated: boolean; receipt: Receipt };
+/**
+ * Binds the receipt to HEAD the way the remote does. Inside GitHub Actions the
+ * pointer must already match: ci.yml's normalize-receipt job performs the
+ * commit-only rebind on the pull request before the gate runs. Outside Actions
+ * (the pre-push mirror) that rebind has not happened yet, so behavior-bearing
+ * drift is accepted only when the same rebind would succeed: the receipt commit
+ * is an ancestor of HEAD and no live evidence field changes.
+ */
+function bindReceiptToHead(receipt: Receipt, headCommit: string): Receipt {
+  try {
+    return assertMultifileSpecSyncReceiptSourceBinding(receipt, { headCommit, repoRoot }) as Receipt;
+  } catch (error) {
+    if (
+      process.env.GITHUB_ACTIONS === 'true' ||
+      !(error instanceof Error) ||
+      !error.message.includes('behavior-bearing paths changed')
+    ) {
+      throw error;
+    }
+    const plan = planMultifileReceiptRebind(receipt, {
+      headCommit,
+      isAncestor: (ancestor: string, descendant: string) => {
+        try {
+          execFileSync('git', ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: repoRoot });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      changedPaths: execFileSync('git', ['diff', '--name-only', `${receipt.bootstrapCommit}..${headCommit}`], {
+        cwd: repoRoot,
+        encoding: 'utf8'
+      })
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+    });
+    expect(plan.updated, 'pending commit-only rebind must be plannable').toBe(true);
+    return plan.receipt as Receipt;
+  }
+}
   it('requires live evidence receipt bound to committed feature source with P01-P10 pass', { timeout: 30_000 }, () => {
     expect(existsSync(receiptPath)).toBe(true);
     const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as Receipt;
     const commit = currentBootstrapCommit();
-    const validated = assertMultifileSpecSyncReceiptSourceBinding(receipt, {
-      headCommit: commit,
-      repoRoot
-    }) as Receipt;
+    const validated = bindReceiptToHead(receipt, commit);
     expect(validated.bootstrapCommit).toMatch(/^[a-f0-9]{40}$/);
     expect(validated.legs).toHaveLength(2);
     for (const leg of validated.legs) {

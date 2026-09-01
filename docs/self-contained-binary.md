@@ -50,9 +50,8 @@ The plain-env fallback (3) is what makes Jenkins [`withCredentials`](https://www
 
 Run with **only** `postman-access-token` (no `postman-api-key`) and with the two optional download paths off (their defaults) to keep the run free of any runtime tool downloads. Every asset operation — workspace, Spec Hub upload, collection generation, test injection, tagging, linking, sync — runs over the access-token gateway, which needs nothing *on the agent* beyond the binary (it still reaches the Postman gateway over the network — see [Network requirements](#network-requirements)).
 
-Two features pull extra tooling onto the agent at runtime; both are off by default and must stay off (or be pre-provisioned) on a locked-down agent:
+One feature pulls extra tooling onto the agent at runtime; it is off by default and must stay off (or be pre-provisioned) on a locked-down agent:
 
-- **Spec lint** — enabled by `postman-api-key`. Downloads and installs the [Postman CLI](https://learning.postman.com/docs/postman-cli/postman-cli-installation/) via `curl` at runtime. Without a PMAK, lint is cleanly skipped (`{ "status": "skipped", "reason": "no postman-api-key" }`) and the run does not fail.
 - **Breaking-change check** — enabled by `breaking-change-mode` with a comparison source. Downloads the pinned `pb33f/openapi-changes` tarball from GitHub and shells out to `tar`. Leave `breaking-change-mode` at its default (`off`) to skip it, or pre-provision/mirror the tool. Access-token-only alone does **not** disable it.
 
 If you need either in a locked-down environment, run it as a separate, explicitly-provisioned step rather than through this binary.
@@ -82,14 +81,14 @@ POSTMAN_ACCESS_TOKEN="$(printf '%s' "$resp" | grep -o '"access_token":"[^"]*"' |
 export POSTMAN_ACCESS_TOKEN
 
 # Drop the PMAK so it is not in scope when the binary runs: the binary
-# reads a plain POSTMAN_API_KEY too, and its presence would enable lint
-# (a runtime Postman CLI install), breaking access-token-only isolation.
+# reads a plain POSTMAN_API_KEY too; keeping it out of scope keeps the run
+# access-token-only.
 unset POSTMAN_API_KEY
 ```
 
 A token minted from the US endpoint is not valid against the EU API (and vice versa), so the mint base and `--postman-region` must match. Store the PMAK in your CI secret store and mint on demand; do not persist the access token.
 
-Minting uses the PMAK only for this token exchange — it is **not** passed to the binary as `--postman-api-key`, so the run stays access-token-only (no lint, no Postman CLI install).
+Minting uses the PMAK only for this token exchange — it is **not** passed to the binary as `--postman-api-key`, so the run stays access-token-only.
 
 ## Network requirements
 
@@ -105,7 +104,7 @@ On agents that enforce an outbound allowlist, allow **all** of the following (pr
 | `iapub.postman.co` | Session identity / team scope (`/api/sessions/current`) |
 | `go.postman.co` | Cold serial fallback for the Bifrost proxy (`/_api`) |
 
-Allowlisting only the API host is **not** enough: credential preflight and asset-gateway calls will fail even though minting succeeds. If you also enable lint or breaking-change checks, add `dl-cli.pstmn.io` and `github.com` / `objects.githubusercontent.com` respectively.
+Allowlisting only the API host is **not** enough: credential preflight and asset-gateway calls will fail even though minting succeeds. If you also enable the breaking-change check, add `github.com` and `objects.githubusercontent.com`.
 
 Pre-minting the access token on a connected host and injecting it as `POSTMAN_ACCESS_TOKEN` removes the mint call from the agent, but **not** the requirement — the agent still must reach the gateway hosts above to do the actual work. A host with no route to Postman (direct or proxied) cannot run the bootstrap. Only the package-registry and Node-runtime dependencies are eliminated; Postman connectivity is not.
 
@@ -180,7 +179,7 @@ pipeline {
             [ -n "$POSTMAN_ACCESS_TOKEN" ] || { echo "token mint failed" >&2; exit 1; }
             export POSTMAN_ACCESS_TOKEN
             # Drop the PMAK so the binary stays access-token-only: it also reads a plain
-            # POSTMAN_API_KEY, whose presence would enable lint (a runtime CLI install).
+            # POSTMAN_API_KEY, whose presence would widen the run beyond access-token-only.
             unset POSTMAN_API_KEY
             ./postman-bootstrap \
               --project-name core-payments \
@@ -205,6 +204,5 @@ pipeline {
 
 - **Platform:** linux-x64 (glibc) only. arm64/Windows/macOS targets are not built yet.
 - **Network:** not air-gapped — requires outbound access to the Postman API/gateway hosts for the whole run. See [Network requirements](#network-requirements).
-- **Lint:** requires the Postman CLI, which the binary installs via `curl` at runtime — not self-contained. Access-token-only runs skip lint cleanly.
 - **Breaking-change check:** downloads the `pb33f/openapi-changes` tarball at runtime when enabled. Off by default (`breaking-change-mode: off`); leave it off or pre-provision the tool on locked-down agents.
 - **Version:** the embedded `--version` and telemetry version are baked in at build time from the release tag; the versioned filename (`postman-bootstrap-<version>-linux-x64`) also carries it.

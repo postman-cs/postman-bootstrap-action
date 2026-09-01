@@ -13,7 +13,9 @@ import {
   applyOas30TypeNullLintCompatibility,
   normalizeSpecDocument,
   readActionInputs,
+  runAction,
   runBootstrap,
+  runGatedValidation,
   type CoreLike,
   type ExecLike,
   type IOLike,
@@ -511,6 +513,17 @@ describe('bootstrap action', () => {
     ]);
   });
 
+  it('marks secrets before rejecting an authored-collections scope without a directory', () => {
+    const { core, secrets } = createCoreStub({
+      'project-name': 'core-payments', 'spec-url': 'https://example.test/openapi.yaml',
+      'postman-api-key': 'pmak-test',
+      'onboarding-scope': 'spec-with-additional-collections'
+    });
+
+    expect(() => readActionInputs(core)).toThrow(/ADDITIONAL_COLLECTIONS_DIR_REQUIRED/);
+    expect(secrets).toEqual(['pmak-test']);
+  });
+
   it('fails the breaking-change check before Postman resource mutations', async () => {
     const { core, outputs } = createCoreStub();
     const postman = createRollbackPostman({
@@ -865,6 +878,130 @@ describe('bootstrap action', () => {
     expect(internalIntegration.linkCollectionsToSpecification).not.toHaveBeenCalled();
     expect(internalIntegration.syncCollection).not.toHaveBeenCalled();
     expect(internalIntegration.findWorkspaceForRepo).toHaveBeenCalledTimes(1);
+  });
+
+  it('checkpoints an authored collection root and resumes it after population fails', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-additional-'));
+    mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    writeFileSync(join(workspace, 'postman/curated/payments.json'),
+      JSON.stringify(createCuratedCollection('Payments curated')));
+    writeFileSync(join(workspace, 'postman/curated/refunds.json'),
+      JSON.stringify(createCuratedCollection('Refunds curated')));
+
+    try {
+      await withCwd(workspace, async () => {
+        let checkpoint: ReturnType<typeof readResourcesState> = null;
+        const resourcesState = {
+          read: () => checkpoint,
+          write: vi.fn((state) => { checkpoint = structuredClone(state); })
+        };
+        let createdRoots = 0;
+        const createCollection = vi.fn(async (_workspaceId: string, _collection: unknown,
+          options?: { onRootCreated?: (id: string) => void | Promise<void> }) => {
+          const id = createdRoots++ === 0 ? 'col-created' : 'col-failed';
+          await options?.onRootCreated?.(id);
+          if (id === 'col-failed') throw new Error('population failed');
+          return id;
+        });
+        const postman = createRollbackPostman({ createCollection });
+        const action = createCoreStub();
+        const inputs = { additionalCollectionsDir: 'postman/curated',
+          onboardingScope: 'spec-with-additional-collections' as const };
+        await expect(runExistingSpecBootstrap(postman, { core: action.core, inputs, resourcesState }))
+          .rejects.toThrow(/population failed/);
+        expect(checkpoint).toMatchObject({
+          workspace: { id: 'ws-existing' },
+          cloudResources: { additionalCollections: {
+            '../postman/curated/payments.json': 'col-created',
+            '../postman/curated/refunds.json': 'col-failed'
+          } }
+        });
+        expect(action.warnings.join('\n')).toContain('col-created');
+
+        const result = await runExistingSpecBootstrap(postman, { inputs, resourcesState });
+        expect(result['collections-json']).toBe(JSON.stringify({ baseline: '', contract: '', smoke: '' }));
+        expect(JSON.parse(result['additional-collections-json'])).toMatchObject([{
+          collectionId: 'col-created', displayPath: 'postman/curated/payments.json',
+          name: 'Payments curated', resourcePath: '../postman/curated/payments.json'
+        }, {
+          collectionId: 'col-failed', name: 'Refunds curated'
+        }]);
+        expect(createCollection).toHaveBeenCalledTimes(2);
+        expect(postman.updateCollection).toHaveBeenCalledWith(
+          'col-created', expect.objectContaining({ info: expect.any(Object) })
+        );
+        expect([postman.importV2Collection, postman.tagCollection]
+          .every((mock) => mock.mock.calls.length === 0)).toBe(true);
+
+        const unownedPostman = createRollbackPostman({
+          findWorkspacesByName: vi.fn().mockResolvedValue([{ id: 'ws-name', name: 'core-payments' }])
+        });
+        await expect(runExistingSpecBootstrap(unownedPostman, { inputs: {
+          ...inputs, teamId: '123', workspaceId: undefined } }))
+          .rejects.toThrow(/ADDITIONAL_COLLECTIONS_WORKSPACE_ID_REQUIRED/);
+        expect(unownedPostman.updateSpec).not.toHaveBeenCalled();
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects duplicate authored collection names before mutation', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-spec-additional-duplicates-'));
+    mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+    const duplicate = JSON.stringify(createCuratedCollection('Payments curated'));
+    writeFileSync(join(workspace, 'postman/curated/payments.json'), duplicate);
+    writeFileSync(join(workspace, 'postman/curated/payments-copy.json'), duplicate);
+
+    try {
+      await withCwd(workspace, async () => {
+        await expect(runGatedValidation(createInputs({ additionalCollectionsDir: 'postman/curated',
+          onboardingScope: 'spec-with-additional-collections' }), {
+          tier: 'gated', strategy: 'publish-gate', identity: { provider: 'github', refKind: 'branch', isPrContext: false, isForkPr: false }, reason: 'test'
+        }, createCoreStub().core)).rejects.toThrow(/ADDITIONAL_COLLECTION_NAME_CONFLICT/);
+
+        const postman = createRollbackPostman();
+        await expect(runExistingSpecBootstrap(postman, { inputs: {
+          additionalCollectionsDir: 'postman/curated',
+          onboardingScope: 'spec-with-additional-collections'
+        } })).rejects.toThrow(/ADDITIONAL_COLLECTION_NAME_CONFLICT/);
+        expect(postman.updateSpec).not.toHaveBeenCalled();
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects authored collection sync from preview runs before mutation', async () => {
+    const previousDecision = process.env.POSTMAN_BRANCH_DECISION;
+    process.env.POSTMAN_BRANCH_DECISION = JSON.stringify({
+      tier: 'preview', strategy: 'preview',
+      identity: { provider: 'github', headBranch: 'feature/test' }, reason: 'test preview decision'
+    });
+    const postman = createRollbackPostman();
+    try {
+      const action = createCoreStub({
+        'project-name': 'core-payments',
+        'spec-url': 'https://example.test/openapi.yaml',
+        'additional-collections-dir': 'not-read',
+        'onboarding-scope': 'spec-with-additional-collections'
+      });
+      await expect(runAction(action.core, createExecStub(), createIoStub()))
+        .rejects.toThrow(/does not sync authored collections from preview runs/);
+      expect(action.secrets).toEqual([]);
+
+      await expect(runExistingSpecBootstrap(postman, {
+        inputs: {
+          additionalCollectionsDir: 'not-read',
+          onboardingScope: 'spec-with-additional-collections'
+        }
+      })).rejects.toThrow(/does not sync authored collections from preview runs/);
+      expect(postman.updateSpec).not.toHaveBeenCalled();
+      expect(postman.createCollection).not.toHaveBeenCalled();
+    } finally {
+      if (previousDecision === undefined) delete process.env.POSTMAN_BRANCH_DECISION;
+      else process.env.POSTMAN_BRANCH_DECISION = previousDecision;
+    }
   });
 
   it('drops tracked asset ids when spec-only onboarding targets a different workspace', async () => {

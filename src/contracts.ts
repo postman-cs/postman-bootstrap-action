@@ -52,10 +52,10 @@ export const bootstrapActionContract: ActionContract = {
       required: false
     },
     'onboarding-scope': {
-      description: 'Onboarding scope. Use full for the complete pipeline or spec-only for OpenAPI workspace and specification onboarding without generated assets.',
+      description: 'Onboarding scope. Use full for the complete pipeline, spec-only for OpenAPI workspace and specification onboarding without collections, or spec-with-additional-collections for OpenAPI workspace/spec onboarding plus authored additional collections without generated assets; authored sync requires a durable workspace identity.',
       required: false,
       default: 'full',
-      allowedValues: ['full', 'spec-only']
+      allowedValues: ['full', 'spec-only', 'spec-with-additional-collections']
     },
     'sync-examples': {
       description: 'Whether linked spec/collection relations should enable example syncing.',
@@ -297,6 +297,9 @@ export const bootstrapActionContract: ActionContract = {
     },
     'collections-json': {
       description: 'JSON summary of generated collections.'
+    },
+    'additional-collections-json': {
+      description: 'JSON array of authored collection identities, including collectionId, name, displayPath, and resourcePath.'
     },
     'prebuilt-collections-json': {
       description:

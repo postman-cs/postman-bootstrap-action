@@ -105,6 +105,13 @@ describe('bootstrap action contract', () => {
   });
 
   it('defaults lifecycle controls in contract, manifest, and runtime', () => {
+    expect(bootstrapActionContract.inputs['onboarding-scope']).toMatchObject({
+      default: 'full', allowedValues: ['full', 'spec-only', 'spec-with-additional-collections']
+    });
+    expect([actionManifest.inputs['onboarding-scope'].default, resolveInputs({}).onboardingScope,
+      resolveInputs({ INPUT_ADDITIONAL_COLLECTIONS_DIR: 'postman/curated', INPUT_ONBOARDING_SCOPE:
+        'spec-with-additional-collections' }).onboardingScope
+    ]).toEqual(['full', 'full', 'spec-with-additional-collections']);
     expect(bootstrapActionContract.inputs['sync-examples'].default).toBe('true');
     expect(bootstrapActionContract.inputs['sync-examples'].allowedValues).toEqual([
       'true',
@@ -185,6 +192,8 @@ describe('bootstrap action contract', () => {
   });
 
   it('rejects unsupported lifecycle control values instead of silently falling back', () => {
+    expect(() => resolveInputs({ INPUT_ONBOARDING_SCOPE: 'unsupported' }))
+      .toThrow(/Unsupported onboarding-scope/);
     expect(() => resolveInputs({ INPUT_COLLECTION_SYNC_MODE: 'unsupported' }))
       .toThrow(/Unsupported collection-sync-mode/);
     expect(() => resolveInputs({ INPUT_SPEC_SYNC_MODE: 'reuse' }))
@@ -551,6 +560,7 @@ describe('bootstrap action contract', () => {
         smoke: '',
         contract: ''
       }),
+      'additional-collections-json': '[]',
       'prebuilt-collections-json': '',
       'openapi-operation-ledger-json': '',
       'lint-summary-json': JSON.stringify({

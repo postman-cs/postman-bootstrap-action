@@ -3384,7 +3384,21 @@ export class PostmanGatewayAssetsClient {
     // Both the items and root routes need the full public uid.
     const itemsCid = this.collectionItemsId(rawId);
     const rootCid = this.collectionRootId(rawId);
-    await options.onRootCreated?.(rawId);
+    try {
+      await options.onRootCreated?.(rawId);
+    } catch (error) {
+      try {
+        await this.deleteCollection(rawId);
+      } catch (cleanupError) {
+        throw new Error(
+          `Collection ${rawId} checkpoint failed (${error instanceof Error ? error.message : String(error)}) and cleanup also failed: ${
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          }`,
+          { cause: cleanupError }
+        );
+      }
+      throw error;
+    }
     try {
       await this.createItemTree(itemsCid, asItemArray(v3.items), itemsCid);
       await this.applyCollectionLevelSettings(rootCid, v3, { rename: true });

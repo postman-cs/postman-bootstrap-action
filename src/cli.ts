@@ -5,6 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  assertAdditionalCollectionsBranchSupported,
   createBootstrapDependencies,
   decideBranchTier,
   resolveInputs,
@@ -449,6 +450,7 @@ export async function runCli(
   const inputs = resolveInputs(config.inputEnv);
   // Decide BEFORE credential validation so gated runs never require a token.
   const branchDecision = decideBranchTier(inputs, config.inputEnv);
+  assertAdditionalCollectionsBranchSupported(inputs, branchDecision, { allowGatedValidation: true });
   validateCliInputs(inputs, { requireCredentials: branchDecision.tier !== 'gated' });
   assertOutputFileAllowed(config.resultJsonPath);
   assertOutputFileAllowed(config.dotenvPath);

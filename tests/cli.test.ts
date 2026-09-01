@@ -30,6 +30,7 @@ type CliOutputs = {
   'smoke-collection-id': string;
   'contract-collection-id': string;
   'collections-json': string;
+  'additional-collections-json': string;
   'lint-summary-json': string;
   'breaking-change-status': string;
   'breaking-change-summary-json': string;
@@ -49,6 +50,7 @@ function createCliOutputs(overrides: Partial<CliOutputs> = {}): CliOutputs {
     'smoke-collection-id': 'col-smoke',
     'contract-collection-id': 'col-contract',
     'collections-json': '{}',
+    'additional-collections-json': '[]',
     'lint-summary-json': '{"errors":0}',
     'breaking-change-status': 'skipped',
     'breaking-change-summary-json': '{"status":"skipped"}',
@@ -767,6 +769,28 @@ describe('runCli publish-gate branch seam', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+  it('rejects authored collection sync from preview runs before credentials or network', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const executeBootstrap = vi.fn();
+    await expect(runCli([
+      '--project-name', 'preview-authored', '--spec-url', 'https://example.test/openapi.yaml',
+      '--additional-collections-dir', 'not-read',
+      '--onboarding-scope', 'spec-with-additional-collections'
+    ], {
+      env: {
+        POSTMAN_BRANCH_DECISION: JSON.stringify({
+          tier: 'preview', strategy: 'preview',
+          identity: { provider: 'github', headBranch: 'feature/test' }, reason: 'test preview decision'
+        })
+      },
+      executeBootstrap
+    })).rejects.toThrow(/does not sync authored collections from preview runs/);
+
+    expect(executeBootstrap).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('exits cleanly with skipped-branch-gate and no network or credential mint on a GitHub feature branch', async () => {

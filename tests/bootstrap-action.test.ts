@@ -1025,6 +1025,56 @@ describe('bootstrap action', () => {
     }
   });
 
+  // These inputs only ever apply to generated roles, so pairing them with a
+  // scope that produces none is a misconfiguration. Both paths must agree:
+  // accepting on one and rejecting on the other is how a PR gate passes work
+  // that the canonical run silently drops, or vice versa.
+  it.each(['spec-only', 'spec-with-additional-collections'] as const)(
+    'rejects collection-root content on both paths under onboarding-scope %s',
+    async (onboardingScope) => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-scope-root-content-'));
+      mkdirSync(join(workspace, '.postman/scripts'), { recursive: true });
+      mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+      writeFileSync(join(workspace, '.postman/scripts/signer.js'), '// signer');
+      writeFileSync(
+        join(workspace, 'postman/curated/payments.json'),
+        JSON.stringify(createCuratedCollection('Payments curated'))
+      );
+
+      const scopedInputs = {
+        onboardingScope,
+        additionalCollectionsDir: 'postman/curated',
+        collectionScriptsJson: JSON.stringify({
+          schemaVersion: 1,
+          roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+        })
+      };
+
+      try {
+        await withCwd(workspace, async () => {
+          // Branch gate.
+          await expect(
+            runGatedValidation(createInputs(scopedInputs), {
+              tier: 'gated',
+              strategy: 'publish-gate',
+              identity: { provider: 'github', refKind: 'branch', isPrContext: false, isForkPr: false },
+              reason: 'test'
+            }, createCoreStub().core)
+          ).rejects.toThrow(/COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE/);
+
+          // Publish path, and it must refuse before touching the spec.
+          const postman = createRollbackPostman();
+          await expect(
+            runExistingSpecBootstrap(postman, { inputs: scopedInputs })
+          ).rejects.toThrow(/COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE/);
+          expect(postman.updateSpec).not.toHaveBeenCalled();
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('rejects authored collection sync from preview runs before mutation', async () => {
     const previousDecision = process.env.POSTMAN_BRANCH_DECISION;
     process.env.POSTMAN_BRANCH_DECISION = JSON.stringify({

@@ -271284,7 +271284,7 @@ var bootstrapActionContract = {
       required: false
     },
     "collection-scripts-json": {
-      description: 'Collection-root prerequest scripts for generated collections, as inline JSON starting with { or a workspace-relative path to a JSON manifest. Shape: {"schemaVersion":1,"roles":{"*":{"beforeRequest":".postman/scripts/signer.js"}}}. Role keys are * (every role), baseline, smoke, or contract; a role key overrides * for the same script type. Values are workspace-relative paths to plain JavaScript, inlined at load time and rebuilt into the payload on every run. Use for computed per-request signatures (OAuth 1.0a, HMAC, SigV4, JWS) that no OpenAPI security scheme can express. Applies to OpenAPI collections only; a GraphQL, gRPC, SOAP, or AsyncAPI run fails rather than ignoring it. afterResponse is reserved and rejected. Script edits ship on the next run when collection-sync-mode is refresh, even if the spec is unchanged. Two limits: under collection-sync-mode version an unchanged spec still short-circuits, so a script edit needs a spec change to publish; and *removing* this input cannot be detected on an unchanged spec, so a previously injected script stays on the existing collections until a spec byte changes or the collection ids move. Note that postman-smoke-flow-action auth-config-json writes this same collection-root prerequest channel on the smoke collection; enabling both stacks two scripts and applies its bearer after this script signs, which breaks the signature.',
+      description: 'Collection-root prerequest scripts for generated collections, as inline JSON starting with { or a workspace-relative path to a JSON manifest. Shape: {"schemaVersion":1,"roles":{"*":{"beforeRequest":".postman/scripts/signer.js"}}}. Role keys are * (every role), baseline, smoke, or contract; a role key overrides * for the same script type. Values are workspace-relative paths to plain JavaScript, inlined at load time and rebuilt into the payload on every run. Use for computed per-request signatures (OAuth 1.0a, HMAC, SigV4, JWS) that no OpenAPI security scheme can express. Applies to OpenAPI collections only; a GraphQL, gRPC, SOAP, or AsyncAPI run fails rather than ignoring it, as does any onboarding-scope other than full, since those produce no generated collections. afterResponse is reserved and rejected. Script edits ship on the next run when collection-sync-mode is refresh, even if the spec is unchanged. Two limits: under collection-sync-mode version an unchanged spec still short-circuits, so a script edit needs a spec change to publish; and *removing* this input cannot be detected on an unchanged spec, so a previously injected script stays on the existing collections until a spec byte changes or the collection ids move. Note that postman-smoke-flow-action auth-config-json writes this same collection-root prerequest channel on the smoke collection; enabling both stacks two scripts and applies its bearer after this script signs, which breaks the signature.',
       required: false
     },
     "collection-variables-json": {
@@ -281685,6 +281685,9 @@ function resolveVariables(roles) {
     if (Object.keys(values).length > 0) resolved[role] = values;
   }
   return Object.keys(resolved).length > 0 ? resolved : void 0;
+}
+function isCollectionRootContentRequested(scriptsInput, variablesInput) {
+  return Boolean(scriptsInput?.trim() || variablesInput?.trim());
 }
 function resolveCollectionRootContent(scriptsInput, variablesInput, workspaceRoot, dependencies = {}) {
   const scriptRoles = parseScriptPaths(
@@ -343592,6 +343595,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
   }
   const defaultResourcesState = isCanonicalWriter ? trackedState : trackedState?.workspace ? { workspace: trackedState.workspace } : null;
   const fullScopeAdditionalCollections = shouldGenerateCollections ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, defaultResourcesState) : [];
+  if (isCollectionRootContentRequested(inputs.collectionScriptsJson, inputs.collectionVariablesJson) && !shouldGenerateCollections) {
+    throw new Error(
+      `COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE: collection-scripts-json and collection-variables-json apply to generated collections, which onboarding-scope=${onboardingScope} does not produce`
+    );
+  }
   const collectionRootContent = shouldGenerateCollections ? resolveCollectionRootContent(
     inputs.collectionScriptsJson,
     inputs.collectionVariablesJson,
@@ -345023,11 +345031,20 @@ async function runGatedValidation(inputs, decision, actionCore) {
         loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, null)
       );
     }
-    const gatedRootContent = resolveCollectionRootContent(
+    const gatedRootContentRequested = isCollectionRootContentRequested(
+      inputs.collectionScriptsJson,
+      inputs.collectionVariablesJson
+    );
+    if (gatedRootContentRequested && inputs.onboardingScope !== "full") {
+      throw new Error(
+        `COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE: collection-scripts-json and collection-variables-json apply to generated collections, which onboarding-scope=${inputs.onboardingScope} does not produce`
+      );
+    }
+    const gatedRootContent = gatedRootContentRequested ? resolveCollectionRootContent(
       inputs.collectionScriptsJson,
       inputs.collectionVariablesJson,
       resolveWorkspaceRoot2()
-    );
+    ) : void 0;
     let content;
     let bundle4;
     if (inputs.specPath) {

@@ -98,7 +98,10 @@ import {
   type CollectionRole,
   type LocalOpenApiRolePayloads
 } from './lib/spec/local-openapi-collection-generation.js';
-import { resolveCollectionRootContent } from './lib/spec/collection-root-content.js';
+import {
+  isCollectionRootContentRequested,
+  resolveCollectionRootContent
+} from './lib/spec/collection-root-content.js';
 import { planCollectionDelta } from './lib/spec/collection-delta.js';
 import type { CollectionWriteMetrics } from './lib/postman/postman-gateway-assets-client.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
@@ -2639,6 +2642,19 @@ async function runBootstrapInner(
   // manifest, a missing script, or a path escaping the workspace must fail
   // before the CLI install, spec upload or workspace create. Only generated
   // roles carry this content, so the non-full scopes never resolve it.
+  // Rejected rather than ignored. These inputs only ever apply to generated
+  // roles, so pairing them with a scope that produces none is a
+  // misconfiguration, and silently dropping them is how an onboarded API ends
+  // up with collections that cannot authenticate. Checked before any file read
+  // so the error names the pairing instead of an unrelated missing file.
+  if (
+    isCollectionRootContentRequested(inputs.collectionScriptsJson, inputs.collectionVariablesJson) &&
+    !shouldGenerateCollections
+  ) {
+    throw new Error(
+      `COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE: collection-scripts-json and collection-variables-json apply to generated collections, which onboarding-scope=${onboardingScope} does not produce`
+    );
+  }
   const collectionRootContent = shouldGenerateCollections
     ? resolveCollectionRootContent(
         inputs.collectionScriptsJson,
@@ -4417,11 +4433,26 @@ export async function runGatedValidation(
     // malformed manifest, or unparsable JavaScript fails the credential-free
     // branch gate rather than surviving review and breaking the canonical
     // publish. Filesystem reads only; no workspace writes.
-    const gatedRootContent = resolveCollectionRootContent(
+    //
+    // Scope is checked first, and only content is resolved for a scope that
+    // produces generated roles, so this path accepts and rejects exactly what
+    // the publish path does.
+    const gatedRootContentRequested = isCollectionRootContentRequested(
       inputs.collectionScriptsJson,
-      inputs.collectionVariablesJson,
-      resolveWorkspaceRoot()
+      inputs.collectionVariablesJson
     );
+    if (gatedRootContentRequested && inputs.onboardingScope !== 'full') {
+      throw new Error(
+        `COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE: collection-scripts-json and collection-variables-json apply to generated collections, which onboarding-scope=${inputs.onboardingScope} does not produce`
+      );
+    }
+    const gatedRootContent = gatedRootContentRequested
+      ? resolveCollectionRootContent(
+          inputs.collectionScriptsJson,
+          inputs.collectionVariablesJson,
+          resolveWorkspaceRoot()
+        )
+      : undefined;
     let content: string | undefined;
     let bundle: DefinitionBundle | undefined;
     if (inputs.specPath) {

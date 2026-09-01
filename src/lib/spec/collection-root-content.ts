@@ -435,6 +435,21 @@ function resolveVariables(
 }
 
 /**
+ * Whether either input carries a value, without reading anything from disk.
+ *
+ * Lets both the publish path and the credential-free branch gate reject an
+ * unsupported pairing (a non-`full` onboarding scope, or a non-OpenAPI protocol)
+ * with an error about the pairing itself, rather than surfacing an unrelated
+ * missing-file error for content that would never have been applied.
+ */
+export function isCollectionRootContentRequested(
+  scriptsInput: string | undefined,
+  variablesInput: string | undefined
+): boolean {
+  return Boolean(scriptsInput?.trim() || variablesInput?.trim());
+}
+
+/**
  * Resolve both inputs into applied content. Called before any provisioning side
  * effect so a malformed manifest, a missing script or a path escaping the
  * workspace fails the run before a workspace, spec or collection exists.

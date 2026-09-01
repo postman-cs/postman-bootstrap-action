@@ -1750,6 +1750,29 @@ describe('PostmanGatewayAssetsClient', () => {
       }));
     });
 
+    it.each([
+      { cleanupStatus: 200, expected: /checkpoint write failed/ },
+      { cleanupStatus: 403, expected: /55363555-root-uid checkpoint failed.*cleanup also failed/ }
+    ])('cleans up a root after checkpoint failure (delete $cleanupStatus)', async ({ cleanupStatus, expected }) => {
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'post' && env.path.startsWith('/v3/collections/?workspace=')) {
+          return jsonResponse({ data: { id: '55363555-root-uid' } });
+        }
+        if (env.method === 'delete') return jsonResponse(
+          cleanupStatus === 200 ? { data: { id: '55363555-root-uid' } } : { error: 'forbidden' },
+          { status: cleanupStatus });
+        return jsonResponse({});
+      });
+
+      await expect(client.createCollection(
+        'ws-1', { $kind: 'collection', name: 'Checkpointed', items: [] },
+        { onRootCreated: () => { throw new Error('checkpoint write failed'); } }
+      )).rejects.toThrow(expected);
+      expect(calls).toContainEqual(expect.objectContaining(
+        { method: 'delete', path: '/v3/collections/55363555-root-uid' }));
+      expect(calls.some((call) => call.path.endsWith('/items/'))).toBe(false);
+    });
+
     it('normalizes http: script types for converted v2.1 collection and item scripts', async () => {
       const v21 = {
         info: {

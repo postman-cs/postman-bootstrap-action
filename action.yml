@@ -28,7 +28,7 @@ inputs:
     description: Workspace-relative directory containing curated Postman v2.1 JSON/YAML files or canonical HTTP collection v3 Local View directories to create or update.
     required: false
   onboarding-scope:
-    description: Onboarding scope. Use full for the complete pipeline or spec-only for OpenAPI workspace and specification onboarding without generated assets.
+    description: Onboarding scope. Use full for the complete pipeline, spec-only for OpenAPI workspace and specification onboarding without collections, or spec-with-additional-collections for OpenAPI workspace/spec onboarding plus authored additional collections without generated assets; authored sync requires a durable workspace identity.
     required: false
     default: full
   sync-examples:
@@ -209,6 +209,8 @@ outputs:
     description: Contract collection ID
   collections-json:
     description: JSON summary of generated collections
+  additional-collections-json:
+    description: JSON array of authored collection identities, including collectionId, name, displayPath, and resourcePath
   prebuilt-collections-json:
     description: Digest-bound JSON manifest of locally materialized Collection v3 trees (schemaVersion 1) for repo-sync reuse
   openapi-operation-ledger-json:

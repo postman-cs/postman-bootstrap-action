@@ -4413,6 +4413,15 @@ export async function runGatedValidation(
         loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, null)
       );
     }
+    // Resolved here, not just on the publish path, so a missing script file, a
+    // malformed manifest, or unparsable JavaScript fails the credential-free
+    // branch gate rather than surviving review and breaking the canonical
+    // publish. Filesystem reads only; no workspace writes.
+    const gatedRootContent = resolveCollectionRootContent(
+      inputs.collectionScriptsJson,
+      inputs.collectionVariablesJson,
+      resolveWorkspaceRoot()
+    );
     let content: string | undefined;
     let bundle: DefinitionBundle | undefined;
     if (inputs.specPath) {
@@ -4435,6 +4444,13 @@ export async function runGatedValidation(
       if (inputs.onboardingScope !== 'full' && specType !== 'openapi') {
         throw new Error(
           `onboarding-scope=${inputs.onboardingScope} currently supports OpenAPI specifications only; detected ${specType}`
+        );
+      }
+      // Mirrors the publish-path rejection so the branch gate catches an
+      // unsupported protocol pairing instead of deferring it to the canonical run.
+      if (gatedRootContent && specType !== 'openapi') {
+        throw new Error(
+          `COLLECTION_ROOT_CONTENT_UNSUPPORTED_PROTOCOL: collection-scripts-json and collection-variables-json apply to OpenAPI-generated collections only; detected ${specType}`
         );
       }
       if (specType === 'openapi') {

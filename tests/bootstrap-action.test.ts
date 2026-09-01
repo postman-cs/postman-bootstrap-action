@@ -972,6 +972,59 @@ describe('bootstrap action', () => {
     }
   });
 
+  // The branch gate is the credential-free PR check. Root-content problems have
+  // to surface there rather than passing review and breaking the canonical
+  // publish, which is the same fail-fast contract additional-collections has.
+  it('rejects broken collection-root content during a gated run', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-gated-root-content-'));
+    mkdirSync(join(workspace, '.postman/scripts'), { recursive: true });
+    writeFileSync(join(workspace, '.postman/scripts/broken.js'), 'pm.request.headers.add({ key: "X" ');
+
+    const gatedDecision = {
+      tier: 'gated' as const,
+      strategy: 'publish-gate' as const,
+      identity: {
+        provider: 'github' as const,
+        refKind: 'branch' as const,
+        isPrContext: false,
+        isForkPr: false
+      },
+      reason: 'test'
+    };
+    const scriptsFor = (scriptPath: string) =>
+      JSON.stringify({ schemaVersion: 1, roles: { '*': { beforeRequest: scriptPath } } });
+
+    try {
+      await withCwd(workspace, async () => {
+        await expect(
+          runGatedValidation(
+            createInputs({ collectionScriptsJson: scriptsFor('.postman/scripts/missing.js') }),
+            gatedDecision,
+            createCoreStub().core
+          )
+        ).rejects.toThrow(/COLLECTION_SCRIPT_UNREADABLE/);
+
+        await expect(
+          runGatedValidation(
+            createInputs({ collectionScriptsJson: scriptsFor('.postman/scripts/broken.js') }),
+            gatedDecision,
+            createCoreStub().core
+          )
+        ).rejects.toThrow(/COLLECTION_SCRIPT_UNPARSABLE/);
+
+        await expect(
+          runGatedValidation(
+            createInputs({ collectionVariablesJson: '{"schemaVersion":2,"roles":{}}' }),
+            gatedDecision,
+            createCoreStub().core
+          )
+        ).rejects.toThrow(/COLLECTION_VARIABLES_JSON_INVALID/);
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('rejects authored collection sync from preview runs before mutation', async () => {
     const previousDecision = process.env.POSTMAN_BRANCH_DECISION;
     process.env.POSTMAN_BRANCH_DECISION = JSON.stringify({

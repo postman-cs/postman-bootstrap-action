@@ -345023,6 +345023,11 @@ async function runGatedValidation(inputs, decision, actionCore) {
         loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, null)
       );
     }
+    const gatedRootContent = resolveCollectionRootContent(
+      inputs.collectionScriptsJson,
+      inputs.collectionVariablesJson,
+      resolveWorkspaceRoot2()
+    );
     let content;
     let bundle4;
     if (inputs.specPath) {
@@ -345040,6 +345045,11 @@ async function runGatedValidation(inputs, decision, actionCore) {
       if (inputs.onboardingScope !== "full" && specType !== "openapi") {
         throw new Error(
           `onboarding-scope=${inputs.onboardingScope} currently supports OpenAPI specifications only; detected ${specType}`
+        );
+      }
+      if (gatedRootContent && specType !== "openapi") {
+        throw new Error(
+          `COLLECTION_ROOT_CONTENT_UNSUPPORTED_PROTOCOL: collection-scripts-json and collection-variables-json apply to OpenAPI-generated collections only; detected ${specType}`
         );
       }
       if (specType === "openapi") {

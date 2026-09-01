@@ -459,6 +459,18 @@ export function isReleaseOnlyDriftPath(relPath) {
   ) {
     return true;
   }
+  // Repository policy docs and docs-lint tooling: never run inside the action,
+  // not bundled into dist. Exact paths for the same reason as above.
+  if (
+    p === 'AGENTS.md' ||
+    p === 'CONTRIBUTING.md' ||
+    p === 'SECURITY.md' ||
+    p === 'SUPPORT.md' ||
+    p === '.github/pull_request_template.md' ||
+    p === 'scripts/check-doc-pins.mjs'
+  ) {
+    return true;
+  }
   // Release/docs metadata (markdown only).
   if (p === 'RELEASE_POLICY.md') return true;
   if (p.startsWith('docs/') && /\.md$/i.test(p)) return true;

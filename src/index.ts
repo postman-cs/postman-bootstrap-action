@@ -98,6 +98,7 @@ import {
   type CollectionRole,
   type LocalOpenApiRolePayloads
 } from './lib/spec/local-openapi-collection-generation.js';
+import { resolveCollectionRootContent } from './lib/spec/collection-root-content.js';
 import { planCollectionDelta } from './lib/spec/collection-delta.js';
 import type { CollectionWriteMetrics } from './lib/postman/postman-gateway-assets-client.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
@@ -130,6 +131,13 @@ export interface ResolvedInputs {
   smokeCollectionId?: string;
   contractCollectionId?: string;
   additionalCollectionsDir?: string;
+  /**
+   * Raw manifest inputs. Held unparsed because either may be inline JSON or a
+   * workspace-relative path, so resolution needs filesystem access and happens
+   * with the other pre-side-effect validation rather than here.
+   */
+  collectionScriptsJson?: string;
+  collectionVariablesJson?: string;
   onboardingScope: 'full' | 'spec-only' | 'spec-with-additional-collections';
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
@@ -744,6 +752,8 @@ export function resolveInputs(
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
     additionalCollectionsDir: getInput('additional-collections-dir', env),
+    collectionScriptsJson: getInput('collection-scripts-json', env),
+    collectionVariablesJson: getInput('collection-variables-json', env),
     onboardingScope: parseEnumInput<ResolvedInputs['onboardingScope']>(
       'onboarding-scope',
       getInput('onboarding-scope', env),
@@ -1120,6 +1130,8 @@ export function readActionInputs(
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, 'additional-collections-dir'),
+    INPUT_COLLECTION_SCRIPTS_JSON: optionalInput(actionCore, 'collection-scripts-json'),
+    INPUT_COLLECTION_VARIABLES_JSON: optionalInput(actionCore, 'collection-variables-json'),
     INPUT_ONBOARDING_SCOPE:
       optionalInput(actionCore, 'onboarding-scope') ??
       bootstrapActionContract.inputs['onboarding-scope'].default,
@@ -2623,6 +2635,17 @@ async function runBootstrapInner(
   const fullScopeAdditionalCollections = shouldGenerateCollections
     ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, defaultResourcesState)
     : [];
+  // Same fail-fast contract as additional-collections-dir above: a malformed
+  // manifest, a missing script, or a path escaping the workspace must fail
+  // before the CLI install, spec upload or workspace create. Only generated
+  // roles carry this content, so the non-full scopes never resolve it.
+  const collectionRootContent = shouldGenerateCollections
+    ? resolveCollectionRootContent(
+        inputs.collectionScriptsJson,
+        inputs.collectionVariablesJson,
+        resolveWorkspaceRoot()
+      )
+    : undefined;
 
   let previousSpecContent: string | undefined;
   let previousSpecRollbackHash: string | undefined;
@@ -3465,6 +3488,7 @@ async function runBootstrapInner(
           secretsResolverProvider: inputs.secretsResolverProvider,
           names: roleNames,
           ...(collectionBranchMarker ? { description: collectionBranchMarker } : {}),
+          ...(collectionRootContent ? { collectionRootContent } : {}),
           contractIndex
         };
         localOpenApiGenerationOptions = buildLocalOpenApiConversionOptions(conversionOptions);

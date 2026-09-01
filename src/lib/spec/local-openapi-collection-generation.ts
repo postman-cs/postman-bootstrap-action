@@ -9,6 +9,7 @@ import {
 
 import { canonicalizeV2CollectionForSync } from '../postman/collection-model-conversion.js';
 import { stripCollectionSemanticReceipt } from '../postman/collection-semantic-receipt.js';
+import { applyCollectionRootContent, type CollectionRootContent } from './collection-root-content.js';
 import { instrumentContractCollection } from './collection-contracts.js';
 import type { ContractIndex } from './contract-index.js';
 import { withDeterministicSchemaFaker } from './deterministic-schema-faker.js';
@@ -32,7 +33,8 @@ export type LocalOpenApiConversionStage =
   | 'repair-request-examples'
   | 'materialize-roles'
   | 'instrument-smoke'
-  | 'instrument-contract';
+  | 'instrument-contract'
+  | 'apply-collection-root-content';
 
 export class LocalOpenApiConversionError extends Error {
   readonly code = LOCAL_OPENAPI_CONVERSION_FAILED;
@@ -71,6 +73,13 @@ export interface LocalOpenApiConversionOptions {
   names: Record<CollectionRole, string>;
   /** Optional branch-scoped description applied to every role payload. */
   description?: string;
+  /**
+   * Optional customer-supplied collection-root scripts and variable
+   * declarations. Omitted by every caller that sets neither
+   * `collection-scripts-json` nor `collection-variables-json`, in which case
+   * role payloads are byte-identical to those produced without this option.
+   */
+  collectionRootContent?: CollectionRootContent;
   /** Required when producing the contract role payload. */
   contractIndex: ContractIndex;
 }
@@ -162,6 +171,7 @@ function assertValidOptions(options: LocalOpenApiConversionOptions): void {
     typeof options.names.contract !== 'string' ||
     !options.names.contract.trim() ||
     (options.description !== undefined && typeof options.description !== 'string') ||
+    (options.collectionRootContent !== undefined && !isRecord(options.collectionRootContent)) ||
     !options.contractIndex ||
     typeof options.contractIndex !== 'object'
   ) {
@@ -509,6 +519,27 @@ export async function generateLocalOpenApiRolePayloads(
     warnings.push(...instrumented.warnings);
   } catch (error) {
     throw new LocalOpenApiConversionError('instrument-contract', 'failed to instrument contract collection', error);
+  }
+
+  // Deliberately after contract instrumentation and before canonicalization.
+  // After, because `instrumentContractCollection` runs a forbidden-construct
+  // scan that throws on `eval(` — correct for our generated contract runtime,
+  // wrong for a customer signer that evals a pinned crypto library. Before,
+  // because the digest is computed over the canonicalized payload, so injecting
+  // here is what makes the script and its variables survive regeneration
+  // instead of needing a post-create PATCH.
+  if (options.collectionRootContent) {
+    try {
+      baseline = applyCollectionRootContent(baseline, 'baseline', options.collectionRootContent);
+      smoke = applyCollectionRootContent(smoke, 'smoke', options.collectionRootContent);
+      contract = applyCollectionRootContent(contract, 'contract', options.collectionRootContent);
+    } catch (error) {
+      throw new LocalOpenApiConversionError(
+        'apply-collection-root-content',
+        'failed to apply collection-root scripts or variables',
+        error
+      );
+    }
   }
 
   // Sync persists the Collection v3 model, not every legacy converter v2 field.

@@ -1637,6 +1637,39 @@ paths:
     ).toBe(true);
   });
 
+  // A signer script or variable manifest can change while the spec does not.
+  // If the unchanged-spec branch still short-circuits, that edit never reaches
+  // payload comparison and the remote collections keep the stale script with no
+  // warning. Regeneration is safe here because the per-role payload digest
+  // comparison is what suppresses the write.
+  it('still regenerates collections on an unchanged spec when collection-root content is configured', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'root-content-noop-'));
+    mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+    writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+    await withCwd(dir, async () => {
+      const { core, infos } = createCoreStub();
+      const postman = createRollbackPostman({
+        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      });
+
+      await runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          collectionScriptsJson: JSON.stringify({
+            schemaVersion: 1,
+            roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+          })
+        }
+      });
+
+      // The Spec Hub update is still correctly skipped; only the collection
+      // regeneration skip must not fire.
+      expect(infos.some((info) => info.includes('skipping Spec Hub update'))).toBe(true);
+      expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(false);
+    });
+  });
+
   it('reports a content-changing canonical publish for repo-sync finalization', async () => {
     const { core, outputs } = createCoreStub();
     const tagSpecVersion = vi.fn().mockResolvedValue({ id: 'tag-1', name: 'v1 (deadbee)' });

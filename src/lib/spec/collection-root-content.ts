@@ -132,9 +132,16 @@ function resolveInsideWorkspace(
     throw new Error(`${code}_UNREADABLE: ${label} does not exist at ${relativePath}`, { cause: error });
   }
   // Checked after realpath so a symlink pointing outside the workspace cannot
-  // smuggle host files into a collection payload.
+  // smuggle host files into a collection payload. Compared on segment
+  // boundaries, not by prefix: a legitimate in-workspace name whose first
+  // component merely begins with two dots (`..fixtures/signer.js`) resolves
+  // inside the workspace and must not be reported as an escape.
   const relative = path.relative(root, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  if (
+    relative === '..' ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
     throw new Error(
       `${code}_OUTSIDE_WORKSPACE: ${label} must resolve inside ${root}, got: ${resolved}`
     );
@@ -294,7 +301,11 @@ function parseVariableValues(
       if (Object.keys(entry).length === 0) {
         invalid(`roles.${roleKey} must declare at least one variable`);
       }
-      const values: CollectionVariableValues = {};
+      // Null prototype so a variable legitimately named `__proto__` becomes an
+      // own property. On an ordinary object literal that assignment hits the
+      // `Object.prototype.__proto__` setter, is ignored for a string value, and
+      // the key silently disappears from `Object.keys`.
+      const values: CollectionVariableValues = Object.create(null) as CollectionVariableValues;
       for (const [key, rawValue] of Object.entries(entry)) {
         if (!key.trim()) invalid(`roles.${roleKey} declares an empty variable name`);
         if (key !== key.trim()) {
@@ -350,7 +361,6 @@ function inlineScripts(
         throw new Error(`COLLECTION_SCRIPT_UNREADABLE: ${label} did not read back as text`);
       }
       const bytes = Buffer.byteLength(source, 'utf8');
-      if (bytes === 0) throw new Error(`COLLECTION_SCRIPT_EMPTY: ${label} is empty at ${scriptPath}`);
       if (bytes > MAX_COLLECTION_SCRIPT_BYTES) {
         throw new Error(
           `COLLECTION_SCRIPT_SIZE_EXCEEDED: ${label} is ${bytes} bytes, over the ${MAX_COLLECTION_SCRIPT_BYTES} byte limit`
@@ -364,7 +374,15 @@ function inlineScripts(
       // Normalize to the exec form Sync round-trips: one joined string, LF
       // endings, no trailing blank lines. Emitting the same bytes the v2/v3/v2
       // canonicalization produces keeps the payload digest stable on rerun.
-      code[scriptType] = source.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+      const normalized = source.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+      // Checked on the normalized source, not the raw byte count. An
+      // editor-created "empty" file often holds a single newline, which is one
+      // byte; normalizing it yields '' and `applyCollectionRootScripts` then
+      // drops it, so the run would succeed with no signer and no warning.
+      if (!normalized.trim()) {
+        throw new Error(`COLLECTION_SCRIPT_EMPTY: ${label} has no script content at ${scriptPath}`);
+      }
+      code[scriptType] = normalized;
     }
     if (Object.keys(code).length > 0) resolved[role] = code;
   }

@@ -220,6 +220,18 @@ describe('collection-root content resolution', () => {
       ).toThrow(/COLLECTION_SCRIPT_EMPTY/);
     });
 
+    // An editor-created "empty" signer holds a single newline, which is one
+    // byte. A raw byte-count check passes it, normalization yields '', and the
+    // script is then silently dropped: a green run with no authentication.
+    it.each([['a single newline', '\n'], ['CRLFs only', '\r\n\r\n'], ['spaces and tabs', '  \t \n']])(
+      'rejects a script that normalizes to blank content (%s)',
+      (_label, source) => {
+        expect(() =>
+          resolveCollectionRootContent(SCRIPTS_INLINE, undefined, workspaceWithSigner(source))
+        ).toThrow(/COLLECTION_SCRIPT_EMPTY/);
+      }
+    );
+
     it('rejects a symlink escaping the workspace', () => {
       const root = workspaceWithSigner();
       const outside = mkdtempSync(path.join(tmpdir(), 'outside-'));
@@ -250,6 +262,44 @@ describe('collection-root content resolution', () => {
         )
       ).toThrow(/must be a string/);
     });
+
+  });
+
+  // Regression: on an ordinary object literal, assigning a string to
+  // `__proto__` hits Object.prototype's setter and is dropped, so the variable
+  // vanished from Object.keys with no error.
+  it('keeps a variable literally named __proto__ as an own property', () => {
+    // Built as a raw JSON string on purpose. In a JS object literal
+    // `__proto__:` is prototype-setter syntax and would serialize to `{}`,
+    // whereas JSON.parse creates a genuine own property, which is the input
+    // shape a customer manifest actually produces.
+    const manifest = '{"schemaVersion":1,"roles":{"*":{"__proto__":"kept","consumerKey":""}}}';
+    const content = resolveCollectionRootContent(undefined, manifest, workspaceWithSigner());
+    expect(Object.keys(content?.variables?.contract ?? {}).sort()).toEqual([
+      '__proto__',
+      'consumerKey'
+    ]);
+
+    const collection: JsonRecord = { info: { name: 'c' }, item: [] };
+    applyCollectionRootVariables(collection, content?.variables?.contract);
+    expect(array(collection.variable).map(record)).toEqual([
+      { key: '__proto__', value: 'kept' },
+      { key: 'consumerKey', value: '' }
+    ]);
+  });
+
+  // Regression: a prefix test on path.relative() rejected legitimate names
+  // whose first component merely begins with two dots.
+  it('accepts an in-workspace path whose first component begins with two dots', () => {
+    const root = workspaceWithSigner();
+    mkdirSync(path.join(root, '..fixtures'), { recursive: true });
+    writeFileSync(path.join(root, '..fixtures', 'signer.js'), '// dotted dir signer', 'utf8');
+    const content = resolveCollectionRootContent(
+      JSON.stringify({ schemaVersion: 1, roles: { '*': { beforeRequest: '..fixtures/signer.js' } } }),
+      undefined,
+      root
+    );
+    expect(content?.scripts?.smoke?.beforeRequest).toBe('// dotted dir signer');
   });
 });
 

@@ -3405,9 +3405,16 @@ async function runBootstrapInner(
     dependencies.core.info(
       `onboarding-scope=${onboardingScope}; preserving workspace/spec onboarding and syncing authored additional collections only.`
     );
-  } else if (specContentUnchanged) {
+  } else if (specContentUnchanged && !collectionRootContent) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
+    //
+    // Gated on there being no collection-root content, because a signer script
+    // or variable manifest can change while the spec does not. Skipping here
+    // would make that edit a silent no-op. Regeneration is cheap and does not
+    // imply a write: the per-role payload digest comparison against the
+    // rollback snapshot still resolves an unchanged role to `unchanged` with
+    // zero network operations.
     outputs['baseline-collection-id'] = baselineCollectionId || '';
     outputs['smoke-collection-id'] = smokeCollectionId || '';
     outputs['contract-collection-id'] = contractCollectionId || '';

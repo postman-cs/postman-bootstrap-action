@@ -281472,7 +281472,7 @@ function resolveInsideWorkspace2(workspaceRoot, relativePath, label, code, realp
     throw new Error(`${code}_UNREADABLE: ${label} does not exist at ${relativePath}`, { cause: error });
   }
   const relative3 = import_node_path3.default.relative(root, resolved);
-  if (relative3.startsWith("..") || import_node_path3.default.isAbsolute(relative3)) {
+  if (relative3 === ".." || relative3.startsWith(`..${import_node_path3.default.sep}`) || import_node_path3.default.isAbsolute(relative3)) {
     throw new Error(
       `${code}_OUTSIDE_WORKSPACE: ${label} must resolve inside ${root}, got: ${resolved}`
     );
@@ -281589,7 +281589,7 @@ function parseVariableValues(text) {
       if (Object.keys(entry).length === 0) {
         invalid(`roles.${roleKey} must declare at least one variable`);
       }
-      const values = {};
+      const values = /* @__PURE__ */ Object.create(null);
       for (const [key, rawValue] of Object.entries(entry)) {
         if (!key.trim()) invalid(`roles.${roleKey} declares an empty variable name`);
         if (key !== key.trim()) {
@@ -281637,7 +281637,6 @@ function inlineScripts(roles, workspaceRoot, dependencies) {
         throw new Error(`COLLECTION_SCRIPT_UNREADABLE: ${label} did not read back as text`);
       }
       const bytes = Buffer.byteLength(source, "utf8");
-      if (bytes === 0) throw new Error(`COLLECTION_SCRIPT_EMPTY: ${label} is empty at ${scriptPath}`);
       if (bytes > MAX_COLLECTION_SCRIPT_BYTES) {
         throw new Error(
           `COLLECTION_SCRIPT_SIZE_EXCEEDED: ${label} is ${bytes} bytes, over the ${MAX_COLLECTION_SCRIPT_BYTES} byte limit`
@@ -281648,7 +281647,11 @@ function inlineScripts(roles, workspaceRoot, dependencies) {
           `COLLECTION_SCRIPT_RESERVED_MARKER: ${label} contains the postman-smoke-flow-action generated-OAuth marker, which makes smoke-flow delete this script on its next run`
         );
       }
-      code[scriptType] = source.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+      const normalized = source.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+      if (!normalized.trim()) {
+        throw new Error(`COLLECTION_SCRIPT_EMPTY: ${label} has no script content at ${scriptPath}`);
+      }
+      code[scriptType] = normalized;
     }
     if (Object.keys(code).length > 0) resolved[role] = code;
   }
@@ -344188,7 +344191,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info(
         `onboarding-scope=${onboardingScope}; preserving workspace/spec onboarding and syncing authored additional collections only.`
       );
-    } else if (specContentUnchanged) {
+    } else if (specContentUnchanged && !collectionRootContent) {
       outputs["baseline-collection-id"] = baselineCollectionId || "";
       outputs["smoke-collection-id"] = smokeCollectionId || "";
       outputs["contract-collection-id"] = contractCollectionId || "";

@@ -2663,6 +2663,20 @@ async function runBootstrapInner(
         resolveWorkspaceRoot()
       )
     : undefined;
+  if (collectionRootContent) {
+    // Configure-time audit trail, not a detector: removing these inputs on a
+    // later run cannot be caught here (that run never sees this branch), so
+    // the only reliable place to say it is now, while the risk is still
+    // legible. Applies under both collection-sync-mode values - the
+    // version-mode digest precheck further below only catches an edit while
+    // content stays configured, never its removal.
+    dependencies.core.warning(
+      'collection-scripts-json/collection-variables-json configured: removing these inputs on a ' +
+        'later run with an unchanged spec is not detected, and previously injected scripts/' +
+        'variables may remain live on the collections until a spec byte changes or the ' +
+        'collection ids move.'
+    );
+  }
 
   let previousSpecContent: string | undefined;
   let previousSpecRollbackHash: string | undefined;

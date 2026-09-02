@@ -1774,6 +1774,50 @@ paths:
     });
   });
 
+  // Removal cannot be caught retroactively (the run that removes the inputs
+  // never sees this code path), so the audit trail has to be logged now,
+  // every time the feature is actually used, regardless of sync mode or
+  // whether the spec changed.
+  it('warns at configure time that removing collection-root content later goes undetected', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'root-content-configure-warn-'));
+    mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+    writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+    await withCwd(dir, async () => {
+      const { core, warnings } = createCoreStub();
+      const postman = createRollbackPostman({
+        getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+      });
+
+      await runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          collectionScriptsJson: JSON.stringify({
+            schemaVersion: 1,
+            roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+          })
+        }
+      });
+
+      expect(
+        warnings.some(
+          (warning) => warning.includes('removing these inputs') && warning.includes('is not detected')
+        )
+      ).toBe(true);
+    });
+  });
+
+  it('does not warn about collection-root removal when the inputs are not configured at all', async () => {
+    const { core, warnings } = createCoreStub();
+    const postman = createRollbackPostman({
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+    });
+
+    await runExistingSpecBootstrap(postman, { core });
+
+    expect(warnings.some((warning) => warning.includes('removing these inputs'))).toBe(false);
+  });
+
   // Only `refresh` fetches the rollback snapshots the payload-digest comparison
   // needs, so only there is regenerating write-free. Under `version` there is
   // no snapshot and no comparison, and bypassing the fast path would publish

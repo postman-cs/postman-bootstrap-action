@@ -306050,7 +306050,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-08-28T17:35:35.305Z",
-  bootstrapCommit: "37e4f3e9f27ab2b72175c9ba0baed457152af6d6",
+  bootstrapCommit: "de46d6197ae82f4dd3a0af54fa83dea987e2ab9e",
   legs: [
     {
       mode: "nonorg",
@@ -343631,6 +343631,11 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
     inputs.collectionVariablesJson,
     resolveWorkspaceRoot2()
   ) : void 0;
+  if (collectionRootContent) {
+    dependencies.core.warning(
+      "collection-scripts-json/collection-variables-json configured: removing these inputs on a later run with an unchanged spec is not detected, and previously injected scripts/variables may remain live on the collections until a spec byte changes or the collection ids move."
+    );
+  }
   let previousSpecContent;
   let previousSpecRollbackHash;
   let previousBundleSnapshot;

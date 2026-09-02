@@ -310620,8 +310620,13 @@ ${error.responseBody ?? ""}`
    * app. Unlike the expensive v3 export projection, this Sync read is stable
    * immediately after an acknowledged atomic import/deep-update. It is always
    * one fail-closed request: a 5xx is surfaced, never hidden behind a retry.
+   *
+   * Does not throw when the root has no semantic receipt yet (adopted by
+   * name, or never bootstrap-managed) — callers that need "no receipt" to be
+   * a hard failure enforce that themselves; a soft pre-check needs "absent"
+   * distinguishable from "malformed."
    */
-  async readCollectionSemanticReceiptRoot(collectionUid) {
+  async readCollectionSyncRootProjection(collectionUid) {
     const uid = this.collectionRootId(collectionUid);
     const path13 = `/collection/${encodeURIComponent(uid)}/sync?since_id=0&favorite=true&exclude=response%2Crequest`;
     const response = await this.gateway.requestDirectJson({
@@ -310653,13 +310658,34 @@ ${error.responseBody ?? ""}`
         "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root identity, name, or revision is malformed"
       );
     }
-    const receipt = parseCollectionSemanticReceipt(description);
-    if (!receipt) {
+    return { id, name, description, revision, receipt: parseCollectionSemanticReceipt(description) };
+  }
+  async readCollectionSemanticReceiptRoot(collectionUid) {
+    const projection = await this.readCollectionSyncRootProjection(collectionUid);
+    if (!projection.receipt) {
       throw new Error(
         "COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root is missing its semantic receipt"
       );
     }
-    return { id, name, description, revision, digest: receipt.digest };
+    return {
+      id: projection.id,
+      name: projection.name,
+      description: projection.description,
+      revision: projection.revision,
+      digest: projection.receipt.digest
+    };
+  }
+  /**
+   * Cheap pre-write check: does the collection's remote payload already match
+   * a desired digest, without pulling item/response bodies? Returns
+   * `undefined` when the collection has no receipt yet (never bootstrap-
+   * managed, or adopted by name) rather than throwing — callers must decide
+   * for themselves what "unverifiable" means, since it is not evidence of
+   * either a match or a divergence.
+   */
+  async readCollectionReceiptDigest(collectionUid) {
+    const projection = await this.readCollectionSyncRootProjection(collectionUid);
+    return projection.receipt?.digest;
   }
   /**
    * Prove one atomic whole-tree write through its exact Sync identity and the
@@ -344217,6 +344243,63 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       }
       return outputs;
     }
+    let versionModeContentVerified = true;
+    if (specContentUnchanged && inputs.collectionSyncMode === "version" && collectionRootContent) {
+      dependencies.core.warning(
+        "collection-sync-mode: version with collection-scripts-json/collection-variables-json configured is a non-standard combination; regeneration on an unchanged spec depends on a best-effort remote receipt check, not the stronger refresh-mode guarantee."
+      );
+      const versionModeRoles = [
+        { role: "baseline", prefix: BASELINE_COLLECTION_PREFIX, existingId: baselineCollectionId },
+        { role: "smoke", prefix: SMOKE_COLLECTION_PREFIX, existingId: smokeCollectionId },
+        { role: "contract", prefix: CONTRACT_COLLECTION_PREFIX, existingId: contractCollectionId }
+      ];
+      const versionModeRoleNames = {};
+      for (const role of versionModeRoles) {
+        const effectivePrefix = branchDecision.tier === "channel" && branchDecision.channel ? channelAssetName(role.prefix, branchDecision.channel.code).trim() : role.prefix;
+        versionModeRoleNames[role.role] = [effectivePrefix, collectionAssetProjectName].filter(Boolean).join(" ").replace(/[\r\n\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim();
+      }
+      try {
+        if (!contractIndex) {
+          throw new Error("CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight");
+        }
+        const desiredPayloads = await generateLocalOpenApiRolePayloads(bundledCompatibilitySpecContent, {
+          openApiVersion: detectedOpenapiVersion,
+          requestNameSource: inputs.requestNameSource,
+          folderStrategy: inputs.folderStrategy,
+          nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+          secretsResolverProvider: inputs.secretsResolverProvider,
+          names: versionModeRoleNames,
+          ...collectionBranchMarker ? { description: collectionBranchMarker } : {},
+          collectionRootContent,
+          contractIndex
+        });
+        for (const role of versionModeRoles) {
+          if (!role.existingId) continue;
+          let observedDigest;
+          try {
+            observedDigest = await dependencies.postman.readCollectionReceiptDigest?.(role.existingId);
+          } catch (error) {
+            dependencies.core.warning(
+              `collection-root content could not be verified against the remote ${role.role} collection under collection-sync-mode: version (${error instanceof Error ? error.message : String(error)}); the unchanged-spec skip may no longer be accurate.`
+            );
+            continue;
+          }
+          if (observedDigest === void 0) {
+            dependencies.core.warning(
+              `Remote ${role.role} collection has no semantic receipt yet; collection-root content could not be verified under collection-sync-mode: version. The unchanged-spec skip may no longer be accurate.`
+            );
+            continue;
+          }
+          if (observedDigest !== desiredPayloads.roles[role.role].payloadDigest) {
+            versionModeContentVerified = false;
+          }
+        }
+      } catch (error) {
+        dependencies.core.warning(
+          `collection-root content could not be locally re-derived to verify against the remote collections under collection-sync-mode: version (${error instanceof Error ? error.message : String(error)}); the unchanged-spec skip may no longer be accurate.`
+        );
+      }
+    }
     if (!shouldGenerateCollections) {
       outputs["baseline-collection-id"] = "";
       outputs["smoke-collection-id"] = "";
@@ -344225,7 +344308,7 @@ async function runBootstrapInner(inputs, dependencies, telemetry) {
       dependencies.core.info(
         `onboarding-scope=${onboardingScope}; preserving workspace/spec onboarding and syncing authored additional collections only.`
       );
-    } else if (specContentUnchanged && !(collectionRootContent && inputs.collectionSyncMode === "refresh")) {
+    } else if (specContentUnchanged && !(collectionRootContent && inputs.collectionSyncMode === "refresh") && versionModeContentVerified) {
       outputs["baseline-collection-id"] = baselineCollectionId || "";
       outputs["smoke-collection-id"] = smokeCollectionId || "";
       outputs["contract-collection-id"] = contractCollectionId || "";
@@ -345146,6 +345229,7 @@ function createRoutingPostmanClient(options) {
       deepUpdateV2Collection: requireAccessToken("deepUpdateV2Collection"),
       verifyCollectionSemanticReceipt: requireAccessToken("verifyCollectionSemanticReceipt"),
       exportV2Collection: requireAccessToken("exportV2Collection"),
+      readCollectionReceiptDigest: requireAccessToken("readCollectionReceiptDigest"),
       deleteVerifiedRunOwnedCollections: requireAccessToken("deleteVerifiedRunOwnedCollections"),
       reconcileDuplicateFinalCollections: requireAccessToken("reconcileDuplicateFinalCollections")
     };
@@ -345197,6 +345281,7 @@ function createRoutingPostmanClient(options) {
       return gateway.collectionWriteMetrics;
     },
     exportV2Collection: (collectionUid) => gateway.exportV2Collection(collectionUid),
+    readCollectionReceiptDigest: (collectionUid) => gateway.readCollectionReceiptDigest(collectionUid),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) => gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
     reconcileDuplicateFinalCollections: (workspaceId, candidates) => gateway.reconcileDuplicateFinalCollections(workspaceId, candidates),
     findAdoptableSameMarkerCollection: (workspaceId, finalName, desiredDescription) => gateway.findAdoptableSameMarkerCollection(workspaceId, finalName, desiredDescription)

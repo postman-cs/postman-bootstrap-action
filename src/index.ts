@@ -392,6 +392,7 @@ export interface BootstrapExecutionDependencies {
       expectedPayloadDigest: string
     ): Promise<void>;
     exportV2Collection?(collectionUid: string): Promise<Record<string, unknown>>;
+    readCollectionReceiptDigest?(collectionUid: string): Promise<string | undefined>;
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
       workspaceId: string,
@@ -3422,6 +3423,95 @@ async function runBootstrapInner(
     return outputs;
   }
 
+  // Under `refresh`, the existing per-role check further below (rollback
+  // snapshot digest vs. desired digest) already regenerates correctly from
+  // whatever collectionRootContent currently is, including "removed" -
+  // whenever this outer guard lets the step run at all. Nothing to add here.
+  //
+  // Under `version`, there is no equivalent internal check: the step never
+  // runs on an unchanged spec, so a script edit or removal never republishes.
+  // Verify with a cheap remote receipt digest per role (root-only Sync read,
+  // no full export) before accepting the skip. An inconclusive read (error,
+  // or no receipt yet) is not evidence of anything - it must not silently
+  // flip the outcome either way, so it only ever warns and preserves
+  // today's skip; only a positively observed digest mismatch regenerates.
+  let versionModeContentVerified = true;
+  if (specContentUnchanged && inputs.collectionSyncMode === 'version' && collectionRootContent) {
+    dependencies.core.warning(
+      'collection-sync-mode: version with collection-scripts-json/collection-variables-json ' +
+        'configured is a non-standard combination; regeneration on an unchanged spec depends on ' +
+        'a best-effort remote receipt check, not the stronger refresh-mode guarantee.'
+    );
+    const versionModeRoles: Array<{
+      role: CollectionRole;
+      prefix: GeneratedCollectionPrefix;
+      existingId: string | undefined;
+    }> = [
+      { role: 'baseline', prefix: BASELINE_COLLECTION_PREFIX, existingId: baselineCollectionId },
+      { role: 'smoke', prefix: SMOKE_COLLECTION_PREFIX, existingId: smokeCollectionId },
+      { role: 'contract', prefix: CONTRACT_COLLECTION_PREFIX, existingId: contractCollectionId }
+    ];
+    const versionModeRoleNames = {} as Record<CollectionRole, string>;
+    for (const role of versionModeRoles) {
+      const effectivePrefix =
+        branchDecision.tier === 'channel' && branchDecision.channel
+          ? channelAssetName(role.prefix, branchDecision.channel.code).trim()
+          : role.prefix;
+      versionModeRoleNames[role.role] = [effectivePrefix, collectionAssetProjectName]
+        .filter(Boolean)
+        .join(' ')
+        .replace(/[\r\n\u2028\u2029]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    try {
+      if (!contractIndex) {
+        throw new Error('CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight');
+      }
+      const desiredPayloads = await generateLocalOpenApiRolePayloads(bundledCompatibilitySpecContent, {
+        openApiVersion: detectedOpenapiVersion,
+        requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
+        folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
+        nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+        secretsResolverProvider: inputs.secretsResolverProvider,
+        names: versionModeRoleNames,
+        ...(collectionBranchMarker ? { description: collectionBranchMarker } : {}),
+        collectionRootContent,
+        contractIndex
+      });
+      for (const role of versionModeRoles) {
+        if (!role.existingId) continue;
+        let observedDigest: string | undefined;
+        try {
+          observedDigest = await dependencies.postman.readCollectionReceiptDigest?.(role.existingId);
+        } catch (error) {
+          dependencies.core.warning(
+            `collection-root content could not be verified against the remote ${role.role} collection ` +
+              `under collection-sync-mode: version (${error instanceof Error ? error.message : String(error)}); ` +
+              'the unchanged-spec skip may no longer be accurate.'
+          );
+          continue;
+        }
+        if (observedDigest === undefined) {
+          dependencies.core.warning(
+            `Remote ${role.role} collection has no semantic receipt yet; collection-root content ` +
+              'could not be verified under collection-sync-mode: version. The unchanged-spec skip may no longer be accurate.'
+          );
+          continue;
+        }
+        if (observedDigest !== desiredPayloads.roles[role.role].payloadDigest) {
+          versionModeContentVerified = false;
+        }
+      }
+    } catch (error) {
+      dependencies.core.warning(
+        'collection-root content could not be locally re-derived to verify against the remote ' +
+          `collections under collection-sync-mode: version (${error instanceof Error ? error.message : String(error)}); ` +
+          'the unchanged-spec skip may no longer be accurate.'
+      );
+    }
+  }
+
   if (!shouldGenerateCollections) {
     outputs['baseline-collection-id'] = '';
     outputs['smoke-collection-id'] = '';
@@ -3432,7 +3522,8 @@ async function runBootstrapInner(
     );
   } else if (
     specContentUnchanged &&
-    !(collectionRootContent && inputs.collectionSyncMode === 'refresh')
+    !(collectionRootContent && inputs.collectionSyncMode === 'refresh') &&
+    versionModeContentVerified
   ) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
@@ -4715,6 +4806,7 @@ export function createRoutingPostmanClient(options: {
       deepUpdateV2Collection: requireAccessToken('deepUpdateV2Collection'),
       verifyCollectionSemanticReceipt: requireAccessToken('verifyCollectionSemanticReceipt'),
       exportV2Collection: requireAccessToken('exportV2Collection'),
+      readCollectionReceiptDigest: requireAccessToken('readCollectionReceiptDigest'),
       deleteVerifiedRunOwnedCollections: requireAccessToken('deleteVerifiedRunOwnedCollections'),
       reconcileDuplicateFinalCollections: requireAccessToken('reconcileDuplicateFinalCollections')
     };
@@ -4788,6 +4880,7 @@ export function createRoutingPostmanClient(options: {
     exportV2Collection: (collectionUid) =>
       (gateway as PostmanGatewayAssetsClient & { exportV2Collection(collectionUid: string): Promise<Record<string, unknown>> })
         .exportV2Collection(collectionUid),
+    readCollectionReceiptDigest: (collectionUid) => gateway.readCollectionReceiptDigest(collectionUid),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
       gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
     reconcileDuplicateFinalCollections: (workspaceId, candidates) =>

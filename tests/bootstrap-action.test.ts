@@ -27,6 +27,7 @@ import {
 } from '../src/lib/spec/definition-bundle.js';
 import { definitionBundleToSnapshot } from '../src/lib/postman/spec-file-reconcile.js';
 import { SquadDiscoveryUnavailableError } from '../src/lib/postman/postman-gateway-assets-client.js';
+import { computePayloadDigest } from '../src/lib/spec/local-openapi-collection-generation.js';
 import { createHash as createNodeHash } from 'node:crypto';
 
 const VALID_SPEC_31 = `{
@@ -1801,6 +1802,329 @@ paths:
       });
 
       expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+    });
+  });
+
+  it('warns once about the non-standard version+root-content combination, with no other behavior change', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'root-content-version-warn-'));
+    mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+    writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+    await withCwd(dir, async () => {
+      const { core, infos, warnings } = createCoreStub();
+      const postman = createRollbackPostman({
+        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      });
+
+      await runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          collectionSyncMode: 'version',
+          releaseLabel: 'v1.0.0',
+          collectionScriptsJson: JSON.stringify({
+            schemaVersion: 1,
+            roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+          })
+        }
+      });
+
+      expect(
+        warnings.some((warning) => warning.includes('non-standard combination'))
+      ).toBe(true);
+      expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+    });
+  });
+
+  describe('version-mode receipt-digest precheck', () => {
+    const SIGNER_SCRIPTS_JSON = () =>
+      JSON.stringify({
+        schemaVersion: 1,
+        roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+      });
+
+    function withReceiptDigestFromExport(
+      postman: ReturnType<typeof createRollbackPostman>,
+      overrides: Record<string, unknown> = {}
+    ) {
+      return {
+        ...postman,
+        readCollectionReceiptDigest: vi.fn(async (collectionUid: string) => {
+          const exported = await postman.exportV2Collection(collectionUid);
+          return computePayloadDigest(exported);
+        }),
+        ...overrides
+      };
+    }
+
+    it('regenerates when the remote receipt digest genuinely diverges from desired content', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'root-content-version-diverge-'));
+      mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+      writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer v1', 'utf8');
+
+      await withCwd(dir, async () => {
+        const postman = createRollbackPostman({
+          getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+        });
+        const postmanWithReceipt = withReceiptDigestFromExport(postman);
+
+        // Run 1: spec content differs from Spec Hub, so full generation runs
+        // and populates real per-role payloads (including the v1 script).
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core: createCoreStub().core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        // Edit the signer between runs so the desired payload now differs
+        // from what is tracked as remotely committed.
+        writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer v2', 'utf8');
+        (postman.getSpecContent as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_SPEC_31);
+
+        // Run 2: same spec content as Spec Hub now (specContentUnchanged),
+        // same existing collection ids, edited script.
+        const { core, infos } = createCoreStub();
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-generated',
+            smokeCollectionId: 'col-smoke-generated',
+            contractCollectionId: 'col-contract-generated',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(false);
+        expect(postmanWithReceipt.importV2Collection).toHaveBeenCalledTimes(6);
+      });
+    });
+
+    it('stays a true no-op when the remote receipt digest matches desired content', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'root-content-version-match-'));
+      mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+      writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+      await withCwd(dir, async () => {
+        const postman = createRollbackPostman({
+          getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+        });
+        const postmanWithReceipt = withReceiptDigestFromExport(postman);
+
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core: createCoreStub().core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        (postman.getSpecContent as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_SPEC_31);
+
+        const { core, infos } = createCoreStub();
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-generated',
+            smokeCollectionId: 'col-smoke-generated',
+            contractCollectionId: 'col-contract-generated',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+        expect(postmanWithReceipt.importV2Collection).toHaveBeenCalledTimes(3);
+      });
+    });
+
+    it('warns and preserves the skip when a role receipt read fails, rather than failing the run or forcing regeneration', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'root-content-version-error-'));
+      mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+      writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+      await withCwd(dir, async () => {
+        const postman = createRollbackPostman({
+          getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+        });
+        const postmanWithReceipt = withReceiptDigestFromExport(postman, {
+          readCollectionReceiptDigest: vi.fn(async (collectionUid: string) => {
+            if (collectionUid === 'col-baseline-generated') {
+              throw new Error('receipt read failed: 503');
+            }
+            const exported = await postman.exportV2Collection(collectionUid);
+            return computePayloadDigest(exported);
+          })
+        });
+
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core: createCoreStub().core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        (postman.getSpecContent as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_SPEC_31);
+
+        const { core, infos, warnings } = createCoreStub();
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-generated',
+            smokeCollectionId: 'col-smoke-generated',
+            contractCollectionId: 'col-contract-generated',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        expect(
+          warnings.some(
+            (warning) => warning.includes('baseline') && warning.includes('could not be verified')
+          )
+        ).toBe(true);
+        expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+        expect(postmanWithReceipt.importV2Collection).toHaveBeenCalledTimes(3);
+      });
+    });
+
+    it('warns and preserves the skip when a role has no receipt yet, rather than failing the run or forcing regeneration', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'root-content-version-noreceipt-'));
+      mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+      writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+      await withCwd(dir, async () => {
+        const postman = createRollbackPostman({
+          getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+        });
+        const postmanWithReceipt = withReceiptDigestFromExport(postman, {
+          readCollectionReceiptDigest: vi.fn(async (collectionUid: string) => {
+            if (collectionUid === 'col-smoke-generated') return undefined;
+            const exported = await postman.exportV2Collection(collectionUid);
+            return computePayloadDigest(exported);
+          })
+        });
+
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core: createCoreStub().core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        (postman.getSpecContent as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_SPEC_31);
+
+        const { core, infos, warnings } = createCoreStub();
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-generated',
+            smokeCollectionId: 'col-smoke-generated',
+            contractCollectionId: 'col-contract-generated',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        expect(
+          warnings.some(
+            (warning) => warning.includes('smoke') && warning.includes('no semantic receipt yet')
+          )
+        ).toBe(true);
+        expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+        expect(postmanWithReceipt.importV2Collection).toHaveBeenCalledTimes(3);
+      });
     });
   });
 

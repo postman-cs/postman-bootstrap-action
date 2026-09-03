@@ -27,6 +27,7 @@ import {
 } from '../src/lib/spec/definition-bundle.js';
 import { definitionBundleToSnapshot } from '../src/lib/postman/spec-file-reconcile.js';
 import { SquadDiscoveryUnavailableError } from '../src/lib/postman/postman-gateway-assets-client.js';
+import { computePayloadDigest } from '../src/lib/spec/local-openapi-collection-generation.js';
 import { createHash as createNodeHash } from 'node:crypto';
 
 const VALID_SPEC_31 = `{
@@ -972,6 +973,109 @@ describe('bootstrap action', () => {
     }
   });
 
+  // The branch gate is the credential-free PR check. Root-content problems have
+  // to surface there rather than passing review and breaking the canonical
+  // publish, which is the same fail-fast contract additional-collections has.
+  it('rejects broken collection-root content during a gated run', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-gated-root-content-'));
+    mkdirSync(join(workspace, '.postman/scripts'), { recursive: true });
+    writeFileSync(join(workspace, '.postman/scripts/broken.js'), 'pm.request.headers.add({ key: "X" ');
+
+    const gatedDecision = {
+      tier: 'gated' as const,
+      strategy: 'publish-gate' as const,
+      identity: {
+        provider: 'github' as const,
+        refKind: 'branch' as const,
+        isPrContext: false,
+        isForkPr: false
+      },
+      reason: 'test'
+    };
+    const scriptsFor = (scriptPath: string) =>
+      JSON.stringify({ schemaVersion: 1, roles: { '*': { beforeRequest: scriptPath } } });
+
+    try {
+      await withCwd(workspace, async () => {
+        await expect(
+          runGatedValidation(
+            createInputs({ collectionScriptsJson: scriptsFor('.postman/scripts/missing.js') }),
+            gatedDecision,
+            createCoreStub().core
+          )
+        ).rejects.toThrow(/COLLECTION_SCRIPT_UNREADABLE/);
+
+        await expect(
+          runGatedValidation(
+            createInputs({ collectionScriptsJson: scriptsFor('.postman/scripts/broken.js') }),
+            gatedDecision,
+            createCoreStub().core
+          )
+        ).rejects.toThrow(/COLLECTION_SCRIPT_UNPARSABLE/);
+
+        await expect(
+          runGatedValidation(
+            createInputs({ collectionVariablesJson: '{"schemaVersion":2,"roles":{}}' }),
+            gatedDecision,
+            createCoreStub().core
+          )
+        ).rejects.toThrow(/COLLECTION_VARIABLES_JSON_INVALID/);
+      });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // These inputs only ever apply to generated roles, so pairing them with a
+  // scope that produces none is a misconfiguration. Both paths must agree:
+  // accepting on one and rejecting on the other is how a PR gate passes work
+  // that the canonical run silently drops, or vice versa.
+  it.each(['spec-only', 'spec-with-additional-collections'] as const)(
+    'rejects collection-root content on both paths under onboarding-scope %s',
+    async (onboardingScope) => {
+      const workspace = mkdtempSync(join(tmpdir(), 'bootstrap-scope-root-content-'));
+      mkdirSync(join(workspace, '.postman/scripts'), { recursive: true });
+      mkdirSync(join(workspace, 'postman/curated'), { recursive: true });
+      writeFileSync(join(workspace, '.postman/scripts/signer.js'), '// signer');
+      writeFileSync(
+        join(workspace, 'postman/curated/payments.json'),
+        JSON.stringify(createCuratedCollection('Payments curated'))
+      );
+
+      const scopedInputs = {
+        onboardingScope,
+        additionalCollectionsDir: 'postman/curated',
+        collectionScriptsJson: JSON.stringify({
+          schemaVersion: 1,
+          roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+        })
+      };
+
+      try {
+        await withCwd(workspace, async () => {
+          // Branch gate.
+          await expect(
+            runGatedValidation(createInputs(scopedInputs), {
+              tier: 'gated',
+              strategy: 'publish-gate',
+              identity: { provider: 'github', refKind: 'branch', isPrContext: false, isForkPr: false },
+              reason: 'test'
+            }, createCoreStub().core)
+          ).rejects.toThrow(/COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE/);
+
+          // Publish path, and it must refuse before touching the spec.
+          const postman = createRollbackPostman();
+          await expect(
+            runExistingSpecBootstrap(postman, { inputs: scopedInputs })
+          ).rejects.toThrow(/COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE/);
+          expect(postman.updateSpec).not.toHaveBeenCalled();
+        });
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('rejects authored collection sync from preview runs before mutation', async () => {
     const previousDecision = process.env.POSTMAN_BRANCH_DECISION;
     process.env.POSTMAN_BRANCH_DECISION = JSON.stringify({
@@ -1635,6 +1739,437 @@ paths:
     expect(
       infos.some((info) => info.includes('Spec content unchanged'))
     ).toBe(true);
+  });
+
+  // A signer script or variable manifest can change while the spec does not.
+  // If the unchanged-spec branch still short-circuits, that edit never reaches
+  // payload comparison and the remote collections keep the stale script with no
+  // warning. Regeneration is safe here because the per-role payload digest
+  // comparison is what suppresses the write.
+  it('still regenerates collections on an unchanged spec when collection-root content is configured', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'root-content-noop-'));
+    mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+    writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+    await withCwd(dir, async () => {
+      const { core, infos } = createCoreStub();
+      const postman = createRollbackPostman({
+        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      });
+
+      await runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          collectionScriptsJson: JSON.stringify({
+            schemaVersion: 1,
+            roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+          })
+        }
+      });
+
+      // The Spec Hub update is still correctly skipped; only the collection
+      // regeneration skip must not fire.
+      expect(infos.some((info) => info.includes('skipping Spec Hub update'))).toBe(true);
+      expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(false);
+    });
+  });
+
+  // Removal cannot be caught retroactively (the run that removes the inputs
+  // never sees this code path), so the audit trail has to be logged now,
+  // every time the feature is actually used, regardless of sync mode or
+  // whether the spec changed.
+  it('warns at configure time that removing collection-root content later goes undetected', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'root-content-configure-warn-'));
+    mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+    writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+    await withCwd(dir, async () => {
+      const { core, warnings } = createCoreStub();
+      const postman = createRollbackPostman({
+        getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+      });
+
+      await runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          collectionScriptsJson: JSON.stringify({
+            schemaVersion: 1,
+            roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+          })
+        }
+      });
+
+      expect(
+        warnings.some(
+          (warning) => warning.includes('removing these inputs') && warning.includes('is not detected')
+        )
+      ).toBe(true);
+    });
+  });
+
+  it('does not warn about collection-root removal when the inputs are not configured at all', async () => {
+    const { core, warnings } = createCoreStub();
+    const postman = createRollbackPostman({
+      getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+    });
+
+    await runExistingSpecBootstrap(postman, { core });
+
+    expect(warnings.some((warning) => warning.includes('removing these inputs'))).toBe(false);
+  });
+
+  // Only `refresh` fetches the rollback snapshots the payload-digest comparison
+  // needs, so only there is regenerating write-free. Under `version` there is
+  // no snapshot and no comparison, and bypassing the fast path would publish
+  // three fresh collection versions on every idempotent rerun.
+  it('keeps the unchanged-spec fast path under collection-sync-mode version', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'root-content-version-'));
+    mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+    writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+    await withCwd(dir, async () => {
+      const { core, infos } = createCoreStub();
+      const postman = createRollbackPostman({
+        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      });
+
+      await runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          collectionSyncMode: 'version',
+          releaseLabel: 'v1.0.0',
+          collectionScriptsJson: JSON.stringify({
+            schemaVersion: 1,
+            roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+          })
+        }
+      });
+
+      expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+    });
+  });
+
+  it('warns once about the non-standard version+root-content combination, with no other behavior change', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'root-content-version-warn-'));
+    mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+    writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+    await withCwd(dir, async () => {
+      const { core, infos, warnings } = createCoreStub();
+      const postman = createRollbackPostman({
+        getSpecContent: vi.fn().mockResolvedValue(VALID_SPEC_31)
+      });
+
+      await runExistingSpecBootstrap(postman, {
+        core,
+        inputs: {
+          collectionSyncMode: 'version',
+          releaseLabel: 'v1.0.0',
+          collectionScriptsJson: JSON.stringify({
+            schemaVersion: 1,
+            roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+          })
+        }
+      });
+
+      expect(
+        warnings.some((warning) => warning.includes('non-standard combination'))
+      ).toBe(true);
+      expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+    });
+  });
+
+  describe('version-mode receipt-digest precheck', () => {
+    const SIGNER_SCRIPTS_JSON = () =>
+      JSON.stringify({
+        schemaVersion: 1,
+        roles: { '*': { beforeRequest: '.postman/scripts/signer.js' } }
+      });
+
+    function withReceiptDigestFromExport(
+      postman: ReturnType<typeof createRollbackPostman>,
+      overrides: Record<string, unknown> = {}
+    ) {
+      return {
+        ...postman,
+        readCollectionReceiptDigest: vi.fn(async (collectionUid: string) => {
+          const exported = await postman.exportV2Collection(collectionUid);
+          return computePayloadDigest(exported);
+        }),
+        ...overrides
+      };
+    }
+
+    it('regenerates when the remote receipt digest genuinely diverges from desired content', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'root-content-version-diverge-'));
+      mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+      writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer v1', 'utf8');
+
+      await withCwd(dir, async () => {
+        const postman = createRollbackPostman({
+          getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+        });
+        const postmanWithReceipt = withReceiptDigestFromExport(postman);
+
+        // Run 1: spec content differs from Spec Hub, so full generation runs
+        // and populates real per-role payloads (including the v1 script).
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core: createCoreStub().core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        // Edit the signer between runs so the desired payload now differs
+        // from what is tracked as remotely committed.
+        writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer v2', 'utf8');
+        (postman.getSpecContent as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_SPEC_31);
+
+        // Run 2: same spec content as Spec Hub now (specContentUnchanged),
+        // same existing collection ids, edited script.
+        const { core, infos } = createCoreStub();
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-generated',
+            smokeCollectionId: 'col-smoke-generated',
+            contractCollectionId: 'col-contract-generated',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(false);
+        expect(postmanWithReceipt.importV2Collection).toHaveBeenCalledTimes(6);
+      });
+    });
+
+    it('stays a true no-op when the remote receipt digest matches desired content', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'root-content-version-match-'));
+      mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+      writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+      await withCwd(dir, async () => {
+        const postman = createRollbackPostman({
+          getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+        });
+        const postmanWithReceipt = withReceiptDigestFromExport(postman);
+
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core: createCoreStub().core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        (postman.getSpecContent as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_SPEC_31);
+
+        const { core, infos } = createCoreStub();
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-generated',
+            smokeCollectionId: 'col-smoke-generated',
+            contractCollectionId: 'col-contract-generated',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+        expect(postmanWithReceipt.importV2Collection).toHaveBeenCalledTimes(3);
+      });
+    });
+
+    it('warns and preserves the skip when a role receipt read fails, rather than failing the run or forcing regeneration', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'root-content-version-error-'));
+      mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+      writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+      await withCwd(dir, async () => {
+        const postman = createRollbackPostman({
+          getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+        });
+        const postmanWithReceipt = withReceiptDigestFromExport(postman, {
+          readCollectionReceiptDigest: vi.fn(async (collectionUid: string) => {
+            if (collectionUid === 'col-baseline-generated') {
+              throw new Error('receipt read failed: 503');
+            }
+            const exported = await postman.exportV2Collection(collectionUid);
+            return computePayloadDigest(exported);
+          })
+        });
+
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core: createCoreStub().core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        (postman.getSpecContent as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_SPEC_31);
+
+        const { core, infos, warnings } = createCoreStub();
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-generated',
+            smokeCollectionId: 'col-smoke-generated',
+            contractCollectionId: 'col-contract-generated',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        expect(
+          warnings.some(
+            (warning) => warning.includes('baseline') && warning.includes('could not be verified')
+          )
+        ).toBe(true);
+        expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+        expect(postmanWithReceipt.importV2Collection).toHaveBeenCalledTimes(3);
+      });
+    });
+
+    it('warns and preserves the skip when a role has no receipt yet, rather than failing the run or forcing regeneration', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'root-content-version-noreceipt-'));
+      mkdirSync(join(dir, '.postman', 'scripts'), { recursive: true });
+      writeFileSync(join(dir, '.postman', 'scripts', 'signer.js'), '// signer', 'utf8');
+
+      await withCwd(dir, async () => {
+        const postman = createRollbackPostman({
+          getSpecContent: vi.fn().mockResolvedValue(PREVIOUS_SPEC_31)
+        });
+        const postmanWithReceipt = withReceiptDigestFromExport(postman, {
+          readCollectionReceiptDigest: vi.fn(async (collectionUid: string) => {
+            if (collectionUid === 'col-smoke-generated') return undefined;
+            const exported = await postman.exportV2Collection(collectionUid);
+            return computePayloadDigest(exported);
+          })
+        });
+
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core: createCoreStub().core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        (postman.getSpecContent as ReturnType<typeof vi.fn>).mockResolvedValue(VALID_SPEC_31);
+
+        const { core, infos, warnings } = createCoreStub();
+        await runBootstrap(
+          createInputs({
+            workspaceId: 'ws-existing',
+            specId: 'spec-existing',
+            baselineCollectionId: 'col-baseline-generated',
+            smokeCollectionId: 'col-smoke-generated',
+            contractCollectionId: 'col-contract-generated',
+            collectionSyncMode: 'version',
+            releaseLabel: 'v1.0.0',
+            collectionScriptsJson: SIGNER_SCRIPTS_JSON()
+          }),
+          {
+            core,
+            exec: createExecStub(),
+            io: createIoStub(),
+            postman: postmanWithReceipt,
+            specFetcher: vi.fn<typeof fetch>().mockResolvedValue(
+              new Response(VALID_SPEC_31, { status: 200 })
+            )
+          }
+        );
+
+        expect(
+          warnings.some(
+            (warning) => warning.includes('smoke') && warning.includes('no semantic receipt yet')
+          )
+        ).toBe(true);
+        expect(infos.some((info) => info.includes('skipping collection regeneration'))).toBe(true);
+        expect(postmanWithReceipt.importV2Collection).toHaveBeenCalledTimes(3);
+      });
+    });
   });
 
   it('reports a content-changing canonical publish for repo-sync finalization', async () => {

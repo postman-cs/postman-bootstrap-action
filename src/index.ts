@@ -98,6 +98,10 @@ import {
   type CollectionRole,
   type LocalOpenApiRolePayloads
 } from './lib/spec/local-openapi-collection-generation.js';
+import {
+  isCollectionRootContentRequested,
+  resolveCollectionRootContent
+} from './lib/spec/collection-root-content.js';
 import { planCollectionDelta } from './lib/spec/collection-delta.js';
 import type { CollectionWriteMetrics } from './lib/postman/postman-gateway-assets-client.js';
 import { loadOpenApiContractSpec, loadOpenApiContractSpecFromPath, normalizeSpecTypeFromContent, parseOpenApiDocument } from './lib/spec/openapi-loader.js';
@@ -130,6 +134,13 @@ export interface ResolvedInputs {
   smokeCollectionId?: string;
   contractCollectionId?: string;
   additionalCollectionsDir?: string;
+  /**
+   * Raw manifest inputs. Held unparsed because either may be inline JSON or a
+   * workspace-relative path, so resolution needs filesystem access and happens
+   * with the other pre-side-effect validation rather than here.
+   */
+  collectionScriptsJson?: string;
+  collectionVariablesJson?: string;
   onboardingScope: 'full' | 'spec-only' | 'spec-with-additional-collections';
   syncExamples: boolean;
   collectionSyncMode: 'refresh' | 'version';
@@ -381,6 +392,7 @@ export interface BootstrapExecutionDependencies {
       expectedPayloadDigest: string
     ): Promise<void>;
     exportV2Collection?(collectionUid: string): Promise<Record<string, unknown>>;
+    readCollectionReceiptDigest?(collectionUid: string): Promise<string | undefined>;
     deleteVerifiedRunOwnedCollections?(workspaceId: string, collectionIds: string[]): Promise<void>;
     reconcileDuplicateFinalCollections?(
       workspaceId: string,
@@ -744,6 +756,8 @@ export function resolveInputs(
     smokeCollectionId: getInput('smoke-collection-id', env),
     contractCollectionId: getInput('contract-collection-id', env),
     additionalCollectionsDir: getInput('additional-collections-dir', env),
+    collectionScriptsJson: getInput('collection-scripts-json', env),
+    collectionVariablesJson: getInput('collection-variables-json', env),
     onboardingScope: parseEnumInput<ResolvedInputs['onboardingScope']>(
       'onboarding-scope',
       getInput('onboarding-scope', env),
@@ -1120,6 +1134,8 @@ export function readActionInputs(
     INPUT_SMOKE_COLLECTION_ID: optionalInput(actionCore, 'smoke-collection-id'),
     INPUT_CONTRACT_COLLECTION_ID: optionalInput(actionCore, 'contract-collection-id'),
     INPUT_ADDITIONAL_COLLECTIONS_DIR: optionalInput(actionCore, 'additional-collections-dir'),
+    INPUT_COLLECTION_SCRIPTS_JSON: optionalInput(actionCore, 'collection-scripts-json'),
+    INPUT_COLLECTION_VARIABLES_JSON: optionalInput(actionCore, 'collection-variables-json'),
     INPUT_ONBOARDING_SCOPE:
       optionalInput(actionCore, 'onboarding-scope') ??
       bootstrapActionContract.inputs['onboarding-scope'].default,
@@ -2623,6 +2639,44 @@ async function runBootstrapInner(
   const fullScopeAdditionalCollections = shouldGenerateCollections
     ? loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, defaultResourcesState)
     : [];
+  // Same fail-fast contract as additional-collections-dir above: a malformed
+  // manifest, a missing script, or a path escaping the workspace must fail
+  // before the CLI install, spec upload or workspace create. Only generated
+  // roles carry this content, so the non-full scopes never resolve it.
+  // Rejected rather than ignored. These inputs only ever apply to generated
+  // roles, so pairing them with a scope that produces none is a
+  // misconfiguration, and silently dropping them is how an onboarded API ends
+  // up with collections that cannot authenticate. Checked before any file read
+  // so the error names the pairing instead of an unrelated missing file.
+  if (
+    isCollectionRootContentRequested(inputs.collectionScriptsJson, inputs.collectionVariablesJson) &&
+    !shouldGenerateCollections
+  ) {
+    throw new Error(
+      `COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE: collection-scripts-json and collection-variables-json apply to generated collections, which onboarding-scope=${onboardingScope} does not produce`
+    );
+  }
+  const collectionRootContent = shouldGenerateCollections
+    ? resolveCollectionRootContent(
+        inputs.collectionScriptsJson,
+        inputs.collectionVariablesJson,
+        resolveWorkspaceRoot()
+      )
+    : undefined;
+  if (collectionRootContent) {
+    // Configure-time audit trail, not a detector: removing these inputs on a
+    // later run cannot be caught here (that run never sees this branch), so
+    // the only reliable place to say it is now, while the risk is still
+    // legible. Applies under both collection-sync-mode values - the
+    // version-mode digest precheck further below only catches an edit while
+    // content stays configured, never its removal.
+    dependencies.core.warning(
+      'collection-scripts-json/collection-variables-json configured: removing these inputs on a ' +
+        'later run with an unchanged spec is not detected, and previously injected scripts/' +
+        'variables may remain live on the collections until a spec byte changes or the ' +
+        'collection ids move.'
+    );
+  }
 
   let previousSpecContent: string | undefined;
   let previousSpecRollbackHash: string | undefined;
@@ -2681,6 +2735,15 @@ async function runBootstrapInner(
     if (!shouldGenerateCollections) {
       throw new Error(
         `onboarding-scope=${onboardingScope} currently supports OpenAPI specifications only; detected ${resolvedSpecType}`
+      );
+    }
+    // Fail rather than silently ignore. The multi-protocol path builds its
+    // collections through a different generator that has no collection-root
+    // content channel, so accepting these inputs here would produce a green run
+    // whose collections carry none of the requested authentication.
+    if (collectionRootContent) {
+      throw new Error(
+        `COLLECTION_ROOT_CONTENT_UNSUPPORTED_PROTOCOL: collection-scripts-json and collection-variables-json apply to OpenAPI-generated collections only; detected ${resolvedSpecType}`
       );
     }
     dependencies.core.info(`Detected ${resolvedSpecType} spec; using multi-protocol contract path`);
@@ -3374,6 +3437,95 @@ async function runBootstrapInner(
     return outputs;
   }
 
+  // Under `refresh`, the existing per-role check further below (rollback
+  // snapshot digest vs. desired digest) already regenerates correctly from
+  // whatever collectionRootContent currently is, including "removed" -
+  // whenever this outer guard lets the step run at all. Nothing to add here.
+  //
+  // Under `version`, there is no equivalent internal check: the step never
+  // runs on an unchanged spec, so a script edit or removal never republishes.
+  // Verify with a cheap remote receipt digest per role (root-only Sync read,
+  // no full export) before accepting the skip. An inconclusive read (error,
+  // or no receipt yet) is not evidence of anything - it must not silently
+  // flip the outcome either way, so it only ever warns and preserves
+  // today's skip; only a positively observed digest mismatch regenerates.
+  let versionModeContentVerified = true;
+  if (specContentUnchanged && inputs.collectionSyncMode === 'version' && collectionRootContent) {
+    dependencies.core.warning(
+      'collection-sync-mode: version with collection-scripts-json/collection-variables-json ' +
+        'configured is a non-standard combination; regeneration on an unchanged spec depends on ' +
+        'a best-effort remote receipt check, not the stronger refresh-mode guarantee.'
+    );
+    const versionModeRoles: Array<{
+      role: CollectionRole;
+      prefix: GeneratedCollectionPrefix;
+      existingId: string | undefined;
+    }> = [
+      { role: 'baseline', prefix: BASELINE_COLLECTION_PREFIX, existingId: baselineCollectionId },
+      { role: 'smoke', prefix: SMOKE_COLLECTION_PREFIX, existingId: smokeCollectionId },
+      { role: 'contract', prefix: CONTRACT_COLLECTION_PREFIX, existingId: contractCollectionId }
+    ];
+    const versionModeRoleNames = {} as Record<CollectionRole, string>;
+    for (const role of versionModeRoles) {
+      const effectivePrefix =
+        branchDecision.tier === 'channel' && branchDecision.channel
+          ? channelAssetName(role.prefix, branchDecision.channel.code).trim()
+          : role.prefix;
+      versionModeRoleNames[role.role] = [effectivePrefix, collectionAssetProjectName]
+        .filter(Boolean)
+        .join(' ')
+        .replace(/[\r\n\u2028\u2029]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    try {
+      if (!contractIndex) {
+        throw new Error('CONTRACT_PLAN_MISSING: Contract plan was not created during OpenAPI preflight');
+      }
+      const desiredPayloads = await generateLocalOpenApiRolePayloads(bundledCompatibilitySpecContent, {
+        openApiVersion: detectedOpenapiVersion,
+        requestNameSource: inputs.requestNameSource as 'URL' | 'Fallback',
+        folderStrategy: inputs.folderStrategy as 'Paths' | 'Tags',
+        nestedFolderHierarchy: inputs.nestedFolderHierarchy,
+        secretsResolverProvider: inputs.secretsResolverProvider,
+        names: versionModeRoleNames,
+        ...(collectionBranchMarker ? { description: collectionBranchMarker } : {}),
+        collectionRootContent,
+        contractIndex
+      });
+      for (const role of versionModeRoles) {
+        if (!role.existingId) continue;
+        let observedDigest: string | undefined;
+        try {
+          observedDigest = await dependencies.postman.readCollectionReceiptDigest?.(role.existingId);
+        } catch (error) {
+          dependencies.core.warning(
+            `collection-root content could not be verified against the remote ${role.role} collection ` +
+              `under collection-sync-mode: version (${error instanceof Error ? error.message : String(error)}); ` +
+              'the unchanged-spec skip may no longer be accurate.'
+          );
+          continue;
+        }
+        if (observedDigest === undefined) {
+          dependencies.core.warning(
+            `Remote ${role.role} collection has no semantic receipt yet; collection-root content ` +
+              'could not be verified under collection-sync-mode: version. The unchanged-spec skip may no longer be accurate.'
+          );
+          continue;
+        }
+        if (observedDigest !== desiredPayloads.roles[role.role].payloadDigest) {
+          versionModeContentVerified = false;
+        }
+      }
+    } catch (error) {
+      dependencies.core.warning(
+        'collection-root content could not be locally re-derived to verify against the remote ' +
+          `collections under collection-sync-mode: version (${error instanceof Error ? error.message : String(error)}); ` +
+          'the unchanged-spec skip may no longer be accurate.'
+      );
+    }
+  }
+
   if (!shouldGenerateCollections) {
     outputs['baseline-collection-id'] = '';
     outputs['smoke-collection-id'] = '';
@@ -3382,9 +3534,33 @@ async function runBootstrapInner(
     dependencies.core.info(
       `onboarding-scope=${onboardingScope}; preserving workspace/spec onboarding and syncing authored additional collections only.`
     );
-  } else if (specContentUnchanged) {
+  } else if (
+    specContentUnchanged &&
+    !(collectionRootContent && inputs.collectionSyncMode === 'refresh') &&
+    versionModeContentVerified
+  ) {
     // A canonical no-op has no new spec changelog group. Keep the existing
     // collection identities but do not regenerate them from unchanged input.
+    //
+    // Two conditions have to hold before the fast path is given up, because a
+    // signer script or variable manifest can change while the spec does not and
+    // skipping would make that edit a silent no-op.
+    //
+    // `collectionRootContent`: no configured content means no payload
+    // difference to find, so there is nothing to regenerate for.
+    //
+    // `refresh`: only that mode fetches rollback snapshots, which are what the
+    // per-role digest comparison compares against, so only there does
+    // regenerating stay write-free when nothing actually changed. Under
+    // `version` there is no snapshot and no comparison, so bypassing would
+    // publish three fresh collection versions on every idempotent rerun.
+    //
+    // Known gap, documented on both inputs: *removing* the inputs cannot be
+    // detected here. Absent content is indistinguishable from never-configured
+    // content without per-run state, and `.postman/resources.yaml` is not a
+    // trustworthy source for it since not every consumer commits it back.
+    // A previously injected script therefore survives on the existing
+    // collections until any spec byte changes or the collection ids are moved.
     outputs['baseline-collection-id'] = baselineCollectionId || '';
     outputs['smoke-collection-id'] = smokeCollectionId || '';
     outputs['contract-collection-id'] = contractCollectionId || '';
@@ -3465,6 +3641,7 @@ async function runBootstrapInner(
           secretsResolverProvider: inputs.secretsResolverProvider,
           names: roleNames,
           ...(collectionBranchMarker ? { description: collectionBranchMarker } : {}),
+          ...(collectionRootContent ? { collectionRootContent } : {}),
           contractIndex
         };
         localOpenApiGenerationOptions = buildLocalOpenApiConversionOptions(conversionOptions);
@@ -4357,6 +4534,30 @@ export async function runGatedValidation(
         loadAdditionalCollectionFiles(inputs.additionalCollectionsDir, null)
       );
     }
+    // Resolved here, not just on the publish path, so a missing script file, a
+    // malformed manifest, or unparsable JavaScript fails the credential-free
+    // branch gate rather than surviving review and breaking the canonical
+    // publish. Filesystem reads only; no workspace writes.
+    //
+    // Scope is checked first, and only content is resolved for a scope that
+    // produces generated roles, so this path accepts and rejects exactly what
+    // the publish path does.
+    const gatedRootContentRequested = isCollectionRootContentRequested(
+      inputs.collectionScriptsJson,
+      inputs.collectionVariablesJson
+    );
+    if (gatedRootContentRequested && inputs.onboardingScope !== 'full') {
+      throw new Error(
+        `COLLECTION_ROOT_CONTENT_UNSUPPORTED_SCOPE: collection-scripts-json and collection-variables-json apply to generated collections, which onboarding-scope=${inputs.onboardingScope} does not produce`
+      );
+    }
+    const gatedRootContent = gatedRootContentRequested
+      ? resolveCollectionRootContent(
+          inputs.collectionScriptsJson,
+          inputs.collectionVariablesJson,
+          resolveWorkspaceRoot()
+        )
+      : undefined;
     let content: string | undefined;
     let bundle: DefinitionBundle | undefined;
     if (inputs.specPath) {
@@ -4379,6 +4580,13 @@ export async function runGatedValidation(
       if (inputs.onboardingScope !== 'full' && specType !== 'openapi') {
         throw new Error(
           `onboarding-scope=${inputs.onboardingScope} currently supports OpenAPI specifications only; detected ${specType}`
+        );
+      }
+      // Mirrors the publish-path rejection so the branch gate catches an
+      // unsupported protocol pairing instead of deferring it to the canonical run.
+      if (gatedRootContent && specType !== 'openapi') {
+        throw new Error(
+          `COLLECTION_ROOT_CONTENT_UNSUPPORTED_PROTOCOL: collection-scripts-json and collection-variables-json apply to OpenAPI-generated collections only; detected ${specType}`
         );
       }
       if (specType === 'openapi') {
@@ -4612,6 +4820,7 @@ export function createRoutingPostmanClient(options: {
       deepUpdateV2Collection: requireAccessToken('deepUpdateV2Collection'),
       verifyCollectionSemanticReceipt: requireAccessToken('verifyCollectionSemanticReceipt'),
       exportV2Collection: requireAccessToken('exportV2Collection'),
+      readCollectionReceiptDigest: requireAccessToken('readCollectionReceiptDigest'),
       deleteVerifiedRunOwnedCollections: requireAccessToken('deleteVerifiedRunOwnedCollections'),
       reconcileDuplicateFinalCollections: requireAccessToken('reconcileDuplicateFinalCollections')
     };
@@ -4685,6 +4894,7 @@ export function createRoutingPostmanClient(options: {
     exportV2Collection: (collectionUid) =>
       (gateway as PostmanGatewayAssetsClient & { exportV2Collection(collectionUid: string): Promise<Record<string, unknown>> })
         .exportV2Collection(collectionUid),
+    readCollectionReceiptDigest: (collectionUid) => gateway.readCollectionReceiptDigest(collectionUid),
     deleteVerifiedRunOwnedCollections: (workspaceId, collectionIds) =>
       gateway.deleteVerifiedRunOwnedCollections(workspaceId, collectionIds),
     reconcileDuplicateFinalCollections: (workspaceId, candidates) =>

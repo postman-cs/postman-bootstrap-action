@@ -4099,6 +4099,78 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls).toHaveLength(1);
     });
 
+    describe('readCollectionReceiptDigest', () => {
+      it('resolves the digest through the same cheap root-only Sync read, no export', async () => {
+        const bareId = 'aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+        const fullUid = `12345678-${bareId}`;
+        const desired = collectionWithRootId(bareId);
+        const committed = withSemanticReceipt(desired);
+        const { client, gateway, calls } = makeClient((env) => {
+          expect(env).toMatchObject({
+            service: 'direct',
+            method: 'get',
+            path: `/collection/${fullUid}/sync?since_id=0&favorite=true&exclude=response%2Crequest`
+          });
+          return syncRootResponse(committed, 42, fullUid);
+        });
+        const directRead = vi.spyOn(gateway, 'requestDirectJson');
+
+        await expect(client.readCollectionReceiptDigest(fullUid)).resolves.toBe(
+          computePayloadDigest(desired)
+        );
+        expect(calls).toHaveLength(1);
+        expect(calls.some((call) => call.path.endsWith('/export'))).toBe(false);
+        expect(directRead).toHaveBeenCalledExactlyOnceWith({
+          path: `/collection/${fullUid}/sync?since_id=0&favorite=true&exclude=response%2Crequest`,
+          method: 'get',
+          retry: 'none',
+          maxRetries: 0
+        });
+      });
+
+      it('resolves undefined, not a throw, when the root has no receipt yet', async () => {
+        const bareId = 'aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+        const fullUid = `12345678-${bareId}`;
+        const noReceipt = collectionWithRootId(bareId);
+        const { client, calls } = makeClient(() => syncRootResponse(noReceipt, 1, fullUid));
+
+        await expect(client.readCollectionReceiptDigest(fullUid)).resolves.toBeUndefined();
+        expect(calls).toHaveLength(1);
+      });
+
+      it('still throws on a malformed Sync root projection', async () => {
+        const fullUid = '12345678-aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+        const { client } = makeClient(() => jsonResponse({ entities: [] }));
+
+        await expect(client.readCollectionReceiptDigest(fullUid)).rejects.toThrow(
+          /must return exactly one entity/
+        );
+      });
+
+      it('surfaces a direct Sync 500 after exactly one request, no retry', async () => {
+        const fullUid = '12345678-aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+        const { client, calls } = makeClient(() =>
+          jsonResponse({ error: 'unavailable' }, { status: 500 })
+        );
+
+        await expect(client.readCollectionReceiptDigest(fullUid)).rejects.toThrow(/500/);
+        expect(calls).toHaveLength(1);
+      });
+
+      it('leaves readCollectionSemanticReceiptRoot still throwing on a missing receipt', async () => {
+        const bareId = 'aaaaaaaa-bbbb-5ccc-8ddd-eeeeeeeeeeee';
+        const fullUid = `12345678-${bareId}`;
+        const noReceipt = collectionWithRootId(bareId);
+        const { client } = makeClient(() => syncRootResponse(noReceipt, 1, fullUid));
+
+        await expect(client.verifyCollectionSemanticReceipt(
+          fullUid,
+          noReceipt,
+          computePayloadDigest(noReceipt)
+        )).rejects.toThrow(/missing its semantic receipt/);
+      });
+    });
+
     it('derives one stable logical root across trigger SHAs and separates workspaces, names, and branches', () => {
       const markerA = renderAssetMarker({
         repo: 'https://github.com/acme/payments',

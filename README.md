@@ -288,7 +288,7 @@ export POSTMAN_ACCESS_TOKEN="<minted-token>"
 ./postman-bootstrap --project-name core-payments --spec-path ./openapi.yaml --result-json bootstrap-result.json
 ```
 
-Credentials resolve from a CLI flag, then the `INPUT_*` env var, then a plain `POSTMAN_ACCESS_TOKEN` / `POSTMAN_API_KEY` — so Jenkins `withCredentials` works with no flag. Access-token-only runs pull no extra tooling onto the agent **as long as the two optional download paths stay off** (their defaults): `postman-api-key` enables lint (installs the Postman CLI via `curl`), and `breaking-change-mode` with a comparison source downloads the `pb33f/openapi-changes` tarball. Current target is `linux-x64`. Full runbook, credential minting, the Postman host allowlist, and a Jenkins pipeline: [Self-contained binary](docs/self-contained-binary.md).
+Credentials resolve from a CLI flag, then the `INPUT_*` env var, then a plain `POSTMAN_ACCESS_TOKEN` / `POSTMAN_API_KEY` — so Jenkins `withCredentials` works with no flag. Access-token-only runs pull no extra tooling onto the agent **as long as the optional breaking-change download stays off** (its default): `breaking-change-mode` with a comparison source downloads the `pb33f/openapi-changes` tarball. Current target is `linux-x64`. Full runbook, credential minting, the Postman host allowlist, and a Jenkins pipeline: [Self-contained binary](docs/self-contained-binary.md).
 
 ## How it works
 

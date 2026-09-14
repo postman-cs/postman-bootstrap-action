@@ -162,14 +162,11 @@ reported status, whose `message` (field 2) is length-delimited, and whose `detai
 
 Generation-time `.proto` lints run before instrumentation and surface as `GRPC_*` warnings: field numbers must sit in protoc’s legal range (1–536,870,911, excluding the 19000–19999 implementation-reserved block — `GRPC_FIELD_NUMBER_INVALID`) and must not reuse `reserved` numbers (`GRPC_RESERVED_FIELD_NUMBER_REUSED`); a proto3 enum’s first value must be 0 (`GRPC_ENUM_FIRST_VALUE_NOT_ZERO`) and its zero value is conventionally `*_UNSPECIFIED` (`GRPC_ENUM_ZERO_NAME_CONVENTION`); a missing `package` declaration is flagged per buf’s PACKAGE_DEFINED lint (`GRPC_FILE_PACKAGE_CONVENTION`); `rpc` request/response types must resolve to messages in the parsed set (`GRPC_RPC_TYPE_UNRESOLVED`); deprecated RPCs, messages, fields, and enums are surfaced (`GRPC_DEPRECATED`); and `google.api.http` transcoding annotations are cross-checked against the request message: path template variables must reference request fields (`GRPC_HTTP_PATH_VARIABLE_UNKNOWN`), `body` must be `*` or a request field (`GRPC_HTTP_BODY_FIELD_UNKNOWN`), and `additional_bindings` must not nest (`GRPC_HTTP_NESTED_ADDITIONAL_BINDINGS`).
 
-## Write path: public v2.1.0 vs gateway EC
+## Write path: gateway EC
 
-The protocols split across two different create APIs because they produce two different collection
-wire formats:
+Every protocol writes through the access-token gateway Extensible Collection (EC) API:
 
-- **GraphQL and SOAP -> public v2.1.0 collections API.** They build ordinary v2.1.0 `http` collections
-  and are created with `POST https://api.getpostman.com/collections` using the `postman-api-key`. No
-  access token is required for the create itself.
+- **GraphQL and SOAP -> gateway Extensible Collection (EC) API.** They build v3/EC collections and are created through the bifrost gateway (`POST {bifrost}/ws/proxy`, `service:'collection'`) against the collection service's EC API, using the `postman-access-token`. No PMAK collection call is involved.
 - **gRPC and AsyncAPI (WebSocket / Socket.IO) -> gateway Extensible Collection (EC) API.** These need
   the `grpc-request` / `ws-raw-request` / `ws-socketio-request` item types, which only exist in the
   v3/EC schema. The public v2.1.0 endpoint validates the legacy schema and rejects

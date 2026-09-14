@@ -48,13 +48,13 @@ The plain-env fallback (3) is what makes Jenkins [`withCredentials`](https://www
 
 ### Access-token-only keeps it self-contained
 
-Run with **only** `postman-access-token` (no `postman-api-key`) and with the two optional download paths off (their defaults) to keep the run free of any runtime tool downloads. Every asset operation — workspace, Spec Hub upload, collection generation, test injection, tagging, linking, sync — runs over the access-token gateway, which needs nothing *on the agent* beyond the binary (it still reaches the Postman gateway over the network — see [Network requirements](#network-requirements)).
+Run with **only** `postman-access-token` (no `postman-api-key`) and with the optional download path off (its default) to keep the run free of any runtime tool downloads. Every asset operation — workspace, Spec Hub upload, collection generation, test injection, tagging, linking, sync — runs over the access-token gateway, which needs nothing *on the agent* beyond the binary (it still reaches the Postman gateway over the network — see [Network requirements](#network-requirements)).
 
 One feature pulls extra tooling onto the agent at runtime; it is off by default and must stay off (or be pre-provisioned) on a locked-down agent:
 
 - **Breaking-change check** — enabled by `breaking-change-mode` with a comparison source. Downloads the pinned `pb33f/openapi-changes` tarball from GitHub and shells out to `tar`. Leave `breaking-change-mode` at its default (`off`) to skip it, or pre-provision/mirror the tool. Access-token-only alone does **not** disable it.
 
-If you need either in a locked-down environment, run it as a separate, explicitly-provisioned step rather than through this binary.
+If you need it in a locked-down environment, run it as a separate, explicitly-provisioned step rather than through this binary.
 
 ### Minting an access token
 

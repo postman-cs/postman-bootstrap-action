@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,6 +7,26 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const CHILD_TIMEOUT_MS = 15_000;
 const temporaryDirectories: string[] = [];
+
+// Resolve the real git binary instead of trusting PATH: disposable fixtures
+// must never execute operator shell shims.
+function gitBinary(): string {
+  if (process.platform === 'win32') {
+    const candidates = [
+      process.env.GIT_INSTALL_ROOT && join(process.env.GIT_INSTALL_ROOT, 'bin', 'git.exe'),
+      process.env.ProgramFiles && join(process.env.ProgramFiles, 'Git', 'bin', 'git.exe'),
+      'C:\\Program Files\\Git\\bin\\git.exe'
+    ].filter((candidate): candidate is string => Boolean(candidate));
+    const executable = candidates.find((candidate) => existsSync(candidate));
+    if (!executable) throw new Error('Git is required for release alias fixtures');
+    return executable;
+  }
+  const executable = ['/usr/bin/git', '/usr/local/bin/git'].find((candidate) => existsSync(candidate));
+  if (!executable) throw new Error('Git is required for release alias fixtures');
+  return executable;
+}
+
+const GIT_BIN = gitBinary();
 
 function fixtureGitEnv(): NodeJS.ProcessEnv {
   return {
@@ -19,7 +39,7 @@ function fixtureGitEnv(): NodeJS.ProcessEnv {
 }
 
 function git(cwd: string, args: readonly string[]): string {
-  return execFileSync('git', args, {
+  return execFileSync(GIT_BIN, args, {
     cwd,
     encoding: 'utf8',
     timeout: CHILD_TIMEOUT_MS,
@@ -31,7 +51,7 @@ function git(cwd: string, args: readonly string[]): string {
 function createTempRepo(): string {
   const root = mkdtempSync(join(tmpdir(), 'bootstrap-release-alias-git-'));
   temporaryDirectories.push(root);
-  git(root, ['init', '-b', 'main']);
+  git(root, ['init', '--template=', '-b', 'main']);
   git(root, ['config', 'user.name', 'alias-fixture']);
   git(root, ['config', 'user.email', 'alias-fixture@example.com']);
   return root;

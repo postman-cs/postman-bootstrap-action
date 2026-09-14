@@ -463,9 +463,14 @@ function executeDispatchShell(ghToken: string): DispatchShellResult {
     // Write the real dispatch shell (expression-substituted) to a temp script.
     writeFileSync(shellPath, substituteGithubExpressions(extractStepRunBody('notify-composite', DISPATCH_STEP_NAME)));
 
-    const result = spawnSync('bash', [shellPath], {
+    const result = spawnSync('bash', ['--noprofile', '--norc', shellPath], {
       env: {
         ...process.env,
+        // --noprofile/--norc do not suppress BASH_ENV/ENV startup files, and
+        // those can redefine gh as a shell function that shadows the tmpDir
+        // stub below. Unset them so the PATH-injected mock is the gh resolved.
+        BASH_ENV: undefined,
+        ENV: undefined,
         PATH: `${tmpDir}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
         GH_TOKEN: ghToken,
         GITHUB_REPOSITORY: DETERMINISTIC_REPO,

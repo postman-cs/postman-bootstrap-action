@@ -163,6 +163,8 @@ const cliInputNames = [
   'smoke-collection-id',
   'contract-collection-id',
   'additional-collections-dir',
+  'collection-scripts-json',
+  'collection-variables-json',
   'onboarding-scope',
   'sync-examples',
   'collection-sync-mode',

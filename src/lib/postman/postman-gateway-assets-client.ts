@@ -73,7 +73,8 @@ import { convergentCollectionRootIdentity } from './convergent-collection-root.j
 import {
   parseCollectionSemanticReceipt,
   renderCollectionSemanticReceipt,
-  stripCollectionSemanticReceipt
+  stripCollectionSemanticReceipt,
+  type CollectionSemanticReceipt
 } from './collection-semantic-receipt.js';
 
 export { convergentCollectionRootIdentity } from './convergent-collection-root.js';
@@ -4415,15 +4416,20 @@ export class PostmanGatewayAssetsClient {
    * app. Unlike the expensive v3 export projection, this Sync read is stable
    * immediately after an acknowledged atomic import/deep-update. It is always
    * one fail-closed request: a 5xx is surfaced, never hidden behind a retry.
+   *
+   * Does not throw when the root has no semantic receipt yet (adopted by
+   * name, or never bootstrap-managed) — callers that need "no receipt" to be
+   * a hard failure enforce that themselves; a soft pre-check needs "absent"
+   * distinguishable from "malformed."
    */
-  private async readCollectionSemanticReceiptRoot(
+  private async readCollectionSyncRootProjection(
     collectionUid: string
   ): Promise<{
     id: string;
     name: string;
     description: string;
     revision: string;
-    digest: string;
+    receipt: CollectionSemanticReceipt | undefined;
   }> {
     const uid = this.collectionRootId(collectionUid);
     const path =
@@ -4458,13 +4464,44 @@ export class PostmanGatewayAssetsClient {
         'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root identity, name, or revision is malformed'
       );
     }
-    const receipt = parseCollectionSemanticReceipt(description);
-    if (!receipt) {
+    return { id, name, description, revision, receipt: parseCollectionSemanticReceipt(description) };
+  }
+
+  private async readCollectionSemanticReceiptRoot(
+    collectionUid: string
+  ): Promise<{
+    id: string;
+    name: string;
+    description: string;
+    revision: string;
+    digest: string;
+  }> {
+    const projection = await this.readCollectionSyncRootProjection(collectionUid);
+    if (!projection.receipt) {
       throw new Error(
         'COLLECTION_SEMANTIC_RECEIPT_INVALID: Sync root is missing its semantic receipt'
       );
     }
-    return { id, name, description, revision, digest: receipt.digest };
+    return {
+      id: projection.id,
+      name: projection.name,
+      description: projection.description,
+      revision: projection.revision,
+      digest: projection.receipt.digest
+    };
+  }
+
+  /**
+   * Cheap pre-write check: does the collection's remote payload already match
+   * a desired digest, without pulling item/response bodies? Returns
+   * `undefined` when the collection has no receipt yet (never bootstrap-
+   * managed, or adopted by name) rather than throwing — callers must decide
+   * for themselves what "unverifiable" means, since it is not evidence of
+   * either a match or a divergence.
+   */
+  async readCollectionReceiptDigest(collectionUid: string): Promise<string | undefined> {
+    const projection = await this.readCollectionSyncRootProjection(collectionUid);
+    return projection.receipt?.digest;
   }
 
   /**

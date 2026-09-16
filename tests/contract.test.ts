@@ -516,6 +516,11 @@ describe('bootstrap action contract', () => {
     );
   });
 
+  it('keeps the parsed action manifest description nonempty and within 125 characters', () => {
+    expect(actionManifest.description.length).toBeGreaterThan(0);
+    expect(actionManifest.description.length).toBeLessThanOrEqual(125);
+  });
+
   it('lets scheduled contract smoke skip missing secrets but makes manual dispatch fail preflight', () => {
     const preflight = contractSmokeWorkflow.jobs.preflight;
     const credentialsStep = preflight.steps?.find((step) => step.id === 'credentials');

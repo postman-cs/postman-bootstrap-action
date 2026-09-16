@@ -1,5 +1,5 @@
-name: 'Postman Onboarding: Workspace Bootstrap'
-description: Provision a Postman workspace from an OpenAPI spec with generated collections. Part of the Postman API Onboarding suite.
+name: 'Postman Enterprise Automation: Workspace Bootstrap'
+description: Provision a Postman workspace and collections from an OpenAPI spec. Part of the Postman Enterprise Automation Suite.
 author: Postman
 branding:
   icon: box

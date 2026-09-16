@@ -1,4 +1,4 @@
-# Postman Onboarding: Workspace Bootstrap
+# Postman Enterprise Automation: Workspace Bootstrap
 
 [![CI](https://github.com/postman-cs/postman-bootstrap-action/actions/workflows/ci.yml/badge.svg)](https://github.com/postman-cs/postman-bootstrap-action/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/postman-cs/postman-bootstrap-action?sort=semver)](https://github.com/postman-cs/postman-bootstrap-action/releases) [![npm](https://img.shields.io/npm/v/%40postman-cs%2Fonboarding-bootstrap)](https://www.npmjs.com/package/@postman-cs/onboarding-bootstrap) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
@@ -6,7 +6,7 @@ Provisions a [Postman workspace](https://learning.postman.com/docs/collaborating
 
 Every generated collection ships with executable contract tests compiled from your spec: OpenAPI request, response, schema, and security checks grounded in the governing RFCs, plus dedicated gRPC, SOAP, GraphQL, AsyncAPI, and MCP lanes. The full test inventory and the standard behind each check: [Generated assertions](docs/generated-assertions.md) and [Multi-Protocol Contract Assertions](docs/MULTIPROTOCOL-ASSERTIONS.md).
 
-Part of the [Postman API Onboarding suite](https://github.com/postman-cs/postman-api-onboarding-action); the composite action's README has the full [action-picker table](https://github.com/postman-cs/postman-api-onboarding-action#which-action-should-i-use).
+Part of the [Postman Enterprise Automation Suite](https://github.com/postman-cs/postman-api-onboarding-action); the composite action's README has the full [action-picker table](https://github.com/postman-cs/postman-api-onboarding-action#which-action-should-i-use).
 
 - [Usage](#usage)
 - [Common scenarios](#common-scenarios)

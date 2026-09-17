@@ -15,6 +15,7 @@ concurrency:
 jobs:
   classify:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     outputs:
       release_kind: ${{ steps.release_tag.outputs.release_kind }}
       npm_publish: ${{ steps.release_tag.outputs.npm_publish }}
@@ -54,6 +55,7 @@ jobs:
     needs: classify
     if: ${{ needs.classify.outputs.release_kind == 'immutable' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     permissions:
       contents: read
     outputs:
@@ -162,6 +164,7 @@ jobs:
     needs: [classify, verify-package]
     if: ${{ needs.classify.outputs.release_kind == 'immutable' && needs.verify-package.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 13
     outputs:
       published: ${{ steps.npm-publish.outputs.published }}
     permissions:
@@ -358,6 +361,7 @@ jobs:
     needs: [classify, verify-package, publish]
     if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     permissions:
       contents: read
     outputs:
@@ -393,6 +397,7 @@ jobs:
     needs: [classify, verify-package, publish, verify-release-e2e]
     if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' && needs.verify-release-e2e.outputs.outcome == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions:
       contents: write
     steps:
@@ -492,6 +497,7 @@ jobs:
     needs: [classify, verify-package, publish, verify-release-e2e, advance-major-alias]
     if: ${{ !cancelled() && needs.classify.outputs.release_kind == 'immutable' && needs.publish.result == 'success' && needs.verify-release-e2e.result == 'success' && needs.verify-release-e2e.outputs.outcome == 'success' && needs.advance-major-alias.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions: {}
     steps:
       - name: Mint composite-scoped App token

@@ -20,6 +20,7 @@ jobs:
   preflight:
     name: Drift credential preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'schedule') }}
     outputs:
       recordable: ${{ steps.credentials.outputs.recordable }}
@@ -46,6 +47,7 @@ jobs:
   drift-check:
     name: Shape-diff live re-recording vs committed cassette
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     needs: preflight
     if: ${{ needs.preflight.outputs.recordable == 'true' }}
     steps:

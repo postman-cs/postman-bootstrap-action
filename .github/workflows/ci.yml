@@ -20,6 +20,7 @@ jobs:
     name: Normalize multifile receipt
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
+    timeout-minutes: 6
     permissions:
       actions: write
       contents: write
@@ -78,6 +79,7 @@ jobs:
     needs: normalize-receipt
     if: ${{ always() && (needs.normalize-receipt.result == 'success' || needs.normalize-receipt.result == 'skipped') && needs.normalize-receipt.outputs.updated != 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     permissions:
       contents: read
       pull-requests: read
@@ -212,6 +214,7 @@ jobs:
     needs: gate
     if: ${{ always() && needs.gate.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     permissions:
       contents: read
     steps:
@@ -243,6 +246,7 @@ jobs:
     needs: normalize-receipt
     if: ${{ always() && (needs.normalize-receipt.result == 'success' || needs.normalize-receipt.result == 'skipped') && needs.normalize-receipt.outputs.updated != 'true' }}
     runs-on: windows-latest
+    timeout-minutes: 9
     steps:
       - uses: actions/checkout@v7
         with:
@@ -318,6 +322,7 @@ jobs:
     needs: [gate, dist-parity, windows]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
       - name: Require all CI jobs succeeded
         run: |

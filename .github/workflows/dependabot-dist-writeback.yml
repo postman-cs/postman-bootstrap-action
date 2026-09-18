@@ -33,6 +33,7 @@ jobs:
   writeback:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     permissions:
       contents: write
       pull-requests: write

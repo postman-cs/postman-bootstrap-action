@@ -2232,8 +2232,8 @@ describe('PostmanGatewayAssetsClient', () => {
       // (5 attempts: initial + 4 retries) before the run concedes, rather than
       // moving on after a single ambiguous 500 and recreating over debris.
       expect(deleteAttempts).toBe(5);
-      // one re-read per attempt + the post-loop verification
-      expect(itemListReads).toBe(6);
+      // initial existing-items fetch + one re-read per attempt + the post-loop verification
+      expect(itemListReads).toBe(7);
       expect(calls.some((call) => call.method === 'post')).toBe(false);
     });
 
@@ -2252,6 +2252,12 @@ describe('PostmanGatewayAssetsClient', () => {
         }
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1') {
           return jsonResponse({ data: { id: '55363555-cid-1', name: 'Old' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          return jsonResponse({ data: { id: 'new-1' } });
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/55363555-cid-1') {
+          return jsonResponse({ data: { id: '55363555-cid-1' } });
         }
         return jsonResponse({ data: {} });
       });

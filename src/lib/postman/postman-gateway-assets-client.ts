@@ -3481,29 +3481,38 @@ export class PostmanGatewayAssetsClient {
     const rootCid = this.collectionRootId(collectionUid);
     const v3 = this.normalizeCollectionForWrite(collection);
 
+    const deleteSettleDelaysMs = PostmanGatewayAssetsClient.DELETE_ABSENCE_SETTLE_DELAYS_MS.slice(0, 4);
     const existingItems = await this.listCollectionItems(itemsCid);
     for (const item of existingItems) {
       const itemId = String(item.id).trim();
-      try {
-        await this.gateway.requestJson<JsonRecord>({
-          service: 'collection',
-          method: 'delete',
-          path: `/v3/collections/${itemsCid}/items/${itemId}`,
-          retry: 'none',
-          headers: { 'X-Entity-Type': String(item.$kind ?? 'http-request') }
-        });
-      } catch (error) {
-        if (isAmbiguousTransportError(error)) {
-          // Re-read before deciding. Gone => cascade/spurious 5xx; still present =>
-          // fall through to the post-loop verification so we never recreate.
-          const stillPresent = (await this.listCollectionItems(itemsCid)).some(
-            (candidate) => String(candidate.id ?? '').trim() === itemId
-          );
-          if (!stillPresent) continue;
-          continue;
+      let deleted = false;
+      for (let attempt = 0; !deleted && attempt <= deleteSettleDelaysMs.length; attempt += 1) {
+        try {
+          await this.gateway.requestJson<JsonRecord>({
+            service: 'collection',
+            method: 'delete',
+            path: `/v3/collections/${itemsCid}/items/${itemId}`,
+            retry: 'none',
+            headers: { 'X-Entity-Type': String(item.$kind ?? 'http-request') }
+          });
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) {
+            // fall through to the presence re-check below; a spurious 500 on an
+            // already-cascaded delete is common, but a genuinely failed delete
+            // must be retried rather than silently conceded.
+          } else if (!(error instanceof HttpError && error.status === 404)) {
+            throw error;
+          }
         }
-        if (!(error instanceof HttpError && error.status === 404)) {
-          throw error;
+        // Re-read before deciding. Gone => cascade/spurious 5xx or a real delete;
+        // still present after all attempts => fall through to the post-loop
+        // verification, which fails the run rather than recreating over debris.
+        const stillPresent = (await this.listCollectionItems(itemsCid)).some(
+          (candidate) => String(candidate.id ?? '').trim() === itemId
+        );
+        deleted = !stillPresent;
+        if (!deleted && attempt < deleteSettleDelaysMs.length) {
+          await this.sleep(deleteSettleDelaysMs[attempt]!);
         }
       }
     }

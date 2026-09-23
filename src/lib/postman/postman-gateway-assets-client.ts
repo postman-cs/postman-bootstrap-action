@@ -3485,8 +3485,34 @@ export class PostmanGatewayAssetsClient {
     const existingItems = await this.listCollectionItems(itemsCid);
     for (const item of existingItems) {
       const itemId = String(item.id).trim();
-      let deleted = false;
-      for (let attempt = 0; !deleted && attempt <= deleteSettleDelaysMs.length; attempt += 1) {
+      try {
+        await this.gateway.requestJson<JsonRecord>({
+          service: 'collection',
+          method: 'delete',
+          path: `/v3/collections/${itemsCid}/items/${itemId}`,
+          retry: 'none',
+          headers: { 'X-Entity-Type': String(item.$kind ?? 'http-request') }
+        });
+        continue;
+      } catch (error) {
+        if (!isAmbiguousTransportError(error)) {
+          if (error instanceof HttpError && error.status === 404) continue;
+          throw error;
+        }
+      }
+      // Ambiguous transport error (e.g. a 500): could be a spurious response on
+      // an already-cascaded delete, or a genuinely failed delete. Re-read to
+      // decide, and if the item is still there, retry the delete itself across
+      // a short settle-delay schedule before conceding — a real delete failure
+      // must not be silently skipped and left for the post-loop verification to
+      // discover only after every other item has already been torn down.
+      for (let attempt = 0; ; attempt += 1) {
+        const stillPresent = (await this.listCollectionItems(itemsCid)).some(
+          (candidate) => String(candidate.id ?? '').trim() === itemId
+        );
+        if (!stillPresent) break;
+        if (attempt >= deleteSettleDelaysMs.length) break;
+        await this.sleep(deleteSettleDelaysMs[attempt]!);
         try {
           await this.gateway.requestJson<JsonRecord>({
             service: 'collection',
@@ -3496,23 +3522,9 @@ export class PostmanGatewayAssetsClient {
             headers: { 'X-Entity-Type': String(item.$kind ?? 'http-request') }
           });
         } catch (error) {
-          if (isAmbiguousTransportError(error)) {
-            // fall through to the presence re-check below; a spurious 500 on an
-            // already-cascaded delete is common, but a genuinely failed delete
-            // must be retried rather than silently conceded.
-          } else if (!(error instanceof HttpError && error.status === 404)) {
+          if (!isAmbiguousTransportError(error) && !(error instanceof HttpError && error.status === 404)) {
             throw error;
           }
-        }
-        // Re-read before deciding. Gone => cascade/spurious 5xx or a real delete;
-        // still present after all attempts => fall through to the post-loop
-        // verification, which fails the run rather than recreating over debris.
-        const stillPresent = (await this.listCollectionItems(itemsCid)).some(
-          (candidate) => String(candidate.id ?? '').trim() === itemId
-        );
-        deleted = !stillPresent;
-        if (!deleted && attempt < deleteSettleDelaysMs.length) {
-          await this.sleep(deleteSettleDelaysMs[attempt]!);
         }
       }
     }

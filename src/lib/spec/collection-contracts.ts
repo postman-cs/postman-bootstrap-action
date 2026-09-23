@@ -1508,23 +1508,34 @@ function isResolverItem(item: JsonRecord): boolean {
   return String(target?.value || '') === 'secretsmanager.GetSecretValue' && !requestPath(request).includes('secretsmanager');
 }
 
+// deepObject members arrive as name[prop]; they belong to the bracket-free
+// parameter name.
+function queryBaseName(key: string): string {
+  return key.toLowerCase().replace(/(\[|%5b).*$/, '');
+}
+
 function requestQueryNames(request: JsonRecord): Set<string> {
   const url = asRecord(request.url);
   const names = new Set<string>();
   if (Array.isArray(url?.query)) {
     for (const entry of url.query.map((item) => asRecord(item)).filter(Boolean)) {
-      if (entry!.disabled !== true && typeof entry!.key === 'string') names.add(entry!.key.toLowerCase());
+      if (entry!.disabled !== true && typeof entry!.key === 'string') names.add(queryBaseName(entry!.key));
     }
   }
   if (typeof url?.raw === 'string') {
     try {
       const parsed = new URL(url.raw.replace(/^\{\{[^}]+\}\}/, 'https://placeholder.test'));
-      parsed.searchParams.forEach((_value, key) => names.add(key.toLowerCase()));
+      parsed.searchParams.forEach((_value, key) => names.add(queryBaseName(key)));
     } catch {
       // ignore non-URL raw values
     }
   }
   return names;
+}
+
+function undocumentedQueryNames(operation: ContractOperation, request: JsonRecord): string[] {
+  if (operation.openQueryParameters) return [];
+  return [...requestQueryNames(request)].filter((name) => !operation.declaredQueryParameters.includes(name));
 }
 
 function requestHeaderNames(request: JsonRecord): Set<string> {
@@ -1858,7 +1869,7 @@ export function instrumentContractCollection(
         const previous = covered.get(result.operation.id);
         if (previous) throw new Error(`CONTRACT_DUPLICATE_OPERATION_REQUEST: ${result.operation.id} matched more than one generated request (${previous}, ${String(item.name || '<unnamed>')})`);
         warnings.push(...assertStaticRequestShape(result.operation, request));
-        for (const name of [...requestQueryNames(request)].filter((entry) => !result.operation!.declaredQueryParameters.includes(entry))) {
+        for (const name of undocumentedQueryNames(result.operation, request)) {
           warnings.push(`CONTRACT_UNDOCUMENTED_QUERY_PARAM: ${result.operation.id} generated request sends query parameter ${name} that the OpenAPI operation does not declare`);
         }
         covered.set(result.operation.id, String(item.name || '<unnamed>'));
@@ -2026,9 +2037,7 @@ export function planContractItemScripts(
           `CONTRACT_STATIC_REQUEST_CHECK_SKIPPED: ${result.operation.id} static request-shape check could not be evaluated over the v3 collection surface (${error instanceof Error ? error.message : String(error)})`
         );
       }
-      for (const queryName of [...requestQueryNames(request)].filter(
-        (entry) => !result.operation!.declaredQueryParameters.includes(entry)
-      )) {
+      for (const queryName of undocumentedQueryNames(result.operation, request)) {
         warnings.push(
           `CONTRACT_UNDOCUMENTED_QUERY_PARAM: ${result.operation.id} generated request sends query parameter ${queryName} that the OpenAPI operation does not declare`
         );

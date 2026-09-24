@@ -2207,14 +2207,16 @@ describe('PostmanGatewayAssetsClient', () => {
       expect(calls.some((call) => call.method === 'post')).toBe(false);
     });
 
-    it('does not recreate when a tolerated delete error leaves an old item behind', async () => {
+    it('does not recreate when a delete error leaves an old item behind after every retry', async () => {
       let itemListReads = 0;
+      let deleteAttempts = 0;
       const { client, calls } = makeClient((env) => {
         if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
           itemListReads += 1;
           return jsonResponse({ data: [{ id: 'old-1', name: 'Old', $kind: 'http-request' }] });
         }
         if (env.method === 'delete') {
+          deleteAttempts += 1;
           return jsonResponse({ error: { code: 'GENERIC_ERROR' } }, { status: 500 });
         }
         return jsonResponse({ data: {} });
@@ -2226,9 +2228,48 @@ describe('PostmanGatewayAssetsClient', () => {
         items: [{ $kind: 'http-request', name: 'New', method: 'GET', url: 'https://example.test' }]
       })).rejects.toThrow(/old items remain|delete.*verification/i);
 
-      // initial list + ambiguous-delete re-read + post-loop verification
-      expect(itemListReads).toBe(3);
+      // A genuinely failing delete is retried across the settle-delay schedule
+      // (5 attempts: initial + 4 retries) before the run concedes, rather than
+      // moving on after a single ambiguous 500 and recreating over debris.
+      expect(deleteAttempts).toBe(5);
+      // initial existing-items fetch + one re-read per attempt + the post-loop verification
+      expect(itemListReads).toBe(7);
       expect(calls.some((call) => call.method === 'post')).toBe(false);
+    });
+
+    it('retries past a transient ambiguous delete error and still recreates the tree', async () => {
+      let deleteAttempts = 0;
+      const { client, calls } = makeClient((env) => {
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          if (deleteAttempts === 0) {
+            return jsonResponse({ data: [{ id: 'old-1', name: 'Old', $kind: 'http-request' }] });
+          }
+          return jsonResponse({ data: [] });
+        }
+        if (env.method === 'delete') {
+          deleteAttempts += 1;
+          return jsonResponse({ error: { code: 'GENERIC_ERROR' } }, { status: 500 });
+        }
+        if (env.method === 'get' && env.path === '/v3/collections/55363555-cid-1') {
+          return jsonResponse({ data: { id: '55363555-cid-1', name: 'Old' } });
+        }
+        if (env.method === 'post' && env.path === '/v3/collections/55363555-cid-1/items/') {
+          return jsonResponse({ data: { id: 'new-1' } });
+        }
+        if (env.method === 'patch' && env.path === '/v3/collections/55363555-cid-1') {
+          return jsonResponse({ data: { id: '55363555-cid-1' } });
+        }
+        return jsonResponse({ data: {} });
+      });
+
+      await client.updateCollection('55363555-cid-1', {
+        $kind: 'collection',
+        name: 'Replacement',
+        items: [{ $kind: 'http-request', name: 'New', method: 'GET', url: 'https://example.test' }]
+      });
+
+      expect(deleteAttempts).toBe(1);
+      expect(calls.some((call) => call.method === 'post')).toBe(true);
     });
 
     it('reconciles root description/auth/variables/scripts on update, including removals', async () => {

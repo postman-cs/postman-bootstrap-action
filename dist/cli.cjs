@@ -306075,7 +306075,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-08-28T17:35:35.305Z",
-  bootstrapCommit: "7ac1bc78eac63fa9ef277cfd8044f1cc549c5367",
+  bootstrapCommit: "97e6c1c1ad3649e2e840ec8bfe64a833803d0742",
   legs: [
     {
       mode: "nonorg",
@@ -309903,6 +309903,7 @@ ${error.responseBody ?? ""}`
     const itemsCid = this.collectionItemsId(collectionUid);
     const rootCid = this.collectionRootId(collectionUid);
     const v3 = this.normalizeCollectionForWrite(collection);
+    const deleteSettleDelaysMs = _PostmanGatewayAssetsClient.DELETE_ABSENCE_SETTLE_DELAYS_MS.slice(0, 4);
     const existingItems = await this.listCollectionItems(itemsCid);
     for (const item of existingItems) {
       const itemId = String(item.id).trim();
@@ -309914,16 +309915,32 @@ ${error.responseBody ?? ""}`
           retry: "none",
           headers: { "X-Entity-Type": String(item.$kind ?? "http-request") }
         });
+        continue;
       } catch (error) {
-        if (isAmbiguousTransportError(error)) {
-          const stillPresent = (await this.listCollectionItems(itemsCid)).some(
-            (candidate) => String(candidate.id ?? "").trim() === itemId
-          );
-          if (!stillPresent) continue;
-          continue;
-        }
-        if (!(error instanceof HttpError && error.status === 404)) {
+        if (!isAmbiguousTransportError(error)) {
+          if (error instanceof HttpError && error.status === 404) continue;
           throw error;
+        }
+      }
+      for (let attempt = 0; ; attempt += 1) {
+        const stillPresent = (await this.listCollectionItems(itemsCid)).some(
+          (candidate) => String(candidate.id ?? "").trim() === itemId
+        );
+        if (!stillPresent) break;
+        if (attempt >= deleteSettleDelaysMs.length) break;
+        await this.sleep(deleteSettleDelaysMs[attempt]);
+        try {
+          await this.gateway.requestJson({
+            service: "collection",
+            method: "delete",
+            path: `/v3/collections/${itemsCid}/items/${itemId}`,
+            retry: "none",
+            headers: { "X-Entity-Type": String(item.$kind ?? "http-request") }
+          });
+        } catch (error) {
+          if (!isAmbiguousTransportError(error) && !(error instanceof HttpError && error.status === 404)) {
+            throw error;
+          }
         }
       }
     }

@@ -109,6 +109,8 @@ export interface ContractOperation {
   responses: Record<string, ContractResponse>;
   requiredParameters: ContractParameterRequirement[];
   declaredQueryParameters: string[];
+  // Set when an exploded form object admits undeclared members, so any query key is valid.
+  openQueryParameters?: boolean;
   parameterChecks?: ContractParameterCheck[];
   requestBody?: ContractRequestBodyRequirement;
   security?: ContractSecurityCheck[][];
@@ -334,6 +336,40 @@ function resolvedParameters(root: JsonRecord, pathItem: JsonRecord, operation: J
 
 const DEFAULT_PARAM_STYLES: Record<string, string> = { query: 'form', path: 'simple', header: 'simple', cookie: 'form' };
 
+interface ParamSerialization {
+  style: string;
+  explode: boolean;
+  defaultSerialization: boolean;
+}
+
+// OAS Parameter Object style/explode with their per-location defaults,
+// resolved in one place so presence, decoding, and warnings agree on the wire
+// shape.
+function paramSerialization(location: string, param: JsonRecord): ParamSerialization | undefined {
+  const defaultStyle = DEFAULT_PARAM_STYLES[location];
+  if (!defaultStyle) return undefined;
+  const style = typeof param.style === 'string' ? param.style : defaultStyle;
+  const defaultExplode = style === 'form';
+  const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
+  return { style, explode, defaultSerialization: style === defaultStyle && explode === defaultExplode };
+}
+
+// An exploded form object query parameter spreads its members into top-level
+// keys (?a=1&b=2) and never sends its own name. Returns those member keys and
+// whether the schema admits members beyond them.
+function explodedObjectQueryMembers(root: JsonRecord, param: JsonRecord): { names: string[]; open: boolean } | undefined {
+  const serialization = paramSerialization('query', param);
+  if (serialization?.style !== 'form' || !serialization.explode) return undefined;
+  let schema: JsonRecord | null;
+  try {
+    schema = resolveInternalRef<JsonRecord>(root, param.schema);
+  } catch {
+    return undefined;
+  }
+  if (!schema || !schemaTypeNames(schema).includes('object')) return undefined;
+  return { names: Object.keys(asRecord(schema.properties) ?? {}).map((name) => name.toLowerCase()), open: schema.additionalProperties !== false };
+}
+
 // OAS Parameter Object: header parameters named Accept, Content-Type, or
 // Authorization SHALL be ignored; content negotiation and credentials are
 // described by the media types and security schemes instead.
@@ -362,17 +398,14 @@ function collectSerializationWarnings(root: JsonRecord, pathItem: JsonRecord, op
   for (const param of resolvedParameters(root, pathItem, operation)) {
     const location = String(param.in || '').toLowerCase();
     const name = String(param.name || '');
-    const defaultStyle = DEFAULT_PARAM_STYLES[location];
-    if (!name || !defaultStyle || isIgnoredParameter(location, name)) continue;
-    const style = typeof param.style === 'string' ? param.style : defaultStyle;
-    const defaultExplode = style === 'form';
-    const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
+    const serialization = paramSerialization(location, param);
+    if (!name || !serialization || isIgnoredParameter(location, name)) continue;
     // Content parameters with a single JSON media type are parsed and
     // validated at runtime, but only in the query/header locations the
     // runtime check covers; every other content shape or location warns.
     const unvalidatedContent = param.content !== undefined
       && (jsonContentParameterMedia(param) === undefined || (location !== 'query' && location !== 'header'));
-    if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || unvalidatedContent) {
+    if (!serialization.defaultSerialization || param.allowReserved === true || unvalidatedContent) {
       // A non-default style the runtime check decodes back into items is
       // validated rather than warned; allowReserved and content keep the
       // warning because neither is interpreted.
@@ -486,11 +519,7 @@ function collectParameterChecks(root: JsonRecord, pathItem: JsonRecord, operatio
       continue;
     }
     if (param.content !== undefined || param.schema === undefined) continue;
-    const defaultStyle = DEFAULT_PARAM_STYLES[location]!;
-    const style = typeof param.style === 'string' ? param.style : defaultStyle;
-    const defaultExplode = style === 'form';
-    const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
-    const defaultSerialization = style === defaultStyle && explode === defaultExplode;
+    const { style, explode, defaultSerialization } = paramSerialization(location, param)!;
     const packed = packSchema(root, param.schema, version);
     // Pack notes follow validation attempts: default-serialization parameters
     // always packed before this change, and decoded array parameters emit
@@ -580,17 +609,24 @@ function packNoteWarnings(packed: PackedSchema, context: string): string[] {
   );
 }
 
-function collectDeclaredQueryParameters(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): string[] {
+function collectDeclaredQueryParameters(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): Pick<ContractOperation, 'declaredQueryParameters' | 'openQueryParameters'> {
   const names = new Set<string>();
+  let open = false;
   for (const param of resolvedParameters(root, pathItem, operation)) {
     if (String(param.in || '').toLowerCase() !== 'query') continue;
+    const members = explodedObjectQueryMembers(root, param);
+    if (members) {
+      members.names.forEach((name) => names.add(name));
+      open ||= members.open;
+      continue;
+    }
     const name = String(param.name || '');
     if (name) names.add(name.toLowerCase());
   }
   for (const key of collectSecurityApiKeys(root, operation)) {
     if (key.startsWith('query:')) names.add(key.slice('query:'.length));
   }
-  return [...names];
+  return { declaredQueryParameters: [...names], ...(open && { openQueryParameters: true }) };
 }
 
 function collectParameters(root: JsonRecord, pathItem: JsonRecord, operation: JsonRecord): ContractParameterRequirement[] {
@@ -605,6 +641,8 @@ function collectParameters(root: JsonRecord, pathItem: JsonRecord, operation: Js
     if (!['path', 'query', 'header', 'cookie'].includes(location)) continue;
     const name = String(param.name || '');
     if (!name || param.required !== true || isIgnoredParameter(location, name)) continue;
+    // An exploded form object never sends its own name, so there is no key to require.
+    if (location === 'query' && explodedObjectQueryMembers(root, param)) continue;
     const key = `${location}:${name.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1291,10 +1329,9 @@ function validateParameterExamples(root: JsonRecord, param: JsonRecord, packed: 
   const validate = compileSchemaValidator(packed.schema);
   if (!validate) return;
   const location = String(param.in || '').toLowerCase();
-  const defaultStyle = DEFAULT_PARAM_STYLES[location];
-  const style = typeof param.style === 'string' ? param.style : defaultStyle;
-  const defaultExplode = style === 'form';
-  const explode = typeof param.explode === 'boolean' ? param.explode : defaultExplode;
+  const serialization = paramSerialization(location, param);
+  const style = serialization?.style;
+  const explode = serialization?.explode;
   const itemsSchema = packedArrayItemsSchema(packed);
   const itemType = asRecord(itemsSchema)?.type;
   const serializedArrayDecode =
@@ -1816,7 +1853,7 @@ export function buildContractIndex(root: JsonRecord): ContractIndex {
           candidates,
           responses: contractResponses,
           requiredParameters,
-          declaredQueryParameters: collectDeclaredQueryParameters(root, pathItem, operation),
+          ...collectDeclaredQueryParameters(root, pathItem, operation),
           parameterChecks,
           requestBody: collectRequestBody(root, operation, version, operationId, opWarnings),
           security: collectSecurityRuntimeChecks(root, operation),

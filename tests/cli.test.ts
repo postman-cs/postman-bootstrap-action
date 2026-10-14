@@ -564,7 +564,9 @@ describe('package CLI bin', () => {
       },
       maxBuffer: 20 * 1024 * 1024
     });
-    const [packed] = JSON.parse(packResult.stdout) as Array<{
+    // npm <= 11 prints an array of pack results; npm 12 keys them by package name.
+    const packJson: unknown = JSON.parse(packResult.stdout);
+    const [packed] = (Array.isArray(packJson) ? packJson : Object.values(packJson as object)) as Array<{
       filename: string;
       files: Array<{ path: string }>;
       name: string;

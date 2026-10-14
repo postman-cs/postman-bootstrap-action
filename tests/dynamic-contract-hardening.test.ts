@@ -695,6 +695,35 @@ components:
     expect(() => instrumentContractCollection({ item: [{ request: { method: 'POST', url: { path: ['pets', '1'], query: [{ key: 'mode', value: 'full' }] }, header: [{ key: 'X-Trace-Id', value: 'trace-1' }, { key: 'Content-Type', value: 'text/plain' }], body: { raw: '{}' } } }] }, index)).toThrow('request Content-Type text/plain does not match application/json');
   });
 
+  it('accepts required exploded-object and deepObject query parameters whose name is not a wire key', () => {
+    const index = indexFrom(`openapi: 3.1.0
+info: { title: T, version: 1.0.0 }
+paths:
+  /user:
+    get:
+      parameters:
+        - { name: params, in: query, required: true, schema: { type: object, additionalProperties: { type: string } } }
+      responses: { '200': { description: OK } }
+  /search:
+    get:
+      parameters:
+        - { name: page, in: query, required: true, schema: { $ref: '#/components/schemas/Page' } }
+        - { name: filter, in: query, required: true, style: deepObject, schema: { type: object, properties: { id: { type: string } } } }
+        - { name: ids, in: query, required: true, explode: false, schema: { type: object, properties: { a: { type: string } } } }
+      responses: { '200': { description: OK } }
+components:
+  schemas:
+    Page: { type: object, additionalProperties: false, properties: { limit: { type: integer } } }
+`);
+    const get = (path: string, keys: string[]) => ({ request: { method: 'GET', url: { path: [path], query: keys.map((key) => ({ key, value: '1' })) } } });
+    const { warnings } = instrumentContractCollection({ item: [get('user', ['key_0', 'key_1']), get('search', ['limit', 'filter[id]', 'ids', 'verbose'])] }, index);
+    expect(warnings.filter((warning) => warning.startsWith('CONTRACT_UNDOCUMENTED_QUERY_PARAM'))).toEqual([
+      'CONTRACT_UNDOCUMENTED_QUERY_PARAM: GET /search generated request sends query parameter verbose that the OpenAPI operation does not declare'
+    ]);
+    expect(() => instrumentContractCollection({ item: [get('search', ['limit', 'ids'])] }, index)).toThrow('missing required query parameter filter');
+    expect(() => instrumentContractCollection({ item: [get('search', ['limit', 'filter[id]', 'a'])] }, index)).toThrow('missing required query parameter ids');
+  });
+
   it('handles OAS 3.0 ref siblings, OAS 3.1 ref siblings, nullable, and writeOnly packaging', () => {
     const spec30 = `openapi: 3.0.3
 info: { title: T, version: 1 }

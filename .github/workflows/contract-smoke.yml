@@ -11,6 +11,7 @@ jobs:
   preflight:
     name: Smoke credential preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     outputs:
       bootstrap_api: ${{ steps.credentials.outputs.bootstrap_api }}
       bifrost: ${{ steps.credentials.outputs.bifrost }}
@@ -77,6 +78,7 @@ jobs:
   bootstrap-smoke:
     name: Bootstrap API Contract
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     needs: preflight
     if: ${{ needs.preflight.outputs.bootstrap_api == 'true' }}
     steps:
@@ -183,6 +185,7 @@ jobs:
   bifrost-smoke:
     name: Bifrost API Contract
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: preflight
     if: ${{ needs.preflight.outputs.bifrost == 'true' }}
     steps:
@@ -210,6 +213,7 @@ jobs:
   session-smoke:
     name: Session Validation Contract
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: preflight
     if: ${{ needs.preflight.outputs.session == 'true' }}
     steps:

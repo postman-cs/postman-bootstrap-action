@@ -279030,6 +279030,26 @@ function resolvedParameters(root, pathItem, operation2) {
   }).filter((param) => Boolean(param));
 }
 var DEFAULT_PARAM_STYLES = { query: "form", path: "simple", header: "simple", cookie: "form" };
+function paramSerialization(location2, param) {
+  const defaultStyle = DEFAULT_PARAM_STYLES[location2];
+  if (!defaultStyle) return void 0;
+  const style = typeof param.style === "string" ? param.style : defaultStyle;
+  const defaultExplode = style === "form";
+  const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
+  return { style, explode, defaultSerialization: style === defaultStyle && explode === defaultExplode };
+}
+function explodedObjectQueryMembers(root, param) {
+  const serialization = paramSerialization("query", param);
+  if (serialization?.style !== "form" || !serialization.explode) return void 0;
+  let schema3;
+  try {
+    schema3 = resolveInternalRef(root, param.schema);
+  } catch {
+    return void 0;
+  }
+  if (!schema3 || !schemaTypeNames(schema3).includes("object")) return void 0;
+  return { names: Object.keys(asRecord6(schema3.properties) ?? {}).map((name) => name.toLowerCase()), open: schema3.additionalProperties !== false };
+}
 var IGNORED_HEADER_PARAMS = /* @__PURE__ */ new Set(["accept", "content-type", "authorization"]);
 function isIgnoredParameter(location2, name) {
   return location2 === "header" && IGNORED_HEADER_PARAMS.has(name.toLowerCase());
@@ -279050,13 +279070,10 @@ function collectSerializationWarnings(root, pathItem, operation2, decodedKeys) {
   for (const param of resolvedParameters(root, pathItem, operation2)) {
     const location2 = String(param.in || "").toLowerCase();
     const name = String(param.name || "");
-    const defaultStyle = DEFAULT_PARAM_STYLES[location2];
-    if (!name || !defaultStyle || isIgnoredParameter(location2, name)) continue;
-    const style = typeof param.style === "string" ? param.style : defaultStyle;
-    const defaultExplode = style === "form";
-    const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
+    const serialization = paramSerialization(location2, param);
+    if (!name || !serialization || isIgnoredParameter(location2, name)) continue;
     const unvalidatedContent = param.content !== void 0 && (jsonContentParameterMedia(param) === void 0 || location2 !== "query" && location2 !== "header");
-    if (style !== defaultStyle || explode !== defaultExplode || param.allowReserved === true || unvalidatedContent) {
+    if (!serialization.defaultSerialization || param.allowReserved === true || unvalidatedContent) {
       if (decodedKeys.has(`${location2}:${name.toLowerCase()}`) && param.allowReserved !== true && param.content === void 0) continue;
       warnings.push(`CONTRACT_PARAM_SERIALIZATION_NOT_VALIDATED: parameter ${location2}:${name} declares non-default style, explode, allowReserved, or content and its serialization is not validated`);
     }
@@ -279136,11 +279153,7 @@ function collectParameterChecks(root, pathItem, operation2, version, operationId
       continue;
     }
     if (param.content !== void 0 || param.schema === void 0) continue;
-    const defaultStyle = DEFAULT_PARAM_STYLES[location2];
-    const style = typeof param.style === "string" ? param.style : defaultStyle;
-    const defaultExplode = style === "form";
-    const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
-    const defaultSerialization = style === defaultStyle && explode === defaultExplode;
+    const { style, explode, defaultSerialization } = paramSerialization(location2, param);
     const packed = packSchema(root, param.schema, version);
     const noteWarnings = packNoteWarnings(packed, `parameter ${location2}:${name} of ${operationId}`);
     if (defaultSerialization) warnings.push(...noteWarnings);
@@ -279210,15 +279223,22 @@ function packNoteWarnings(packed, context) {
 }
 function collectDeclaredQueryParameters(root, pathItem, operation2) {
   const names = /* @__PURE__ */ new Set();
+  let open3 = false;
   for (const param of resolvedParameters(root, pathItem, operation2)) {
     if (String(param.in || "").toLowerCase() !== "query") continue;
+    const members = explodedObjectQueryMembers(root, param);
+    if (members) {
+      members.names.forEach((name2) => names.add(name2));
+      open3 ||= members.open;
+      continue;
+    }
     const name = String(param.name || "");
     if (name) names.add(name.toLowerCase());
   }
   for (const key of collectSecurityApiKeys(root, operation2)) {
     if (key.startsWith("query:")) names.add(key.slice("query:".length));
   }
-  return [...names];
+  return { declaredQueryParameters: [...names], ...open3 && { openQueryParameters: true } };
 }
 function collectParameters(root, pathItem, operation2) {
   const securityKeys = collectSecurityApiKeys(root, operation2);
@@ -279232,6 +279252,7 @@ function collectParameters(root, pathItem, operation2) {
     if (!["path", "query", "header", "cookie"].includes(location2)) continue;
     const name = String(param.name || "");
     if (!name || param.required !== true || isIgnoredParameter(location2, name)) continue;
+    if (location2 === "query" && explodedObjectQueryMembers(root, param)) continue;
     const key = `${location2}:${name.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -279850,10 +279871,9 @@ function validateParameterExamples(root, param, packed, context, warnings) {
   const validate4 = compileSchemaValidator(packed.schema);
   if (!validate4) return;
   const location2 = String(param.in || "").toLowerCase();
-  const defaultStyle = DEFAULT_PARAM_STYLES[location2];
-  const style = typeof param.style === "string" ? param.style : defaultStyle;
-  const defaultExplode = style === "form";
-  const explode = typeof param.explode === "boolean" ? param.explode : defaultExplode;
+  const serialization = paramSerialization(location2, param);
+  const style = serialization?.style;
+  const explode = serialization?.explode;
   const itemsSchema = packedArrayItemsSchema(packed);
   const itemType = asRecord6(itemsSchema)?.type;
   const serializedArrayDecode = location2 === "query" ? QUERY_ARRAY_DECODES[`${style}:${explode}`] : location2 === "header" && style === "simple" && !explode ? "csv" : void 0;
@@ -280355,7 +280375,7 @@ function buildContractIndex(root) {
           candidates,
           responses: contractResponses,
           requiredParameters,
-          declaredQueryParameters: collectDeclaredQueryParameters(root, pathItem, operation2),
+          ...collectDeclaredQueryParameters(root, pathItem, operation2),
           parameterChecks,
           requestBody: collectRequestBody(root, operation2, version, operationId, opWarnings),
           security: collectSecurityRuntimeChecks(root, operation2),
@@ -282102,22 +282122,29 @@ function isResolverItem(item) {
   const target = headers.find((entry) => entry?.key === "X-Amz-Target");
   return String(target?.value || "") === "secretsmanager.GetSecretValue" && !requestPath(request).includes("secretsmanager");
 }
+function queryBaseName(key) {
+  return key.toLowerCase().replace(/(\[|%5b).*$/, "");
+}
 function requestQueryNames(request) {
   const url = asRecord9(request.url);
   const names = /* @__PURE__ */ new Set();
   if (Array.isArray(url?.query)) {
     for (const entry of url.query.map((item) => asRecord9(item)).filter(Boolean)) {
-      if (entry.disabled !== true && typeof entry.key === "string") names.add(entry.key.toLowerCase());
+      if (entry.disabled !== true && typeof entry.key === "string") names.add(queryBaseName(entry.key));
     }
   }
   if (typeof url?.raw === "string") {
     try {
       const parsed = new URL(url.raw.replace(/^\{\{[^}]+\}\}/, "https://placeholder.test"));
-      parsed.searchParams.forEach((_value, key) => names.add(key.toLowerCase()));
+      parsed.searchParams.forEach((_value, key) => names.add(queryBaseName(key)));
     } catch {
     }
   }
   return names;
+}
+function undocumentedQueryNames(operation2, request) {
+  if (operation2.openQueryParameters) return [];
+  return [...requestQueryNames(request)].filter((name) => !operation2.declaredQueryParameters.includes(name));
 }
 function requestHeaderNames(request) {
   const names = /* @__PURE__ */ new Set();
@@ -282376,7 +282403,7 @@ function instrumentContractCollection(collection, index, limits = {}) {
         const previous = covered.get(result.operation.id);
         if (previous) throw new Error(`CONTRACT_DUPLICATE_OPERATION_REQUEST: ${result.operation.id} matched more than one generated request (${previous}, ${String(item.name || "<unnamed>")})`);
         warnings.push(...assertStaticRequestShape(result.operation, request));
-        for (const name of [...requestQueryNames(request)].filter((entry) => !result.operation.declaredQueryParameters.includes(entry))) {
+        for (const name of undocumentedQueryNames(result.operation, request)) {
           warnings.push(`CONTRACT_UNDOCUMENTED_QUERY_PARAM: ${result.operation.id} generated request sends query parameter ${name} that the OpenAPI operation does not declare`);
         }
         covered.set(result.operation.id, String(item.name || "<unnamed>"));
@@ -282487,9 +282514,7 @@ function planContractItemScripts(items, index) {
           `CONTRACT_STATIC_REQUEST_CHECK_SKIPPED: ${result.operation.id} static request-shape check could not be evaluated over the v3 collection surface (${error2 instanceof Error ? error2.message : String(error2)})`
         );
       }
-      for (const queryName of [...requestQueryNames(request)].filter(
-        (entry) => !result.operation.declaredQueryParameters.includes(entry)
-      )) {
+      for (const queryName of undocumentedQueryNames(result.operation, request)) {
         warnings.push(
           `CONTRACT_UNDOCUMENTED_QUERY_PARAM: ${result.operation.id} generated request sends query parameter ${queryName} that the OpenAPI operation does not declare`
         );
@@ -307236,7 +307261,7 @@ function parseAssetMarker(description) {
 var multifile_spec_sync_default = {
   schemaVersion: 1,
   testedAt: "2026-08-28T17:35:35.305Z",
-  bootstrapCommit: "f4d025186752e32f5314b283172680a40d62e347",
+  bootstrapCommit: "3310702f4cab56329455beb3e18fca06539519e7",
   legs: [
     {
       mode: "nonorg",
@@ -311064,6 +311089,7 @@ ${error2.responseBody ?? ""}`
     const itemsCid = this.collectionItemsId(collectionUid);
     const rootCid = this.collectionRootId(collectionUid);
     const v3 = this.normalizeCollectionForWrite(collection);
+    const deleteSettleDelaysMs = _PostmanGatewayAssetsClient.DELETE_ABSENCE_SETTLE_DELAYS_MS.slice(0, 4);
     const existingItems = await this.listCollectionItems(itemsCid);
     for (const item of existingItems) {
       const itemId = String(item.id).trim();
@@ -311075,16 +311101,32 @@ ${error2.responseBody ?? ""}`
           retry: "none",
           headers: { "X-Entity-Type": String(item.$kind ?? "http-request") }
         });
+        continue;
       } catch (error2) {
-        if (isAmbiguousTransportError(error2)) {
-          const stillPresent = (await this.listCollectionItems(itemsCid)).some(
-            (candidate) => String(candidate.id ?? "").trim() === itemId
-          );
-          if (!stillPresent) continue;
-          continue;
-        }
-        if (!(error2 instanceof HttpError && error2.status === 404)) {
+        if (!isAmbiguousTransportError(error2)) {
+          if (error2 instanceof HttpError && error2.status === 404) continue;
           throw error2;
+        }
+      }
+      for (let attempt = 0; ; attempt += 1) {
+        const stillPresent = (await this.listCollectionItems(itemsCid)).some(
+          (candidate) => String(candidate.id ?? "").trim() === itemId
+        );
+        if (!stillPresent) break;
+        if (attempt >= deleteSettleDelaysMs.length) break;
+        await this.sleep(deleteSettleDelaysMs[attempt]);
+        try {
+          await this.gateway.requestJson({
+            service: "collection",
+            method: "delete",
+            path: `/v3/collections/${itemsCid}/items/${itemId}`,
+            retry: "none",
+            headers: { "X-Entity-Type": String(item.$kind ?? "http-request") }
+          });
+        } catch (error2) {
+          if (!isAmbiguousTransportError(error2) && !(error2 instanceof HttpError && error2.status === 404)) {
+            throw error2;
+          }
         }
       }
     }

@@ -1,0 +1,68 @@
+name: Advance Doc Pins
+
+# Keeps rolling sibling aliases in docs/templates at each sibling's newest
+# published major so the docs-pins gate fails on mistakes, not calendar
+# drift. Opens a pull request; never pushes to main.
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advance-doc-pins-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  advance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Advance rolling doc pins
+        id: advance
+        run: |
+          set -euo pipefail
+          node scripts/check-doc-pins.mjs --write
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Commit and open pull request
+        if: steps.advance.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH="chore/advance-doc-pins"
+          git switch -C "$BRANCH"
+          git add -A
+          git commit -m "docs: advance sibling action pins to current majors"
+          gh auth setup-git
+          git fetch origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" || true
+          git push --force-with-lease origin "HEAD:refs/heads/${BRANCH}"
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')" ]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "docs: advance sibling action pins to current majors" \
+              --body "Automated rolling-alias advance by advance-doc-pins.yml after a sibling major release."
+          fi
+          # CI is dispatched explicitly because GITHUB_TOKEN-created pull
+          # requests do not emit pull_request runs.
+          gh workflow run ci.yml --ref "$BRANCH"

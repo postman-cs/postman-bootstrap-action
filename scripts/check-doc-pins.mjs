@@ -6,12 +6,14 @@
 //
 // Scans README.md, AGENTS.md, RELEASE_POLICY.md, SUPPORT.md, SECURITY.md,
 // docs/**, templates/**, and .postman-template/** for
-// `postman-cs/<action>@vN[.M.K]`. Tag truth comes from `git ls-remote --tags`
+// `postman-cs/<action>@vN[.M.K]`. With `--write`, stale rolling aliases are
+// first advanced in place to the newest published major, then the same check
+// runs. Tag truth comes from `git ls-remote --tags`
 // against each referenced repository, so the check needs network access and
 // no local tag fetch.
 import { execFileSync } from 'node:child_process';
 import console from 'node:console';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
 import process from 'node:process';
 
@@ -106,8 +108,30 @@ function findStalePins(files) {
   return failures;
 }
 
+function advanceRollingPins(files) {
+  const changed = [];
+  for (const file of files) {
+    const source = readFileSync(file, 'utf8');
+    const next = source.replace(PIN, (match, repo, major, minor) => {
+      if (minor !== undefined) return match;
+      const { topMajor } = publishedTags(repo);
+      return topMajor > Number(major) ? `postman-cs/${repo}@v${topMajor}` : match;
+    });
+    if (next !== source) {
+      writeFileSync(file, next);
+      changed.push(relative(ROOT, file));
+    }
+  }
+  return changed;
+}
+
 const files = [];
 for (const target of SCAN_ROOTS) collectFiles(join(ROOT, target), files);
+if (process.argv.includes('--write')) {
+  for (const file of advanceRollingPins(files)) {
+    console.log(`advanced rolling pins in ${file}`);
+  }
+}
 const failures = findStalePins(files);
 if (failures.length > 0) {
   console.error('Stale documentation pins:');
